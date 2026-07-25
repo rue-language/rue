@@ -2119,6 +2119,42 @@ impl<'a> BoundSema<'a> {
         )
     }
 
+    /// Analyze one callable body while publishing every exact declaration
+    /// candidate-set lookup through `collector`.
+    ///
+    /// The collector is installed only after declaration installation has
+    /// completed, so it records body-resolution demand rather than the
+    /// whole-epoch preparation prefix.
+    pub fn analyze_one_body_instance_recording_lookups<K, M>(
+        mut self,
+        instance: &crate::FunctionInstanceKey<K, M>,
+        definition: impl Fn(
+            &K,
+        ) -> Result<
+            crate::SemanticDefinitionToken,
+            crate::SemanticStableResolutionFailure,
+        >,
+        module: impl Fn(
+            &M,
+        )
+            -> Result<crate::SemanticModuleToken, crate::SemanticStableResolutionFailure>,
+        interruption: Option<super::OneBodyInterruption>,
+        collector: super::BodyLookupCollector,
+    ) -> super::OneBodyTransactionOutcome
+    where
+        K: Clone,
+        M: Clone,
+    {
+        self.sema.body_lookup_collector = Some(collector);
+        super::one_body::analyze_one_body_instance(
+            self.sema,
+            instance,
+            definition,
+            module,
+            interruption,
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn analyze_one_body_for_test(
         self,

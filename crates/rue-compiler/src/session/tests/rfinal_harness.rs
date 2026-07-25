@@ -530,18 +530,6 @@ const EDGE_FAMILY_EXCEPTIONS: &[EdgeFamilyException] = &[
                  keeping this input on the transaction, not on the fact drivers",
     },
     EdgeFamilyException {
-        family: "compiler.module-declaration-set",
-        side: EdgeExceptionSide::EpochOnly,
-        reason: "the conservative whole-program declaration-set edge the flip DELETES (plan \
-                 section 5 step 3) — exactly the no-whole-program-context locality delta",
-    },
-    EdgeFamilyException {
-        family: "compiler.lookup-name",
-        side: EdgeExceptionSide::ProviderOnly,
-        reason: "r4a-1 ruling: keyed name-lookup edges recorded at materialization are the \
-                 richer post-flip truth the epoch's table reads mask",
-    },
-    EdgeFamilyException {
         family: "compiler.semantic-nucleus",
         side: EdgeExceptionSide::ProviderOnly,
         reason: "declaration identity/signature/const facts consulted through the boundary \
@@ -755,7 +743,6 @@ fn capture_terminal(
             revision,
             key.clone(),
             Arc::new(BTreeMap::new()),
-            Arc::from([]),
             false,
             Arc::from([]),
             rue_query::CancellationToken::new(),
@@ -779,11 +766,14 @@ fn capture_terminal(
             body,
             references,
             produced_anonymous_nominals,
+            ..
         } => (
             format!("{body:?}\n{references:?}\n{produced_anonymous_nominals:?}").into_bytes(),
             Vec::new(),
         ),
-        crate::body_query::BodyTransaction::DeterministicFailure { errors, references } => (
+        crate::body_query::BodyTransaction::DeterministicFailure {
+            errors, references, ..
+        } => (
             format!("{references:?}").into_bytes(),
             // CompileErrors::to_string() is the production ordered rendered
             // diagnostic stream; do not sort it.

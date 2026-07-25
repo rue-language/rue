@@ -158,14 +158,17 @@ impl BodyEndpointProvider for EpochFacts<'_, '_> {
     }
 
     fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.functions_by_file_name.get(&(file, name)).copied()
     }
 
     fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.structs_by_file_name.get(&(file, name)).copied()
     }
 
     fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.sema.record_body_module_item_lookup(file, name);
         self.sema.enums_by_file_name.get(&(file, name)).copied()
     }
 
@@ -207,6 +210,7 @@ impl BodyEndpointProvider for EpochFacts<'_, '_> {
     }
 
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.sema.record_body_member_lookup(struct_id, name);
         self.sema.method_info((struct_id, name)).copied()
     }
 
@@ -215,6 +219,7 @@ impl BodyEndpointProvider for EpochFacts<'_, '_> {
     }
 
     fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
+        self.sema.record_body_module_item_lookup(file_id, source);
         self.sema
             .declaration_index
             .first_free_function(source, Some(file_id))
@@ -226,10 +231,13 @@ impl BodyEndpointProvider for EpochFacts<'_, '_> {
         owner_type_name: Spur,
         method_name: Spur,
     ) -> Option<InstRef> {
+        self.sema
+            .record_body_module_item_lookup(owner_file, owner_type_name);
         let struct_id = self
             .sema
             .structs_by_file_name
             .get(&(owner_file, owner_type_name))?;
+        self.sema.record_body_member_lookup(*struct_id, method_name);
         self.sema
             .named_method_declarations
             .get(&(*struct_id, method_name))
@@ -237,6 +245,8 @@ impl BodyEndpointProvider for EpochFacts<'_, '_> {
     }
 
     fn destructor(&self, file: u32, type_name: Spur) -> Option<RirDestructorDeclaration> {
+        self.sema
+            .record_body_destructor_lookup(FileId::new(file), type_name);
         self.sema
             .declaration_index
             .destructors()

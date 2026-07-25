@@ -3240,9 +3240,8 @@ impl CompilerSession {
     }
 
     /// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4).
-    /// The lease-scoped and lease-attributed fields read zero on the production
-    /// path — no production body observes a lookup terminal, so the session
-    /// `PublishedRootLookupLease` promotes only empty sets until the step-4 flip.
+    /// Production body publications retain their exact observed lookup
+    /// terminals in the session's `PublishedRootLookupLease`.
     pub(crate) fn lookup_pressure_metrics(&self) -> crate::unstable::LookupPressureMetrics {
         self.queries.revisioned.lookup_pressure_metrics()
     }
@@ -6751,15 +6750,6 @@ impl CompilerSession {
                 }
             }
             let declaration_candidates = Arc::new(declaration_candidates);
-            let mut declaration_modules = BTreeSet::from([imports.root().clone()]);
-            for record in imports.records() {
-                declaration_modules.insert(record.importer().clone());
-                if let crate::CanonicalImportResolution::Resolved(target) = record.resolution() {
-                    declaration_modules.insert(target.clone());
-                }
-            }
-            let declaration_modules: Arc<[crate::ModuleId]> =
-                declaration_modules.into_iter().collect::<Vec<_>>().into();
             let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
@@ -7227,7 +7217,6 @@ impl CompilerSession {
                         runtime_revision,
                         key.clone(),
                         declaration_candidates.clone(),
-                        declaration_modules.clone(),
                         producer_body_terminal_required,
                         well_known_demands.clone(),
                         cancellation.clone(),
@@ -11678,14 +11667,10 @@ mod tests {
     }
 
     #[test]
-    fn published_lookup_root_lease_is_inert_on_the_production_path() {
-        // RUE-1091 slice 3c: the `PublishedRootLookupLease` promotion point is
-        // wired into the rooted semantic publication path, but a production body
-        // observes no lookup terminal (the exact provider that consults the lookup
-        // families is a test-only differential adapter until the step-4 flip), so
-        // every semantic-root publication promotes an EMPTY set — no root is
-        // installed and no lease-scoped or lease-attributed metric moves. The
-        // RUE-1090 recipe-cache and RUE-1091 provider counters stay unchanged too.
+    fn published_lookup_root_lease_retains_production_body_lookups() {
+        // Production one-body analysis publishes its exact lookup-name terminals
+        // into the session lease. This remains independent of the test-only fact
+        // provider and recipe cache.
         let source = snapshot(
             &[(
                 1,
@@ -11702,15 +11687,9 @@ mod tests {
             .expect("the program analyzes");
 
         let metrics = crate::unstable::lookup_pressure_metrics(&session);
-        assert_eq!(
-            metrics.published_roots, 0,
-            "no root is promoted on the production path"
-        );
-        assert_eq!(
-            metrics.leased_terminals, 0,
-            "the session lease holds no pin"
-        );
-        assert_eq!(metrics.retained_logical_keys, 0);
+        assert!(metrics.published_roots > 0, "{metrics:?}");
+        assert!(metrics.leased_terminals > 0, "{metrics:?}");
+        assert!(metrics.retained_logical_keys > 0, "{metrics:?}");
         assert_eq!(
             metrics.protected_growth, 0,
             "no lease supersession grew a family"
@@ -11720,18 +11699,12 @@ mod tests {
             "no lease supersession evicted a terminal"
         );
         assert_eq!(metrics.rederivations_after_eviction, 0);
-        // Mechanical (not inferred) proof that the empty path costs nothing: the
-        // promotion hook never entered its non-empty branch on any of this
-        // compile's body publications, so it formatted no root identity and took
-        // no lease lock.
-        assert_eq!(
-            session.queries.revisioned.lookup_promotion_entries(),
-            0,
-            "the promotion hook never entered the non-empty branch on the production path"
+        assert!(
+            session.queries.revisioned.lookup_promotion_entries() > 0,
+            "production bodies must promote their observed lookup terminals"
         );
-        // RUE-1090 recipe-cache and RUE-1091 provider inertness hold at the same
-        // time: wiring the lease promotion point did not perturb the production
-        // path.
+        // Exact lookup collection does not route production analysis through the
+        // differential provider or recipe cache.
         assert_eq!(
             crate::unstable::provider_observation_metrics(&session),
             crate::unstable::ProviderObservationMetrics::default(),
@@ -17909,7 +17882,6 @@ fn main() -> i32 { selected.value() }"#,
                 revision,
                 key.clone(),
                 Arc::new(BTreeMap::new()),
-                Arc::from([]),
                 false,
                 Arc::from([]),
                 cancellation.clone(),
@@ -17959,7 +17931,6 @@ fn main() -> i32 { selected.value() }"#,
                 revision,
                 key.clone(),
                 Arc::new(BTreeMap::new()),
-                Arc::from([]),
                 false,
                 Arc::from([]),
                 rue_query::CancellationToken::new(),
@@ -17988,7 +17959,6 @@ fn main() -> i32 { selected.value() }"#,
                 revision,
                 key.clone(),
                 Arc::new(BTreeMap::new()),
-                Arc::from([]),
                 false,
                 Arc::from([]),
                 rue_query::CancellationToken::new(),
@@ -18511,6 +18481,34 @@ fn main() -> i32 {
         let mut warm = CompilerSession::new();
         warm.update(&missing).into_result().unwrap();
         assert!(warm.canonical_semantic(&options).is_err());
+        let main = crate::body_query::BodyQueryKey {
+            instance: crate::FunctionInstanceKey::Definition(
+                crate::StableDefinitionKey::from_stable_parts(
+                    crate::ModuleId::from_logical_path("main.rue").unwrap(),
+                    crate::StableDefinitionNamespace::Value,
+                    crate::StableDefinitionKind::Function,
+                    "main",
+                    None,
+                ),
+            ),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: options.target,
+                preview_features: StablePreviewFeatures::new(&options.preview_features),
+            },
+        };
+        let dependencies = retained_body_dependency_nodes(&warm, &main);
+        assert!(
+            dependencies
+                .iter()
+                .any(|node| node.contains("lookup-name") && node.contains("helper")),
+            "{dependencies:?}"
+        );
+        assert!(
+            dependencies
+                .iter()
+                .all(|node| !node.contains("module-declaration-set")),
+            "{dependencies:?}"
+        );
 
         warm.update(&resolved).into_result().unwrap();
         let warm_output = warm.canonical_semantic(&options).unwrap();
@@ -18693,7 +18691,6 @@ fn main() -> i32 {
             revision,
             dead,
             Arc::new(BTreeMap::new()),
-            Arc::from([]),
             false,
             Arc::from([]),
             rue_query::CancellationToken::new(),

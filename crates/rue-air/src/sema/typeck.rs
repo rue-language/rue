@@ -74,6 +74,7 @@ impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types
             return Ok(None);
         };
         let name = self.sema.interner.get_or_intern(name);
+        self.sema.record_body_module_item_lookup(root_file, name);
         let binding = provider_failure(self.sema.resolve_module_binding_in_file(root_file, name))?;
         Ok(binding.and_then(|binding| self.module_binding_fact(binding)))
     }
@@ -89,6 +90,7 @@ impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types
         }
         let file = self.sema.module_registry.get_def(*module).file_id;
         let name = self.sema.interner.get_or_intern(name);
+        self.sema.record_body_module_item_lookup(file, name);
         let binding = provider_failure(self.sema.resolve_module_binding_in_file(file, name))?;
         Ok(binding.and_then(|binding| self.module_binding_fact(binding)))
     }
@@ -157,14 +159,17 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.sema.interner.get_or_intern(name);
         let (id, bypass_visibility) = match self.root_authority {
-            SemaTypeRootAuthority::KnownFile(root_file) => (
-                self.sema
-                    .structs_by_file_name
-                    .get(&(root_file, symbol))
-                    .copied()
-                    .or_else(|| self.sema.resolve_builtin_struct_name(symbol)),
-                false,
-            ),
+            SemaTypeRootAuthority::KnownFile(root_file) => {
+                self.sema.record_body_module_item_lookup(root_file, symbol);
+                (
+                    self.sema
+                        .structs_by_file_name
+                        .get(&(root_file, symbol))
+                        .copied()
+                        .or_else(|| self.sema.resolve_builtin_struct_name(symbol)),
+                    false,
+                )
+            }
             SemaTypeRootAuthority::GlobalSpeculative => (
                 self.sema
                     .struct_id_for_name(symbol)
@@ -194,14 +199,17 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.sema.interner.get_or_intern(name);
         let (id, bypass_visibility) = match self.root_authority {
-            SemaTypeRootAuthority::KnownFile(root_file) => (
-                self.sema
-                    .enums_by_file_name
-                    .get(&(root_file, symbol))
-                    .copied()
-                    .or_else(|| self.sema.resolve_builtin_enum_name(symbol)),
-                false,
-            ),
+            SemaTypeRootAuthority::KnownFile(root_file) => {
+                self.sema.record_body_module_item_lookup(root_file, symbol);
+                (
+                    self.sema
+                        .enums_by_file_name
+                        .get(&(root_file, symbol))
+                        .copied()
+                        .or_else(|| self.sema.resolve_builtin_enum_name(symbol)),
+                    false,
+                )
+            }
             SemaTypeRootAuthority::GlobalSpeculative => (
                 self.sema
                     .enum_id_for_name(symbol)
@@ -233,6 +241,7 @@ impl<D: DeclarationPhase>
             return Ok(None);
         };
         let symbol = self.sema.interner.get_or_intern(name);
+        self.sema.record_body_module_item_lookup(root_file, symbol);
         let mut value = self
             .sema
             .resolve_const_info_in_file(symbol, root_file)
@@ -260,6 +269,7 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let file = self.sema.module_registry.get_def(*module).file_id;
         let symbol = self.sema.interner.get_or_intern(name);
+        self.sema.record_body_module_item_lookup(file, symbol);
         let Some(id) = self.sema.structs_by_file_name.get(&(file, symbol)).copied() else {
             return Ok(None);
         };
@@ -282,6 +292,7 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let file = self.sema.module_registry.get_def(*module).file_id;
         let symbol = self.sema.interner.get_or_intern(name);
+        self.sema.record_body_module_item_lookup(file, symbol);
         let Some(id) = self.sema.enums_by_file_name.get(&(file, symbol)).copied() else {
             return Ok(None);
         };
@@ -304,6 +315,7 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let file = self.sema.module_registry.get_def(*module).file_id;
         let symbol = self.sema.interner.get_or_intern(name);
+        self.sema.record_body_module_item_lookup(file, symbol);
         if self.sema.declaration_binding_active && self.sema.value_const(&(file, symbol)).is_none()
         {
             provider_failure(

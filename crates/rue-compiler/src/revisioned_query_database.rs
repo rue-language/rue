@@ -469,7 +469,6 @@ pub(crate) struct RevisionedQueryDatabase {
     test_import_store: Arc<Mutex<TestImportInputStore>>,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
-    module_declaration_sets: QueryFamily<ModuleQueryKey, ModuleDeclarationSetValue>,
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
     #[cfg(test)]
@@ -508,10 +507,9 @@ pub(crate) struct RevisionedQueryDatabase {
     >,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     /// Per-`(module, import-path)` binding-resolution family. Registered query
-    /// machinery for the RUE-1091 exact provider boundary. No production consumer
-    /// exists until the step-4 flip adopts it, so — unlike `declaration_imports`,
-    /// whose family runs in production and only test-gates its field handle — both
-    /// this family's registration and its handle are `#[cfg(test)]` for now.
+    /// machinery for the exact provider boundary. Production body import
+    /// dependencies are mediated by module-binding name and semantic-nucleus
+    /// terminals; the direct provider remains a differential test adapter.
     #[cfg(test)]
     lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
     /// Test-only log of every module whose immutable name index was built,
@@ -576,17 +574,14 @@ pub(crate) struct RevisionedQueryDatabase {
     provider_observation_meter: Arc<ProviderObservationCounters>,
     /// Session-held retention lease over the lookup families (RUE-1091,
     /// ADR-0066 §4). A rooted semantic publication promotes its exact observed
-    /// lookup-pin set here. Inert on the production path in this slice — a
-    /// production body observes no lookup terminals, so nothing is ever promoted;
-    /// the mechanism is production code the step-4 flip makes live. Behind a
-    /// `Mutex` because promotion is a `&self` operation on the shared database.
+    /// lookup-pin set here. Behind a `Mutex` because promotion is a `&self`
+    /// operation on the shared database.
     lookup_root_lease: Mutex<PublishedRootLookupLease>,
     /// Test-only witness that the rooted-publication promotion hook took its
     /// non-empty branch — i.e. entered the promotion path at all (RUE-1091). The
     /// hook checks the observed set for emptiness FIRST, before formatting the
     /// root identity or taking the lease lock, and increments this only past that
-    /// gate. A full production compile leaves it zero, mechanically proving the
-    /// empty path costs no identity format and no lock acquisition.
+    /// gate.
     #[cfg(test)]
     lookup_promotion_entries: std::sync::atomic::AtomicU64,
     /// Test-only probe family hosting one provider-observation task so a driven
@@ -641,10 +636,9 @@ const LOOKUP_INCARNATION_HISTORY_BOUND: usize = 4096;
 /// (the pin-under-lock discipline: no birth-eviction window). Promotion transfers
 /// this into the session-held [`PublishedRootLookupLease`].
 ///
-/// Production body analysis observes no lookup terminals in this slice — the
-/// exact body-fact provider that consults the lookup families is a test-only
-/// differential adapter until the RUE-1091 step-4 flip — so a production body's
-/// collected root is empty and its promotion is inert.
+/// Production body analysis records the candidate-set keys consulted by the
+/// epoch analyzer, then resolves and pins their exact query terminals before
+/// publishing the body transaction.
 pub(crate) struct ObservedLookupRoot {
     /// The exact pins, retained past the request through the batched-release set.
     pins: rue_query::RetainedPinSet,
@@ -673,9 +667,6 @@ impl ObservedLookupRoot {
     /// A terminal already present (same incarnation/stamp/revision) deduplicates:
     /// the redundant pin is dropped and no duplicate key is recorded.
     ///
-    /// Reachable in this slice only from the test-only exact provider — no
-    /// production body observes a lookup terminal until the step-4 flip.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn record<K, V>(
         &mut self,
         family: &QueryFamily<K, V>,
@@ -848,23 +839,6 @@ pub(crate) struct ProjectedModuleIndex {
 
 #[derive(Debug, Clone)]
 struct ModuleIndexValue(Result<Arc<ModuleIndex>, crate::CompileErrors>);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ModuleDeclarationSetFact {
-    namespace: DefinitionNamespace,
-    kind: DefinitionKind,
-    visibility: Option<rue_parser::ast::Visibility>,
-    name: Arc<str>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ModuleDeclarationSetValue {
-    Available {
-        declarations: Arc<[ModuleDeclarationSetFact]>,
-        import_specifiers: Arc<[Arc<str>]>,
-    },
-    Unavailable,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DeclarationOccurrenceIndex {
@@ -6434,66 +6408,6 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the ModuleIndex family has one canonical name");
-        let indexes_for_declaration_sets = module_indexes.clone();
-        let module_declaration_sets = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.module-declaration-set",
-                MODULE_QUERY_MEMO_RETENTION,
-                |left: &ModuleDeclarationSetValue, right: &ModuleDeclarationSetValue| left == right,
-                move |context, _, key: &ModuleQueryKey| {
-                    let indexed =
-                        context.query_registered(&indexes_for_declaration_sets, key.clone())?;
-                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
-                        unreachable!("ModuleIndex publishes typed values")
-                    };
-                    let value = match &indexed.0 {
-                        Ok(index) => {
-                            let mut declarations = index
-                                .definitions
-                                .iter()
-                                .map(|entry| ModuleDeclarationSetFact {
-                                    namespace: entry.namespace,
-                                    kind: entry.kind,
-                                    visibility: entry.visibility,
-                                    name: entry.name.clone(),
-                                })
-                                .collect::<Vec<_>>();
-                            declarations.sort_by(|left, right| {
-                                let visibility_rank = |visibility| match visibility {
-                                    None => 0,
-                                    Some(rue_parser::ast::Visibility::Private) => 1,
-                                    Some(rue_parser::ast::Visibility::Public) => 2,
-                                };
-                                (
-                                    left.namespace,
-                                    left.kind,
-                                    visibility_rank(left.visibility),
-                                    left.name.as_ref(),
-                                )
-                                    .cmp(&(
-                                        right.namespace,
-                                        right.kind,
-                                        visibility_rank(right.visibility),
-                                        right.name.as_ref(),
-                                    ))
-                            });
-                            let mut import_specifiers = index
-                                .imports
-                                .iter()
-                                .map(|import| Arc::from(import.specifier()))
-                                .collect::<Vec<_>>();
-                            import_specifiers.sort();
-                            ModuleDeclarationSetValue::Available {
-                                declarations: declarations.into(),
-                                import_specifiers: import_specifiers.into(),
-                            }
-                        }
-                        Err(_) => ModuleDeclarationSetValue::Unavailable,
-                    };
-                    Ok(QueryOutput::success(value))
-                },
-            )
-            .expect("the ModuleDeclarationSet family has one canonical name");
         let parse_for_declaration_occurrences = parse_modules.clone();
         let parse_for_declaration_shells = parse_modules.clone();
         let declaration_occurrence_indexes = runtime
@@ -8967,7 +8881,6 @@ impl RevisionedQueryDatabase {
             test_import_store,
             parse_modules,
             module_indexes,
-            module_declaration_sets,
             declaration_occurrence_indexes,
             declaration_shells,
             #[cfg(test)]
@@ -9065,8 +8978,7 @@ impl RevisionedQueryDatabase {
     /// revalidation (or any publication that consulted no lookups) observes
     /// nothing, so it preserves the prior root's leased set by construction —
     /// which IS the §4 edit/error/fix warmth semantic. Promotion happens only on
-    /// publications that observed lookups. Inert on the production path: a
-    /// production body observes no lookup terminal, so this always returns early.
+    /// publications that observed lookups.
     pub(crate) fn promote_published_lookup_root(&self, root: String, observed: ObservedLookupRoot) {
         if observed.is_empty() {
             return;
@@ -9382,7 +9294,6 @@ impl RevisionedQueryDatabase {
                 crate::declaration_candidate::DeclarationCandidateKey,
             >,
         >,
-        declaration_modules: Arc<[ModuleId]>,
         producer_body_terminal_required: bool,
         well_known_demands: Arc<[crate::body_query::WellKnownOptionDemand]>,
         cancellation: CancellationToken,
@@ -9400,6 +9311,7 @@ impl RevisionedQueryDatabase {
         let candidate = declaration_candidate_for_stable_key(&definition)
             .ok_or(BodyTransactionRequestFailure::Query(QueryAbort::Canceled))?;
         let deferred_anonymous_producers = std::cell::RefCell::new(BTreeSet::new());
+        let observed_lookups = std::cell::RefCell::new(ObservedLookupRoot::new());
         // Set when a depended-on anonymous producer committed an anchor-transport
         // internal error (RUE-1089). It is carried out of the query closure — which
         // can only signal a bare `QueryAbort` — and mapped to a fatal
@@ -9436,21 +9348,6 @@ impl RevisionedQueryDatabase {
                     unreachable!("BodyToolchainDemands publishes typed values")
                 };
                 let body_payload_kinds = toolchain_demand.payload_kinds();
-                // The one-body resolver consumes declaration-set selection,
-                // including negative and qualified lookups that do not become
-                // positive BodyReferences. Until it publishes those exact
-                // lookup keys as a projection, conservatively observe the
-                // already-canonical, position-free declaration-set
-                // projections admitted by this body epoch. This is a query
-                // dependency only: no source/RIR rescanning or peer name
-                // resolver is introduced.
-                let _ = context.optional_input(accepted_import_topology_input());
-                for module in declaration_modules.iter().cloned() {
-                    let _ = context.query_registered(
-                        &self.module_declaration_sets,
-                        ModuleQueryKey(module),
-                    )?;
-                }
                 let mut selected_anonymous = BTreeMap::new();
                 let mut pending_anonymous = collect_instance_anonymous_nominals(&key.instance);
                 while let Some(identity) = pending_anonymous.pop_first() {
@@ -9580,6 +9477,83 @@ impl RevisionedQueryDatabase {
                         .into(),
                     well_known,
                 )?;
+                for lookup in transaction.lookup_observations() {
+                    match lookup {
+                        crate::body_query::BodyLookupKey::Name {
+                            module,
+                            namespace,
+                            name,
+                        } => {
+                            let namespace = match namespace {
+                                crate::body_query::BodyLookupNamespace::ModuleItem => {
+                                    DefinitionNamespace::ModuleItem
+                                }
+                                crate::body_query::BodyLookupNamespace::Destructor => {
+                                    DefinitionNamespace::Destructor
+                                }
+                            };
+                            let terminal = context.query_registered(
+                                &self.lookup_names,
+                                LookupNameKey {
+                                    module: module.clone(),
+                                    namespace,
+                                    name: name.clone(),
+                                },
+                            )?;
+                            observed_lookups
+                                .borrow_mut()
+                                .record(&self.lookup_names, &terminal);
+                        }
+                        crate::body_query::BodyLookupKey::Member {
+                            module,
+                            owner_name,
+                            member_name,
+                        } => {
+                            use crate::declaration_candidate::{
+                                DeclarationCandidateCategory as Category,
+                                DeclarationCandidateKey,
+                                DeclarationCandidateOwner,
+                            };
+                            for category in [Category::Method, Category::AssociatedFunction] {
+                                let query =
+                                    crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                                        declaration: DeclarationCandidateKey {
+                                            module: module.clone(),
+                                            category,
+                                            name: member_name.clone(),
+                                            owner: Some(DeclarationCandidateOwner {
+                                                category: Category::Struct,
+                                                name: owner_name.clone(),
+                                            }),
+                                            duplicate_discriminator: 0,
+                                        },
+                                        configuration: key.configuration.clone(),
+                                    };
+                                let identity = context.query_registered(
+                                    &self.semantic_nucleus,
+                                    crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
+                                        query.clone(),
+                                    ),
+                                )?;
+                                if matches!(
+                                    identity.outcome(),
+                                    rue_query::QueryOutcome::Success(
+                                        crate::semantic_query_nucleus::SemanticNucleusValue::Identity(
+                                            _
+                                        )
+                                    )
+                                ) {
+                                    let _ = context.query_registered(
+                                        &self.semantic_nucleus,
+                                        crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                                            query,
+                                        ),
+                                    )?;
+                                }
+                            }
+                        }
+                    }
+                }
                 let mut semantic_dependencies = BTreeSet::from([definition]);
                 let mut anonymous_dependencies = BTreeSet::new();
                 for reference in transaction.references().0.iter() {
@@ -9749,17 +9723,14 @@ impl RevisionedQueryDatabase {
                 //
                 // Empty observation is an unconditional no-op checked FIRST, with
                 // zero cost — no root-identity format, no lease lock, no map
-                // access. A production body observes no lookup terminals (the
-                // exact provider that consults the lookup families is a test-only
-                // differential adapter until the step-4 flip), and a warm green
-                // revalidation short-circuits with no observations either; both
-                // leave the empty set. So promotion never runs on the production
-                // path, and green reuse preserves the prior root's leased set by
-                // construction — the §4 edit/error/fix warmth semantic. Only a
-                // publication that actually observed lookups formats the identity,
-                // takes the lease, and supersedes. An attempt that aborts before
-                // publishing a root takes an `Err` arm below and is never promoted.
-                let observed = ObservedLookupRoot::new();
+                // access. A warm green revalidation short-circuits with no new
+                // observations and therefore preserves the prior root's leased
+                // set by construction — the §4 edit/error/fix warmth semantic.
+                // Only a publication that actually observed lookups formats the
+                // identity, takes the lease, and supersedes. An attempt that
+                // aborts before publishing a root takes an `Err` arm below and is
+                // never promoted.
+                let observed = observed_lookups.into_inner();
                 if !observed.is_empty() {
                     #[cfg(test)]
                     self.lookup_promotion_entries
@@ -9954,7 +9925,6 @@ impl RevisionedQueryDatabase {
                 revision,
                 key,
                 Arc::new(BTreeMap::new()),
-                Arc::from([]),
                 false,
                 Arc::from([]),
                 CancellationToken::new(),
@@ -9988,7 +9958,6 @@ impl RevisionedQueryDatabase {
                 revision,
                 key,
                 Arc::new(BTreeMap::new()),
-                Arc::from([]),
                 false,
                 Arc::from([]),
                 CancellationToken::new(),

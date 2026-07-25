@@ -74,8 +74,9 @@ pub use runtime_call::{
 };
 pub use sema::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
-    BodyAnalysisWork, BodyFactProvider, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind,
-    BodyOwnerToken, BoundSema, BuiltinTypeCallHead, ConstInfo, ConstValue, DeclarationBindingWork,
+    BodyAnalysisWork, BodyFactProvider, BodyLookupCollector, BodyLookupObservation,
+    BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BoundSema,
+    BuiltinTypeCallHead, ConstInfo, ConstValue, DeclarationBindingWork,
     DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationInstallFailure,
     DeclarationResolutionFailure, DeclarationShells, DeclarationTypeCallHeadDependencyEvent,
     DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,

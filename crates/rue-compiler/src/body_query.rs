@@ -85,6 +85,26 @@ pub(crate) struct BodyProducedAnonymousNominals(
     pub(crate) Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
 );
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum BodyLookupKey {
+    Name {
+        module: crate::ModuleId,
+        namespace: BodyLookupNamespace,
+        name: Arc<str>,
+    },
+    Member {
+        module: crate::ModuleId,
+        owner_name: Arc<str>,
+        member_name: Arc<str>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) enum BodyLookupNamespace {
+    ModuleItem,
+    Destructor,
+}
+
 /// The `body-produced-anonymous` family's terminal value.
 ///
 /// A producer either publishes the anonymous nominals it owns (`Produced`) or
@@ -121,10 +141,12 @@ pub(crate) enum BodyTransaction {
         body: Box<CanonicalBody>,
         references: BodyReferences,
         produced_anonymous_nominals: BodyProducedAnonymousNominals,
+        lookup_observations: Arc<[BodyLookupKey]>,
     },
     DeterministicFailure {
         errors: crate::CompileErrors,
         references: BodyReferences,
+        lookup_observations: Arc<[BodyLookupKey]>,
     },
 }
 
@@ -136,6 +158,32 @@ impl BodyTransaction {
             }
         }
     }
+
+    pub(crate) fn lookup_observations(&self) -> &[BodyLookupKey] {
+        match self {
+            Self::Success {
+                lookup_observations,
+                ..
+            }
+            | Self::DeterministicFailure {
+                lookup_observations,
+                ..
+            } => lookup_observations,
+        }
+    }
+
+    pub(crate) fn install_lookup_observations(&mut self, observations: Arc<[BodyLookupKey]>) {
+        match self {
+            Self::Success {
+                lookup_observations,
+                ..
+            }
+            | Self::DeterministicFailure {
+                lookup_observations,
+                ..
+            } => *lookup_observations = observations,
+        }
+    }
 }
 
 pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction) -> bool {
@@ -145,11 +193,13 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
                 body: left_body,
                 references: left_references,
                 produced_anonymous_nominals: left_produced,
+                ..
             },
             BodyTransaction::Success {
                 body: right_body,
                 references: right_references,
                 produced_anonymous_nominals: right_produced,
+                ..
             },
         ) => {
             left_body == right_body
@@ -160,10 +210,12 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
             BodyTransaction::DeterministicFailure {
                 errors: left_errors,
                 references: left_references,
+                ..
             },
             BodyTransaction::DeterministicFailure {
                 errors: right_errors,
                 references: right_references,
+                ..
             },
         ) => {
             left_errors.to_string() == right_errors.to_string()

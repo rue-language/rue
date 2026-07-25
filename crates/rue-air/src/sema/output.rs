@@ -239,6 +239,68 @@ pub struct BodyNamedDependencyEvent {
     pub target: NamedConstDependencyTargetEvent,
 }
 
+/// One exact declaration candidate-set lookup performed while analyzing a
+/// single body.
+///
+/// These observations deliberately carry source-level file/name identities,
+/// never epoch-local compact type or symbol ids. The compiler projects them to
+/// its registered lookup and semantic-nucleus query keys while the body query
+/// task is still live. Empty and ambiguous results are observations too: the
+/// event records the consulted key, not a selected declaration.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BodyLookupObservation {
+    /// A top-level value/type/module-binding lookup in one module.
+    ModuleItem {
+        file: u32,
+        name: std::sync::Arc<str>,
+    },
+    /// A destructor lookup for one named type in one module.
+    Destructor {
+        file: u32,
+        type_name: std::sync::Arc<str>,
+    },
+    /// A method or associated-function candidate-set lookup on one named owner.
+    Member {
+        owner_file: u32,
+        owner_name: std::sync::Arc<str>,
+        member_name: std::sync::Arc<str>,
+    },
+}
+
+/// Thread-safe sink for one body's exact lookup observations.
+///
+/// A collector is installed only for the duration of an exact-one-body
+/// analysis. The fact seams accept `&self`, so the shared set provides explicit
+/// interior mutability without making the semantic epoch itself a query-runtime
+/// authority. Observations are deterministically deduplicated and sorted.
+#[derive(Clone, Default)]
+pub struct BodyLookupCollector(
+    std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<BodyLookupObservation>>>,
+);
+
+impl BodyLookupCollector {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub(crate) fn record(&self, observation: BodyLookupObservation) {
+        self.0
+            .lock()
+            .expect("body lookup collector is not poisoned")
+            .insert(observation);
+    }
+
+    pub fn observations(&self) -> std::sync::Arc<[BodyLookupObservation]> {
+        self.0
+            .lock()
+            .expect("body lookup collector is not poisoned")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .into()
+    }
+}
+
 /// Stable-capable owner of an analyzed body or synthesized named-type glue.
 ///
 /// This deliberately contains no request-local symbols or type IDs. CFG
