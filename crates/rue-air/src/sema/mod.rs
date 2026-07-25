@@ -1354,8 +1354,11 @@ impl<'a> Sema<'a> {
             self.synthetic_declaration_discovery,
             "canonical compiler epochs must import query-owned declaration shells"
         );
-        let mut binding_work =
-            DeclarationBindingWork::from_inputs(self.rir.len(), self.declaration_index.work());
+        let mut binding_work = DeclarationBindingWork::from_inputs(
+            self.rir.len(),
+            self.declaration_index.work(),
+            self.module_registry.len(),
+        );
         // Phase 0: Inject built-in types (String, etc.) before user code.
         // Canonical merge has already validated function/type/main conflicts;
         // value constants are checked later once module bindings are known.
@@ -1389,8 +1392,11 @@ impl<'a> Sema<'a> {
         mut self,
         imported: &[SemanticDeclarationShell],
     ) -> MultiErrorResult<DeclarationShells<'a>> {
-        let mut binding_work =
-            DeclarationBindingWork::from_inputs(self.rir.len(), self.declaration_index.work());
+        let mut binding_work = DeclarationBindingWork::from_inputs(
+            self.rir.len(),
+            self.declaration_index.work(),
+            self.module_registry.len(),
+        );
         self.inject_builtin_types();
         binding_work.namespace_setup_invocations += 1;
         self.register_type_names().map_err(CompileErrors::from)?;

@@ -9878,6 +9878,17 @@ impl RevisionedQueryDatabase {
         self.body_transactions.any_retained_key(|_| true)
     }
 
+    /// Whether the exact body key already has a retained memo node.
+    ///
+    /// This is deliberately narrower than provenance: a newly reached body has
+    /// no prior key to invalidate, even though its first terminal changes the
+    /// provenance-derived body set. The query runtime remains authoritative for
+    /// whether the current request actually computed or reused that key.
+    pub(crate) fn has_retained_body_key(&self, key: &crate::body_query::BodyQueryKey) -> bool {
+        self.body_transactions
+            .any_retained_key(|candidate| candidate == key)
+    }
+
     /// Test-only exact provenance for retained ordinary body terminals.
     ///
     /// Looking up retained keys directly keeps failed-revision acceptance tests

@@ -385,7 +385,12 @@ pub struct DurableDeclarationSemantic {
 pub struct DurableSemanticProjectionWork {
     pub projection_invocations: usize,
     pub shells_visited: usize,
+    /// Durable-source declaration records examined by the projection join.
     pub durable_records_visited: usize,
+    /// Durable-source records whose payloads were copied into current-revision
+    /// semantic exports. This is intentionally separate from inspection: a
+    /// future shared projection may inspect a record without copying it.
+    pub durable_records_copied: usize,
     /// Stable definition records inserted into the exact projection join index.
     pub definition_records_indexed: usize,
     /// Exact-key definition index probes performed while joining shells.
@@ -596,6 +601,7 @@ pub fn project_durable_declaration_semantics(
         projection_invocations: 1,
         shells_visited: shells.len(),
         durable_records_visited: durable.len(),
+        durable_records_copied: exports.len(),
         definition_records_indexed: definitions.definitions().len(),
         definition_lookup_probes: shells.len(),
         rir_instructions_visited: 0,

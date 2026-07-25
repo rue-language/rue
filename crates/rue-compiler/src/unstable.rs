@@ -1058,6 +1058,10 @@ impl LowerMetrics {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticBindingMetrics {
     pub bind_invocations: usize,
+    pub declarations_inspected: usize,
+    pub modules_registered: usize,
+    pub rir_indexes_constructed: usize,
+    pub rir_instructions_visited: usize,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticManifestMetrics {
@@ -1068,11 +1072,28 @@ pub struct SemanticCfgMetrics {
     pub cfg_builds_attempted: usize,
     pub cfg_builds_succeeded: usize,
     pub cfg_builds_failed: usize,
+    pub cfg_import_attempts: usize,
+    pub cfg_import_successes: usize,
+    pub cfg_import_failures: usize,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SemanticBodyMetrics {
+    pub analyses_computed: usize,
+    pub analyses_reused: usize,
+    pub analyses_invalidated: usize,
+    pub declarations_inspected: usize,
+    pub modules_registered: usize,
+    pub rir_indexes_constructed: usize,
+    pub rir_instructions_visited: usize,
+    pub durable_source_records_inspected: usize,
+    pub durable_source_records_copied: usize,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticMetrics {
     pub binding: SemanticBindingMetrics,
     pub manifest: SemanticManifestMetrics,
+    pub body: SemanticBodyMetrics,
     pub cfg: SemanticCfgMetrics,
 }
 
@@ -1081,14 +1102,50 @@ impl SemanticMetrics {
         Self {
             binding: SemanticBindingMetrics {
                 bind_invocations: work.binding.bind_invocations,
+                declarations_inspected: work.binding.indexed_declaration_records_visited,
+                modules_registered: work.binding.modules_registered,
+                rir_indexes_constructed: work.declaration_index.build_invocations,
+                rir_instructions_visited: work.declaration_index.rir_instructions_visited,
             },
             manifest: SemanticManifestMetrics {
                 build_invocations: work.manifest.build_invocations,
+            },
+            body: SemanticBodyMetrics {
+                analyses_computed: work.body_analysis.body_analyses_computed,
+                analyses_reused: work.body_analysis.body_analyses_reused,
+                analyses_invalidated: work.body_analysis.body_analyses_invalidated,
+                declarations_inspected: work
+                    .body_analysis
+                    .per_body_declaration_context
+                    .declarations_inspected,
+                modules_registered: work
+                    .body_analysis
+                    .per_body_declaration_context
+                    .modules_registered,
+                rir_indexes_constructed: work
+                    .body_analysis
+                    .per_body_declaration_context
+                    .rir_indexes_constructed,
+                rir_instructions_visited: work
+                    .body_analysis
+                    .per_body_declaration_context
+                    .rir_instructions_visited,
+                durable_source_records_inspected: work
+                    .body_analysis
+                    .per_body_declaration_context
+                    .durable_source_records_inspected,
+                durable_source_records_copied: work
+                    .body_analysis
+                    .per_body_declaration_context
+                    .durable_source_records_copied,
             },
             cfg: SemanticCfgMetrics {
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
                 cfg_builds_succeeded: work.cfg.cfg_builds_succeeded,
                 cfg_builds_failed: work.cfg.cfg_builds_failed,
+                cfg_import_attempts: work.cfg.cfg_import_attempts,
+                cfg_import_successes: work.cfg.cfg_import_successes,
+                cfg_import_failures: work.cfg.cfg_import_failures,
             },
         }
     }
@@ -1230,12 +1287,25 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
         "declaration_resolution_invocations": records.iter().map(|record| record.work.binding.declaration_resolution_invocations).sum::<usize>(),
         "declaration_resolution_failures": records.iter().map(|record| record.work.binding.declaration_resolution_failures).sum::<usize>(),
         "body_readiness_finalization_invocations": records.iter().map(|record| record.work.binding.body_readiness_finalization_invocations).sum::<usize>(),
+        "declarations_inspected": records.iter().map(|record| record.work.binding.indexed_declaration_records_visited).sum::<usize>(),
+        "modules_registered": records.iter().map(|record| record.work.binding.modules_registered).sum::<usize>(),
+        "rir_indexes_constructed": records.iter().map(|record| record.work.declaration_index.build_invocations).sum::<usize>(),
+        "rir_instructions_visited": records.iter().map(|record| record.work.declaration_index.rir_instructions_visited).sum::<usize>(),
         "body_free_function_lookups": records.iter().map(|record| record.work.body_analysis.free_function_record_lookups).sum::<usize>(),
+        "body_analyses_computed": records.iter().map(|record| record.work.body_analysis.body_analyses_computed).sum::<usize>(),
+        "body_analyses_reused": records.iter().map(|record| record.work.body_analysis.body_analyses_reused).sum::<usize>(),
+        "body_analyses_invalidated": records.iter().map(|record| record.work.body_analysis.body_analyses_invalidated).sum::<usize>(),
         "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
         "per_body_declaration_context": {
             "cold_body_preparations": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.cold_body_preparations).sum::<usize>(),
+            "declarations_inspected": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.declarations_inspected).sum::<usize>(),
+            "modules_registered": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.modules_registered).sum::<usize>(),
+            "rir_indexes_constructed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.rir_indexes_constructed).sum::<usize>(),
+            "rir_instructions_visited": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.rir_instructions_visited).sum::<usize>(),
             "shells_prepared": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.shells_prepared).sum::<usize>(),
             "semantics_installed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.semantics_installed).sum::<usize>(),
+            "durable_source_records_inspected": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.durable_source_records_inspected).sum::<usize>(),
+            "durable_source_records_copied": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.durable_source_records_copied).sum::<usize>(),
         },
         "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
         "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
@@ -1295,6 +1365,9 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
             "builds_attempted": records.iter().map(|record| record.work.cfg.cfg_builds_attempted).sum::<usize>(),
             "builds_succeeded": records.iter().map(|record| record.work.cfg.cfg_builds_succeeded).sum::<usize>(),
             "builds_failed": records.iter().map(|record| record.work.cfg.cfg_builds_failed).sum::<usize>(),
+            "import_attempts": records.iter().map(|record| record.work.cfg.cfg_import_attempts).sum::<usize>(),
+            "import_successes": records.iter().map(|record| record.work.cfg.cfg_import_successes).sum::<usize>(),
+            "import_failures": records.iter().map(|record| record.work.cfg.cfg_import_failures).sum::<usize>(),
             "air_instructions_consumed": records.iter().map(|record| record.work.cfg.air_instructions_consumed).sum::<usize>(),
             "optimization_attempts": records.iter().map(|record| record.work.cfg.optimization_attempts).sum::<usize>(),
             "optimization_completions": records.iter().map(|record| record.work.cfg.optimization_completions).sum::<usize>(),
@@ -1302,9 +1375,6 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
             "warnings_emitted": records.iter().map(|record| record.work.cfg.cfg_warnings_emitted).sum::<usize>(),
             "implicit_destructor_targets_emitted": records.iter().map(|record| record.work.cfg.implicit_destructor_targets_emitted).sum::<usize>(),
             "reuse_candidates": records.iter().map(|record| record.work.cfg.cfg_reuse_candidates).sum::<usize>(),
-            "import_attempts": records.iter().map(|record| record.work.cfg.cfg_import_attempts).sum::<usize>(),
-            "import_successes": records.iter().map(|record| record.work.cfg.cfg_import_successes).sum::<usize>(),
-            "import_failures": records.iter().map(|record| record.work.cfg.cfg_import_failures).sum::<usize>(),
             "reuses": records.iter().map(|record| record.work.cfg.cfg_reuses).sum::<usize>(),
             "fallbacks": records.iter().map(|record| record.work.cfg.cfg_fallbacks).sum::<usize>(),
             "warnings_reused": records.iter().map(|record| record.work.cfg.cfg_warnings_reused).sum::<usize>(),

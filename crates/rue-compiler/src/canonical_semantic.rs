@@ -420,6 +420,9 @@ pub struct CanonicalSemanticWork {
 impl CanonicalSemanticWork {
     pub(crate) fn accrue_body_query_work(&mut self, query: BodyAnalysisWork) {
         let body = &mut self.body_analysis;
+        body.body_analyses_computed += query.body_analyses_computed;
+        body.body_analyses_reused += query.body_analyses_reused;
+        body.body_analyses_invalidated += query.body_analyses_invalidated;
         body.bodies_attempted += query.bodies_attempted;
         body.bodies_succeeded += query.bodies_succeeded;
         body.bodies_failed += query.bodies_failed;
@@ -431,12 +434,28 @@ impl CanonicalSemanticWork {
         body.deferred_producer_retries += query.deferred_producer_retries;
         body.per_body_declaration_context.cold_body_preparations +=
             query.per_body_declaration_context.cold_body_preparations;
+        body.per_body_declaration_context.declarations_inspected +=
+            query.per_body_declaration_context.declarations_inspected;
+        body.per_body_declaration_context.modules_registered +=
+            query.per_body_declaration_context.modules_registered;
+        body.per_body_declaration_context.rir_indexes_constructed +=
+            query.per_body_declaration_context.rir_indexes_constructed;
+        body.per_body_declaration_context.rir_instructions_visited +=
+            query.per_body_declaration_context.rir_instructions_visited;
         body.per_body_declaration_context.shells_prepared +=
             query.per_body_declaration_context.shells_prepared;
         body.per_body_declaration_context.semantics_installed +=
             query.per_body_declaration_context.semantics_installed;
         body.per_body_declaration_context.projections_performed +=
             query.per_body_declaration_context.projections_performed;
+        body.per_body_declaration_context
+            .durable_source_records_inspected += query
+            .per_body_declaration_context
+            .durable_source_records_inspected;
+        body.per_body_declaration_context
+            .durable_source_records_copied += query
+            .per_body_declaration_context
+            .durable_source_records_copied;
         body.per_body_declaration_context.endpoints_installed +=
             query.per_body_declaration_context.endpoints_installed;
         body.closure_bodies_visited = body
@@ -1781,11 +1800,14 @@ pub(crate) fn analyze_body_query(
         shells,
         shell_records,
         definitions: provisional,
-        declaration_index: _,
+        declaration_index,
     } = prepared;
     // Prepare-stage source: the shells this stage actually materialized. A
     // shared-base shortcut that predeclares fewer shells drops this counter.
     work.shells_prepared += shell_records.len();
+    work.declarations_inspected += shell_records.len();
+    work.rir_indexes_constructed += declaration_index.build_invocations;
+    work.rir_instructions_visited += declaration_index.rir_instructions_visited;
     drop(prepare_span);
     let project_span = info_span!("body_project_declarations").entered();
     let (projected, projection_work) = match crate::project_durable_declaration_semantics(
@@ -1826,6 +1848,8 @@ pub(crate) fn analyze_body_query(
     // drops this counter even if the exported slice length is unchanged.
     work.projections_performed +=
         projection_work.durable_records_visited + projected_anonymous.len();
+    work.durable_source_records_inspected += projection_work.durable_records_visited;
+    work.durable_source_records_copied += projection_work.durable_records_copied;
     drop(project_span);
     let install_span = info_span!("body_install_declarations").entered();
     let bound = match shells
@@ -1847,6 +1871,7 @@ pub(crate) fn analyze_body_query(
     // installation work only. An install shortcut that reuses a shared bound
     // base and installs fewer payloads therefore drops this counter.
     work.semantics_installed += bound.binding_work().durable_payloads_installed;
+    work.modules_registered += bound.binding_work().modules_registered;
     let manifest = bound.binding_manifest();
     let definitions = match issue_bound_definitions(
         merged,
