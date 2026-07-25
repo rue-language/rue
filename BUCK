@@ -203,11 +203,24 @@ sh_test(
     },
 )
 
-# RUE-1083: these four large example programs exceed their compiler budgets
-# after the query cutover. Keep the CLI targets running the other 1,667 cases
-# while RUE-1083 restores their automatic and explicit example coverage;
-# Caldera remains isolated below. Shared verbatim by //:cli-tests and its shards
-# so a slice runs exactly the same cases the monolithic target would.
+# RUE-1083: these large example programs exceed their compiler budgets after the
+# query cutover. Keep the CLI targets running the other 1,667 cases while
+# RUE-1083 restores their automatic and explicit example coverage; Caldera
+# remains isolated below. Shared verbatim by //:cli-tests and its shards so a
+# slice runs exactly the same cases the monolithic target would.
+#
+# These skips are a PERFORMANCE deferral, not a coverage decision, and they are
+# owned by RUE-1083 rather than left unattributed:
+#
+# * that these programs still COMPILE is covered by the large-example guard
+#   (.github/workflows/large-examples.yml), which is no longer stubbed;
+# * that their compile COST is bounded is gated by the regressed_example
+#   workloads in benchmarks/value-audit/manifest.toml, whose budgets come from
+#   the pre-cutover figures in docs/notes/rue-1083-closure-evidence.md.
+#
+# Restoring them here requires the compile time, not more coverage. Remove a
+# name from this list when its program fits the ordinary CLI budget again; do
+# not remove the list wholesale until every name below is back.
 _CLI_TEST_ARGS = [
     "--quiet",
     "--skip", "cli.examples::caldera::main",
