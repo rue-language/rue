@@ -821,6 +821,10 @@ where
 
     let executable_sha256 = format!("{:x}", Sha256::digest(&reused_executable.elf));
     json!({
+        "schema_version": 1,
+        "status": "pass",
+        "comparison": "cold_vs_reused_in_process",
+        "comparison_completed": true,
         "public_semantic_cfg_artifacts": "exact",
         "public_type_universe": "exact_ordered_entries",
         "durable_specialized_body_payloads": "exact",
@@ -839,31 +843,81 @@ where
 }
 
 fn with_parity(mut scenario: Value, evidence: Value) -> Value {
+    scenario["evidence_schema"] = json!({
+        "version": 2,
+        "differential_parity_version": 1,
+        "locality_work_version": 2,
+    });
     scenario["differential_parity"] = evidence;
     scenario["required_vs_reused_work"] = work_projection(&scenario);
     scenario
 }
 
-/// Stable black-box work projection consumed by the value-audit runner.
-/// Keep this schema independent of the detailed counter ledger: the runner
-/// needs only required-versus-reused artifact counts for locality gates.
+/// Stable production-counter projection consumed by the value-audit runner.
+/// The detailed counter ledger remains available beside this projection, while
+/// these fields give external tooling one typed vocabulary for computed,
+/// reused, and invalidated work.  Identity sets are currently not exposed by
+/// this benchmark, so that absence is explicit rather than inferred.
 fn work_projection(scenario: &Value) -> Value {
+    macro_rules! required_count {
+        ($path:expr) => {
+            match try_count(scenario, $path) {
+                Some(value) => value,
+                None => {
+                    return json!({
+                        "schema_version": 2,
+                        "status": "unsupported",
+                        "reason": "production counter path was absent",
+                    });
+                }
+            }
+        };
+    }
     json!({
+        "schema_version": 2,
+        "counter_source": "production_metrics",
+        "exact_identity_sets": {
+            "available": false,
+            "reason": "CompilerSession does not expose stable recompute/reuse identity sets in this protocol"
+        },
         "modules": {
-            "required": count(scenario, &["parse", "modules_reparsed"]),
-            "reused": count(scenario, &["parse", "modules_reused"]),
+            "computed": required_count!(&["parse", "modules_reparsed"]),
+            "invalidated": required_count!(&["parse", "modules_reparsed"]),
+            "required": required_count!(&["parse", "modules_reparsed"]),
+            "reused": required_count!(&["parse", "modules_reused"]),
+        },
+        "rir": {
+            "computed": required_count!(&["queries", "rir_executions"]),
+            "invalidated": required_count!(&["queries", "rir_executions"]),
+            "reused": required_count!(&["queries", "rir_reuses"]),
+        },
+        "declarations": {
+            "computed": required_count!(&["semantic_work", "declaration_resolution_invocations"]),
+            "invalidated": required_count!(&["queries", "definition_entries_invalidated"]),
+            "reused": required_count!(&["semantic_work", "declaration_reuse", "durable_records_reused"]),
+        },
+        "durable_source": {
+            "computed": required_count!(&["semantic_work", "per_body_declaration_context", "durable_source_records_copied"]),
+            "invalidated": required_count!(&["semantic_work", "body_analyses_invalidated"]),
+            "reused": required_count!(&["semantic_work", "durable_bodies", "reused_bodies"]),
         },
         "semantic_bodies": {
-            "required": count(scenario, &["semantic_work", "bodies_attempted"]),
-            "reused": count(scenario, &["semantic_work", "durable_bodies", "reused_bodies"]),
+            "computed": required_count!(&["semantic_work", "body_analyses_computed"]),
+            "invalidated": required_count!(&["semantic_work", "body_analyses_invalidated"]),
+            "required": required_count!(&["semantic_work", "bodies_attempted"]),
+            "reused": required_count!(&["semantic_work", "durable_bodies", "reused_bodies"]),
         },
         "cfgs": {
-            "required": count(scenario, &["semantic_work", "cfg", "builds_attempted"]),
-            "reused": count(scenario, &["semantic_work", "cfg", "reuses"]),
+            "computed": required_count!(&["semantic_work", "cfg", "builds_attempted"]),
+            "invalidated": required_count!(&["semantic_work", "cfg", "builds_attempted"]),
+            "required": required_count!(&["semantic_work", "cfg", "builds_attempted"]),
+            "reused": required_count!(&["semantic_work", "cfg", "reuses"]),
         },
         "semantic_queries": {
-            "required": count(scenario, &["queries", "semantic_executions"]),
-            "reused": count(scenario, &["queries", "semantic_reuses"]),
+            "computed": required_count!(&["queries", "semantic_executions"]),
+            "invalidated": required_count!(&["queries", "semantic_entries_invalidated"]),
+            "required": required_count!(&["queries", "semantic_executions"]),
+            "reused": required_count!(&["queries", "semantic_reuses"]),
         },
     })
 }
@@ -1145,6 +1199,12 @@ fn count(value: &Value, path: &[&str]) -> u64 {
         .fold(value, |value, key| &value[*key])
         .as_u64()
         .unwrap()
+}
+
+fn try_count(value: &Value, path: &[&str]) -> Option<u64> {
+    path.iter()
+        .try_fold(value, |value, key| value.get(*key))
+        .and_then(Value::as_u64)
 }
 
 fn assert_structure(scenarios: &[Value], modules: usize) {
@@ -1511,10 +1571,21 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
         "completion_changed_reachable_body",
         "completion_reverse_closure",
     ] {
+        assert_eq!(get(name)["differential_parity"]["schema_version"], 1);
+        assert_eq!(get(name)["differential_parity"]["status"], "pass");
+        assert_eq!(
+            get(name)["differential_parity"]["comparison_completed"],
+            true
+        );
         let projection = &get(name)["required_vs_reused_work"];
+        assert_eq!(projection["schema_version"], 2);
+        assert_eq!(projection["counter_source"], "production_metrics");
+        assert!(projection["exact_identity_sets"]["available"].is_boolean());
         for artifact in ["modules", "semantic_bodies", "cfgs", "semantic_queries"] {
             assert!(projection[artifact]["required"].is_u64());
             assert!(projection[artifact]["reused"].is_u64());
+            assert!(projection[artifact]["computed"].is_u64());
+            assert!(projection[artifact]["invalidated"].is_u64());
         }
     }
     assert_eq!(count(noop, &["queries", "semantic_executions"]), 0);
@@ -1883,7 +1954,7 @@ fn main() {
         println!(
             "{}",
             json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "workload": "representative_compiler_session_scenarios",
                 "fixture": "benchmarks/scenarios/representative/main.rue",
                 "measurement_scope": "compiler_build_and_query_performance_not_runtime",
@@ -1910,7 +1981,7 @@ fn main() {
     println!(
         "{}",
         json!({
-            "schema_version": 11,
+            "schema_version": 12,
             "workload": "compiler_session_invalidation",
             "configuration": {
                 "modules": config.modules,

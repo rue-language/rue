@@ -18,9 +18,11 @@ useful as context without backporting the modern incrementality harness.
 from __future__ import annotations
 
 import argparse
+from functools import lru_cache
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -83,7 +85,7 @@ WORKLOADS = (
     },
 )
 
-THRESHOLDS = {
+PRECOMMITTED_THRESHOLDS = {
     "warm_unrelated_declaration_improvement": 0.50,
     "warm_leaf_body_improvement": 0.25,
     "claimed_win_mad_multiplier": 3.0,
@@ -92,7 +94,33 @@ THRESHOLDS = {
     "caldera_wall_seconds": 300.0,
 }
 
+LOCALITY_COUNTERS = (
+    "modules",
+    "rir",
+    "declarations",
+    "durable_source",
+    "semantic_bodies",
+    "cfgs",
+    "semantic_queries",
+)
+PARITY_EXACT_FIELDS = (
+    "public_semantic_cfg_artifacts",
+    "public_type_universe",
+    "durable_specialized_body_payloads",
+    "durable_ordinary_body_manifest_artifacts",
+    "diagnostics",
+    "warnings",
+    "stable_identities",
+    "dependency_records",
+    "emitted_output",
+)
+PARITY_EXACT_VALUES = {
+    "public_type_universe": {"exact", "exact_ordered_entries"},
+    "emitted_output": {"exact", "byte_exact"},
+}
 
+
+@lru_cache(maxsize=1)
 def load_perf_baseline(root: Path):
     path = root / "scripts" / "perf-baseline.py"
     spec = importlib.util.spec_from_file_location("rue_perf_baseline", path)
@@ -151,28 +179,23 @@ def all_files(directory: Path) -> list[Path]:
     ]
 
 
-def source_provenance(source_dir: Path | None, root: Path, workload_root: Path) -> dict[str, Any]:
-    source_dir = (source_dir or root).resolve()
+def tracked_files(directory: Path) -> list[Path]:
+    names = git_value(directory, "ls-files", "-z")
+    if names is not None:
+        return [directory / item for item in names.split("\0") if item]
+    return all_files(directory)
+
+
+def source_provenance(source_dir: Path) -> dict[str, Any]:
+    source_dir = source_dir.resolve()
     commit = git_value(source_dir, "rev-parse", "HEAD")
     tree = git_value(source_dir, "rev-parse", "HEAD^{tree}")
-    if commit is not None:
-        tracked = git_value(source_dir, "ls-files", "-z")
-        if tracked is not None:
-            paths = [source_dir / item for item in tracked.split("\0") if item]
-        else:
-            paths = all_files(source_dir)
-    else:
-        paths = all_files(source_dir)
-    # A workload hash is kept separate from the complete source-tree identity;
-    # it makes an audit row reproducible even when unrelated repository files
-    # change between two operators' runs.
-    workload_paths = all_files(workload_root) if workload_root.is_dir() else [workload_root]
+    paths = tracked_files(source_dir)
     return {
         "directory": str(source_dir),
         "commit": commit,
         "source_tree": tree,
         "source_files_sha256": sha256_paths(paths, source_dir),
-        "workload_files_sha256": sha256_paths(workload_paths, root),
     }
 
 
@@ -193,20 +216,55 @@ def load_audit_manifest(root: Path) -> dict[str, Any]:
     path = root / "benchmarks" / "value-audit" / "manifest.toml"
     with path.open("rb") as stream:
         manifest = tomllib.load(stream)
-    if manifest.get("schema_version") != 1:
-        raise ValueError("value-audit manifest schema_version must be 1")
+    if manifest.get("schema_version") != 2:
+        raise ValueError("value-audit manifest schema_version must be 2")
     protocol = manifest.get("protocol")
     if not isinstance(protocol, dict) or protocol.get("paired_samples") != 7 or protocol.get("warmup") != 1:
         raise ValueError("value-audit manifest must pin one warmup and seven paired samples")
     if protocol.get("measurement_profile") != "release":
         raise ValueError("value-audit manifest must pin the release measurement profile")
+    if not isinstance(protocol.get("caldera_timeout_headroom_seconds"), (int, float)) or protocol["caldera_timeout_headroom_seconds"] <= 0:
+        raise ValueError("value-audit manifest must provide positive Caldera timeout headroom")
     source_manifest = path.parent / str(manifest.get("source_manifest", ""))
     if source_manifest.resolve() != (root / "benchmarks" / "manifest.toml").resolve():
         raise ValueError("value-audit manifest must reuse benchmarks/manifest.toml")
+    thresholds = manifest.get("thresholds")
+    if not isinstance(thresholds, dict):
+        raise ValueError("value-audit manifest must define thresholds")
+    for name, expected in PRECOMMITTED_THRESHOLDS.items():
+        actual = thresholds.get(name)
+        if not isinstance(actual, (int, float)) or actual != expected:
+            raise ValueError(
+                f"value-audit manifest threshold {name} drifted from the precommitted value {expected}"
+            )
+    policy = manifest.get("scenario_policy")
+    if not isinstance(policy, dict) or set(policy) != set(SCENARIOS):
+        raise ValueError("value-audit manifest scenario policy drifted from the runner")
+    for scenario in SCENARIOS:
+        entry = policy[scenario]
+        if not isinstance(entry, dict) or not isinstance(entry.get("required"), bool):
+            raise ValueError(f"scenario policy for {scenario} must declare required=true/false")
+    locality = manifest.get("locality")
+    required_locality = set(SCENARIOS) - {"cold", "repeated_edit_memory"}
+    if not isinstance(locality, dict) or not required_locality.issubset(locality):
+        raise ValueError("value-audit manifest locality policy is incomplete")
+    for scenario in required_locality:
+        entry = locality[scenario]
+        if not isinstance(entry, dict):
+            raise ValueError(f"locality policy for {scenario} must be a table")
+        for counter in LOCALITY_COUNTERS:
+            key = f"max_{counter}_computed"
+            value = entry.get(key)
+            if not isinstance(value, int) or value < 0:
+                raise ValueError(f"locality policy for {scenario} must define non-negative {key}")
     workloads = manifest.get("workload")
     expected = {workload["name"] for workload in WORKLOADS}
     if not isinstance(workloads, list) or {item.get("name") for item in workloads} != expected:
         raise ValueError("value-audit manifest workload matrix drifted from the runner")
+    for item in workloads:
+        supported = item.get("supported_scenarios")
+        if not isinstance(supported, list) or not set(supported).issubset(SCENARIOS):
+            raise ValueError(f"workload {item.get('name')} has invalid supported_scenarios")
     return manifest
 
 
@@ -247,12 +305,24 @@ def time_prefix() -> tuple[list[str], str]:
 
 def parse_rss(stderr: str, style: str) -> int | None:
     if style == "darwin":
+        # macOS has emitted both `maximum resident set size: 123` and
+        # `123 maximum resident set size` forms across supported hosts.
         match = re.search(r"maximum resident set size:\s*(\d+)", stderr)
+        if match:
+            return int(match.group(1))
+        match = re.search(r"(\d+)\s+maximum resident set size", stderr)
         return int(match.group(1)) if match else None
     if style == "gnu":
         match = re.search(r"Maximum resident set size \(kbytes\):\s*(\d+)", stderr)
         return int(match.group(1)) * 1024 if match else None
     return None
+
+
+def measurement_env(root: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("RUST_LOG", None)
+    env["RUE_STD_PATH"] = str(root / "std")
+    return env
 
 
 def run_command(command: list[str], timeout: float, env: dict[str, str]) -> dict[str, Any]:
@@ -294,12 +364,11 @@ def cold_sample(
     timeout: float,
     jobs: int,
     workdir: Path,
+    perf_baseline: Any,
 ) -> dict[str, Any]:
     output = workdir / "audit-output"
     output.unlink(missing_ok=True)
-    env = os.environ.copy()
-    env.pop("RUST_LOG", None)
-    env["RUE_STD_PATH"] = str(root / "std")
+    env = measurement_env(root)
     modern = [
         str(binary),
         "--benchmark-json",
@@ -342,7 +411,6 @@ def cold_sample(
         # Reuse perf-baseline's schema/aggregation validator for modern JSON.
         # The audit keeps the raw payload as evidence, but does not duplicate
         # its pass-nesting interpretation here.
-        perf_baseline = load_perf_baseline(root)
         payload["_process_ms"] = result["wall_ms"]
         sample["perf_baseline_aggregate"] = perf_baseline.aggregate([payload])
         sample["compiler_ms"] = payload.get("total_ms")
@@ -365,27 +433,104 @@ SESSION_ROW_NAMES = {
 }
 
 
-def locality_check(scenario: str, row: dict[str, Any]) -> dict[str, Any]:
+def parity_check(row: dict[str, Any]) -> dict[str, Any]:
+    parity = row.get("differential_parity")
+    if not isinstance(parity, dict):
+        return {"status": "unsupported", "reason": "session runner omitted differential parity evidence"}
+    if parity.get("schema_version") != 1:
+        return {"status": "unsupported", "reason": "differential parity schema version is missing or unknown"}
+    if parity.get("status") != "pass" or parity.get("comparison") != "cold_vs_reused_in_process":
+        return {"status": "unsupported", "reason": "differential parity did not report a completed in-process comparison"}
+    if parity.get("comparison_completed") is not True:
+        return {"status": "unsupported", "reason": "differential parity comparison was not marked complete"}
+    for field in PARITY_EXACT_FIELDS:
+        if parity.get(field) not in PARITY_EXACT_VALUES.get(field, {"exact"}):
+            return {"status": "unsupported", "reason": f"differential parity field {field} is not exact"}
+    digest = parity.get("emitted_output_sha256")
+    if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+        return {"status": "unsupported", "reason": "differential parity has no valid emitted-output digest"}
+    if not isinstance(parity.get("emitted_output_size_bytes"), int) or parity["emitted_output_size_bytes"] <= 0:
+        return {"status": "unsupported", "reason": "differential parity has no positive emitted-output size"}
+    if not isinstance(parity.get("cold_semantic_work"), dict):
+        return {"status": "unsupported", "reason": "differential parity has no cold work evidence"}
+    return {"status": "pass", "evidence": parity}
+
+
+def locality_check(
+    scenario: str,
+    row: dict[str, Any],
+    policy: dict[str, Any],
+) -> dict[str, Any]:
+    evidence_schema = row.get("evidence_schema")
+    if evidence_schema != {
+        "version": 2,
+        "differential_parity_version": 1,
+        "locality_work_version": 2,
+    }:
+        return {"status": "unsupported", "reason": "session row omitted the explicit evidence schema attachment"}
     work = row.get("required_vs_reused_work")
-    if not isinstance(work, dict):
-        return {"status": "unsupported", "reason": "session runner omitted locality evidence"}
+    if not isinstance(work, dict) or work.get("schema_version") != 2:
+        return {"status": "unsupported", "reason": "session runner omitted schema-versioned locality evidence"}
+    if work.get("counter_source") != "production_metrics":
+        return {"status": "unsupported", "reason": "locality evidence is not sourced from production metrics"}
+    identity_sets = work.get("exact_identity_sets")
+    if not isinstance(identity_sets, dict) or not isinstance(identity_sets.get("available"), bool):
+        return {"status": "unsupported", "reason": "locality evidence omitted exact-identity-set availability"}
+    if identity_sets["available"]:
+        for key in ("recomputed", "reused"):
+            if not isinstance(identity_sets.get(key), list):
+                return {"status": "unsupported", "reason": "available identity sets are malformed"}
+    elif not isinstance(identity_sets.get("reason"), str) or not identity_sets["reason"]:
+        return {"status": "unsupported", "reason": "unavailable identity sets were not explained"}
 
-    def count(artifact: str, side: str) -> Any:
-        return work.get(artifact, {}).get(side)
+    for artifact in LOCALITY_COUNTERS:
+        values = work.get(artifact)
+        if not isinstance(values, dict):
+            return {"status": "unsupported", "reason": f"locality evidence omitted {artifact} counters"}
+        for field in ("computed", "reused", "invalidated"):
+            if not isinstance(values.get(field), int) or isinstance(values[field], bool) or values[field] < 0:
+                return {"status": "unsupported", "reason": f"locality evidence has no numeric {artifact}.{field}"}
 
-    if scenario == "warm_no_op":
-        passed = count("semantic_queries", "required") == 0 and count("semantic_queries", "reused") >= 1
-    elif scenario == "warm_unrelated_declaration":
-        passed = (
-            count("semantic_bodies", "required") == 0
-            and count("cfgs", "required") == 0
-            and count("cfgs", "reused") >= 1
-        )
-    elif scenario == "warm_leaf_body":
-        passed = count("semantic_bodies", "required") >= 1 and count("cfgs", "reused") >= 1
-    else:
-        passed = count("modules", "required") >= 1 or count("semantic_bodies", "required") >= 1
-    return {"status": "pass" if passed else "fail", "work": work}
+    # Every warm locality gate is an upper-bounded production-work gate.  A
+    # lower bound such as "some CFG was reused" cannot detect a full-program
+    # recompute, so both computed and invalidated counters are checked.
+    maxima = policy
+    if any(
+        not isinstance(maxima.get(f"max_{artifact}_computed"), int)
+        or isinstance(maxima.get(f"max_{artifact}_computed"), bool)
+        or maxima[f"max_{artifact}_computed"] < 0
+        for artifact in LOCALITY_COUNTERS
+    ):
+        return {"status": "unsupported", "reason": "manifest locality bounds are malformed"}
+    violations = []
+    for artifact in LOCALITY_COUNTERS:
+        maximum = maxima[f"max_{artifact}_computed"]
+        values = work[artifact]
+        if values["computed"] > maximum or values["invalidated"] > maximum:
+            violations.append({
+                "artifact": artifact,
+                "maximum": maximum,
+                "computed": values["computed"],
+                "invalidated": values["invalidated"],
+            })
+    if violations:
+        return {"status": "fail", "reason": "production work exceeded the manifest locality bounds", "violations": violations, "work": work}
+
+    # A successful edit must show that the corresponding production query did
+    # run.  This is deliberately narrow and does not turn reuse into a pass.
+    if scenario == "warm_no_op" and work["semantic_queries"]["reused"] < 1:
+        return {"status": "unsupported", "reason": "no-op row has no reused semantic-query evidence", "work": work}
+    if scenario == "warm_unrelated_declaration" and not any(
+        work[artifact]["reused"] > 0 for artifact in LOCALITY_COUNTERS
+    ):
+        return {"status": "unsupported", "reason": "unrelated-edit row has no reused production work evidence", "work": work}
+    if scenario in {"warm_leaf_body", "warm_signature_fanout"} and work["semantic_bodies"]["computed"] < 1:
+        return {"status": "unsupported", "reason": "edit row has no computed body evidence", "work": work}
+    if scenario == "warm_leaf_body" and work["cfgs"]["computed"] < 1:
+        return {"status": "unsupported", "reason": "leaf edit has no computed CFG evidence", "work": work}
+    if scenario == "warm_signature_fanout" and work["modules"]["computed"] < 1 and work["semantic_bodies"]["computed"] < 1:
+        return {"status": "unsupported", "reason": "fanout edit has no computed locality evidence", "work": work}
+    return {"status": "pass", "work": work}
 
 
 def session_sample(
@@ -394,6 +539,7 @@ def session_sample(
     scenario: str,
     timeout: float,
     root: Path,
+    locality_policy: dict[str, Any],
 ) -> dict[str, Any]:
     mode = workload["session_mode"]
     if scenario not in SESSION_ROW_NAMES.get(workload["family"], {}):
@@ -404,7 +550,7 @@ def session_sample(
     else:
         command += ["--modules", str(workload["session_modules"])]
     command += ["--warmup", "0", "--iterations", "1"]
-    result = run_command(command, timeout, {**os.environ, "RUE_STD_PATH": str(root / "std")})
+    result = run_command(command, timeout, measurement_env(root))
     if result["returncode"] != 0:
         detail = result["stderr"].strip() or result["stdout"].strip()
         raise RuntimeError(f"session benchmark failed: {detail[-1200:]}")
@@ -415,22 +561,27 @@ def session_sample(
     if not isinstance(rows, list):
         raise RuntimeError("session benchmark iteration is not an array")
     wanted = SESSION_ROW_NAMES[workload["family"]][scenario]
-    row = next((candidate for candidate in rows if candidate.get("name") == wanted), None)
+    row = next((candidate for candidate in rows if isinstance(candidate, dict) and candidate.get("name") == wanted), None)
     if row is None:
         raise RuntimeError(f"session benchmark did not report {wanted}")
     timing_ns = row.get("wall_time_ns")
     if not isinstance(timing_ns, int) or timing_ns <= 0:
         raise RuntimeError(f"session benchmark row {wanted} has no positive wall_time_ns")
-    parity = row.get("differential_parity") or row.get("diagnostic_parity")
-    exact = parity is not None
-    locality = locality_check(scenario, row)
+    parity_result = parity_check(row)
+    locality = locality_check(scenario, row, locality_policy)
+    evidence_status = "pass"
+    if parity_result["status"] != "pass" or locality["status"] == "unsupported":
+        evidence_status = "indeterminate"
+    elif locality["status"] == "fail":
+        evidence_status = "fail"
     return {
-        "status": "pass" if exact and locality["status"] == "pass" else "fail",
+        "status": evidence_status,
+        "protocol": "session_benchmark_json",
         "wall_ms": timing_ns / 1_000_000,
         "peak_rss_bytes": result["peak_rss_bytes"],
         "runner_wall_ms": result["wall_ms"],
         "scenario_name": wanted,
-        "exact_parity": parity,
+        "exact_parity": parity_result,
         "locality": locality,
         "row": row,
     }
@@ -438,9 +589,9 @@ def session_sample(
 
 def scaling_sample(
     scaling_binary: Path,
-    workload: dict[str, Any],
     warm: bool,
     timeout: float,
+    root: Path,
 ) -> dict[str, Any]:
     command = [
         str(scaling_binary),
@@ -456,7 +607,7 @@ def scaling_sample(
     ]
     if warm:
         command.append("--warm")
-    result = run_command(command, timeout, os.environ.copy())
+    result = run_command(command, timeout, measurement_env(root))
     if result["returncode"] != 0:
         raise RuntimeError(f"scaling benchmark failed: {result['stderr'][-1200:]}")
     payload = json_object(result["stdout"])
@@ -473,19 +624,65 @@ def scaling_sample(
     }
 
 
+def merge_role_sample(role_row: dict[str, Any], sample: dict[str, Any], scenario: str) -> None:
+    """Merge one measurement without allowing unsupported evidence to erase prior samples."""
+    if sample.get("status") == "unsupported":
+        if role_row.get("wall_samples"):
+            role_row["status"] = "indeterminate"
+            role_row.setdefault("details", []).append(sample)
+        else:
+            role_row["status"] = "unsupported"
+            role_row["reason"] = sample.get("reason")
+        return
+    if scenario == "cold":
+        sample["status"] = "pass"
+    role_row.setdefault("wall_samples", []).append(float(sample["wall_ms"]))
+    role_row.setdefault("rss_samples", []).append(sample.get("peak_rss_bytes"))
+    if sample.get("status") == "fail":
+        role_row["status"] = "fail"
+    elif sample.get("status") == "indeterminate":
+        role_row["status"] = "indeterminate"
+    role_row.setdefault("details", []).append(sample)
+
+
 def pair_verdict(
     left: dict[str, Any],
     right: dict[str, Any],
     kind: str,
     threshold: float | None = None,
+    thresholds: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if thresholds is None:
+        raise ValueError("pair_verdict requires thresholds loaded from the audit manifest")
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return {"status": "indeterminate", "reason": "malformed timing evidence"}
     left_median = left.get("median")
     right_median = right.get("median")
-    if left_median is None or right_median is None:
+    if (
+        not isinstance(left_median, (int, float))
+        or isinstance(left_median, bool)
+        or not math.isfinite(left_median)
+        or not isinstance(right_median, (int, float))
+        or isinstance(right_median, bool)
+        or not math.isfinite(right_median)
+    ):
         return {"status": "unsupported", "reason": "one side has no samples"}
-    left_mad = left.get("mad") or 0.0
-    right_mad = right.get("mad") or 0.0
-    noise = THRESHOLDS["claimed_win_mad_multiplier"] * max(left_mad, right_mad)
+    left_mad = left.get("mad")
+    right_mad = right.get("mad")
+    if left_mad is None:
+        left_mad = 0.0
+    if right_mad is None:
+        right_mad = 0.0
+    if (
+        not isinstance(left_mad, (int, float))
+        or isinstance(left_mad, bool)
+        or not math.isfinite(left_mad)
+        or not isinstance(right_mad, (int, float))
+        or isinstance(right_mad, bool)
+        or not math.isfinite(right_mad)
+    ):
+        return {"status": "indeterminate", "reason": "malformed MAD evidence"}
+    noise = thresholds["claimed_win_mad_multiplier"] * max(left_mad, right_mad)
     delta = right_median - left_median
     if kind == "improvement":
         improvement = (left_median - right_median) / left_median if left_median else None
@@ -508,14 +705,14 @@ def pair_verdict(
             "noise_budget": noise,
             "threshold": threshold,
         }
-    allowed = max(THRESHOLDS["cold_regression_fraction"] * left_median, noise)
+    allowed = max(thresholds["cold_regression_fraction"] * left_median, noise)
     return {
         "status": "pass" if delta <= allowed else "fail",
         "reason": "within cold wall/RSS regression budget" if delta <= allowed else "cold regression exceeds budget",
         "delta": delta,
         "allowed_regression": allowed,
         "noise_budget": noise,
-        "threshold_fraction": THRESHOLDS["cold_regression_fraction"],
+        "threshold_fraction": thresholds["cold_regression_fraction"],
     }
 
 
@@ -523,28 +720,55 @@ def scenario_verdict(
     scenario: str,
     role_rows: dict[str, dict[str, Any]],
     workload: dict[str, Any],
+    scenario_policy: dict[str, Any],
+    thresholds: dict[str, Any],
 ) -> dict[str, Any]:
     pairs: dict[str, Any] = {}
+    required = scenario_policy["required"]
+    if scenario not in workload["supported_scenarios"]:
+        return {
+            "status": "not_applicable",
+            "required": False,
+            "reason": "scenario is not declared by the workload in the audit manifest",
+            "pairs": {},
+        }
     if scenario == "cold":
         kind = "regression"
         threshold = None
     elif scenario == "warm_unrelated_declaration":
         kind = "improvement"
-        threshold = THRESHOLDS["warm_unrelated_declaration_improvement"]
+        threshold = thresholds["warm_unrelated_declaration_improvement"]
     elif scenario == "warm_leaf_body":
         kind = "improvement"
-        threshold = THRESHOLDS["warm_leaf_body_improvement"]
+        threshold = thresholds["warm_leaf_body_improvement"]
     else:
         kind = "observation"
         threshold = None
     for left_role, right_role in PAIR_NAMES:
         left = role_rows.get(left_role, {})
         right = role_rows.get(right_role, {})
-        if left.get("status") == "unsupported" or right.get("status") == "unsupported":
-            pairs[f"{left_role}_vs_{right_role}"] = {"status": "unsupported", "reason": "role lacks this protocol"}
+        if left.get("status") in {"unsupported", "indeterminate"} or right.get("status") in {"unsupported", "indeterminate"}:
+            pairs[f"{left_role}_vs_{right_role}"] = {
+                "status": "indeterminate" if required else "unsupported",
+                "reason": "role lacks complete required protocol evidence",
+            }
             continue
         if left.get("status") == "fail" or right.get("status") == "fail":
             pairs[f"{left_role}_vs_{right_role}"] = {"status": "fail", "reason": "exact correctness or locality evidence failed"}
+            continue
+        if left.get("protocol") != right.get("protocol"):
+            pairs[f"{left_role}_vs_{right_role}"] = {
+                "status": "indeterminate",
+                "reason": "timing protocols differ; benchmark_json and black_box_compile are not comparable",
+                "left_protocol": left.get("protocol"),
+                "right_protocol": right.get("protocol"),
+            }
+            continue
+        if not isinstance(left.get("wall"), dict) or not isinstance(right.get("wall"), dict):
+            pairs[f"{left_role}_vs_{right_role}"] = {
+                "status": "indeterminate",
+                "reason": "role row is partially shaped and has no timing evidence",
+            }
             continue
         if scenario == "repeated_edit_memory":
             pairs[f"{left_role}_vs_{right_role}"] = {"status": "unsupported", "reason": "no repeated-edit session protocol is exposed by the reused benchmark"}
@@ -554,11 +778,18 @@ def scenario_verdict(
                 "left": left["wall"], "right": right["wall"]
             }}
         else:
-            pair = pair_verdict(left["wall"], right["wall"], kind, threshold)
+            pair = pair_verdict(left["wall"], right["wall"], kind, threshold, thresholds)
         if scenario == "cold":
             rss_left = left.get("rss", {})
             rss_right = right.get("rss", {})
-            pair["rss"] = pair_verdict(rss_left, rss_right, "regression")
+            rss = pair_verdict(rss_left, rss_right, "regression", thresholds=thresholds)
+            pair["rss"] = rss
+            if rss["status"] == "fail":
+                pair["status"] = "fail"
+                pair["reason"] = "cold RSS regression exceeds budget"
+            elif rss["status"] in {"unsupported", "indeterminate"}:
+                pair["status"] = "indeterminate"
+                pair["reason"] = "cold RSS evidence is unavailable or indeterminate"
         pairs[f"{left_role}_vs_{right_role}"] = pair
     for role, row in role_rows.items():
         if row.get("status") == "fail":
@@ -567,31 +798,46 @@ def scenario_verdict(
             scenario == "cold"
             and workload["family"] == "caldera"
             and row.get("wall", {}).get("median") is not None
-            and row["wall"]["median"] > THRESHOLDS["caldera_wall_seconds"] * 1000
+            and row["wall"]["median"] > thresholds["caldera_wall_seconds"] * 1000
         ):
             pairs.setdefault(role, {
                 "status": "fail",
-                "reason": "Caldera cold wall time exceeds the 300-second budget",
+                "reason": f"Caldera cold wall time exceeds the {thresholds['caldera_wall_seconds']}-second budget",
             })
     statuses = [value.get("status") for value in pairs.values()]
     if "fail" in statuses:
         status = "fail"
-    elif "indeterminate" in statuses:
+    elif "indeterminate" in statuses or (required and "unsupported" in statuses):
         status = "indeterminate"
     elif any(value == "pass" for value in statuses):
         status = "pass"
     else:
         status = "unsupported"
-    return {"status": status, "pairs": pairs}
+    return {"status": status, "required": required, "pairs": pairs}
 
 
-def role_metadata(role: str, binary: Path, source_dir: Path | None, root: Path) -> dict[str, Any]:
-    source = source_provenance(source_dir, root, root)
+def role_metadata(role: str, binary: Path, source_dir: Path | None) -> dict[str, Any]:
+    if source_dir is None:
+        raise ValueError(
+            f"{role} requires explicit --source-dir provenance; the runner never defaults a role to the candidate checkout"
+        )
+    if not source_dir.is_dir():
+        raise ValueError(f"{role} source provenance directory does not exist: {source_dir}")
+    source = source_provenance(source_dir)
+    if source["commit"] is None or source["source_tree"] is None:
+        raise ValueError(f"{role} source provenance is not a verifiable Git checkout: {source_dir}")
+    binary_hash = sha256_file(binary) if binary.is_file() else None
     return {
         "role": role,
         "label": ROLE_LABELS[role],
         "binary": str(binary),
-        "binary_sha256": sha256_file(binary) if binary.is_file() else None,
+        "binary_sha256": binary_hash,
+        "build_provenance": {
+            "source_directory": str(source_dir),
+            "source_commit": source["commit"],
+            "source_tree": source["source_tree"],
+            "binary_sha256": binary_hash,
+        },
         **source,
     }
 
@@ -599,8 +845,12 @@ def role_metadata(role: str, binary: Path, source_dir: Path | None, root: Path) 
 def run_audit(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(__file__).resolve().parent.parent
     audit_manifest = load_audit_manifest(root)
+    thresholds = audit_manifest["thresholds"]
+    scenario_policy = audit_manifest["scenario_policy"]
+    manifest_workloads = {item["name"]: item for item in audit_manifest["workload"]}
+    if args.warmup != audit_manifest["protocol"]["warmup"] or args.iterations != audit_manifest["protocol"]["paired_samples"]:
+        raise ValueError("CLI sampling counts drifted from the validated audit manifest")
     perf_baseline = load_perf_baseline(root)
-    del perf_baseline  # Loading validates that this audit uses the canonical module.
     binaries: dict[str, Path] = args.binaries
     for role, binary in binaries.items():
         if not binary.is_file() or not os.access(binary, os.X_OK):
@@ -611,7 +861,7 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
         if not binary.is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError(f"{role} benchmark binary is not executable: {binary}")
     report: dict[str, Any] = {
-        "schema_version": 1,
+        "schema_version": 2,
         "protocol": {
             "name": "rue_incrementality_value_audit",
             "measurement_profile": "release",
@@ -620,7 +870,9 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             "pair_order": "historical,current,candidate then candidate,current,historical alternating",
             "source_of_cold_timing": "scripts/perf-baseline.py-compatible benchmark JSON, black-box fallback for old revisions",
             "source_of_warm_timing": "rue-compiler-session-bench opaque scenario JSON",
-            "thresholds": THRESHOLDS,
+            "thresholds": thresholds,
+            "scenario_policy": scenario_policy,
+            "caldera_timeout_headroom_seconds": audit_manifest["protocol"]["caldera_timeout_headroom_seconds"],
         },
         "provenance": {
             "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -631,9 +883,10 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             "audit_manifest_sha256": sha256_file(root / "benchmarks/value-audit/manifest.toml"),
         },
         "revisions": {
-            role: role_metadata(role, binaries[role], args.source_dirs.get(role), root)
+            role: role_metadata(role, binaries[role], args.source_dirs.get(role))
             for role in ROLES
         },
+        "comparison_provenance": {},
         "workloads": [],
         "baseline_selection": {
             "recommendation": "current_production",
@@ -642,6 +895,21 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
         "fixture_protocol": audit_manifest["protocol"],
         "verdict": "pass",
     }
+    binary_hashes = {
+        role: report["revisions"][role]["binary_sha256"] for role in ROLES
+    }
+    if len(set(binary_hashes.values())) == 1:
+        report["comparison_provenance"] = {
+            "classification": "same_binary_protocol_smoke",
+            "historical_comparison_valid": False,
+            "claim_scope": "protocol and fail-closed gate smoke only; no historical/current/candidate value claim",
+        }
+    else:
+        report["comparison_provenance"] = {
+            "classification": "three_role_binary_comparison",
+            "historical_comparison_valid": True,
+            "claim_scope": "role comparisons are linked to explicit source/build provenance and binary hashes",
+        }
     statuses: list[str] = []
     selected = set(args.workloads) if args.workloads else {workload["name"] for workload in WORKLOADS}
     for workload in WORKLOADS:
@@ -652,9 +920,10 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             raise RuntimeError(f"workload root is missing: {root_source}")
         row: dict[str, Any] = {
             **workload,
+            "supported_scenarios": manifest_workloads[workload["name"]]["supported_scenarios"],
             "root": str(root_source),
             "source_sha256": sha256_paths(
-                all_files(root_source.parent) if workload["family"] in {"representative", "caldera"} else [root_source],
+                tracked_files(root_source.parent) if workload["family"] in {"representative", "caldera"} else [root_source],
                 root,
             ),
             "scenarios": {},
@@ -663,6 +932,13 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="rue-value-audit-") as temp:
             workdir = Path(temp)
             for scenario in SCENARIOS:
+                timeout = args.timeout
+                if workload["family"] == "caldera" and scenario == "cold":
+                    timeout = max(
+                        timeout,
+                        thresholds["caldera_wall_seconds"]
+                        + audit_manifest["protocol"]["caldera_timeout_headroom_seconds"],
+                    )
                 role_rows: dict[str, dict[str, Any]] = {}
                 for pair_index in range(args.iterations):
                     order = list(ROLES) if pair_index % 2 == 0 else list(reversed(ROLES))
@@ -671,43 +947,45 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                             continue
                         role_rows.setdefault(role, {"status": "pass", "wall_samples": [], "rss_samples": [], "details": []})
                         if scenario == "cold":
+                            if pair_index == 0:
+                                for _ in range(audit_manifest["protocol"]["warmup"]):
+                                    cold_sample(
+                                        binaries[role], root_source, root, timeout, args.jobs,
+                                        workdir, perf_baseline,
+                                    )
                             sample = cold_sample(
-                                binaries[role], root_source, root, args.timeout, args.jobs, workdir
+                                binaries[role], root_source, root, timeout, args.jobs, workdir,
+                                perf_baseline,
                             )
                         elif scenario == "repeated_edit_memory":
                             sample = {"status": "unsupported", "reason": "existing reused benchmark has no bounded repeated-edit memory protocol"}
                         elif role not in session_bins:
                             sample = {"status": "unsupported", "reason": "no compatible session benchmark binary supplied for this revision"}
+                        elif scenario not in manifest_workloads[workload["name"]]["supported_scenarios"]:
+                            sample = {"status": "unsupported", "reason": "scenario is not declared by the workload in the audit manifest"}
                         elif workload["family"] not in SESSION_ROW_NAMES or scenario not in SESSION_ROW_NAMES[workload["family"]]:
                             sample = {"status": "unsupported", "reason": "scenario is not implemented by the canonical runner for this workload"}
                         else:
                             if pair_index == 0:
-                                # Exactly one unrecorded warmup per role and
-                                # scenario, as required by the protocol.
-                                session_sample(session_bins[role], workload, scenario, args.timeout, root)
-                            sample = session_sample(session_bins[role], workload, scenario, args.timeout, root)
+                                for _ in range(audit_manifest["protocol"]["warmup"]):
+                                    session_sample(
+                                        session_bins[role], workload, scenario, timeout, root,
+                                        audit_manifest["locality"][scenario],
+                                    )
+                            sample = session_sample(
+                                session_bins[role], workload, scenario, timeout, root,
+                                audit_manifest["locality"][scenario],
+                            )
                         if (
                             workload["family"] == "synthetic"
                             and scenario == "warm_leaf_body"
                             and role in scaling_bins
                         ):
                             if pair_index == 0:
-                                scaling_sample(scaling_bins[role], workload, True, args.timeout)
-                            scaling = scaling_sample(scaling_bins[role], workload, True, args.timeout)
+                                scaling_sample(scaling_bins[role], True, timeout, root)
+                            scaling = scaling_sample(scaling_bins[role], True, timeout, root)
                             row["scaling_evidence"].setdefault(role, []).append(scaling)
-                        if sample.get("status") == "unsupported":
-                            role_rows[role] = sample
-                            continue
-                        if scenario == "cold":
-                            sample["status"] = "pass"
-                            role_rows[role]["wall_samples"].append(float(sample["wall_ms"]))
-                            role_rows[role]["rss_samples"].append(sample.get("peak_rss_bytes"))
-                        else:
-                            role_rows[role]["wall_samples"].append(float(sample["wall_ms"]))
-                            role_rows[role]["rss_samples"].append(sample.get("peak_rss_bytes"))
-                            if sample.get("status") == "fail":
-                                role_rows[role]["status"] = "fail"
-                        role_rows[role]["details"].append(sample)
+                        merge_role_sample(role_rows[role], sample, scenario)
                 for role, values in list(role_rows.items()):
                     if values.get("status") == "unsupported":
                         continue
@@ -717,6 +995,16 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                     values["rss"] = median_mad([
                         float(value) for value in values.pop("rss_samples") if value is not None
                     ])
+                    protocols = sorted({
+                        detail.get("protocol")
+                        for detail in values.get("details", [])
+                        if detail.get("protocol") is not None
+                    })
+                    if len(protocols) != 1:
+                        values["status"] = "indeterminate"
+                        values["protocol"] = protocols
+                    else:
+                        values["protocol"] = protocols[0]
                 for role, values in role_rows.items():
                     if values.get("status") == "unsupported":
                         continue
@@ -730,7 +1018,13 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                         values["correctness"] = {"status": "fail", "reason": "output artifact changed between paired samples"}
                     else:
                         values["correctness"] = {"status": "pass", "criterion": "exit_zero_and_output_present"}
-                verdict = scenario_verdict(scenario, role_rows, workload)
+                verdict = scenario_verdict(
+                    scenario,
+                    role_rows,
+                    row,
+                    scenario_policy[scenario],
+                    thresholds,
+                )
                 row["scenarios"][scenario] = {"roles": role_rows, "verdict": verdict}
                 statuses.append(verdict["status"])
         report["workloads"].append(row)
@@ -745,11 +1039,19 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 "runner": "rue-scaling-bench",
             }
-    if "fail" in statuses:
+    required_statuses = [
+        status
+        for workload in report["workloads"]
+        for scenario, value in workload["scenarios"].items()
+        if value["verdict"].get("required")
+        and value["verdict"].get("status") not in {"not_applicable"}
+        for status in [value["verdict"]["status"]]
+    ]
+    if "fail" in statuses or "fail" in required_statuses:
         report["verdict"] = "fail"
-    elif "indeterminate" in statuses:
+    elif "indeterminate" in statuses or "indeterminate" in required_statuses:
         report["verdict"] = "indeterminate"
-    elif not statuses or all(status == "unsupported" for status in statuses):
+    elif not statuses or all(status in {"unsupported", "not_applicable"} for status in statuses):
         report["verdict"] = "unsupported"
     return report
 
@@ -781,6 +1083,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "candidate": args.candidate.expanduser().resolve(),
     }
     args.source_dirs = parse_role_mapping(args.source_dir, "--source-dir")
+    if set(args.source_dirs) != set(ROLES):
+        parser.error("--source-dir is required once for every role; provenance is never inferred")
     args.session_bins = parse_role_mapping(args.session_bench, "--session-bench")
     args.scaling_bins = parse_role_mapping(args.scaling_bench, "--scaling-bench")
     return args

@@ -1,4 +1,4 @@
-schema_version = 1
+schema_version = 2
 
 # This manifest names the audit's user-value matrix.  The workload semantics
 # remain owned by benchmarks/manifest.toml and by the existing benchmark
@@ -11,6 +11,7 @@ warmup = 1
 paired_samples = 7
 pair_order = "historical,current,candidate then candidate,current,historical"
 measurement_profile = "release"
+caldera_timeout_headroom_seconds = 30
 
 [thresholds]
 warm_unrelated_declaration_improvement = 0.50
@@ -19,6 +20,69 @@ claimed_win_mad_multiplier = 3.0
 cold_regression_fraction = 0.02
 repeated_edit_rss_band = 0.05
 caldera_wall_seconds = 300
+
+# A required scenario must have complete evidence for every role that is
+# compared.  A missing binary, malformed row, or unsupported protocol makes
+# the scenario indeterminate; it can never silently become a passing result.
+# Workloads opt into the scenarios they can actually express below.
+[scenario_policy.cold]
+required = true
+
+[scenario_policy.warm_no_op]
+required = true
+
+[scenario_policy.warm_unrelated_declaration]
+required = true
+
+[scenario_policy.warm_leaf_body]
+required = true
+
+[scenario_policy.warm_signature_fanout]
+required = true
+
+[scenario_policy.repeated_edit_memory]
+required = false
+reason_if_unsupported = "No persistent-session repeated-edit RSS protocol is exposed"
+
+# These are upper bounds on production work counters, not lower-bound hints.
+# They deliberately remain flat as an unrelated-body universe grows.  The
+# reverse-closure fixture is allowed its bounded fanout; it is not a license
+# to re-run an arbitrary fraction of the program.
+[locality.warm_no_op]
+max_modules_computed = 0
+max_rir_computed = 0
+max_declarations_computed = 0
+max_durable_source_computed = 0
+max_semantic_bodies_computed = 0
+max_cfgs_computed = 0
+max_semantic_queries_computed = 0
+
+[locality.warm_unrelated_declaration]
+max_modules_computed = 0
+max_rir_computed = 0
+max_declarations_computed = 0
+max_durable_source_computed = 0
+max_semantic_bodies_computed = 0
+max_cfgs_computed = 0
+max_semantic_queries_computed = 0
+
+[locality.warm_leaf_body]
+max_modules_computed = 1
+max_rir_computed = 1
+max_declarations_computed = 1
+max_durable_source_computed = 1
+max_semantic_bodies_computed = 1
+max_cfgs_computed = 1
+max_semantic_queries_computed = 1
+
+[locality.warm_signature_fanout]
+max_modules_computed = 2
+max_rir_computed = 1
+max_declarations_computed = 1
+max_durable_source_computed = 8
+max_semantic_bodies_computed = 8
+max_cfgs_computed = 8
+max_semantic_queries_computed = 1
 
 [[workload]]
 name = "synthetic"
