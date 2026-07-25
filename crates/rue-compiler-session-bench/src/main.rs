@@ -20,9 +20,16 @@ use rue_span::FileId;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+mod module_axis;
 mod representative;
 
 const DEFAULT_MODULES: usize = 128;
+/// The module axis holds this many reached bodies fixed across every row, so a
+/// counter difference between rows is attributable to module count alone.
+const DEFAULT_MODULE_AXIS_BODIES: usize = 128;
+/// One module is the single-file shape the existing completion corpus measures;
+/// the larger counts spread the same bodies over a module graph.
+const DEFAULT_MODULE_AXIS_COUNTS: &[usize] = &[1, 2, 8, 32, 128];
 const DEFAULT_WARMUP: usize = 3;
 const DEFAULT_ITERATIONS: usize = 10;
 
@@ -117,12 +124,18 @@ const AVAILABLE_CONTEXT_COUNTERS: &[(&str, &[&str])] = &[
     ),
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Config {
     modules: usize,
     warmup: usize,
     iterations: usize,
     representative: bool,
+    /// Run the diagnostic module-count axis instead of the timing workloads.
+    /// `module_axis_bodies` is held fixed while `--module-counts` varies, so a
+    /// difference between rows is attributable to module count alone.
+    module_axis: bool,
+    module_axis_bodies: usize,
+    module_axis_counts: Vec<usize>,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -2064,6 +2077,9 @@ fn parse_config_args(args: impl IntoIterator<Item = String>) -> Result<Config, S
         warmup: DEFAULT_WARMUP,
         iterations: DEFAULT_ITERATIONS,
         representative: false,
+        module_axis: false,
+        module_axis_bodies: DEFAULT_MODULE_AXIS_BODIES,
+        module_axis_counts: DEFAULT_MODULE_AXIS_COUNTS.to_vec(),
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -2071,18 +2087,46 @@ fn parse_config_args(args: impl IntoIterator<Item = String>) -> Result<Config, S
             config.representative = true;
             continue;
         }
-        let value = args
+        if arg == "--module-axis" {
+            config.module_axis = true;
+            continue;
+        }
+        let raw = args
             .next()
             .ok_or_else(|| format!("missing value for {arg}"))?;
-        let value = value
+        if arg == "--module-counts" {
+            let counts = raw
+                .split(',')
+                .map(|part| part.trim().parse::<usize>())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| format!("invalid value for {arg}"))?;
+            if counts.is_empty() || counts.contains(&0) {
+                return Err(format!("unknown option or invalid value: {arg}"));
+            }
+            config.module_axis_counts = counts;
+            continue;
+        }
+        let value = raw
             .parse::<usize>()
             .map_err(|_| format!("invalid value for {arg}"))?;
         match arg.as_str() {
             "--modules" if value >= 4 => config.modules = value,
             "--warmup" => config.warmup = value,
             "--iterations" if value > 0 => config.iterations = value,
+            "--bodies" if value >= 2 => config.module_axis_bodies = value,
             _ => return Err(format!("unknown option or invalid value: {arg}")),
         }
+    }
+    if config.module_axis
+        && let Some(count) = config
+            .module_axis_counts
+            .iter()
+            .find(|count| **count > config.module_axis_bodies)
+    {
+        return Err(format!(
+            "cannot spread {} bodies across {count} modules",
+            config.module_axis_bodies
+        ));
     }
     Ok(config)
 }
@@ -2090,13 +2134,20 @@ fn parse_config_args(args: impl IntoIterator<Item = String>) -> Result<Config, S
 fn usage(message: &str) -> ! {
     eprintln!("error: {message}");
     eprintln!(
-        "usage: rue-compiler-session-bench [--representative] [--modules N>=4] [--warmup N] [--iterations N>=1]"
+        "usage: rue-compiler-session-bench [--representative] [--modules N>=4] [--warmup N] [--iterations N>=1]\n       rue-compiler-session-bench --module-axis [--bodies N>=2] [--module-counts N,N,...]"
     );
     process::exit(2)
 }
 
 fn main() {
     let config = parse_config();
+    if config.module_axis {
+        println!(
+            "{}",
+            module_axis::run(config.module_axis_bodies, &config.module_axis_counts)
+        );
+        return;
+    }
     if config.representative {
         for _ in 0..config.warmup {
             representative::run_iteration();
@@ -2196,6 +2247,9 @@ mod tests {
                 warmup: DEFAULT_WARMUP,
                 iterations: DEFAULT_ITERATIONS,
                 representative: false,
+                module_axis: false,
+                module_axis_bodies: DEFAULT_MODULE_AXIS_BODIES,
+                module_axis_counts: DEFAULT_MODULE_AXIS_COUNTS.to_vec(),
             }
         );
     }
