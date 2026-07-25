@@ -1868,6 +1868,14 @@ pub(crate) struct BoundBodyEpoch<'a> {
 }
 
 impl<'a> BoundBodyEpoch<'a> {
+    /// Seal this epoch as a request's declaration base (RUE-1135), moving its
+    /// type pool and parameter arena into shared immutable layers. Every later
+    /// [`Self::derive_body_epoch`] then shares those two families by refcount
+    /// instead of materializing a flat base per body.
+    pub(crate) fn seal_as_declaration_base(&mut self) {
+        self.bound.seal_as_declaration_base();
+    }
+
     /// Derive one body-local epoch from this declaration base (RUE-1135),
     /// charging what the derivation shared and what it copied.
     ///
@@ -2059,6 +2067,13 @@ impl<'a> SharedDeclarationBase<'a> {
                 shared_projection,
                 work,
             )?;
+            let mut epoch = epoch;
+            // Seal once, here, so the type pool and parameter arena are shared
+            // by refcount from the first derivation onwards. An unsealed base
+            // has to materialize a flat immutable layer before it can be
+            // shared, and paying that per body would put the copy the base
+            // exists to remove straight back on the per-body path.
+            epoch.seal_as_declaration_base();
             // Charged by the builder, at the point a base was really derived
             // from scratch: a request that reuses its base never reaches here.
             work.declaration_bases_built += 1;
@@ -4615,6 +4630,21 @@ mod tests {
             )
             .expect("the corpus builds a base");
             let before = base.shared_universe_entries() + base.local_universe_entries();
+            // Sealing moves the base's own type-pool and parameter universe into
+            // the shared immutable layer without changing what it contains. Every
+            // later derivation shares that layer by refcount.
+            let mut base = base;
+            base.seal_as_declaration_base();
+            assert_eq!(
+                base.local_universe_entries(),
+                0,
+                "sealing moves the base's whole universe into its shared layer"
+            );
+            assert_eq!(
+                base.shared_universe_entries(),
+                before,
+                "sealing must not change what the base contains"
+            );
             for key in &keys {
                 let mut units = rue_air::EpochDerivationUnits::default();
                 let derived = base.derive_body_epoch(&mut units);

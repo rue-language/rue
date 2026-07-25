@@ -195,8 +195,11 @@ impl ParamArena {
     /// A fresh arena that shares this one's parameters as an immutable base and
     /// appends its own allocations above them (RUE-1135).
     ///
-    /// Flattening first keeps every derived arena exactly one layer deep, so a
-    /// lookup is a single branch no matter how many times an arena is derived.
+    /// Deriving from an already-sealed arena — one that has a base and has
+    /// allocated nothing of its own — shares that base's `Arc` and copies
+    /// nothing, which is what makes every per-body derivation O(1). Otherwise
+    /// one flat base is materialized first, which also keeps every derived arena
+    /// exactly one layer deep so a lookup stays a single branch.
     pub(crate) fn derive_overlay(&self) -> Self {
         let base_len = self.total_params();
         let base = match (&self.base, self.local.types.is_empty()) {

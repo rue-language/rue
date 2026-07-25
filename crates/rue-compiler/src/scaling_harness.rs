@@ -1139,26 +1139,17 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
         // RUE-1121 acceptance rows consume only stage-sourced counters. The
         // RUE-1090 verdict below deliberately remains limited to its original
         // project/install/endpoint exact-ratio decision.
-        // Each witness is the known-bad TOTAL for that counter's charging shape:
-        // `universe · cold_bodies` for the counters still paid per body, and a
-        // single `universe` for the RUE-1132 projection, which is computed once
-        // per request and shared. The projection row therefore remains a tracked
-        // RUE-1091 expected-failure — one whole-universe projection is still not
-        // exactly flat in unrelated declarations — but its witness now records
-        // the repaired shape, so a regression back to per-body projection blows
-        // past the band and panics instead of being absorbed.
-        let per_body_witness = |per_body: usize| {
-            per_body
-                .checked_mul(grown.cold_bodies)
-                .expect("RUE-1121 context witness overflow")
-        };
-        // Since RUE-1135 every one of these stages is charged once per request:
-        // the declaration base is built once and each body derives its epoch
-        // from it, so each witness is now a single whole universe rather than
-        // `universe · cold_bodies`. `per_body_witness` is retained because a
-        // regression back to per-body construction must blow past a band that
-        // still names the old shape rather than quietly fitting inside it.
-        let _ = per_body_witness;
+        // Each witness is the known-bad TOTAL for that counter's charging shape.
+        // Every one of these stages is now charged once per request — the
+        // RUE-1132 projection is computed once and shared, and since RUE-1135 the
+        // whole declaration epoch is built once and each body derives from it —
+        // so each witness is a single `universe`, never `universe · cold_bodies`.
+        // These rows therefore remain tracked RUE-1091 expected-failures — one
+        // whole-universe prefix is still not exactly flat in unrelated
+        // declarations — but their witnesses record the repaired shape, so a
+        // regression back to per-body construction lands at
+        // `universe · cold_bodies`, blows past the band, and panics instead of
+        // being absorbed.
         for (counter, baseline_total, grown_total, witness) in [
             (
                 "shells prepared",

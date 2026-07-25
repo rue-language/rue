@@ -155,6 +155,23 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 }
 
 impl BoundSema<'_> {
+    /// Seal this epoch as a request's declaration base (RUE-1135).
+    ///
+    /// The type pool and parameter arena are moved into shared immutable layers
+    /// with an empty local layer on top. This is what makes every later
+    /// [`Self::derive_body_epoch`] O(1) in those two families: an unsealed
+    /// universe has to materialize a flat base before it can be shared, and
+    /// doing that once per request instead of once per body is the difference
+    /// between sharing the type universe and copying it per body.
+    ///
+    /// Calling this leaves the epoch's contents identical — every canonical
+    /// `Type` and `ParamRange` keeps its meaning — so a sealed base analyzes a
+    /// body exactly as an unsealed one would.
+    pub fn seal_as_declaration_base(&mut self) {
+        self.sema.type_pool = self.sema.type_pool.derive_overlay();
+        self.sema.param_arena = self.sema.param_arena.derive_overlay();
+    }
+
     /// Derive one body-local epoch from this declaration base, charging what the
     /// derivation shared and what it copied (RUE-1135).
     ///

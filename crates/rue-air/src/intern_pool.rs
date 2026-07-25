@@ -616,11 +616,21 @@ impl TypeInternPoolInner {
 
     /// A fresh universe that reads this one as an immutable base and appends its
     /// own entries above it (RUE-1135).
+    ///
+    /// Deriving from an already-sealed universe — one that has a base and has
+    /// appended nothing of its own — shares that base's `Arc` and copies
+    /// nothing, which is what makes every per-body derivation O(1). Deriving
+    /// from an unsealed or grown universe materializes one flat base first;
+    /// sealing a request's declaration base once
+    /// (`BoundSema::seal_as_declaration_base`) is what keeps that cost off the
+    /// per-body path.
     fn derive_overlay(&self) -> Self {
-        let base = if self.base.is_none() {
-            Arc::new(self.clone())
-        } else {
-            Arc::new(self.flatten())
+        let untouched =
+            self.types.is_empty() && self.overrides.is_empty() && self.override_facts.is_empty();
+        let base = match (&self.base, untouched) {
+            (Some(base), true) => Arc::clone(base),
+            (Some(_), false) => Arc::new(self.flatten()),
+            (None, _) => Arc::new(self.clone()),
         };
         Self {
             base_len: base.entry_count(),
