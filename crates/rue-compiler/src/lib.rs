@@ -196,6 +196,8 @@ pub(crate) use source_identity::{
 // Immutable query artifacts and stable identities returned by CompilerSession.
 #[cfg(test)]
 pub(crate) use backend::generate_mir;
+#[cfg(test)]
+pub(crate) use body_query::{BodyTransaction, transaction_equal};
 pub(crate) use bound_definitions::{
     BoundDefinitionRecord, BoundDefinitionSet, StableDefinitionKey, StableDefinitionKind,
     StableDefinitionNamespace,
