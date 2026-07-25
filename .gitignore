@@ -23,3 +23,7 @@ third-party/.cargo/.global-cache/
 
 # BuildBuddy remote cache local config (RUE-316) — holds the API key, never committed
 .buckconfig.local
+
+# Python bytecode from repository tooling scripts.
+__pycache__/
+*.pyc
