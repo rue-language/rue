@@ -33,6 +33,16 @@ runtime_timeout_ms = 120000
 path = "harbor/main.rue"
 contract = "heavyweight"
 
+# The automatic example compiles examples/jsonfmt/main.rue against the real std
+# exactly as cases/examples_jsonfmt.toml does, so it needs that section's
+# classification too. That file records the reason: the compile is ~7.5s on
+# 4-core CI-class hardware even at trunk, which leaves no headroom under the
+# default 10s budget once the shard runs it concurrently with everything else.
+# Heavyweight both raises the budget and moves it into the bounded serial lane.
+[[automatic_example]]
+path = "jsonfmt/main.rue"
+contract = "heavyweight"
+
 [[automatic_example]]
 path = "lattice/main.rue"
 contract = "heavyweight"
