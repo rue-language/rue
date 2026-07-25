@@ -944,7 +944,7 @@ fn rue_1090_historical_witness_ceiling_line(
     )
 }
 
-/// RUE-1121's post-repair acceptance row for a counter charged once per body.
+/// RUE-1121's post-repair acceptance row for a declaration-context counter.
 ///
 /// The RUE-1090 decision remains its exact-ratio verdict below. This row is the
 /// complementary acceptance assertion: with the same reached-body topology,
@@ -952,21 +952,25 @@ fn rue_1090_historical_witness_ceiling_line(
 /// flat. Until RUE-1091 repairs the shared declaration context, the current
 /// whole-universe witness records a controlled expected failure. Once repaired,
 /// the same row becomes a hard target pass without duplicating the test.
+///
+/// `witness` is the documented known-bad TOTAL, which differs by counter
+/// because the counters are no longer charged the same way. A counter still
+/// paid per body witnesses at `universe · cold_bodies`; the RUE-1132 projection
+/// is charged once per request and witnesses at `universe`. Passing the total
+/// rather than a per-body value keeps that difference explicit at each call
+/// site instead of hiding it in a uniform multiply here.
 fn rue_1121_exact_flat_context_row(
     counter: &str,
     baseline_total: usize,
     baseline_bodies: usize,
     grown_total: usize,
     grown_bodies: usize,
-    historical_grown_per_body_witness: usize,
+    witness: usize,
 ) -> Row {
     assert_eq!(
         grown_bodies, baseline_bodies,
         "RUE-1121 fixed-body corpus changed its body-preparation topology"
     );
-    let witness = historical_grown_per_body_witness
-        .checked_mul(grown_bodies)
-        .expect("RUE-1121 context witness overflow");
     Row::envelope(
         format!(
             "RUE-1121 exact-flat {counter}: warm-independent cold {} -> {} \
@@ -1109,12 +1113,25 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
         // RUE-1121 acceptance rows consume only stage-sourced counters. The
         // RUE-1090 verdict below deliberately remains limited to its original
         // project/install/endpoint exact-ratio decision.
-        for (counter, baseline_total, grown_total, historical_grown_per_body_witness) in [
+        // Each witness is the known-bad TOTAL for that counter's charging shape:
+        // `universe · cold_bodies` for the counters still paid per body, and a
+        // single `universe` for the RUE-1132 projection, which is computed once
+        // per request and shared. The projection row therefore remains a tracked
+        // RUE-1091 expected-failure — one whole-universe projection is still not
+        // exactly flat in unrelated declarations — but its witness now records
+        // the repaired shape, so a regression back to per-body projection blows
+        // past the band and panics instead of being absorbed.
+        let per_body_witness = |per_body: usize| {
+            per_body
+                .checked_mul(grown.cold_bodies)
+                .expect("RUE-1121 context witness overflow")
+        };
+        for (counter, baseline_total, grown_total, witness) in [
             (
                 "shells prepared",
                 baseline.shells_total,
                 grown.shells_total,
-                historical_grown.per_body_shells,
+                per_body_witness(historical_grown.per_body_shells),
             ),
             (
                 "projections",
@@ -1126,13 +1143,13 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
                 "semantics installed",
                 baseline.semantics_total,
                 grown.semantics_total,
-                historical_grown.per_body_semantics,
+                per_body_witness(historical_grown.per_body_semantics),
             ),
             (
                 "endpoints",
                 baseline.endpoints_total,
                 grown.endpoints_total,
-                historical_grown.per_body_endpoints,
+                per_body_witness(historical_grown.per_body_endpoints),
             ),
         ] {
             report.push(rue_1121_exact_flat_context_row(
@@ -1141,7 +1158,7 @@ fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
                 baseline.cold_bodies,
                 grown_total,
                 grown.cold_bodies,
-                historical_grown_per_body_witness,
+                witness,
             ));
         }
         // A worsening beyond the historical unrepaired witness is a regression,
@@ -1356,13 +1373,21 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
             predicted.per_body_shells,
             1,
         ));
+        // RUE-1132 changed the SHAPE of this counter, so it is no longer a
+        // per-body linear row. The declaration projection is body-invariant and
+        // is now computed once per request and shared, so total projection work
+        // must stay at one universe REGARDLESS of how many bodies are reached.
+        // Asserting the total (not the per-body quotient) is strictly stronger
+        // than the old linear row: a regression to per-body projection lands at
+        // `U · cold_bodies` and fails here immediately, and the row cannot be
+        // satisfied by an integer-division artifact at large body counts.
         report.push(Row::linear_hard(
             format!(
-                "per-body project @ {decls} decls: {bodies} bodies={} (corpus U={})",
-                grown.per_body_projections(),
-                predicted.per_body_projections
+                "RUE-1132 shared projection @ {decls} decls: {bodies} bodies \
+                 total={} (corpus U={}, charged once per request)",
+                grown.projections_total, predicted.per_body_projections
             ),
-            grown.per_body_projections(),
+            grown.projections_total,
             predicted.per_body_projections,
             1,
         ));

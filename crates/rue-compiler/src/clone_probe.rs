@@ -40,7 +40,9 @@ use std::time::{Duration, Instant};
 use rue_air::{EpochCloneUnits, PerBodyDeclarationContextWork};
 
 use crate::body_query::{BodyQueryKey, BodyTransaction, WellKnownOptionResolution};
-use crate::canonical_semantic::{BoundBodyEpoch, analyze_body_in_epoch, build_bound_body_epoch};
+use crate::canonical_semantic::{
+    BoundBodyEpoch, SharedDeclarationProjection, analyze_body_in_epoch, build_bound_body_epoch,
+};
 use crate::durable_semantics::{DurableAnonymousNominal, DurableDeclarationSemantic};
 use crate::{CanonicalImportGraph, CanonicalMergedProgram, CanonicalRirOutput, CompileOptions};
 
@@ -223,6 +225,7 @@ impl<'a> CloneFromTemplateProbe<'a> {
         well_known: &WellKnownOptionResolution,
         key: &BodyQueryKey,
         cancellation: &rue_query::CancellationToken,
+        shared_projection: &SharedDeclarationProjection,
         work: &mut PerBodyDeclarationContextWork,
     ) -> Result<BodyTransaction, rue_query::QueryAbort> {
         if cancellation.is_canceled() {
@@ -245,7 +248,8 @@ impl<'a> CloneFromTemplateProbe<'a> {
                 query_declarations,
                 query_anonymous_nominals,
                 well_known,
-                &key.instance,
+                key,
+                shared_projection,
                 &mut rebuild_work,
             );
             let transaction = match epoch {
@@ -287,7 +291,8 @@ impl<'a> CloneFromTemplateProbe<'a> {
                 query_declarations,
                 query_anonymous_nominals,
                 well_known,
-                &key.instance,
+                key,
+                shared_projection,
                 &mut template_work,
             );
             CloneProbeMeter::charge_nanos(&self.meter.template_build_nanos, started.elapsed());

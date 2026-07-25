@@ -30,7 +30,11 @@ derived from the pre-cutover figures recorded in
 process timeout sits above its own budget so an over-budget compile is recorded
 as a gate failure rather than raising out of the run. Those budgets are checked
 per role without pairing, so they return a verdict even when no historical
-baseline binary exists and every pair is unsupported. Cold RSS is part of the
+baseline binary exists and every pair is unsupported. When a distinct historical
+baseline IS supplied the absolute budget becomes advisory and the
+host-independent pair comparison decides the scenario, because an absolute
+budget calibrated on another host can otherwise fail a repaired compiler; see
+[`pre-cutover-baseline-binary.md`](pre-cutover-baseline-binary.md). Cold RSS is part of the
 cold pair verdict, not a detached annotation. The report records medians, MADs,
 explicit role provenance, hashes, host provenance, raw alternating samples, and
 unsupported/indeterminate cases.

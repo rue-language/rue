@@ -693,6 +693,11 @@ mod tests {
             cancellation: &rue_query::CancellationToken,
         ) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
             let mut work = rue_air::PerBodyDeclarationContextWork::default();
+            // A fresh memo per call: this differential compares one production
+            // body against one overlay body, so each side projects for itself
+            // exactly as it did before RUE-1132 shared the projection across the
+            // bodies of a request.
+            let shared_projection = crate::canonical_semantic::SharedDeclarationProjection::new();
             crate::canonical_semantic::analyze_body_query(
                 &self.merged,
                 &self.rir,
@@ -704,6 +709,7 @@ mod tests {
                 &crate::body_query::WellKnownOptionResolution::default(),
                 key,
                 cancellation,
+                &shared_projection,
                 &mut work,
             )
         }
