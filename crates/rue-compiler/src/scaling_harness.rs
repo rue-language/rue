@@ -666,22 +666,26 @@ fn assert_warm_fresh_parity(
             // from the warm cache is a correctness failure, not a cache hit.
             let warm_failures = warm_bodies
                 .iter()
-                .filter_map(|(identity, transaction)| {
+                .filter(|(_, transaction)| {
                     matches!(
                         transaction,
                         Some(crate::BodyTransaction::DeterministicFailure { .. })
                     )
-                    .then(|| (identity.clone(), transaction.as_ref().unwrap().clone()))
+                })
+                .map(|(identity, transaction)| {
+                    (identity.clone(), transaction.as_ref().unwrap().clone())
                 })
                 .collect::<BTreeMap<_, _>>();
             let fresh_failures = fresh_bodies
                 .iter()
-                .filter_map(|(identity, transaction)| {
+                .filter(|(_, transaction)| {
                     matches!(
                         transaction,
                         Some(crate::BodyTransaction::DeterministicFailure { .. })
                     )
-                    .then(|| (identity.clone(), transaction.as_ref().unwrap().clone()))
+                })
+                .map(|(identity, transaction)| {
+                    (identity.clone(), transaction.as_ref().unwrap().clone())
                 })
                 .collect::<BTreeMap<_, _>>();
             assert_eq!(
