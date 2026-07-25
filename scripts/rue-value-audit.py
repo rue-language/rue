@@ -46,6 +46,7 @@ PAIR_NAMES = (
     ("historical_baseline", "current_production"),
     ("current_production", "candidate"),
 )
+PAIR_ORDER = "historical,current,candidate then candidate,current,historical"
 SCENARIOS = (
     "cold",
     "warm_no_op",
@@ -62,6 +63,8 @@ WORKLOADS = (
         "root": "benchmarks/stress/many_functions.rue",
         "session_mode": "modules",
         "session_modules": 128,
+        "warm_runner": "rue-compiler-session-bench --modules 128",
+        "scaling_runner": "rue-scaling-bench --bodies 1000 --decls 100",
         "description": "Generated declaration-volume and completion locality corpus.",
     },
     {
@@ -69,18 +72,24 @@ WORKLOADS = (
         "family": "representative",
         "root": "benchmarks/scenarios/representative/main.rue",
         "session_mode": "representative",
+        "warm_runner": "rue-compiler-session-bench --representative",
+        "scaling_runner": None,
         "description": "Tracked multi-module application-shaped fixture from benchmarks/manifest.toml.",
     },
     {
         "name": "medium_ordinary_rue",
         "family": "ordinary",
         "root": "examples/quicksort.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
         "description": "Ordinary medium Rue example; only fresh-driver scenarios are supported.",
     },
     {
         "name": "caldera",
         "family": "caldera",
         "root": "examples/caldera/main.rue",
+        "warm_runner": "unsupported: no persistent-session black-box protocol",
+        "scaling_runner": None,
         "description": "Large maintained application graph with a 300-second cold budget.",
     },
 )
@@ -102,6 +111,43 @@ LOCALITY_COUNTERS = (
     "semantic_bodies",
     "cfgs",
     "semantic_queries",
+    "cold_body_preparations",
+    "declarations_inspected",
+    "modules_registered",
+    "rir_indexes_constructed",
+    "rir_instructions_visited",
+    "durable_source_records_inspected",
+    "durable_source_records_copied",
+    "shells_prepared",
+    "projections_performed",
+    "semantics_installed",
+    "endpoints_installed",
+)
+COUNTER_DIMENSIONS = ("computed", "reused", "invalidated", "required")
+COLD_SEMANTIC_WORK_REQUIRED_PATHS = (
+    ("schema_version",),
+    ("bodies_attempted",),
+    ("bodies_succeeded",),
+    ("bodies_failed",),
+    ("body_analyses_computed",),
+    ("body_analyses_reused",),
+    ("body_analyses_invalidated",),
+    ("per_body_declaration_context", "cold_body_preparations"),
+    ("per_body_declaration_context", "declarations_inspected"),
+    ("per_body_declaration_context", "modules_registered"),
+    ("per_body_declaration_context", "rir_indexes_constructed"),
+    ("per_body_declaration_context", "rir_instructions_visited"),
+    ("per_body_declaration_context", "shells_prepared"),
+    ("per_body_declaration_context", "projections_performed"),
+    ("per_body_declaration_context", "semantics_installed"),
+    ("per_body_declaration_context", "endpoints_installed"),
+    ("per_body_declaration_context", "durable_source_records_inspected"),
+    ("per_body_declaration_context", "durable_source_records_copied"),
+    ("durable_bodies", "candidate_comparisons"),
+    ("durable_bodies", "reused_bodies"),
+    ("cfg", "builds_attempted"),
+    ("cfg", "builds_succeeded"),
+    ("cfg", "builds_failed"),
 )
 PARITY_EXACT_FIELDS = (
     "public_semantic_cfg_artifacts",
@@ -221,6 +267,8 @@ def load_audit_manifest(root: Path) -> dict[str, Any]:
     protocol = manifest.get("protocol")
     if not isinstance(protocol, dict) or protocol.get("paired_samples") != 7 or protocol.get("warmup") != 1:
         raise ValueError("value-audit manifest must pin one warmup and seven paired samples")
+    if protocol.get("pair_order") != PAIR_ORDER:
+        raise ValueError("value-audit manifest pair order drifted from the runner")
     if protocol.get("measurement_profile") != "release":
         raise ValueError("value-audit manifest must pin the release measurement profile")
     if not isinstance(protocol.get("caldera_timeout_headroom_seconds"), (int, float)) or protocol["caldera_timeout_headroom_seconds"] <= 0:
@@ -261,7 +309,22 @@ def load_audit_manifest(root: Path) -> dict[str, Any]:
     expected = {workload["name"] for workload in WORKLOADS}
     if not isinstance(workloads, list) or {item.get("name") for item in workloads} != expected:
         raise ValueError("value-audit manifest workload matrix drifted from the runner")
+    if len(workloads) != len(WORKLOADS):
+        raise ValueError("value-audit manifest workload matrix contains duplicate entries")
+    expected_workloads = {workload["name"]: workload for workload in WORKLOADS}
     for item in workloads:
+        expected_workload = expected_workloads.get(item.get("name"))
+        if expected_workload is None:
+            raise ValueError(f"value-audit manifest has an unknown workload {item.get('name')}")
+        expected_manifest_root = os.path.normpath(
+            os.path.relpath(expected_workload["root"], "benchmarks/value-audit")
+        )
+        if item.get("root") != expected_manifest_root:
+            raise ValueError(f"workload {item.get('name')} root drifted from the runner")
+        if item.get("warm_runner") != expected_workload["warm_runner"]:
+            raise ValueError(f"workload {item.get('name')} warm runner drifted from the runner")
+        if item.get("scaling_runner") != expected_workload["scaling_runner"]:
+            raise ValueError(f"workload {item.get('name')} scaling runner drifted from the runner")
         supported = item.get("supported_scenarios")
         if not isinstance(supported, list) or not set(supported).issubset(SCENARIOS):
             raise ValueError(f"workload {item.get('name')} has invalid supported_scenarios")
@@ -451,9 +514,42 @@ def parity_check(row: dict[str, Any]) -> dict[str, Any]:
         return {"status": "unsupported", "reason": "differential parity has no valid emitted-output digest"}
     if not isinstance(parity.get("emitted_output_size_bytes"), int) or parity["emitted_output_size_bytes"] <= 0:
         return {"status": "unsupported", "reason": "differential parity has no positive emitted-output size"}
-    if not isinstance(parity.get("cold_semantic_work"), dict):
-        return {"status": "unsupported", "reason": "differential parity has no cold work evidence"}
+    cold_work = parity.get("cold_semantic_work")
+    if not isinstance(cold_work, dict) or not cold_work:
+        return {"status": "unsupported", "reason": "differential parity has empty cold work evidence"}
+    for path in COLD_SEMANTIC_WORK_REQUIRED_PATHS:
+        value: Any = cold_work
+        for key in path:
+            if not isinstance(value, dict) or key not in value:
+                return {
+                    "status": "unsupported",
+                    "reason": f"differential parity cold work omitted {'.'.join(path)}",
+                }
+            value = value[key]
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return {
+                "status": "unsupported",
+                "reason": f"differential parity cold work has malformed {'.'.join(path)}",
+            }
+    if cold_work["schema_version"] != 1:
+        return {"status": "unsupported", "reason": "differential parity cold work schema version is missing or unknown"}
     return {"status": "pass", "evidence": parity}
+
+
+def counter_value(values: dict[str, Any], field: str) -> int | None:
+    value = values.get(field)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
+
+
+def unavailable_counter(value: Any) -> bool:
+    return (
+        isinstance(value, dict)
+        and value.get("available") is False
+        and isinstance(value.get("reason"), str)
+        and bool(value["reason"])
+    )
 
 
 def locality_check(
@@ -487,13 +583,15 @@ def locality_check(
         values = work.get(artifact)
         if not isinstance(values, dict):
             return {"status": "unsupported", "reason": f"locality evidence omitted {artifact} counters"}
-        for field in ("computed", "reused", "invalidated"):
-            if not isinstance(values.get(field), int) or isinstance(values[field], bool) or values[field] < 0:
-                return {"status": "unsupported", "reason": f"locality evidence has no numeric {artifact}.{field}"}
+        for field in COUNTER_DIMENSIONS:
+            value = values.get(field)
+            if counter_value(values, field) is None and not unavailable_counter(value):
+                return {"status": "unsupported", "reason": f"locality evidence has malformed {artifact}.{field}"}
 
-    # Every warm locality gate is an upper-bounded production-work gate.  A
+    # Every warm locality gate is an upper-bounded production-work gate. A
     # lower bound such as "some CFG was reused" cannot detect a full-program
-    # recompute, so both computed and invalidated counters are checked.
+    # recompute. Unavailable dimensions are shape-checked above but never
+    # treated as zero or as independent evidence here.
     maxima = policy
     if any(
         not isinstance(maxima.get(f"max_{artifact}_computed"), int)
@@ -506,29 +604,57 @@ def locality_check(
     for artifact in LOCALITY_COUNTERS:
         maximum = maxima[f"max_{artifact}_computed"]
         values = work[artifact]
-        if values["computed"] > maximum or values["invalidated"] > maximum:
-            violations.append({
-                "artifact": artifact,
-                "maximum": maximum,
-                "computed": values["computed"],
-                "invalidated": values["invalidated"],
-            })
+        if counter_value(values, "computed") is None:
+            return {"status": "unsupported", "reason": f"locality evidence has no computed {artifact} counter"}
+        for dimension in ("computed", "invalidated"):
+            observed = counter_value(values, dimension)
+            if observed is not None and observed > maximum:
+                violations.append({
+                    "artifact": artifact,
+                    "dimension": dimension,
+                    "maximum": maximum,
+                    "observed": observed,
+                })
     if violations:
         return {"status": "fail", "reason": "production work exceeded the manifest locality bounds", "violations": violations, "work": work}
 
+    # Semantic work is sliced to the current request by the session benchmark.
+    # A non-zero body/context counter with no current semantic execution is a
+    # historical cached-result field, not current-request recomputation. Do not
+    # let an exact-cycle cache hit satisfy a locality claim.
+    semantic_execution_count = counter_value(work["semantic_queries"], "computed")
+    current_request_work = (
+        "semantic_bodies",
+        "durable_source",
+        "cfgs",
+        "shells_prepared",
+        "projections_performed",
+        "semantics_installed",
+        "endpoints_installed",
+    )
+    if semantic_execution_count == 0 and any(
+        (counter_value(work[artifact], "computed") or 0) > 0
+        for artifact in current_request_work
+    ):
+        return {
+            "status": "unsupported",
+            "reason": "current-request semantic work is unavailable; counters may be historical cached-result fields",
+            "work": work,
+        }
+
     # A successful edit must show that the corresponding production query did
     # run.  This is deliberately narrow and does not turn reuse into a pass.
-    if scenario == "warm_no_op" and work["semantic_queries"]["reused"] < 1:
+    if scenario == "warm_no_op" and (counter_value(work["semantic_queries"], "reused") or 0) < 1:
         return {"status": "unsupported", "reason": "no-op row has no reused semantic-query evidence", "work": work}
     if scenario == "warm_unrelated_declaration" and not any(
-        work[artifact]["reused"] > 0 for artifact in LOCALITY_COUNTERS
+        (counter_value(work[artifact], "reused") or 0) > 0 for artifact in LOCALITY_COUNTERS
     ):
         return {"status": "unsupported", "reason": "unrelated-edit row has no reused production work evidence", "work": work}
-    if scenario in {"warm_leaf_body", "warm_signature_fanout"} and work["semantic_bodies"]["computed"] < 1:
+    if scenario in {"warm_leaf_body", "warm_signature_fanout"} and (counter_value(work["semantic_bodies"], "computed") or 0) < 1:
         return {"status": "unsupported", "reason": "edit row has no computed body evidence", "work": work}
-    if scenario == "warm_leaf_body" and work["cfgs"]["computed"] < 1:
+    if scenario == "warm_leaf_body" and (counter_value(work["cfgs"], "computed") or 0) < 1:
         return {"status": "unsupported", "reason": "leaf edit has no computed CFG evidence", "work": work}
-    if scenario == "warm_signature_fanout" and work["modules"]["computed"] < 1 and work["semantic_bodies"]["computed"] < 1:
+    if scenario == "warm_signature_fanout" and (counter_value(work["modules"], "computed") or 0) < 1 and (counter_value(work["semantic_bodies"], "computed") or 0) < 1:
         return {"status": "unsupported", "reason": "fanout edit has no computed locality evidence", "work": work}
     return {"status": "pass", "work": work}
 
@@ -756,6 +882,16 @@ def scenario_verdict(
         if left.get("status") == "fail" or right.get("status") == "fail":
             pairs[f"{left_role}_vs_{right_role}"] = {"status": "fail", "reason": "exact correctness or locality evidence failed"}
             continue
+        left_binary = left.get("binary_sha256")
+        right_binary = right.get("binary_sha256")
+        if isinstance(left_binary, str) and isinstance(right_binary, str) and left_binary == right_binary:
+            pairs[f"{left_role}_vs_{right_role}"] = {
+                "status": "unsupported",
+                "reason": "identical binary hashes cannot support a value or improvement claim",
+                "same_binary": True,
+                "binary_sha256": left_binary,
+            }
+            continue
         if left.get("protocol") != right.get("protocol"):
             pairs[f"{left_role}_vs_{right_role}"] = {
                 "status": "indeterminate",
@@ -867,7 +1003,7 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
             "measurement_profile": "release",
             "warmup": args.warmup,
             "paired_samples": args.iterations,
-            "pair_order": "historical,current,candidate then candidate,current,historical alternating",
+            "pair_order": audit_manifest["protocol"]["pair_order"],
             "source_of_cold_timing": "scripts/perf-baseline.py-compatible benchmark JSON, black-box fallback for old revisions",
             "source_of_warm_timing": "rue-compiler-session-bench opaque scenario JSON",
             "thresholds": thresholds,
@@ -945,7 +1081,13 @@ def run_audit(args: argparse.Namespace) -> dict[str, Any]:
                     for role in order:
                         if role in role_rows and len(role_rows[role].get("wall_samples", [])) > pair_index:
                             continue
-                        role_rows.setdefault(role, {"status": "pass", "wall_samples": [], "rss_samples": [], "details": []})
+                        role_rows.setdefault(role, {
+                            "status": "pass",
+                            "wall_samples": [],
+                            "rss_samples": [],
+                            "details": [],
+                            "binary_sha256": report["revisions"][role]["binary_sha256"],
+                        })
                         if scenario == "cold":
                             if pair_index == 0:
                                 for _ in range(audit_manifest["protocol"]["warmup"]):

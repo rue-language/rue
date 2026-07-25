@@ -1277,6 +1277,7 @@ impl MetricsSnapshot {
 fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -> Value {
     let records = &work.semantic_records[from..];
     json!({
+        "schema_version": 1,
         "failed_requests": records.iter().filter(|record| record.failure.is_some()).count(),
         "failure_phases": {
             "declaration": records.iter().filter(|record| matches!(record.failure.map(|failure| failure.phase), Some(SemanticFailurePhase::Declaration))).count(),
@@ -1304,8 +1305,10 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
             "rir_instructions_visited": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.rir_instructions_visited).sum::<usize>(),
             "shells_prepared": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.shells_prepared).sum::<usize>(),
             "semantics_installed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.semantics_installed).sum::<usize>(),
+            "projections_performed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.projections_performed).sum::<usize>(),
             "durable_source_records_inspected": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.durable_source_records_inspected).sum::<usize>(),
             "durable_source_records_copied": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.durable_source_records_copied).sum::<usize>(),
+            "endpoints_installed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.endpoints_installed).sum::<usize>(),
         },
         "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
         "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
