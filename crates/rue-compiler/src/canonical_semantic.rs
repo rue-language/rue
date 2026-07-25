@@ -570,6 +570,14 @@ impl CanonicalSemanticWork {
             .durable_source_records_copied;
         body.per_body_declaration_context.endpoints_installed +=
             query.per_body_declaration_context.endpoints_installed;
+        body.per_body_declaration_context.declaration_bases_built +=
+            query.per_body_declaration_context.declaration_bases_built;
+        body.per_body_declaration_context.body_epochs_derived +=
+            query.per_body_declaration_context.body_epochs_derived;
+        body.per_body_declaration_context.declaration_units_shared +=
+            query.per_body_declaration_context.declaration_units_shared;
+        body.per_body_declaration_context.body_local_units_copied +=
+            query.per_body_declaration_context.body_local_units_copied;
         body.closure_bodies_visited = body
             .closure_bodies_visited
             .max(query.closure_bodies_visited);
@@ -1844,12 +1852,274 @@ fn project_produced_anonymous_nominals(
         .map(|values| crate::body_query::BodyProducedAnonymousNominals(values.into()))
 }
 
-/// Materialize one fresh declaration epoch and analyze exactly one stable
-/// function instance. The epoch is discarded after its canonical projections
-/// cross the stable bridge.
-pub(crate) fn analyze_body_query(
+/// One fully bound declaration epoch and the definition universe issued with it.
+///
+/// A request builds exactly one of these — the immutable declaration base
+/// (RUE-1135) — and every reached body analyzes inside an epoch *derived* from
+/// it through [`BoundBodyEpoch::derive_body_epoch`]. Both production and the
+/// differential oracle consume epochs through [`analyze_body_in_epoch`].
+pub(crate) struct BoundBodyEpoch<'a> {
+    bound: rue_air::BoundSema<'a>,
+    definitions: BoundDefinitionSet,
+}
+
+impl<'a> BoundBodyEpoch<'a> {
+    /// Seal this epoch as a request's declaration base (RUE-1135), moving its
+    /// type pool and parameter arena into shared immutable layers. Every later
+    /// [`Self::derive_body_epoch`] then shares those two families by refcount
+    /// instead of materializing a flat base per body.
+    pub(crate) fn seal_as_declaration_base(&mut self) {
+        self.bound.seal_as_declaration_base();
+    }
+
+    /// Derive one body-local epoch from this declaration base (RUE-1135),
+    /// charging what the derivation shared and what it copied.
+    ///
+    /// The declaration namespace, the stable endpoint tables, the module
+    /// registry, and the immutable prefixes of the type pool and parameter arena
+    /// are shared with the base; only the small per-body owned state is copied.
+    /// The issued definition universe is shared by reference: it is immutable
+    /// durable data that body analysis only reads.
+    pub(crate) fn derive_body_epoch(&self, units: &mut rue_air::EpochDerivationUnits) -> Self {
+        Self {
+            bound: self.bound.derive_body_epoch(units),
+            definitions: self.definitions.clone(),
+        }
+    }
+
+    /// Type-pool entries and parameters this epoch owns locally, excluding
+    /// everything it reads from a shared base. Zero immediately after a
+    /// derivation: the base's universe is read, not copied.
+    pub(crate) fn local_universe_entries(&self) -> usize {
+        self.bound.local_type_pool_entries() + self.bound.local_parameter_entries()
+    }
+
+    /// Type-pool entries and parameters this epoch reads from a shared base.
+    #[cfg(test)]
+    pub(crate) fn shared_universe_entries(&self) -> usize {
+        self.bound.shared_type_pool_entries() + self.bound.shared_parameter_entries()
+    }
+}
+
+/// The per-body epoch inputs a declaration base was built against.
+///
+/// A retained base can serve a body only when these compare equal: both are
+/// installed *into* the epoch, so an epoch built against different ones is a
+/// different epoch. On the measured corpora one base serves every body of a
+/// request; a mismatch rebuilds rather than silently serving a stale base.
+#[derive(Debug, PartialEq, Eq)]
+struct DeclarationBaseInputs {
+    revision: crate::SourceRevision,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    anonymous_nominals: Vec<crate::durable_semantics::DurableAnonymousNominal>,
+    well_known: crate::body_query::WellKnownOptionResolution,
+}
+
+/// The request-scoped immutable declaration base (RUE-1135, RUE-1091 repair
+/// option 2).
+///
+/// `analyze_body_query` used to rebuild the whole declaration epoch — prepare,
+/// project, install, endpoints — for every reached body. Those stages take only
+/// revision-scoped inputs and produce the same epoch every time; the only reason
+/// they repeated is that the resulting epoch is mutated during body analysis.
+/// This holds one built epoch for the length of one rooted attempt and hands
+/// each body an epoch derived from it, so the mutation lands in a body-local
+/// overlay instead of forcing a rebuild.
+///
+/// Three properties are load-bearing:
+///
+/// - **Private to the body bridge.** It is created inside one rooted attempt and
+///   dropped with it. It is not a query authority, holds no lease, publishes no
+///   artifact, and nothing outside this module can obtain the epoch it holds. A
+///   failed or canceled request drops the base with the attempt, so a failure
+///   cannot poison it.
+/// - **It replaces per-body construction.** There is exactly one production
+///   body-analysis path; `build_bound_body_epoch` now runs once per request
+///   rather than once per body, and its per-stage counters record that.
+/// - **Schedule-order independence.** Two bodies derived from one base share no
+///   mutable state: the shared containers have no mutable path out of the base,
+///   and each body's type-pool and parameter appends land above the base's
+///   entries in its own overlay. One body's materializations therefore cannot be
+///   observed by another regardless of the order they were scheduled in.
+///
+/// It pins the revision, configuration, and per-body epoch inputs it was filled
+/// for. A request presenting different ones rebuilds the base rather than
+/// serving an epoch that was never built for it.
+pub(crate) struct SharedDeclarationBase<'a> {
+    mode: SharedDeclarationBaseMode,
+    meter: std::sync::Arc<crate::declaration_base_meter::DeclarationBaseMeter>,
+    filled: std::sync::Mutex<Option<FilledDeclarationBase<'a>>>,
+}
+
+/// How a request treats its declaration base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SharedDeclarationBaseMode {
+    /// Production: build the base once per request and derive every body from
+    /// it.
+    Shared,
+    /// Validation: analyze every body twice — once inside a freshly built,
+    /// independently derived epoch, once inside an epoch derived from the shared
+    /// base — and compare the published transactions. The derived arm is the one
+    /// that publishes, so a divergence is recorded rather than papered over.
+    /// Deliberately useless for timing; enabled only by
+    /// [`crate::unstable::enable_shared_declaration_base_differential`].
+    Differential,
+}
+
+struct FilledDeclarationBase<'a> {
+    inputs: DeclarationBaseInputs,
+    epoch: BoundBodyEpoch<'a>,
+}
+
+impl<'a> SharedDeclarationBase<'a> {
+    pub(crate) fn new(
+        mode: SharedDeclarationBaseMode,
+        meter: std::sync::Arc<crate::declaration_base_meter::DeclarationBaseMeter>,
+    ) -> Self {
+        Self {
+            mode,
+            meter,
+            filled: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// A base private to one caller, with its own meter. Used by the harnesses
+    /// that measure or compare a single body in isolation and must not inherit a
+    /// base another body already paid for.
+    #[cfg(test)]
+    pub(crate) fn isolated() -> Self {
+        Self::new(SharedDeclarationBaseMode::Shared, std::sync::Arc::default())
+    }
+
+    fn is_differential(&self) -> bool {
+        self.mode == SharedDeclarationBaseMode::Differential
+    }
+
+    /// Record one differential comparison between an independently built epoch
+    /// and the base-derived epoch that actually published.
+    fn record_parity(
+        &self,
+        independent: &crate::body_query::BodyTransaction,
+        derived: &crate::body_query::BodyTransaction,
+    ) {
+        self.meter
+            .record_parity(crate::body_query::transaction_equal(independent, derived));
+    }
+
+    /// A body-local epoch for this request, building the base on first demand.
+    ///
+    /// The base build charges the ordinary prepare/project/install/endpoint
+    /// counters at their own stage sources, exactly as a per-body build did —
+    /// once per request instead of once per body. The derivation charges its own
+    /// shared/copied unit counters, so the two are read together and the drop in
+    /// the stage counters is accounted for rather than merely observed.
+    #[allow(clippy::too_many_arguments)]
+    fn get_or_derive(
+        &self,
+        merged: &CanonicalMergedProgram,
+        rir: &'a CanonicalRirOutput,
+        options: &CompileOptions,
+        imports: &CanonicalImportGraph,
+        query_shells: &[rue_air::SemanticDeclarationShell],
+        query_declarations: &[DurableDeclarationSemantic],
+        query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+        well_known: &crate::body_query::WellKnownOptionResolution,
+        key: &crate::body_query::BodyQueryKey,
+        shared_projection: &SharedDeclarationProjection,
+        work: &mut PerBodyDeclarationContextWork,
+    ) -> Result<BoundBodyEpoch<'a>, crate::body_query::BodyTransaction> {
+        let inputs = DeclarationBaseInputs {
+            revision: rir.source_revision().clone(),
+            configuration: key.configuration.clone(),
+            anonymous_nominals: query_anonymous_nominals.to_vec(),
+            well_known: well_known.clone(),
+        };
+        let mut filled = self
+            .filled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if filled.as_ref().is_none_or(|held| held.inputs != inputs) {
+            let epoch = build_bound_body_epoch(
+                merged,
+                rir,
+                options,
+                imports,
+                query_shells,
+                query_declarations,
+                query_anonymous_nominals,
+                well_known,
+                key,
+                shared_projection,
+                work,
+            )?;
+            let mut epoch = epoch;
+            // Seal once, here, so the type pool and parameter arena are shared
+            // by refcount from the first derivation onwards. An unsealed base
+            // has to materialize a flat immutable layer before it can be
+            // shared, and paying that per body would put the copy the base
+            // exists to remove straight back on the per-body path.
+            epoch.seal_as_declaration_base();
+            // Charged by the builder, at the point a base was really derived
+            // from scratch: a request that reuses its base never reaches here.
+            work.declaration_bases_built += 1;
+            self.meter.record_base_built(filled.is_some());
+            *filled = Some(FilledDeclarationBase { inputs, epoch });
+        }
+        let held = filled.as_ref().expect("a base was just retained");
+        let mut units = rue_air::EpochDerivationUnits::default();
+        let derived = held.epoch.derive_body_epoch(&mut units);
+        // The layering invariant, checked where it is established: a freshly
+        // derived epoch reads the base's whole type-pool and parameter universe
+        // and owns none of it. A derivation that copied instead of layering
+        // would show up here rather than only as a slower compile.
+        assert_eq!(
+            derived.local_universe_entries(),
+            0,
+            "a freshly derived epoch owns no type-pool or parameter entry of its own"
+        );
+        work.body_epochs_derived += 1;
+        work.declaration_units_shared += units.total_units_shared();
+        work.body_local_units_copied += units.body_local_entries_copied;
+        self.meter.record_epoch_derived(&units);
+        Ok(derived)
+    }
+}
+
+/// Render a deterministic body-query stage failure for `instance`.
+///
+/// Preparation, projection, and installation failures are invariant violations,
+/// not cancellations. Each is surfaced as a failed body transaction so the
+/// coordinator renders a real compiler diagnostic instead of a disguised abort
+/// that panics the uncanceled session.
+pub(crate) fn body_stage_failure(
+    instance: &crate::FunctionInstanceKey,
+    stage: &str,
+    detail: String,
+) -> crate::body_query::BodyTransaction {
+    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction};
+
+    BodyTransaction::DeterministicFailure {
+        errors: crate::CompileErrors::from(crate::CompileError::without_span(
+            rue_error::ErrorKind::InternalError(format!(
+                "canonical body query stage `{stage}` failed for body instance {instance:?}: {detail}"
+            )),
+        )),
+        references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
+        lookup_observations: Arc::from([]),
+    }
+}
+
+/// Materialize one fresh declaration epoch: prepare shells, project durable
+/// declaration semantics, install them, and install the stable endpoints and the
+/// per-body well-known `Option` registry.
+///
+/// This is the O(declarations) per-body prefix RUE-1091 exists to remove. It is
+/// factored out of [`analyze_body_query`] so one request can build the base once
+/// while the differential oracle can still construct an independent epoch.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_bound_body_epoch<'a>(
     merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
+    rir: &'a CanonicalRirOutput,
     options: &CompileOptions,
     imports: &CanonicalImportGraph,
     query_shells: &[rue_air::SemanticDeclarationShell],
@@ -1857,7 +2127,6 @@ pub(crate) fn analyze_body_query(
     query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
     well_known: &crate::body_query::WellKnownOptionResolution,
     key: &crate::body_query::BodyQueryKey,
-    cancellation: &rue_query::CancellationToken,
     // The request-scoped memo for the body-invariant declaration projection
     // (RUE-1132). The first reached body of a request projects and publishes;
     // every later body reuses the shared exports and charges no projection work.
@@ -1869,35 +2138,13 @@ pub(crate) fn analyze_body_query(
     // or endpoint work), so the structural gate observes a shortcut added inside
     // any stage and never charges installation for a body that never installed.
     work: &mut PerBodyDeclarationContextWork,
-) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
-    use crate::body_query::{BodyReference, BodyReferences, BodyTransaction};
-
-    if cancellation.is_canceled() {
-        return Err(rue_query::QueryAbort::Canceled);
-    }
+) -> Result<BoundBodyEpoch<'a>, crate::body_query::BodyTransaction> {
     // Deterministic preparation, projection, and installation failures are
     // invariant violations, not cancellations. Each is surfaced as a failed body
     // transaction so the coordinator renders a real compiler diagnostic instead
     // of a disguised abort that panics the uncanceled session.
-    let deterministic_failure = |stage: &str, detail: String| -> BodyTransaction {
-        BodyTransaction::DeterministicFailure {
-            errors: crate::CompileErrors::from(crate::CompileError::without_span(
-                rue_error::ErrorKind::InternalError(format!(
-                    "canonical body query stage `{stage}` failed for body instance {:?}: {detail}",
-                    key.instance,
-                )),
-            )),
-            references: BodyReferences(Arc::from(Vec::<BodyReference>::new())),
-            lookup_observations: Arc::from([]),
-        }
-    };
-    #[cfg(test)]
-    if INJECT_BODY_QUERY_STAGE_FAILURE.with(Cell::get) {
-        return Ok(deterministic_failure(
-            "injected_body_query_stage",
-            "test body query stage failure injection".into(),
-        ));
-    }
+    let deterministic_failure =
+        |stage: &str, detail: String| body_stage_failure(&key.instance, stage, detail);
     // Per-reached-body pipeline stages are timed as sibling leaves so
     // `--time-passes` can split the whole-program-rebuild cost RUE-1083 traced
     // to `analyze_body_query`. Each guard is dropped before the next stage so
@@ -1910,7 +2157,7 @@ pub(crate) fn analyze_body_query(
         match prepare_query_declaration_shells(merged, rir, options, imports, query_shells) {
             Ok(prepared) => prepared,
             Err(failure) => {
-                return Ok(deterministic_failure(
+                return Err(deterministic_failure(
                     "prepare_query_declaration_shells",
                     format!("{} ({:?})", failure.errors, failure.failure),
                 ));
@@ -1947,13 +2194,13 @@ pub(crate) fn analyze_body_query(
         Ok(SharedProjectionOutcome::Computed(projected, work)) => (projected, Some(work)),
         Ok(SharedProjectionOutcome::Reused(projected)) => (projected, None),
         Err(SharedProjectionFailure::Projection(failure)) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "project_durable_declaration_semantics",
                 format!("{failure:?}"),
             ));
         }
         Err(SharedProjectionFailure::ForeignRequest) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "shared_declaration_projection_revision",
                 "the shared declaration projection belongs to a different revision or \
                  configuration than this body's request"
@@ -1968,7 +2215,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(projected_anonymous) => projected_anonymous,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "project_durable_anonymous_nominals",
                 format!("{failure:?}"),
             ));
@@ -2000,7 +2247,7 @@ pub(crate) fn analyze_body_query(
     {
         Ok(bound) => bound,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "install_declaration_semantics_with_anonymous",
                 format!("{failure:?}"),
             ));
@@ -2024,7 +2271,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(definitions) => definitions,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "issue_bound_definitions",
                 format!("{failure:?}"),
             ));
@@ -2041,7 +2288,7 @@ pub(crate) fn analyze_body_query(
             .filter(|record| record.stable_key().kind().owns_body())
             .map(|record| record.stable_key()))
     {
-        return Ok(deterministic_failure(
+        return Err(deterministic_failure(
             "provisional_body_owner_key_equality",
             "provisional body-owner keys do not match the issued definition universe".into(),
         ));
@@ -2051,7 +2298,7 @@ pub(crate) fn analyze_body_query(
     let bound = match bound.install_body_owner_tokens(&body_owner_endpoints) {
         Ok(bound) => bound,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "install_body_owner_tokens",
                 format!("{failure:?}"),
             ));
@@ -2066,7 +2313,7 @@ pub(crate) fn analyze_body_query(
     ) {
         Ok(bound) => bound,
         Err(failure) => {
-            return Ok(deterministic_failure(
+            return Err(deterministic_failure(
                 "install_stable_identity_endpoints",
                 format!("{failure:?}"),
             ));
@@ -2099,7 +2346,7 @@ pub(crate) fn analyze_body_query(
             ) {
                 Ok(projected) => projected,
                 Err(failure) => {
-                    return Ok(deterministic_failure(
+                    return Err(deterministic_failure(
                         "project_durable_option_registry",
                         format!("{failure:?}"),
                     ));
@@ -2110,7 +2357,7 @@ pub(crate) fn analyze_body_query(
         {
             Ok(bound) => bound,
             Err(failure) => {
-                return Ok(deterministic_failure(
+                return Err(deterministic_failure(
                     "install_well_known_option_types",
                     format!("{failure:?}"),
                 ));
@@ -2118,6 +2365,21 @@ pub(crate) fn analyze_body_query(
         }
     };
     drop(install_span);
+    Ok(BoundBodyEpoch { bound, definitions })
+}
+
+/// Analyze exactly one stable function instance inside an already bound epoch,
+/// then publish its durable transaction. The epoch is consumed, so body
+/// analysis owns all of its local mutable state.
+pub(crate) fn analyze_body_in_epoch(
+    epoch: BoundBodyEpoch<'_>,
+    merged: &CanonicalMergedProgram,
+    key: &crate::body_query::BodyQueryKey,
+    cancellation: &rue_query::CancellationToken,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    let BoundBodyEpoch { bound, definitions } = epoch;
+    let deterministic_failure =
+        |stage: &str, detail: String| body_stage_failure(&key.instance, stage, detail);
     let analyze_span = info_span!("body_analyze").entered();
     let lookup_collector = rue_air::BodyLookupCollector::new();
     let outcome = bound.analyze_one_body_instance_recording_lookups(
@@ -2190,6 +2452,90 @@ pub(crate) fn analyze_body_query(
     Ok(transaction)
 }
 
+/// Derive one body-local epoch from the request's declaration base and analyze
+/// exactly one stable function instance. The derived epoch is discarded after
+/// its canonical projections cross the stable bridge; the base outlives it and
+/// serves the request's remaining bodies (RUE-1135).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn analyze_body_query<'a>(
+    merged: &CanonicalMergedProgram,
+    rir: &'a CanonicalRirOutput,
+    options: &CompileOptions,
+    imports: &CanonicalImportGraph,
+    query_shells: &[rue_air::SemanticDeclarationShell],
+    query_declarations: &[DurableDeclarationSemantic],
+    query_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
+    well_known: &crate::body_query::WellKnownOptionResolution,
+    key: &crate::body_query::BodyQueryKey,
+    cancellation: &rue_query::CancellationToken,
+    shared_projection: &SharedDeclarationProjection,
+    // The request-scoped immutable declaration base (RUE-1135). The first
+    // reached body of a request builds it; every body — including that one —
+    // analyzes inside an epoch derived from it.
+    shared_base: &SharedDeclarationBase<'a>,
+    work: &mut PerBodyDeclarationContextWork,
+) -> Result<crate::body_query::BodyTransaction, rue_query::QueryAbort> {
+    if cancellation.is_canceled() {
+        return Err(rue_query::QueryAbort::Canceled);
+    }
+    #[cfg(test)]
+    if INJECT_BODY_QUERY_STAGE_FAILURE.with(Cell::get) {
+        return Ok(body_stage_failure(
+            &key.instance,
+            "injected_body_query_stage",
+            "test body query stage failure injection".into(),
+        ));
+    }
+    // Validation arm (RUE-1135): a genuinely independent derivation of the same
+    // epoch, built and consumed exactly as the pre-base per-body path did. It
+    // runs first so the comparison is against a fresh epoch rather than a second
+    // read of the shared one, and its stage work is discarded — the production
+    // arm below owns the accounting.
+    let independent = if shared_base.is_differential() {
+        let mut independent_work = PerBodyDeclarationContextWork::default();
+        let independent_projection = SharedDeclarationProjection::new();
+        let epoch = build_bound_body_epoch(
+            merged,
+            rir,
+            options,
+            imports,
+            query_shells,
+            query_declarations,
+            query_anonymous_nominals,
+            well_known,
+            key,
+            &independent_projection,
+            &mut independent_work,
+        );
+        Some(match epoch {
+            Ok(epoch) => analyze_body_in_epoch(epoch, merged, key, cancellation)?,
+            Err(failure) => failure,
+        })
+    } else {
+        None
+    };
+    let epoch = match shared_base.get_or_derive(
+        merged,
+        rir,
+        options,
+        imports,
+        query_shells,
+        query_declarations,
+        query_anonymous_nominals,
+        well_known,
+        key,
+        shared_projection,
+        work,
+    ) {
+        Ok(epoch) => epoch,
+        Err(failure) => return Ok(failure),
+    };
+    let transaction = analyze_body_in_epoch(epoch, merged, key, cancellation)?;
+    if let Some(independent) = independent {
+        shared_base.record_parity(&independent, &transaction);
+    }
+    Ok(transaction)
+}
 /// The stable-identity back-projection publication needs to convert one
 /// `OneBodyTransactionOutcome` (carrying issuer-scoped compact tokens) into the
 /// durable `BodyTransaction`. It abstracts over which token space issued the
@@ -4017,6 +4363,508 @@ mod tests {
             assert!(
                 matches!(retried, SharedProjectionOutcome::Computed(..)),
                 "a failure must not be cached as a reusable projection"
+            );
+        }
+    }
+
+    /// RUE-1135: the request-scoped immutable declaration base.
+    ///
+    /// The base's whole claim is that sharing one bound declaration epoch across
+    /// a request's bodies is indistinguishable from building one per body. These
+    /// tests attack that claim from both ends: body-for-body publication parity
+    /// against an independently built epoch, and schedule-order independence
+    /// between bodies that share a base.
+    mod shared_declaration_base {
+        use std::sync::Arc;
+
+        use super::super::{
+            SharedDeclarationBase, SharedDeclarationProjection, analyze_body_in_epoch,
+            build_bound_body_epoch,
+        };
+        use crate::{
+            CompileOptions, CompilerSession, SourceSnapshot, StableDefinitionKind,
+            StablePreviewFeatures,
+        };
+
+        /// Inputs for driving bodies through an explicit declaration base,
+        /// without the session's traversal in the way.
+        struct BaseInputs {
+            merged: crate::CanonicalMergedProgram,
+            rir: crate::CanonicalRirOutput,
+            options: CompileOptions,
+            imports: crate::CanonicalImportGraph,
+            query_shells: Vec<rue_air::SemanticDeclarationShell>,
+            query_declarations: Arc<[crate::durable_semantics::DurableDeclarationSemantic]>,
+            definitions: crate::bound_definitions::BoundDefinitionSet,
+        }
+
+        impl BaseInputs {
+            fn build(source: &str) -> Self {
+                let snapshot = SourceSnapshot::single("main.rue", source).expect("corpus parses");
+                let parsed =
+                    crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
+                let merged = crate::merge_parsed_modules(&parsed).unwrap();
+                let rir = crate::lower_canonical_rir(&merged).unwrap();
+                let options = CompileOptions::default();
+                let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+                let (definitions, query_declarations, _) =
+                    crate::bound_definitions::bind_canonical_declaration_semantics(
+                        &merged,
+                        &rir,
+                        options.preview_features.clone(),
+                        options.target,
+                    )
+                    .unwrap();
+                let query_shells = super::super::query_owned_declaration_shells_for_test(
+                    &merged,
+                    &rir,
+                    options.preview_features.clone(),
+                    options.target,
+                    &imports,
+                )
+                .unwrap()
+                .declaration_shells()
+                .cloned()
+                .collect::<Vec<_>>();
+                Self {
+                    merged,
+                    rir,
+                    options,
+                    imports,
+                    query_shells,
+                    query_declarations,
+                    definitions,
+                }
+            }
+
+            fn body_key(
+                &self,
+                kind: StableDefinitionKind,
+                name: &str,
+            ) -> crate::body_query::BodyQueryKey {
+                let definition = self
+                    .definitions
+                    .definitions()
+                    .iter()
+                    .find(|record| {
+                        record.stable_key().kind() == kind && record.stable_key().name() == name
+                    })
+                    .unwrap_or_else(|| panic!("no {kind:?} named {name}"))
+                    .stable_key()
+                    .clone();
+                crate::body_query::BodyQueryKey {
+                    instance: crate::FunctionInstanceKey::Definition(definition),
+                    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                        target: self.options.target,
+                        preview_features: StablePreviewFeatures::new(
+                            &self.options.preview_features,
+                        ),
+                    },
+                }
+            }
+
+            /// One freshly built, independently derived epoch for `key` — the
+            /// per-body construction the base replaced.
+            fn independent(
+                &self,
+                key: &crate::body_query::BodyQueryKey,
+            ) -> crate::body_query::BodyTransaction {
+                let mut work = rue_air::PerBodyDeclarationContextWork::default();
+                let projection = SharedDeclarationProjection::new();
+                let epoch = build_bound_body_epoch(
+                    &self.merged,
+                    &self.rir,
+                    &self.options,
+                    &self.imports,
+                    &self.query_shells,
+                    &self.query_declarations,
+                    &[],
+                    &crate::body_query::WellKnownOptionResolution::default(),
+                    key,
+                    &projection,
+                    &mut work,
+                )
+                .expect("the corpus builds an epoch");
+                analyze_body_in_epoch(
+                    epoch,
+                    &self.merged,
+                    key,
+                    &rue_query::CancellationToken::new(),
+                )
+                .expect("an uncanceled body publishes")
+            }
+        }
+
+        /// A base retained across a whole sequence of bodies, driven directly.
+        fn analyze_through_one_base(
+            inputs: &BaseInputs,
+            keys: &[crate::body_query::BodyQueryKey],
+        ) -> Vec<crate::body_query::BodyTransaction> {
+            let projection = SharedDeclarationProjection::new();
+            let base = SharedDeclarationBase::isolated();
+            let mut work = rue_air::PerBodyDeclarationContextWork::default();
+            keys.iter()
+                .map(|key| {
+                    let epoch = base
+                        .get_or_derive(
+                            &inputs.merged,
+                            &inputs.rir,
+                            &inputs.options,
+                            &inputs.imports,
+                            &inputs.query_shells,
+                            &inputs.query_declarations,
+                            &[],
+                            &crate::body_query::WellKnownOptionResolution::default(),
+                            key,
+                            &projection,
+                            &mut work,
+                        )
+                        .expect("the corpus derives an epoch");
+                    analyze_body_in_epoch(
+                        epoch,
+                        &inputs.merged,
+                        key,
+                        &rue_query::CancellationToken::new(),
+                    )
+                    .expect("an uncanceled body publishes")
+                })
+                .collect()
+        }
+
+        /// Corpora chosen for what a shared base is most likely to get wrong.
+        /// The plain-function case is the RUE-1133 probe's shape; the rest add
+        /// the families that corpus made invisible — named structs and methods,
+        /// a `-> type` producer that materializes anonymous nominals into the
+        /// epoch, and a body whose analysis fails.
+        const CASES: &[(&str, &[(StableDefinitionKind, &str)])] = &[
+            (
+                "fn helper() -> i32 { 7 } fn other() -> i32 { 9 } \
+                 fn main() -> i32 { helper() + other() }",
+                &[
+                    (StableDefinitionKind::Function, "helper"),
+                    (StableDefinitionKind::Function, "other"),
+                    (StableDefinitionKind::Function, "main"),
+                ],
+            ),
+            (
+                "struct Counter { value: i32, fn get(self) -> i32 { self.value } \
+                 fn twice(self) -> i32 { self.value + self.value } } \
+                 fn main() -> i32 { Counter { value: 3 }.get() }",
+                &[
+                    (StableDefinitionKind::Method, "get"),
+                    (StableDefinitionKind::Method, "twice"),
+                    (StableDefinitionKind::Function, "main"),
+                ],
+            ),
+            (
+                "fn Pair() -> type { struct { a: i32, b: i32 } } \
+                 fn Trip() -> type { struct { a: i32, b: i32, c: i32 } } \
+                 fn use_pair() -> i32 { let P = Pair(); let p: P = P { a: 1, b: 2 }; p.a + p.b } \
+                 fn main() -> i32 { use_pair() }",
+                &[
+                    (StableDefinitionKind::Function, "Pair"),
+                    (StableDefinitionKind::Function, "Trip"),
+                    (StableDefinitionKind::Function, "use_pair"),
+                    (StableDefinitionKind::Function, "main"),
+                ],
+            ),
+            (
+                "fn ok() -> i32 { 1 } fn bad() -> i32 { true } fn main() -> i32 { ok() }",
+                &[
+                    (StableDefinitionKind::Function, "ok"),
+                    (StableDefinitionKind::Function, "bad"),
+                    (StableDefinitionKind::Function, "main"),
+                ],
+            ),
+        ];
+
+        // The central claim: a body analyzed inside an epoch derived from a
+        // shared base publishes exactly what the same body publishes inside a
+        // freshly built epoch. `transaction_equal` compares the canonical body,
+        // its references, its produced anonymous nominals, and the rendered
+        // diagnostic stream including order, so a divergence in artifacts,
+        // identities, or diagnostic ORDER fails here.
+        #[test]
+        fn base_derived_bodies_publish_what_independently_built_bodies_publish() {
+            for (source, bodies) in CASES {
+                let inputs = BaseInputs::build(source);
+                let keys = bodies
+                    .iter()
+                    .map(|(kind, name)| inputs.body_key(*kind, name))
+                    .collect::<Vec<_>>();
+                let derived = analyze_through_one_base(&inputs, &keys);
+                for (key, derived) in keys.iter().zip(&derived) {
+                    let independent = inputs.independent(key);
+                    assert!(
+                        crate::body_query::transaction_equal(&independent, derived),
+                        "a base-derived body diverged from an independently built \
+                         one for {:?}:\n  independent={independent:?}\n  derived={derived:?}",
+                        key.instance
+                    );
+                }
+            }
+        }
+
+        // Schedule-order independence — the risk a shared base introduces and
+        // the one the RUE-1133 probe's deep copy could not test. The
+        // pre-cutover batch compiler shared one epoch *sequentially*, so a body
+        // could observe what an earlier body materialized. Here the same bodies
+        // are analyzed through one base in a forward order and in the reverse
+        // order; each body must publish the same transaction either way.
+        #[test]
+        fn bodies_sharing_one_base_publish_the_same_transaction_in_any_order() {
+            for (source, bodies) in CASES {
+                let inputs = BaseInputs::build(source);
+                let keys = bodies
+                    .iter()
+                    .map(|(kind, name)| inputs.body_key(*kind, name))
+                    .collect::<Vec<_>>();
+                let forward = analyze_through_one_base(&inputs, &keys);
+                let mut reversed_keys = keys.clone();
+                reversed_keys.reverse();
+                let mut reversed = analyze_through_one_base(&inputs, &reversed_keys);
+                reversed.reverse();
+                for ((key, forward), reversed) in keys.iter().zip(&forward).zip(&reversed) {
+                    assert!(
+                        crate::body_query::transaction_equal(forward, reversed),
+                        "body {:?} published differently depending on the order its \
+                         siblings ran in:\n  forward={forward:?}\n  reversed={reversed:?}",
+                        key.instance
+                    );
+                }
+            }
+        }
+
+        // The base is a base: deriving an epoch from it, analyzing a body, and
+        // deriving again must leave the base's own universe untouched. If a
+        // body's interning reached the base's type pool or parameter arena
+        // instead of its own overlay, these sizes would grow.
+        #[test]
+        fn deriving_and_analyzing_never_grows_the_base_universe() {
+            let inputs = BaseInputs::build(CASES[2].0);
+            let keys = CASES[2]
+                .1
+                .iter()
+                .map(|(kind, name)| inputs.body_key(*kind, name))
+                .collect::<Vec<_>>();
+            let projection = SharedDeclarationProjection::new();
+            let mut work = rue_air::PerBodyDeclarationContextWork::default();
+            let base = build_bound_body_epoch(
+                &inputs.merged,
+                &inputs.rir,
+                &inputs.options,
+                &inputs.imports,
+                &inputs.query_shells,
+                &inputs.query_declarations,
+                &[],
+                &crate::body_query::WellKnownOptionResolution::default(),
+                &keys[0],
+                &projection,
+                &mut work,
+            )
+            .expect("the corpus builds a base");
+            let before = base.shared_universe_entries() + base.local_universe_entries();
+            // Sealing moves the base's own type-pool and parameter universe into
+            // the shared immutable layer without changing what it contains. Every
+            // later derivation shares that layer by refcount.
+            let mut base = base;
+            base.seal_as_declaration_base();
+            assert_eq!(
+                base.local_universe_entries(),
+                0,
+                "sealing moves the base's whole universe into its shared layer"
+            );
+            assert_eq!(
+                base.shared_universe_entries(),
+                before,
+                "sealing must not change what the base contains"
+            );
+            for key in &keys {
+                let mut units = rue_air::EpochDerivationUnits::default();
+                let derived = base.derive_body_epoch(&mut units);
+                assert_eq!(
+                    derived.local_universe_entries(),
+                    0,
+                    "a derivation must copy no type-pool or parameter entry"
+                );
+                assert_eq!(
+                    derived.shared_universe_entries(),
+                    before,
+                    "a derivation must read the whole base universe"
+                );
+                assert!(
+                    units.total_units_shared() > 0,
+                    "a derivation shares the base's declaration universe: {units:?}"
+                );
+                assert!(
+                    units.canonical_import_entries_shared > 0,
+                    "canonical import state must be accounted as shared: {units:?}"
+                );
+                assert!(
+                    units.type_side_table_entries_shared > 0,
+                    "type-pool side tables must be accounted as shared: {units:?}"
+                );
+                analyze_body_in_epoch(
+                    derived,
+                    &inputs.merged,
+                    key,
+                    &rue_query::CancellationToken::new(),
+                )
+                .expect("an uncanceled body publishes");
+            }
+            assert_eq!(
+                base.shared_universe_entries() + base.local_universe_entries(),
+                before,
+                "analyzing bodies must not extend the shared base's universe"
+            );
+        }
+
+        /// A corpus with several unrelated declarations and several reached
+        /// bodies, so a per-body epoch would be genuinely O(declarations).
+        fn corpus(bodies: usize, decls: usize) -> SourceSnapshot {
+            let mut source = String::new();
+            for index in 0..bodies {
+                source.push_str(&format!("fn b{index}() -> i32 {{ {index} }}\n"));
+            }
+            for index in 0..decls {
+                source.push_str(&format!("struct D{index} {{ n: i32 }}\n"));
+            }
+            source.push_str("fn main() -> i32 {\n    let mut acc = 0;\n");
+            for index in 0..bodies {
+                source.push_str(&format!("    acc = acc + b{index}();\n"));
+            }
+            source.push_str("    acc\n}\n");
+            SourceSnapshot::single("main.rue", source).expect("synthetic corpus parses")
+        }
+
+        fn compile(
+            snapshot: &SourceSnapshot,
+            differential: bool,
+        ) -> (
+            crate::CanonicalSemanticWork,
+            crate::unstable::DeclarationBaseMetrics,
+        ) {
+            let mut session = CompilerSession::new();
+            session.enable_shared_declaration_base_differential(differential);
+            session.update(snapshot).into_result().unwrap();
+            let output = session
+                .canonical_semantic(&CompileOptions::default())
+                .expect("synthetic corpus compiles");
+            (output.work(), session.declaration_base_metrics())
+        }
+
+        // One base serves an entire request. This is the premise: if the
+        // retained base could not be reused, "build once per request" would not
+        // describe what ran, and the O(declarations) factor would still be
+        // charged per body.
+        #[test]
+        fn one_declaration_base_serves_every_body_of_a_request() {
+            let (work, metrics) = compile(&corpus(8, 16), false);
+            assert_eq!(metrics.bases_built, 1, "{metrics:?}");
+            assert_eq!(metrics.base_input_misses, 0, "{metrics:?}");
+            assert!(metrics.epochs_derived >= 9, "{metrics:?}");
+            let context = &work.body_analysis.per_body_declaration_context;
+            assert_eq!(
+                context.declaration_bases_built, 1,
+                "the stage counters agree with the meter: {context:?}"
+            );
+            assert_eq!(
+                context.body_epochs_derived, metrics.epochs_derived as usize,
+                "{context:?}"
+            );
+        }
+
+        // The ordinary per-body declaration-context counters stay honest. The
+        // prepare/project/install/endpoint stages now genuinely run once per
+        // request instead of once per body, so those counters record ONE prefix
+        // — they are not reclassified or left reading a total the compiler no
+        // longer performs. The shared-unit counters account for what replaced
+        // them, and the two must be read together.
+        #[test]
+        fn the_shared_base_charges_one_prefix_and_reports_what_it_shared() {
+            let (work, metrics) = compile(&corpus(8, 16), false);
+            let context = &work.body_analysis.per_body_declaration_context;
+            assert_eq!(
+                context.cold_body_preparations, 1,
+                "the request prepares exactly one declaration epoch: {context:?}"
+            );
+            assert!(
+                context.body_epochs_derived > 4 * context.cold_body_preparations,
+                "many bodies were served by that one prefix: {context:?}"
+            );
+            // The work did not vanish, it changed shape: every derivation reports
+            // the units it read from the base rather than copied.
+            assert!(context.declaration_units_shared > 0, "{context:?}");
+            assert!(
+                context.declaration_units_shared > context.body_local_units_copied,
+                "sharing must dominate copying: {context:?}"
+            );
+            assert_eq!(
+                context.declaration_units_shared % context.body_epochs_derived as u64,
+                0,
+                "every body reads the same base, so the shared total is a clean \
+                 multiple of the derivation count: {context:?}"
+            );
+            assert_eq!(metrics.parity_comparisons, 0, "{metrics:?}");
+        }
+
+        // The whole-request parity oracle. Every reached body of a real compile
+        // is analyzed both ways and compared, including the multi-body traversal,
+        // the well-known `Option` registry, and producer nominals that are
+        // installed INTO the epoch.
+        #[test]
+        fn every_reached_body_of_a_request_survives_the_parity_oracle() {
+            let source = "\
+fn Pair() -> type { struct { a: i32, b: i32 } }
+struct Counter { value: i32, fn get(self) -> i32 { self.value } }
+fn use_pair() -> i32 { let P = Pair(); let p: P = P { a: 1, b: 2 }; p.a + p.b }
+fn use_counter() -> i32 { Counter { value: 4 }.get() }
+fn main() -> i32 { use_pair() + use_counter() }
+";
+            let snapshot = SourceSnapshot::single("main.rue", source).unwrap();
+            let (work, metrics) = compile(&snapshot, true);
+            assert!(
+                work.body_analysis.bodies_succeeded >= 5,
+                "the corpus must reach the anonymous members: {metrics:?}"
+            );
+            assert_eq!(
+                metrics.parity_comparisons, metrics.epochs_derived,
+                "every body served from the base was compared: {metrics:?}"
+            );
+            assert_eq!(
+                metrics.parity_mismatches, 0,
+                "a base-derived body diverged from an independently built one: {metrics:?}"
+            );
+        }
+
+        // A compile that never asks for the oracle never runs it, and the base
+        // meter still records the production path. This is what keeps the
+        // validation arm out of ordinary compiles.
+        #[test]
+        fn an_ordinary_compile_runs_the_base_but_not_the_oracle() {
+            let (work, metrics) = compile(&corpus(4, 8), false);
+            assert_eq!(metrics.parity_comparisons, 0, "{metrics:?}");
+            assert_eq!(metrics.parity_mismatches, 0, "{metrics:?}");
+            assert!(metrics.epochs_derived > 0, "{metrics:?}");
+            assert!(work.body_analysis.bodies_succeeded > 0);
+        }
+
+        // Sharing a base does not change what the compiler emits. The same
+        // corpus compiled with the oracle on and off produces the same body
+        // analysis totals and the same diagnostics.
+        #[test]
+        fn the_oracle_does_not_change_what_the_request_produces() {
+            let snapshot = corpus(6, 12);
+            let (plain, _) = compile(&snapshot, false);
+            let (checked, metrics) = compile(&snapshot, true);
+            assert_eq!(metrics.parity_mismatches, 0, "{metrics:?}");
+            assert_eq!(
+                plain.body_analysis.bodies_succeeded,
+                checked.body_analysis.bodies_succeeded
+            );
+            assert_eq!(
+                plain.body_analysis.air_instructions_produced,
+                checked.body_analysis.air_instructions_produced
             );
         }
     }

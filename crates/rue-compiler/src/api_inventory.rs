@@ -16,6 +16,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_merge", include_str!("canonical_merge.rs")),
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
     (
+        "declaration_base_meter",
+        include_str!("declaration_base_meter.rs"),
+    ),
+    (
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),
     ),
@@ -1123,7 +1127,9 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
         "pub(crate) fn analyze_body_query",
     );
     assert!(!body_adapter.contains(".resolve_declarations_for_test()"));
-    assert!(body_adapter.contains("install_declaration_semantics_with_anonymous"));
+    assert!(body_adapter.contains("shared_base.get_or_derive"));
+    assert!(body_adapter.contains("analyze_body_in_epoch"));
+    assert!(!body_adapter.contains("install_declaration_semantics_with_anonymous"));
 }
 
 #[test]
@@ -1412,12 +1418,14 @@ fn unstable_views_do_not_alias_query_engine_records() {
     assert_eq!(
         reexports,
         [
+            "pubusecrate::declaration_base_meter::DeclarationBaseMetrics;",
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
             "pubusecrate::recipe_cache::RecipeCacheMetrics;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
         ],
-        "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, and recipe-cache metering helpers"
+        "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, \
+         recipe-cache metering, and declaration-base metering (RUE-1135) helpers"
     );
 
     let facade = include_str!("lib.rs");

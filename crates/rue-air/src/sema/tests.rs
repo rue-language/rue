@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
 
     use crate::ConstValue;
     use crate::inst::{AirArgMode, AirInstData, AirRef};
@@ -130,6 +131,32 @@ mod tests {
         sema.register_type_names().unwrap();
         sema.resolve_declarations().unwrap();
         sema
+    }
+
+    #[test]
+    fn body_epoch_clone_shares_canonical_import_context() {
+        let sema = gather_two_file_declarations_for_testing(
+            "const dep = @import(\"dep.rue\"); fn main() -> i32 { dep.value() }",
+            "pub fn value() -> i32 { 1 }",
+        )
+        .freeze_declarations();
+        let cloned = sema.clone();
+        let original = sema
+            .canonical_imports
+            .as_ref()
+            .expect("the two-file fixture installs canonical imports");
+        let cloned = cloned
+            .canonical_imports
+            .as_ref()
+            .expect("cloning preserves canonical imports");
+        assert!(
+            Arc::ptr_eq(original, cloned),
+            "body-epoch derivation must share, not copy, the import maps"
+        );
+        assert!(
+            original.len() >= 3,
+            "modules and the import site are metered"
+        );
     }
 
     fn compile_to_air_with_authoritative_identity_order(
