@@ -927,7 +927,10 @@ impl CanonicalSemanticOutput {
     ) -> crate::unstable::DurableArtifactStatus {
         crate::unstable::DurableArtifactStatus::from_debug(&self.durable_specialized_body_payloads)
     }
-    /// Structural work performed by this request.
+    /// Structural work performed by the request that computed this output.
+    /// An exact-cycle caller may receive a memoized output without executing a
+    /// new semantic request, so these fields can describe historical work from
+    /// the request that originally produced the retained result.
     pub(crate) fn work(&self) -> CanonicalSemanticWork {
         self.work
     }
