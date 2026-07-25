@@ -23505,9 +23505,7 @@ mod tests {
         let decls = production_declarations(&snapshot);
         let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
         let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
-        let limit_key = durable_decl(&decls, Kind::ValueConst, "LIMIT")
-            .key
-            .clone();
+        let limit_key = durable_decl(&decls, Kind::ValueConst, "LIMIT").key.clone();
 
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();

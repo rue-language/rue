@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use super::{
     assert_cold_reused_parity_with_discovery, assert_diagnostic_parity, count, measure, named,
+    work_projection,
 };
 
 const ROOT: &str = "/bench/main.rue";
@@ -220,27 +221,6 @@ fn measured_project_semantic(
         parse
     });
     (value, output.unwrap())
-}
-
-fn work_projection(scenario: &Value) -> Value {
-    json!({
-        "modules": {
-            "required": count(scenario, &["parse", "modules_reparsed"]),
-            "reused": count(scenario, &["parse", "modules_reused"]),
-        },
-        "semantic_bodies": {
-            "required": count(scenario, &["semantic_work", "bodies_attempted"]),
-            "reused": count(scenario, &["semantic_work", "durable_bodies", "reused_bodies"]),
-        },
-        "cfgs": {
-            "required": count(scenario, &["semantic_work", "cfg", "builds_attempted"]),
-            "reused": count(scenario, &["semantic_work", "cfg", "reuses"]),
-        },
-        "semantic_queries": {
-            "required": count(scenario, &["queries", "semantic_executions"]),
-            "reused": count(scenario, &["queries", "semantic_reuses"]),
-        },
-    })
 }
 
 fn successful_edit(name: &str, target: &SourceSnapshot) -> Value {

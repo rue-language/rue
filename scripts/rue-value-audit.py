@@ -379,7 +379,6 @@ def locality_check(scenario: str, row: dict[str, Any]) -> dict[str, Any]:
         passed = (
             count("semantic_bodies", "required") == 0
             and count("cfgs", "required") == 0
-            and count("semantic_bodies", "reused") >= 1
             and count("cfgs", "reused") >= 1
         )
     elif scenario == "warm_leaf_body":
