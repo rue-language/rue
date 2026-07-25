@@ -6984,6 +6984,12 @@ impl CompilerSession {
                 // host driver after the worklist; the demanding body's transaction
                 // never runs on an unsatisfied prerequisite.
                 let mut parked_toolchain: Option<crate::ParkedToolchainModules> = None;
+                // RUE-1132: the durable declaration projection is body-invariant,
+                // so this rooted attempt projects once and every reached body
+                // reuses the shared exports. The memo is created here and dropped
+                // with the attempt, so it can never outlive its revision.
+                let shared_projection =
+                    crate::canonical_semantic::SharedDeclarationProjection::new();
                 while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
                     let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                     // Producer-nominal identity is exact: a reached anonymous
@@ -7278,6 +7284,7 @@ impl CompilerSession {
                                 &well_known,
                                 &key,
                                 cancellation,
+                                &shared_projection,
                                 &mut stage_context,
                             );
                             // Fold the stage-sourced per-body declaration-context
