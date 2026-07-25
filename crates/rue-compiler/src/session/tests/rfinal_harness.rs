@@ -122,6 +122,10 @@ impl DirectProductionInputs {
         HarnessError,
     > {
         let mut work = rue_air::PerBodyDeclarationContextWork::default();
+        // A fresh memo per analyzed body: this harness captures each body's own
+        // declaration-context work in isolation, so it must not inherit a
+        // projection another body already paid for (RUE-1132).
+        let shared_projection = crate::canonical_semantic::SharedDeclarationProjection::new();
         let transaction = crate::canonical_semantic::analyze_body_query(
             &self.merged,
             &self.rir,
@@ -133,6 +137,7 @@ impl DirectProductionInputs {
             &crate::body_query::WellKnownOptionResolution::default(),
             key,
             &rue_query::CancellationToken::new(),
+            &shared_projection,
             &mut work,
         )
         .map_err(|abort| HarnessError::Compile(format!("{abort:?}")))?;

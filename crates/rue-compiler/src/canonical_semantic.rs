@@ -12,6 +12,118 @@ use rue_air::{
 };
 use tracing::info_span;
 
+/// Request-scoped memo for the body-invariant durable declaration projection
+/// (RUE-1132).
+///
+/// `project_durable_declaration_semantics` is a pure function of inputs that are
+/// all revision-scoped — the merged program, the prepared shell records and
+/// their provisional definition universe, and the query-owned durable
+/// declarations. None of them carries a body key, so every reached body used to
+/// recompute a bit-for-bit identical value. This memo computes it once per
+/// semantic request and hands the shared `Arc` to each body.
+///
+/// It is **not** a dependency authority and holds no lease: it is created inside
+/// one rooted attempt, dropped with it, and pins the revision and configuration
+/// it was filled for. A request presenting a different revision/configuration is
+/// a programming error, not a cache miss — the body fails closed rather than
+/// recomputing into a slot that belongs to another revision. Because the value
+/// is owned data (`Arc<[SemanticDeclarationExport]>`) rather than a semantic
+/// epoch, sharing it retains no mutable declaration state across bodies.
+///
+/// The projection lock is never held across the projection itself: a miss
+/// releases the lock, projects, then re-locks to publish. Two concurrent misses
+/// may therefore both project — deterministically producing equal values — and
+/// the first writer wins, mirroring `recipe_cache`'s claim discipline.
+pub(crate) struct SharedDeclarationProjection {
+    filled: std::sync::Mutex<Option<FilledDeclarationProjection>>,
+}
+
+struct FilledDeclarationProjection {
+    revision: crate::SourceRevision,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    exports: Arc<[rue_air::SemanticDeclarationExport]>,
+}
+
+/// Why a body's projection request did not reuse the shared value. The stage
+/// charges its projection work only on a `Computed` outcome, so a reused
+/// projection drops the per-body counter at the stage's own source rather than
+/// being subtracted afterwards.
+enum SharedProjectionOutcome {
+    Computed(
+        Arc<[rue_air::SemanticDeclarationExport]>,
+        crate::durable_semantics::DurableSemanticProjectionWork,
+    ),
+    Reused(Arc<[rue_air::SemanticDeclarationExport]>),
+}
+
+impl SharedDeclarationProjection {
+    pub(crate) fn new() -> Self {
+        Self {
+            filled: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The declaration projection for this request, computing it on first
+    /// demand. `project` runs outside the lock.
+    fn get_or_project(
+        &self,
+        revision: &crate::SourceRevision,
+        configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        project: impl FnOnce() -> Result<
+            (
+                Arc<[rue_air::SemanticDeclarationExport]>,
+                crate::durable_semantics::DurableSemanticProjectionWork,
+            ),
+            crate::durable_semantics::DurableSemanticProjectionFailure,
+        >,
+    ) -> Result<SharedProjectionOutcome, SharedProjectionFailure> {
+        {
+            let filled = self
+                .filled
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(filled) = filled.as_ref() {
+                if filled.revision != *revision || filled.configuration != *configuration {
+                    return Err(SharedProjectionFailure::ForeignRequest);
+                }
+                return Ok(SharedProjectionOutcome::Reused(filled.exports.clone()));
+            }
+        }
+        let (exports, work) = project().map_err(SharedProjectionFailure::Projection)?;
+        let mut filled = self
+            .filled
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match filled.as_ref() {
+            // A concurrent miss published first. Its value is equal by
+            // construction, so adopt it and keep one shared identity.
+            Some(existing)
+                if existing.revision == *revision && existing.configuration == *configuration =>
+            {
+                let exports = existing.exports.clone();
+                drop(filled);
+                Ok(SharedProjectionOutcome::Computed(exports, work))
+            }
+            Some(_) => Err(SharedProjectionFailure::ForeignRequest),
+            None => {
+                *filled = Some(FilledDeclarationProjection {
+                    revision: revision.clone(),
+                    configuration: configuration.clone(),
+                    exports: exports.clone(),
+                });
+                drop(filled);
+                Ok(SharedProjectionOutcome::Computed(exports, work))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SharedProjectionFailure {
+    Projection(crate::durable_semantics::DurableSemanticProjectionFailure),
+    ForeignRequest,
+}
+
 pub(crate) struct PreparedDurableBodyCandidate {
     pub owner: crate::StableDefinitionKey,
     pub body_span: rue_span::Span,
@@ -1746,6 +1858,10 @@ pub(crate) fn analyze_body_query(
     well_known: &crate::body_query::WellKnownOptionResolution,
     key: &crate::body_query::BodyQueryKey,
     cancellation: &rue_query::CancellationToken,
+    // The request-scoped memo for the body-invariant declaration projection
+    // (RUE-1132). The first reached body of a request projects and publishes;
+    // every later body reuses the shared exports and charges no projection work.
+    shared_projection: &SharedDeclarationProjection,
     // Per-body declaration-context work is accrued here, at the stage sources,
     // as each stage actually performs it — never from the coordinator's input
     // slice lengths. The out-parameter carries partial work when a stage fails
@@ -1813,17 +1929,34 @@ pub(crate) fn analyze_body_query(
     work.rir_instructions_visited += declaration_index.rir_instructions_visited;
     drop(prepare_span);
     let project_span = info_span!("body_project_declarations").entered();
-    let (projected, projection_work) = match crate::project_durable_declaration_semantics(
-        merged,
-        &provisional,
-        &shell_records,
-        query_declarations,
-    ) {
-        Ok(projected) => projected,
-        Err(failure) => {
+    // RUE-1132: the declaration projection is body-invariant, so it is computed
+    // once per request and shared. The stage still runs in full for the first
+    // reached body — including its failure classification — so a projection
+    // failure is reported identically regardless of which body demanded it.
+    let projection =
+        shared_projection.get_or_project(rir.source_revision(), &key.configuration, || {
+            crate::project_durable_declaration_semantics(
+                merged,
+                &provisional,
+                &shell_records,
+                query_declarations,
+            )
+        });
+    let (projected, projection_work) = match projection {
+        Ok(SharedProjectionOutcome::Computed(projected, work)) => (projected, Some(work)),
+        Ok(SharedProjectionOutcome::Reused(projected)) => (projected, None),
+        Err(SharedProjectionFailure::Projection(failure)) => {
             return Ok(deterministic_failure(
                 "project_durable_declaration_semantics",
                 format!("{failure:?}"),
+            ));
+        }
+        Err(SharedProjectionFailure::ForeignRequest) => {
+            return Ok(deterministic_failure(
+                "shared_declaration_projection_revision",
+                "the shared declaration projection belongs to a different revision or \
+                 configuration than this body's request"
+                    .into(),
             ));
         }
     };
@@ -1849,10 +1982,16 @@ pub(crate) fn analyze_body_query(
     // than `projected.len()` means a projection shortcut that visits fewer
     // records — e.g. a shared base that skips already-projected declarations —
     // drops this counter even if the exported slice length is unchanged.
+    //
+    // RUE-1132 is exactly that shortcut: a body that reused the request's shared
+    // projection visited and copied no durable record, so it charges only the
+    // anonymous-nominal term it did project. The declaration term is charged
+    // once per request, by whichever body computed it.
+    let declaration_projection_work = projection_work.unwrap_or_default();
     work.projections_performed +=
-        projection_work.durable_records_visited + projected_anonymous.len();
-    work.durable_source_records_inspected += projection_work.durable_records_visited;
-    work.durable_source_records_copied += projection_work.durable_records_copied;
+        declaration_projection_work.durable_records_visited + projected_anonymous.len();
+    work.durable_source_records_inspected += declaration_projection_work.durable_records_visited;
+    work.durable_source_records_copied += declaration_projection_work.durable_records_copied;
     drop(project_span);
     let install_span = info_span!("body_install_declarations").entered();
     let bound = match shells
@@ -3672,5 +3811,165 @@ mod tests {
         assert_eq!(o1.optimization_attempts, 2);
         assert_eq!(o1.optimization_completions, 2);
         assert_eq!(o1.optimized_level_attempts, 2);
+    }
+
+    mod shared_declaration_projection {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use super::super::{
+            SharedDeclarationProjection, SharedProjectionFailure, SharedProjectionOutcome,
+        };
+        use crate::durable_semantics::{
+            DurableSemanticProjectionFailure, DurableSemanticProjectionWork,
+        };
+        use crate::source_identity::{ModuleRevision, SourceId, SourceRevision};
+
+        fn revision(text: &str) -> SourceRevision {
+            let module = crate::ModuleId::from_logical_path("main")
+                .expect("`main` is a valid logical module path");
+            SourceRevision::new(
+                module.clone(),
+                vec![ModuleRevision {
+                    module,
+                    source: SourceId::from_shared_text(Arc::new(text.to_owned())),
+                }],
+            )
+            .expect("a single-module revision is well formed")
+        }
+
+        fn configuration() -> crate::semantic_query_nucleus::SemanticQueryConfiguration {
+            crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: crate::Target::X86_64Linux,
+                preview_features: crate::StablePreviewFeatures::new(
+                    &crate::PreviewFeatures::default(),
+                ),
+            }
+        }
+
+        /// The memo is agnostic to the projection payload — it shares whatever
+        /// the projector returned — so an empty export set is sufficient to
+        /// exercise compute/reuse/fail-closed. Payload equivalence is covered by
+        /// the projector's own tests and by the corpus differentials.
+        fn exports() -> Arc<[rue_air::SemanticDeclarationExport]> {
+            Arc::from(Vec::new())
+        }
+
+        /// The first body of a request projects; every later body reuses the
+        /// exact same allocation rather than reprojecting. This is the whole
+        /// point of RUE-1132, so it is asserted on `Arc` identity, not equality.
+        #[test]
+        fn later_bodies_reuse_the_first_body_s_projection() {
+            let shared = SharedDeclarationProjection::new();
+            let revision = revision("fn main() {}");
+            let configuration = configuration();
+            let projections = AtomicUsize::new(0);
+            let project = || {
+                projections.fetch_add(1, Ordering::Relaxed);
+                Ok((exports(), DurableSemanticProjectionWork::default()))
+            };
+
+            let first = shared
+                .get_or_project(&revision, &configuration, project)
+                .expect("the first request projects");
+            let SharedProjectionOutcome::Computed(first, _) = first else {
+                panic!("the first request must compute");
+            };
+            let second = shared
+                .get_or_project(&revision, &configuration, project)
+                .expect("the second request reuses");
+            let SharedProjectionOutcome::Reused(second) = second else {
+                panic!("the second request must reuse, not recompute");
+            };
+
+            assert_eq!(
+                projections.load(Ordering::Relaxed),
+                1,
+                "the projection must run exactly once per request"
+            );
+            assert!(
+                Arc::ptr_eq(&first, &second),
+                "every body must share one projection allocation"
+            );
+        }
+
+        /// A memo that outlived its revision is a programming error, not a miss.
+        /// It must never silently reproject into a slot owned by another
+        /// revision, because the body would then observe a projection that does
+        /// not belong to its own source.
+        #[test]
+        fn a_foreign_revision_fails_closed_instead_of_reprojecting() {
+            let shared = SharedDeclarationProjection::new();
+            let configuration = configuration();
+            shared
+                .get_or_project(&revision("fn main() {}"), &configuration, || {
+                    Ok((exports(), DurableSemanticProjectionWork::default()))
+                })
+                .expect("the first request projects");
+
+            let foreign = shared.get_or_project(
+                &revision("fn main() { let x = 1; }"),
+                &configuration,
+                || panic!("a foreign revision must not be given the chance to reproject"),
+            );
+
+            assert!(matches!(
+                foreign,
+                Err(SharedProjectionFailure::ForeignRequest)
+            ));
+        }
+
+        /// The same fail-closed rule applies to configuration: a body compiled
+        /// for another target or preview-feature set must not adopt this
+        /// request's exports.
+        #[test]
+        fn a_foreign_configuration_fails_closed() {
+            let shared = SharedDeclarationProjection::new();
+            let revision = revision("fn main() {}");
+            shared
+                .get_or_project(&revision, &configuration(), || {
+                    Ok((exports(), DurableSemanticProjectionWork::default()))
+                })
+                .expect("the first request projects");
+
+            let mut foreign_configuration = configuration();
+            foreign_configuration.target = crate::Target::Aarch64Linux;
+            let foreign = shared.get_or_project(&revision, &foreign_configuration, || {
+                panic!("a foreign configuration must not be given the chance to reproject")
+            });
+
+            assert!(matches!(
+                foreign,
+                Err(SharedProjectionFailure::ForeignRequest)
+            ));
+        }
+
+        /// A failed projection must not fill the memo: the failure is
+        /// deterministic and every body must observe it, rather than the first
+        /// body failing and later bodies reusing a half-filled slot.
+        #[test]
+        fn a_failed_projection_leaves_the_memo_empty() {
+            let shared = SharedDeclarationProjection::new();
+            let revision = revision("fn main() {}");
+            let configuration = configuration();
+
+            let failed = shared.get_or_project(&revision, &configuration, || {
+                Err(DurableSemanticProjectionFailure::AmbiguousDefinition)
+            });
+            assert!(matches!(
+                failed,
+                Err(SharedProjectionFailure::Projection(_))
+            ));
+
+            let retried = shared
+                .get_or_project(&revision, &configuration, || {
+                    Ok((exports(), DurableSemanticProjectionWork::default()))
+                })
+                .expect("a later body reprojects after a failure");
+            assert!(
+                matches!(retried, SharedProjectionOutcome::Computed(..)),
+                "a failure must not be cached as a reusable projection"
+            );
+        }
     }
 }
