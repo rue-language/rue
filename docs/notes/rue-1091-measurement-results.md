@@ -49,6 +49,46 @@ the future post-flip run. Stage 8/9 values must not be filled with a
 current-production value-audit row, and a pre-flip `ALLOW_FAIL` is only
 plumbing validation for that future gauntlet.
 
+### What a green gauntlet does and does not establish
+
+Read this before filling stage 3, 8, or 9, because the gauntlet's warm rows
+cannot observe one known cost and a clean sweep will otherwise be over-read.
+
+Retained work is validated across revisions by a compatibility token. An
+ordinary `session.update` publishes a constant token; import discovery publishes
+the import-request generation, which every `begin_import_input_request`
+increments. A request that goes through discovery therefore cannot validate
+anything it retained. See
+[`module-axis-locality-findings.md`](module-axis-locality-findings.md) for the
+measurement and the mechanism.
+
+Every locality-asserting row in this gauntlet runs on the constant-token path:
+
+- the RUE-1121 exact-recompute-set and exact-flat context rows (stage 3) drive
+  `session.update` plus `canonical_semantic` with no discovery at all;
+- the stage 7/8 allocation and timing rows use `rue-scaling-bench`, which does
+  the same;
+- stage 9 is a cold Caldera compile, where warm reuse does not apply.
+
+The one harness row that does drive the rooted-demand protocol
+(`correctness_oracle_import_edit_compares_imported_body_and_linked_bytes`)
+asserts warm/fresh parity and that the edited value's consumer refreshed. It
+asserts no locality, which is why it passes today.
+
+Two consequences:
+
+1. **No stage is gated on the epoch-reset decision.** The flip does not need to
+   wait for it, and a stage that fails must be explained by the flip rather than
+   by this.
+2. **A green sweep is not evidence that a driver-shaped warm rebuild is fast.**
+   It measures an in-process host that manages its own snapshots. Extending any
+   stage-8 conclusion to `rue main.rue` on a developer's machine is unsupported
+   by this gauntlet as written.
+
+If the project wants to claim (2), the gauntlet needs one added row that drives
+a warm edit through the same rooted-demand protocol the driver uses. Until that
+row exists, the post-flip summary should say which host shape it measured.
+
 Use this template for the authoritative run after the analyzer flip. The runner
 retains a `summary.tsv` plus one full log per stage:
 
