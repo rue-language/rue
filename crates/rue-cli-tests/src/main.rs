@@ -7,6 +7,17 @@
 //! environment, stdin piped to the compiled program, and stdout/exit codes
 //! asserted.
 //!
+//! # Scope
+//!
+//! Keep a case here only when invoking the shipped driver is part of what the
+//! case proves: argument and environment handling, filesystem/project loading,
+//! linking, executable structure, process I/O, or an end-to-end runtime/codegen
+//! boundary that a lower-level suite cannot exercise. Diagnostic wording and
+//! rendering belong in `rue-ui-tests`; language semantics belong in `rue-spec`
+//! or a focused `CompilerSession` test. Do not add a second CLI copy of a
+//! regression merely to preserve its historical issue name—the dedicated case
+//! is the regression test.
+//!
 //! # Why this exists
 //!
 //! The spec suite gave a false sense of health: `@import` resolution from
