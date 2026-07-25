@@ -538,6 +538,24 @@ sh_test(
     },
 )
 
+# RUE-1091: the value-audit protocol and adversarial fail-closed tests are
+# repository gates. Declare every script and checked-in manifest they import so
+# Buck cannot reuse a result after the protocol or fixture changes.
+sh_test(
+    name = "value-audit-tool-tests",
+    test = "scripts/test-value-audit.py",
+    resources = [
+        "scripts/rue-value-audit.py",
+        "scripts/perf-baseline.py",
+        "benchmarks/manifest.toml",
+        "benchmarks/value-audit/manifest.toml",
+        "benchmarks/value-audit/README.md",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # The destructive maintenance scripts under test (jj-tidy, worktree-gc). Their
 # fail-closed contract is pinned by scripts/test-cleanup-scripts.sh (RUE-567),
 # which runs copies of them against fake gh/git/df on PATH — no real repo,

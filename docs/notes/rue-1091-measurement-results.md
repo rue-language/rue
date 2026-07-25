@@ -11,17 +11,24 @@ fixture matrix in [`benchmarks/value-audit/manifest.toml`](../../benchmarks/valu
 Its candidate baseline is the current production compiler. A historical
 pre-query revision is retained only as context; if it cannot consume the
 modern benchmark/session protocol, the runner uses a thin cold black-box
-compile fallback and records warm scenarios as unsupported. It is incorrect to
-call that historical result post-flip evidence or to backport the modern
-incrementality harness solely to make the comparison complete.
+compile fallback. Cross-protocol timing comparisons are indeterminate and
+missing required warm evidence is unsupported—not silently treated as zero
+work. A same-binary run is a protocol smoke only, not historical comparison
+evidence. It is incorrect to call that historical result post-flip evidence or
+to backport the modern incrementality harness solely to make the comparison
+complete.
 
 The value-audit gates are exact correctness/locality inputs, warm unrelated
 edit improvement of at least 50%, warm isolated body-edit improvement of at
 least 25%, claimed wins exceeding three times the larger MAD, cold wall/RSS
 regression no greater than `max(2%, 3 * larger MAD)`, repeated-edit RSS
 stabilization within a 5% band when a persistent-session protocol exists, and
-Caldera cold wall time at or below 300 seconds. The report records medians,
-MADs, hashes, host provenance, raw alternating samples, and unsupported cases.
+Caldera cold wall time at or below 300 seconds. Caldera process timeout includes
+only the manifest-pinned headroom beyond that gate so an over-budget compile is
+recorded as a failure. Cold RSS is part of the cold pair verdict, not a
+detached annotation. The report records medians, MADs, explicit role
+provenance, hashes, host provenance, raw alternating samples, and
+unsupported/indeterminate cases.
 
 This is the current-production value audit, not the activation ledger below.
 
@@ -89,8 +96,10 @@ TBD
 
 ## Notes and anomalies
 
-- Record retries, host contention, unavailable peak-RSS support, and any
-  `ALLOW_FAIL` result here.
+- Record retries, host contention, unavailable peak-RSS support, protocol
+  fallbacks, and any `ALLOW_FAIL` result here. The value-audit session schema
+  currently declares exact recompute/reuse identity sets unavailable; no
+  provider identity evidence is invented.
 - A non-flat RUE-1090 ratio is a failure even if wall time improves.
 - A historical-witness ceiling failure is a measurement blocker, not an
   ordinary activation result.

@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 
 use super::{
     assert_cold_reused_parity_with_discovery, assert_diagnostic_parity, count, measure, named,
-    work_projection,
+    with_parity, work_projection,
 };
 
 const ROOT: &str = "/bench/main.rue";
@@ -231,7 +231,7 @@ fn successful_edit(name: &str, target: &SourceSnapshot) -> Value {
     session
         .unstable_dependency_baseline(&options, Some("/bench/std"))
         .unwrap();
-    let (mut value, output) = measured_project_semantic(&mut session, target, &options);
+    let (value, output) = measured_project_semantic(&mut session, target, &options);
     let parity = assert_cold_reused_parity_with_discovery(
         &mut session,
         &output,
@@ -241,9 +241,7 @@ fn successful_edit(name: &str, target: &SourceSnapshot) -> Value {
         close_discovery,
         |_, _| {},
     );
-    value["differential_parity"] = parity;
-    value["required_vs_reused_work"] = work_projection(&value);
-    named(name, value)
+    named(name, with_parity(value, parity))
 }
 
 fn diagnostic_and_recovery() -> (Value, Value) {
@@ -282,6 +280,11 @@ fn diagnostic_and_recovery() -> (Value, Value) {
         "warning_count": diagnostics.warnings().len(),
         "last_good_preserved": true,
     });
+    failed["evidence_schema"] = json!({
+        "version": 2,
+        "differential_parity_version": 1,
+        "locality_work_version": 2,
+    });
     failed["required_vs_reused_work"] = work_projection(&failed);
     let failed = named("diagnostic_error_edit", failed);
 
@@ -296,6 +299,11 @@ fn diagnostic_and_recovery() -> (Value, Value) {
         close_discovery,
         |_, _| {},
     );
+    recovered["evidence_schema"] = json!({
+        "version": 2,
+        "differential_parity_version": 1,
+        "locality_work_version": 2,
+    });
     recovered["differential_parity"] = parity;
     recovered["recovered_from_diagnostic_error"] = json!(true);
     recovered["required_vs_reused_work"] = work_projection(&recovered);
@@ -325,9 +333,19 @@ fn assert_structure(scenarios: &[Value]) {
     assert_eq!(scenarios.len(), 6);
     for scenario in scenarios {
         let work = &scenario["required_vs_reused_work"];
+        if scenario["differential_parity"].is_object() {
+            assert_eq!(scenario["differential_parity"]["schema_version"], 1);
+            assert_eq!(scenario["differential_parity"]["status"], "pass");
+        } else {
+            assert!(scenario["diagnostic_parity"].is_object());
+        }
+        assert_eq!(work["schema_version"], 2);
+        assert_eq!(work["counter_source"], "production_metrics");
         for artifact in ["modules", "semantic_bodies", "cfgs", "semantic_queries"] {
             assert!(work[artifact]["required"].is_u64());
             assert!(work[artifact]["reused"].is_u64());
+            assert!(work[artifact]["computed"].is_u64());
+            assert!(work[artifact]["invalidated"].is_u64());
         }
     }
     let get = |name: &str| {
