@@ -74,8 +74,8 @@ local version control and [Linear](https://linear.app) (`RUE-NN`) for issue
 tracking, and they mirror external GitHub issues into Linear. **None of this is
 required to contribute** — ordinary Git and GitHub issues/PRs are fully
 supported and are the intended path for external contributions. The internal
-process (Linear access, agent/AI workflows, merge-queue management, the fork
-setup) is documented for maintainers under
+process (Linear access, agent/AI workflows, merge-queue management, and
+repository setup) is documented for maintainers under
 [docs/process/](docs/process/), which external contributors can safely ignore.
 
 ## Documentation

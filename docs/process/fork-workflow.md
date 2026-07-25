@@ -1,37 +1,47 @@
-# Fork workflow (jj)
+# Contribution workflow (jj)
 
 > **Scope: internal/maintainer-oriented.** This describes the maintainers'
-> Jujutsu-based fork setup and assumes the configured git remotes and jj revset
-> aliases in [Required repo config](#required-repo-config). External contributors
-> do **not** need any of this — an ordinary Git fork and a GitHub PR against
-> `trunk` is fully supported; see [CONTRIBUTING.md](../../CONTRIBUTING.md).
+> Jujutsu-based repository setup and assumes the configured git remotes and jj
+> revset aliases in [Required repo config](#required-repo-config). External
+> contributors do **not** need any of this — an ordinary Git fork and a GitHub
+> PR against `trunk` is fully supported; see
+> [CONTRIBUTING.md](../../CONTRIBUTING.md).
 
-How to work on Rue from a **fork** using Jujutsu, with two git remotes:
+Rue supports two ways to publish a feature branch:
 
-- `upstream` = `rue-language/rue` — the canonical repo, the source of truth.
-  You **cannot** push here; you open PRs into it.
-- `origin` = `<you>/rue` — your fork. You push feature branches here, then PR
-  them upstream.
+- **Steve and Dorian:** prefer pushing feature branches directly to
+  `rue-language/rue` when repository access and the working environment allow
+  it. The change still goes through a pull request; never push directly to
+  `trunk`.
+- **All other contributors:** push feature branches to a personal fork and open
+  a pull request into `rue-language/rue`. This is a fully supported workflow.
 
-This documents the maintainers' working setup (originally `steveklabnik/rue`);
-adjust names for your own fork.
+The examples use these remote names:
+
+- `upstream` = `rue-language/rue` — the canonical repository and source of
+  truth.
+- `origin` = `<you>/rue` — a personal fork, when one is used.
 
 ## Rules
 
-1. **Always base work on `trunk()` (= `trunk@upstream`); do NOT push or sync
-   `origin/trunk`.** You never need to mirror `origin/trunk` to upstream —
+1. **Always base work on `trunk()` (= `trunk@upstream`) and never push
+   `trunk`.** A fork's `origin/trunk` does not need to mirror upstream:
    cross-fork PRs diff against `upstream/trunk`, and jj's immutability anchor is
-   `trunk@upstream`. So `origin/trunk` may sit stale (behind upstream); that's
-   harmless. `trunk@origin` is untracked (see required config) precisely so you
-   aren't tempted to push it. Never commit on `trunk` / PR `trunk` — that causes
-   hash-rewrite divergence when upstream rebase/squash-merges.
-2. **Work on a feature change**, then push it as a branch and PR it:
+   `trunk@upstream`. `trunk@origin` is untracked (see required config) so it may
+   harmlessly remain behind upstream.
+2. **Work on a feature change**, then push it as a branch and open a PR. Steve
+   and Dorian should use the direct-upstream form when possible:
    ```bash
-   jj new 'trunk()'                # start the change on upstream's canonical trunk (a revset, not a bookmark)
+   jj new 'trunk()'
    # ... make edits ...
-   jj git push -c @                # pushes as <you>/push-<changeid> (see git_push_bookmark template)
-   gh pr create --repo rue-language/rue --base trunk --head <you>:<branch> ...
+   jj git push --remote upstream -c @
+   gh pr create --repo rue-language/rue --base trunk --head <branch> ...
    gh pr merge <n> --repo rue-language/rue --auto   # queue it immediately
+   ```
+   Everyone else uses the same process through a fork:
+   ```bash
+   jj git push --remote origin -c @
+   gh pr create --repo rue-language/rue --base trunk --head <you>:<branch> ...
    ```
 3. **`trunk()` is a revset alias = `trunk@upstream`** — always means upstream's
    latest, regardless of local bookmark state. Always use `trunk()`, never the
@@ -48,12 +58,11 @@ Machine-local; set on a fresh clone — jj does not read committed config:
 
 ```bash
 jj config set --repo 'revset-aliases."trunk()"' 'trunk@upstream'   # base/immutability = canonical repo
-jj config set --repo git.fetch '["origin", "upstream"]'            # always see both remotes
-jj bookmark untrack 'trunk' --remote=origin                        # don't track/sync origin/trunk; base on upstream only
+jj config set --repo git.fetch '["origin", "upstream"]'            # when using a fork, fetch both remotes
+jj bookmark untrack 'trunk' --remote=origin                        # when using a fork, don't track origin/trunk
 ```
 
-Without the first two, `jj git fetch` only pulls `origin` (you won't see
-upstream merges), and `trunk()`/immutability anchor to your fork instead of
-upstream. The `untrack` keeps the local `trunk` bookmark tracking *only*
-`upstream`, so it fast-forwards to upstream on fetch and you never feel
-obligated to push it back to origin.
+The revset alias is required in both setups. A checkout without a fork can set
+`git.fetch` to `["upstream"]` instead. In a fork-based setup, fetching both
+remotes ensures upstream merges are visible, while `untrack` keeps the local
+`trunk` bookmark tracking only upstream.

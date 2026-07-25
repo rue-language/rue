@@ -4,7 +4,7 @@ This is the canonical guidance for coding agents working in Rue. Tool-specific
 instruction files should point here rather than copy these rules.
 
 Rue is an early-stage systems programming language implemented in Rust. It uses
-Buck2, Jujutsu, Linear, and a fork-based GitHub contribution workflow.
+Buck2, Jujutsu, Linear, and a pull-request-based GitHub contribution workflow.
 
 ## Working agreement
 
@@ -231,35 +231,40 @@ and `jj commit` there.
 A Codex-managed Git worktree may use Git natively for the entire workflow,
 including branching, committing, pushing, and opening a PR. Do not recreate its
 work in a Jujutsu workspace merely to follow the maintainer workflow. Respect
-the same fork topology and publication rules below regardless of which VCS
-front end the checkout uses. If the user explicitly requests a particular VCS
-workflow, follow that request.
+the same base and publication rules below regardless of which VCS front end the
+checkout uses. If the user explicitly requests a particular VCS workflow,
+follow that request.
 
-The maintainer fork topology is fixed:
+The publication topology is:
 
-- `upstream` = `rue-language/rue` — source of truth; never push directly.
-- `origin` = `steveklabnik/rue` — push feature bookmarks here.
+- `upstream` = `rue-language/rue` — source of truth. Steve and Dorian should
+  prefer pushing feature branches here when access and tooling allow it. Never
+  push directly to `trunk`.
+- Other contributors push feature branches to their `origin` fork. Fork-based
+  PRs remain fully supported.
 - PR base = `rue-language/rue:trunk`.
 
-Typical maintainer-checkout flow:
+Typical direct-upstream maintainer flow for Steve and Dorian:
 
 ```bash
 jj git fetch
 jj new 'trunk()'
 # edit and test
 jj describe -m 'RUE-NNN: concise summary'
-jj git push -c @
-gh pr create --repo rue-language/rue --base trunk \
-  --head steveklabnik:<bookmark>
+jj git push --remote upstream -c @
+gh pr create --repo rue-language/rue --base trunk --head <bookmark>
 gh pr merge <number> --repo rue-language/rue --auto --squash
 # wait for the authoritative MERGED state
 jj git fetch
 jj new 'trunk()'
 ```
 
+For a fork-based contribution, push with `--remote origin` and pass
+`--head <user>:<bookmark>` when creating the PR.
+
 After merge, verify that GitHub deleted the feature branch and fetch with the
 checkout's native VCS so it sees the deletion and updated upstream `trunk`. Do
-not push or synchronize `origin/trunk`. See
+not push or synchronize a fork's `origin/trunk`. See
 `docs/process/fork-workflow.md` for machine-local configuration details.
 
 Commit and PR text should be tool-neutral. Do not add agent attribution,
