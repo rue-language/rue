@@ -496,6 +496,31 @@ fn render_diagnostics(errors: &CompileErrors) -> String {
         .join("\n")
 }
 
+fn assert_successful_output_body_presence(
+    label: &str,
+    output: &CanonicalSemanticOutput,
+    states: &BTreeMap<String, Option<crate::BodyTransaction>>,
+) {
+    for function in output.functions() {
+        let prefix = format!("{:?}:", function.semantic_identity);
+        let matching = states
+            .iter()
+            .filter(|(identity, _)| identity.starts_with(&prefix))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            matching.len(),
+            1,
+            "{label}: successful output body identity is absent or ambiguous: {:?}",
+            function.semantic_identity
+        );
+        assert!(
+            matching[0].1.is_some(),
+            "{label}: successful output body has no observable retained transaction: {:?}",
+            function.semantic_identity
+        );
+    }
+}
+
 /// The one shared warm-vs-fresh oracle every edit row uses. Built on the exact
 /// semantic-parity machinery (`CanonicalSemanticOutput::unstable_parity_snapshot`
 /// — the same owned projection the in-tree cold-vs-reused differential compares),
@@ -513,23 +538,46 @@ fn assert_warm_fresh_parity(
     fresh_session: &mut CompilerSession,
     source: &SourceSnapshot,
     options: &CompileOptions,
-    body_names: &[String],
     warm: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
     fresh: &Result<Arc<CanonicalSemanticOutput>, CompileErrors>,
 ) {
-    let successful_body_transactions = |session: &CompilerSession,
-                                        output: &CanonicalSemanticOutput|
-     -> BTreeMap<String, crate::BodyTransaction> {
-        output
-            .functions()
-            .iter()
-            .filter_map(|function| {
-                session
-                    .retained_body_transaction_for_test(options, &function.semantic_identity)
-                    .map(|transaction| (format!("{:?}", function.semantic_identity), transaction))
-            })
-            .collect()
-    };
+    // The body-transaction family is the canonical production cache. Its
+    // test-only snapshot includes every retained key, not only the final root
+    // output: successful and deterministic-failure terminals, newly reached
+    // identities, and stale keys left by invalidation. A `None` value means a
+    // retained identity is no longer observable at this revision (for example,
+    // a deleted body), and is deliberately compared as absence below.
+    let warm_bodies = warm_session.retained_body_identity_states_for_test(options);
+    let fresh_bodies = fresh_session.retained_body_identity_states_for_test(options);
+    // A failed rooted semantic query may stop before an unchanged helper is
+    // requested. Such a helper can remain observable from the warm cache while
+    // having no fresh-side retained key; that is cache reachability, not a
+    // semantic result. Identities retained by both revisions are compared for
+    // exact presence/absence and payload equality. The union is still retained
+    // in the snapshots so deletion tests can explicitly prove that a removed
+    // identity is not observable, rather than silently dropping it here.
+    let identities = warm_bodies
+        .keys()
+        .filter(|identity| fresh_bodies.contains_key(*identity))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for identity in identities {
+        let warm_transaction = warm_bodies.get(&identity).and_then(Option::as_ref);
+        let fresh_transaction = fresh_bodies.get(&identity).and_then(Option::as_ref);
+        assert_eq!(
+            warm_transaction.is_some(),
+            fresh_transaction.is_some(),
+            "{label}: warm/fresh body identity presence diverged for {identity}\n"
+        );
+        if let (Some(warm_transaction), Some(fresh_transaction)) =
+            (warm_transaction, fresh_transaction)
+        {
+            assert!(
+                crate::transaction_equal(warm_transaction, fresh_transaction),
+                "{label}: exact BodyTransaction diverged for {identity}\n warm={warm_transaction:?}\n fresh={fresh_transaction:?}"
+            );
+        }
+    }
     match (warm, fresh) {
         (Ok(warm), Ok(fresh)) => {
             assert_eq!(
@@ -538,21 +586,11 @@ fn assert_warm_fresh_parity(
                 "{label}: warm/fresh semantic parity snapshot diverged"
             );
 
-            let warm_bodies = successful_body_transactions(warm_session, warm);
-            let fresh_bodies = successful_body_transactions(fresh_session, fresh);
-            assert_eq!(
-                warm_bodies.keys().collect::<Vec<_>>(),
-                fresh_bodies.keys().collect::<Vec<_>>(),
-                "{label}: warm/fresh retained body identities diverged"
-            );
-            for name in warm_bodies.keys() {
-                assert!(
-                    crate::transaction_equal(&warm_bodies[name], &fresh_bodies[name]),
-                    "{label}: exact BodyTransaction diverged for {name}\n warm={:?}\n fresh={:?}",
-                    warm_bodies[name],
-                    fresh_bodies[name]
-                );
-            }
+            // Keep the public output check as a consistency assertion, not as
+            // the identity enumeration source. Every emitted function must
+            // also have exactly one observable retained body transaction.
+            assert_successful_output_body_presence(label, warm, &warm_bodies);
+            assert_successful_output_body_presence(label, fresh, &fresh_bodies);
 
             assert_eq!(
                 format!("{:?}", warm.functions()),
@@ -617,24 +655,46 @@ fn assert_warm_fresh_parity(
                 render_diagnostics(fresh),
                 "{label}: warm/fresh failure diagnostics diverged"
             );
-            let warm_bodies = warm_session.retained_body_transactions_for_test(body_names);
-            let fresh_bodies = fresh_session.retained_body_transactions_for_test(body_names);
-            assert_eq!(
-                warm_bodies.keys().collect::<Vec<_>>(),
-                fresh_bodies.keys().collect::<Vec<_>>(),
-                "{label}: warm/fresh failed-body identities diverged"
-            );
-            for name in warm_bodies.keys() {
-                assert!(
-                    crate::transaction_equal(&warm_bodies[name], &fresh_bodies[name]),
-                    "{label}: exact failed BodyTransaction diverged for {name}"
-                );
-            }
             assert_eq!(
                 format!("{:?}", warm_session.latest_diagnostics()),
                 format!("{:?}", fresh_session.latest_diagnostics()),
                 "{label}: ordered failure diagnostic snapshots diverged"
             );
+            // These are current-revision failure terminals, not intentionally
+            // retained last-good artifacts. Compare the complete deterministic
+            // failure subset explicitly; a fresh-side failure that disappears
+            // from the warm cache is a correctness failure, not a cache hit.
+            let warm_failures = warm_bodies
+                .iter()
+                .filter_map(|(identity, transaction)| {
+                    matches!(
+                        transaction,
+                        Some(crate::BodyTransaction::DeterministicFailure { .. })
+                    )
+                    .then(|| (identity.clone(), transaction.as_ref().unwrap().clone()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            let fresh_failures = fresh_bodies
+                .iter()
+                .filter_map(|(identity, transaction)| {
+                    matches!(
+                        transaction,
+                        Some(crate::BodyTransaction::DeterministicFailure { .. })
+                    )
+                    .then(|| (identity.clone(), transaction.as_ref().unwrap().clone()))
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                warm_failures.keys().collect::<Vec<_>>(),
+                fresh_failures.keys().collect::<Vec<_>>(),
+                "{label}: failed body identity presence diverged"
+            );
+            for identity in warm_failures.keys() {
+                assert!(
+                    crate::transaction_equal(&warm_failures[identity], &fresh_failures[identity]),
+                    "{label}: exact failed BodyTransaction diverged for {identity}"
+                );
+            }
         }
         (Ok(_), Err(fresh)) => panic!(
             "{label}: warm compiled but fresh failed:\n{}",
@@ -1505,7 +1565,6 @@ impl EditScenario {
             &mut fresh,
             &rev2_source,
             &options,
-            body_names,
             &warm_rev2,
             &fresh_rev2,
         );
@@ -1546,12 +1605,19 @@ fn corpus_body_names(reached_bodies: usize) -> Vec<String> {
 /// the scaling rows. The exact oracle is deliberately shared by all of these
 /// cases so a new edit shape cannot accidentally fall back to comparing only a
 /// root semantic projection.
+struct SourceEditOracle {
+    changed: BTreeSet<String>,
+    before_states: BTreeMap<String, Option<crate::BodyTransaction>>,
+    warm_states: BTreeMap<String, Option<crate::BodyTransaction>>,
+    fresh_states: BTreeMap<String, Option<crate::BodyTransaction>>,
+}
+
 fn run_source_edit(
     label: &str,
     rev1_source: &str,
     rev2_source: &str,
     body_names: &[&str],
-) -> BTreeSet<String> {
+) -> SourceEditOracle {
     let options = CompileOptions::default();
     let rev1 = SourceSnapshot::single("main.rue", rev1_source).unwrap();
     let rev2 = SourceSnapshot::single("main.rue", rev2_source).unwrap();
@@ -1564,24 +1630,42 @@ fn run_source_edit(
     warm.update(&rev1).into_result().unwrap();
     warm.canonical_semantic(&options).ok();
     let before = warm.retained_body_transaction_origins_for_test(&body_names);
+    let before_states = warm.retained_body_identity_states_for_test(&options);
     warm.update(&rev2).into_result().unwrap();
     let warm_result = warm.canonical_semantic(&options);
     let after = warm.retained_body_transaction_origins_for_test(&body_names);
+    let warm_states = warm.retained_body_identity_states_for_test(&options);
 
     let mut fresh = CompilerSession::new();
     fresh.update(&rev2).into_result().unwrap();
     let fresh_result = fresh.canonical_semantic(&options);
+    let fresh_states = fresh.retained_body_identity_states_for_test(&options);
     assert_warm_fresh_parity(
         label,
         &mut warm,
         &mut fresh,
         &rev2,
         &options,
-        &body_names,
         &warm_result,
         &fresh_result,
     );
-    changed_body_origins(&before, &after)
+    SourceEditOracle {
+        changed: changed_body_origins(&before, &after),
+        before_states,
+        warm_states,
+        fresh_states,
+    }
+}
+
+fn named_state<'a>(
+    states: &'a BTreeMap<String, Option<crate::BodyTransaction>>,
+    name: &str,
+) -> Option<&'a Option<crate::BodyTransaction>> {
+    let name = format!("name: \"{name}\"");
+    states
+        .iter()
+        .find(|(identity, _)| identity.contains(&name))
+        .map(|(_, state)| state)
 }
 
 fn import_source(
@@ -1846,7 +1930,6 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
         &mut fresh,
         &rev2_snap,
         &options,
-        &body_names,
         &warm_rev2,
         &fresh_rev2,
     );
@@ -1931,7 +2014,6 @@ fn main() -> i32 { left() + right() + control() }
         &mut fresh,
         &rev2_snap,
         &options,
-        &body_names,
         &warm_rev2,
         &fresh_rev2,
     );
@@ -2012,7 +2094,6 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
         &mut fresh,
         &rev2_snap,
         &options,
-        &body_names,
         &warm_rev2,
         &fresh_rev2,
     );
@@ -2073,7 +2154,7 @@ fn correctness_oracle_noop_edit_preserves_every_body_terminal() {
     let source = "fn isolated() -> i32 { 1 }\nfn main() -> i32 { isolated() }\n";
     let changed = run_source_edit("no-op edit", source, source, &["isolated", "main"]);
     assert!(
-        changed.is_empty(),
+        changed.changed.is_empty(),
         "a no-op must retain every body terminal"
     );
 }
@@ -2169,6 +2250,24 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_deletion() {
 }
 
 #[test]
+#[should_panic(expected = "successful output body identity is absent or ambiguous")]
+fn correctness_oracle_rejects_missing_successful_body_transaction() {
+    let options = CompileOptions::default();
+    let source = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }\n").unwrap();
+    let mut session = CompilerSession::new();
+    session.update(&source).into_result().unwrap();
+    let output = session.canonical_semantic(&options).unwrap();
+    let mut states = session.retained_body_identity_states_for_test(&options);
+    let main_identity = states
+        .keys()
+        .find(|identity| identity.contains("main"))
+        .cloned()
+        .expect("main body identity is retained");
+    states.remove(&main_identity);
+    assert_successful_output_body_presence("missing retained body regression", &output, &states);
+}
+
+#[test]
 fn correctness_oracle_signature_edit_follows_transitive_fanout() {
     let rev1 = "fn leaf() -> i32 { 1 }\nfn middle() -> i32 { leaf() }\nfn control() -> i32 { 9 }\nfn main() -> i32 { middle() }\n";
     let rev2 = "fn leaf() -> i64 { 1 }\nfn middle() -> i64 { leaf() }\nfn control() -> i32 { 9 }\nfn main() -> i64 { middle() }\n";
@@ -2179,7 +2278,7 @@ fn correctness_oracle_signature_edit_follows_transitive_fanout() {
         &["leaf", "middle", "control", "main"],
     );
     assert_eq!(
-        changed,
+        changed.changed,
         BTreeSet::from(["leaf".to_owned(), "middle".to_owned(), "main".to_owned()]),
         "signature changes must reach direct and transitive consumers, not control"
     );
@@ -2191,14 +2290,37 @@ fn correctness_oracle_diagnostic_introduce_and_repair() {
     let bad = "fn helper() -> i32 { 1 }\nfn main() -> i32 { missing() }\n";
     let repaired = run_source_edit("diagnostic introduce", good, bad, &["main"]);
     assert!(
-        repaired.contains("main"),
+        repaired.changed.contains("main"),
         "introducing a missing lookup must replace the consumer body terminal"
+    );
+    assert!(
+        named_state(&repaired.before_states, "main")
+            .and_then(Option::as_ref)
+            .is_some(),
+        "diagnostic introduction must start with a successful main transaction"
+    );
+    assert_eq!(
+        named_state(&repaired.warm_states, "main").map(|state| matches!(
+            state,
+            Some(crate::BodyTransaction::DeterministicFailure { .. })
+        )),
+        named_state(&repaired.fresh_states, "main").map(|state| matches!(
+            state,
+            Some(crate::BodyTransaction::DeterministicFailure { .. })
+        )),
+        "failed main terminal availability must match warm and fresh"
     );
 
     let repaired = run_source_edit("diagnostic repair", bad, good, &["helper", "main"]);
     assert!(
-        repaired.contains("main"),
+        repaired.changed.contains("main"),
         "repairing a missing lookup must publish a fresh successful consumer terminal"
+    );
+    assert!(named_state(&repaired.warm_states, "helper").is_some());
+    assert!(
+        named_state(&repaired.warm_states, "main")
+            .and_then(Option::as_ref)
+            .is_some()
     );
 }
 
@@ -2211,23 +2333,91 @@ fn correctness_oracle_rename_delete_and_visibility_edits() {
         &["renamed", "main"],
     );
     assert!(
-        renamed.contains("main"),
+        renamed.changed.contains("main"),
         "renaming a declaration and its call site must refresh the consumer"
     );
-
-    let _deleted = run_source_edit(
-        "unused declaration deletion",
-        "fn unused() -> i32 { 1 }\nfn main() -> i32 { 0 }\n",
-        "fn main() -> i32 { 0 }\n",
-        &["main"],
+    assert!(
+        named_state(&renamed.before_states, "helper")
+            .and_then(Option::as_ref)
+            .is_some()
+    );
+    assert!(
+        named_state(&renamed.warm_states, "renamed")
+            .and_then(Option::as_ref)
+            .is_some()
+    );
+    assert!(
+        named_state(&renamed.warm_states, "helper")
+            .and_then(Option::as_ref)
+            .is_none()
     );
 
-    let _visibility = run_source_edit(
+    let deleted = run_source_edit(
+        "unused declaration deletion",
+        "fn unused() -> i32 { 1 }\nfn main() -> i32 { unused() }\n",
+        "fn main() -> i32 { 0 }\n",
+        &["unused", "main"],
+    );
+    assert!(
+        named_state(&deleted.before_states, "unused")
+            .and_then(Option::as_ref)
+            .is_some()
+    );
+    assert!(
+        named_state(&deleted.warm_states, "unused")
+            .and_then(Option::as_ref)
+            .is_none()
+    );
+    assert!(
+        named_state(&deleted.fresh_states, "unused")
+            .and_then(Option::as_ref)
+            .is_none()
+    );
+
+    let unreachable = run_source_edit(
+        "reached body becomes unreachable",
+        "fn hidden() -> i32 { 1 }\nfn main() -> i32 { hidden() }\n",
+        "fn hidden() -> i32 { 1 }\nfn main() -> i32 { 0 }\n",
+        &["hidden", "main"],
+    );
+    // The source declaration remains valid, so a warm session may retain its
+    // unchanged transaction even though a fresh rooted compile never reaches
+    // it. Keep that retained-key case visible; deletion below requires the
+    // stronger non-observability assertion.
+    assert!(
+        named_state(&unreachable.before_states, "hidden")
+            .and_then(Option::as_ref)
+            .is_some()
+    );
+    assert!(
+        named_state(&unreachable.warm_states, "hidden")
+            .and_then(Option::as_ref)
+            .is_some()
+    );
+    assert!(
+        named_state(&unreachable.fresh_states, "hidden")
+            .and_then(Option::as_ref)
+            .is_none()
+    );
+
+    let visibility = run_source_edit(
         "visibility edit",
         "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n",
         "pub fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n",
         &["helper", "main"],
     );
+    for name in ["helper", "main"] {
+        assert!(
+            named_state(&visibility.warm_states, name)
+                .and_then(Option::as_ref)
+                .is_some()
+        );
+        assert!(
+            named_state(&visibility.fresh_states, name)
+                .and_then(Option::as_ref)
+                .is_some()
+        );
+    }
 }
 
 #[test]
@@ -2260,7 +2450,6 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
         &mut fresh,
         &rev2,
         &options,
-        &["value".to_owned(), "main".to_owned()],
         &warm_result,
         &fresh_result,
     );

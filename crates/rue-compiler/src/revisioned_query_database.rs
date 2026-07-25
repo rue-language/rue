@@ -9890,6 +9890,37 @@ impl RevisionedQueryDatabase {
         self.body_transactions.contains_retained_key(key)
     }
 
+    /// Test-only snapshot of every retained body-query identity and whether its
+    /// terminal is observable at `revision`.
+    ///
+    /// The key scan is intentionally rooted in the production body-transaction
+    /// family. It includes stale keys left behind by invalidation, while the
+    /// read-only terminal request records whether that key still has a current
+    /// success or deterministic failure. The supplied computation is never
+    /// entered, so this hook cannot become a second semantic computation path.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn retained_body_identity_states_for_test(
+        &self,
+        revision: Revision,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    ) -> BTreeMap<String, Option<crate::BodyTransaction>> {
+        let mut keys = Vec::new();
+        self.body_transactions.any_retained_key(|candidate| {
+            keys.push(candidate.clone());
+            false
+        });
+        keys.retain(|key| key.configuration == configuration);
+        keys.sort_by_key(|key| key.stable_identity());
+        keys.into_iter()
+            .map(|key| {
+                let identity = key.stable_identity();
+                let transaction = self.retained_body_transaction_for_test(revision, key);
+                (identity, transaction)
+            })
+            .collect()
+    }
+
     /// Test-only exact provenance for retained ordinary body terminals.
     ///
     /// Looking up retained keys directly keeps failed-revision acceptance tests
@@ -9941,51 +9972,6 @@ impl RevisionedQueryDatabase {
             }
         }
         origins
-    }
-
-    /// Test-only access to the actual retained body transactions for named
-    /// ordinary bodies. The correctness oracle compares these values directly;
-    /// it does not infer body equality from aggregate semantic projections.
-    #[cfg(test)]
-    pub(crate) fn retained_body_transactions_for_test(
-        &self,
-        revision: Revision,
-        names: &[String],
-    ) -> BTreeMap<String, crate::BodyTransaction> {
-        let mut transactions = BTreeMap::new();
-        for name in names {
-            let mut retained_key = None;
-            self.body_transactions.any_retained_key(|candidate| {
-                let crate::FunctionInstanceKey::Definition(definition) = &candidate.instance else {
-                    return false;
-                };
-                if definition.name() != name.as_str() {
-                    return false;
-                }
-                retained_key = Some(candidate.clone());
-                true
-            });
-            let Some(key) = retained_key else {
-                continue;
-            };
-            let terminal = self.body_transaction(
-                revision,
-                key,
-                Arc::new(BTreeMap::new()),
-                Arc::from([]),
-                false,
-                Arc::from([]),
-                CancellationToken::new(),
-                |_, _| Err(QueryAbort::Canceled),
-            );
-            if let Ok(terminal) = terminal {
-                let rue_query::QueryOutcome::Success(transaction) = terminal.outcome() else {
-                    unreachable!("BodyTransaction publishes typed values")
-                };
-                transactions.insert(name.clone(), transaction.clone());
-            }
-        }
-        transactions
     }
 
     /// Test-only lookup of one retained body transaction by its complete
