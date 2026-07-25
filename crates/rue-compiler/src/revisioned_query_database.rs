@@ -9883,10 +9883,11 @@ impl RevisionedQueryDatabase {
     /// This is deliberately narrower than provenance: a newly reached body has
     /// no prior key to invalidate, even though its first terminal changes the
     /// provenance-derived body set. The query runtime remains authoritative for
-    /// whether the current request actually computed or reused that key.
+    /// whether the current request actually computed or reused that key. The
+    /// exact retained-key index probe is O(1) average-case; it does not
+    /// enumerate the retained body family once per reached body.
     pub(crate) fn has_retained_body_key(&self, key: &crate::body_query::BodyQueryKey) -> bool {
-        self.body_transactions
-            .any_retained_key(|candidate| candidate == key)
+        self.body_transactions.contains_retained_key(key)
     }
 
     /// Test-only exact provenance for retained ordinary body terminals.

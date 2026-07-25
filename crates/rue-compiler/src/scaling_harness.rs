@@ -2079,6 +2079,96 @@ fn correctness_oracle_noop_edit_preserves_every_body_terminal() {
 }
 
 #[test]
+fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_deletion() {
+    let options = CompileOptions::default();
+    let mut unrelated_session = CompilerSession::new();
+    let cold_source = unrelated_module_snapshot(0);
+    unrelated_session
+        .update(&cold_source)
+        .into_result()
+        .unwrap();
+    let cold = unrelated_session
+        .canonical_semantic(&options)
+        .expect("cold lifecycle fixture compiles");
+    let cold_body = cold.work().body_analysis;
+    assert_eq!(cold_body.body_analyses_reused, 0);
+    assert_eq!(cold_body.body_analyses_invalidated, 0);
+    assert!(
+        cold_body.body_analyses_computed > 0,
+        "cold compilation must enter at least one body analysis"
+    );
+
+    unrelated_session
+        .update(&unrelated_module_snapshot(1))
+        .into_result()
+        .unwrap();
+    let unrelated_output = unrelated_session
+        .canonical_semantic(&options)
+        .expect("unrelated-edit lifecycle fixture compiles");
+    let unrelated_body = unrelated_output.work().body_analysis;
+    assert_eq!(unrelated_body.body_analyses_computed, 0);
+    assert_eq!(unrelated_body.body_analyses_invalidated, 0);
+    assert_eq!(
+        unrelated_body.body_analyses_reused, cold_body.body_analyses_computed,
+        "an unrelated edit must reuse every unaffected body analysis"
+    );
+    assert_eq!(
+        unrelated_body.per_body_declaration_context,
+        rue_air::PerBodyDeclarationContextWork::default(),
+        "reused bodies must not add declaration/module/RIR work"
+    );
+
+    let changed_initial = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }\n",
+    )
+    .unwrap();
+    let changed = SourceSnapshot::single(
+        "main.rue",
+        "fn helper() -> i32 { 2 }\nfn main() -> i32 { helper() }\n",
+    )
+    .unwrap();
+    let mut changed_session = CompilerSession::new();
+    changed_session
+        .update(&changed_initial)
+        .into_result()
+        .unwrap();
+    let changed_cold = changed_session
+        .canonical_semantic(&options)
+        .expect("changed-body cold fixture compiles");
+    let changed_cold_body = changed_cold.work().body_analysis;
+    changed_session.update(&changed).into_result().unwrap();
+    let changed_output = changed_session
+        .canonical_semantic(&options)
+        .expect("changed-body lifecycle fixture compiles");
+    let changed_body = changed_output.work().body_analysis;
+    assert!(changed_body.body_analyses_computed > 0);
+    assert!(changed_body.body_analyses_reused > 0);
+    assert_eq!(
+        changed_body.body_analyses_invalidated, changed_body.body_analyses_computed,
+        "every recomputed changed-body transaction had a retained predecessor"
+    );
+    assert_eq!(
+        changed_body.body_analyses_computed + changed_body.body_analyses_reused,
+        changed_cold_body.body_analyses_computed,
+        "changed-body lifecycle must partition cold bodies into recomputed and reused"
+    );
+
+    let deleted_output = unrelated_session
+        .update(&unrelated_module_snapshot(0))
+        .into_result()
+        .and_then(|_| unrelated_session.canonical_semantic(&options))
+        .expect("deletion lifecycle fixture compiles");
+    let deleted_body = deleted_output.work().body_analysis;
+    assert_eq!(deleted_body.body_analyses_computed, 1);
+    assert_eq!(deleted_body.body_analyses_reused, 0);
+    assert_eq!(
+        deleted_body.body_analyses_invalidated, 0,
+        "deletion reaches a fresh root key, so it has no retained predecessor"
+    );
+}
+
+#[test]
 fn correctness_oracle_signature_edit_follows_transitive_fanout() {
     let rev1 = "fn leaf() -> i32 { 1 }\nfn middle() -> i32 { leaf() }\nfn control() -> i32 { 9 }\nfn main() -> i32 { middle() }\n";
     let rev2 = "fn leaf() -> i64 { 1 }\nfn middle() -> i64 { leaf() }\nfn control() -> i32 { 9 }\nfn main() -> i64 { middle() }\n";
