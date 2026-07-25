@@ -2643,12 +2643,20 @@ impl<'a> CfgBuilder<'a> {
     /// field path of `key` that is moved somewhere in this function
     /// (RUE-156). Called at the slot's (re)initialization sites.
     fn arm_field_drop_flags(&mut self, key: MovedSlot, span: rue_span::Span) {
-        let paths: Vec<FieldPath> = self
+        let mut paths: Vec<FieldPath> = self
             .ever_field_moved
             .iter()
             .filter(|(s, _)| *s == key)
             .map(|(_, p)| p.clone())
             .collect();
+        // `ever_field_moved` is a `HashSet`, so its iteration order varies per
+        // process. `set_field_drop_flag` allocates a hidden local the first time
+        // it sees a path, which would make the flag slots — and therefore every
+        // frame offset after them — depend on hash order. Sorting pins the
+        // allocation order to the field path itself. Emitted output must be a
+        // function of the source, and several parity gates compare artifacts
+        // byte-for-byte.
+        paths.sort();
         for path in paths {
             self.set_field_drop_flag(key, path, true, span);
         }
