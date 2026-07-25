@@ -89,17 +89,92 @@ This does not contradict any individual assertion in the completion workload;
 those assertions are accurate about the corpus they measure. It qualifies what
 that corpus is evidence *for*.
 
+## Mechanism
+
+The measurement above narrows the cause to a single call. At one module the
+demand path performs the same work as the staged path plus
+`begin_import_input_request`, and locality is already gone. Reading that path
+gives the exact mechanism, and it is not an oversight.
+
+`rue_query::Revision` is a pair of an id and a *compatibility token*, and
+retained work is validated across revisions by comparing the token alone
+(`crates/rue-query/src/lib.rs:87`, consumed at `lib.rs:3609`):
+
+```rust
+pub const fn is_compatible_with(self, other: Self) -> bool {
+    self.compatibility == other.compatibility
+}
+```
+
+The two publication paths choose that token differently:
+
+- an ordinary source update publishes `Revision::new(self.next_revision, 1)` —
+  a **constant** token, so every retained terminal stays validatable across
+  edits (`revisioned_query_database.rs:11053`);
+- import discovery publishes `Revision::new(self.next_revision, generation)`
+  (`revisioned_query_database.rs:10644`), where `generation` is incremented by
+  every `begin_import_inputs` call (`revisioned_query_database.rs:10224`).
+
+So each import-input request mints a fresh compatibility token, and no terminal
+retained under the previous token can be validated against it. Every body is
+recomputed — not because its inputs changed, but because the token it was
+retained under no longer matches.
+
+This is deliberate, and the code says so at the increment:
+
+> A new request generation is a fresh filesystem observation epoch. Reuse
+> requires a future explicit watch/read-policy proof token. The API deliberately
+> has no carried-ledger input that could be mistaken for freshness authority.
+
+That is a sound conservatism in isolation: without evidence that the filesystem
+has not changed underneath it, the compiler refuses to trust anything it
+retained. The finding here is not that the rule is wrong. It is that **nobody
+had measured what it costs**, and the cost is the entire warm-rebuild benefit
+for every program that reaches its sources through import discovery.
+
+## The design question this raises
+
+ADR-0063 §2 states:
+
+> Terminals from the previous attempt are validated or red/green reused against
+> the successor; an unchanged input leaf carried into the successor does not
+> become different merely because its revision number advanced.
+
+The epoch reset and that sentence are in tension. Both are defensible; they
+cannot both be fully honored without the "future explicit watch/read-policy
+proof token" the comment names, which does not exist yet.
+
+Resolving this is a design decision, not a repair — it decides when the compiler
+is entitled to believe the filesystem has not moved. It is deliberately not
+changed here. The candidate directions, for whoever picks it up:
+
+1. Introduce the proof token the comment anticipates, so a request that can
+   demonstrate unchanged inputs carries its predecessor's compatibility token
+   instead of minting a new one.
+2. Separate "filesystem freshness" from "semantic input identity" so that a new
+   observation epoch invalidates only the leaves it actually re-observed, rather
+   than every terminal in the graph.
+3. Accept the cost and state plainly that warm incremental rebuild is available
+   only to in-process hosts that manage their own source snapshots — which would
+   make the north-star interactive rebuild unreachable for the CLI driver.
+
+Option 3 is the status quo by default, and it is worth being explicit that it is
+the status quo rather than arriving there without deciding.
+
 ## Consequences for RUE-1091
 
 The per-body context repair addresses the O(bodies x declarations) cost inside
 `analyze_body_query` — the work a body performs once it has been chosen for
 analysis. The behavior measured here decides *how many* bodies are chosen. They
-are different layers, and the numbers above suggest the second one is not
-addressed by the first.
+are different layers, and the mechanism above confirms the second is untouched by
+the first: the compatibility token is chosen in the import-input publication
+path, which the provider rewire does not go near.
 
-Worth confirming before the provider flip rather than after: if the flip lands
-and warm rebuilds on multi-module programs are still recomputing every body, the
-cause will be here rather than in the repaired per-body path.
+So the flip can proceed without waiting on this. What must not happen is reading
+the post-flip warm numbers as a verdict on the flip. If multi-module warm
+rebuilds still recompute every body afterward, that is the epoch reset, not a
+failed repair — and the post-flip measurement should say which rows it expects
+to move before it is run rather than after.
 
 ## Reproducing
 
