@@ -542,6 +542,61 @@ class ValueAuditTests(unittest.TestCase):
             drifted["historical_reference"] = reference
         self.reject_mutation(mutate)
 
+    def test_leaf_bound_scales_with_the_declared_reverse_closure(self):
+        """A leaf edit costs its reverse closure, not one unit.
+
+        Three computed bodies must fail at a closure of one (the old shape) and
+        pass at the representative fixture's declared closure of three, so the
+        gate does not fail an implementation that is invalidating correctly.
+        """
+        row = self.row("warm_leaf_body", body=3, cfg=3, queries=1)
+        policy = self.locality_policy("warm_leaf_body")
+        self.assertEqual(
+            value_audit.locality_check("warm_leaf_body", row, policy, 1)["status"],
+            "fail",
+        )
+        self.assertEqual(
+            value_audit.locality_check("warm_leaf_body", row, policy, 3)["status"],
+            "pass",
+        )
+
+    def test_scaling_never_loosens_a_zero_bound(self):
+        row = self.row("warm_unrelated_declaration", body=1, cfg=1)
+        self.assertEqual(
+            value_audit.locality_check(
+                "warm_unrelated_declaration", row,
+                self.locality_policy("warm_unrelated_declaration"), 8,
+            )["status"],
+            "fail",
+        )
+
+    def test_unit_scale_applies_only_to_the_leaf_scenario(self):
+        for workload in value_audit.WORKLOADS:
+            scale = value_audit.warm_unit_scale(workload, "warm_signature_fanout")
+            self.assertEqual(scale, 1)
+        synthetic = next(w for w in value_audit.WORKLOADS if w["name"] == "synthetic")
+        self.assertEqual(value_audit.warm_unit_scale(synthetic, "warm_leaf_body"), 2)
+        representative = next(
+            w for w in value_audit.WORKLOADS if w["name"] == "representative_multi_module"
+        )
+        self.assertEqual(value_audit.warm_unit_scale(representative, "warm_leaf_body"), 3)
+
+    def test_a_nonsense_unit_scale_is_unsupported_not_a_pass(self):
+        row = self.row("warm_leaf_body", body=1, cfg=1)
+        policy = self.locality_policy("warm_leaf_body")
+        for scale in (0, -1, True):
+            self.assertEqual(
+                value_audit.locality_check("warm_leaf_body", row, policy, scale)["status"],
+                "unsupported",
+            )
+
+    def test_leaf_closure_must_accompany_leaf_support(self):
+        def mutate(drifted):
+            drifted["workload"] = [dict(item) for item in self.manifest["workload"]]
+            synthetic = next(item for item in drifted["workload"] if item["name"] == "synthetic")
+            del synthetic["warm_leaf_body_reverse_closure"]
+        self.reject_mutation(mutate)
+
     def test_reference_programs_must_match_the_regressed_workloads(self):
         def mutate(drifted):
             reference = dict(self.manifest["historical_reference"])
