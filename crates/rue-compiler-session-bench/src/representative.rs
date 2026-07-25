@@ -341,11 +341,35 @@ fn assert_structure(scenarios: &[Value]) {
         }
         assert_eq!(work["schema_version"], 2);
         assert_eq!(work["counter_source"], "production_metrics");
-        for artifact in ["modules", "semantic_bodies", "cfgs", "semantic_queries"] {
+        for artifact in [
+            "modules",
+            "rir",
+            "declarations",
+            "durable_source",
+            "semantic_bodies",
+            "cfgs",
+            "semantic_queries",
+            "cold_body_preparations",
+            "declarations_inspected",
+            "modules_registered",
+            "rir_indexes_constructed",
+            "rir_instructions_visited",
+            "durable_source_records_inspected",
+            "durable_source_records_copied",
+            "shells_prepared",
+            "projections_performed",
+            "semantics_installed",
+            "endpoints_installed",
+        ] {
             assert!(work[artifact]["required"].is_u64());
-            assert!(work[artifact]["reused"].is_u64());
             assert!(work[artifact]["computed"].is_u64());
-            assert!(work[artifact]["invalidated"].is_u64());
+            for field in ["reused", "invalidated"] {
+                let value = &work[artifact][field];
+                assert!(
+                    value.is_u64() || (value["available"] == false && value["reason"].is_string()),
+                    "{artifact}.{field} must be a real counter or an explicit unavailable reason"
+                );
+            }
         }
     }
     let get = |name: &str| {

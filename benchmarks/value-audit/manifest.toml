@@ -44,7 +44,10 @@ required = true
 required = false
 reason_if_unsupported = "No persistent-session repeated-edit RSS protocol is exposed"
 
-# These are upper bounds on production work counters, not lower-bound hints.
+# These are upper bounds on available production work counters, not lower-bound
+# hints. `max_*_computed` is also the bound for an available invalidated
+# dimension; unavailable dimensions are explicit in the row and are not treated
+# as zero.
 # They deliberately remain flat as an unrelated-body universe grows.  The
 # reverse-closure fixture is allowed its bounded fanout; it is not a license
 # to re-run an arbitrary fraction of the program.
@@ -56,6 +59,17 @@ max_durable_source_computed = 0
 max_semantic_bodies_computed = 0
 max_cfgs_computed = 0
 max_semantic_queries_computed = 0
+max_cold_body_preparations_computed = 0
+max_declarations_inspected_computed = 0
+max_modules_registered_computed = 0
+max_rir_indexes_constructed_computed = 0
+max_rir_instructions_visited_computed = 0
+max_durable_source_records_inspected_computed = 0
+max_durable_source_records_copied_computed = 0
+max_shells_prepared_computed = 0
+max_projections_performed_computed = 0
+max_semantics_installed_computed = 0
+max_endpoints_installed_computed = 0
 
 [locality.warm_unrelated_declaration]
 max_modules_computed = 0
@@ -65,6 +79,17 @@ max_durable_source_computed = 0
 max_semantic_bodies_computed = 0
 max_cfgs_computed = 0
 max_semantic_queries_computed = 0
+max_cold_body_preparations_computed = 0
+max_declarations_inspected_computed = 0
+max_modules_registered_computed = 0
+max_rir_indexes_constructed_computed = 0
+max_rir_instructions_visited_computed = 0
+max_durable_source_records_inspected_computed = 0
+max_durable_source_records_copied_computed = 0
+max_shells_prepared_computed = 0
+max_projections_performed_computed = 0
+max_semantics_installed_computed = 0
+max_endpoints_installed_computed = 0
 
 [locality.warm_leaf_body]
 max_modules_computed = 1
@@ -74,6 +99,17 @@ max_durable_source_computed = 1
 max_semantic_bodies_computed = 1
 max_cfgs_computed = 1
 max_semantic_queries_computed = 1
+max_cold_body_preparations_computed = 1
+max_declarations_inspected_computed = 1
+max_modules_registered_computed = 1
+max_rir_indexes_constructed_computed = 1
+max_rir_instructions_visited_computed = 1
+max_durable_source_records_inspected_computed = 1
+max_durable_source_records_copied_computed = 1
+max_shells_prepared_computed = 1
+max_projections_performed_computed = 1
+max_semantics_installed_computed = 1
+max_endpoints_installed_computed = 1
 
 [locality.warm_signature_fanout]
 max_modules_computed = 2
@@ -83,6 +119,17 @@ max_durable_source_computed = 8
 max_semantic_bodies_computed = 8
 max_cfgs_computed = 8
 max_semantic_queries_computed = 1
+max_cold_body_preparations_computed = 8
+max_declarations_inspected_computed = 8
+max_modules_registered_computed = 8
+max_rir_indexes_constructed_computed = 8
+max_rir_instructions_visited_computed = 8
+max_durable_source_records_inspected_computed = 8
+max_durable_source_records_copied_computed = 8
+max_shells_prepared_computed = 8
+max_projections_performed_computed = 8
+max_semantics_installed_computed = 8
+max_endpoints_installed_computed = 8
 
 [[workload]]
 name = "synthetic"

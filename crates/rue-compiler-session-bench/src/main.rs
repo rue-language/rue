@@ -26,6 +26,97 @@ const DEFAULT_MODULES: usize = 128;
 const DEFAULT_WARMUP: usize = 3;
 const DEFAULT_ITERATIONS: usize = 10;
 
+const AVAILABLE_CONTEXT_COUNTERS: &[(&str, &[&str])] = &[
+    (
+        "cold_body_preparations",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "cold_body_preparations",
+        ],
+    ),
+    (
+        "declarations_inspected",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "declarations_inspected",
+        ],
+    ),
+    (
+        "modules_registered",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "modules_registered",
+        ],
+    ),
+    (
+        "rir_indexes_constructed",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "rir_indexes_constructed",
+        ],
+    ),
+    (
+        "rir_instructions_visited",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "rir_instructions_visited",
+        ],
+    ),
+    (
+        "durable_source_records_inspected",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "durable_source_records_inspected",
+        ],
+    ),
+    (
+        "durable_source_records_copied",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "durable_source_records_copied",
+        ],
+    ),
+    (
+        "shells_prepared",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "shells_prepared",
+        ],
+    ),
+    (
+        "projections_performed",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "projections_performed",
+        ],
+    ),
+    (
+        "semantics_installed",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "semantics_installed",
+        ],
+    ),
+    (
+        "endpoints_installed",
+        &[
+            "semantic_work",
+            "per_body_declaration_context",
+            "endpoints_installed",
+        ],
+    ),
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Config {
     modules: usize,
@@ -854,10 +945,12 @@ fn with_parity(mut scenario: Value, evidence: Value) -> Value {
 }
 
 /// Stable production-counter projection consumed by the value-audit runner.
-/// The detailed counter ledger remains available beside this projection, while
-/// these fields give external tooling one typed vocabulary for computed,
-/// reused, and invalidated work.  Identity sets are currently not exposed by
-/// this benchmark, so that absence is explicit rather than inferred.
+/// The detailed counter ledger remains available beside this projection. Each
+/// numeric field is copied from a production counter; an unavailable dimension
+/// is an explicit reason object rather than a duplicated or inferred value.
+/// `required` is the audit's uniform demand shape, not an additional production
+/// counter. Identity sets are currently not exposed by this benchmark, so that
+/// absence is explicit rather than inferred.
 fn work_projection(scenario: &Value) -> Value {
     macro_rules! required_count {
         ($path:expr) => {
@@ -873,7 +966,15 @@ fn work_projection(scenario: &Value) -> Value {
             }
         };
     }
-    json!({
+    macro_rules! unavailable {
+        ($reason:expr) => {
+            json!({
+                "available": false,
+                "reason": $reason,
+            })
+        };
+    }
+    let mut projection = json!({
         "schema_version": 2,
         "counter_source": "production_metrics",
         "exact_identity_sets": {
@@ -882,36 +983,39 @@ fn work_projection(scenario: &Value) -> Value {
         },
         "modules": {
             "computed": required_count!(&["parse", "modules_reparsed"]),
-            "invalidated": required_count!(&["parse", "modules_reparsed"]),
             "required": required_count!(&["parse", "modules_reparsed"]),
             "reused": required_count!(&["parse", "modules_reused"]),
+            "invalidated": unavailable!("CompilerSession exposes no module invalidation counter"),
         },
         "rir": {
             "computed": required_count!(&["queries", "rir_executions"]),
-            "invalidated": required_count!(&["queries", "rir_executions"]),
+            "required": required_count!(&["queries", "rir_executions"]),
             "reused": required_count!(&["queries", "rir_reuses"]),
+            "invalidated": unavailable!("CompilerSession exposes no RIR invalidation counter"),
         },
         "declarations": {
             "computed": required_count!(&["semantic_work", "declaration_resolution_invocations"]),
+            "required": required_count!(&["semantic_work", "declaration_resolution_invocations"]),
             "invalidated": required_count!(&["queries", "definition_entries_invalidated"]),
             "reused": required_count!(&["semantic_work", "declaration_reuse", "durable_records_reused"]),
         },
         "durable_source": {
             "computed": required_count!(&["semantic_work", "per_body_declaration_context", "durable_source_records_copied"]),
-            "invalidated": required_count!(&["semantic_work", "body_analyses_invalidated"]),
-            "reused": required_count!(&["semantic_work", "durable_bodies", "reused_bodies"]),
+            "required": required_count!(&["semantic_work", "per_body_declaration_context", "durable_source_records_copied"]),
+            "invalidated": unavailable!("CompilerSession exposes no durable-source invalidation counter"),
+            "reused": unavailable!("durable-body reuse is not a durable-source reuse counter"),
         },
         "semantic_bodies": {
             "computed": required_count!(&["semantic_work", "body_analyses_computed"]),
             "invalidated": required_count!(&["semantic_work", "body_analyses_invalidated"]),
             "required": required_count!(&["semantic_work", "bodies_attempted"]),
-            "reused": required_count!(&["semantic_work", "durable_bodies", "reused_bodies"]),
+            "reused": required_count!(&["semantic_work", "body_analyses_reused"]),
         },
         "cfgs": {
             "computed": required_count!(&["semantic_work", "cfg", "builds_attempted"]),
-            "invalidated": required_count!(&["semantic_work", "cfg", "builds_attempted"]),
             "required": required_count!(&["semantic_work", "cfg", "builds_attempted"]),
             "reused": required_count!(&["semantic_work", "cfg", "reuses"]),
+            "invalidated": unavailable!("CompilerSession exposes no CFG invalidation counter"),
         },
         "semantic_queries": {
             "computed": required_count!(&["queries", "semantic_executions"]),
@@ -919,7 +1023,26 @@ fn work_projection(scenario: &Value) -> Value {
             "required": required_count!(&["queries", "semantic_executions"]),
             "reused": required_count!(&["queries", "semantic_reuses"]),
         },
-    })
+    });
+    for (name, path) in AVAILABLE_CONTEXT_COUNTERS {
+        let computed = match try_count(scenario, path) {
+            Some(value) => value,
+            None => {
+                return json!({
+                    "schema_version": 2,
+                    "status": "unsupported",
+                    "reason": format!("production counter path was absent: {name}"),
+                });
+            }
+        };
+        projection[*name] = json!({
+            "computed": computed,
+            "required": computed,
+            "invalidated": unavailable!(format!("{name} has no invalidation counter")),
+            "reused": unavailable!(format!("{name} has no reuse counter")),
+        });
+    }
+    projection
 }
 
 fn completion_workloads(functions: usize) -> Vec<Value> {
@@ -1581,11 +1704,41 @@ fn assert_completion_structure(scenarios: &[Value], functions: usize) {
         assert_eq!(projection["schema_version"], 2);
         assert_eq!(projection["counter_source"], "production_metrics");
         assert!(projection["exact_identity_sets"]["available"].is_boolean());
-        for artifact in ["modules", "semantic_bodies", "cfgs", "semantic_queries"] {
-            assert!(projection[artifact]["required"].is_u64());
-            assert!(projection[artifact]["reused"].is_u64());
-            assert!(projection[artifact]["computed"].is_u64());
-            assert!(projection[artifact]["invalidated"].is_u64());
+        for artifact in [
+            "modules",
+            "rir",
+            "declarations",
+            "durable_source",
+            "semantic_bodies",
+            "cfgs",
+            "semantic_queries",
+            "cold_body_preparations",
+            "declarations_inspected",
+            "modules_registered",
+            "rir_indexes_constructed",
+            "rir_instructions_visited",
+            "durable_source_records_inspected",
+            "durable_source_records_copied",
+            "shells_prepared",
+            "projections_performed",
+            "semantics_installed",
+            "endpoints_installed",
+        ] {
+            assert!(
+                projection[artifact]["required"].is_u64(),
+                "{artifact} projection is missing required: {projection:?}"
+            );
+            assert!(
+                projection[artifact]["computed"].is_u64(),
+                "{artifact} projection is missing computed: {projection:?}"
+            );
+            for field in ["reused", "invalidated"] {
+                let value = &projection[artifact][field];
+                assert!(
+                    value.is_u64() || (value["available"] == false && value["reason"].is_string()),
+                    "{artifact}.{field} must be a real counter or an explicit unavailable reason"
+                );
+            }
         }
     }
     assert_eq!(count(noop, &["queries", "semantic_executions"]), 0);

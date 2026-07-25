@@ -23,11 +23,16 @@ class ValueAuditTests(unittest.TestCase):
         return self.manifest["locality"][scenario]
 
     def work(self, *, body=0, cfg=0, modules=0, rir=0, declarations=0,
-             durable_source=0, queries=0, reused=1):
+             durable_source=0, queries=0, shells=0, projections=0,
+             semantics=0, endpoints=0, cold_preparations=0,
+             declarations_inspected=0, modules_registered=0,
+             rir_indexes=0, rir_instructions=0, durable_inspected=0,
+             durable_copied=0, reused=1):
         def counters(computed, reused_count):
             return {
                 "computed": computed,
                 "invalidated": computed,
+                "required": computed,
                 "reused": reused_count,
             }
         return {
@@ -44,6 +49,17 @@ class ValueAuditTests(unittest.TestCase):
             "semantic_bodies": counters(body, reused),
             "cfgs": counters(cfg, reused),
             "semantic_queries": counters(queries, reused),
+            "cold_body_preparations": counters(cold_preparations, reused),
+            "declarations_inspected": counters(declarations_inspected, reused),
+            "modules_registered": counters(modules_registered, reused),
+            "rir_indexes_constructed": counters(rir_indexes, reused),
+            "rir_instructions_visited": counters(rir_instructions, reused),
+            "durable_source_records_inspected": counters(durable_inspected, reused),
+            "durable_source_records_copied": counters(durable_copied, reused),
+            "shells_prepared": counters(shells, reused),
+            "projections_performed": counters(projections, reused),
+            "semantics_installed": counters(semantics, reused),
+            "endpoints_installed": counters(endpoints, reused),
         }
 
     def parity(self):
@@ -63,7 +79,30 @@ class ValueAuditTests(unittest.TestCase):
             "emitted_output": "byte_exact",
             "emitted_output_sha256": "0" * 64,
             "emitted_output_size_bytes": 1,
-            "cold_semantic_work": {},
+            "cold_semantic_work": {
+                "schema_version": 1,
+                "bodies_attempted": 1,
+                "bodies_succeeded": 1,
+                "bodies_failed": 0,
+                "body_analyses_computed": 1,
+                "body_analyses_reused": 0,
+                "body_analyses_invalidated": 0,
+                "per_body_declaration_context": {
+                    "cold_body_preparations": 1,
+                    "declarations_inspected": 1,
+                    "modules_registered": 1,
+                    "rir_indexes_constructed": 1,
+                    "rir_instructions_visited": 1,
+                    "shells_prepared": 1,
+                    "projections_performed": 1,
+                    "semantics_installed": 1,
+                    "endpoints_installed": 1,
+                    "durable_source_records_inspected": 1,
+                    "durable_source_records_copied": 1,
+                },
+                "durable_bodies": {"candidate_comparisons": 0, "reused_bodies": 0},
+                "cfg": {"builds_attempted": 1, "builds_succeeded": 1, "builds_failed": 0},
+            },
         }
 
     def row(self, scenario, **kwargs):
@@ -139,6 +178,20 @@ class ValueAuditTests(unittest.TestCase):
         row["differential_parity"] = {}
         self.assertEqual(value_audit.parity_check(row)["status"], "unsupported")
 
+    def test_empty_cold_semantic_work_is_not_exact_evidence(self):
+        row = self.row("warm_leaf_body")
+        row["differential_parity"]["cold_semantic_work"] = {}
+        self.assertEqual(value_audit.parity_check(row)["status"], "unsupported")
+
+    def test_partial_or_malformed_cold_semantic_work_fails_closed(self):
+        for mutation in ("bodies_attempted", "per_body_declaration_context"):
+            row = self.row("warm_leaf_body")
+            if mutation == "bodies_attempted":
+                del row["differential_parity"]["cold_semantic_work"][mutation]
+            else:
+                row["differential_parity"]["cold_semantic_work"][mutation] = []
+            self.assertEqual(value_audit.parity_check(row)["status"], "unsupported")
+
     def test_ordered_type_universe_is_valid_exact_parity_evidence(self):
         self.assertEqual(value_audit.parity_check(self.row("warm_leaf_body"))["status"], "pass")
 
@@ -148,6 +201,59 @@ class ValueAuditTests(unittest.TestCase):
             "warm_leaf_body", row, self.locality_policy("warm_leaf_body")
         )
         self.assertEqual(result["status"], "fail")
+
+    def test_omitted_counter_universe_traversal_fails(self):
+        row = self.row("warm_leaf_body", shells=129)
+        result = value_audit.locality_check(
+            "warm_leaf_body", row, self.locality_policy("warm_leaf_body")
+        )
+        self.assertEqual(result["status"], "fail")
+
+    def test_each_newly_carried_counter_is_bounded(self):
+        counters = (
+            "cold_body_preparations",
+            "declarations_inspected",
+            "modules_registered",
+            "rir_indexes_constructed",
+            "rir_instructions_visited",
+            "durable_source_records_inspected",
+            "durable_source_records_copied",
+        )
+        for counter in counters:
+            row = self.row("warm_leaf_body")
+            maximum = self.locality_policy("warm_leaf_body")[f"max_{counter}_computed"]
+            row["required_vs_reused_work"][counter]["computed"] = maximum + 1
+            result = value_audit.locality_check(
+                "warm_leaf_body", row, self.locality_policy("warm_leaf_body")
+            )
+            self.assertEqual(result["status"], "fail", counter)
+
+    def test_unavailable_dimensions_are_not_published_as_work(self):
+        row = self.row("warm_leaf_body", body=1, cfg=1, queries=1)
+        row["required_vs_reused_work"]["durable_source"]["reused"] = {
+            "available": False,
+            "reason": "durable-body reuse is not durable-source reuse",
+        }
+        row["required_vs_reused_work"]["durable_source"]["invalidated"] = {
+            "available": False,
+            "reason": "no durable-source invalidation counter",
+        }
+        self.assertEqual(
+            value_audit.locality_check(
+                "warm_leaf_body", row, self.locality_policy("warm_leaf_body")
+            )["status"],
+            "pass",
+        )
+
+    def test_historical_cached_work_cannot_claim_current_recomputation(self):
+        row = self.row("warm_leaf_body", body=1, cfg=1)
+        row["required_vs_reused_work"]["semantic_queries"]["computed"] = 0
+        self.assertEqual(
+            value_audit.locality_check(
+                "warm_leaf_body", row, self.locality_policy("warm_leaf_body")
+            )["status"],
+            "unsupported",
+        )
 
     def test_unrelated_edit_with_semantic_rerun_fails(self):
         row = self.row("warm_unrelated_declaration", declarations=1, queries=1)
@@ -167,7 +273,54 @@ class ValueAuditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 value_audit.load_audit_manifest(ROOT)
         finally:
+                value_audit.tomllib.load = original_loader
+
+    def test_manifest_contract_mutations_are_rejected_before_measurement(self):
+        original_loader = value_audit.tomllib.load
+        for mutation in ("root", "warm_runner"):
+            drifted = dict(self.manifest)
+            drifted["workload"] = [dict(item) for item in self.manifest["workload"]]
+            drifted["workload"][0][mutation] = "mutated"
+            value_audit.tomllib.load = lambda _stream, drifted=drifted: drifted
+            try:
+                with self.assertRaises(ValueError):
+                    value_audit.load_audit_manifest(ROOT)
+            finally:
+                value_audit.tomllib.load = original_loader
+
+        drifted = dict(self.manifest)
+        drifted["protocol"] = dict(self.manifest["protocol"])
+        drifted["protocol"]["pair_order"] = "candidate,current,historical"
+        value_audit.tomllib.load = lambda _stream, drifted=drifted: drifted
+        try:
+            with self.assertRaises(ValueError):
+                value_audit.load_audit_manifest(ROOT)
+        finally:
             value_audit.tomllib.load = original_loader
+
+    def test_identical_binary_pairs_cannot_claim_value(self):
+        def role(binary):
+            return {
+                "status": "pass",
+                "protocol": "session_benchmark_json",
+                "binary_sha256": binary,
+                "wall": {"median": 100.0, "mad": 0.0},
+                "rss": {"median": 100.0, "mad": 0.0},
+            }
+        result = value_audit.scenario_verdict(
+            "warm_leaf_body",
+            {
+                "historical_baseline": role("historical"),
+                "current_production": role("same"),
+                "candidate": role("same"),
+            },
+            {"family": "synthetic", "supported_scenarios": ["warm_leaf_body"]},
+            self.manifest["scenario_policy"]["warm_leaf_body"],
+            self.thresholds,
+        )
+        pair = result["pairs"]["current_production_vs_candidate"]
+        self.assertEqual(pair["status"], "unsupported")
+        self.assertTrue(pair["same_binary"])
 
     def test_role_provenance_is_explicit_and_never_defaults(self):
         with self.assertRaises(ValueError):
