@@ -1650,7 +1650,6 @@ fn close_import_source(
         let observations = frontier
             .requests()
             .iter()
-            .cloned()
             .map(|request| {
                 let read = accepted_reads
                     .iter()
