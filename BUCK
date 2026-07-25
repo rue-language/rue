@@ -315,12 +315,16 @@ sh_test(
     },
 )
 
+# RUE-1083: `examples/` is a declared input because this suite now also checks a
+# real maintained program (rill) for byte-stable output, not just the
+# purpose-built fixture. An edit under examples/ must therefore re-run it.
 sh_test(
     name = "reproducible-programs",
     labels = ["rue_heavy_suite"],
     test = "scripts/test-reproducible-output.sh",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_REPRO_FIXTURE": "$(location :reproducibility-fixture)/reproducibility/fixture",
         "RUE_STD_DIR": "$(location :std)/std",
     },
