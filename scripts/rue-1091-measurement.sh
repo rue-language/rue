@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 #
-# Run the RUE-1091 post-flip measurement gauntlet.
+# Run the RUE-1091 future post-flip structural/activation gauntlet.
+#
+# This is not the current-production value audit. The reproducible value audit
+# has its own black-box runner in scripts/rue-value-audit.py so a historical
+# pre-query revision can remain contextual when it cannot consume this
+# post-flip harness.
 #
 # This script is intentionally orchestration only. The structural assertions
 # remain in the RUE-1090/RUE-1121 harnesses, and timing is never collected from

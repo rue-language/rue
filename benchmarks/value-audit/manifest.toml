@@ -1,0 +1,50 @@
+schema_version = 1
+
+# This manifest names the audit's user-value matrix.  The workload semantics
+# remain owned by benchmarks/manifest.toml and by the existing benchmark
+# binaries; this file only pins the protocol-facing fixture selection.
+source_manifest = "../manifest.toml"
+
+[protocol]
+name = "rue_incrementality_value_audit"
+warmup = 1
+paired_samples = 7
+pair_order = "historical,current,candidate then candidate,current,historical"
+measurement_profile = "release"
+
+[thresholds]
+warm_unrelated_declaration_improvement = 0.50
+warm_leaf_body_improvement = 0.25
+claimed_win_mad_multiplier = 3.0
+cold_regression_fraction = 0.02
+repeated_edit_rss_band = 0.05
+caldera_wall_seconds = 300
+
+[[workload]]
+name = "synthetic"
+family = "synthetic"
+root = "../stress/many_functions.rue"
+warm_runner = "rue-compiler-session-bench --modules 128"
+scaling_runner = "rue-scaling-bench --bodies 1000 --decls 100"
+supported_scenarios = ["cold", "warm_no_op", "warm_unrelated_declaration", "warm_leaf_body", "warm_signature_fanout"]
+
+[[workload]]
+name = "representative_multi_module"
+family = "representative"
+root = "../scenarios/representative/main.rue"
+warm_runner = "rue-compiler-session-bench --representative"
+supported_scenarios = ["cold", "warm_no_op", "warm_leaf_body", "warm_signature_fanout"]
+
+[[workload]]
+name = "medium_ordinary_rue"
+family = "ordinary"
+root = "../../examples/quicksort.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
+
+[[workload]]
+name = "caldera"
+family = "caldera"
+root = "../../examples/caldera/main.rue"
+warm_runner = "unsupported: no persistent-session black-box protocol"
+supported_scenarios = ["cold"]
