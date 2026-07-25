@@ -67,7 +67,7 @@ soundness argument, and a cold-coefficient measurement are in
 with raw evidence in
 [`../benchmarks/rue-1135-declaration-base.jsonl`](../benchmarks/rue-1135-declaration-base.jsonl).
 
-It is a real coefficient win (3.8× to 7.8× cold semantic phase on the synthetic
+It is a real coefficient win (3.6× to 8.4× cold semantic phase on the synthetic
 curve, growing with the declaration universe) and it is not activation evidence
 either. It narrows no dependency: an unrelated declaration edit still
 invalidates the base and therefore every body, and cold work remains

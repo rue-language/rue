@@ -108,29 +108,33 @@ integer-division quotient. A hard row pins one declaration prefix per request.
 
 ## Measured
 
-Cold semantic phase, `rue-scaling-bench --mode timing`, release build, on a
-shared 4-core container. Raw evidence, every sample retained:
+Cold semantic phase, `rue-scaling-bench --mode timing`, five iterations per
+point, release build. Both arms were measured in one session on the same
+container so they share host conditions; the container is shared and not quiet,
+so read the ratios rather than the absolute milliseconds. Raw evidence, every
+sample retained:
 [`../benchmarks/rue-1135-declaration-base.jsonl`](../benchmarks/rue-1135-declaration-base.jsonl).
-Treat the ratios rather than the absolute milliseconds as the result — the host
-is not quiet.
 
-| bodies × decls | before (`ef75a7a`) | after (`9e790ff`) | speedup |
+| bodies × decls | before (`ef75a7a`) | after (`52e93ee`) | speedup |
 | -- | --: | --: | --: |
-| 100 × 100 | 159.3 ms | 42.1 ms | 3.8× |
-| 200 × 200 | 585.3 ms | 96.5 ms | 6.1× |
-| 200 × 400 | 911.8 ms | 122.9 ms | 7.4× |
-| 400 × 400 | 2 314.4 ms | 297.5 ms | 7.8× |
+| 100 × 100 | 161.3 ms | 45.2 ms | 3.6× |
+| 200 × 200 | 568.1 ms | 98.5 ms | 5.8× |
+| 200 × 400 | 875.2 ms | 136.0 ms | 6.4× |
+| 400 × 400 | 2 481.0 ms | 296.3 ms | 8.4× |
 
 The speedup grows with the declaration universe, which is the shape to expect:
 what the base removes is the `O(bodies × declarations)` epoch rebuild, so the
 larger the universe each body used to re-derive, the more of it goes away. The
-larger points land in the range RUE-1133 predicted for a shared base (~6.5×,
-against a 5.75× measured clone arm).
+larger points land at or above the range RUE-1133 predicted for a shared base
+(~6.5×, against a 5.75× measured clone arm).
 
-This is a coefficient measurement, not a value-audit row. The value-audit
+Two limits on these points. The synthetic corpus declares no structs, so its
+canonical type pool is nearly empty and this curve does not exercise the
+type-pool overlay — the family RUE-1133 flagged as the one its own corpus made
+invisible. And this is a coefficient measurement, not a value-audit row: the
 protocol in `benchmarks/value-audit/manifest.toml` needs three role binaries, a
-historical baseline, and its paired median/MAD sampling policy on a quiet host;
-it has not been run for this change.
+historical baseline, and its paired median/MAD sampling policy on a quiet host,
+and it has not been run for this change.
 
 ## Why this is sound
 

@@ -476,10 +476,10 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) known: KnownSymbols,
     /// Canonical composite-type storage for this semantic epoch (ADR-0024).
     pub(crate) type_pool: TypeInternPool,
-    /// Canonically prepopulated module registry for the current semantic epoch.
-    /// Canonically prepopulated and then read-only: body analysis resolves
-    /// modules through the registry and never registers one, so it is shared
-    /// across the bodies of a declaration base (RUE-1135).
+    /// Canonically prepopulated module registry for the current semantic epoch,
+    /// read-only once installed: body analysis resolves modules through the
+    /// registry and never registers one, so it is shared across the bodies of a
+    /// declaration base (RUE-1135).
     pub(crate) module_registry: Arc<crate::module_registry::ModuleRegistry>,
     /// Accepted canonical import-site identities for this semantic epoch.
     pub(crate) canonical_imports: Option<crate::canonical_imports::CanonicalImportContext>,
