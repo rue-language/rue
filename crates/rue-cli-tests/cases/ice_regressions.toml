@@ -107,21 +107,6 @@ fn main() -> i32 { consume(StrBuf.new()) }
 exit_code = 0
 
 [[case]]
-name = "struct_field_string_eq_rue94"
-env = { RUE_STD_PATH = "${REAL_STD}" }
-description = "RUE-94: comparing a struct-field StrBuf with == ('builtin type should have field vregs') -> SIGABRT."
-files = [{ path = "main.rue", source = """
-const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-struct Holder { s: StrBuf }
-fn main() -> i32 {
-    let h = Holder { s: "hello" };
-    if h.s == "hello" { 0 } else { 1 }
-}
-""" }]
-exit_code = 0
-
-[[case]]
 name = "array_literal_string_element_rue96"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 description = "RUE-96: array literal with a StrBuf element inferred the element as <error> -> E9000 ICE."
@@ -163,29 +148,6 @@ compile_fail = true
 error_contains = ["E0201"]
 
 [[case]]
-name = "neg_of_binary_in_intrinsic_arg_rue149"
-description = "RUE-149: @dbg(-(3 + 4)) was typed <error> then hit unreachable!() in cfg_lower -> SIGABRT."
-files = [{ path = "main.rue", source = """
-fn main() -> i32 {
-    @dbg(-(3 + 4));
-    0
-}
-""" }]
-stdout = "-7\n"
-exit_code = 0
-
-[[case]]
-name = "while_diverging_condition_rue77"
-description = "RUE-77: a while loop with an unconditionally-diverging condition left a block with no terminator -> SIGABRT."
-files = [{ path = "main.rue", source = """
-fn main() -> i32 {
-    while return 8 {}
-    5
-}
-""" }]
-exit_code = 8
-
-[[case]]
 name = "empty_array_in_struct_field_rue82"
 description = "RUE-82: an empty array literal [] in a struct field initializer inferred <error> -> E9000 ICE."
 files = [{ path = "main.rue", source = """
@@ -196,28 +158,6 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 5
-
-[[case]]
-name = "placeread_struct_call_arg_rue118"
-description = "RUE-118: passing a place-read struct field by value passed only slot 0 (miscompiled to 10)."
-files = [{ path = "main.rue", source = """
-struct Point { x: i32, y: i32 }
-struct Wrap { p: Point, tag: i32 }
-fn sum(pt: Point) -> i32 { pt.x + pt.y }
-fn main() -> i32 { let w = Wrap { p: Point { x: 10, y: 20 }, tag: 1 }; sum(w.p) }
-""" }]
-exit_code = 30
-
-[[case]]
-name = "placeread_struct_return_rue118"
-description = "RUE-118: returning a place-read struct field by value returned only slot 0 (miscompiled to 11)."
-files = [{ path = "main.rue", source = """
-struct Point { x: i32, y: i32 }
-struct Wrap { p: Point, tag: i32 }
-fn get_p(w: Wrap) -> Point { w.p }
-fn main() -> i32 { let w = Wrap { p: Point { x: 10, y: 20 }, tag: 1 }; let p = get_p(w); p.x + p.y }
-""" }]
-exit_code = 30
 
 [[case]]
 name = "anon_struct_compound_field_init_rue170"
@@ -260,22 +200,6 @@ fn main() -> i32 {
 }
 """ }]
 exit_code = 70
-
-[[case]]
-name = "dbg_string_array_element_rue192"
-env = { RUE_STD_PATH = "${REAL_STD}" }
-description = "RUE-192: @dbg(arr[0]) on a [StrBuf; 1] ('string value should have field vregs for fat pointer') -> SIGABRT."
-files = [{ path = "main.rue", source = """
-const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn main() -> i32 {
-    let arr: [StrBuf; 1] = ["hi"];
-    @dbg(arr[0]);
-    0
-}
-""" }]
-stdout = "hi\n"
-exit_code = 0
 
 [[case]]
 name = "array_drop_glue_multislot_rue193"

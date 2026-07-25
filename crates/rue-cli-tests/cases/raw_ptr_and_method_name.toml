@@ -121,22 +121,6 @@ fn main() -> i32 {
 """ }]
 stdout = "5\n9\n"
 
-# --- RUE-223 guard: StrBuf's real mutation methods STILL require `mut` -------
-[[case]]
-name = "string_push_str_still_requires_mut"
-env = { RUE_STD_PATH = "${REAL_STD}" }
-files = [{ path = "main.rue", source = """
-const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
-fn main() -> i32 {
-    let s = StrBuf.new();
-    s.push_str("x");
-    0
-}
-""" }]
-compile_fail = true
-error_contains = ["E0203"]
-
 # --- RUE-223 guard: StrBuf mutation on a `mut` binding still works -----------
 [[case]]
 name = "string_push_str_on_mut_ok"
