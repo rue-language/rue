@@ -5,6 +5,7 @@
 //! is consumed separately through a borrowing canonical compiler view.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::{FileId, Span};
@@ -18,8 +19,8 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
         view: &dyn crate::CanonicalImportView,
     ) -> CompileResult<()> {
         let (context, registry) = crate::canonical_imports::CanonicalImportContext::build(view)?;
-        self.canonical_imports = Some(context);
-        self.module_registry = registry;
+        self.canonical_imports = Some(Arc::new(context));
+        self.module_registry = Arc::new(registry);
         Ok(())
     }
 
@@ -52,7 +53,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     ///
     /// This maps FileIds to their corresponding request-local source paths.
     pub fn set_file_paths(&mut self, file_paths: HashMap<FileId, String>) {
-        self.file_paths = file_paths;
+        self.file_paths = Arc::new(file_paths);
         self.refresh_type_symbol_paths();
     }
 
@@ -60,19 +61,19 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     /// component. These are deliberately separate from physical file paths so
     /// relocating a source tree cannot change machine-level names.
     pub fn set_symbol_paths(&mut self, symbol_paths: HashMap<FileId, String>) {
-        self.symbol_paths = symbol_paths;
+        self.symbol_paths = Arc::new(symbol_paths);
         self.refresh_type_symbol_paths();
     }
 
     /// Install standard-library provenance established by import discovery.
     /// Path spelling alone never grants this authority.
     pub fn set_trusted_standard_library_files(&mut self, file_ids: HashSet<FileId>) {
-        self.trusted_standard_library_files = file_ids;
+        self.trusted_standard_library_files = Arc::new(file_ids);
     }
 
     fn refresh_type_symbol_paths(&self) {
-        let mut effective_paths = self.file_paths.clone();
-        effective_paths.extend(self.symbol_paths.clone());
+        let mut effective_paths = (*self.file_paths).clone();
+        effective_paths.extend(self.symbol_paths.iter().map(|(k, v)| (*k, v.clone())));
         self.type_pool.set_symbol_paths(effective_paths);
     }
 

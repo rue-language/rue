@@ -739,6 +739,25 @@ pub struct PerBodyDeclarationContextWork {
     /// Charged only when the endpoint stage runs (after a successful install),
     /// so it isolates endpoint traversal work from the projection/install terms.
     pub endpoints_installed: usize,
+    /// Immutable declaration bases built from scratch for this request
+    /// (RUE-1135). One per request is the intended result; a second means the
+    /// per-body epoch inputs differed and the retained base could not serve the
+    /// body. Charged by the base builder itself, so it counts derivations that
+    /// really ran the prepare/project/install/endpoint stages.
+    pub declaration_bases_built: usize,
+    /// Body-local epochs derived from a declaration base. Equals the number of
+    /// cold reached bodies once the base serves the whole request.
+    pub body_epochs_derived: usize,
+    /// Units a derivation read from the shared base without copying them:
+    /// declaration namespace, stable endpoints, module registry, and the
+    /// immutable prefixes of the type pool and parameter arena. Read from the
+    /// derived containers themselves, so a family that stopped being shared
+    /// drops out of this total.
+    pub declaration_units_shared: u64,
+    /// Units a derivation genuinely copied — the per-body owned state, sized by
+    /// the epoch's anonymous universe rather than by its declarations. Read
+    /// beside `declaration_units_shared`: neither is allowed to hide the other.
+    pub body_local_units_copied: u64,
 }
 
 /// Diagnostics and value-only structural work from a failed body-analysis

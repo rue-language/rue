@@ -384,8 +384,9 @@ impl SemanticBindingManifest {
     }
 }
 
+#[derive(Clone)]
 pub struct BoundSema<'a> {
-    sema: super::BodySema<'a>,
+    pub(super) sema: super::BodySema<'a>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
 }
@@ -501,14 +502,15 @@ impl<'a> DeclarationShells<'a> {
                 .iter()
                 .all(|pending| pending.declaration.as_u32() < self.sema.rir.len() as u32)
         );
-        self.sema.bound_const_candidates =
-            Some(super::declaration_index::BoundConstCandidateIndex::new(
+        self.sema.bound_const_candidates = Some(std::sync::Arc::new(
+            super::declaration_index::BoundConstCandidateIndex::new(
                 self.sema.rir,
                 self.pending_payloads.iter().filter_map(|pending| {
                     matches!(pending.source, DeclarationPayloadSource::Const { .. })
                         .then_some((pending.shell.source_order, pending.declaration))
                 }),
-            ));
+            ),
+        ));
         self.binding_work.declaration_resolution_invocations += 1;
         if let Err(error) = self.sema.resolve_declarations_for_test() {
             self.binding_work.declaration_resolution_failures += 1;
@@ -1586,8 +1588,8 @@ fn install_const_candidate_endpoints<D: super::DeclarationPhase>(
             return Err(crate::SemanticStableResolutionFailure::Ambiguous);
         }
     }
-    sema.const_candidate_tokens = tokens;
-    sema.const_candidate_endpoints = endpoints;
+    sema.const_candidate_tokens = std::sync::Arc::new(tokens);
+    sema.const_candidate_endpoints = std::sync::Arc::new(endpoints);
     Ok(())
 }
 
@@ -1975,12 +1977,12 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
         sema.anon_enum_identities = anon_enum_identities;
         sema.canonical_anonymous_types = canonical_anonymous_types;
     }
-    sema.stable_definition_tokens = definition_tokens;
-    sema.stable_definition_endpoints = definition_endpoints;
-    sema.const_candidate_tokens.clear();
-    sema.const_candidate_endpoints.clear();
-    sema.stable_module_tokens = module_tokens;
-    sema.stable_module_endpoints = module_endpoints;
+    sema.stable_definition_tokens = std::sync::Arc::new(definition_tokens);
+    sema.stable_definition_endpoints = std::sync::Arc::new(definition_endpoints);
+    sema.const_candidate_tokens = std::sync::Arc::default();
+    sema.const_candidate_endpoints = std::sync::Arc::default();
+    sema.stable_module_tokens = std::sync::Arc::new(module_tokens);
+    sema.stable_module_endpoints = std::sync::Arc::new(module_endpoints);
     Ok(())
 }
 
@@ -2169,10 +2171,9 @@ impl<'a> BoundSema<'a> {
         mut self,
         token: crate::SemanticDefinitionToken,
     ) -> Self {
-        self.sema
-            .stable_definition_tokens
+        std::sync::Arc::make_mut(&mut self.sema.stable_definition_tokens)
             .retain(|_, candidate| *candidate != token);
-        self.sema.stable_definition_endpoints.remove(&token);
+        std::sync::Arc::make_mut(&mut self.sema.stable_definition_endpoints).remove(&token);
         self
     }
 
@@ -2183,16 +2184,17 @@ impl<'a> BoundSema<'a> {
         issuer: u64,
     ) -> Self {
         let replacement = crate::SemanticDefinitionToken::new(issuer, token.slot());
-        for candidate in self.sema.stable_definition_tokens.values_mut() {
+        for candidate in
+            std::sync::Arc::make_mut(&mut self.sema.stable_definition_tokens).values_mut()
+        {
             if *candidate == token {
                 *candidate = replacement;
             }
         }
-        if let Some(mut endpoint) = self.sema.stable_definition_endpoints.remove(&token) {
+        let endpoints = std::sync::Arc::make_mut(&mut self.sema.stable_definition_endpoints);
+        if let Some(mut endpoint) = endpoints.remove(&token) {
             endpoint.token = replacement;
-            self.sema
-                .stable_definition_endpoints
-                .insert(replacement, endpoint);
+            endpoints.insert(replacement, endpoint);
         }
         self
     }
@@ -2433,7 +2435,7 @@ impl<'a> BoundSema<'a> {
         if actual != expected {
             return Err(DeclarationInstallFailure::IdentityMismatch);
         }
-        self.sema.body_owner_tokens = installed;
+        self.sema.body_owner_tokens = std::sync::Arc::new(installed);
         Ok(self)
     }
     pub fn binding_work(&self) -> DeclarationBindingWork {

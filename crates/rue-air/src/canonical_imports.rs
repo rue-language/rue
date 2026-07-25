@@ -30,6 +30,10 @@ pub(crate) struct CanonicalImportContext {
 }
 
 impl CanonicalImportContext {
+    pub(crate) fn len(&self) -> usize {
+        self.by_file.len() + self.sites.len()
+    }
+
     pub(crate) fn build(view: &dyn CanonicalImportView) -> CompileResult<(Self, ModuleRegistry)> {
         let mut display_names = BTreeMap::new();
         let mut unresolved_sites = BTreeMap::new();

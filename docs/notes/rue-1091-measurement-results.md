@@ -46,6 +46,26 @@ and the runner rejects a manifest that claims otherwise.
 
 This is the current-production value audit, not the activation ledger below.
 
+## Landed repairs
+
+RUE-1135 (A3) built the request-scoped immutable declaration base the probe was
+run to size: one bound declaration epoch per rooted attempt, with each reached
+body deriving its epoch from it instead of rebuilding one. Design, the
+soundness argument, and a cold-coefficient measurement are in
+[`rue-1135-request-scoped-declaration-base.md`](rue-1135-request-scoped-declaration-base.md),
+with raw evidence in
+[`../benchmarks/rue-1135-declaration-base.jsonl`](../benchmarks/rue-1135-declaration-base.jsonl).
+
+It lands by maintainer decision as an intentionally transitional coefficient
+repair. It is a real coefficient win (3.6× to 8.4× cold semantic phase on the
+synthetic curve, growing with the declaration universe), but it is neither
+activation evidence nor a provider-path step: the base still issues the compact
+identities and tokens consumed by bodies. It narrows no dependency: an
+unrelated declaration edit still invalidates the base and therefore every body,
+and cold work remains `O(bodies × declarations)` with a smaller coefficient.
+RUE-1091's completion criterion and RUE-1093's gate stay open; closing them
+additionally requires RUE-1134 (B1) and the provider path. RUE-1092 must replace,
+not extend, the shared-issuer boundary.
 ## Future post-flip activation evidence
 
 The staged gauntlet and result template below remain the authoritative plan for

@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::canonical_semantic::CanonicalSemanticFailurePhase as SemanticFailurePhase;
 
+pub use crate::declaration_base_meter::DeclarationBaseMetrics;
 pub use crate::diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
@@ -279,6 +280,33 @@ pub fn overlay_materialization_metrics(
     session.overlay_materialization_metrics()
 }
 
+/// Turn the RUE-1135 declaration-base parity oracle on or off.
+///
+/// With it on, every reached body is analyzed twice — once inside a freshly
+/// built, independently derived declaration epoch and once inside an epoch
+/// derived from the request's shared base — and the two published
+/// `BodyTransaction`s are compared, including the rendered diagnostic stream and
+/// its order. The base-derived arm is the one that publishes, so the oracle
+/// observes production rather than replacing it.
+///
+/// This is validation, not a second production path: it roughly doubles
+/// semantic work and exists so that "sharing the base is equivalent to building
+/// one per body" is checked body-for-body rather than asserted. Ordinary
+/// compiles leave it off.
+pub fn enable_shared_declaration_base_differential(
+    session: &mut crate::CompilerSession,
+    enabled: bool,
+) {
+    session.enable_shared_declaration_base_differential(enabled);
+}
+
+/// A snapshot of the RUE-1135 declaration-base meter: bases built, bodies served
+/// from one, units shared versus copied, and differential parity results. Unlike
+/// the clone probe this is charged by every compile — the base is the production
+/// path. See [`DeclarationBaseMetrics`].
+pub fn declaration_base_metrics(session: &crate::CompilerSession) -> DeclarationBaseMetrics {
+    session.declaration_base_metrics()
+}
 /// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4): the
 /// session-held `PublishedRootLookupLease`'s retained working set and its
 /// grow-with-pressure, eviction, and rederivation-after-eviction accounting.

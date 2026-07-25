@@ -40,6 +40,7 @@ mod call_resolution;
 mod comptime_eval;
 mod context;
 mod control_flow;
+mod declaration_base;
 mod declaration_index;
 mod declarations;
 mod file_paths;
@@ -67,6 +68,7 @@ pub use binding_manifest::{
     SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use context::ConstValue;
+pub use declaration_base::EpochDerivationUnits;
 pub use declaration_index::RirDeclarationIndexWork;
 pub use inference_ctx::InferenceContext;
 pub(crate) use inference_ctx::SemaInferenceFacts;
@@ -113,6 +115,7 @@ pub use body_identity::{
 pub use call_resolution::ProviderCallFacts;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileErrors, MultiErrorResult, PreviewFeatures};
@@ -144,8 +147,16 @@ pub(crate) struct EpochLocalConstCandidateEndpoint {
 pub struct MutableDeclarations(DeclarationNamespace);
 
 /// The closed source declaration namespace consumed by body analysis.
+///
+/// The namespace is closed at the phase transition, so every body of a request
+/// reads the same value. It is held behind an `Arc` and shared rather than
+/// copied: deriving a body-local epoch from a request-scoped declaration base
+/// (RUE-1135) bumps a refcount instead of copying O(declarations) map entries,
+/// and the absence of `DerefMut` here is what makes that sharing sound — no
+/// body can reach the shared namespace mutably.
 #[doc(hidden)]
-pub struct SourceDeclarations(DeclarationNamespace);
+#[derive(Clone)]
+pub struct SourceDeclarations(Arc<DeclarationNamespace>);
 
 #[doc(hidden)]
 pub struct DeclarationNamespace {
@@ -289,16 +300,23 @@ pub(crate) struct DeferredOwnershipGate {
 }
 
 /// Semantic analyzer that converts RIR to AIR.
+///
+/// Cloning is confined to request-scoped body-epoch derivation. Immutable
+/// declaration data is shared by refcount; body-local mutable state is copied.
+#[derive(Clone)]
 pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     declarations: D,
     pub(crate) rir: &'a Rir,
     pub(crate) interner: &'a ThreadedRodeo,
     /// Request-local declaration candidates for this exact RIR arena.
-    declaration_index: declaration_index::RirDeclarationIndex,
+    /// Shared with every body derived from one declaration base (RUE-1135):
+    /// the index is a pure function of the RIR arena and is never written after
+    /// the base is prepared.
+    declaration_index: Arc<declaration_index::RirDeclarationIndex>,
     /// Const locators admitted by the declaration-shell boundary. Canonical
     /// epochs populate this only from query-owned shells; it is installed
     /// immediately before declaration resolution begins.
-    bound_const_candidates: Option<declaration_index::BoundConstCandidateIndex>,
+    bound_const_candidates: Option<Arc<declaration_index::BoundConstCandidateIndex>>,
     /// Raw RIR declaration discovery is confined to synthetic component-test
     /// epochs. Canonical compiler epochs must import query-owned shells.
     synthetic_declaration_discovery: bool,
@@ -365,21 +383,29 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
             crate::SemanticModuleToken,
         >,
     >,
-    pub(crate) stable_definition_tokens: HashMap<
-        (u32, String, Option<String>, crate::StableDefinitionKind),
-        crate::SemanticDefinitionToken,
+    // The stable endpoint tables (RUE-1135). Installed once when a declaration
+    // base is built and read-only for the whole of body analysis — body analysis
+    // resolves tokens through them and never issues one — so every body derived
+    // from one base shares them behind an `Arc` instead of copying
+    // O(declarations) entries. A write outside the install stages fails to
+    // compile here rather than silently copying.
+    pub(crate) stable_definition_tokens: Arc<
+        HashMap<
+            (u32, String, Option<String>, crate::StableDefinitionKind),
+            crate::SemanticDefinitionToken,
+        >,
     >,
     pub(crate) stable_definition_endpoints:
-        HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>,
-    pub(crate) const_candidate_tokens: HashMap<(u32, String), EpochLocalConstCandidateToken>,
+        Arc<HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>>,
+    pub(crate) const_candidate_tokens: Arc<HashMap<(u32, String), EpochLocalConstCandidateToken>>,
     pub(crate) const_candidate_endpoints:
-        HashMap<EpochLocalConstCandidateToken, EpochLocalConstCandidateEndpoint>,
-    pub(crate) stable_module_tokens: HashMap<FileId, crate::SemanticModuleToken>,
+        Arc<HashMap<EpochLocalConstCandidateToken, EpochLocalConstCandidateEndpoint>>,
+    pub(crate) stable_module_tokens: Arc<HashMap<FileId, crate::SemanticModuleToken>>,
     pub(crate) stable_module_endpoints:
-        HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>,
+        Arc<HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>>,
     pub(crate) body_dependency_observer: Option<AnalyzedBodyOwnerEvent>,
     pub(crate) body_owner_tokens:
-        HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
+        Arc<HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>>,
     pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
     pub(crate) body_lookup_collector: Option<BodyLookupCollector>,
     pub(crate) one_body_error_recovery: bool,
@@ -441,17 +467,20 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) known: KnownSymbols,
     /// Canonical composite-type storage for this semantic epoch (ADR-0024).
     pub(crate) type_pool: TypeInternPool,
-    /// Canonically prepopulated module registry for the current semantic epoch.
-    pub(crate) module_registry: crate::module_registry::ModuleRegistry,
+    /// Canonically prepopulated module registry for the current semantic epoch,
+    /// read-only once installed: body analysis resolves modules through the
+    /// registry and never registers one, so it is shared across the bodies of a
+    /// declaration base (RUE-1135).
+    pub(crate) module_registry: Arc<crate::module_registry::ModuleRegistry>,
     /// Accepted canonical import-site identities for this semantic epoch.
-    pub(crate) canonical_imports: Option<crate::canonical_imports::CanonicalImportContext>,
+    pub(crate) canonical_imports: Option<Arc<crate::canonical_imports::CanonicalImportContext>>,
     /// Maps FileId to request-local source paths used for presentation.
-    pub(crate) file_paths: HashMap<FileId, String>,
+    pub(crate) file_paths: Arc<HashMap<FileId, String>>,
     /// Maps FileId to relocation-stable paths used in generated symbols.
-    pub(crate) symbol_paths: HashMap<FileId, String>,
+    pub(crate) symbol_paths: Arc<HashMap<FileId, String>>,
     /// FileIds whose standard-library provenance was established by the
     /// frontend's import resolver, rather than inferred from path spelling.
-    pub(crate) trusted_standard_library_files: HashSet<FileId>,
+    pub(crate) trusted_standard_library_files: Arc<HashSet<FileId>>,
     /// Explicit semantic root module for root-relative import fallback.
     pub(crate) root_file_id: Option<FileId>,
     /// Arena storage for function/method parameter data.
@@ -1129,7 +1158,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 impl<'a> Sema<'a> {
     fn freeze_declarations(mut self) -> BodySema<'a> {
         self.rebuild_callable_method_index();
-        self.map_declarations(|MutableDeclarations(namespace)| SourceDeclarations(namespace))
+        self.map_declarations(|MutableDeclarations(namespace)| {
+            SourceDeclarations(Arc::new(namespace))
+        })
     }
 
     /// Create a phase-local semantic analyzer for synthetic/test use.
@@ -1164,9 +1195,8 @@ impl<'a> Sema<'a> {
                 .then_some((candidate.source_order, candidate.declaration))
             })
             .collect::<Vec<_>>();
-        sema.bound_const_candidates = Some(declaration_index::BoundConstCandidateIndex::new(
-            sema.rir,
-            synthetic_const_candidates,
+        sema.bound_const_candidates = Some(Arc::new(
+            declaration_index::BoundConstCandidateIndex::new(sema.rir, synthetic_const_candidates),
         ));
         sema
     }
@@ -1190,7 +1220,7 @@ impl<'a> Sema<'a> {
             declarations: MutableDeclarations(DeclarationNamespace::new()),
             rir,
             interner,
-            declaration_index: declaration_index::RirDeclarationIndex::new(rir),
+            declaration_index: Arc::new(declaration_index::RirDeclarationIndex::new(rir)),
             bound_const_candidates: None,
             synthetic_declaration_discovery: false,
             anonymous_methods: HashMap::new(),
@@ -1213,14 +1243,14 @@ impl<'a> Sema<'a> {
             specialized_body_exports: Vec::new(),
             reusable_ordinary_bodies: HashMap::new(),
             reusable_specialized_bodies: Vec::new(),
-            stable_definition_tokens: HashMap::new(),
-            stable_definition_endpoints: HashMap::new(),
-            const_candidate_tokens: HashMap::new(),
-            const_candidate_endpoints: HashMap::new(),
-            stable_module_tokens: HashMap::new(),
-            stable_module_endpoints: HashMap::new(),
+            stable_definition_tokens: Arc::default(),
+            stable_definition_endpoints: Arc::default(),
+            const_candidate_tokens: Arc::default(),
+            const_candidate_endpoints: Arc::default(),
+            stable_module_tokens: Arc::default(),
+            stable_module_endpoints: Arc::default(),
             body_dependency_observer: None,
-            body_owner_tokens: HashMap::new(),
+            body_owner_tokens: Arc::default(),
             body_named_dependencies: Vec::new(),
             body_lookup_collector: None,
             one_body_error_recovery: false,
@@ -1251,11 +1281,11 @@ impl<'a> Sema<'a> {
             builtin_data_model_id: None,
             known: KnownSymbols::new(interner),
             type_pool,
-            module_registry: crate::module_registry::ModuleRegistry::new(),
+            module_registry: Arc::new(crate::module_registry::ModuleRegistry::new()),
             canonical_imports: None,
-            file_paths: physical_paths,
-            symbol_paths: logical_paths,
-            trusted_standard_library_files: HashSet::new(),
+            file_paths: Arc::new(physical_paths),
+            symbol_paths: Arc::new(logical_paths),
+            trusted_standard_library_files: Arc::default(),
             root_file_id: Some(root_file_id),
             param_arena: ParamArena::new(),
             anon_struct_method_sigs: HashMap::new(),
