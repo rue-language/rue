@@ -42,7 +42,13 @@ usable_as_role_evidence = false
 # a performance target: the target is the reference value itself.  Every one of
 # these programs is currently 20x to 77x its reference, so the allowance cannot
 # mask the regression it exists to measure.
-cold_gate_multiplier = 4.0
+#
+# The multiplier was 4.0 until a measured host showed it delivered only 1.2x to
+# 1.7x headroom over that host's OWN pre-cutover cost — tight enough that a host
+# a quarter slower would have failed a repaired compiler on the rill row. See
+# docs/notes/pre-cutover-baseline-binary.md. At 6.0 the headroom is 1.8x to 2.6x
+# and the current failures are still 4x to 14x over gate.
+cold_gate_multiplier = 6.0
 
 [historical_reference.programs.rill]
 pre_cutover_seconds = 0.32
@@ -238,7 +244,7 @@ family = "regressed_example"
 root = "../../examples/rill/main.rue"
 warm_runner = "unsupported: no persistent-session black-box protocol"
 supported_scenarios = ["cold"]
-cold_wall_seconds = 1.28
+cold_wall_seconds = 1.92
 cold_timeout_seconds = 120
 
 [[workload]]
@@ -247,7 +253,7 @@ family = "regressed_example"
 root = "../../examples/mosaic/main.rue"
 warm_runner = "unsupported: no persistent-session black-box protocol"
 supported_scenarios = ["cold"]
-cold_wall_seconds = 1.96
+cold_wall_seconds = 2.94
 cold_timeout_seconds = 120
 
 [[workload]]
@@ -256,7 +262,7 @@ family = "regressed_example"
 root = "../../examples/harbor/main.rue"
 warm_runner = "unsupported: no persistent-session black-box protocol"
 supported_scenarios = ["cold"]
-cold_wall_seconds = 3.56
+cold_wall_seconds = 5.34
 cold_timeout_seconds = 300
 
 [[workload]]
@@ -265,7 +271,7 @@ family = "regressed_example"
 root = "../../examples/lattice/main.rue"
 warm_runner = "unsupported: no persistent-session black-box protocol"
 supported_scenarios = ["cold"]
-cold_wall_seconds = 4.6
+cold_wall_seconds = 6.9
 cold_timeout_seconds = 300
 
 [[workload]]
@@ -274,5 +280,5 @@ family = "regressed_example"
 root = "../../examples/meridian/main.rue"
 warm_runner = "unsupported: no persistent-session black-box protocol"
 supported_scenarios = ["cold"]
-cold_wall_seconds = 22.8
+cold_wall_seconds = 34.2
 cold_timeout_seconds = 900
