@@ -1869,6 +1869,18 @@ where
         lock(&self.inner.nodes).keys().any(|key| predicate(key))
     }
 
+    /// Whether the exact key currently owns a live memo node in this family.
+    ///
+    /// "Retained" means that the key is still present in the family's memo
+    /// index. It does not mean that a terminal for the current revision is
+    /// valid, selected, or protected from eviction; those properties are
+    /// decided by the ordinary query request. This exact-key probe preserves
+    /// the memo node's lifetime semantics while using the index's O(1)
+    /// average-case lookup instead of enumerating every retained key.
+    pub fn contains_retained_key(&self, key: &K) -> bool {
+        lock(&self.inner.nodes).contains_key(key)
+    }
+
     /// Caller-owned provenance identities for every retained reusable terminal.
     pub fn retained_origin_request_ids(&self) -> BTreeSet<u64> {
         let nodes = lock(&self.inner.nodes)
@@ -3865,6 +3877,24 @@ mod tests {
         }
     }
 
+    static CONTAINS_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CountingKey(u64);
+
+    impl std::hash::Hash for CountingKey {
+        fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+            CONTAINS_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+            state.write_u64(self.0);
+        }
+    }
+
+    impl QueryKey for CountingKey {
+        fn stable_identity(&self) -> String {
+            self.0.to_string()
+        }
+    }
+
     fn revision(id: u64) -> Revision {
         Revision::new(id, id)
     }
@@ -3878,6 +3908,51 @@ mod tests {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         hasher.finish()
+    }
+
+    #[test]
+    fn exact_retained_key_probe_uses_hash_lookup_not_predicate_enumeration() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<CountingKey, u64>("exact-retained-key", 128)
+            .unwrap();
+        for key in 0..64 {
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    CountingKey(key),
+                    CancellationToken::new(),
+                    move |_| Ok(QueryOutput::success(key)),
+                )
+                .unwrap();
+        }
+
+        CONTAINS_HASH_CALLS.store(0, Ordering::Relaxed);
+        assert!(family.contains_retained_key(&CountingKey(63)));
+        assert_eq!(
+            CONTAINS_HASH_CALLS.load(Ordering::Relaxed),
+            1,
+            "an exact retained-key probe hashes the requested key once"
+        );
+        assert!(!family.contains_retained_key(&CountingKey(64)));
+        assert_eq!(
+            CONTAINS_HASH_CALLS.load(Ordering::Relaxed),
+            2,
+            "a missing exact retained-key probe still performs one lookup"
+        );
+
+        let predicate_visits = AtomicUsize::new(0);
+        assert!(!family.any_retained_key(|_| {
+            predicate_visits.fetch_add(1, Ordering::Relaxed);
+            false
+        }));
+        assert_eq!(
+            predicate_visits.load(Ordering::Relaxed),
+            64,
+            "predicate enumeration visits the retained-key population"
+        );
     }
 
     fn publish_empty(runtime: &QueryRuntime, revisions: impl IntoIterator<Item = Revision>) {

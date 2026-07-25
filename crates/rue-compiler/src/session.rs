@@ -12323,9 +12323,60 @@ mod tests {
         assert_eq!(fresh_body_work.body_analyses_computed, 1);
         assert_eq!(fresh_body_work.body_analyses_reused, 0);
         assert_eq!(fresh_body_work.body_analyses_invalidated, 0);
-        let mut normalized_warm_body_work = warm_body_work;
-        normalized_warm_body_work.body_analyses_invalidated = 0;
-        assert_eq!(normalized_warm_body_work, fresh_body_work);
+        assert_eq!(
+            warm_body_work.body_analyses_computed, fresh_body_work.body_analyses_computed,
+            "warm and fresh must compute the same number of bodies"
+        );
+        assert_eq!(
+            warm_body_work.body_analyses_reused, fresh_body_work.body_analyses_reused,
+            "warm and fresh must report the same reuse count"
+        );
+        assert_eq!(
+            warm_body_work.body_analyses_invalidated,
+            fresh_body_work.body_analyses_invalidated + 1,
+            "warm has one intentional invalidation delta for its retained predecessor"
+        );
+        assert_eq!(
+            warm_body_work.per_body_declaration_context,
+            fresh_body_work.per_body_declaration_context,
+            "all declaration/module/RIR body-context work must match"
+        );
+        assert_eq!(
+            warm_body_work.bodies_attempted, fresh_body_work.bodies_attempted,
+            "warm and fresh must attempt the same bodies"
+        );
+        assert_eq!(
+            warm_body_work.bodies_succeeded, fresh_body_work.bodies_succeeded,
+            "warm and fresh must succeed for the same bodies"
+        );
+        assert_eq!(
+            warm_body_work.air_instructions_produced, fresh_body_work.air_instructions_produced,
+            "warm and fresh must produce the same AIR instruction count"
+        );
+        assert_eq!(
+            warm_body_work.local_strings_produced, fresh_body_work.local_strings_produced,
+            "warm and fresh must produce the same local string count"
+        );
+        assert_eq!(
+            warm_body_work.ordinary_body_exports_attempted,
+            fresh_body_work.ordinary_body_exports_attempted,
+            "warm and fresh must attempt the same ordinary exports"
+        );
+        assert_eq!(
+            warm_body_work.ordinary_body_exports_succeeded,
+            fresh_body_work.ordinary_body_exports_succeeded,
+            "warm and fresh must succeed for the same ordinary exports"
+        );
+        assert_eq!(
+            warm_body_work.specialized_bodies_attempted,
+            fresh_body_work.specialized_bodies_attempted,
+            "warm and fresh must attempt the same specialized bodies"
+        );
+        assert_eq!(
+            warm_body_work.specialized_bodies_succeeded,
+            fresh_body_work.specialized_bodies_succeeded,
+            "warm and fresh must succeed for the same specialized bodies"
+        );
         assert_eq!(
             format!("{:?}", reused.functions()),
             format!("{:?}", ordinary.functions())
