@@ -57,6 +57,24 @@ with raw evidence in
 It is neither a value-audit row nor activation evidence: a cheap copy narrows no
 dependency and cannot satisfy any RUE-1091 acceptance criterion.
 
+## Landed repairs
+
+RUE-1135 (A3) built the request-scoped immutable declaration base the probe was
+run to size: one bound declaration epoch per rooted attempt, with each reached
+body deriving its epoch from it instead of rebuilding one. Design, the
+soundness argument, and a cold-coefficient measurement are in
+[`rue-1135-request-scoped-declaration-base.md`](rue-1135-request-scoped-declaration-base.md),
+with raw evidence in
+[`../benchmarks/rue-1135-declaration-base.jsonl`](../benchmarks/rue-1135-declaration-base.jsonl).
+
+It is a real coefficient win (3.8× to 7.8× cold semantic phase on the synthetic
+curve, growing with the declaration universe) and it is not activation evidence
+either. It narrows no dependency: an unrelated declaration edit still
+invalidates the base and therefore every body, and cold work remains
+`O(bodies × declarations)` with a smaller coefficient. RUE-1091's completion
+criterion and RUE-1093's gate stay open; closing them additionally requires
+RUE-1134 (B1) and the provider path.
+
 ## Future post-flip activation evidence
 
 The staged gauntlet and result template below remain the authoritative plan for
