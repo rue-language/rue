@@ -11,7 +11,7 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
-use super::{ConstValue, Sema, SemaOutput};
+use super::{BodySemanticBase, ConstValue, Sema, SemaOutput};
 use crate::types::{
     ArrayLen, PtrMutability, Type, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
 };
@@ -388,16 +388,21 @@ impl SemanticBindingManifest {
 ///
 pub struct BoundSema<'a> {
     pub(super) sema: super::BodySema<'a>,
+    /// Installed exactly once at the declaration/body boundary. It contains
+    /// immutable data only; a derived body receives a new analyzer assembled
+    /// from it and fresh local overlays.
+    pub(super) body_base: Option<Arc<BodySemanticBase<'a>>>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
 }
 
-impl<'a> Clone for BoundSema<'a> {
-    fn clone(&self) -> Self {
+impl<'a> BoundSema<'a> {
+    pub(super) fn derive_from_body_base(&self, base: Arc<BodySemanticBase<'a>>) -> Self {
         Self {
-            sema: self.sema.clone(),
+            sema: super::BodySema::derive_from_body_semantic_base(&base),
+            body_base: Some(base),
             manifest: self.manifest.clone(),
-            binding_work: self.binding_work.clone(),
+            binding_work: self.binding_work,
         }
     }
 }
@@ -3871,6 +3876,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         BoundSema {
             binding_work,
             sema: self.freeze_declarations(),
+            body_base: None,
             manifest: OnceLock::new(),
         }
     }

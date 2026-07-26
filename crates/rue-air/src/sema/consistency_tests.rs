@@ -124,6 +124,7 @@ mod tests {
     const AGGREGATE_RESOLUTION_SOURCE: &str = include_str!("aggregate_resolution.rs");
     const INFERENCE_CONTEXT_SOURCE: &str = include_str!("inference_ctx.rs");
     const TYPECK_SOURCE: &str = include_str!("typeck.rs");
+    const DECLARATION_BASE_SOURCE: &str = include_str!("declaration_base.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
@@ -246,6 +247,60 @@ mod tests {
             "InstData variant handling mismatch between constraint generation and AIR emission:\n{}",
             errors.join("\n")
         );
+    }
+
+    #[test]
+    fn body_epoch_derivation_has_a_data_only_base_and_fresh_local_overlays() {
+        let base = SEMA_ROOT_SOURCE
+            .split("pub(super) struct BodySemanticBase")
+            .nth(1)
+            .and_then(|source| source.split("/// The declaration-time portion").next())
+            .expect("BodySemanticBase definition is present");
+        for forbidden in ["Sema<", "Sema::", "&Sema", "BodySema", "BoundSema", "Deref"] {
+            assert!(
+                !base.contains(forbidden),
+                "BodySemanticBase must be data-only, not retain {forbidden}"
+            );
+        }
+
+        let local = SEMA_ROOT_SOURCE
+            .split("struct BodyLocalSeed")
+            .nth(1)
+            .and_then(|source| source.split("/// Semantic analyzer").next())
+            .expect("BodyLocalSeed definition is present");
+        for forbidden in ["Sema<", "Sema::", "&Sema", "BodySema", "BoundSema", "Deref"] {
+            assert!(
+                !local.contains(forbidden),
+                "BodyLocalSeed must be data-only, not retain {forbidden}"
+            );
+        }
+
+        let derive = DECLARATION_BASE_SOURCE
+            .split("pub fn derive_body_epoch")
+            .nth(1)
+            .and_then(|source| source.split("/// Type-pool entries").next())
+            .expect("body derivation is present");
+        assert!(derive.contains("body_base"));
+        assert!(derive.contains("derive_from_body_base"));
+        assert!(!derive.contains("self.clone()"));
+        assert!(!SEMA_ROOT_SOURCE.contains("impl<'a, D> Clone for Sema"));
+        assert!(!include_str!("binding_manifest.rs").contains("Clone for BoundSema"));
+
+        let construction = SEMA_ROOT_SOURCE
+            .split("fn derive_from_body_semantic_base")
+            .nth(1)
+            .and_then(|source| {
+                source
+                    .split("impl<D: DeclarationPhase> std::ops::Deref")
+                    .next()
+            })
+            .expect("base construction is present");
+        assert!(construction.contains("type_pool: base.type_pool.derive_overlay()"));
+        assert!(construction.contains("param_arena: base.param_arena.derive_overlay()"));
+        assert!(construction.contains("body_analysis_work: BodyAnalysisWork::default()"));
+        assert!(construction.contains("body_named_dependencies: Vec::new()"));
+        assert!(DECLARATION_BASE_SOURCE.contains("+ local.deferred_ownership_gates.len()"));
+        assert!(DECLARATION_BASE_SOURCE.contains("forced_anonymous_digest_entries"));
     }
 
     #[test]
