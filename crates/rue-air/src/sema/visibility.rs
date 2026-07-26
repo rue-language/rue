@@ -10,7 +10,7 @@ use rue_span::FileId;
 use super::aggregate_resolution::{
     AggregateFacts, is_accessible, resolve_visibility_module_ref, select_qualified_enum,
 };
-use super::{DeclarationPhase, Sema, context::AnalysisContext};
+use super::{BodySema, DeclarationPhase, Sema, context::AnalysisContext};
 use crate::types::EnumId;
 
 impl<D: DeclarationPhase> Sema<'_, D> {
@@ -86,7 +86,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             "`{name}` is not marked `pub`; private items are only visible within their defining directory"
         )))
     }
+}
 
+impl BodySema<'_> {
     /// Resolve an enum type through a module reference.
     ///
     /// Used for qualified enum paths like `module.EnumName::Variant` in match patterns.
