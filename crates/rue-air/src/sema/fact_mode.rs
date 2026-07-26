@@ -58,18 +58,6 @@ pub(crate) struct DeferredTypeRequest<'a> {
     pub(crate) span: Span,
 }
 
-/// Exact input for validating a deferred value-position parameter.
-pub(crate) struct DeferredValueRequest<'a> {
-    pub(crate) value_name: &'a str,
-    pub(crate) type_params: &'a [Spur],
-    pub(crate) value_params: &'a [Spur],
-    pub(crate) value_param_type_syms: &'a [(Spur, Spur)],
-    pub(crate) expected: Option<Type>,
-    pub(crate) contract: Option<(Spur, Spur)>,
-    pub(crate) require_integer: bool,
-    pub(crate) span: Span,
-}
-
 type TypeSyntaxResult = Result<
     Type,
     crate::SemanticTypeSyntaxError<std::convert::Infallible, rue_error::CompileError, FileId, Spur>,
@@ -131,10 +119,6 @@ pub(crate) trait BodyAnalysisHost: BodyAnalysisReadHost + Sized {
         &mut self,
         request: DeferredTypeRequest<'_>,
     ) -> rue_error::CompileResult<Option<Type>>;
-    fn validate_deferred_value(
-        &mut self,
-        request: DeferredValueRequest<'_>,
-    ) -> rue_error::CompileResult<Option<ConstValue>>;
 }
 
 /// The canonical epoch host. This is the only location that names the epoch
@@ -218,22 +202,6 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
             request.type_params,
             request.value_params,
             request.value_param_type_syms,
-            request.span,
-        )
-    }
-
-    fn validate_deferred_value(
-        &mut self,
-        request: DeferredValueRequest<'_>,
-    ) -> rue_error::CompileResult<Option<ConstValue>> {
-        self.validate_deferred_value_position_with_epoch_facts(
-            request.value_name,
-            request.type_params,
-            request.value_params,
-            request.value_param_type_syms,
-            request.expected,
-            request.contract,
-            request.require_integer,
             request.span,
         )
     }

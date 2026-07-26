@@ -369,12 +369,10 @@ mod tests {
         assert!(FACT_MODE_SOURCE.contains("struct ModulePrefixRequest"));
         assert!(FACT_MODE_SOURCE.contains("struct ArrayLengthRequest"));
         assert!(FACT_MODE_SOURCE.contains("struct DeferredTypeRequest"));
-        assert!(FACT_MODE_SOURCE.contains("struct DeferredValueRequest"));
         assert!(FACT_MODE_SOURCE.contains("fn resolve_type_syntax("));
         assert!(FACT_MODE_SOURCE.contains("fn resolve_type_module_prefix"));
         assert!(FACT_MODE_SOURCE.contains("fn resolve_array_length("));
         assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_type("));
-        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_value("));
         let contract = FACT_MODE_SOURCE
             .split("pub(crate) trait BodyAnalysisHost")
             .nth(1)
@@ -485,7 +483,7 @@ mod tests {
         }
 
         for (extension, count) in [
-            ("D::resolve_indexed_const", 4),
+            ("D::resolve_indexed_const", 3),
             ("D::collect_free_function_signature", 2),
         ] {
             assert_eq!(
@@ -529,6 +527,161 @@ mod tests {
                 "frozen {method_name} must make misses authoritative"
             );
         }
+    }
+
+    #[test]
+    fn type_syntax_evaluator_is_generic_and_has_one_explicit_host() {
+        fn item<'source>(source: &'source str, header: &str) -> &'source str {
+            let start = source.find(header).expect("item header is present");
+            let rest = &source[start..];
+            let open = rest.find('{').expect("item body opens");
+            let mut depth = 0;
+            for (offset, ch) in rest[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &rest[..open + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("item body closes");
+        }
+
+        let host = item(TYPECK_SOURCE, "trait TypeSyntaxHost");
+        for forbidden in [
+            "Sema<",
+            "Sema::",
+            "BodySema",
+            "Deref",
+            "as_sema",
+            "fn sema",
+            "type_syntax_deferred_array_length",
+            "type_syntax_deferred_value_argument",
+        ] {
+            assert!(
+                !host.contains(forbidden),
+                "the type-syntax host exposes no full analyzer accessor: {forbidden}"
+            );
+        }
+        assert_eq!(
+            TYPECK_SOURCE.matches("TypeSyntaxHost for Sema<").count(),
+            1,
+            "only the production epoch implements the type-syntax host"
+        );
+        assert!(TYPECK_SOURCE.contains("pub(super) trait TypeSyntaxHost"));
+        assert!(TYPECK_SOURCE.contains("pub(super) struct TypeSyntaxProvider"));
+        assert!(TYPECK_SOURCE.contains("pub(super) struct DeferredTypeSyntaxProvider"));
+        assert!(TYPECK_SOURCE.contains("pub(super) enum SemaTypeResolutionContext"));
+        assert!(TYPECK_SOURCE.contains("pub(super) fn resolve_array_length_fact("));
+        assert_eq!(
+            TYPECK_SOURCE
+                .matches("pub(super) fn flush_observed_type_dependencies(")
+                .count(),
+            2,
+            "both generic evaluators expose exact dependency flushing to sibling hosts"
+        );
+        assert!(!TYPECK_SOURCE.contains("type_syntax_deferred_array_length"));
+        assert!(!TYPECK_SOURCE.contains("type_syntax_deferred_value_argument"));
+
+        for evaluator in [
+            item(TYPECK_SOURCE, "struct TypeSyntaxProvider<"),
+            item(TYPECK_SOURCE, "struct DeferredTypeSyntaxProvider<"),
+            item(
+                TYPECK_SOURCE,
+                "impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>\n    for TypeSyntaxProvider",
+            ),
+            item(
+                TYPECK_SOURCE,
+                "impl<H: TypeSyntaxHost>\n    crate::SemanticTypeSyntaxProvider<\n        FileId,\n        crate::types::ModuleId,\n        FileId,\n        Spur,\n        Spur,\n        Type,\n        ConstValue,\n    > for TypeSyntaxProvider",
+            ),
+            item(
+                TYPECK_SOURCE,
+                "impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H>",
+            ),
+            item(
+                TYPECK_SOURCE,
+                "impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>\n    for DeferredTypeSyntaxProvider",
+            ),
+            item(
+                TYPECK_SOURCE,
+                "impl<H: TypeSyntaxHost>\n    crate::SemanticTypeSyntaxProvider<\n        FileId,\n        crate::types::ModuleId,\n        FileId,\n        Spur,\n        Spur,\n        DeferredTypeResolution,\n        DeferredValueResolution,\n    > for DeferredTypeSyntaxProvider",
+            ),
+            item(
+                TYPECK_SOURCE,
+                "impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H>",
+            ),
+        ] {
+            for forbidden in [
+                "Sema<",
+                "Sema::",
+                "BodySema",
+                "DeclarationPhase",
+                "Deref",
+                "SemaTypeSyntaxProvider",
+                "DeferredSemaTypeSyntaxProvider",
+                "type_syntax_deferred_array_length",
+                "type_syntax_deferred_value_argument",
+            ] {
+                assert!(
+                    !evaluator.contains(forbidden),
+                    "generic type-syntax evaluator must not retain {forbidden}"
+                );
+            }
+        }
+
+        let deferred = item(
+            TYPECK_SOURCE,
+            "impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H>",
+        );
+        for required in [
+            "fn deferred_argument_expected(",
+            "fn validate_value_position(",
+            "resolve_semantic_comptime_call(",
+            "type_syntax_signature_substitutions_are_ready(",
+            "type_syntax_resolve_substituted_parameter_type(",
+            "type_syntax_resolve_substituted_return_type(",
+            "type_syntax_validate_deferred_value(",
+        ] {
+            assert!(
+                deferred.contains(required),
+                "generic deferred evaluator owns {required}"
+            );
+        }
+
+        for (method, provider) in [
+            (
+                "resolve_type_syntax_with_epoch_facts",
+                "TypeSyntaxProvider::new",
+            ),
+            (
+                "resolve_type_module_prefix_with_epoch_facts",
+                "TypeSyntaxProvider::new",
+            ),
+            (
+                "resolve_array_length_with_epoch_facts",
+                "TypeSyntaxProvider::new",
+            ),
+            (
+                "validate_deferred_type_position_with_epoch_facts",
+                "DeferredTypeSyntaxProvider::new",
+            ),
+        ] {
+            let method = item(TYPECK_SOURCE, &format!("fn {method}("));
+            assert!(
+                method.contains(provider),
+                "{method} constructs the generic provider"
+            );
+            assert!(!method.contains("SemaTypeSyntaxProvider"));
+        }
+        let bare_value = deferred;
+        assert!(bare_value.contains("TypeSyntaxProvider::new"));
+        assert!(bare_value.contains("DeferredTypeSyntaxProvider::new"));
+        assert!(!TYPECK_SOURCE.contains("SemaTypeSyntaxProvider"));
+        assert!(!TYPECK_SOURCE.contains("DeferredSemaTypeSyntaxProvider"));
     }
 
     #[test]
