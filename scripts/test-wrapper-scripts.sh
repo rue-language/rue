@@ -767,9 +767,20 @@ EOF
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: monolithic CLI corpus receives the extended executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: CLI shard receives the extended executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-shard-1 -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
+
   local other_target
   for other_target in \
-    //:cli-tests \
     //:cli-tests-caldera \
     //:spec-tests \
     //:ui-tests \
