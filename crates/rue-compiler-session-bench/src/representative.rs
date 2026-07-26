@@ -385,14 +385,24 @@ fn assert_structure(scenarios: &[Value]) {
         ("no_change_query", [0, 0, 0, 0, 0, 0, 0, 1]),
         // Opaque bound tokens remove the old textual conversion discard, so
         // the two semantically unchanged CFGs remain reusable.
-        ("leaf_edit", [1, 6, 6, 0, 4, 2, 1, 0]),
-        ("widely_depended_definition_edit", [1, 6, 6, 0, 4, 2, 1, 0]),
-        ("import_change", [2, 5, 6, 0, 4, 2, 1, 0]),
-        ("diagnostic_error_edit", [1, 6, 5, 0, 0, 0, 1, 0]),
+        //
+        // Body reuse under rooted demand arrived with RUE-1137: the revision
+        // compatibility slot now carries observation-regime identity instead of
+        // a per-request counter, so an edit no longer invalidates every
+        // retained terminal for lack of a matching token. These rows are the
+        // reverse-closure of each edit, not the whole program.
+        ("leaf_edit", [1, 6, 1, 5, 4, 2, 1, 0]),
+        ("widely_depended_definition_edit", [1, 6, 1, 5, 4, 2, 1, 0]),
+        // The import edit drops one leaf and adds its replacement, so two
+        // modules are required and the removed module's dependents recompute.
+        ("import_change", [2, 5, 2, 4, 4, 2, 1, 0]),
+        // The failing body is required; the four unaffected bodies reuse. No
+        // CFG is built because the request fails before CFG construction.
+        ("diagnostic_error_edit", [1, 6, 1, 4, 0, 0, 1, 0]),
         // The failed ParseModule terminal is retained. Recovery changes only
         // that module's source leaf, so the other six module terminals remain
         // exact hits rather than being re-adopted after the diagnostic epoch.
-        ("diagnostic_recovery", [1, 6, 6, 0, 4, 2, 1, 0]),
+        ("diagnostic_recovery", [1, 6, 1, 5, 4, 2, 1, 0]),
     ];
     for (name, counts) in expected {
         let work = &get(name)["required_vs_reused_work"];

@@ -9644,7 +9644,7 @@ impl RevisionedQueryDatabase {
     /// queries must run on that successor revision when one exists.
     pub(crate) fn current_semantic_revision(&self) -> Option<Revision> {
         self.current_import_revision
-            .map(|revision| Revision::new(revision.revision_id, revision.request_generation))
+            .map(|revision| Revision::new(revision.revision_id, revision.compatibility_token))
             .or({
                 #[cfg(test)]
                 {
@@ -10925,7 +10925,7 @@ impl RevisionedQueryDatabase {
                 "import demand requested from a non-current immutable revision",
             ));
         }
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let view = {
             let store = lock_import_store(&self.import_store);
             store
@@ -11088,7 +11088,7 @@ impl RevisionedQueryDatabase {
         self.exact_import_groups_dispatched = self
             .exact_import_groups_dispatched
             .saturating_add(roots.occurrences().len() as u64);
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let mut groups = Vec::new();
         for occurrence in roots.occurrences() {
             let attempt = self.runtime.request_registered(
@@ -11242,7 +11242,7 @@ impl RevisionedQueryDatabase {
         ImportObservationLedger,
     )> {
         let current = self.current_import_revision?;
-        let runtime = Revision::new(current.revision_id, current.request_generation);
+        let runtime = Revision::new(current.revision_id, current.compatibility_token);
         let view = {
             let store = lock_import_store(&self.import_store);
             store
@@ -11315,7 +11315,13 @@ impl RevisionedQueryDatabase {
         for source in ledger.iter().filter_map(ImportObservation::accepted_source) {
             crate::import_discovery::accepted_import_module(source, &accepted_reads)?;
         }
-        let revision = Revision::new(self.next_revision, generation);
+        // RUE-1137: the runtime revision's compatibility slot carries
+        // observation-regime identity, not the per-request counter. A request
+        // reading under unchanged rules therefore publishes a revision its
+        // predecessor's terminals can still be validated against; only a
+        // regime change (roots, read policy, discovery epoch) resets the epoch.
+        let compatibility_token = context.regime_token();
+        let revision = Revision::new(self.next_revision, compatibility_token);
         self.next_revision += 1;
         let mut leaves = Vec::new();
         let mut accepted_topology = ledger
@@ -11435,6 +11441,7 @@ impl RevisionedQueryDatabase {
         let published = ImportInputRevision {
             revision_id: revision.id(),
             request_generation: generation,
+            compatibility_token,
             frontier_round,
         };
         self.current_import_revision = Some(published);
@@ -11467,7 +11474,7 @@ impl RevisionedQueryDatabase {
                 "a successor overlay must extend the current published revision",
             ));
         }
-        let parent_runtime = Revision::new(parent.revision_id, parent.request_generation);
+        let parent_runtime = Revision::new(parent.revision_id, parent.compatibility_token);
         let parent_view = {
             let store = lock_import_store(&self.import_store);
             store
@@ -11621,7 +11628,9 @@ impl RevisionedQueryDatabase {
             }
         }
 
-        let revision = Revision::new(self.next_revision, parent.request_generation);
+        // An overlay successor stays inside its parent's observation regime, so
+        // it inherits the parent's compatibility token verbatim (RUE-1137).
+        let revision = Revision::new(self.next_revision, parent.compatibility_token);
         self.next_revision += 1;
         let mut leaves = Vec::new();
         {
@@ -11696,6 +11705,7 @@ impl RevisionedQueryDatabase {
         let published = ImportInputRevision {
             revision_id: revision.id(),
             request_generation: parent.request_generation,
+            compatibility_token: parent.compatibility_token,
             frontier_round,
         };
         self.current_import_revision = Some(published);
@@ -18985,7 +18995,7 @@ fn main() -> i32 {
         let revision = database
             .begin_import_inputs(&snapshot, context.clone(), reads.clone())
             .unwrap();
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let root = ModuleId::from_logical_path("main.rue").unwrap();
         let modules = snapshot
             .source_revision()
@@ -19131,7 +19141,7 @@ fn main() -> i32 {
             begin_database_plan(&mut database, &mut assembler, context);
         let revision =
             publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let parsed = database.runtime.request_registered(
             &database.parse_modules,
@@ -19301,7 +19311,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 first_revision.revision_id,
-                first_revision.request_generation,
+                first_revision.compatibility_token,
             ),
             key.clone(),
             CancellationToken::new(),
@@ -19322,7 +19332,7 @@ fn main() -> i32 {
         );
         let shifted_runtime = Revision::new(
             shifted_revision.revision_id,
-            shifted_revision.request_generation,
+            shifted_revision.compatibility_token,
         );
         let relocated = database.runtime.request_registered(
             &database.declaration_imports,
@@ -19374,7 +19384,7 @@ fn main() -> i32 {
         );
         let pending = database.runtime.request_registered(
             &database.declaration_imports,
-            Revision::new(revision.revision_id, revision.request_generation),
+            Revision::new(revision.revision_id, revision.compatibility_token),
             key.clone(),
             CancellationToken::new(),
         );
@@ -19389,7 +19399,7 @@ fn main() -> i32 {
             publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
         let recovered = database.runtime.request_registered(
             &database.declaration_imports,
-            Revision::new(completed.revision_id, completed.request_generation),
+            Revision::new(completed.revision_id, completed.compatibility_token),
             key,
             CancellationToken::new(),
         );
@@ -19415,7 +19425,7 @@ fn main() -> i32 {
         let mut database = RevisionedQueryDatabase::default();
         let (snapshot, reads, revision, plan) =
             begin_database_plan(&mut database, &mut assembler, context);
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let query =
             Key::ConstResolution(crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
@@ -19443,7 +19453,7 @@ fn main() -> i32 {
             publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
         let recovered = database.runtime.request_registered(
             &database.semantic_nucleus,
-            Revision::new(completed.revision_id, completed.request_generation),
+            Revision::new(completed.revision_id, completed.compatibility_token),
             query,
             CancellationToken::new(),
         );
@@ -19484,7 +19494,7 @@ fn main() -> i32 {
             begin_database_plan(&mut database, &mut assembler, context);
         let revision =
             publish_manifest_observations(&mut database, &snapshot, reads, &plan, revision);
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let selected = database.runtime.request_registered(
             &database.declaration_imports,
@@ -19601,7 +19611,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 first_revision.revision_id,
-                first_revision.request_generation,
+                first_revision.compatibility_token,
             ),
             key.clone(),
             CancellationToken::new(),
@@ -19638,7 +19648,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 remapped_revision.revision_id,
-                remapped_revision.request_generation,
+                remapped_revision.compatibility_token,
             ),
             key.clone(),
             CancellationToken::new(),
@@ -19679,7 +19689,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 green_revision.revision_id,
-                green_revision.request_generation,
+                green_revision.compatibility_token,
             ),
             key,
             CancellationToken::new(),
@@ -19740,7 +19750,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 first_revision.revision_id,
-                first_revision.request_generation,
+                first_revision.compatibility_token,
             ),
             key.clone(),
             CancellationToken::new(),
@@ -19800,7 +19810,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 remapped_revision.revision_id,
-                remapped_revision.request_generation,
+                remapped_revision.compatibility_token,
             ),
             key.clone(),
             CancellationToken::new(),
@@ -19845,7 +19855,7 @@ fn main() -> i32 {
             &database.declaration_imports,
             Revision::new(
                 green_revision.revision_id,
-                green_revision.request_generation,
+                green_revision.compatibility_token,
             ),
             key,
             CancellationToken::new(),
@@ -19993,7 +20003,7 @@ fn main() -> i32 {
         let revision = database
             .begin_import_inputs(&snapshot, context, reads)
             .unwrap();
-        let runtime_revision = Revision::new(revision.revision_id, revision.request_generation);
+        let runtime_revision = Revision::new(revision.revision_id, revision.compatibility_token);
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let key = |index| {
             declaration_import_key(

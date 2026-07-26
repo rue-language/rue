@@ -1709,6 +1709,28 @@ where
             active.remove(&self.incarnation);
             return match result {
                 TaskQueryResult::Terminal { terminal, .. } => Ok(Some(terminal.stamp)),
+                // A dependency that cannot be produced under this revision
+                // because one of its inputs is gone does not abort the
+                // dependent: it makes the dependent's retained terminal
+                // invalid, so the dependent recomputes against the current
+                // graph (RUE-1137 item 8).
+                //
+                // The distinction is which side of the edge the demand is on.
+                // Demanding an input a *computation* has not yet discovered is
+                // the external-input protocol asking the host to supply it.
+                // Re-demanding an input a *retained terminal already observed*,
+                // and finding it absent, is an ordinary red edge — the removal
+                // is the change. Without this, editing an import so a module
+                // leaves the graph aborts every dependent instead of
+                // recomputing it.
+                //
+                // Only missing inputs are absorbed. Cancellation, dependency
+                // cycles, and engine invariant violations still propagate: they
+                // say nothing about whether the retained terminal is stale.
+                TaskQueryResult::Aborted {
+                    abort: QueryAbort::MissingInput(_),
+                    ..
+                } => Ok(None),
                 TaskQueryResult::Aborted { abort, .. } => Err(abort),
             };
         }

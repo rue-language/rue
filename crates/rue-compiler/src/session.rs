@@ -5281,7 +5281,11 @@ impl CompilerSession {
             predecessor: predecessor_revision,
         };
         let runtime_revision =
-            rue_query::Revision::new(revision.revision_id, revision.request_generation);
+            // The runtime revision's compatibility slot is the observation
+            // regime, not the per-request counter (RUE-1137). This must match
+            // how import publication built the revision, or the module-input
+            // and parse projections cannot find their published views.
+            rue_query::Revision::new(revision.revision_id, revision.compatibility_token);
         self.parse_modules_dispatched = self
             .parse_modules_dispatched
             .saturating_add(appended.len() as u64);

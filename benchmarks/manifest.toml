@@ -41,11 +41,16 @@ scenarios = [
   # Bound tokens (RUE-850) removed the textual conversion discard, so the two
   # semantically unchanged CFGs stay reusable on ordinary source edits; these
   # rows mirror assert_structure in rue-compiler-session-bench.
-  { name = "leaf_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
-  { name = "widely_depended_definition_edit", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
-  { name = "import_change", modules = [2, 5], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
-  { name = "diagnostic_error_edit", modules = [1, 6], semantic_bodies = [5, 0], cfgs = [0, 0], semantic_queries = [1, 0] },
-  { name = "diagnostic_recovery", modules = [1, 6], semantic_bodies = [6, 0], cfgs = [4, 2], semantic_queries = [1, 0] },
+  #
+  # RUE-1137 made the revision compatibility slot carry observation-regime
+  # identity rather than a per-request counter, so retained terminals survive an
+  # edit under unchanged read rules. The semantic_bodies columns are therefore
+  # the edit's reverse closure instead of the whole program.
+  { name = "leaf_edit", modules = [1, 6], semantic_bodies = [1, 5], cfgs = [4, 2], semantic_queries = [1, 0] },
+  { name = "widely_depended_definition_edit", modules = [1, 6], semantic_bodies = [1, 5], cfgs = [4, 2], semantic_queries = [1, 0] },
+  { name = "import_change", modules = [2, 5], semantic_bodies = [2, 4], cfgs = [4, 2], semantic_queries = [1, 0] },
+  { name = "diagnostic_error_edit", modules = [1, 6], semantic_bodies = [1, 4], cfgs = [0, 0], semantic_queries = [1, 0] },
+  { name = "diagnostic_recovery", modules = [1, 6], semantic_bodies = [1, 5], cfgs = [4, 2], semantic_queries = [1, 0] },
 ]
 
 [[benchmark]]
