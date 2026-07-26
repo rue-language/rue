@@ -5,7 +5,7 @@
 //! has no per-AST construction path: callers normalize symbols, append module
 //! items in order, and finish one lowering session.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use lasso::{Spur, ThreadedRodeo};
 
@@ -65,6 +65,7 @@ pub struct AstGen<'a> {
     /// missing or kind-mismatched lookup fails closed as an internal error.
     anonymous_anchors:
         HashMap<rue_span::Span, (crate::AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
+    authoritative_anonymous_anchors: bool,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
 }
 
@@ -82,8 +83,38 @@ impl<'a> AstGen<'a> {
             for_counter: 0,
             structural_path: Vec::new(),
             anonymous_anchors: HashMap::new(),
+            authoritative_anonymous_anchors: false,
             normalize_symbol: Box::new(normalize_symbol),
         }
+    }
+
+    /// Install the exact anonymous-type anchors transported for one complete
+    /// producer declaration. When installed, this table is the sole authority
+    /// for anonymous type identity: producer-root lowering does not derive a
+    /// second table from the AST walk, and every supplied entry must be
+    /// consumed by exactly one matching literal.
+    pub fn install_authoritative_anonymous_anchors(
+        &mut self,
+        anchors: impl IntoIterator<
+            Item = (
+                rue_span::Span,
+                crate::AnonymousTypeSiteKind,
+                crate::RirStructuralAnchor,
+            ),
+        >,
+    ) -> Result<(), crate::RirPayloadBuildError> {
+        self.authoritative_anonymous_anchors = true;
+        let mut seen_anchors = HashSet::new();
+        for (span, kind, anchor) in anchors {
+            if self.anonymous_anchors.contains_key(&span) || !seen_anchors.insert(anchor.clone()) {
+                return Err(crate::RirPayloadBuildError::InvalidBuilderInput {
+                    family: "anonymous type anchor",
+                    reason: "authoritative table aliases a source locator or anchor",
+                });
+            }
+            self.anonymous_anchors.insert(span, (kind, anchor));
+        }
+        Ok(())
     }
 
     /// Append borrowed items while preserving generator-global state.
@@ -132,6 +163,12 @@ impl<'a> AstGen<'a> {
         if let Some(error) = self.payload_error {
             return Err(error);
         }
+        if self.authoritative_anonymous_anchors && !self.anonymous_anchors.is_empty() {
+            return Err(crate::RirPayloadBuildError::InvalidBuilderInput {
+                family: "anonymous type anchor",
+                reason: "authoritative table contains an unconsumed source locator",
+            });
+        }
         self.rir
             .validate_payloads()
             .expect("AstGen produced malformed RIR payloads");
@@ -167,9 +204,11 @@ impl<'a> AstGen<'a> {
     /// globally unique, so the accumulated map needs no per-root reset.
     fn with_producer_root<T>(&mut self, root: &Expr, action: impl FnOnce(&mut Self) -> T) -> T {
         let outer_path = std::mem::take(&mut self.structural_path);
-        for site in crate::anonymous_type_sites(root) {
-            self.anonymous_anchors
-                .insert(site.span, (site.kind, site.anchor));
+        if !self.authoritative_anonymous_anchors {
+            for site in crate::anonymous_type_sites(root) {
+                self.anonymous_anchors
+                    .insert(site.span, (site.kind, site.anchor));
+            }
         }
         let result = action(self);
         self.structural_path = outer_path;
@@ -205,8 +244,8 @@ impl<'a> AstGen<'a> {
         span: rue_span::Span,
         kind: crate::AnonymousTypeSiteKind,
     ) -> crate::RirStructuralAnchor {
-        match self.anonymous_anchors.get(&span) {
-            Some((site_kind, anchor)) if *site_kind == kind => anchor.clone(),
+        match self.anonymous_anchors.remove(&span) {
+            Some((site_kind, anchor)) if site_kind == kind => anchor,
             Some(_) => {
                 self.record_anonymous_anchor_failure(
                     "anonymous type literal kind disagrees with its transported frontend anchor",
@@ -1964,6 +2003,30 @@ mod tests {
                 _ => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn authoritative_anonymous_anchor_install_rejects_span_and_anchor_aliases() {
+        let interner = ThreadedRodeo::new();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        let anchor = crate::RirStructuralAnchor::new(vec![crate::RirStructuralPathSegment::Body]);
+        let kind = crate::AnonymousTypeSiteKind::Struct;
+        let duplicate_span = astgen.install_authoritative_anonymous_anchors([
+            (rue_span::Span::new(1, 2), kind, anchor.clone()),
+            (
+                rue_span::Span::new(1, 2),
+                kind,
+                crate::RirStructuralAnchor::new(Vec::new()),
+            ),
+        ]);
+        assert!(duplicate_span.is_err());
+
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        let duplicate_anchor = astgen.install_authoritative_anonymous_anchors([
+            (rue_span::Span::new(1, 2), kind, anchor.clone()),
+            (rue_span::Span::new(3, 4), kind, anchor),
+        ]);
+        assert!(duplicate_anchor.is_err());
     }
 
     #[test]

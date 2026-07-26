@@ -1852,7 +1852,8 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "declaration_candidate"
+            "body_query"
+                | "declaration_candidate"
                 | "parsed_modules"
                 | "revisioned_query_database"
                 | "semantic_query_nucleus"
@@ -1864,7 +1865,8 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         }
         if !matches!(
             *name,
-            "declaration_candidate"
+            "body_query"
+                | "declaration_candidate"
                 | "parsed_modules"
                 | "revisioned_query_database"
                 | "semantic_query_nucleus"
