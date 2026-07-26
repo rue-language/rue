@@ -30,8 +30,8 @@ use crate::types::{
     parse_type_call_syntax,
 };
 
-struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
-    sema: &'s mut Sema<'a, D>,
+struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase, F: super::BodyAnalysisFactMode> {
+    sema: &'s mut Sema<'a, D, F>,
     span: Span,
     root_authority: SemaTypeRootAuthority,
     resolution_context: SemaTypeResolutionContext,
@@ -41,7 +41,7 @@ struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum SemaTypeRootAuthority {
+pub(crate) enum SemaTypeRootAuthority {
     KnownFile(FileId),
     GlobalSpeculative,
 }
@@ -58,8 +58,9 @@ fn provider_failure<T>(result: CompileResult<T>) -> SemaProviderResult<T> {
     result.map_err(crate::SemanticProviderError::Failure)
 }
 
-impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
-    for SemaTypeSyntaxProvider<'_, '_, '_, D>
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
+    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+    for SemaTypeSyntaxProvider<'_, '_, '_, D, F>
 {
     type Abort = Infallible;
     type Failure = CompileError;
@@ -117,7 +118,7 @@ impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types
     }
 }
 
-impl<D: DeclarationPhase>
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     crate::SemanticTypeSyntaxProvider<
         FileId,
         crate::types::ModuleId,
@@ -126,7 +127,7 @@ impl<D: DeclarationPhase>
         Spur,
         Type,
         ConstValue,
-    > for SemaTypeSyntaxProvider<'_, '_, '_, D>
+    > for SemaTypeSyntaxProvider<'_, '_, '_, D, F>
 {
     fn substituted_type(
         &mut self,
@@ -570,7 +571,28 @@ impl<D: DeclarationPhase>
     }
 }
 
-impl<D: DeclarationPhase> SemaTypeSyntaxProvider<'_, '_, '_, D> {
+impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
+    SemaTypeSyntaxProvider<'s, 'a, 'c, D, F>
+{
+    fn new(
+        sema: &'s mut Sema<'a, D, F>,
+        span: Span,
+        root_authority: SemaTypeRootAuthority,
+        resolution_context: SemaTypeResolutionContext,
+        type_substitutions: Option<&'c HashMap<Spur, Type>>,
+        value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
+    ) -> Self {
+        Self {
+            sema,
+            span,
+            root_authority,
+            resolution_context,
+            type_substitutions,
+            value_substitutions,
+            observed_type_dependencies: Vec::new(),
+        }
+    }
+
     fn resolve_array_length_fact(
         &mut self,
         scope: FileId,
@@ -962,15 +984,52 @@ enum DeferredValueResolution {
     Pending,
 }
 
-struct DeferredSemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
-    inner: SemaTypeSyntaxProvider<'s, 'a, 'c, D>,
+struct DeferredSemaTypeSyntaxProvider<
+    's,
+    'a,
+    'c,
+    D: DeclarationPhase,
+    F: super::BodyAnalysisFactMode,
+> {
+    inner: SemaTypeSyntaxProvider<'s, 'a, 'c, D, F>,
     type_params: &'c [Spur],
     value_params: &'c [Spur],
     value_param_type_syms: &'c [(Spur, Spur)],
 }
 
-impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
-    for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D>
+impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
+    DeferredSemaTypeSyntaxProvider<'s, 'a, 'c, D, F>
+{
+    fn new(
+        sema: &'s mut Sema<'a, D, F>,
+        span: Span,
+        type_params: &'c [Spur],
+        value_params: &'c [Spur],
+        value_param_type_syms: &'c [(Spur, Spur)],
+    ) -> Self {
+        Self {
+            inner: SemaTypeSyntaxProvider::new(
+                sema,
+                span,
+                SemaTypeRootAuthority::KnownFile(span.file_id),
+                SemaTypeResolutionContext::Type,
+                None,
+                None,
+            ),
+            type_params,
+            value_params,
+            value_param_type_syms,
+        }
+    }
+
+    fn flush_observed_type_dependencies(&mut self) {
+        self.inner.flush_observed_type_dependencies();
+    }
+}
+
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
+    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+    for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D, F>
 {
     type Abort = Infallible;
     type Failure = CompileError;
@@ -1002,7 +1061,7 @@ impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types
     }
 }
 
-impl<D: DeclarationPhase>
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     crate::SemanticTypeSyntaxProvider<
         FileId,
         crate::types::ModuleId,
@@ -1011,7 +1070,7 @@ impl<D: DeclarationPhase>
         Spur,
         DeferredTypeResolution,
         DeferredValueResolution,
-    > for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D>
+    > for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D, F>
 {
     fn substituted_type(
         &mut self,
@@ -1535,7 +1594,7 @@ fn private_qualified_item_error(
     ))
 }
 
-impl<'a, D: DeclarationPhase> Sema<'a, D> {
+impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
     /// Get a human-readable name for a type.
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         // A constructor-produced anonymous type prints its instantiation
@@ -2078,15 +2137,35 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> Result<Type, crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>> {
-        let mut provider = SemaTypeSyntaxProvider {
-            sema: self,
-            span,
+        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
+        fact_mode.resolve_type_syntax_with_substitutions(
+            self,
+            syntax,
+            root_file,
             root_authority,
-            resolution_context: SemaTypeResolutionContext::Type,
+            span,
             type_substitutions,
             value_substitutions,
-            observed_type_dependencies: Vec::new(),
-        };
+        )
+    }
+
+    pub(crate) fn resolve_type_syntax_with_epoch_facts(
+        &mut self,
+        syntax: &str,
+        root_file: FileId,
+        root_authority: SemaTypeRootAuthority,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> Result<Type, crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>> {
+        let mut provider = SemaTypeSyntaxProvider::new(
+            self,
+            span,
+            root_authority,
+            SemaTypeResolutionContext::Type,
+            type_substitutions,
+            value_substitutions,
+        );
         let result = crate::resolve_semantic_type_syntax(&mut provider, &root_file, syntax);
         provider.flush_observed_type_dependencies();
         result
@@ -2370,20 +2449,27 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
-        let resolved = crate::resolve_semantic_module_path(
-            &mut SemaTypeSyntaxProvider {
-                sema: self,
-                span,
-                root_authority: SemaTypeRootAuthority::KnownFile(root_file),
-                resolution_context: SemaTypeResolutionContext::Type,
-                type_substitutions: None,
-                value_substitutions: None,
-                observed_type_dependencies: Vec::new(),
-            },
-            &root_file,
-            segments,
-        )
-        .map_err(|failure| module_path_resolution_compile_error(failure, span))?;
+        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
+        fact_mode.resolve_type_module_prefix(self, root_file, segments, span)
+    }
+
+    pub(crate) fn resolve_type_module_prefix_with_epoch_facts(
+        &mut self,
+        root_file: FileId,
+        segments: &[&str],
+        span: Span,
+    ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
+        let mut provider = SemaTypeSyntaxProvider::new(
+            self,
+            span,
+            SemaTypeRootAuthority::KnownFile(root_file),
+            SemaTypeResolutionContext::Type,
+            None,
+            None,
+        );
+        let resolved = crate::resolve_semantic_module_path(&mut provider, &root_file, segments)
+            .map_err(|failure| module_path_resolution_compile_error(failure, span))?;
+        provider.flush_observed_type_dependencies();
 
         let module_id = resolved.module;
         let module_def = self.module_registry.get_def(module_id);
@@ -2622,15 +2708,24 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         span: Span,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
-        let mut provider = SemaTypeSyntaxProvider {
-            sema: self,
+        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
+        fact_mode.resolve_array_length_fact(self, length, span, value_substitutions)
+    }
+
+    pub(crate) fn resolve_array_length_with_epoch_facts(
+        &mut self,
+        length: &ArrayLen,
+        span: Span,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<u64> {
+        let mut provider = SemaTypeSyntaxProvider::new(
+            self,
             span,
-            root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
-            resolution_context: SemaTypeResolutionContext::Type,
-            type_substitutions: None,
+            SemaTypeRootAuthority::KnownFile(span.file_id),
+            SemaTypeResolutionContext::Type,
+            None,
             value_substitutions,
-            observed_type_dependencies: Vec::new(),
-        };
+        );
         let result = provider.resolve_array_length_fact(span.file_id, length);
         provider.flush_observed_type_dependencies();
         result
@@ -2831,22 +2926,34 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         value_param_type_syms: &[(Spur, Spur)],
         span: Span,
     ) -> CompileResult<Option<Type>> {
-        let mut provider = DeferredSemaTypeSyntaxProvider {
-            inner: SemaTypeSyntaxProvider {
-                sema: self,
-                span,
-                root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
-                resolution_context: SemaTypeResolutionContext::Type,
-                type_substitutions: None,
-                value_substitutions: None,
-                observed_type_dependencies: Vec::new(),
-            },
+        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
+        fact_mode.validate_deferred_type_position(
+            self,
+            type_name,
             type_params,
             value_params,
             value_param_type_syms,
-        };
+            span,
+        )
+    }
+
+    pub(crate) fn validate_deferred_type_position_with_epoch_facts(
+        &mut self,
+        type_name: String,
+        type_params: &[Spur],
+        value_params: &[Spur],
+        value_param_type_syms: &[(Spur, Spur)],
+        span: Span,
+    ) -> CompileResult<Option<Type>> {
+        let mut provider = DeferredSemaTypeSyntaxProvider::new(
+            self,
+            span,
+            type_params,
+            value_params,
+            value_param_type_syms,
+        );
         let result = crate::resolve_semantic_type_syntax(&mut provider, &span.file_id, &type_name);
-        provider.inner.flush_observed_type_dependencies();
+        provider.flush_observed_type_dependencies();
         match result {
             Ok(DeferredTypeResolution::Resolved(ty)) => Ok(Some(ty)),
             Ok(DeferredTypeResolution::Pending) => Ok(None),
@@ -2885,6 +2992,31 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// values are returned for partial binding; an enclosing comptime
     /// parameter is valid but remains `None` until specialization.
     fn validate_deferred_value_position(
+        &mut self,
+        value_name: &str,
+        type_params: &[Spur],
+        value_params: &[Spur],
+        value_param_type_syms: &[(Spur, Spur)],
+        expected: Option<Type>,
+        contract: Option<(Spur, Spur)>,
+        require_integer: bool,
+        span: Span,
+    ) -> CompileResult<Option<ConstValue>> {
+        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
+        fact_mode.validate_deferred_value_position(
+            self,
+            value_name,
+            type_params,
+            value_params,
+            value_param_type_syms,
+            expected,
+            contract,
+            require_integer,
+            span,
+        )
+    }
+
+    pub(crate) fn validate_deferred_value_position_with_epoch_facts(
         &mut self,
         value_name: &str,
         type_params: &[Spur],
@@ -2953,20 +3085,13 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
 
         if let Some((call_name, args)) = parse_type_call_syntax(value_name) {
-            let mut provider = DeferredSemaTypeSyntaxProvider {
-                inner: SemaTypeSyntaxProvider {
-                    sema: self,
-                    span,
-                    root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
-                    resolution_context: SemaTypeResolutionContext::Type,
-                    type_substitutions: None,
-                    value_substitutions: None,
-                    observed_type_dependencies: Vec::new(),
-                },
+            let mut provider = DeferredSemaTypeSyntaxProvider::new(
+                self,
+                span,
                 type_params,
                 value_params,
                 value_param_type_syms,
-            };
+            );
             let call = crate::resolve_semantic_comptime_call(
                 &mut provider,
                 &span.file_id,
@@ -2974,7 +3099,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 &args,
                 crate::SemanticComptimeCallExpectation::Value,
             );
-            provider.inner.flush_observed_type_dependencies();
+            provider.flush_observed_type_dependencies();
             let call =
                 call.map_err(|failure| self.deferred_value_syntax_compile_error(failure, span))?;
             let function = *self
@@ -3055,17 +3180,18 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             return Ok(concrete);
         }
 
-        let value = match (SemaTypeSyntaxProvider {
-            sema: self,
+        let mut provider = SemaTypeSyntaxProvider::new(
+            self,
             span,
-            root_authority: SemaTypeRootAuthority::KnownFile(span.file_id),
-            resolution_context: SemaTypeResolutionContext::Type,
-            type_substitutions: None,
-            value_substitutions: None,
-            observed_type_dependencies: Vec::new(),
-        })
-        .resolve_value_argument_fact(span.file_id, "compile-time call", value_name)
-        {
+            SemaTypeRootAuthority::KnownFile(span.file_id),
+            SemaTypeResolutionContext::Type,
+            None,
+            None,
+        );
+        let value_result =
+            provider.resolve_value_argument_fact(span.file_id, "compile-time call", value_name);
+        provider.flush_observed_type_dependencies();
+        let value = match value_result {
             Ok(value) => value,
             Err(_) if require_integer => {
                 // This is the outer array-length boundary, not a nested

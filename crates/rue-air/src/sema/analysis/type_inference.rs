@@ -6,7 +6,7 @@
 use super::*;
 use crate::inference::LazyInferenceFacts;
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     fn inference_function_is_selected(
         &self,
         function: Spur,
@@ -203,7 +203,11 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        fn record_concrete(sema: &mut BodySema<'_>, ty: &InferType, access_file: FileId) -> bool {
+        fn record_concrete<F: crate::sema::BodyAnalysisFactMode>(
+            sema: &mut BodySema<'_, F>,
+            ty: &InferType,
+            access_file: FileId,
+        ) -> bool {
             match ty {
                 InferType::Concrete(ty) => {
                     let accessible = match ty.kind() {
@@ -328,7 +332,7 @@ impl<'a> BodySema<'a> {
             type_var_count,
             inference_body_dependencies,
         ) = {
-            let facts = crate::sema::SemaInferenceFacts::new(infer_ctx, self);
+            let facts = self.inference_facts(infer_ctx);
 
             // Create constraint generator driven by the demand-population provider.
             let mut cgen = ConstraintGenerator::with_lazy_facts(

@@ -5,7 +5,7 @@
 //! them. It extends the canonical [`BodySema`] rather than introducing peer
 //! analysis state.
 
-use super::super::call_resolution::{CallResolutionFacts, call_facts};
+use super::super::call_resolution::CallResolutionFacts;
 use super::super::context::{LocalVar, VariableMoveState};
 use super::*;
 use crate::inst::AirPlaceRef;
@@ -143,7 +143,7 @@ impl PlaceTrace {
             .any(|p| matches!(p.proj, AirProjection::Index { .. }) && p.index_segment.is_none())
     }
 }
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     /// Read move state without exposing the move-state store to phase peers.
     pub(super) fn moved_state<'ctx>(
         &self,
@@ -371,7 +371,8 @@ impl<'a> BodySema<'a> {
         // owner backs both calls.
         let ptr_method = self.interner.get_or_intern("as_ptr");
         let len_method = self.interner.get_or_intern("len");
-        let Some(ptr_ty) = call_facts(self)
+        let Some(ptr_ty) = self
+            .call_facts()
             .method_info(struct_id, ptr_method)
             .map(|m| m.return_type)
         else {
@@ -382,7 +383,8 @@ impl<'a> BodySema<'a> {
                 span,
             ));
         };
-        let Some(len_ty) = call_facts(self)
+        let Some(len_ty) = self
+            .call_facts()
             .method_info(struct_id, len_method)
             .map(|m| m.return_type)
         else {
@@ -1393,7 +1395,8 @@ impl<'a> BodySema<'a> {
         // @import("math")`). Module bindings are per-file scoped (RUE-113),
         // so the lookup is keyed by the reference's own file and takes
         // precedence over file-local value constants.
-        if let Some(binding) = call_facts(self).module_binding(span.file_id, name) {
+        let module_binding = self.call_facts().module_binding(span.file_id, name);
+        if let Some(binding) = module_binding {
             self.record_body_named_dependency(
                 super::super::NamedConstDependencyTargetEvent::ModuleBinding {
                     file: span.file_id.index(),
@@ -1415,7 +1418,10 @@ impl<'a> BodySema<'a> {
         // checked above. The value was evaluated once during declaration
         // gathering (RUE-171); materialize it directly — the initializer is
         // never re-analyzed at use sites.
-        if let Some(const_info) = call_facts(self).resolve_const_info_in_file(name, span.file_id) {
+        let const_info = self
+            .call_facts()
+            .resolve_const_info_in_file(name, span.file_id);
+        if let Some(const_info) = const_info {
             // Apply the uniform privacy rule even though ordinary unqualified
             // lookup resolves in the reference file (spec 10.3:1, 10.3:7).
             self.check_unqualified_visibility(
@@ -2620,7 +2626,7 @@ impl<'a> BodySema<'a> {
             ));
         };
         let method = self.interner.get_or_intern("byte_at_borrowed");
-        if call_facts(self).method_info(struct_id, method).is_none() {
+        if self.call_facts().method_info(struct_id, method).is_none() {
             return Err(CompileError::new(
                 ErrorKind::InternalError(
                     "trusted std StrBuf is missing its source `byte_at_borrowed` method"

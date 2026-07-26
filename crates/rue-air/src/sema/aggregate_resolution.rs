@@ -46,17 +46,24 @@ impl AggregateModuleFact {
     }
 }
 
-pub(crate) struct EpochFacts<'s, 'a, D: DeclarationPhase> {
-    sema: &'s Sema<'a, D>,
+pub(crate) struct EpochFacts<
+    's,
+    'a,
+    D: DeclarationPhase,
+    F: super::BodyAnalysisFactMode = super::EpochFactMode,
+> {
+    sema: &'s Sema<'a, D, F>,
 }
 
-impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
-    pub(crate) fn new(sema: &'s Sema<'a, D>) -> Self {
+impl<'s, 'a, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> EpochFacts<'s, 'a, D, F> {
+    pub(crate) fn new(sema: &'s Sema<'a, D, F>) -> Self {
         Self { sema }
     }
 }
 
-impl<D: DeclarationPhase> AggregateFacts for EpochFacts<'_, '_, D> {
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> AggregateFacts
+    for EpochFacts<'_, '_, D, F>
+{
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
         self.sema.record_body_module_item_lookup(file, name);
         self.sema.value_const(&(file, name)).cloned()

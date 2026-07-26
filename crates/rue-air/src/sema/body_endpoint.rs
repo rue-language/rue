@@ -46,7 +46,7 @@ use crate::{
 /// `one_body.rs`. Every operation answers one point query against the
 /// declaration universe and returns owned/`Copy` data — no borrowed epoch table
 /// or live `Sema` handle escapes.
-pub(in crate::sema) trait BodyEndpointProvider {
+pub(crate) trait BodyEndpointProvider {
     /// Intern a source name to its symbol, or `None` if never interned. Mirrors
     /// `interner.get`.
     fn name_symbol(&self, name: &str) -> Option<Spur>;
@@ -131,17 +131,17 @@ pub(in crate::sema) trait BodyEndpointProvider {
 
 /// The production [`BodyEndpointProvider`]: every operation is the verbatim
 /// epoch-table read the inline `one_body.rs` code performed.
-pub(in crate::sema) struct EpochFacts<'s, 'a> {
-    sema: &'s BodySema<'a>,
+pub(crate) struct EpochFacts<'s, 'a, F: super::BodyAnalysisFactMode = super::EpochFactMode> {
+    sema: &'s BodySema<'a, F>,
 }
 
-/// Construct a short-lived [`EpochFacts`] borrowing `sema` for the duration of
-/// one endpoint resolution.
-pub(in crate::sema) fn endpoint_facts<'s, 'a>(sema: &'s BodySema<'a>) -> EpochFacts<'s, 'a> {
-    EpochFacts { sema }
+impl<'s, 'a, F: crate::sema::BodyAnalysisFactMode> EpochFacts<'s, 'a, F> {
+    pub(in crate::sema) fn new(sema: &'s BodySema<'a, F>) -> Self {
+        Self { sema }
+    }
 }
 
-impl BodyEndpointProvider for EpochFacts<'_, '_> {
+impl<F: super::BodyAnalysisFactMode> BodyEndpointProvider for EpochFacts<'_, '_, F> {
     fn name_symbol(&self, name: &str) -> Option<Spur> {
         self.sema.interner.get(name)
     }

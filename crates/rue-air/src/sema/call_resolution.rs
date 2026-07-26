@@ -52,7 +52,7 @@ use crate::types::{ModuleDef, ModuleId, StructId};
 /// family-1C analyzer sites. Every operation answers one point query against
 /// the declaration universe and returns owned/`Copy` data — no borrowed epoch
 /// table or live `Sema` handle escapes.
-pub(in crate::sema) trait CallResolutionFacts {
+pub(crate) trait CallResolutionFacts {
     /// The signature/binding info for an internal free-function symbol.
     /// Mirrors `Sema::function_info` (`functions.get`).
     fn function_info(&self, name: Spur) -> Option<FunctionInfo>;
@@ -114,17 +114,17 @@ pub(in crate::sema) trait CallResolutionFacts {
 
 /// The production [`CallResolutionFacts`]: every operation is the verbatim
 /// epoch-table read the inline analyzer code performed.
-pub(in crate::sema) struct EpochFacts<'s, 'a> {
-    sema: &'s BodySema<'a>,
+pub(crate) struct EpochFacts<'s, 'a, F: super::BodyAnalysisFactMode = super::EpochFactMode> {
+    sema: &'s BodySema<'a, F>,
 }
 
-/// Construct a short-lived [`EpochFacts`] borrowing `sema` for the duration of
-/// one call/method/operator resolution.
-pub(in crate::sema) fn call_facts<'s, 'a>(sema: &'s BodySema<'a>) -> EpochFacts<'s, 'a> {
-    EpochFacts { sema }
+impl<'s, 'a, F: crate::sema::BodyAnalysisFactMode> EpochFacts<'s, 'a, F> {
+    pub(in crate::sema) fn new(sema: &'s BodySema<'a, F>) -> Self {
+        Self { sema }
+    }
 }
 
-impl CallResolutionFacts for EpochFacts<'_, '_> {
+impl<F: super::BodyAnalysisFactMode> CallResolutionFacts for EpochFacts<'_, '_, F> {
     fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.sema.function_info(name).copied()
     }

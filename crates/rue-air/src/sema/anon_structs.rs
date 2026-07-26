@@ -108,7 +108,7 @@ pub(crate) fn anonymous_producer_root(
     }
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
     /// Deterministic export/presentation ordering of two producer-nominal keys.
     ///
     /// This is a *presentation* order only — it decides how anonymous exports are
@@ -391,7 +391,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
     /// Stable, allocation-order-independent digest of a producer-nominal
     /// anonymous identity (ADR-0066, RUE-1089).
     ///

@@ -118,6 +118,7 @@ mod tests {
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
     const OWNERSHIP_SOURCE: &str = include_str!("analysis/ownership.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
+    const FACT_MODE_SOURCE: &str = include_str!("fact_mode.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
@@ -348,8 +349,34 @@ mod tests {
             );
         }
 
-        assert!(CONTROL_FLOW_SOURCE.contains("impl<'a> BodySema<'a>"));
+        assert!(
+            CONTROL_FLOW_SOURCE
+                .contains("impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode>")
+        );
         assert!(!CONTROL_FLOW_SOURCE.contains("struct BodySema"));
+    }
+
+    #[test]
+    fn one_body_fact_mode_has_one_epoch_backed_production_configuration() {
+        assert!(FACT_MODE_SOURCE.contains("pub struct EpochFactMode"));
+        assert!(FACT_MODE_SOURCE.contains("type EndpointFacts"));
+        assert!(FACT_MODE_SOURCE.contains("type CallFacts"));
+        assert!(FACT_MODE_SOURCE.contains("type AggregateFacts"));
+        assert!(FACT_MODE_SOURCE.contains("type InferenceFacts"));
+        assert!(FACT_MODE_SOURCE.contains("fn resolve_type_syntax_with_substitutions"));
+        assert!(FACT_MODE_SOURCE.contains("fn resolve_type_module_prefix"));
+        assert!(FACT_MODE_SOURCE.contains("fn resolve_array_length_fact"));
+        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_type_position"));
+        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_value_position"));
+        assert!(!FACT_MODE_SOURCE.contains("SemaTypeSyntaxProvider"));
+        assert!(!FACT_MODE_SOURCE.contains("DeferredSemaTypeSyntaxProvider"));
+        assert!(!FACT_MODE_SOURCE.contains("ProviderFactMode"));
+        assert!(!FACT_MODE_SOURCE.contains("analyze_one_body"));
+        assert!(SEMA_ROOT_SOURCE.contains("F = EpochFactMode"));
+        assert!(SEMA_ROOT_SOURCE.contains("fn endpoint_facts("));
+        assert!(SEMA_ROOT_SOURCE.contains("fn call_facts("));
+        assert!(SEMA_ROOT_SOURCE.contains("fn aggregate_facts("));
+        assert!(SEMA_ROOT_SOURCE.contains("fn inference_facts"));
     }
 
     #[test]
@@ -398,7 +425,10 @@ mod tests {
         assert!(OWNERSHIP_SOURCE.contains("struct PlaceTrace"));
         assert!(OWNERSHIP_SOURCE.contains("struct ProjectionInfo"));
         assert!(OWNERSHIP_SOURCE.contains("fn moved_state<'ctx>("));
-        assert!(OWNERSHIP_SOURCE.contains("impl<'a> BodySema<'a>"));
+        assert!(
+            OWNERSHIP_SOURCE
+                .contains("impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode>")
+        );
         assert!(!OWNERSHIP_SOURCE.contains("struct BodySema"));
         assert!(!OWNERSHIP_SOURCE.contains("analyze_field_set_impl"));
         assert!(!OWNERSHIP_SOURCE.contains("analyze_index_set_impl"));

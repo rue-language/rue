@@ -13,7 +13,7 @@ enum OwnershipProperty {
     Drop,
 }
 
-impl<'a> Sema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, super::MutableDeclarations, Mode> {
     /// Phase 0: Inject compiler-provided enums.
     pub(crate) fn inject_builtin_types(&mut self) {
         // Inject built-in enum types (Arch, Os)
@@ -55,7 +55,7 @@ impl<'a> Sema<'a> {
     }
 }
 
-impl<'a, D: DeclarationPhase> Sema<'a, D> {
+impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
     // ========================================================================
     // Builtin type helper methods
     // ========================================================================

@@ -16,7 +16,7 @@ use rue_error::{CompileError, CompileErrors, ErrorKind};
 use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
-use super::body_endpoint::{BodyEndpointProvider, endpoint_facts};
+use super::body_endpoint::BodyEndpointProvider;
 use super::{AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyOwnerKind, BodySema};
 use crate::{
     FunctionInstanceKey, NominalInstanceKey, SemanticBodyExport, SemanticDefinitionToken,
@@ -218,8 +218,8 @@ fn interruption_outcome(interruption: OneBodyInterruption) -> OneBodyTransaction
     }
 }
 
-fn stable_token(
-    sema: &BodySema<'_>,
+fn stable_token<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     file: u32,
     name: &str,
     owner: Option<&str>,
@@ -228,8 +228,8 @@ fn stable_token(
     sema.stable_definition_token(file, name, owner, kind)
 }
 
-fn target_dependency(
-    sema: &BodySema<'_>,
+fn target_dependency<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     target: &super::NamedConstDependencyTargetEvent,
 ) -> Result<OneBodyDependency, crate::SemanticBodyExportFailure> {
     use super::{DeclarationTypeDependencyTargetKind as TK, NamedConstDependencyTargetEvent as T};
@@ -244,7 +244,7 @@ fn target_dependency(
         }
         T::NamedType { file, name, kind } => {
             if let Some(symbol) = sema.interner.get(name.as_str()) {
-                let facts = endpoint_facts(sema);
+                let facts = sema.endpoint_facts();
                 let builtin_kind = if facts.is_builtin_enum(symbol) {
                     Some(crate::AnonymousNominalKind::Enum)
                 } else if facts.is_builtin_or_generated_struct(symbol) {
@@ -314,13 +314,13 @@ fn semantic_parameter_mode(mode: rue_rir::RirParamMode) -> crate::SemanticParame
     }
 }
 
-fn produced_method_type(
-    sema: &BodySema<'_>,
+fn produced_method_type<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     ty: &super::AnonMethodType,
     owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<SemanticProducedAnonymousMethodType, crate::SemanticBodyExportFailure> {
-    fn concrete(
-        sema: &BodySema<'_>,
+    fn concrete<F: super::BodyAnalysisFactMode>(
+        sema: &BodySema<'_, F>,
         ty: &super::AnonMethodType,
         owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
     ) -> Result<
@@ -354,8 +354,8 @@ fn produced_method_type(
     })
 }
 
-fn produced_anonymous_nominals(
-    sema: &BodySema<'_>,
+fn produced_anonymous_nominals<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
 ) -> Result<Arc<[SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure> {
     let mut identities = sema
         .canonical_anonymous_types
@@ -369,7 +369,7 @@ fn produced_anonymous_nominals(
         .collect::<Vec<_>>();
     // Deterministic total order over the direct producer keys so the exported
     // nominal stream never depends on `HashMap` iteration order.
-    identities.sort_by(|(_, left), (_, right)| BodySema::anonymous_key_cmp(left, right));
+    identities.sort_by(|(_, left), (_, right)| BodySema::<F>::anonymous_key_cmp(left, right));
 
     identities
         .into_iter()
@@ -577,8 +577,8 @@ fn dependency_has_issuer(dependency: &OneBodyDependency, issuer: u64) -> bool {
     }
 }
 
-fn body_references(
-    sema: &BodySema<'_>,
+fn body_references<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     owner: Option<super::BodyOwnerToken>,
     referenced_functions: &HashSet<Spur>,
     referenced_methods: &HashSet<(crate::StructId, Spur)>,
@@ -597,7 +597,7 @@ fn body_references(
         references.insert(OneBodyDependency::Callable(identity));
     }
     for (structure, method) in referenced_methods {
-        let Some(info) = endpoint_facts(sema).method_info(*structure, *method) else {
+        let Some(info) = sema.endpoint_facts().method_info(*structure, *method) else {
             return Err(ReferenceProjectionFailure::EngineAbort);
         };
         let symbol = sema.method_symbol(*structure, sema.interner.resolve(method), info.has_self);
@@ -643,7 +643,7 @@ fn body_references(
             continue;
         }
         if sema.interner.get(&event.target_name).is_some_and(|symbol| {
-            let facts = endpoint_facts(sema);
+            let facts = sema.endpoint_facts();
             facts.is_builtin_or_generated_struct(symbol) || facts.is_builtin_enum(symbol)
         }) {
             continue;
@@ -728,8 +728,8 @@ fn body_references(
     Ok(references)
 }
 
-fn fail(
-    sema: &BodySema<'_>,
+fn fail<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     owner: Option<super::BodyOwnerToken>,
     error: CompileError,
 ) -> OneBodyTransactionOutcome {
@@ -769,8 +769,8 @@ fn fail(
     }
 }
 
-fn finalize_ordinary(
-    sema: &BodySema<'_>,
+fn finalize_ordinary<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     owner: super::BodyOwnerToken,
     body_span: Span,
     function: AnalyzedFunction,
@@ -827,8 +827,8 @@ fn finalize_ordinary(
     }
 }
 
-pub(super) fn analyze_one_body(
-    mut sema: BodySema<'_>,
+pub(super) fn analyze_one_body<F: super::BodyAnalysisFactMode>(
+    mut sema: BodySema<'_, F>,
     request: OneBodyRequest,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
@@ -866,7 +866,7 @@ pub(super) fn analyze_one_body(
             type_arguments,
             value_arguments,
         } => {
-            let Some(endpoint) = endpoint_facts(&sema).definition_endpoint(base) else {
+            let Some(endpoint) = sema.endpoint_facts().definition_endpoint(base) else {
                 return fail(
                     &sema,
                     None,
@@ -884,7 +884,8 @@ pub(super) fn analyze_one_body(
                     )),
                 );
             };
-            let Some(base_name) = endpoint_facts(&sema)
+            let Some(base_name) = sema
+                .endpoint_facts()
                 .function_by_file_name(FileId::new(endpoint.file), source_name)
             else {
                 return fail(
@@ -901,7 +902,7 @@ pub(super) fn analyze_one_body(
                 value_args: value_arguments,
             };
             let base_name = key.base_name;
-            let base_info = endpoint_facts(&sema).function_info(base_name);
+            let base_info = sema.endpoint_facts().function_info(base_name);
             let owner = base_info.as_ref().map(|info| {
                 sema.body_owner_token(
                     info.file_id,
@@ -987,8 +988,8 @@ pub(super) fn analyze_one_body(
     }
 }
 
-pub(super) fn analyze_one_body_instance<K, M>(
-    mut sema: BodySema<'_>,
+pub(super) fn analyze_one_body_instance<K, M, F: super::BodyAnalysisFactMode>(
+    mut sema: BodySema<'_, F>,
     instance: &FunctionInstanceKey<K, M>,
     definition: impl Fn(&K) -> Result<SemanticDefinitionToken, crate::SemanticStableResolutionFailure>,
     module: impl Fn(&M) -> Result<SemanticModuleToken, crate::SemanticStableResolutionFailure>,
@@ -1138,8 +1139,8 @@ fn function_instance_contains_str<D, M>(instance: &FunctionInstanceKey<D, M>) ->
     }
 }
 
-fn analyze_anonymous_member(
-    mut sema: BodySema<'_>,
+fn analyze_anonymous_member<F: super::BodyAnalysisFactMode>(
+    mut sema: BodySema<'_, F>,
     owner: TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
     member: crate::AnonymousMemberKey,
     interruption: Option<OneBodyInterruption>,
@@ -1178,7 +1179,7 @@ fn analyze_anonymous_member(
             CompileError::without_span(ErrorKind::UndefinedFunction(member.name.to_string())),
         );
     };
-    let Some(method_info) = endpoint_facts(&sema).method_info(struct_id, method_name) else {
+    let Some(method_info) = sema.endpoint_facts().method_info(struct_id, method_name) else {
         return fail(
             &sema,
             None,
@@ -1347,12 +1348,12 @@ fn analyze_anonymous_member(
     }
 }
 
-pub(in crate::sema) fn materialize_argument_value(
-    sema: &BodySema<'_>,
+pub(in crate::sema) fn materialize_argument_value<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     value: &crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<super::ConstValue, crate::SemanticBodyExportFailure> {
     use crate::CanonicalArgumentValue as V;
-    let facts = super::body_endpoint::endpoint_facts(sema);
+    let facts = sema.endpoint_facts();
     Ok(match value {
         V::Integer(value) => super::ConstValue::Integer(*value),
         V::Bool(value) => super::ConstValue::Bool(*value),
@@ -1372,20 +1373,20 @@ pub(in crate::sema) fn materialize_argument_value(
     })
 }
 
-pub(in crate::sema) fn materialize_instance_type(
-    sema: &BodySema<'_>,
+pub(in crate::sema) fn materialize_instance_type<F: super::BodyAnalysisFactMode>(
+    sema: &BodySema<'_, F>,
     value: &TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<Type, crate::SemanticBodyExportFailure> {
-    super::body_endpoint::resolve_instance_type(&super::body_endpoint::endpoint_facts(sema), value)
+    super::body_endpoint::resolve_instance_type(&sema.endpoint_facts(), value)
 }
 
-fn analyze_definition(
-    sema: &mut BodySema<'_>,
+fn analyze_definition<F: super::BodyAnalysisFactMode>(
+    sema: &mut BodySema<'_, F>,
     infer_ctx: &super::InferenceContext,
     token: SemanticDefinitionToken,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
-    let Some(endpoint) = endpoint_facts(sema).definition_endpoint(token) else {
+    let Some(endpoint) = sema.endpoint_facts().definition_endpoint(token) else {
         return fail(
             sema,
             None,
@@ -1405,8 +1406,9 @@ fn analyze_definition(
                     )),
                 );
             };
-            let Some(name) =
-                endpoint_facts(sema).function_by_file_name(FileId::new(endpoint.file), source_name)
+            let Some(name) = sema
+                .endpoint_facts()
+                .function_by_file_name(FileId::new(endpoint.file), source_name)
             else {
                 return fail(
                     sema,
@@ -1416,7 +1418,8 @@ fn analyze_definition(
                     )),
                 );
             };
-            let info = endpoint_facts(sema)
+            let info = sema
+                .endpoint_facts()
                 .function_info(name)
                 .expect("functions_by_file_name resolved to a registered function");
             if info.is_generic || info.is_extern {
@@ -1426,8 +1429,10 @@ fn analyze_definition(
                     ),
                 };
             }
-            let source = endpoint_facts(sema).source_function_name(name);
-            let Some(declaration) = endpoint_facts(sema).first_free_function(source, info.file_id)
+            let source = sema.endpoint_facts().source_function_name(name);
+            let Some(declaration) = sema
+                .endpoint_facts()
+                .first_free_function(source, info.file_id)
             else {
                 return fail(
                     sema,
@@ -1512,8 +1517,8 @@ fn analyze_definition(
     }
 }
 
-fn analyze_named_method(
-    sema: &mut BodySema<'_>,
+fn analyze_named_method<F: super::BodyAnalysisFactMode>(
+    sema: &mut BodySema<'_, F>,
     infer_ctx: &super::InferenceContext,
     endpoint: &crate::SemanticDefinitionEndpoint,
     interruption: Option<OneBodyInterruption>,
@@ -1536,8 +1541,9 @@ fn analyze_named_method(
             )),
         );
     };
-    let Some(struct_id) =
-        endpoint_facts(sema).struct_by_file_name(FileId::new(endpoint.file), owner_symbol)
+    let Some(struct_id) = sema
+        .endpoint_facts()
+        .struct_by_file_name(FileId::new(endpoint.file), owner_symbol)
     else {
         return fail(
             sema,
@@ -1554,14 +1560,14 @@ fn analyze_named_method(
             CompileError::without_span(ErrorKind::UndefinedFunction(endpoint.name.to_string())),
         );
     };
-    let Some(info) = endpoint_facts(sema).method_info(struct_id, method_name) else {
+    let Some(info) = sema.endpoint_facts().method_info(struct_id, method_name) else {
         return fail(
             sema,
             None,
             CompileError::without_span(ErrorKind::UndefinedFunction(endpoint.name.to_string())),
         );
     };
-    let Some(declaration) = endpoint_facts(sema).named_method_declaration(
+    let Some(declaration) = sema.endpoint_facts().named_method_declaration(
         FileId::new(endpoint.file),
         owner_symbol,
         method_name,
@@ -1653,8 +1659,8 @@ fn analyze_named_method(
     }
 }
 
-fn analyze_named_destructor(
-    sema: &mut BodySema<'_>,
+fn analyze_named_destructor<F: super::BodyAnalysisFactMode>(
+    sema: &mut BodySema<'_, F>,
     infer_ctx: &super::InferenceContext,
     endpoint: &crate::SemanticDefinitionEndpoint,
     interruption: Option<OneBodyInterruption>,
@@ -1677,8 +1683,9 @@ fn analyze_named_destructor(
             )),
         );
     };
-    let Some(struct_id) =
-        endpoint_facts(sema).struct_by_file_name(FileId::new(endpoint.file), owner_symbol)
+    let Some(struct_id) = sema
+        .endpoint_facts()
+        .struct_by_file_name(FileId::new(endpoint.file), owner_symbol)
     else {
         return fail(
             sema,
@@ -1688,7 +1695,10 @@ fn analyze_named_destructor(
             )),
         );
     };
-    let Some(record) = endpoint_facts(sema).destructor(endpoint.file, owner_symbol) else {
+    let Some(record) = sema
+        .endpoint_facts()
+        .destructor(endpoint.file, owner_symbol)
+    else {
         return fail(
             sema,
             None,

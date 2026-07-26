@@ -29,7 +29,7 @@ use crate::types::{Type, TypeKind};
 
 // ============================================================================
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     // ========================================================================
     // Literals: IntConst, BoolConst, StringConst, UnitConst
     // ========================================================================
