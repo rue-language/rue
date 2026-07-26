@@ -316,9 +316,12 @@ pub(super) struct PendingNominalPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclarationInstallFailure {
-    /// Body-owner installation was attempted after the declaration base was
-    /// sealed; refreshing only the live epoch would leave derivation data stale.
+    /// An identity endpoint installation was attempted after the declaration
+    /// base was sealed; refreshing only the live epoch would leave derivation
+    /// data stale.
     AlreadySealed,
+    /// Stable endpoint validation failed before installation.
+    EndpointResolution(crate::SemanticStableResolutionFailure),
     DuplicatePayload,
     MissingPayload,
     UnexpectedPayload,
@@ -336,6 +339,12 @@ pub enum DeclarationInstallFailure {
     /// types; the carried message names both stable keys and the digest. Surfaces
     /// as a fail-closed E9000 internal error.
     AnonymousDigestCollision(Box<str>),
+}
+
+impl From<crate::SemanticStableResolutionFailure> for DeclarationInstallFailure {
+    fn from(failure: crate::SemanticStableResolutionFailure) -> Self {
+        Self::EndpointResolution(failure)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2274,7 +2283,10 @@ impl<'a> BoundSema<'a> {
         mut self,
         definitions: &[crate::SemanticDefinitionEndpoint],
         modules: &[crate::SemanticModuleEndpoint],
-    ) -> Result<Self, crate::SemanticStableResolutionFailure> {
+    ) -> Result<Self, DeclarationInstallFailure> {
+        if self.body_base.is_some() {
+            return Err(DeclarationInstallFailure::AlreadySealed);
+        }
         let expected_definitions = self
             .binding_manifest()
             .bindings()
@@ -3974,7 +3986,7 @@ mod tests {
     fn install_stable_endpoints(
         definitions: &[crate::SemanticDefinitionEndpoint],
         modules: &[crate::SemanticModuleEndpoint],
-    ) -> Result<(), crate::SemanticStableResolutionFailure> {
+    ) -> Result<(), crate::DeclarationInstallFailure> {
         let (tokens, interner) = Lexer::new("fn main() {}").tokenize().unwrap();
         let (ast, interner) = Parser::new(tokens, interner).parse().unwrap();
         let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
@@ -4002,13 +4014,16 @@ mod tests {
             file: 0,
         };
         assert_eq!(install_stable_endpoints(&[endpoint.clone()], &[]), Ok(()));
-        assert_eq!(install_stable_endpoints(&[], &[]), Err(F::Missing));
+        assert_eq!(
+            install_stable_endpoints(&[], &[]),
+            Err(crate::DeclarationInstallFailure::from(F::Missing))
+        );
 
         let mut duplicate = endpoint.clone();
         duplicate.token = crate::SemanticDefinitionToken::new(7, 1);
         assert_eq!(
             install_stable_endpoints(&[endpoint.clone(), duplicate], &[]),
-            Err(F::Ambiguous)
+            Err(crate::DeclarationInstallFailure::from(F::Ambiguous))
         );
 
         let mut wrong_kind = endpoint.clone();
@@ -4017,23 +4032,26 @@ mod tests {
         wrong_kind.kind = StableDefinitionKind::ValueConst;
         assert_eq!(
             install_stable_endpoints(&[wrong_kind], &[]),
-            Err(F::WrongKind)
+            Err(crate::DeclarationInstallFailure::from(F::WrongKind))
         );
 
         let mut nonexistent = endpoint.clone();
         nonexistent.name = Arc::from("other");
         assert_eq!(
             install_stable_endpoints(&[nonexistent], &[]),
-            Err(F::Missing)
+            Err(crate::DeclarationInstallFailure::from(F::Missing))
         );
-        assert_eq!(install_stable_endpoints(&[], &[]), Err(F::Missing));
+        assert_eq!(
+            install_stable_endpoints(&[], &[]),
+            Err(crate::DeclarationInstallFailure::from(F::Missing))
+        );
         let extra_module = crate::SemanticModuleEndpoint {
             token: crate::SemanticModuleToken::new(7, 1),
             file: 99,
         };
         assert_eq!(
             install_stable_endpoints(&[endpoint.clone()], &[module, extra_module]),
-            Err(F::Missing)
+            Err(crate::DeclarationInstallFailure::from(F::Missing))
         );
 
         let foreign_module = crate::SemanticModuleEndpoint {
@@ -4042,7 +4060,7 @@ mod tests {
         };
         assert_eq!(
             install_stable_endpoints(&[endpoint], &[foreign_module]),
-            Err(F::ForeignIssuer)
+            Err(crate::DeclarationInstallFailure::from(F::ForeignIssuer))
         );
     }
 

@@ -3810,6 +3810,16 @@ fn main() -> i32 {
         crate::sema::BoundSema<'static>,
         Vec<crate::SemanticDefinitionEndpoint>,
     ) {
+        one_body_fixture_with_install_order(source, false)
+    }
+
+    fn one_body_fixture_with_install_order(
+        source: &str,
+        owner_before_stable: bool,
+    ) -> (
+        crate::sema::BoundSema<'static>,
+        Vec<crate::SemanticDefinitionEndpoint>,
+    ) {
         let (rir, interner) = lower_files(&[(source, FileId::DEFAULT)]);
         let rir = Box::leak(Box::new(rir));
         let interner = Box::leak(Box::new(interner));
@@ -3840,12 +3850,83 @@ fn main() -> i32 {
                 owner: binding.owner.clone(),
             })
             .collect::<Vec<_>>();
-        let bound = resolved
-            .install_stable_identity_endpoints(&definitions, &[])
-            .unwrap()
-            .install_body_owner_tokens(&owners)
-            .unwrap();
+        let bound = if owner_before_stable {
+            resolved
+                .install_body_owner_tokens(&owners)
+                .unwrap()
+                .install_stable_identity_endpoints(&definitions, &[])
+                .unwrap()
+        } else {
+            resolved
+                .install_stable_identity_endpoints(&definitions, &[])
+                .unwrap()
+                .install_body_owner_tokens(&owners)
+                .unwrap()
+        };
         (bound, definitions)
+    }
+
+    #[test]
+    fn stable_endpoint_install_refreshes_body_state_in_both_install_orders() {
+        for owner_before_stable in [false, true] {
+            let (bound, _) =
+                one_body_fixture_with_install_order("fn main() {}", owner_before_stable);
+            bound
+                .analyze_all_bodies_for_test()
+                .expect("pre-seal endpoint installation must refresh body state");
+        }
+    }
+
+    #[test]
+    fn stable_endpoint_reinstallation_after_sealing_fails_before_mutation() {
+        let (mut bound, definitions) = one_body_fixture("fn main() {}");
+        bound.seal_as_declaration_base();
+
+        let sealed_base = bound
+            .body_base
+            .as_ref()
+            .expect("sealing installs a declaration base")
+            .clone();
+        let base_definition_tokens = sealed_base.stable_definition_tokens.clone();
+        let base_definition_endpoints = sealed_base.stable_definition_endpoints.clone();
+        let base_module_tokens = sealed_base.stable_module_tokens.clone();
+        let base_module_endpoints = sealed_base.stable_module_endpoints.clone();
+
+        let mut units = crate::EpochDerivationUnits::default();
+        let derived = bound.derive_body_epoch(&mut units);
+        let derived_definition_tokens = derived.sema.stable_definition_tokens.clone();
+        let derived_definition_endpoints = derived.sema.stable_definition_endpoints.clone();
+        let derived_module_tokens = derived.sema.stable_module_tokens.clone();
+        let derived_module_endpoints = derived.sema.stable_module_endpoints.clone();
+
+        let Err(failure) = bound.install_stable_identity_endpoints(&definitions, &[]) else {
+            panic!("stable endpoint installation after sealing unexpectedly succeeded")
+        };
+        assert_eq!(failure, crate::DeclarationInstallFailure::AlreadySealed);
+
+        assert_eq!(sealed_base.stable_definition_tokens, base_definition_tokens);
+        assert_eq!(
+            sealed_base.stable_definition_endpoints,
+            base_definition_endpoints
+        );
+        assert_eq!(sealed_base.stable_module_tokens, base_module_tokens);
+        assert_eq!(sealed_base.stable_module_endpoints, base_module_endpoints);
+        assert_eq!(
+            derived.sema.stable_definition_tokens,
+            derived_definition_tokens
+        );
+        assert_eq!(
+            derived.sema.stable_definition_endpoints,
+            derived_definition_endpoints
+        );
+        assert_eq!(derived.sema.stable_module_tokens, derived_module_tokens);
+        assert_eq!(
+            derived.sema.stable_module_endpoints,
+            derived_module_endpoints
+        );
+        derived
+            .analyze_all_bodies_for_test()
+            .expect("already-derived epoch remains usable after rejection");
     }
 
     #[test]
