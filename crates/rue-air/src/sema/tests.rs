@@ -289,6 +289,36 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "production body analysis requires installed body-owner tokens")]
+    fn production_owner_identity_rejects_a_present_state_without_tokens() {
+        let tokens = HashMap::new();
+        super::super::resolve_body_owner_token(
+            &tokens,
+            FileId::DEFAULT,
+            "main",
+            None,
+            crate::BodyOwnerKind::FreeFunction,
+            false,
+        );
+    }
+
+    #[test]
+    fn synthetic_owner_identity_retains_fixture_zero_issuer() {
+        let tokens = HashMap::new();
+        assert_eq!(
+            super::super::resolve_body_owner_token(
+                &tokens,
+                FileId::DEFAULT,
+                "main",
+                None,
+                crate::BodyOwnerKind::FreeFunction,
+                true,
+            ),
+            crate::BodyOwnerToken::new(0, FileId::DEFAULT.index())
+        );
+    }
+
+    #[test]
     fn test_analyze_simple_function() {
         let output = compile_to_air("fn main() -> i32 { 42 }").unwrap();
         let functions = &output.functions;
@@ -3769,6 +3799,28 @@ fn main() -> i32 {
             .install_body_owner_tokens(&owners)
             .unwrap();
         (bound, definitions)
+    }
+
+    #[test]
+    fn owner_token_reinstallation_after_sealing_fails_before_mutation() {
+        let (mut bound, definitions) = one_body_fixture("fn main() {}");
+        let definition = definitions
+            .iter()
+            .find(|definition| definition.kind == crate::StableDefinitionKind::Function)
+            .expect("fixture has a free function");
+        let owners = vec![crate::BodyOwnerEndpoint {
+            token: crate::BodyOwnerToken::new(91, definition.token.slot()),
+            kind: crate::BodyOwnerKind::FreeFunction,
+            file: definition.file,
+            name: definition.name.to_string(),
+            owner_name: None,
+        }];
+
+        bound.seal_as_declaration_base();
+        let Err(failure) = bound.install_body_owner_tokens(&owners) else {
+            panic!("owner-token installation after sealing unexpectedly succeeded")
+        };
+        assert_eq!(failure, crate::DeclarationInstallFailure::AlreadySealed);
     }
 
     fn one_body_two_file_fixture(

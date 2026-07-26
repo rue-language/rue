@@ -340,6 +340,23 @@ mod tests {
         assert!(ordinary.contains("state: &BodyAnalysisState<'_>"));
         assert!(ordinary.contains("let owner = state.body_owner_token("));
         assert!(!ordinary.contains("BodyAnalysisState::from_body_semantic_base"));
+
+        let resolver = SEMA_ROOT_SOURCE
+            .split("fn resolve_body_owner_token(")
+            .nth(1)
+            .and_then(|source| source.split("/// The declaration-time portion").next())
+            .expect("shared owner-token resolver is present");
+        assert!(resolver.contains("allow_fixture_identity"));
+        assert!(
+            resolver.contains(
+                "panic!(\"production body analysis requires installed body-owner tokens\")"
+            )
+        );
+        assert!(SEMA_ROOT_SOURCE.contains("self.epoch.synthetic_declaration_discovery"));
+        assert!(SEMA_ROOT_SOURCE.contains("body analysis requires installed body-owner tokens"));
+        assert!(include_str!("binding_manifest.rs").contains(
+            "if self.body_base.is_some() {\n            return Err(DeclarationInstallFailure::AlreadySealed);"
+        ));
     }
 
     #[test]

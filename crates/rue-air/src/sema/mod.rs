@@ -375,7 +375,14 @@ impl<'a> BodyAnalysisState<'a> {
         owner: Option<&str>,
         kind: BodyOwnerKind,
     ) -> BodyOwnerToken {
-        resolve_body_owner_token(&self.epoch.body_owner_tokens, file, name, owner, kind)
+        resolve_body_owner_token(
+            &self.epoch.body_owner_tokens,
+            file,
+            name,
+            owner,
+            kind,
+            self.epoch.synthetic_declaration_discovery,
+        )
     }
 }
 
@@ -385,6 +392,7 @@ fn resolve_body_owner_token(
     name: &str,
     owner: Option<&str>,
     kind: BodyOwnerKind,
+    allow_fixture_identity: bool,
 ) -> BodyOwnerToken {
     let key = (
         file.index(),
@@ -393,7 +401,10 @@ fn resolve_body_owner_token(
         kind,
     );
     if tokens.is_empty() {
-        return BodyOwnerToken::new(0, file.index());
+        if allow_fixture_identity {
+            return BodyOwnerToken::new(0, file.index());
+        }
+        panic!("production body analysis requires installed body-owner tokens");
     }
     *tokens.get(&key).unwrap_or_else(|| {
         panic!(
@@ -1434,7 +1445,14 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // cross a durable identity boundary. Issuer zero is reserved for
         // those present API contracts; successful canonical analysis installs
         // compiler-issued tokens before bodies are analyzed.
-        resolve_body_owner_token(&self.body_owner_tokens, file, name, owner, kind)
+        resolve_body_owner_token(
+            &self.body_owner_tokens,
+            file,
+            name,
+            owner,
+            kind,
+            self.synthetic_declaration_discovery,
+        )
     }
 }
 
