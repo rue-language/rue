@@ -191,11 +191,11 @@ add_program() {
 discover_examples() {
     local dir="$1"
     local entry
-    # RUE-1083: Caldera's cold compile alone runs past ~11 minutes with the
-    # non-release compiler this driver builds, while the driver has no compile
-    # timeout. Keep the required Valgrind job and every other example real;
-    # restore this one root when the remaining per-body incremental work
-    # brings large-program compile time back down.
+    # RUE-1083: Caldera alone measured ~31 minutes (compile + memcheck) with
+    # the non-release compiler this driver builds, while the driver has no
+    # compile timeout. Keep the required Valgrind job and every other example
+    # real; restore this one root when the remaining per-body incremental
+    # work brings large-program compile time back down.
     if [[ "$dir" == "$repo_root/examples/caldera" ]]; then
         echo "run-sanitizer: deferring examples/caldera/main.rue (RUE-1083)" >&2
         return
