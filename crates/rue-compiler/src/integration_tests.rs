@@ -1145,7 +1145,7 @@ drop fn StrBuf(self) { }
                 );
 
                 for &target in Target::all() {
-                    generate_mir(cfg, &state.type_pool, &state.interner, target)
+                    test_codegen_state(&state, target)
                         .unwrap_or_else(|error| panic!("{name} must lower for {target}: {error}"));
                 }
                 test_compile_source(&source).unwrap_or_else(|error| {
@@ -1220,7 +1220,7 @@ drop fn StrBuf(self) { }
                 );
 
                 for &target in Target::all() {
-                    generate_mir(cfg, &state.type_pool, &state.interner, target)
+                    test_codegen_state(&state, target)
                         .unwrap_or_else(|error| panic!("{name} must lower for {target}: {error}"));
                 }
                 test_compile_source(&source).unwrap_or_else(|error| {
@@ -1259,12 +1259,8 @@ drop fn StrBuf(self) { }
                 let state = test_cfg(&source)
                     .unwrap_or_else(|error| panic!("never must coerce to {name}: {error}"));
                 for &target in Target::all() {
-                    for function in &state.functions {
-                        generate_mir(&function.cfg, &state.type_pool, &state.interner, target)
-                            .unwrap_or_else(|error| {
-                                panic!("{name} must lower for {target}: {error}")
-                            });
-                    }
+                    test_codegen_state(&state, target)
+                        .unwrap_or_else(|error| panic!("{name} must lower for {target}: {error}"));
                 }
                 test_compile_source(&source)
                     .unwrap_or_else(|error| panic!("{name} must compile and link: {error}"));

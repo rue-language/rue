@@ -33,8 +33,6 @@ use rue_error::CompileResult;
 use rue_target::Target;
 
 use crate::MachineCode;
-use crate::regalloc::RegAllocDebugInfo;
-
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation};
 
@@ -45,14 +43,65 @@ pub(crate) fn prepare_backend(
     target: Target,
     symbols: crate::MachineSymbolResolver<'_>,
 ) -> CompileResult<crate::codegen_pipeline::PreparedMir<Aarch64Mir, Reg>> {
-    crate::codegen_pipeline::prepare_mir(
+    prepare_backend_with_artifacts(
+        cfg,
+        type_pool,
+        interner,
+        target,
+        symbols,
+        crate::BackendArtifactRequest::default(),
+    )
+    .map(|(prepared, _artifacts)| prepared)
+}
+
+fn prepare_backend_with_artifacts(
+    cfg: &ValidatedCfg,
+    type_pool: &FrozenTypeInternPool,
+    interner: &ThreadedRodeo,
+    target: Target,
+    symbols: crate::MachineSymbolResolver<'_>,
+    request: crate::BackendArtifactRequest,
+) -> CompileResult<(
+    crate::codegen_pipeline::PreparedMir<Aarch64Mir, Reg>,
+    crate::BackendArtifacts,
+)> {
+    crate::codegen_pipeline::prepare_mir_with_artifacts(
         cfg,
         type_pool,
         cfg_lower::ARG_REGS.len() as u32,
         cfg_lower::RET_REGS.len() as u32,
         crate::frame_layout::SavedRegScheme::Aarch64,
-        || CfgLower::new_with_symbols(cfg, type_pool, interner, target, symbols).lower(),
-        |mir, existing_slots| RegAlloc::new(mir, existing_slots).allocate_with_spills(),
+        || {
+            let (mir, lowering) = if request.lowering {
+                let (mir, debug) =
+                    CfgLower::new_with_symbols(cfg, type_pool, interner, target, symbols)
+                        .lower_with_debug()?;
+                (mir, Some(debug))
+            } else {
+                (
+                    CfgLower::new_with_symbols(cfg, type_pool, interner, target, symbols)
+                        .lower()?,
+                    None,
+                )
+            };
+            let mir_text = request.mir.then(|| mir.to_string());
+            Ok((
+                mir,
+                crate::BackendArtifacts {
+                    lowering,
+                    mir: mir_text,
+                    ..Default::default()
+                },
+            ))
+        },
+        |mir, existing_slots, artifacts| {
+            let (mir, spills, used_callee_saved, liveness, regalloc) =
+                RegAlloc::new_with_artifacts(mir, existing_slots, request.liveness)
+                    .allocate_with_artifacts(request.regalloc)?;
+            artifacts.liveness = liveness.map(|debug| debug.to_string());
+            artifacts.regalloc = regalloc.map(|debug| debug.to_string());
+            Ok((mir, spills, used_callee_saved))
+        },
         |mir| {
             peephole::optimize(mir.instructions_vec_mut());
         },
@@ -61,7 +110,7 @@ pub(crate) fn prepare_backend(
     )
 }
 
-fn generate_inner<T, Emit>(
+fn generate_inner(
     cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
@@ -70,12 +119,10 @@ fn generate_inner<T, Emit>(
     symbols: crate::MachineSymbolResolver<'_>,
     atoms: &[crate::LocalAtomProjection<'_>],
     require_complete_atoms: bool,
-    emit: Emit,
-) -> CompileResult<(T, Vec<String>)>
-where
-    Emit: for<'a> FnOnce(Emitter<'a>) -> CompileResult<T>,
-{
-    let mut prepared = prepare_backend(cfg, type_pool, interner, target, symbols)?;
+    request: crate::BackendArtifactRequest,
+) -> CompileResult<crate::BackendProduct> {
+    let (mut prepared, mut artifacts) =
+        prepare_backend_with_artifacts(cfg, type_pool, interner, target, symbols, request)?;
     let referenced_strings = prepared
         .mir
         .instructions()
@@ -108,8 +155,26 @@ where
     .with_sret(prepared.has_sret)
     .with_frame_layout(prepared.frame_layout)
     .with_param_homing(prepared.param_homing.clone());
-    let emitted = emit(emitter)?;
-    Ok((emitted, local_strings))
+    let machine_code = if request.asm {
+        let emitted = emitter.emit_all()?;
+        artifacts.asm = Some(emitted.to_asm());
+        MachineCode {
+            code: emitted.to_bytes(),
+            relocations: emitted.relocations,
+            strings: local_strings,
+        }
+    } else {
+        let (code, relocations) = emitter.emit()?;
+        MachineCode {
+            code,
+            relocations,
+            strings: local_strings,
+        }
+    };
+    Ok(crate::BackendProduct {
+        machine_code,
+        artifacts,
+    })
 }
 
 /// Generate machine code from CFG.
@@ -122,7 +187,7 @@ pub fn generate(
     interner: &ThreadedRodeo,
     target: Target,
 ) -> CompileResult<MachineCode> {
-    let ((code, relocations), strings) = generate_inner(
+    Ok(generate_inner(
         cfg,
         type_pool,
         strings,
@@ -131,16 +196,9 @@ pub fn generate(
         crate::MachineSymbolResolver::default(),
         &[],
         false,
-        |emitter| {
-            // Keep the normal path allocation-free with respect to assembly text.
-            emitter.emit()
-        },
-    )?;
-    Ok(MachineCode {
-        code,
-        relocations,
-        strings,
-    })
+        crate::BackendArtifactRequest::default(),
+    )?
+    .machine_code)
 }
 
 pub fn generate_with_symbols(
@@ -151,7 +209,7 @@ pub fn generate_with_symbols(
     target: Target,
     symbols: crate::MachineSymbolResolver<'_>,
 ) -> CompileResult<MachineCode> {
-    let ((code, relocations), strings) = generate_inner(
+    Ok(generate_inner(
         cfg,
         type_pool,
         strings,
@@ -160,13 +218,9 @@ pub fn generate_with_symbols(
         symbols,
         &[],
         false,
-        |emitter| emitter.emit(),
-    )?;
-    Ok(MachineCode {
-        code,
-        relocations,
-        strings,
-    })
+        crate::BackendArtifactRequest::default(),
+    )?
+    .machine_code)
 }
 
 pub fn generate_with_symbols_and_atoms(
@@ -178,7 +232,7 @@ pub fn generate_with_symbols_and_atoms(
     symbols: crate::MachineSymbolResolver<'_>,
     atoms: &[crate::LocalAtomProjection<'_>],
 ) -> CompileResult<MachineCode> {
-    let ((code, relocations), strings) = generate_inner(
+    Ok(generate_inner(
         cfg,
         type_pool,
         strings,
@@ -187,85 +241,23 @@ pub fn generate_with_symbols_and_atoms(
         symbols,
         atoms,
         true,
-        |emitter| emitter.emit(),
-    )?;
-    Ok(MachineCode {
-        code,
-        relocations,
-        strings,
-    })
+        crate::BackendArtifactRequest::default(),
+    )?
+    .machine_code)
 }
 
-/// Generate machine code with assembly text from CFG.
-///
-/// This returns both machine code bytes and human-readable assembly text
-/// showing the actual emitted instructions (including prologue/epilogue).
-pub fn generate_with_asm(
+/// Run the production backend and retain requested diagnostic projections.
+pub fn generate_product_with_symbols_and_atoms(
     cfg: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     target: Target,
-) -> CompileResult<(MachineCode, String)> {
-    let (emitted, strings) = generate_inner(
-        cfg,
-        type_pool,
-        strings,
-        interner,
-        target,
-        crate::MachineSymbolResolver::default(),
-        &[],
-        false,
-        |emitter| emitter.emit_all(),
-    )?;
-    let asm = emitted.to_asm();
-    let machine_code = MachineCode {
-        code: emitted.to_bytes(),
-        relocations: emitted.relocations,
-        strings,
-    };
-    Ok((machine_code, asm))
-}
-
-/// Generate register allocation debug info from CFG.
-///
-/// This returns information about the register allocation process,
-/// including live ranges, interference, and allocation decisions.
-pub fn generate_regalloc_info(
-    cfg: &ValidatedCfg,
-    type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<RegAllocDebugInfo<Reg>> {
-    let has_sret = crate::codegen_pipeline::validate_pre_lowering_budget(
-        cfg,
-        type_pool,
-        cfg_lower::ARG_REGS.len() as u32,
-        cfg_lower::RET_REGS.len() as u32,
-        crate::frame_layout::SavedRegScheme::Aarch64,
-    )?;
-
-    // Lower CFG to Aarch64Mir with virtual registers
-    let mir = CfgLower::new(cfg, type_pool, interner, target).lower()?;
-
-    // Allocate physical registers with debug info
-    let existing_slots = crate::codegen_pipeline::checked_slot_sum([
-        cfg.num_locals(),
-        cfg.num_params(),
-        u32::from(has_sret),
-    ])
-    .ok_or_else(|| crate::codegen_pipeline::frame_budget_error(cfg, None))?;
-    let (_mir, num_spills, used_callee_saved, debug_info) =
-        RegAlloc::new(mir, existing_slots).allocate_with_debug()?;
-    let total_slots = existing_slots
-        .checked_add(num_spills)
-        .ok_or_else(|| crate::codegen_pipeline::frame_budget_error(cfg, None))?;
-    crate::frame_layout::FrameLayout::try_new(
-        crate::frame_layout::SavedRegScheme::Aarch64,
-        used_callee_saved.len(),
-        total_slots,
+    symbols: crate::MachineSymbolResolver<'_>,
+    atoms: &[crate::LocalAtomProjection<'_>],
+    request: crate::BackendArtifactRequest,
+) -> CompileResult<crate::BackendProduct> {
+    generate_inner(
+        cfg, type_pool, strings, interner, target, symbols, atoms, true, request,
     )
-    .map_err(|_| crate::codegen_pipeline::frame_budget_error(cfg, None))?;
-
-    Ok(debug_info)
 }

@@ -152,7 +152,11 @@ pub(crate) fn validate_pre_lowering_budget(
 ///   sret pointer so register-allocation spills cannot overlap any of them.
 /// - `total_locals` includes only original locals and new spill slots because
 ///   emitters account for parameters and sret separately.
-pub(crate) fn prepare_mir<M, R, Lower, Allocate, Peephole, Schedule, Verify>(
+///
+/// Run the canonical backend pipeline while carrying optional diagnostic
+/// observations alongside the same lowering and allocation execution.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn prepare_mir_with_artifacts<M, R, D, Lower, Allocate, Peephole, Schedule, Verify>(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     arg_reg_count: u32,
@@ -163,10 +167,10 @@ pub(crate) fn prepare_mir<M, R, Lower, Allocate, Peephole, Schedule, Verify>(
     peephole: Peephole,
     schedule: Schedule,
     verify: Verify,
-) -> CompileResult<PreparedMir<M, R>>
+) -> CompileResult<(PreparedMir<M, R>, D)>
 where
-    Lower: FnOnce() -> CompileResult<M>,
-    Allocate: FnOnce(M, u32) -> CompileResult<(M, u32, Vec<R>)>,
+    Lower: FnOnce() -> CompileResult<(M, D)>,
+    Allocate: FnOnce(M, u32, &mut D) -> CompileResult<(M, u32, Vec<R>)>,
     Peephole: FnOnce(&mut M),
     Schedule: FnOnce(&mut M),
     Verify: FnOnce(&M) -> CompileResult<()>,
@@ -177,10 +181,10 @@ where
         validate_pre_lowering_budget(cfg, type_pool, arg_reg_count, return_reg_count, scheme)?;
     let param_homing = param_homing_plan(cfg);
 
-    let mir = lower()?;
+    let (mir, mut artifacts) = lower()?;
     let existing_slots = checked_slot_sum([num_locals_original, num_params, u32::from(has_sret)])
         .ok_or_else(|| frame_budget_error(cfg, None))?;
-    let (mut mir, num_spills, used_callee_saved) = allocate(mir, existing_slots)?;
+    let (mut mir, num_spills, used_callee_saved) = allocate(mir, existing_slots, &mut artifacts)?;
 
     peephole(&mut mir);
     schedule(&mut mir);
@@ -194,16 +198,19 @@ where
     let frame_layout = FrameLayout::try_new(scheme, used_callee_saved.len(), total_slots)
         .map_err(|_| frame_budget_error(cfg, None))?;
 
-    Ok(PreparedMir {
-        mir,
-        total_locals,
-        num_locals_original,
-        num_params,
-        has_sret,
-        used_callee_saved,
-        param_homing,
-        frame_layout,
-    })
+    Ok((
+        PreparedMir {
+            mir,
+            total_locals,
+            num_locals_original,
+            num_params,
+            has_sret,
+            used_callee_saved,
+            param_homing,
+            frame_layout,
+        },
+        artifacts,
+    ))
 }
 
 #[cfg(test)]
@@ -215,7 +222,7 @@ mod tests {
     use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData};
     use rue_span::Span;
 
-    use super::{SavedRegScheme, prepare_mir, validate_pre_lowering_budget};
+    use super::{SavedRegScheme, prepare_mir_with_artifacts, validate_pre_lowering_budget};
 
     #[test]
     fn pass_order_and_frame_slot_formulas_are_single_source() {
@@ -234,7 +241,7 @@ mod tests {
         // A seven-slot return exceeds the six-register budget, so spill
         // placement sees 3 locals + 2 params + 1 sret-pointer slot. Four
         // spills then produce 3 + 4 emitted locals (not 3 + 2 + 1 + 4).
-        let prepared = prepare_mir(
+        let (prepared, ()) = prepare_mir_with_artifacts(
             &cfg,
             &type_pool,
             6,
@@ -242,9 +249,9 @@ mod tests {
             SavedRegScheme::X86_64,
             || {
                 events.borrow_mut().push("lower");
-                Ok(10_u32)
+                Ok((10_u32, ()))
             },
-            |mir, existing_slots| {
+            |mir, existing_slots, _artifacts| {
                 events.borrow_mut().push("allocate");
                 assert_eq!(existing_slots, 6);
                 Ok((mir + 1, 4, vec![5_u8]))

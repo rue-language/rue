@@ -730,8 +730,21 @@ fn main() -> i32 {
         let target = Target::Aarch64Linux;
 
         let info = generate_stack_frame_info(&cfg, "gcd", &type_pool, &interner, target).unwrap();
-        let (_machine_code, asm) =
-            crate::aarch64::generate_with_asm(&cfg, &type_pool, &[], &interner, target).unwrap();
+        let product = crate::aarch64::generate_product_with_symbols_and_atoms(
+            &cfg,
+            &type_pool,
+            &[],
+            &interner,
+            target,
+            crate::MachineSymbolResolver::default(),
+            &[],
+            crate::BackendArtifactRequest {
+                asm: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let asm = product.artifacts.asm.expect("assembly projection");
 
         // Parameters are homed into the frame by explicit `str x*, [x29, #N]`
         // prologue stores; every reported parameter slot must appear at that

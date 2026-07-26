@@ -65,6 +65,16 @@ impl RegAlloc {
         }
     }
 
+    pub(crate) fn new_with_artifacts(
+        mir: Aarch64Mir,
+        existing_locals: u32,
+        capture_liveness: bool,
+    ) -> Self {
+        Self {
+            driver: RegAllocDriver::new_with_artifacts(mir, existing_locals, capture_liveness),
+        }
+    }
+
     pub fn num_spills(&self) -> u32 {
         self.driver.num_spills()
     }
@@ -81,6 +91,19 @@ impl RegAlloc {
         self,
     ) -> CompileResult<(Aarch64Mir, u32, Vec<Reg>, RegAllocDebugInfo<Reg>)> {
         self.driver.allocate_with_debug()
+    }
+
+    pub(crate) fn allocate_with_artifacts(
+        self,
+        capture_regalloc: bool,
+    ) -> CompileResult<(
+        Aarch64Mir,
+        u32,
+        Vec<Reg>,
+        Option<crate::LivenessDebugInfo>,
+        Option<RegAllocDebugInfo<Reg>>,
+    )> {
+        self.driver.allocate_with_artifacts(capture_regalloc)
     }
 
     fn rewrite_inst(
@@ -1210,6 +1233,12 @@ impl RegAllocBackend for Aarch64Backend {
 
     fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg> {
         liveness::analyze(mir)
+    }
+
+    fn analyze_with_debug(
+        mir: &Self::Mir,
+    ) -> (LivenessInfo<Self::Reg>, crate::regalloc::LivenessDebugInfo) {
+        liveness::analyze_with_debug(mir)
     }
 
     fn analyze_loops(mir: &Self::Mir) -> LoopInfo {

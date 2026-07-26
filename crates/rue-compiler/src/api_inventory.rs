@@ -1474,7 +1474,15 @@ fn removed_parallel_entry_points_cannot_return() {
 fn orphaned_backend_inspection_exports_cannot_return() {
     let facade = include_str!("lib.rs");
     let backend = include_str!("backend.rs");
-    let removed = ["generate_allocated_mir"];
+    let unstable = include_str!("unstable.rs");
+    let removed = [
+        "generate_allocated_mir",
+        "generate_emitted_asm",
+        "generate_liveness_info",
+        "generate_lowering_info",
+        "generate_mir",
+        "generate_regalloc_info",
+    ];
 
     for name in removed {
         assert!(
@@ -1485,7 +1493,15 @@ fn orphaned_backend_inspection_exports_cannot_return() {
             !code_identifiers(backend).contains(&name),
             "orphaned backend inspection path returned: {name}"
         );
+        assert!(
+            !code_identifiers(unstable).contains(&name),
+            "unstable presentation regained a parallel backend path: {name}"
+        );
     }
+    assert!(
+        code_identifiers(unstable).contains(&"generate_backend_products"),
+        "unstable presentation must project the canonical production backend product"
+    );
 }
 
 #[test]

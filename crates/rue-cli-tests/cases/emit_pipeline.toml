@@ -226,6 +226,77 @@ args = ["--emit", "asm", "-j1", "main.rue"]
 compile_only = true
 compile_stdout_contains = ["=== Assembly", "main"]
 
+# RUE-1141: backend diagnostics are projections of the production backend
+# product. In particular, helper definitions and calls must use the same
+# canonical machine symbols that a normal object build uses.
+[[case]]
+name = "backend_emits_use_production_symbols_x86_64"
+description = "Every x86-64 backend emit stage projects the production lowering/allocation/emission path and its canonical symbols."
+files = [{ path = "main.rue", source = """
+fn helper() -> i32 { 42 }
+fn main() -> i32 { helper() }
+""" }]
+args = [
+    "--target", "x86-64-linux",
+    "--emit", "lowering",
+    "--emit", "mir",
+    "--emit", "liveness",
+    "--emit", "regalloc",
+    "--emit", "asm",
+    "main.rue",
+]
+compile_only = true
+compile_stdout_contains = [
+    "=== Instruction Selection",
+    "=== MIR",
+    "=== Liveness",
+    "=== Register Allocation",
+    "=== Assembly",
+    "function __rue_sem_v1_",
+    ".globl __rue_sem_v1_",
+    "call __rue_sem_v1_",
+]
+compile_stdout_not_contains = [
+    "function helper:",
+    ".globl helper",
+    "helper:",
+    "call helper",
+]
+
+[[case]]
+name = "backend_emits_use_production_symbols_aarch64"
+description = "Every AArch64 backend emit stage projects the production lowering/allocation/emission path and its canonical symbols."
+files = [{ path = "main.rue", source = """
+fn helper() -> i32 { 42 }
+fn main() -> i32 { helper() }
+""" }]
+args = [
+    "--target", "aarch64-linux",
+    "--emit", "lowering",
+    "--emit", "mir",
+    "--emit", "liveness",
+    "--emit", "regalloc",
+    "--emit", "asm",
+    "main.rue",
+]
+compile_only = true
+compile_stdout_contains = [
+    "=== Instruction Selection",
+    "=== MIR",
+    "=== Liveness",
+    "=== Register Allocation",
+    "=== Assembly",
+    "function __rue_sem_v1_",
+    ".globl __rue_sem_v1_",
+    "bl __rue_sem_v1_",
+]
+compile_stdout_not_contains = [
+    "function helper:",
+    ".globl helper",
+    "helper:",
+    "bl helper",
+]
+
 [[case]]
 name = "emit_lowering_reports_semantic_byref_errors"
 description = "--emit lowering reports by-ref non-place operands rejected during semantic/AIR construction (RUE-760)."

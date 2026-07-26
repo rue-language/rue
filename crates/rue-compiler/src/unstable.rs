@@ -741,119 +741,152 @@ impl crate::CompilerSession {
                     .selected_semantic_rir_owner()
                     .expect("successful semantic query retains canonical RIR");
                 let interner = rir.semantic_symbols().interner();
-                for function in semantic.functions() {
-                    match stage {
-                        PresentationStage::Air => {
-                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                let backend_request = match stage {
+                    PresentationStage::Lowering => Some(rue_codegen::BackendArtifactRequest {
+                        lowering: true,
+                        ..Default::default()
+                    }),
+                    PresentationStage::Mir => Some(rue_codegen::BackendArtifactRequest {
+                        mir: true,
+                        ..Default::default()
+                    }),
+                    PresentationStage::Liveness => Some(rue_codegen::BackendArtifactRequest {
+                        liveness: true,
+                        ..Default::default()
+                    }),
+                    PresentationStage::RegAlloc => Some(rue_codegen::BackendArtifactRequest {
+                        regalloc: true,
+                        ..Default::default()
+                    }),
+                    PresentationStage::Asm => Some(rue_codegen::BackendArtifactRequest {
+                        asm: true,
+                        ..Default::default()
+                    }),
+                    _ => None,
+                };
+                if let Some(backend_request) = backend_request {
+                    let foreign_symbols =
+                        crate::backend::collect_foreign_symbols(rir.rir(), interner);
+                    let products = crate::backend::generate_backend_products(
+                        semantic.functions(),
+                        semantic.type_pool(),
+                        semantic.strings(),
+                        interner,
+                        request.options,
+                        &foreign_symbols,
+                        backend_request,
+                    )?;
+                    for product in products {
+                        match stage {
+                            PresentationStage::Lowering => {
+                                write!(
+                                    &mut text,
+                                    "{}",
+                                    product
+                                        .artifacts
+                                        .lowering
+                                        .expect("lowering projection was requested")
+                                )
                                 .expect("write to String");
-                            writeln!(
-                                &mut text,
-                                "{}",
-                                function.analyzed.air.display_with_interner(interner)
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::Cfg => {
-                            writeln!(
-                                &mut text,
-                                "{}",
-                                function.cfg.display_with_interner(interner)
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::Lowering => {
-                            write!(
-                                &mut text,
-                                "{}",
-                                crate::backend::generate_lowering_info(
-                                    &function.cfg,
-                                    semantic.type_pool(),
-                                    interner,
-                                    request.options.target,
-                                )?
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::Mir => {
-                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                            }
+                            PresentationStage::Mir => {
+                                writeln!(&mut text, "function {}:", product.machine_name)
+                                    .expect("write to String");
+                                writeln!(
+                                    &mut text,
+                                    "{}",
+                                    product.artifacts.mir.expect("MIR projection was requested")
+                                )
                                 .expect("write to String");
-                            writeln!(
-                                &mut text,
-                                "{}",
-                                crate::backend::generate_mir(
-                                    &function.cfg,
-                                    semantic.type_pool(),
-                                    interner,
-                                    request.options.target,
-                                )?
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::Liveness => {
-                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                            }
+                            PresentationStage::Liveness => {
+                                writeln!(&mut text, "function {}:", product.machine_name)
+                                    .expect("write to String");
+                                writeln!(
+                                    &mut text,
+                                    "{}",
+                                    product
+                                        .artifacts
+                                        .liveness
+                                        .expect("liveness projection was requested")
+                                )
                                 .expect("write to String");
-                            writeln!(
-                                &mut text,
-                                "{}",
-                                crate::backend::generate_liveness_info(
-                                    &function.cfg,
-                                    semantic.type_pool(),
-                                    interner,
-                                    request.options.target,
-                                )?
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::RegAlloc => {
-                            writeln!(&mut text, "function {}:", function.analyzed.name)
+                            }
+                            PresentationStage::RegAlloc => {
+                                writeln!(&mut text, "function {}:", product.machine_name)
+                                    .expect("write to String");
+                                write!(
+                                    &mut text,
+                                    "{}",
+                                    product
+                                        .artifacts
+                                        .regalloc
+                                        .expect("regalloc projection was requested")
+                                )
                                 .expect("write to String");
-                            write!(
-                                &mut text,
-                                "{}",
-                                crate::backend::generate_regalloc_info(
-                                    &function.cfg,
-                                    semantic.type_pool(),
-                                    interner,
-                                    request.options.target,
-                                )?
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::Asm => {
-                            writeln!(&mut text, ".globl {}", function.analyzed.name)
+                            }
+                            PresentationStage::Asm => {
+                                writeln!(&mut text, ".globl {}", product.machine_name)
+                                    .expect("write to String");
+                                writeln!(&mut text, "{}:", product.machine_name)
+                                    .expect("write to String");
+                                write!(
+                                    &mut text,
+                                    "{}",
+                                    product
+                                        .artifacts
+                                        .asm
+                                        .expect("assembly projection was requested")
+                                )
                                 .expect("write to String");
-                            writeln!(&mut text, "{}:", function.analyzed.name)
+                            }
+                            _ => unreachable!("backend request has a backend presentation stage"),
+                        }
+                    }
+                } else {
+                    for function in semantic.functions() {
+                        match stage {
+                            PresentationStage::Air => {
+                                writeln!(&mut text, "function {}:", function.analyzed.name)
+                                    .expect("write to String");
+                                writeln!(
+                                    &mut text,
+                                    "{}",
+                                    function.analyzed.air.display_with_interner(interner)
+                                )
                                 .expect("write to String");
-                            write!(
-                                &mut text,
-                                "{}",
-                                crate::backend::generate_emitted_asm(
-                                    &function.cfg,
-                                    semantic.type_pool(),
-                                    semantic.strings(),
-                                    interner,
-                                    request.options.target,
-                                )?
-                            )
-                            .expect("write to String");
+                            }
+                            PresentationStage::Cfg => {
+                                writeln!(
+                                    &mut text,
+                                    "{}",
+                                    function.cfg.display_with_interner(interner)
+                                )
+                                .expect("write to String");
+                            }
+                            PresentationStage::StackFrame => {
+                                writeln!(
+                                    &mut text,
+                                    "{}",
+                                    rue_codegen::generate_stack_frame_info(
+                                        &function.cfg,
+                                        &function.machine_name,
+                                        semantic.type_pool(),
+                                        interner,
+                                        request.options.target,
+                                    )?
+                                )
+                                .expect("write to String");
+                            }
+                            PresentationStage::Tokens
+                            | PresentationStage::Ast
+                            | PresentationStage::Rir
+                            | PresentationStage::Lowering
+                            | PresentationStage::Mir
+                            | PresentationStage::Liveness
+                            | PresentationStage::RegAlloc
+                            | PresentationStage::Asm => unreachable!(),
                         }
-                        PresentationStage::StackFrame => {
-                            writeln!(
-                                &mut text,
-                                "{}",
-                                rue_codegen::generate_stack_frame_info(
-                                    &function.cfg,
-                                    &function.analyzed.name,
-                                    semantic.type_pool(),
-                                    interner,
-                                    request.options.target,
-                                )?
-                            )
-                            .expect("write to String");
-                        }
-                        PresentationStage::Tokens
-                        | PresentationStage::Ast
-                        | PresentationStage::Rir => unreachable!(),
                     }
                 }
             }

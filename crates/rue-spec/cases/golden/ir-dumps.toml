@@ -169,7 +169,7 @@ fn main() -> i32 {
 """
 target = "x86-64-linux"
 expected_mir = """
-function set:
+function __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_:
     mov v0, [rbp-8]
     mov v1, 42
     mov [v0], v1
@@ -186,7 +186,7 @@ function main:
     mov rax, v4
     push rax
     pop rdi
-    call set
+    call __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_
     mov v3, 0
     mov v5, [rbp-8]
     mov rdi, v5
@@ -209,7 +209,7 @@ fn main() -> i32 {
 """
 target = "aarch64-macos"
 expected_mir = """
-function set:
+function __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_:
     ldr v0, [fp, #-8]
     mov v1, #42
     str v1, [v0]
@@ -224,7 +224,7 @@ function main:
     ldr v2, [fp, #-8]
     add v4, fp, #-8
     mov x0, v4
-    bl set
+    bl __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_
     mov v3, #0
     ldr v5, [fp, #-8]
     mov x0, v5
