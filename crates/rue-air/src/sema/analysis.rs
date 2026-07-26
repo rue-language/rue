@@ -10,6 +10,7 @@
 //! when they are reachable from `main`, per ADR-0045. Program shape does not
 //! change which bodies are checked.
 
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use std::collections::{HashMap, HashSet};
 
 use lasso::{Spur, ThreadedRodeo};
@@ -24,7 +25,7 @@ use rue_target::{Arch, DataModel, Os};
 use super::call_resolution::{
     CallResolutionFacts, StaticCallReference, classify_static_call, resolve_static_call_reference,
 };
-use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue, ParamInfo};
+use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue};
 use super::{AnalyzedFunction, BodySema, InferenceContext, MethodInfo, ParamSlotModes, SemaOutput};
 use crate::inference::{
     Constraint, ConstraintContext, ConstraintGenerator, InferType, ParamVarInfo, Unifier,
@@ -3238,7 +3239,7 @@ fn require_byref_place_arg(rir: &Rir, arg: &RirCallArg) -> CompileResult<Spur> {
 
 /// Result of the element-wise linear array consumption check (RUE-186); see
 /// [`Sema::check_array_elementwise_consumption`].
-enum ElementwiseConsumption {
+pub(crate) enum ElementwiseConsumption {
     /// Every element was moved out on every path: the array's must-consume
     /// obligation is satisfied.
     Complete,
@@ -3436,7 +3437,7 @@ where
     Ok(())
 }
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Create a type mismatch error with safe type name resolution.
     ///
     /// This helper method safely resolves type names even for anonymous structs
@@ -3459,36 +3460,11 @@ impl<'a> BodySema<'a> {
     ) -> CompileError {
         CompileError::new(
             ErrorKind::TypeMismatch {
-                expected: expected.safe_name_with_pool(Some(&self.type_pool)),
-                found: found.safe_name_with_pool(Some(&self.type_pool)),
+                expected: expected.safe_name_with_pool(Some(&self.body_type_pool())),
+                found: found.safe_name_with_pool(Some(&self.body_type_pool())),
             },
             span,
         )
-    }
-
-    /// Reject a `type`-valued declaration that would need to exist at runtime.
-    ///
-    /// A parameter of type `type` must be marked `comptime` (spec 4.14:5); a
-    /// non-comptime `type` parameter would carry a type value at runtime, which
-    /// spec 4.14:6 forbids. Both facets otherwise slip past sema and ICE in
-    /// codegen ("block has no terminator", RUE-217), so we surface a clean
-    /// compile-time diagnostic here. Comptime `type` parameters are erased
-    /// during specialization and never reach runtime, so they are allowed.
-    fn reject_runtime_type_value(
-        &self,
-        ty: Type,
-        is_comptime: bool,
-        span: Span,
-    ) -> CompileResult<()> {
-        if ty.is_comptime_type() && !is_comptime {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: "a parameter of type `type` must be marked `comptime`".to_string(),
-                },
-                span,
-            ));
-        }
-        Ok(())
     }
 }
 

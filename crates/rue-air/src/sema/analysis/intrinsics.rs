@@ -5,9 +5,10 @@
 //! raw-memory operations delegate their place and pointer semantics to the
 //! sibling `pointers` and `ownership` modules.
 
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // ========================================================================
     // Intrinsic operations: Intrinsic, TypeIntrinsic
     // ========================================================================
@@ -21,7 +22,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
         let result_expected = ctx.expected_type;
 
         match &inst.data {
@@ -65,7 +72,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let intrinsic_name = self.interner.resolve(&name).to_string();
+        let intrinsic_name = self.body_interner().resolve(&name).to_string();
         let ty = self.resolve_type_with_ctx(type_arg, span, ctx)?;
 
         // `@require_droppable(T)` is the owning-container well-formedness gate
@@ -111,11 +118,11 @@ impl<'a> BodySema<'a> {
                 // canonical layout authority, which owns the bytes-per-slot
                 // conversion.
                 self.require_layout_slots(ty, span)?;
-                self.type_pool.provisional_layout(ty).size
+                self.body_type_pool().provisional_layout(ty).size
             }
             "align_of" => {
                 self.require_layout_slots(ty, span)?;
-                self.type_pool.provisional_layout(ty).alignment
+                self.body_type_pool().provisional_layout(ty).alignment
             }
             _ => {
                 return Err(CompileError::new(
@@ -175,8 +182,8 @@ impl<'a> BodySema<'a> {
             }
         };
 
-        let struct_def = self.type_pool.struct_def(struct_id);
-        let field_name_str = self.interner.resolve(&field);
+        let struct_def = self.body_type_pool().struct_def(struct_id);
+        let field_name_str = self.body_interner().resolve(&field);
         let field_index = match struct_def.find_field(field_name_str) {
             Some((index, _)) => index,
             None => {
@@ -191,7 +198,7 @@ impl<'a> BodySema<'a> {
         };
 
         let byte_offset = self
-            .type_pool
+            .body_type_pool()
             .provisional_struct_field_offset(struct_id, field_index as u32);
 
         let air_ref = air.add_inst(AirInst {
@@ -230,7 +237,7 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Intrinsic arguments are stored as plain InstRefs
-        let arg_refs = self.rir.intrinsic_args(args);
+        let arg_refs = self.body_rir_ref().intrinsic_args(args);
         let args: Vec<RirCallArg> = arg_refs
             .into_iter()
             .map(|value| RirCallArg {
@@ -238,7 +245,7 @@ impl<'a> BodySema<'a> {
                 mode: RirArgMode::Normal,
             })
             .collect();
-        let known = &self.known;
+        let known = &self.known_symbols();
 
         // Raw-pointer and heap intrinsics are unchecked operations: they may
         // only be used inside a `checked` block (spec 9.1:1, chapter 9). Gate
@@ -271,7 +278,7 @@ impl<'a> BodySema<'a> {
                 || name == known.arg_ptr
                 || name == known.env_ptr)
         {
-            let intrinsic_name_str = self.interner.resolve(&name);
+            let intrinsic_name_str = self.body_interner().resolve(&name);
             let kind = if name == known.alloc
                 || name == known.free
                 || name == known.realloc
@@ -428,10 +435,10 @@ impl<'a> BodySema<'a> {
         } else if name == known.byte_set {
             self.analyze_byte_set_intrinsic(air, name, &args, span, ctx)
         } else if name == known.raw {
-            let raw = self.known.raw;
+            let raw = self.known_symbols().raw;
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, false, raw, "addr_of")
         } else if name == known.raw_mut {
-            let raw_mut = self.known.raw_mut;
+            let raw_mut = self.known_symbols().raw_mut;
             self.analyze_addr_of_intrinsic(air, &args, span, ctx, true, raw_mut, "addr_of_mut")
         } else if name == known.field_ptr {
             self.analyze_field_ptr_intrinsic(air, &args, span, ctx)
@@ -445,7 +452,7 @@ impl<'a> BodySema<'a> {
             self.analyze_target_data_model_intrinsic(air, &args, span)
         } else {
             Err(CompileError::new(
-                ErrorKind::UnknownIntrinsic(self.interner.resolve(&name).to_string()),
+                ErrorKind::UnknownIntrinsic(self.body_interner().resolve(&name).to_string()),
                 span,
             ))
         }
@@ -459,7 +466,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let args_len = self.rir.internal_intrinsic_args(args).len() as u32;
+        let args_len = self.body_rir_ref().internal_intrinsic_args(args).len() as u32;
         if args_len != intrinsic.arity() {
             let argument = if intrinsic.arity() == 1 {
                 "argument"
@@ -479,7 +486,7 @@ impl<'a> BodySema<'a> {
         }
 
         let args: Vec<RirCallArg> = self
-            .rir
+            .body_rir_ref()
             .internal_intrinsic_args(args)
             .into_iter()
             .map(|value| RirCallArg {
@@ -536,7 +543,7 @@ impl<'a> BodySema<'a> {
 
         // Array: the bound is the compile-time length N.
         if let Some(array_id) = coll_type.as_array() {
-            let (_elem, len) = self.type_pool.array_def(array_id);
+            let (_elem, len) = self.body_type_pool().array_def(array_id);
             let air_ref = air.add_inst(AirInst {
                 data: AirInstData::Const(len),
                 ty: Type::U64,
@@ -548,8 +555,8 @@ impl<'a> BodySema<'a> {
         // String byte view: the bound is the byte length `s.len()`.
         if self.is_strbuf(coll_type) {
             let source_method = coll_type.as_struct().and_then(|struct_id| {
-                let method = self.interner.get_or_intern("len");
-                (self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+                let method = self.body_interner().get_or_intern("len");
+                (self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
                     && self.method_info((struct_id, method)).is_some())
                 .then_some((struct_id, method))
             });
@@ -571,7 +578,7 @@ impl<'a> BodySema<'a> {
                 ctx,
             )?;
             let call_name = self
-                .interner
+                .body_interner()
                 .get_or_intern(&self.method_symbol(struct_id, "len", true));
             let call_ref = air.add_call(
                 None,
@@ -595,7 +602,7 @@ impl<'a> BodySema<'a> {
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
                 expected: "an array or a StrBuf".to_string(),
-                found: coll_type.safe_name_with_pool(Some(&self.type_pool)),
+                found: coll_type.safe_name_with_pool(Some(&self.body_type_pool())),
             },
             span,
         )
@@ -628,7 +635,9 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "StrBuf".to_string(),
-                    found: coll_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: coll_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 span,
             )
@@ -649,7 +658,9 @@ impl<'a> BodySema<'a> {
             (false, false) => (crate::RuntimeCallKind::StrCharScalar, Type::U32),
             (false, true) => (crate::RuntimeCallKind::StrCharScalarLossy, Type::U32),
         };
-        let call_name = self.interner.get_or_intern(runtime.helper().symbol());
+        let call_name = self
+            .body_interner()
+            .get_or_intern(runtime.helper().symbol());
         let (ptr, len, temp_scope) =
             self.project_strbuf_text_fields(air, coll_result.air_ref, coll_result.ty, span, ctx)?;
         let call_ref = air.add_call(
@@ -722,7 +733,7 @@ impl<'a> BodySema<'a> {
         // exactly as they do for a `borrow`-mode call argument. A non-place
         // argument (literal, arithmetic, call result) has no owning variable to
         // preserve, so it is analyzed normally.
-        let byref_root = root_variable_of(self.rir, args[0].value);
+        let byref_root = root_variable_of(self.body_rir_ref(), args[0].value);
         let arg_result = self.analyze_with_borrow_root(air, args[0].value, byref_root, ctx)?;
         let arg_type = arg_result.ty;
 
@@ -753,14 +764,14 @@ impl<'a> BodySema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
                     expected: "integer, bool, or String".to_string(),
-                    found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
+                    found: arg_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 span,
             ));
         }
 
         let source_strbuf = arg_type.as_struct().is_some_and(|struct_id| {
-            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
         // A StrBuf argument is passed as a layout-stable `{ptr, len}` str view
         // rather than the buffer header, so `@dbg`'s `DebugStr` text lowering
@@ -781,7 +792,7 @@ impl<'a> BodySema<'a> {
             } else {
                 crate::RuntimeCallKind::DebugU64
             }),
-            self.known.dbg,
+            self.known_symbols().dbg,
             &[arg_ref],
             Type::UNIT,
             span,
@@ -915,7 +926,7 @@ impl<'a> BodySema<'a> {
             // call, `return`, or `break` (spec 3.4:2, 4.13:5b; RUE-512).
             let air_ref = air.add_intrinsic(
                 Some(crate::RuntimeCallKind::PanicNoMessage),
-                self.known.panic,
+                self.known_symbols().panic,
                 &[],
                 Type::NEVER,
                 span,
@@ -926,10 +937,14 @@ impl<'a> BodySema<'a> {
         // Panic borrows its message until the runtime call. Give a canonical
         // source StrBuf rvalue an addressable owner for that whole call.
         let arg_result = self.analyze_inst_for_projection(air, args[0].value, ctx)?;
-        self.validate_abort_message_type("panic", arg_result.ty, self.rir.get(args[0].value).span)?;
+        self.validate_abort_message_type(
+            "panic",
+            arg_result.ty,
+            self.body_rir_ref().get(args[0].value).span,
+        )?;
 
         let source_strbuf = arg_result.ty.as_struct().is_some_and(|struct_id| {
-            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
         // Narrow a StrBuf message to a layout-stable `{ptr, len}` str view so
         // the `Panic` text lowering reads a `str`, not the StrBuf header
@@ -941,7 +956,7 @@ impl<'a> BodySema<'a> {
         };
         let intrinsic_ref = air.add_intrinsic(
             Some(crate::RuntimeCallKind::Panic),
-            self.known.panic,
+            self.known_symbols().panic,
             &[arg_ref],
             Type::NEVER,
             span,
@@ -971,13 +986,15 @@ impl<'a> BodySema<'a> {
         }
 
         let cond_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let cond_span = self.rir.get(args[0].value).span;
+        let cond_span = self.body_rir_ref().get(args[0].value).span;
         if cond_result.ty != Type::BOOL && !cond_result.ty.is_never() {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "assert".to_string(),
                     expected: "bool condition".to_string(),
-                    found: cond_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: cond_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 cond_span,
             ));
@@ -991,10 +1008,10 @@ impl<'a> BodySema<'a> {
             self.validate_abort_message_type(
                 "assert",
                 msg_result.ty,
-                self.rir.get(args[1].value).span,
+                self.body_rir_ref().get(args[1].value).span,
             )?;
             let source_strbuf = msg_result.ty.as_struct().is_some_and(|struct_id| {
-                self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+                self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
             });
             let msg_ref = if source_strbuf {
                 let (msg_ref, scope) = self.materialize_borrow_argument(
@@ -1024,7 +1041,7 @@ impl<'a> BodySema<'a> {
             } else {
                 crate::RuntimeCallKind::AssertFailed
             }),
-            self.known.assert,
+            self.known_symbols().assert,
             &extra_data,
             Type::UNIT,
             span,
@@ -1051,7 +1068,7 @@ impl<'a> BodySema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
                     expected: "text message".to_string(),
-                    found: message_ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: message_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 message_span,
             ));
@@ -1093,7 +1110,7 @@ impl<'a> BodySema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
                     expected: "integer".to_string(),
-                    found: from_ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: from_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1118,7 +1135,7 @@ impl<'a> BodySema<'a> {
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: intrinsic_name.to_string(),
                         expected: "integer".to_string(),
-                        found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                     })),
                     span,
                 ));
@@ -1211,19 +1228,15 @@ impl<'a> BodySema<'a> {
         // `match` arms the result feeds) never selects the nominal — it only
         // *checks* the identity. A same-shape user lookalike is a mismatch
         // (E0702), never used to install a parallel identity.
-        let canonical = self
-            .well_known_option_by_payload
-            .get(&expected_payload)
-            .copied()
-            .ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::InternalError(format!(
-                        "fallible intrinsic @{intrinsic_display} reached body analysis without \
+        let canonical = self.well_known_option(expected_payload).ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "fallible intrinsic @{intrinsic_display} reached body analysis without \
                          its exact trusted Option({payload_display}) registry entry"
-                    )),
-                    span,
-                )
-            })?;
+                )),
+                span,
+            )
+        })?;
 
         // Whatever context supplies, if anything. Under `?` no context can supply
         // the `Option` (the enclosing `Option(U)` may carry a different payload),
@@ -1253,7 +1266,7 @@ impl<'a> BodySema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_display.to_string(),
                     expected: format!("Option({payload_display})"),
-                    found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1353,7 +1366,7 @@ impl<'a> BodySema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "@to_string".to_string(),
                     expected: "integer".to_string(),
-                    found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
+                    found: arg_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1390,7 +1403,7 @@ impl<'a> BodySema<'a> {
             .runtime_helper()
             .expect("to_string builtin must map to a runtime helper");
         debug_assert_eq!(runtime_helper.parameters.len(), 2);
-        let call_name = self.interner.get_or_intern(runtime_helper.symbol);
+        let call_name = self.body_interner().get_or_intern(runtime_helper.symbol);
 
         let air_ref = air.add_call(
             Some(if unsigned {
@@ -1444,7 +1457,7 @@ impl<'a> BodySema<'a> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: format!("@{}", intrinsic_name_str),
                     expected: "text".to_string(),
-                    found: arg_type.safe_name_with_pool(Some(&self.type_pool)),
+                    found: arg_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1474,7 +1487,7 @@ impl<'a> BodySema<'a> {
 
         // Encode args into extra array
         let source_strbuf = arg_type.as_struct().is_some_and(|struct_id| {
-            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
         let (arg_ref, temp_scope) = if source_strbuf {
             // RUE-1066: consume the StrBuf through its method-routed `{ptr, len}`
@@ -1653,7 +1666,7 @@ impl<'a> BodySema<'a> {
         }
         let index = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_process_index_type(display, index.ty, span)?;
-        let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+        let result_ty = Type::new_ptr_mut(self.body_type_pool().intern_ptr_mut_from_type(Type::U8));
         if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
             && !self.types_equivalent(expected, result_ty)
             && !expected.is_error()
@@ -1680,7 +1693,7 @@ impl<'a> BodySema<'a> {
             ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                 name: format!("@{display}"),
                 expected: "u64".to_string(),
-                found: found.safe_name_with_pool(Some(&self.type_pool)),
+                found: found.safe_name_with_pool(Some(&self.body_type_pool())),
             })),
             span,
         ))
@@ -1704,7 +1717,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let display = self.interner.resolve(&name).to_string();
+        let display = self.body_interner().resolve(&name).to_string();
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
@@ -1731,9 +1744,9 @@ impl<'a> BodySema<'a> {
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: format!("@{display}"),
                         expected: "integer".to_string(),
-                        found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                     })),
-                    self.rir.get(arg.value).span,
+                    self.body_rir_ref().get(arg.value).span,
                 ));
             }
         }
@@ -1750,9 +1763,9 @@ impl<'a> BodySema<'a> {
             Type::ERROR
         };
 
-        let data = if name == self.known.wrapping_add {
+        let data = if name == self.known_symbols().wrapping_add {
             AirInstData::WrappingAdd(lhs.air_ref, rhs.air_ref)
-        } else if name == self.known.wrapping_sub {
+        } else if name == self.known_symbols().wrapping_sub {
             AirInstData::WrappingSub(lhs.air_ref, rhs.air_ref)
         } else {
             AirInstData::WrappingMul(lhs.air_ref, rhs.air_ref)
@@ -1782,11 +1795,11 @@ impl<'a> BodySema<'a> {
 
         // Compiler preflight guarantees a string literal and owns its
         // diagnostic. AIR only binds the already-resolved canonical record.
-        let arg_inst = self.rir.get(arg.value);
+        let arg_inst = self.body_rir_ref().get(arg.value);
         let import_path = match &arg_inst.data {
             rue_rir::InstData::StringConst {
                 content: path_spur, ..
-            } => self.interner.resolve(path_spur).to_string(),
+            } => self.body_interner().resolve(path_spur).to_string(),
             _ => unreachable!("compiler import preflight requires a string literal"),
         };
 

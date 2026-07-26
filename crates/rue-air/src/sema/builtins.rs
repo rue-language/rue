@@ -60,66 +60,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     // Builtin type helper methods
     // ========================================================================
 
-    /// Check whether a type is the canonical trusted standard-library StrBuf.
-    pub(crate) fn is_strbuf(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(struct_id) => self.type_pool.is_strbuf(struct_id),
-            _ => false,
-        }
-    }
-
-    /// Get the canonical StrBuf type visible to this compilation.
-    ///
-    /// The type is absent when the trusted standard-library module is not in
-    /// the root module's transitive import graph.
-    pub(crate) fn strbuf_type(&self) -> Option<Type> {
-        self.type_pool.lang_item_type(crate::LangItem::StrBuf)
-    }
-
-    /// Check if a type carries a linear value when stored by value: a linear
-    /// struct itself, or an array whose element type carries one.
-    ///
-    /// Used by infectious linearity (RUE-40): a struct with such a field must
-    /// itself be linear, and destructuring a linear struct must not implicitly
-    /// drop such a field. Pointers don't own their pointee and don't carry.
-    ///
-    /// Every reachable nominal definition must be complete. During the
-    /// declaration fixpoint the struct flags are the values being converged;
-    /// outside that fixpoint callers require finalized declaration ownership.
-    pub(crate) fn type_carries_linear(&self, ty: Type) -> bool {
-        self.type_pool.type_carries_linear(ty)
-    }
-
-    /// Whether a type has drop glue — a destructor that runs at scope exit,
-    /// either directly or through a by-value field/payload/element. Mirrors the
-    /// traversal `rue_cfg`'s `type_needs_drop` performs (the codegen authority):
-    /// a struct has glue if it has a destructor or any field does; an enum if any
-    /// variant payload does; an array if its element type does; pointers and
-    /// scalars have none (a pointer does not own its pointee).
-    ///
-    /// Used to gate by-copy element reads (`ArrayBuf(T)::get`/`get_or`, RUE-651):
-    /// copying a drop-glue element by `@ptr_read` would alias its owned resources
-    /// and double-free at scope exit, so those reads are rejected for such `T`.
-    /// Every reachable nominal definition and destructor assignment must be
-    /// finalized before this query is authoritative.
-    pub(crate) fn type_has_drop_glue(&self, ty: Type) -> bool {
-        self.type_pool.type_needs_drop(ty)
-    }
-
-    /// Whether declaration finalization can still change an ownership query
-    /// for `ty`. Pointers deliberately stop the walk because they do not own
-    /// their pointee; arrays carry their element by value.
-    pub(crate) fn type_ownership_depends_on_nominal(&self, ty: Type) -> bool {
-        match ty.kind() {
-            TypeKind::Struct(_) | TypeKind::Enum(_) => true,
-            TypeKind::Array(array_id) => {
-                let (element_type, _) = self.type_pool.array_def(array_id);
-                self.type_ownership_depends_on_nominal(element_type)
-            }
-            _ => false,
-        }
-    }
-
     /// Return only declaration-time ownership facts that cannot be invalidated
     /// by later payload completion or infectious-linearity propagation.
     pub(crate) fn known_linear_during_binding(&self, ty: Type) -> Option<bool> {

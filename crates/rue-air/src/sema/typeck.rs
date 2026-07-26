@@ -6,6 +6,7 @@
 //! - ABI slot calculations
 //! - Type conversions between AIR types and inference types
 
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use std::collections::HashMap;
 use std::convert::Infallible;
 
@@ -14,7 +15,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_span::{FileId, Span};
 
 use super::context::AnalysisContext;
-use super::{BodySema, DeclarationPhase, Sema};
+use super::{DeclarationPhase, Sema};
 
 /// Maximum size of a single object in bytes: `i32::MAX`, matching the
 /// codegen frame-offset (disp32) addressing range (Appendix C practical
@@ -1603,6 +1604,113 @@ fn private_qualified_item_error(
     ))
 }
 
+pub(super) fn semantic_type_syntax_compile_error(
+    interner: &lasso::ThreadedRodeo,
+    failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
+    span: Span,
+) -> CompileError {
+    use crate::SemanticResolutionError as E;
+    use crate::SemanticTypeSyntaxFailure as F;
+
+    match failure {
+        E::ProviderAbort(error) => match error {},
+        E::ProviderFailure(error) => error,
+        E::Semantic(F::Path(failure)) => module_path_compile_error(failure, span),
+        E::Semantic(F::UnknownType { syntax }) => {
+            let display = parse_type_call_syntax(&syntax)
+                .map(|(call, _)| format!("{call}(...)"))
+                .unwrap_or_else(|| syntax.to_string());
+            CompileError::new(ErrorKind::UnknownType(display), span)
+        }
+        E::Semantic(F::UnknownModuleMember { module, member, .. }) => CompileError::new(
+            ErrorKind::UnknownModuleMember {
+                module_name: module.to_string(),
+                member_name: member.to_string(),
+            },
+            span,
+        ),
+        E::Semantic(F::PrivateItem {
+            kind,
+            name,
+            defining_file,
+            ..
+        }) => private_qualified_item_error(kind.diagnostic_name(), &name, &defining_file, span),
+        E::Semantic(F::AmbiguousItem { name, .. }) => CompileError::new(
+            ErrorKind::InternalError(format!(
+                "type resolution produced an ambiguous item for '{}'",
+                name
+            )),
+            span,
+        ),
+        E::Semantic(F::NotTypeConstructor { constructor, .. }) => CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "'{}' is not a type: only a function returning `type` (a type constructor) can be applied as a type here",
+                    constructor
+                ),
+            },
+            span,
+        ),
+        E::Semantic(F::TypeWhereValueExpected { constructor, .. }) => CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "'{}' returns `type` and cannot be used where a compile-time value is required",
+                    constructor
+                ),
+            },
+            span,
+        ),
+        E::Semantic(F::InvalidConstructorArity {
+            constructor,
+            expected,
+            found,
+            ..
+        })
+        | E::Semantic(F::RuntimeConstructorParameter {
+            constructor,
+            expected,
+            found,
+            ..
+        }) => CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "type constructor '{}' expects {} comptime type argument(s), but {} were provided",
+                    constructor, expected, found
+                ),
+            },
+            span,
+        ),
+        E::Semantic(F::ValueWhereTypeExpected {
+            constructor,
+            argument,
+            parameter,
+            ..
+        }) => CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "argument '{}' of type constructor '{}' must be a type (this parameter is `comptime {}: type`)",
+                    argument,
+                    constructor,
+                    interner.resolve(&parameter)
+                ),
+            },
+            span,
+        ),
+        E::ComptimeCallTypeArgument { error, .. } => {
+            semantic_type_syntax_compile_error(interner, *error, span)
+        }
+        E::Semantic(F::ConstructorDidNotReduce { constructor, .. }) => CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "the type constructor '{}' did not reduce to a concrete type at compile time",
+                    constructor
+                ),
+            },
+            span,
+        ),
+    }
+}
+
 impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
     fn type_syntax_symbol(&mut self, name: &str) -> Spur {
         self.interner.get_or_intern(name)
@@ -1751,10 +1859,10 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
             }
             TypeSyntaxNamedKind::Alias => {
                 let Some(file) = file else { return Ok(None) };
-                if self.value_const(&(file, name)).is_none() {
+                if self.value_const(file, name).is_none() {
                     D::resolve_indexed_const(self, name, file)?;
                 }
-                let Some(info) = self.value_const(&(file, name)) else {
+                let Some(info) = self.value_const(file, name) else {
                     return Ok(None);
                 };
                 let ConstValue::Type(value) = info.value else {
@@ -2232,43 +2340,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         }
     }
 
-    /// A `type` value or a module value has no runtime representation and so
-    /// cannot be interned as an array element (`type` values: spec 4.14:6;
-    /// modules: spec 10.4:145). An array with such an element decays to
-    /// `<error>` during type resolution; sema then rejects the offending
-    /// element with a clean diagnostic (E1200 for a `type` value, E0206 for a
-    /// module) rather than reaching the intern pool, which panics on both kinds
-    /// (RUE-253, RUE-265).
-    pub(crate) fn is_non_internable_element(elem_ty: Type) -> bool {
-        matches!(elem_ty.kind(), TypeKind::ComptimeType | TypeKind::Module(_))
-    }
-
-    /// Convert a fully-resolved InferType to a concrete Type.
-    ///
-    /// This handles the conversion of InferType::Array to Type::new_array(id)
-    /// by using the array type registry.
-    pub(crate) fn infer_type_to_type(&mut self, ty: &InferType) -> Type {
-        match ty {
-            InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::ERROR,   // Unbound variable
-            InferType::IntLiteral => Type::I32, // Default (shouldn't happen after resolution)
-            InferType::Array { element, length } => {
-                // Recursively convert element type
-                let elem_ty = self.infer_type_to_type(element);
-                // A comptime-only (`type`) or module element cannot be interned;
-                // leave the array as `<error>` so sema rejects it with a clean
-                // diagnostic rather than panicking in the intern pool. `<error>`
-                // elements decay the same way (RUE-253, RUE-265).
-                if elem_ty == Type::ERROR || Self::is_non_internable_element(elem_ty) {
-                    return Type::ERROR;
-                }
-                // Get or create the array type ID
-                let array_type_id = self.get_or_create_array_type(elem_ty, *length);
-                Type::new_array(array_type_id)
-            }
-        }
-    }
-
     /// Convert a concrete Type to InferType for use in constraint generation.
     ///
     /// This handles the conversion of Type::new_array(id) to InferType::Array
@@ -2355,41 +2426,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// struct is keyed by the name `str`, so every reference shares one
     /// `StructId`.
     pub(crate) fn get_or_create_str_struct(&mut self, span: Span) -> CompileResult<Type> {
-        use crate::types::{StructDef, StructField};
-
-        let type_sym = self.interner.get_or_intern("str");
-        if let Some(struct_id) = self.struct_id_for_name(type_sym) {
-            return Ok(Type::new_struct(struct_id));
-        }
-
-        let ptr_type_id = self.type_pool.intern_ptr_const_from_type(Type::U8);
-        let ptr_ty = Type::new_ptr_const(ptr_type_id);
-
-        let struct_def = StructDef {
-            name: "str".to_string(),
-            fields: vec![
-                StructField {
-                    name: "ptr".to_string(),
-                    ty: ptr_ty,
-                },
-                StructField {
-                    name: "len".to_string(),
-                    ty: Type::U64,
-                },
-            ],
-            // `str` is a copyable, static-backed view (no ownership of bytes).
-            is_copy: true,
-            is_linear: false,
-            destructor: None,
-            // Builtin so it never participates in user drop-glue etc.
-            is_builtin: true,
-            is_pub: true,
-            file_id: rue_span::FileId::new(0),
-        };
-        let (struct_id, _) = self.type_pool.register_struct(type_sym, struct_def);
-        self.generated_structs.insert(type_sym, struct_id);
-        let _ = span;
-        Ok(Type::new_struct(struct_id))
+        super::ordinary_engine::OrdinaryBodyEngine::new(self).get_or_create_str_struct(span)
     }
 
     /// Requalify destructor symbols for struct names that span files
@@ -2515,14 +2552,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 }
 
-impl BodySema<'_> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Detected
     /// by the struct name being exactly `str`. Used to route string literals and
     /// slice-style `.len()`/index operations through the fat-pointer paths while
     /// keeping `str` first-class (exempt from the slice second-class rule).
     pub(crate) fn is_str_struct(&self, ty: Type) -> bool {
         if let TypeKind::Struct(struct_id) = ty.kind() {
-            self.type_pool.struct_def(struct_id).name == "str"
+            self.body_type_pool().struct_def(struct_id).name == "str"
         } else {
             false
         }
@@ -2540,7 +2577,7 @@ impl BodySema<'_> {
     /// back out of the canonical struct name `Str(<N>)`.
     pub(crate) fn str_fixed_capacity(&self, ty: Type) -> Option<u64> {
         if let TypeKind::Struct(struct_id) = ty.kind() {
-            let name = &self.type_pool.struct_def(struct_id).name;
+            let name = &self.body_type_pool().struct_def(struct_id).name;
             let digits = name.strip_prefix("Str(")?.strip_suffix(')')?;
             digits.parse::<u64>().ok()
         } else {
@@ -2704,106 +2741,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         failure: crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>,
         span: Span,
     ) -> CompileError {
-        use crate::SemanticResolutionError as E;
-        use crate::SemanticTypeSyntaxFailure as F;
-
-        match failure {
-            E::ProviderAbort(error) => match error {},
-            E::ProviderFailure(error) => error,
-            E::Semantic(F::Path(failure)) => module_path_compile_error(failure, span),
-            E::Semantic(F::UnknownType { syntax }) => {
-                let display = parse_type_call_syntax(&syntax)
-                    .map(|(call, _)| format!("{call}(...)"))
-                    .unwrap_or_else(|| syntax.to_string());
-                CompileError::new(ErrorKind::UnknownType(display), span)
-            }
-            E::Semantic(F::UnknownModuleMember { module, member, .. }) => CompileError::new(
-                ErrorKind::UnknownModuleMember {
-                    module_name: module.to_string(),
-                    member_name: member.to_string(),
-                },
-                span,
-            ),
-            E::Semantic(F::PrivateItem {
-                kind,
-                name,
-                defining_file,
-                ..
-            }) => private_qualified_item_error(kind.diagnostic_name(), &name, &defining_file, span),
-            E::Semantic(F::AmbiguousItem { name, .. }) => CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "type resolution produced an ambiguous item for '{}'",
-                    name
-                )),
-                span,
-            ),
-            E::Semantic(F::NotTypeConstructor { constructor, .. }) => CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "'{}' is not a type: only a function returning `type` (a type constructor) can be applied as a type here",
-                        constructor
-                    ),
-                },
-                span,
-            ),
-            E::Semantic(F::TypeWhereValueExpected { constructor, .. }) => CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "'{}' returns `type` and cannot be used where a compile-time value is required",
-                        constructor
-                    ),
-                },
-                span,
-            ),
-            E::Semantic(F::InvalidConstructorArity {
-                constructor,
-                expected,
-                found,
-                ..
-            })
-            | E::Semantic(F::RuntimeConstructorParameter {
-                constructor,
-                expected,
-                found,
-                ..
-            }) => CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "type constructor '{}' expects {} comptime type argument(s), but {} were provided",
-                        constructor, expected, found
-                    ),
-                },
-                span,
-            ),
-            E::Semantic(F::ValueWhereTypeExpected {
-                constructor,
-                argument,
-                parameter,
-                ..
-            }) => CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "argument '{}' of type constructor '{}' must be a type (this parameter is `comptime {}: type`)",
-                        argument,
-                        constructor,
-                        self.interner.resolve(&parameter)
-                    ),
-                },
-                span,
-            ),
-            E::ComptimeCallTypeArgument { error, .. } => {
-                self.type_syntax_compile_error(*error, span)
-            }
-            E::Semantic(F::ConstructorDidNotReduce { constructor, .. }) => CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "the type constructor '{}' did not reduce to a concrete type at compile time",
-                        constructor
-                    ),
-                },
-                span,
-            ),
-        }
+        semantic_type_syntax_compile_error(self.interner, failure, span)
     }
 
     pub(crate) fn record_resolved_declaration_type(&mut self, ty: Type) {
@@ -2905,52 +2843,17 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// longer hits an out-of-bounds `ArrayTypeId`.
     ///
     /// [`resolve_type`]: Sema::resolve_type
-    pub(crate) fn resolve_type_with_ctx(
-        &mut self,
-        type_sym: Spur,
-        span: Span,
-        ctx: &AnalysisContext,
-    ) -> CompileResult<Type> {
-        let syntax = self.interner.resolve(&type_sym).to_string();
-        self.resolve_type_syntax_in_scope(&syntax, span.file_id, span, Some(ctx))
-    }
-
     /// Like [`Self::resolve_qualified_type_name`], but with the file whose
     /// imports anchor the path's first segment made explicit. The comptime
     /// engine resolves a member-access type path (`std.strbuf.StrBuf` as a
     /// value-position type-constructor argument) against its environment's
     /// `defining_file`, the same file the qualified type-annotation path walks
     /// (RUE-948, mirroring the RUE-511/RUE-609 receiver walk).
-    pub(crate) fn resolve_qualified_type_name_in_file(
-        &mut self,
-        root_file: FileId,
-        segments: &[&str],
-        span: Span,
-    ) -> CompileResult<Type> {
-        self.resolve_type_syntax_in_scope(&segments.join("."), root_file, span, None)
-    }
-
     /// Like [`Self::resolve_type_module_prefix`], but with the file whose
     /// imports anchor the walk's first segment made explicit. The comptime
     /// engine resolves against its environment's `defining_file` (RUE-511),
     /// which is authoritative even when the expression's span is a default
     /// span with no file context (RUE-609).
-    pub(crate) fn resolve_type_module_prefix_in_file(
-        &mut self,
-        root_file: FileId,
-        segments: &[&str],
-        span: Span,
-    ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
-        super::BodyAnalysisHost::resolve_type_module_prefix(
-            self,
-            super::fact_mode::ModulePrefixRequest {
-                root_file,
-                segments,
-                span,
-            },
-        )
-    }
-
     pub(crate) fn resolve_type_module_prefix_with_epoch_facts(
         &mut self,
         root_file: FileId,
@@ -3145,25 +3048,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         .ok()
     }
 
-    pub(crate) fn resolve_type_for_comptime_with_subst_and_values_at_span(
-        &mut self,
-        type_sym: Spur,
-        type_subst: &std::collections::HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
-        span: Span,
-    ) -> Option<Type> {
-        let syntax = self.interner.resolve(&type_sym).to_string();
-        self.resolve_type_syntax_with_substitutions(
-            &syntax,
-            span.file_id,
-            TypeRootAuthority::KnownFile(span.file_id),
-            span,
-            Some(type_subst),
-            Some(value_subst),
-        )
-        .ok()
-    }
-
     fn record_declaration_builtin_type_call_head(&mut self, builtin: super::BuiltinTypeCallHead) {
         let Some((source_file, source_name, source_owner_name, source_kind, dependency_kind)) =
             self.declaration_type_observer.clone()
@@ -3186,30 +3070,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         );
         self.body_analysis_work
             .declaration_type_call_head_dependency_events += 1;
-    }
-
-    /// Resolve the capacity argument `N` of a fixed-capacity string `Str(N)`
-    /// (ADR-0043 Phase 5, RUE-326) to a concrete `u64`. The argument arrives as
-    /// the raw substring of the interned type name: an integer literal
-    /// (`Str(8)`) or a `const` name (`Str(CAP)`). Both routes reuse the array
-    /// length machinery, so `Str(N)` and `[u8; N]` accept exactly the same
-    /// length forms.
-    /// Resolve a file-scoped array length through the same provider and shared
-    /// comptime-call policy used by canonical type syntax resolution.
-    pub(crate) fn resolve_array_length(
-        &mut self,
-        length: &ArrayLen,
-        span: Span,
-        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
-    ) -> CompileResult<u64> {
-        super::BodyAnalysisHost::resolve_array_length(
-            self,
-            super::fact_mode::ArrayLengthRequest {
-                length,
-                span,
-                value_substitutions,
-            },
-        )
     }
 
     pub(crate) fn resolve_array_length_with_epoch_facts(
@@ -3544,7 +3404,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         };
         if let Some(value) = value {
             let (function_name, param_name) = contract.expect("value contracts name a parameter");
-            return self.validate_comptime_value_for_type(
+            return super::comptime_eval::validate_comptime_value_for_type_impl(
+                &self.interner,
+                &self.type_pool,
                 function_name,
                 param_name,
                 value,
@@ -3575,66 +3437,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     ) -> ArrayTypeId {
         self.type_pool.intern_array_from_type(element_type, length)
     }
-
-    /// Pre-create array types from a resolved InferType.
-    ///
-    /// This walks the InferType recursively and ensures all array types that will
-    /// be needed during `infer_type_to_type` conversion are created beforehand.
-    /// This separation enables future parallelization of function analysis, where
-    /// all mutations happen in this pre-collection phase.
-    pub(crate) fn pre_create_array_types_from_infer_type(&mut self, ty: &InferType) {
-        match ty {
-            InferType::Array { element, length } => {
-                // First recursively process nested array types (e.g., [[i32; 3]; 4])
-                self.pre_create_array_types_from_infer_type(element);
-
-                // Convert the element type to get the concrete Type
-                // (This is safe because we processed nested arrays first)
-                let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                // Skip `<error>`, comptime-only `type`, and module elements:
-                // none can be interned. A `[type; N]` array is diagnosed as
-                // E1200 and a `[module; N]` array as E0206 in sema instead of
-                // panicking here (RUE-253, RUE-265).
-                if elem_ty != Type::ERROR && !Self::is_non_internable_element(elem_ty) {
-                    // Pre-create this array type
-                    self.get_or_create_array_type(elem_ty, *length);
-                }
-            }
-            InferType::Concrete(_) | InferType::Var(_) | InferType::IntLiteral => {
-                // Non-array types don't need pre-creation
-            }
-        }
-    }
-
-    /// Convert an InferType to a concrete Type for use as an array element key.
-    ///
-    /// This is a helper for `pre_create_array_types_from_infer_type` that converts
-    /// the element type without mutating `self.array_types` (since we're in a
-    /// pre-creation context where the array type may not exist yet).
-    pub(crate) fn infer_type_to_concrete_type_for_key(&self, ty: &InferType) -> Type {
-        match ty {
-            InferType::Concrete(t) => *t,
-            InferType::Var(_) => Type::ERROR,   // Unbound variable
-            InferType::IntLiteral => Type::I32, // Default
-            InferType::Array { element, length } => {
-                // For nested arrays, look up or create the array type
-                let elem_ty = self.infer_type_to_concrete_type_for_key(element);
-                // A comptime-only `type` or module element (or `<error>`)
-                // cannot be interned; propagate `<error>` so the enclosing array
-                // is diagnosed as E1200 / E0206 in sema rather than panicking
-                // (RUE-253, RUE-265).
-                if elem_ty == Type::ERROR || Self::is_non_internable_element(elem_ty) {
-                    return Type::ERROR;
-                }
-                // Get or create the array type in the pool
-                let id = self.type_pool.intern_array_from_type(elem_ty, *length);
-                Type::new_array(id)
-            }
-        }
-    }
 }
 
-impl BodySema<'_> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Reject a type whose layout exceeds the implementation's maximum object
     /// size (Appendix C practical limit, RUE-561), returning the slot count on
     /// success. Call this wherever a value of `ty` is MATERIALIZED — a local
@@ -3646,7 +3451,7 @@ impl BodySema<'_> {
             Some(slots) => Ok(slots as u32),
             None => Err(CompileError::new(
                 ErrorKind::TypeTooLarge {
-                    type_name: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    type_name: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                     max_bytes: MAX_TYPE_SIZE_BYTES,
                 },
                 span,
@@ -3683,12 +3488,12 @@ impl BodySema<'_> {
     pub(crate) fn checked_abi_slot_count(&self, ty: Type) -> Option<u64> {
         let slots = match ty.kind() {
             TypeKind::Array(array_type_id) => {
-                let (element_type, length) = self.type_pool.array_def(array_type_id);
+                let (element_type, length) = self.body_type_pool().array_def(array_type_id);
                 let element_slots = self.checked_abi_slot_count(element_type)?;
                 element_slots.checked_mul(length)?
             }
             TypeKind::Struct(struct_id) => {
-                let struct_def = self.type_pool.struct_def(struct_id);
+                let struct_def = self.body_type_pool().struct_def(struct_id);
                 let mut total = 0u64;
                 for f in &struct_def.fields {
                     total = total.checked_add(self.checked_abi_slot_count(f.ty)?)?;
@@ -3696,7 +3501,7 @@ impl BodySema<'_> {
                 total
             }
             TypeKind::Enum(enum_id) => {
-                let enum_def = self.type_pool.enum_def(enum_id);
+                let enum_def = self.body_type_pool().enum_def(enum_id);
                 let mut max_payload = 0u64;
                 for i in 0..enum_def.variant_count() {
                     let mut variant_slots = 0u64;
@@ -3724,6 +3529,6 @@ impl BodySema<'_> {
     /// every materialization site via [`Self::require_layout_slots`], so the
     /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
-        self.type_pool.provisional_abi_slot_count(ty)
+        self.body_type_pool().provisional_abi_slot_count(ty)
     }
 }

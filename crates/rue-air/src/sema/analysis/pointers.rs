@@ -3,9 +3,10 @@
 //! This category owns pointer and platform-facing intrinsic analysis within
 //! the canonical semantic-analysis implementation.
 
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze @ptr_read / @ptr_read_unaligned intrinsic: reads value through
     /// pointer. Signature: `@ptr_read(ptr: ptr const T) -> T`.
     ///
@@ -45,8 +46,8 @@ impl<'a> BodySema<'a> {
 
         // Get the pointee type from the pointer type
         let pointee_type = match ptr_type.kind() {
-            TypeKind::PtrConst(ptr_id) => self.type_pool.ptr_const_def(ptr_id),
-            TypeKind::PtrMut(ptr_id) => self.type_pool.ptr_mut_def(ptr_id),
+            TypeKind::PtrConst(ptr_id) => self.body_type_pool().ptr_const_def(ptr_id),
+            TypeKind::PtrMut(ptr_id) => self.body_type_pool().ptr_mut_def(ptr_id),
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
@@ -119,7 +120,7 @@ impl<'a> BodySema<'a> {
 
         // Pointer must be ptr mut T
         let pointee_type = match ptr_type.kind() {
-            TypeKind::PtrMut(ptr_id) => self.type_pool.ptr_mut_def(ptr_id),
+            TypeKind::PtrMut(ptr_id) => self.body_type_pool().ptr_mut_def(ptr_id),
             TypeKind::PtrConst(_) => {
                 return Err(CompileError::new(
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
@@ -148,7 +149,7 @@ impl<'a> BodySema<'a> {
         // spuriously failing the equality check below (RUE-275). Mirrors the
         // struct-init field-literal coercion in `analyze_struct_init`; the
         // range check keeps `@ptr_write(p_u8, 300)` an honest E0800.
-        let value_inst = self.rir.get(args[1].value);
+        let value_inst = self.body_rir_ref().get(args[1].value);
         let value_result = match &value_inst.data {
             InstData::IntConst(value) if pointee_type.is_integer() => {
                 if !pointee_type.literal_fits(*value) {
@@ -597,7 +598,7 @@ impl<'a> BodySema<'a> {
         let align = self.analyze_inst(air, args[1].value, ctx)?;
         self.require_intrinsic_type("alloc_bytes", align.ty, Type::U64, span)?;
         self.require_power_of_two_align("alloc_bytes", args[1].value, span, ctx)?;
-        let result_ty = Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
+        let result_ty = Type::new_ptr_mut(self.body_type_pool().intern_ptr_mut_from_type(Type::U8));
         if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
             && !self.types_equivalent(expected, result_ty)
             && !expected.is_error()
@@ -879,8 +880,8 @@ impl<'a> BodySema<'a> {
 
     fn require_u8_pointer(&self, name: &str, ty: Type, span: Span) -> CompileResult<()> {
         let is_u8 = match ty.kind() {
-            TypeKind::PtrConst(id) => self.type_pool.ptr_const_def(id) == Type::U8,
-            TypeKind::PtrMut(id) => self.type_pool.ptr_mut_def(id) == Type::U8,
+            TypeKind::PtrConst(id) => self.body_type_pool().ptr_const_def(id) == Type::U8,
+            TypeKind::PtrMut(id) => self.body_type_pool().ptr_mut_def(id) == Type::U8,
             _ => false,
         };
         if is_u8 || ty.is_error() || ty.is_never() {
@@ -898,7 +899,7 @@ impl<'a> BodySema<'a> {
 
     fn require_mut_u8_pointer(&self, name: &str, ty: Type, span: Span) -> CompileResult<()> {
         let is_mut_u8 = match ty.kind() {
-            TypeKind::PtrMut(id) => self.type_pool.ptr_mut_def(id) == Type::U8,
+            TypeKind::PtrMut(id) => self.body_type_pool().ptr_mut_def(id) == Type::U8,
             _ => false,
         };
         if is_mut_u8 || ty.is_error() || ty.is_never() {
@@ -992,10 +993,12 @@ impl<'a> BodySema<'a> {
 
         // Create the pointer type
         let result_type = if is_mut {
-            let ptr_type_id = self.type_pool.intern_ptr_mut_from_type(pointee_type);
+            let ptr_type_id = self.body_type_pool().intern_ptr_mut_from_type(pointee_type);
             Type::new_ptr_mut(ptr_type_id)
         } else {
-            let ptr_type_id = self.type_pool.intern_ptr_const_from_type(pointee_type);
+            let ptr_type_id = self
+                .body_type_pool()
+                .intern_ptr_const_from_type(pointee_type);
             Type::new_ptr_const(ptr_type_id)
         };
 
@@ -1039,13 +1042,16 @@ impl<'a> BodySema<'a> {
         // analysis, so a non-field operand (a bare variable, an index, a call
         // result, a literal) is rejected up front with a targeted diagnostic
         // rather than @raw's generic "not a place" message.
-        if !matches!(self.rir.get(args[0].value).data, InstData::FieldGet { .. }) {
+        if !matches!(
+            self.body_rir_ref().get(args[0].value).data,
+            InstData::FieldGet { .. }
+        ) {
             return Err(CompileError::new(ErrorKind::FieldPtrRequiresField, span));
         }
 
         // @field_ptr yields a mutable raw pointer (like `&raw mut`), so it
         // supports both @ptr_read and @ptr_write round-trips through the field.
-        let field_ptr = self.known.field_ptr;
+        let field_ptr = self.known_symbols().field_ptr;
         self.analyze_addr_of_intrinsic(air, args, span, ctx, true, field_ptr, "field_ptr")
     }
 
@@ -1124,13 +1130,13 @@ impl<'a> BodySema<'a> {
         }
 
         let arch_enum_id = self
-            .builtin_arch_id
+            .builtin_arch_id()
             .expect("Arch enum not injected - internal compiler error");
 
         // Determine variant index from the requested compilation target, not
         // the host running the compiler. Cross-target `--emit` must specialize
         // target intrinsics for the emitted target (RUE-417).
-        let variant_index = match self.target.arch() {
+        let variant_index = match self.target().arch() {
             Arch::X86_64 => 0,
             Arch::Aarch64 => 1,
         };
@@ -1163,13 +1169,13 @@ impl<'a> BodySema<'a> {
         }
 
         let os_enum_id = self
-            .builtin_os_id
+            .builtin_os_id()
             .expect("Os enum not injected - internal compiler error");
 
         // Determine variant index from the requested compilation target, not
         // the host running the compiler. Cross-target `--emit` must specialize
         // target intrinsics for the emitted target (RUE-417).
-        let variant_index = match self.target.os() {
+        let variant_index = match self.target().os() {
             Os::Linux => 0,
             Os::Macos => 1,
         };
@@ -1205,14 +1211,14 @@ impl<'a> BodySema<'a> {
         }
 
         let data_model_enum_id = self
-            .builtin_data_model_id
+            .builtin_data_model_id()
             .expect("DataModel enum not injected - internal compiler error");
 
         // Determine variant index from the requested compilation target, not
         // the host running the compiler. Cross-target `--emit` must specialize
         // target intrinsics for the emitted target (RUE-417). Variant order
         // matches `rue_target::DataModel`.
-        let variant_index = match self.target.data_model() {
+        let variant_index = match self.target().data_model() {
             DataModel::Ilp32 => 0,
             DataModel::Lp64 => 1,
             DataModel::Llp64 => 2,

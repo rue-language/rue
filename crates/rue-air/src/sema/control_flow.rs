@@ -4,14 +4,14 @@
 //! The methods operate directly on the canonical [`BodySema`] state so
 //! control-flow lowering does not introduce a peer analysis context.
 
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use std::collections::HashMap;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
-use rue_rir::{InstData, InstRef, RirPatternView as RirPattern};
+use rue_rir::{InstData, InstRef, RirPattern};
 use rue_span::Span;
 
-use super::BodySema;
 use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue, LocalVar};
@@ -19,7 +19,7 @@ use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze a control flow instruction.
     ///
     /// Handles: Branch, Loop, InfiniteLoop, Match, Break, Continue, Ret, Block
@@ -29,7 +29,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::Branch {
@@ -148,9 +154,11 @@ impl<'a> BodySema<'a> {
                             return Err(CompileError::new(
                                 ErrorKind::TypeMismatch {
                                     expected: "()".to_string(),
-                                    found: result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                                    found: result
+                                        .ty
+                                        .safe_name_with_pool(Some(&self.body_type_pool())),
                                 },
-                                self.rir.get(block).span,
+                                self.body_rir_ref().get(block).span,
                             )
                             .with_help(
                                 "if expressions without else must have unit type; \
@@ -184,7 +192,7 @@ impl<'a> BodySema<'a> {
             ctx.push_scope();
             let then_result = self.analyze_inst(air, then_block, ctx)?;
             let then_type = then_result.ty;
-            let then_span = self.rir.get(then_block).span;
+            let then_span = self.body_rir_ref().get(then_block).span;
             ctx.pop_scope();
 
             // Capture then-branch's move state
@@ -197,7 +205,7 @@ impl<'a> BodySema<'a> {
             ctx.push_scope();
             let else_result = self.analyze_inst(air, else_b, ctx)?;
             let else_type = else_result.ty;
-            let else_span = self.rir.get(else_b).span;
+            let else_span = self.body_rir_ref().get(else_b).span;
             ctx.pop_scope();
 
             // Capture else-branch's move state
@@ -224,15 +232,16 @@ impl<'a> BodySema<'a> {
                     {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: then_type.safe_name_with_pool(Some(&self.type_pool)),
-                                found: else_type.safe_name_with_pool(Some(&self.type_pool)),
+                                expected: then_type
+                                    .safe_name_with_pool(Some(&self.body_type_pool())),
+                                found: else_type.safe_name_with_pool(Some(&self.body_type_pool())),
                             },
                             else_span,
                         )
                         .with_label(
                             format!(
                                 "this is of type `{}`",
-                                then_type.safe_name_with_pool(Some(&self.type_pool))
+                                then_type.safe_name_with_pool(Some(&self.body_type_pool()))
                             ),
                             then_span,
                         )
@@ -269,9 +278,9 @@ impl<'a> BodySema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),
-                        found: then_type.safe_name_with_pool(Some(&self.type_pool)),
+                        found: then_type.safe_name_with_pool(Some(&self.body_type_pool())),
                     },
-                    self.rir.get(then_block).span,
+                    self.body_rir_ref().get(then_block).span,
                 )
                 .with_help(
                     "if expressions without else must have unit type; \
@@ -350,7 +359,7 @@ impl<'a> BodySema<'a> {
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
-            let recovered_before = self.one_body_recovered_errors.len();
+            let recovered_before = self.one_body_recovered_errors_mut().len();
             let result = (|| -> CompileResult<()> {
                 self.analyze_inst(air, cond, &mut scratch_ctx)?;
                 scratch_ctx.push_scope();
@@ -363,7 +372,7 @@ impl<'a> BodySema<'a> {
                 Ok(())
             })();
             air.rollback(checkpoint);
-            for error in &mut self.one_body_recovered_errors[recovered_before..] {
+            for error in &mut self.one_body_recovered_errors_mut()[recovered_before..] {
                 *error = error
                     .clone()
                     .with_note("value was moved in a previous iteration of the loop");
@@ -427,7 +436,7 @@ impl<'a> BodySema<'a> {
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
-            let recovered_before = self.one_body_recovered_errors.len();
+            let recovered_before = self.one_body_recovered_errors_mut().len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
             scratch_ctx.loop_break_stack.push(false);
@@ -436,7 +445,7 @@ impl<'a> BodySema<'a> {
             }
             let result = self.analyze_inst(air, body, &mut scratch_ctx);
             air.rollback(checkpoint);
-            for error in &mut self.one_body_recovered_errors[recovered_before..] {
+            for error in &mut self.one_body_recovered_errors_mut()[recovered_before..] {
                 *error = error
                     .clone()
                     .with_note("value was moved in a previous iteration of the loop");
@@ -477,7 +486,7 @@ impl<'a> BodySema<'a> {
         scrutinee_type: Type,
         span: Span,
     ) -> CompileResult<i64> {
-        let ty_name = scrutinee_type.safe_name_with_pool(Some(&self.type_pool));
+        let ty_name = scrutinee_type.safe_name_with_pool(Some(&self.body_type_pool()));
         if negative {
             if scrutinee_type.is_unsigned() {
                 return Err(
@@ -522,9 +531,9 @@ impl<'a> BodySema<'a> {
     ///
     /// The warning shapes and messages mirror the normal per-arm loop exactly,
     /// so a pruned match and an ordinary match report identical diagnostics.
-    fn warn_unreachable_pruned_arms<'r>(
+    fn warn_unreachable_pruned_arms(
         &self,
-        arms: impl Iterator<Item = (rue_rir::RirPatternView<'r>, InstRef)>,
+        arms: impl Iterator<Item = (RirPattern, InstRef)>,
         scrutinee_type: Type,
         ctx: &mut AnalysisContext,
     ) {
@@ -553,8 +562,8 @@ impl<'a> BodySema<'a> {
                         type_name, variant, ..
                     } => format!(
                         "{}.{}",
-                        self.interner.resolve(&*type_name),
-                        self.interner.resolve(&*variant)
+                        self.body_interner().resolve(&*type_name),
+                        self.body_interner().resolve(&*variant)
                     ),
                 };
                 ctx.warnings.push(
@@ -671,7 +680,12 @@ impl<'a> BodySema<'a> {
         // then reports non-exhaustiveness).
         if !ctx.comptime_value_vars.is_empty() {
             if let Some(value) = self.try_evaluate_const_in_fn(scrutinee, ctx) {
-                let arms = self.rir.match_arms(arms);
+                let arms = self
+                    .body_rir_ref()
+                    .match_arms(arms)
+                    .iter()
+                    .map(|(pattern, body)| (pattern.to_owned(), body))
+                    .collect::<Vec<_>>();
                 let mut selected: Option<InstRef> = None;
                 let mut prunable = !arms.is_empty();
                 let mut has_wildcard = false;
@@ -712,7 +726,7 @@ impl<'a> BodySema<'a> {
                         }
                     };
                     if matched && selected.is_none() {
-                        selected = Some(body);
+                        selected = Some(*body);
                     }
                 }
                 // Exhaustiveness is a property of the pattern set, not of
@@ -766,7 +780,7 @@ impl<'a> BodySema<'a> {
                     // skipped by the early return, so run them here. Only
                     // pattern shapes are inspected — no arm body is analyzed,
                     // honoring 4.14:19.
-                    self.warn_unreachable_pruned_arms(arms.iter(), scrutinee_type, ctx);
+                    self.warn_unreachable_pruned_arms(arms.iter().cloned(), scrutinee_type, ctx);
                     if let Some(body) = selected {
                         ctx.push_scope();
                         let result = self.analyze_inst(air, body, ctx)?;
@@ -783,7 +797,12 @@ impl<'a> BodySema<'a> {
         // Option::Some(l) => .., Option::None => .. }`, RUE-6). Context does not
         // select the intrinsic nominal. Resolution errors are ignored — pattern
         // legality is checked on the normal path below.
-        let arms_for_expected = self.rir.match_arms(arms);
+        let arms_for_expected = self
+            .body_rir_ref()
+            .match_arms(arms)
+            .iter()
+            .map(|(pattern, body)| (pattern.to_owned(), body))
+            .collect::<Vec<_>>();
         let expected_scrutinee = arms_for_expected.iter().find_map(|(pattern, _)| {
             if let RirPattern::Path { type_name, .. } = &pattern {
                 self.resolve_type_with_ctx(*type_name, span, ctx)
@@ -805,20 +824,25 @@ impl<'a> BodySema<'a> {
         {
             return Err(CompileError::new(
                 ErrorKind::InvalidMatchType(
-                    scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
+                    scrutinee_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 ),
                 span,
             ));
         }
 
-        let arms = self.rir.match_arms(arms);
+        let arms = self
+            .body_rir_ref()
+            .match_arms(arms)
+            .iter()
+            .map(|(pattern, body)| (pattern.to_owned(), body))
+            .collect::<Vec<_>>();
         // An empty match is only legal on a zero-variant (uninhabited) enum,
         // where zero arms vacuously satisfy exhaustiveness because the type
         // has no values (spec 4.7:26, RUE-169). The match can never be
         // reached with a value, so its type is `!` (spec 4.7:27).
         if arms.is_empty() {
             let is_uninhabited_enum = match scrutinee_type.try_kind() {
-                Some(TypeKind::Enum(id)) => self.type_pool.enum_def(id).variant_count() == 0,
+                Some(TypeKind::Enum(id)) => self.body_type_pool().enum_def(id).variant_count() == 0,
                 _ => false,
             };
             if !is_uninhabited_enum {
@@ -873,8 +897,8 @@ impl<'a> BodySema<'a> {
                     } => {
                         format!(
                             "{}.{}",
-                            self.interner.resolve(&*type_name),
-                            self.interner.resolve(&*variant)
+                            self.body_interner().resolve(&*type_name),
+                            self.body_interner().resolve(&*variant)
                         )
                     }
                 };
@@ -901,7 +925,7 @@ impl<'a> BodySema<'a> {
                             bool_true_span.is_some() && bool_false_span.is_some()
                         } else if let Some(enum_id) = pattern_enum_id {
                             covered_variants.len()
-                                == self.type_pool.enum_def(enum_id).variant_count()
+                                == self.body_type_pool().enum_def(enum_id).variant_count()
                         } else {
                             false
                         };
@@ -925,7 +949,8 @@ impl<'a> BodySema<'a> {
                     if !scrutinee_type.is_integer() {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
+                                expected: scrutinee_type
+                                    .safe_name_with_pool(Some(&self.body_type_pool())),
                                 found: "integer".to_string(),
                             },
                             pattern_span,
@@ -965,7 +990,8 @@ impl<'a> BodySema<'a> {
                     if scrutinee_type != Type::BOOL {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
+                                expected: scrutinee_type
+                                    .safe_name_with_pool(Some(&self.body_type_pool())),
                                 found: "bool".to_string(),
                             },
                             pattern_span,
@@ -1008,7 +1034,7 @@ impl<'a> BodySema<'a> {
                         .resolve_pattern_enum(*module, *ctor_head, *type_name, ctx, pattern_span)?
                         .ok_or_compile_error(
                             ErrorKind::UnknownEnumType(
-                                self.interner.resolve(&*type_name).to_string(),
+                                self.body_interner().resolve(&*type_name).to_string(),
                             ),
                             pattern_span,
                         )?;
@@ -1019,22 +1045,23 @@ impl<'a> BodySema<'a> {
                     // through a module (E0706 already enforced) or a comptime
                     // binding (exempt); both are reported as `privacy_handled`.
                     if !privacy_handled {
-                        let def = self.type_pool.enum_def(enum_id);
+                        let def = self.body_type_pool().enum_def(enum_id);
                         self.check_unqualified_visibility(
                             "enum",
-                            self.interner.resolve(&*type_name),
+                            self.body_interner().resolve(&*type_name),
                             def.file_id,
                             def.is_pub,
                             pattern_span,
                         )?;
                     }
-                    let enum_def = self.type_pool.enum_def(enum_id);
+                    let enum_def = self.body_type_pool().enum_def(enum_id);
 
                     // Check that scrutinee type matches the pattern's enum type
                     if !self.types_equivalent(scrutinee_type, Type::new_enum(enum_id)) {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
-                                expected: scrutinee_type.safe_name_with_pool(Some(&self.type_pool)),
+                                expected: scrutinee_type
+                                    .safe_name_with_pool(Some(&self.body_type_pool())),
                                 found: enum_def.name.clone(),
                             },
                             pattern_span,
@@ -1042,7 +1069,7 @@ impl<'a> BodySema<'a> {
                     }
 
                     // Find the variant index
-                    let variant_name = self.interner.resolve(&*variant);
+                    let variant_name = self.body_interner().resolve(&*variant);
                     let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                         ErrorKind::UnknownVariant {
                             enum_name: enum_def.name.clone(),
@@ -1059,8 +1086,8 @@ impl<'a> BodySema<'a> {
                         if wildcard_span.is_none() {
                             let pat_str = format!(
                                 "{}.{}",
-                                self.interner.resolve(&*type_name),
-                                self.interner.resolve(&*variant)
+                                self.body_interner().resolve(&*type_name),
+                                self.body_interner().resolve(&*variant)
                             );
                             ctx.warnings.push(
                                 CompileWarning::new(
@@ -1115,7 +1142,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Analyze arm body
-            let body_result = self.analyze_inst(air, body, ctx)?;
+            let body_result = self.analyze_inst(air, *body, ctx)?;
             let body_type = body_result.ty;
 
             ctx.pop_scope();
@@ -1137,7 +1164,7 @@ impl<'a> BodySema<'a> {
                         return Err(self.type_mismatch_error(
                             prev,
                             body_type,
-                            self.rir.get(body).span,
+                            self.body_rir_ref().get(*body).span,
                         ));
                     } else {
                         prev
@@ -1168,7 +1195,7 @@ impl<'a> BodySema<'a> {
                     variant,
                     ..
                 } => {
-                    let type_name_str = self.interner.resolve(&*type_name).to_string();
+                    let type_name_str = self.body_interner().resolve(&*type_name).to_string();
                     let enum_id = self
                         .resolve_pattern_enum(*module, *ctor_head, *type_name, ctx, pattern_span)?
                         .map(|(id, _)| id)
@@ -1181,8 +1208,8 @@ impl<'a> BodySema<'a> {
                                 pattern_span,
                             )
                         })?;
-                    let enum_def = self.type_pool.enum_def(enum_id);
-                    let variant_name = self.interner.resolve(&*variant);
+                    let enum_def = self.body_type_pool().enum_def(enum_id);
+                    let variant_name = self.body_interner().resolve(&*variant);
                     let variant_index = enum_def.find_variant(variant_name).ok_or_else(|| {
                         CompileError::new(
                             ErrorKind::InternalError(format!(
@@ -1227,7 +1254,7 @@ impl<'a> BodySema<'a> {
         let is_exhaustive = if scrutinee_type == Type::BOOL {
             has_wildcard || (bool_true_covered && bool_false_covered)
         } else if let Some(enum_id) = pattern_enum_id {
-            let enum_def = self.type_pool.enum_def(enum_id);
+            let enum_def = self.body_type_pool().enum_def(enum_id);
             has_wildcard || covered_variants.len() == enum_def.variant_count()
         } else {
             // For integers, must have wildcard
@@ -1242,7 +1269,7 @@ impl<'a> BodySema<'a> {
                     Some(TypeKind::Enum(id)) => Some(id),
                     _ => None,
                 })
-                .map(|id| self.type_pool.enum_def(id));
+                .map(|id| self.body_type_pool().enum_def(id));
             return Err(super::analysis::non_exhaustive_match_error(
                 span,
                 scrutinee_type,
@@ -1265,7 +1292,7 @@ impl<'a> BodySema<'a> {
     /// recognise the in-scope library `Option` by structure and name
     /// (RUE-6, ADR-0038), rather than as a privileged builtin.
     fn option_enum_shape(&self, enum_id: crate::types::EnumId) -> Option<(u32, u32, Type)> {
-        let def = self.type_pool.enum_def(enum_id);
+        let def = self.body_type_pool().enum_def(enum_id);
         if def.variant_count() != 2 {
             return None;
         }
@@ -1284,7 +1311,7 @@ impl<'a> BodySema<'a> {
     /// payload arity, mirroring [`Self::option_enum_shape`] (ADR-0038). Returns
     /// `(ok_idx, err_idx, ok_payload_ty, err_payload_ty)`.
     fn result_enum_shape(&self, enum_id: crate::types::EnumId) -> Option<(u32, u32, Type, Type)> {
-        let def = self.type_pool.enum_def(enum_id);
+        let def = self.body_type_pool().enum_def(enum_id);
         if def.variant_count() != 2 {
             return None;
         }
@@ -1355,7 +1382,7 @@ impl<'a> BodySema<'a> {
         let non_option = |sema: &Self| {
             CompileError::new(
                 ErrorKind::QuestionOnNonOption {
-                    found: operand_ty.safe_name_with_pool(Some(&sema.type_pool)),
+                    found: operand_ty.safe_name_with_pool(Some(sema.body_type_pool())),
                 },
                 span,
             )
@@ -1382,7 +1409,8 @@ impl<'a> BodySema<'a> {
                     None => {
                         return Err(CompileError::new(
                             ErrorKind::QuestionOutsideOptionFn {
-                                return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
+                                return_type: return_type
+                                    .safe_name_with_pool(Some(&self.body_type_pool())),
                             },
                             span,
                         ));
@@ -1427,7 +1455,8 @@ impl<'a> BodySema<'a> {
                     None => {
                         return Err(CompileError::new(
                             ErrorKind::QuestionOutsideResultFn {
-                                return_type: return_type.safe_name_with_pool(Some(&self.type_pool)),
+                                return_type: return_type
+                                    .safe_name_with_pool(Some(&self.body_type_pool())),
                             },
                             span,
                         ));
@@ -1436,8 +1465,8 @@ impl<'a> BodySema<'a> {
                 if !self.types_equivalent(err_ty, ret_err_ty) {
                     return Err(CompileError::new(
                         ErrorKind::QuestionErrTypeMismatch {
-                            operand_err: err_ty.safe_name_with_pool(Some(&self.type_pool)),
-                            fn_err: ret_err_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            operand_err: err_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            fn_err: ret_err_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
@@ -1644,11 +1673,11 @@ impl<'a> BodySema<'a> {
             .resolve_pattern_enum(*module, *ctor_head, *type_name, ctx, pattern_span)?
             .map(|(id, _)| id)
             .ok_or_compile_error(
-                ErrorKind::UnknownEnumType(self.interner.resolve(&*type_name).to_string()),
+                ErrorKind::UnknownEnumType(self.body_interner().resolve(&*type_name).to_string()),
                 pattern_span,
             )?;
-        let def = self.type_pool.enum_def(enum_id);
-        let variant_name = self.interner.resolve(&*variant).to_string();
+        let def = self.body_type_pool().enum_def(enum_id);
+        let variant_name = self.body_interner().resolve(&*variant).to_string();
         let variant_index = def.find_variant(&variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
                 enum_name: def.name.clone(),
@@ -1675,13 +1704,13 @@ impl<'a> BodySema<'a> {
         // rather than losing a field (RUE-269). The `_` discard (RUE-601) is
         // exempt: it binds nothing, so any number may repeat (`Rect(_, _)`).
         for (i, name) in bindings.iter().enumerate() {
-            if self.interner.resolve(&name) == "_" {
+            if self.body_interner().resolve(&name) == "_" {
                 continue;
             }
-            if bindings.values().take(i).any(|existing| existing == *name) {
+            if bindings.iter().take(i).any(|existing| existing == name) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicatePatternBinding {
-                        name: self.interner.resolve(&name).to_string(),
+                        name: self.body_interner().resolve(&name).to_string(),
                     },
                     pattern_span,
                 ));
@@ -1696,7 +1725,7 @@ impl<'a> BodySema<'a> {
             // discriminant-only match on a payload-carrying variant. The
             // enumerate index `i` still tracks the real field position for the
             // other bindings.
-            if self.interner.resolve(&binding_name) == "_" {
+            if self.body_interner().resolve(&binding_name) == "_" {
                 continue;
             }
             let field_ty = payload[i];
@@ -1781,8 +1810,10 @@ impl<'a> BodySema<'a> {
             {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: ctx.return_type.safe_name_with_pool(Some(&self.type_pool)),
-                        found: inner_ty.safe_name_with_pool(Some(&self.type_pool)),
+                        expected: ctx
+                            .return_type
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: inner_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 ));
@@ -1793,7 +1824,9 @@ impl<'a> BodySema<'a> {
             if ctx.return_type != Type::UNIT && !ctx.return_type.is_error() {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: ctx.return_type.safe_name_with_pool(Some(&self.type_pool)),
+                        expected: ctx
+                            .return_type
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
                         found: "()".to_string(),
                     },
                     span,
@@ -1819,7 +1852,7 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         // Get the instruction refs from extra data
-        let inst_refs = self.rir.block_insts(instructions);
+        let inst_refs = self.body_rir_ref().block_insts(instructions).to_vec();
 
         // Push a new scope for this block.
         ctx.push_scope();
@@ -1828,14 +1861,14 @@ impl<'a> BodySema<'a> {
         let mut statements = Vec::new();
         let mut last_result: Option<AnalysisResult> = None;
         let num_insts = inst_refs.len();
-        for (i, inst_ref) in inst_refs.values().enumerate() {
+        for (i, inst_ref) in inst_refs.iter().copied().enumerate() {
             let is_last = i == num_insts - 1;
             // Statement recovery starts after body-wide inference has
             // succeeded. Inference failures use the exact selections observed
             // during constraint generation instead; substitution-dependent
             // selections make that transaction non-terminal.
             let recovery_checkpoint = self
-                .one_body_error_recovery
+                .one_body_error_recovery()
                 .then(|| (air.checkpoint(), ctx.clone()));
             let outcome = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)
@@ -1844,16 +1877,16 @@ impl<'a> BodySema<'a> {
             };
             let result = match outcome {
                 Ok(result) => result,
-                Err(error) if self.one_body_error_recovery => {
+                Err(error) if self.one_body_error_recovery() => {
                     let (air_checkpoint, ctx_checkpoint) = recovery_checkpoint
                         .expect("one-body recovery checkpoint must accompany recovery mode");
                     air.rollback(air_checkpoint);
                     *ctx = ctx_checkpoint;
-                    self.one_body_recovered_errors.push(error);
+                    self.one_body_recovered_errors_mut().push(error);
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::UnitConst,
                         ty: Type::ERROR,
-                        span: self.rir.get(inst_ref).span,
+                        span: self.body_rir_ref().get(inst_ref).span,
                     });
                     AnalysisResult::new(air_ref, Type::ERROR)
                 }

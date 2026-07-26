@@ -7,6 +7,7 @@
 
 use super::super::call_resolution::CallResolutionFacts;
 use super::super::context::{LocalVar, VariableMoveState};
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inst::AirPlaceRef;
 use crate::scope::ScopedContext;
@@ -143,9 +144,9 @@ impl PlaceTrace {
             .any(|p| matches!(p.proj, AirProjection::Index { .. }) && p.index_segment.is_none())
     }
 }
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Read move state without exposing the move-state store to phase peers.
-    pub(super) fn moved_state<'ctx>(
+    pub(crate) fn moved_state<'ctx>(
         &self,
         ctx: &'ctx AnalysisContext,
         root: &Spur,
@@ -369,8 +370,8 @@ impl<'a> BodySema<'a> {
         // compiler never depends on StrBuf's internal field layout (RUE-1066).
         // Both accessors are `borrow self`, so one materialized borrow of the
         // owner backs both calls.
-        let ptr_method = self.interner.get_or_intern("as_ptr");
-        let len_method = self.interner.get_or_intern("len");
+        let ptr_method = self.body_interner().get_or_intern("as_ptr");
+        let len_method = self.body_interner().get_or_intern("len");
         let Some(ptr_ty) = self
             .call_facts()
             .method_info(struct_id, ptr_method)
@@ -403,10 +404,10 @@ impl<'a> BodySema<'a> {
         }
         let (receiver, prefix) = self.materialize_borrow_argument(air, value, ty, span, ctx)?;
         let ptr_call_name = self
-            .interner
+            .body_interner()
             .get_or_intern(&self.method_symbol(struct_id, "as_ptr", true));
         let len_call_name = self
-            .interner
+            .body_interner()
             .get_or_intern(&self.method_symbol(struct_id, "len", true));
         let ptr_ref = air.add_call(
             None,
@@ -623,7 +624,13 @@ impl<'a> BodySema<'a> {
         air: &mut Air,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<PlaceTrace>> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             // Base case: local variable reference
@@ -681,8 +688,8 @@ impl<'a> BodySema<'a> {
                         };
 
                         // Look up field info
-                        let struct_def = self.type_pool.struct_def(struct_id);
-                        let field_name_str = self.interner.resolve(field);
+                        let struct_def = self.body_type_pool().struct_def(struct_id);
+                        let field_name_str = self.body_interner().resolve(field);
                         let (field_index, struct_field) =
                             match struct_def.find_field(field_name_str) {
                                 Some(info) => info,
@@ -723,7 +730,7 @@ impl<'a> BodySema<'a> {
                         let base_type = trace.result_type();
                         let (_array_type_id, elem_type) = match base_type.as_array() {
                             Some(id) => {
-                                let (elem, _len) = self.type_pool.array_def(id);
+                                let (elem, _len) = self.body_type_pool().array_def(id);
                                 (id, elem)
                             }
                             None => return Ok(None), // Not an array
@@ -747,7 +754,7 @@ impl<'a> BodySema<'a> {
                         let const_index = self.try_get_const_index(*index);
                         let index_segment = match const_index {
                             Some(k) if k >= 0 => {
-                                Some(super::index_path_segment(self.interner, k as u64))
+                                Some(super::index_path_segment(self.body_interner(), k as u64))
                             }
                             _ => None,
                         };
@@ -831,7 +838,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::Alloc {
@@ -943,7 +956,7 @@ impl<'a> BodySema<'a> {
         // the collection variable (`a` in `a[__p]`); a `.chars()` scalar read
         // has no place root, so this is a no-op there.
         let init_outcome = if iter_elem {
-            let byref_root = super::root_variable_of(self.rir, init);
+            let byref_root = super::root_variable_of(self.body_rir_ref(), init);
             let prev = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
             let r = self.analyze_inst(air, init, ctx);
             ctx.byref_arg_root = prev;
@@ -1023,7 +1036,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Otherwise it genuinely can't be stored at runtime.
-            let name_str = self.interner.resolve(&name);
+            let name_str = self.body_interner().resolve(&name);
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
                     reason: format!(
@@ -1037,7 +1050,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Check if @allow(unused_variable) directive is present
-        let directives = self.rir.directives(directives);
+        let directives = self.body_rir_ref().directives(directives);
         let allow_unused = self.has_allow_directive(directives.iter(), "unused_variable");
 
         // Allocate slots
@@ -1111,7 +1124,7 @@ impl<'a> BodySema<'a> {
             // literal: its content joins the function's local string table
             // and lowers to a `.rodata`-backed `str` value (RUE-957).
             ConstValue::String(content) => {
-                let content = self.interner.resolve(&content).to_string();
+                let content = self.body_interner().resolve(&content).to_string();
                 let anchor = anchor.ok_or_else(|| {
                     CompileError::new(
                         ErrorKind::InternalError(
@@ -1148,7 +1161,7 @@ impl<'a> BodySema<'a> {
         if !ctx.locals.contains_key(&name) {
             if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
                 let ty = param_info.ty;
-                let name_str = self.interner.resolve(&name);
+                let name_str = self.body_interner().resolve(&name);
 
                 // Check if this parameter has been moved
                 if let Some(move_state) = ctx.moved_vars.get(&name) {
@@ -1199,7 +1212,7 @@ impl<'a> BodySema<'a> {
                             // (E0428), so a by-ref use reaching here is borrow-mode.
                             // Anything else moves out of the borrow: rejected.
                             if !is_byref_arg_use {
-                                let name_str = self.interner.resolve(&name);
+                                let name_str = self.body_interner().resolve(&name);
                                 return Err(CompileError::new(
                                     ErrorKind::MoveOutOfBorrow {
                                         variable: name_str.to_string(),
@@ -1238,7 +1251,7 @@ impl<'a> BodySema<'a> {
         }
 
         // Look up the variable in locals
-        let name_str = self.interner.resolve(&name);
+        let name_str = self.body_interner().resolve(&name).to_owned();
 
         // Check if this is a local variable first
         if let Some(local) = ctx.locals.get(&name) {
@@ -1253,7 +1266,7 @@ impl<'a> BodySema<'a> {
                         span,
                     )
                     .with_label("value moved here", moved_span)
-                    .with_help(super::borrow_instead_of_move_help(name_str)));
+                    .with_help(super::borrow_instead_of_move_help(&name_str)));
                 }
             }
 
@@ -1426,7 +1439,7 @@ impl<'a> BodySema<'a> {
             // lookup resolves in the reference file (spec 10.3:1, 10.3:7).
             self.check_unqualified_visibility(
                 "constant",
-                name_str,
+                &name_str,
                 const_info.span.file_id,
                 const_info.is_pub,
                 span,
@@ -1504,7 +1517,7 @@ impl<'a> BodySema<'a> {
                 "consider making parameter `{}` inout: `inout {}: {}`",
                 name_str,
                 name_str,
-                ty.safe_name_with_pool(Some(&self.type_pool))
+                ty.safe_name_with_pool(Some(&self.body_type_pool()))
             ))
         }
     }
@@ -1518,7 +1531,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let name_str = self.interner.resolve(&name);
+        let name_str = self.body_interner().resolve(&name);
 
         // Reassigning a collection that an enclosing `for` loop is iterating
         // mutates a shared-borrowed value (spec 4.8:26, RUE-233) — E0428, just
@@ -1594,7 +1607,10 @@ impl<'a> BodySema<'a> {
                 // Non-literal values retain their own type and are checked
                 // exactly below.
                 let contextual_fixed_literal = self.is_str_fixed_struct(param_ty)
-                    && matches!(&self.rir.get(value).data, InstData::StringConst { .. });
+                    && matches!(
+                        &self.body_rir_ref().get(value).data,
+                        InstData::StringConst { .. }
+                    );
                 let value_result = if contextual_fixed_literal {
                     let prev_expected = ctx.expected_type.replace(param_ty);
                     let result = self.analyze_inst(air, value, ctx);
@@ -1616,10 +1632,12 @@ impl<'a> BodySema<'a> {
                 {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: param_ty.safe_name_with_pool(Some(&self.type_pool)),
-                            found: value_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                            expected: param_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: value_result
+                                .ty
+                                .safe_name_with_pool(Some(&self.body_type_pool())),
                         },
-                        self.rir.get(value).span,
+                        self.body_rir_ref().get(value).span,
                     ));
                 }
 
@@ -1738,14 +1756,14 @@ impl<'a> BodySema<'a> {
             match param_info.mode {
                 RirParamMode::Inout => {
                     return Err(move_out_of_inout_error(
-                        self.interner.resolve(&root_var),
+                        self.body_interner().resolve(&root_var),
                         span,
                     ));
                 }
                 RirParamMode::Borrow => {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfBorrow {
-                            variable: self.interner.resolve(&root_var).to_string(),
+                            variable: self.body_interner().resolve(&root_var).to_string(),
                         },
                         span,
                     ));
@@ -1777,7 +1795,7 @@ impl<'a> BodySema<'a> {
                 field_index,
             } = proj.proj
             {
-                let def = self.type_pool.struct_def(struct_id);
+                let def = self.body_type_pool().struct_def(struct_id);
                 for (i, field) in def.fields.iter().enumerate() {
                     if i as u32 != field_index && self.type_carries_linear(field.ty) {
                         let accessed = def.fields[field_index as usize].name.clone();
@@ -1834,13 +1852,13 @@ impl<'a> BodySema<'a> {
             let Some(struct_id) = container.as_struct() else {
                 continue;
             };
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let struct_def = self.body_type_pool().struct_def(struct_id);
             if struct_def.destructor.is_none() {
                 continue;
             }
             let field_name = proj_info
                 .field_name
-                .map(|s| self.interner.resolve(&s).to_string())
+                .map(|s| self.body_interner().resolve(&s).to_string())
                 .unwrap_or_default();
             let mut err = CompileError::new(
                 ErrorKind::MoveFieldOutOfDestructorType {
@@ -1859,7 +1877,7 @@ impl<'a> BodySema<'a> {
             .with_help(format!(
                 "borrow the field instead (`borrow value.{field_name}`), or move the whole value"
             ));
-            if let Some(drop_span) = self.destructor_spans.get(&struct_id) {
+            if let Some(drop_span) = self.destructor_span(struct_id).as_ref() {
                 err = err.with_label(
                     format!("destructor for '{}' is defined here", struct_def.name),
                     *drop_span,
@@ -1885,7 +1903,13 @@ impl<'a> BodySema<'a> {
     ) -> CompileResult<AnalysisResult> {
         // First, check if the base is a module access (special case, not a place)
         // We need to peek at the base type to detect module.Type access patterns.
-        let base_inst = self.rir.get(base);
+        let base_inst = {
+            let source = self.body_rir_ref().get(base);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
         if let InstData::VarRef { name, .. } = &base_inst.data {
             if !self.is_runtime_value_binding(*name, ctx) {
                 if let Some(result) =
@@ -1906,7 +1930,7 @@ impl<'a> BodySema<'a> {
                         air,
                         module_id,
                         field,
-                        super::const_use_anchor_of(self.rir, base),
+                        super::const_use_anchor_of(self.body_rir_ref(), base),
                         span,
                         ctx,
                     );
@@ -1936,7 +1960,7 @@ impl<'a> BodySema<'a> {
             // Check if the root variable was fully moved (applies regardless of field type)
             if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
-                    let root_name = self.interner.resolve(&trace.root_var);
+                    let root_name = self.body_interner().resolve(&trace.root_var);
                     return Err(CompileError::new(
                         ErrorKind::UseAfterMove(root_name.to_string()),
                         span,
@@ -1961,7 +1985,7 @@ impl<'a> BodySema<'a> {
 
             let is_linear = parent_type
                 .as_struct()
-                .map(|id| self.type_pool.struct_def(id).is_linear)
+                .map(|id| self.body_type_pool().struct_def(id).is_linear)
                 .unwrap_or(false);
 
             // Move checking using the trace. `move_is_partial` selects the
@@ -1987,7 +2011,7 @@ impl<'a> BodySema<'a> {
             {
                 return Err(CompileError::new(
                     ErrorKind::MoveOutOfBorrow {
-                        variable: self.interner.resolve(&trace.root_var).to_string(),
+                        variable: self.body_interner().resolve(&trace.root_var).to_string(),
                     },
                     span,
                 ));
@@ -2000,7 +2024,7 @@ impl<'a> BodySema<'a> {
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
-                            self.interner,
+                            self.body_interner(),
                             trace.root_var,
                             &field_path,
                             span,
@@ -2026,7 +2050,8 @@ impl<'a> BodySema<'a> {
                 if trace.has_untrackable_index() {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
-                            element_type: field_type.safe_name_with_pool(Some(&self.type_pool)),
+                            element_type: field_type
+                                .safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     )
@@ -2047,7 +2072,7 @@ impl<'a> BodySema<'a> {
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_or_descendant_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
-                            self.interner,
+                            self.body_interner(),
                             trace.root_var,
                             &field_path,
                             span,
@@ -2093,7 +2118,7 @@ impl<'a> BodySema<'a> {
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
-                            self.interner,
+                            self.body_interner(),
                             trace.root_var,
                             &field_path,
                             span,
@@ -2146,7 +2171,7 @@ impl<'a> BodySema<'a> {
                 air,
                 module_id,
                 field,
-                super::const_use_anchor_of(self.rir, base),
+                super::const_use_anchor_of(self.body_rir_ref(), base),
                 span,
                 ctx,
             );
@@ -2157,15 +2182,15 @@ impl<'a> BodySema<'a> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
-                        found: base_type.safe_name_with_pool(Some(&self.type_pool)),
+                        found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 ));
             }
         };
 
-        let struct_def = self.type_pool.struct_def(struct_id);
-        let field_name_str = self.interner.resolve(&field).to_string();
+        let struct_def = self.body_type_pool().struct_def(struct_id);
+        let field_name_str = self.body_interner().resolve(&field).to_string();
 
         let (field_index, struct_field) =
             struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -2258,7 +2283,7 @@ impl<'a> BodySema<'a> {
     ) -> CompileResult<AnalysisResult> {
         // Check for constant out-of-bounds index early (before tracing)
         // We need the array type for bounds checking, so peek at the base first
-        let _base_inst = self.rir.get(base);
+        let _base_inst = self.body_rir_ref().get(base);
 
         // Try to trace this expression to a place (lvalue)
         if let Some(trace) = self.try_trace_place(inst_ref, air, ctx)? {
@@ -2281,7 +2306,7 @@ impl<'a> BodySema<'a> {
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
-                            self.interner,
+                            self.body_interner(),
                             trace.root_var,
                             &field_path,
                             span,
@@ -2300,14 +2325,14 @@ impl<'a> BodySema<'a> {
 
             let array_len = match parent_type.as_array() {
                 Some(type_id) => {
-                    let (_elem, len) = self.type_pool.array_def(type_id);
+                    let (_elem, len) = self.body_type_pool().array_def(type_id);
                     len
                 }
                 None => {
                     // This shouldn't happen if try_trace_place worked correctly
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: parent_type.safe_name_with_pool(Some(&self.type_pool)),
+                            found: parent_type.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
@@ -2325,7 +2350,7 @@ impl<'a> BodySema<'a> {
                             index: const_idx,
                             length: array_len,
                         },
-                        self.rir.get(index).span,
+                        self.body_rir_ref().get(index).span,
                     ));
                 }
             }
@@ -2345,7 +2370,7 @@ impl<'a> BodySema<'a> {
                 if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                     if let Some(moved_span) = state.is_path_moved(&field_path) {
                         return Err(super::use_after_move_path_error(
-                            self.interner,
+                            self.body_interner(),
                             trace.root_var,
                             &field_path,
                             span,
@@ -2366,7 +2391,8 @@ impl<'a> BodySema<'a> {
                 if element_move.is_none() {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
-                            element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
+                            element_type: elem_type
+                                .safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     )
@@ -2482,13 +2508,13 @@ impl<'a> BodySema<'a> {
         // Verify base is an array
         let (_array_type_id, elem_type, array_len) = match base_type.as_array() {
             Some(type_id) => {
-                let (element_type, length) = self.type_pool.array_def(type_id);
+                let (element_type, length) = self.body_type_pool().array_def(type_id);
                 (type_id, element_type, length)
             }
             None => {
                 return Err(CompileError::new(
                     ErrorKind::IndexOnNonArray {
-                        found: base_type.safe_name_with_pool(Some(&self.type_pool)),
+                        found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 ));
@@ -2505,7 +2531,7 @@ impl<'a> BodySema<'a> {
                         index: const_idx,
                         length: array_len,
                     },
-                    self.rir.get(index).span,
+                    self.body_rir_ref().get(index).span,
                 ));
             }
         }
@@ -2514,7 +2540,7 @@ impl<'a> BodySema<'a> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::MoveOutOfIndex {
-                    element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
+                    element_type: elem_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 span,
             )
@@ -2607,14 +2633,16 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
-                    found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: index_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 },
-                self.rir.get(index).span,
+                self.body_rir_ref().get(index).span,
             ));
         }
 
         let source_method = base_result.ty.as_struct().and_then(|struct_id| {
-            (self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf))
+            (self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf))
                 .then_some(struct_id)
         });
         let Some(struct_id) = source_method else {
@@ -2625,7 +2653,7 @@ impl<'a> BodySema<'a> {
                 span,
             ));
         };
-        let method = self.interner.get_or_intern("byte_at_borrowed");
+        let method = self.body_interner().get_or_intern("byte_at_borrowed");
         if self.call_facts().method_info(struct_id, method).is_none() {
             return Err(CompileError::new(
                 ErrorKind::InternalError(
@@ -2639,9 +2667,11 @@ impl<'a> BodySema<'a> {
         self.record_body_method_dependency((struct_id, method));
         let (receiver, temp_scope) =
             self.materialize_borrow_argument(air, base_result.air_ref, base_result.ty, span, ctx)?;
-        let call_name =
-            self.interner
-                .get_or_intern(&self.method_symbol(struct_id, "byte_at_borrowed", false));
+        let call_name = self.body_interner().get_or_intern(&self.method_symbol(
+            struct_id,
+            "byte_at_borrowed",
+            false,
+        ));
         let receiver_mode = AirArgMode::Borrow;
         let call_ref = air.add_call(
             None,
@@ -2706,9 +2736,11 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
-                    found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: index_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 },
-                self.rir.get(index).span,
+                self.body_rir_ref().get(index).span,
             ));
         }
 
@@ -2716,7 +2748,9 @@ impl<'a> BodySema<'a> {
         // value is passed by value; codegen decomposes it into pointer/length
         // argument registers.
         let runtime = crate::RuntimeCallKind::StrByteAt;
-        let call_name = self.interner.get_or_intern(runtime.helper().symbol());
+        let call_name = self
+            .body_interner()
+            .get_or_intern(runtime.helper().symbol());
         let call_ref = air.add_call(
             Some(runtime),
             call_name,
@@ -2779,7 +2813,7 @@ impl<'a> BodySema<'a> {
             .ty
             .as_struct()
             .expect("slice receiver is a synthetic struct");
-        let ptr_ty = self.type_pool.struct_def(slice_struct_id).fields[0].ty;
+        let ptr_ty = self.body_type_pool().struct_def(slice_struct_id).fields[0].ty;
 
         // The index is an ordinary rvalue; require an integer (spec 7.1:7).
         let index_result = self.analyze_inst(air, index, ctx)?;
@@ -2787,9 +2821,11 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "an integer".to_string(),
-                    found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: index_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 },
-                self.rir.get(index).span,
+                self.body_rir_ref().get(index).span,
             ));
         }
 
@@ -2837,7 +2873,7 @@ impl<'a> BodySema<'a> {
             });
             Some(air.add_intrinsic(
                 Some(crate::RuntimeCallKind::AssertFailed),
-                self.known.assert,
+                self.known_symbols().assert,
                 &[lower_bound_ref],
                 Type::UNIT,
                 span,
@@ -2852,7 +2888,7 @@ impl<'a> BodySema<'a> {
         });
         let upper_assert_ref = air.add_intrinsic(
             Some(crate::RuntimeCallKind::AssertFailed),
-            self.known.assert,
+            self.known_symbols().assert,
             &[upper_bound_ref],
             Type::UNIT,
             span,
@@ -2861,12 +2897,18 @@ impl<'a> BodySema<'a> {
         // element = @ptr_read(@ptr_offset(ptr, index)).
         let off_ref = air.add_intrinsic(
             None,
-            self.known.ptr_offset,
+            self.known_symbols().ptr_offset,
             &[ptr_ref, index_result.air_ref],
             ptr_ty,
             span,
         )?;
-        let elem_ref = air.add_intrinsic(None, self.known.ptr_read, &[off_ref], elem_ty, span)?;
+        let elem_ref = air.add_intrinsic(
+            None,
+            self.known_symbols().ptr_read,
+            &[off_ref],
+            elem_ty,
+            span,
+        )?;
 
         // Demand-driven lowering only pulls the returned value's dependencies,
         // so the bounds-check assertion (a pure side effect) must be an explicit
@@ -2935,7 +2977,11 @@ impl<'a> BodySema<'a> {
         Err(CompileError::new(
             ErrorKind::UndefinedMethod {
                 method_name: method_name.to_string(),
-                type_name: self.type_pool.struct_def(slice_struct_id).name.clone(),
+                type_name: self
+                    .body_type_pool()
+                    .struct_def(slice_struct_id)
+                    .name
+                    .clone(),
             },
             span,
         ))
@@ -2956,7 +3002,7 @@ impl<'a> BodySema<'a> {
             // Check if the root variable was fully moved
             if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
-                    let root_name = self.interner.resolve(&trace.root_var);
+                    let root_name = self.body_interner().resolve(&trace.root_var);
                     return Err(CompileError::new(
                         ErrorKind::UseAfterMove(root_name.to_string()),
                         span,
@@ -2972,7 +3018,7 @@ impl<'a> BodySema<'a> {
             self.reject_mutate_iter_borrowed(trace.root_var, span, ctx)?;
 
             // Check mutability
-            let root_name = self.interner.resolve(&trace.root_var).to_string();
+            let root_name = self.body_interner().resolve(&trace.root_var).to_string();
             if !trace.is_root_mutable {
                 // Check if this is a borrow parameter - special error message
                 if trace.is_borrow_param {
@@ -3006,15 +3052,15 @@ impl<'a> BodySema<'a> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
+                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
                 }
             };
 
-            let struct_def = self.type_pool.struct_def(struct_id);
-            let field_name_str = self.interner.resolve(&field).to_string();
+            let struct_def = self.body_type_pool().struct_def(struct_id);
+            let field_name_str = self.body_interner().resolve(&field).to_string();
 
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -3117,7 +3163,7 @@ impl<'a> BodySema<'a> {
             // Check if the root variable was fully moved
             if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
                 if let Some(moved_span) = state.full_move {
-                    let root_name = self.interner.resolve(&trace.root_var);
+                    let root_name = self.body_interner().resolve(&trace.root_var);
                     return Err(CompileError::new(
                         ErrorKind::UseAfterMove(root_name.to_string()),
                         span,
@@ -3133,7 +3179,7 @@ impl<'a> BodySema<'a> {
             self.reject_mutate_iter_borrowed(trace.root_var, span, ctx)?;
 
             // Check mutability
-            let root_name = self.interner.resolve(&trace.root_var).to_string();
+            let root_name = self.body_interner().resolve(&trace.root_var).to_string();
             if !trace.is_root_mutable {
                 // Check if this is a borrow parameter - special error message
                 if trace.is_borrow_param {
@@ -3163,13 +3209,13 @@ impl<'a> BodySema<'a> {
             let base_type = trace.result_type();
             let (_array_type_id, elem_type, array_len) = match base_type.as_array() {
                 Some(id) => {
-                    let (elem, len) = self.type_pool.array_def(id);
+                    let (elem, len) = self.body_type_pool().array_def(id);
                     (id, elem, len)
                 }
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
+                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
@@ -3184,9 +3230,11 @@ impl<'a> BodySema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),
-                        found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: index_result
+                            .ty
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
                     },
-                    self.rir.get(index).span,
+                    self.body_rir_ref().get(index).span,
                 ));
             }
 
@@ -3200,7 +3248,7 @@ impl<'a> BodySema<'a> {
                             index: const_index,
                             length: array_len,
                         },
-                        self.rir.get(index).span,
+                        self.body_rir_ref().get(index).span,
                     ));
                 }
             }
@@ -3209,7 +3257,7 @@ impl<'a> BodySema<'a> {
             // its element path segment so field_path nests through it (RUE-279).
             let const_index = self.try_get_const_index(index);
             let index_segment = match const_index {
-                Some(k) if k >= 0 => Some(index_path_segment(self.interner, k as u64)),
+                Some(k) if k >= 0 => Some(index_path_segment(self.body_interner(), k as u64)),
                 _ => None,
             };
             trace.projections.push(ProjectionInfo {
@@ -3263,7 +3311,7 @@ impl<'a> BodySema<'a> {
             ] = trace.projections.as_slice()
             {
                 if *k >= 0 {
-                    let elem_path = vec![index_path_segment(self.interner, *k as u64)];
+                    let elem_path = vec![index_path_segment(self.body_interner(), *k as u64)];
                     if let Some(state) = ctx.moved_vars.get_mut(&trace.root_var) {
                         state.mark_path_reinitialized(&elem_path);
                         if state.is_empty() {
@@ -3295,8 +3343,8 @@ impl<'a> BodySema<'a> {
         directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
         warning_name: &str,
     ) -> bool {
-        let allow_sym = self.interner.get("allow");
-        let warning_sym = self.interner.get(warning_name);
+        let allow_sym = self.body_interner().get("allow");
+        let warning_sym = self.body_interner().get(warning_name);
 
         for directive in directives {
             if Some(directive.name) == allow_sym {
@@ -3336,7 +3384,7 @@ impl<'a> BodySema<'a> {
             };
 
             // Get variable name
-            let name = self.interner.resolve(&*symbol);
+            let name = self.body_interner().resolve(&*symbol);
 
             // Skip variables starting with underscore (convention for intentionally unused)
             if name.starts_with('_') {
@@ -3404,7 +3452,7 @@ impl<'a> BodySema<'a> {
                 ElementwiseConsumption::NotElementwise => {}
             }
 
-            let name = self.interner.resolve(&*symbol);
+            let name = self.body_interner().resolve(&*symbol);
             let err = linear_not_consumed_error(name, local.span, state.and_then(|s| s.full_move));
             return Err(self.attach_infectious_linear_note(err, local.ty));
         }
@@ -3424,7 +3472,7 @@ impl<'a> BodySema<'a> {
     pub(crate) fn type_requires_consumption(&self, ty: Type) -> bool {
         match ty.kind() {
             TypeKind::Array(array_id) => {
-                let (element_type, length) = self.type_pool.array_def(array_id);
+                let (element_type, length) = self.body_type_pool().array_def(array_id);
                 length > 0 && self.type_requires_consumption(element_type)
             }
             _ => self.type_carries_linear(ty),
@@ -3438,7 +3486,7 @@ impl<'a> BodySema<'a> {
     /// consumed element-wise, and `NotElementwise` when no element was ever
     /// consumed (or the type is not an array) — the caller then reports its
     /// usual whole-value diagnostic.
-    pub(super) fn check_array_elementwise_consumption(
+    pub(crate) fn check_array_elementwise_consumption(
         &self,
         ty: Type,
         state: Option<&super::super::context::VariableMoveState>,
@@ -3451,8 +3499,8 @@ impl<'a> BodySema<'a> {
         let Some(s) = state else {
             return Ok(ElementwiseConsumption::NotElementwise);
         };
-        let (_elem, len) = self.type_pool.array_def(array_id);
-        let elem_path = |k: u64| vec![index_path_segment(self.interner, k)];
+        let (_elem, len) = self.body_type_pool().array_def(array_id);
+        let elem_path = |k: u64| vec![index_path_segment(self.body_interner(), k)];
         let unconsumed: Vec<u64> = (0..len)
             .filter(|k| !s.partial_moves_on_all_paths.contains(&elem_path(*k)))
             .collect();
@@ -3461,12 +3509,12 @@ impl<'a> BodySema<'a> {
         }
         let touched_any_element = s.partial_moves.iter().any(|(p, _)| {
             p.first()
-                .is_some_and(|seg| is_index_segment(self.interner, *seg))
+                .is_some_and(|seg| is_index_segment(self.body_interner(), *seg))
         });
         if !touched_any_element {
             return Ok(ElementwiseConsumption::NotElementwise);
         }
-        let name = self.interner.resolve(&symbol);
+        let name = self.body_interner().resolve(&symbol);
         // An unconsumed element that WAS moved on some path selects the
         // more precise "not consumed on all paths" diagnostic (E0443 over
         // E0406).
@@ -3517,7 +3565,7 @@ impl<'a> BodySema<'a> {
         if !self.type_requires_consumption(dest_ty) || discharged {
             return Ok(());
         }
-        let type_name = dest_ty.safe_name_with_pool(Some(&self.type_pool));
+        let type_name = dest_ty.safe_name_with_pool(Some(&self.body_type_pool()));
         let err = if through_inout {
             CompileError::new(
                 ErrorKind::LinearValueOverwrittenThroughInout { type_name },
@@ -3591,9 +3639,9 @@ impl<'a> BodySema<'a> {
         }
         let err = CompileError::new(
             ErrorKind::LinearValueDiscarded {
-                type_name: ty.safe_name_with_pool(Some(&self.type_pool)),
+                type_name: ty.safe_name_with_pool(Some(&self.body_type_pool())),
             },
-            self.rir.get(inst_ref).span,
+            self.body_rir_ref().get(inst_ref).span,
         )
         .with_help("bind the value with `let` and consume it, or pass it to a consumer");
         Err(self.attach_infectious_linear_note(err, ty))
@@ -3618,10 +3666,10 @@ impl<'a> BodySema<'a> {
         let Some(struct_id) = ty.as_struct() else {
             return err;
         };
-        match self.infectious_linear.get(&struct_id) {
+        match self.infectious_linear_reason(struct_id).as_ref() {
             Some((field_name, field_type)) => err.with_note(format!(
                 "'{}' is linear because field '{}' of type '{}' carries a linear value",
-                self.type_pool.struct_def(struct_id).name,
+                self.body_type_pool().struct_def(struct_id).name,
                 field_name,
                 field_type
             )),
@@ -3662,14 +3710,14 @@ impl<'a> BodySema<'a> {
         // Moving an element out of a borrow/inout parameter would leave the
         // CALLER's array holed, exactly like a whole or field move.
         self.reject_move_out_of_byref_param(trace.root_var, ctx, span)?;
-        let elem_path = vec![index_path_segment(self.interner, k as u64)];
+        let elem_path = vec![index_path_segment(self.body_interner(), k as u64)];
         if let Some(state) = ctx.moved_vars.get(&trace.root_var) {
             // Whole-element move: reject if the element itself, an ancestor, or
             // any descendant subfield was already moved (`arr[0]` can't be
             // moved once `arr[0].s` moved — spec 3.8, RUE-279).
             if let Some(moved_span) = state.is_path_or_descendant_moved(&elem_path) {
                 return Err(use_after_move_path_error(
-                    self.interner,
+                    self.body_interner(),
                     trace.root_var,
                     &elem_path,
                     span,
@@ -3768,10 +3816,10 @@ impl<'a> BodySema<'a> {
         };
         match first.const_index {
             Some(k) if k >= 0 => {
-                let elem_path = vec![index_path_segment(self.interner, k as u64)];
+                let elem_path = vec![index_path_segment(self.body_interner(), k as u64)];
                 if let Some(moved_span) = state.is_path_moved(&elem_path) {
                     return Err(use_after_move_path_error(
-                        self.interner,
+                        self.body_interner(),
                         trace.root_var,
                         &elem_path,
                         span,
@@ -3782,7 +3830,7 @@ impl<'a> BodySema<'a> {
             _ => {
                 if let Some(moved_span) = state.is_any_part_moved() {
                     return Err(use_after_move_path_error(
-                        self.interner,
+                        self.body_interner(),
                         trace.root_var,
                         &[],
                         span,
@@ -3824,13 +3872,13 @@ impl<'a> BodySema<'a> {
         };
         let element_move_span = state.partial_moves.iter().find_map(|(p, s)| {
             p.first()
-                .filter(|seg| is_index_segment(self.interner, **seg))
+                .filter(|seg| is_index_segment(self.body_interner(), **seg))
                 .map(|_| *s)
         });
         let Some(moved_span) = element_move_span else {
             return Ok(());
         };
-        let name = self.interner.resolve(&trace.root_var).to_string();
+        let name = self.body_interner().resolve(&trace.root_var).to_string();
         Err(
             CompileError::new(ErrorKind::AssignToPartiallyMovedArray { array: name }, span)
                 .with_label("element moved out here", moved_span)
@@ -3850,7 +3898,7 @@ impl<'a> BodySema<'a> {
     ///
     /// Returns None for expressions that don't refer to a variable (literals, calls, etc.)
     pub(crate) fn extract_root_variable(&self, inst_ref: InstRef) -> Option<Spur> {
-        root_variable_of(self.rir, inst_ref)
+        root_variable_of(self.body_rir_ref(), inst_ref)
     }
 
     /// Whether a method receiver rooted at `root` binds a mutable place, for
@@ -3885,7 +3933,7 @@ impl<'a> BodySema<'a> {
         if ctx.iter_borrows.contains(&root_var) {
             return Err(CompileError::new(
                 ErrorKind::MutateBorrowedValue {
-                    variable: self.interner.resolve(&root_var).to_string(),
+                    variable: self.body_interner().resolve(&root_var).to_string(),
                 },
                 span,
             ));
@@ -3900,7 +3948,7 @@ impl<'a> BodySema<'a> {
         A: IntoIterator,
         A::Item: std::ops::Deref<Target = RirCallArg>,
     {
-        check_exclusive_access_in(self.rir, self.interner, args, call_span)
+        check_exclusive_access_in(self.body_rir_ref(), self.body_interner(), args, call_span)
     }
 
     /// Reject recording a MOVE of `root` while an enclosing call's argument
@@ -3924,7 +3972,7 @@ impl<'a> BodySema<'a> {
     ) -> CompileResult<()> {
         for frame in ctx.call_loaned_roots.iter().rev() {
             if let Some((_, kind)) = frame.iter().find(|(r, _)| *r == root) {
-                let variable = self.interner.resolve(&root).to_string();
+                let variable = self.body_interner().resolve(&root).to_string();
                 let kw = kind.keyword();
                 return Err(CompileError::new(
                     ErrorKind::MoveWhileCallLoaned {
@@ -3958,7 +4006,7 @@ impl<'a> BodySema<'a> {
         operand: InstRef,
         ctx: &AnalysisContext,
     ) -> Option<RirParamMode> {
-        if let InstData::VarRef { name, .. } = self.rir.get(operand).data {
+        if let InstData::VarRef { name, .. } = self.body_rir_ref().get(operand).data {
             // Locals shadow parameters. Without this guard a local reusing a
             // view parameter's name would inherit its second-class provenance.
             if ctx.locals.contains_key(&name) {
@@ -4002,7 +4050,7 @@ impl<'a> BodySema<'a> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         if self.is_strbuf(found) || self.is_str_fixed_struct(found) {
-            let found_name = found.safe_name_with_pool(Some(&self.type_pool));
+            let found_name = found.safe_name_with_pool(Some(&self.body_type_pool()));
             let mut err = CompileError::new(
                 ErrorKind::BufferNotFirstClassStr {
                     found: found_name,
@@ -4078,9 +4126,14 @@ impl<'a> BodySema<'a> {
     pub(crate) fn rir_block_tail_expr(&self, inst: InstRef) -> InstRef {
         let mut current = inst;
         loop {
-            match &self.rir.get(current).data {
+            match &self.body_rir_ref().get(current).data {
                 InstData::Block { instructions } => {
-                    match self.rir.block_insts(instructions).values().last() {
+                    match self
+                        .body_rir_ref()
+                        .block_insts(instructions)
+                        .values()
+                        .last()
+                    {
                         Some(tail) => current = tail,
                         None => return current,
                     }
@@ -4121,7 +4174,7 @@ impl<'a> BodySema<'a> {
                 } else {
                     return None;
                 };
-                root_variable_of(self.rir, arg.value).map(|root| (root, kind))
+                root_variable_of(self.body_rir_ref(), arg.value).map(|root| (root, kind))
             })
             .collect();
         let pushed = !frame.is_empty();
@@ -4203,7 +4256,7 @@ impl<'a> BodySema<'a> {
                     return Err(self.type_mismatch_error(
                         str_ty,
                         arg_result.ty,
-                        self.rir.get(arg.value).span,
+                        self.body_rir_ref().get(arg.value).span,
                     ));
                 }
                 // Two-types model (ADR-0043, RUE-386): a bare `str` parameter
@@ -4216,14 +4269,14 @@ impl<'a> BodySema<'a> {
                         arg.value,
                         arg_result.ty,
                         FirstClassStrSite::Param,
-                        self.rir.get(arg.value).span,
+                        self.body_rir_ref().get(arg.value).span,
                         ctx,
                     )?;
                     if !arg_result.ty.can_coerce_to(&str_ty) {
                         return Err(self.type_mismatch_error(
                             str_ty,
                             arg_result.ty,
-                            self.rir.get(arg.value).span,
+                            self.body_rir_ref().get(arg.value).span,
                         ));
                     }
                 }
@@ -4249,7 +4302,7 @@ impl<'a> BodySema<'a> {
             }
 
             let byref_root = if arg.is_inout() || arg.is_borrow() {
-                let root = require_byref_place_arg(self.rir, &arg)?;
+                let root = require_byref_place_arg(self.body_rir_ref(), &arg)?;
                 if arg.is_inout()
                     && !ctx.locals.contains_key(&root)
                     && ctx
@@ -4259,9 +4312,9 @@ impl<'a> BodySema<'a> {
                 {
                     return Err(CompileError::new(
                         ErrorKind::MutateBorrowedValue {
-                            variable: self.interner.resolve(&root).to_string(),
+                            variable: self.body_interner().resolve(&root).to_string(),
                         },
-                        self.rir.get(arg.value).span,
+                        self.body_rir_ref().get(arg.value).span,
                     ));
                 }
                 Some(root)
@@ -4277,7 +4330,7 @@ impl<'a> BodySema<'a> {
                     air,
                     arg_result.air_ref,
                     arg.is_inout(),
-                    self.rir.get(arg.value).span,
+                    self.body_rir_ref().get(arg.value).span,
                 )?;
             }
             // Two-types model (ADR-0043, RUE-386): an `inout str` parameter is
@@ -4289,7 +4342,7 @@ impl<'a> BodySema<'a> {
                     arg.value,
                     param_ty,
                     arg_result.ty,
-                    self.rir.get(arg.value).span,
+                    self.body_rir_ref().get(arg.value).span,
                     ctx,
                 )?;
                 // RUE-1066: a `StrBuf` source no longer shares `str`'s `{ptr,
@@ -4303,7 +4356,7 @@ impl<'a> BodySema<'a> {
                 // word. Whole-view rebinding is already rejected
                 // (StrViewReassignment), so the snapshot length stays valid.
                 if self.is_strbuf(arg_result.ty) {
-                    let span = self.rir.get(arg.value).span;
+                    let span = self.body_rir_ref().get(arg.value).span;
                     let (view, prefix) =
                         self.strbuf_text_view(air, arg_result.air_ref, arg_result.ty, span, ctx)?;
                     let view =
@@ -4340,21 +4393,21 @@ impl<'a> BodySema<'a> {
     ) -> CompileResult<AirRef> {
         use crate::inst::{AirInstData, AirProjection};
 
-        let span = self.rir.get(arg.value).span;
+        let span = self.body_rir_ref().get(arg.value).span;
         let slice_struct_id = slice_ty
             .as_struct()
             .expect("slice type is a synthetic struct");
         let slice_elem = self
             .slice_element_type(slice_ty)
             .expect("slice type has an element");
-        let ptr_ty = self.type_pool.struct_def(slice_struct_id).fields[0].ty;
+        let ptr_ty = self.body_type_pool().struct_def(slice_struct_id).fields[0].ty;
 
         // A slice argument must be `borrow arr` (the shared form; `inout` slices
         // are a later phase). The array is borrowed (address taken), not moved.
         if !arg.is_borrow() {
             return Err(CompileError::new(ErrorKind::BorrowKeywordMissing, span));
         }
-        let root = require_byref_place_arg(self.rir, arg)?;
+        let root = require_byref_place_arg(self.body_rir_ref(), arg)?;
         let prev_byref_root = ctx.byref_arg_root.replace(root);
         let trace = self.try_trace_place(arg.value, air, ctx);
         ctx.byref_arg_root = prev_byref_root;
@@ -4377,7 +4430,7 @@ impl<'a> BodySema<'a> {
         }
 
         let (arr_elem, arr_len) = match arr_ty.as_array() {
-            Some(id) => self.type_pool.array_def(id),
+            Some(id) => self.body_type_pool().array_def(id),
             None => {
                 // Only whole-array borrow-to-slice is supported in Phase 1.
                 return Err(self.type_mismatch_error(slice_ty, arr_ty, span));
@@ -4397,7 +4450,13 @@ impl<'a> BodySema<'a> {
             // guarded by `i < len`, and `len` is 0. Do not form `@raw(arr[0])`
             // for `[T; 0]`; that is not a valid place and underflows in some
             // codegen paths. Use a conventional null pointer word instead.
-            air.add_intrinsic(None, self.known.int_to_ptr, &[zero_ref], ptr_ty, span)?
+            air.add_intrinsic(
+                None,
+                self.known_symbols().int_to_ptr,
+                &[zero_ref],
+                ptr_ty,
+                span,
+            )?
         } else {
             // ptr word = @raw(arr[0]) : ptr const T. Build a place read of
             // element 0 and take its address, exactly as source `@raw(arr[0])`
@@ -4413,7 +4472,7 @@ impl<'a> BodySema<'a> {
                 ty: arr_elem,
                 span,
             });
-            air.add_intrinsic(None, self.known.raw, &[elem0_read], ptr_ty, span)?
+            air.add_intrinsic(None, self.known_symbols().raw, &[elem0_read], ptr_ty, span)?
         };
 
         // len word = N (compile-time array length).
@@ -4459,8 +4518,8 @@ impl<'a> BodySema<'a> {
     ) -> CompileResult<AirRef> {
         use crate::inst::{AirInstData, AirProjection};
 
-        let span = self.rir.get(arg.value).span;
-        let root = require_byref_place_arg(self.rir, arg)?;
+        let span = self.body_rir_ref().get(arg.value).span;
+        let root = require_byref_place_arg(self.body_rir_ref(), arg)?;
         let prev_byref_root = ctx.byref_arg_root.replace(root);
         let trace = self.try_trace_place(arg.value, air, ctx);
         ctx.byref_arg_root = prev_byref_root;

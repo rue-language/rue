@@ -6,6 +6,7 @@
 //! loan, move, and representation coercion decisions delegate to
 //! `analysis::ownership`.
 
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::sema::call_resolution::CallResolutionFacts;
 use crate::sema::{FunctionInfo, NamedConstDependencyTargetEvent};
@@ -55,7 +56,7 @@ fn check_module_member_access(
     Ok(())
 }
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Validate the source-level contract shared by every ordinary call form.
     /// Receiver exclusivity is checked separately for methods because their
     /// implicit `self` access participates in the same loan set as the explicit
@@ -68,7 +69,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         check_exclusive: bool,
     ) -> CompileResult<()> {
-        let args = self.rir.call_args(args_range);
+        let args = self.body_rir_ref().call_args(args_range).to_vec();
         if args.len() != param_types.len() {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
@@ -100,9 +101,14 @@ impl<'a> BodySema<'a> {
         validate_semantic_types: bool,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Vec<AirCallArg>> {
-        let args = self.rir.call_args(args_range);
-        let air_args =
-            self.analyze_call_args_coerced(air, args.values(), param_types, param_modes, ctx)?;
+        let args = self.body_rir_ref().call_args(args_range).to_vec();
+        let air_args = self.analyze_call_args_coerced(
+            air,
+            args.iter().copied(),
+            param_types,
+            param_modes,
+            ctx,
+        )?;
         if validate_semantic_types {
             for ((arg, air_arg), expected) in args.iter().zip(&air_args).zip(param_types) {
                 let found = air.get(air_arg.value).ty;
@@ -110,7 +116,7 @@ impl<'a> BodySema<'a> {
                     return Err(self.type_mismatch_error(
                         *expected,
                         found,
-                        self.rir.get(arg.value).span,
+                        self.body_rir_ref().get(arg.value).span,
                     ));
                 }
             }
@@ -151,8 +157,8 @@ impl<'a> BodySema<'a> {
         // carrying the analyzed payload operands rather than dispatching to
         // associated-function resolution.
         if let Some((enum_id, via_comptime)) = self.resolve_enum_type_name(type_name, ctx) {
-            let variant_name = self.interner.resolve(&function).to_string();
-            let def = self.type_pool.enum_def(enum_id);
+            let variant_name = self.body_interner().resolve(&function).to_string();
+            let def = self.body_type_pool().enum_def(enum_id);
             if let Some(variant_index) = def.find_variant(&variant_name) {
                 return self.analyze_enum_variant_construction(
                     air,
@@ -183,7 +189,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         // A call has a declared result type; an expectation on that result
         // must not become the context of its receiver or arguments. The
@@ -230,7 +242,7 @@ impl<'a> BodySema<'a> {
         if let Some(const_info) = const_info
             && let Some(callee) = const_info.value.as_function()
         {
-            let alias_name = self.interner.resolve(&name).to_string();
+            let alias_name = self.body_interner().resolve(&name).to_string();
             self.check_unqualified_visibility(
                 "constant",
                 &alias_name,
@@ -263,13 +275,14 @@ impl<'a> BodySema<'a> {
         // unreserved).
         if !resolved_alias
             && local_name.is_none()
-            && (source_name == self.known.print || source_name == self.known.println)
+            && (source_name == self.known_symbols().print
+                || source_name == self.known_symbols().println)
         {
             return self.analyze_print_builtin(air, source_name, args_range, span, ctx);
         }
 
         if !resolved_alias && local_name.is_none() {
-            let fn_name_str = self.interner.resolve(&source_name).to_string();
+            let fn_name_str = self.body_interner().resolve(&source_name).to_string();
             return Err(CompileError::new(
                 ErrorKind::UndefinedFunction(fn_name_str),
                 span,
@@ -278,7 +291,7 @@ impl<'a> BodySema<'a> {
 
         // Look up the function
         let source_name = self.call_facts().source_function_name(name);
-        let fn_name_str = self.interner.resolve(&source_name).to_string();
+        let fn_name_str = self.body_interner().resolve(&source_name).to_string();
         let fn_info = self
             .call_facts()
             .function_info(name)
@@ -309,7 +322,7 @@ impl<'a> BodySema<'a> {
         check_unqualified_visibility: bool,
     ) -> CompileResult<AnalysisResult> {
         let source_name = self.call_facts().source_function_name(name);
-        let fn_name_str = self.interner.resolve(&source_name).to_string();
+        let fn_name_str = self.body_interner().resolve(&source_name).to_string();
 
         // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
         // reach a private function defined in another directory — privacy is
@@ -356,10 +369,10 @@ impl<'a> BodySema<'a> {
         ctx.referenced_functions.insert(name);
 
         // Get parameter data from the arena
-        let param_types = self.param_arena.types(fn_info.params).to_vec();
-        let param_modes = self.param_arena.modes(fn_info.params).to_vec();
-        let param_comptime = self.param_arena.comptime(fn_info.params).to_vec();
-        let param_names = self.param_arena.names(fn_info.params).to_vec();
+        let param_types = self.body_param_arena().types(fn_info.params).to_vec();
+        let param_modes = self.body_param_arena().modes(fn_info.params).to_vec();
+        let param_comptime = self.body_param_arena().comptime(fn_info.params).to_vec();
+        let param_names = self.body_param_arena().names(fn_info.params).to_vec();
 
         self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
         // The declaration, visibility, checked-call policy, and explicit call
@@ -373,7 +386,7 @@ impl<'a> BodySema<'a> {
             });
             self.record_body_callable_dependency(name);
         }
-        let args = self.rir.call_args(args_range);
+        let args = self.body_rir_ref().call_args(args_range).to_vec();
 
         // Extract info before any mutable borrow
         let is_generic = fn_info.is_generic;
@@ -409,15 +422,18 @@ impl<'a> BodySema<'a> {
                                     reason: "comptime type parameter must be a type literal"
                                         .to_string(),
                                 },
-                                self.rir.get(args.get(i).unwrap().value).span,
+                                self.body_rir_ref().get(args.get(i).unwrap().value).span,
                             ));
                         }
                         None => {
                             return Err(CompileError::new(
                                 ErrorKind::ComptimeArgNotConst {
-                                    param_name: self.interner.resolve(&param_names[i]).to_string(),
+                                    param_name: self
+                                        .body_interner()
+                                        .resolve(&param_names[i])
+                                        .to_string(),
                                 },
-                                self.rir.get(args.get(i).unwrap().value).span,
+                                self.body_rir_ref().get(args.get(i).unwrap().value).span,
                             ));
                         }
                     }
@@ -426,9 +442,9 @@ impl<'a> BodySema<'a> {
                 } else {
                     return Err(CompileError::new(
                         ErrorKind::ComptimeArgNotConst {
-                            param_name: self.interner.resolve(&param_names[i]).to_string(),
+                            param_name: self.body_interner().resolve(&param_names[i]).to_string(),
                         },
-                        self.rir.get(args.get(i).unwrap().value).span,
+                        self.body_rir_ref().get(args.get(i).unwrap().value).span,
                     ));
                 }
             }
@@ -468,7 +484,7 @@ impl<'a> BodySema<'a> {
                         || self.is_comptime_type_var(arg.value, ctx)
                         || self.is_comptime_param_forward(arg.value, ctx);
                     if !is_comptime_known {
-                        let param_name = self.interner.resolve(&param_names[i]).to_string();
+                        let param_name = self.body_interner().resolve(&param_names[i]).to_string();
                         // A module-qualified member-access value path is
                         // compile-time known but not yet folded in argument
                         // position (RUE-948): name that limitation and the
@@ -486,7 +502,7 @@ impl<'a> BodySema<'a> {
                             ErrorKind::ComptimeArgNotConst {
                                 param_name: param_name.clone(),
                             },
-                            self.rir.get(arg.value).span,
+                            self.body_rir_ref().get(arg.value).span,
                         )
                         .with_help(help));
                     }
@@ -557,7 +573,8 @@ impl<'a> BodySema<'a> {
                                 value_subst.insert(param_names[i], const_val);
                             }
                             None => {
-                                let param_name = self.interner.resolve(&param_names[i]).to_string();
+                                let param_name =
+                                    self.body_interner().resolve(&param_names[i]).to_string();
                                 let arg_value = args.get(i).unwrap().value;
                                 // RUE-948: a module-member value path is
                                 // compile-time known but unfolded here; point
@@ -575,7 +592,7 @@ impl<'a> BodySema<'a> {
                                     ErrorKind::ComptimeArgNotConst {
                                         param_name: param_name.clone(),
                                     },
-                                    self.rir.get(arg_value).span,
+                                    self.body_rir_ref().get(arg_value).span,
                                 )
                                 .with_help(help));
                             }
@@ -612,10 +629,10 @@ impl<'a> BodySema<'a> {
                 if !self.types_compatible(found, expected) && !expected.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: expected.safe_name_with_pool(Some(&self.type_pool)),
-                            found: found.safe_name_with_pool(Some(&self.type_pool)),
+                            expected: expected.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: found.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
-                        self.rir.get(args.get(i).unwrap().value).span,
+                        self.body_rir_ref().get(args.get(i).unwrap().value).span,
                     ));
                 }
             }
@@ -627,12 +644,11 @@ impl<'a> BodySema<'a> {
             let return_type =
                 self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst)?;
 
-            if let Some(source) = self.body_dependency_observer.clone()
+            if self.body_dependency_observer().is_some()
                 && let Ok(identity) =
                     self.canonical_specialization_instance(name, &type_args, &value_args)
             {
-                self.body_specialization_dependencies
-                    .push((source, identity));
+                self.record_specialization_dependency(identity);
             }
 
             // Special case: functions that return `type` (not a type parameter) with only comptime args
@@ -715,9 +731,9 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let args = self.rir.call_args(args_range);
+        let args = self.body_rir_ref().call_args(args_range).to_vec();
         let receiver_var = self.extract_root_variable(receiver);
-        let method_name_str = self.interner.resolve(&method).to_string();
+        let method_name_str = self.body_interner().resolve(&method).to_string();
 
         // `Type.function(args)` is an associated-function call / enum
         // tuple-variant construction (RUE-196, RUE-488): `.` is the sole
@@ -731,7 +747,7 @@ impl<'a> BodySema<'a> {
         // name-not-found, exactly like a struct literal, type annotation, or
         // plain function reference; the module-qualified spelling
         // (`m.Type.assoc()`) is the supported form (ADR-0046).
-        if let InstData::VarRef { name, .. } = self.rir.get(receiver).data
+        if let InstData::VarRef { name, .. } = self.body_rir_ref().get(receiver).data
             && !self.is_runtime_value_binding(name, ctx)
             && (self.resolve_struct_type_name(name, ctx).is_some()
                 || self.resolve_enum_type_name(name, ctx).is_some()
@@ -747,7 +763,7 @@ impl<'a> BodySema<'a> {
         if let InstData::FieldGet {
             base: module_ref,
             field: type_name,
-        } = self.rir.get(receiver).data
+        } = self.body_rir_ref().get(receiver).data
             && let Some(result) = self.try_analyze_module_qualified_type_call(
                 air, module_ref, type_name, method, args_range, span, ctx,
             )?
@@ -855,8 +871,8 @@ impl<'a> BodySema<'a> {
         {
             match reduced_ty.kind() {
                 TypeKind::Enum(enum_id) => {
-                    let variant_name = self.interner.resolve(&method).to_string();
-                    let def = self.type_pool.enum_def(enum_id);
+                    let variant_name = self.body_interner().resolve(&method).to_string();
+                    let def = self.body_type_pool().enum_def(enum_id);
                     if let Some(vidx) = def.find_variant(&variant_name) {
                         return self.analyze_enum_variant_construction(
                             air,
@@ -871,7 +887,7 @@ impl<'a> BodySema<'a> {
                     }
                     return Err(CompileError::new(
                         ErrorKind::UndefinedAssocFn {
-                            type_name: reduced_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            type_name: reduced_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                             function_name: variant_name,
                         },
                         span,
@@ -898,7 +914,7 @@ impl<'a> BodySema<'a> {
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::MethodCallOnNonStruct {
-                        found: receiver_type.safe_name_with_pool(Some(&self.type_pool)),
+                        found: receiver_type.safe_name_with_pool(Some(&self.body_type_pool())),
                         method_name: method_name_str,
                     },
                     span,
@@ -907,7 +923,7 @@ impl<'a> BodySema<'a> {
         };
 
         // Look up the struct name by its ID (for error messages)
-        let struct_def = self.type_pool.struct_def(struct_id);
+        let struct_def = self.body_type_pool().struct_def(struct_id);
         let struct_name_str = struct_def.name.clone();
 
         // Look up the method using StructId directly
@@ -941,8 +957,8 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let method_param_types = self.param_arena.types(method_info.params).to_vec();
-        let method_param_modes = self.param_arena.modes(method_info.params).to_vec();
+        let method_param_types = self.body_param_arena().types(method_info.params).to_vec();
+        let method_param_modes = self.body_param_arena().modes(method_info.params).to_vec();
         // The receiver's autoref is implicit and deliberately excluded from
         // the explicit contract. Receiver-aware exclusivity runs below.
         self.validate_call_contract(
@@ -971,7 +987,7 @@ impl<'a> BodySema<'a> {
         let mut receiver_temp_scope = Vec::new();
         if receiver_mode != AirArgMode::Normal {
             let receiver_is_source_strbuf = receiver_type.as_struct().is_some_and(|struct_id| {
-                self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+                self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
             });
             if receiver_mode == AirArgMode::Borrow
                 && receiver_var.is_none()
@@ -981,7 +997,7 @@ impl<'a> BodySema<'a> {
                     air,
                     receiver_result.air_ref,
                     receiver_result.ty,
-                    self.rir.get(receiver).span,
+                    self.body_rir_ref().get(receiver).span,
                     ctx,
                 )?;
                 receiver_result = AnalysisResult::new(borrowed, receiver_result.ty);
@@ -991,7 +1007,7 @@ impl<'a> BodySema<'a> {
                 air,
                 receiver_result.air_ref,
                 receiver_mode == AirArgMode::Inout,
-                self.rir.get(receiver).span,
+                self.body_rir_ref().get(receiver).span,
             )?;
 
             if receiver_var.is_none()
@@ -1003,7 +1019,7 @@ impl<'a> BodySema<'a> {
                     } else {
                         ErrorKind::BorrowNonLvalue
                     },
-                    self.rir.get(receiver).span,
+                    self.body_rir_ref().get(receiver).span,
                 ));
             }
 
@@ -1021,7 +1037,7 @@ impl<'a> BodySema<'a> {
                 if receiver_mode == AirArgMode::Inout
                     && !self.receiver_root_is_mutable(receiver_root, ctx)
                 {
-                    let name = self.interner.resolve(&receiver_root).to_string();
+                    let name = self.body_interner().resolve(&receiver_root).to_string();
                     return Err(CompileError::new(
                         ErrorKind::AssignToImmutable(name.clone()),
                         span,
@@ -1106,7 +1122,7 @@ impl<'a> BodySema<'a> {
         // the type name spans files (RUE-571) — must match the definition
         // side, which builds its name through the same helper.
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
-        let call_name_sym = self.interner.get_or_intern(&call_name);
+        let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
         let call = self.emit_call_result(air, call_name_sym, &air_args, return_type, span)?;
         let air_ref = self.wrap_value_with_temp_scope(
@@ -1134,7 +1150,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let fn_name_str = self.interner.resolve(&function_name).to_string();
+        let fn_name_str = self.body_interner().resolve(&function_name).to_string();
         let module_def = self.call_facts().module_def(module_id);
         let module_file_id = Some(module_def.file_id);
         let mut function_key = module_file_id.and_then(|file_id| {
@@ -1203,8 +1219,8 @@ impl<'a> BodySema<'a> {
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(function_key);
 
-        let param_types = self.param_arena.types(fn_info.params).to_vec();
-        let param_modes = self.param_arena.modes(fn_info.params).to_vec();
+        let param_types = self.body_param_arena().types(fn_info.params).to_vec();
+        let param_modes = self.body_param_arena().modes(fn_info.params).to_vec();
         // A re-export was already visibility-checked against its facade const.
         let accessible =
             via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
@@ -1267,8 +1283,8 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
         resolved: Option<StructId>,
     ) -> CompileResult<AnalysisResult> {
-        let type_name_str = self.interner.resolve(&type_name).to_string();
-        let function_name_str = self.interner.resolve(&function).to_string();
+        let type_name_str = self.body_interner().resolve(&type_name).to_string();
+        let function_name_str = self.body_interner().resolve(&function).to_string();
 
         // Check that the type exists and is a struct
         // First check if it's a comptime type variable (e.g., `let P = Point(); P::origin()`)
@@ -1294,7 +1310,7 @@ impl<'a> BodySema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                            found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
@@ -1316,7 +1332,7 @@ impl<'a> BodySema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                            found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
@@ -1326,9 +1342,7 @@ impl<'a> BodySema<'a> {
             // Module-local first, then builtins (RUE-525) — never the global
             // by-name table: an unqualified reference to another file's type
             // is name-not-found, matching every other unqualified form.
-            self.structs_by_file_name
-                .get(&(ctx.current_file_id, type_name))
-                .copied()
+            self.struct_in_file(ctx.current_file_id, type_name)
                 .or_else(|| self.resolve_builtin_struct_name(type_name))
                 .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.clone()), span)?
         };
@@ -1340,7 +1354,7 @@ impl<'a> BodySema<'a> {
         // (String, ...) have no source path, so `is_accessible` is permissive and
         // this is a no-op for them.
         if !privacy_exempt {
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let struct_def = self.body_type_pool().struct_def(struct_id);
             self.check_unqualified_visibility(
                 "struct",
                 &type_name_str,
@@ -1377,8 +1391,8 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let method_param_types = self.param_arena.types(method_info.params).to_vec();
-        let method_param_modes = self.param_arena.modes(method_info.params).to_vec();
+        let method_param_types = self.body_param_arena().types(method_info.params).to_vec();
+        let method_param_modes = self.body_param_arena().modes(method_info.params).to_vec();
         self.validate_call_contract(
             args_range,
             &method_param_types,
@@ -1410,7 +1424,7 @@ impl<'a> BodySema<'a> {
         // file-qualified name when the type name spans files (RUE-571),
         // matching the definition side.
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
-        let call_name_sym = self.interner.get_or_intern(&call_name);
+        let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
         self.emit_call_result(air, call_name_sym, &air_args, return_type, span)
     }

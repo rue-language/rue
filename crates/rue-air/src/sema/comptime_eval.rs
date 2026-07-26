@@ -55,9 +55,66 @@ use rue_rir::{InstData, InstRef, RepeatCount};
 use rue_span::{FileId, Span};
 
 use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
-use super::{
-    DeclarationPhase, DeferredOwnershipGate, DeferredOwnershipGateKind, FunctionInfo, Sema,
-};
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+
+pub(super) fn validate_comptime_value_for_type_impl(
+    interner: &lasso::ThreadedRodeo,
+    type_pool: &crate::intern_pool::TypeInternPool,
+    function_name: Spur,
+    param_name: Spur,
+    value: ConstValue,
+    expected: Type,
+    span: Span,
+) -> CompileResult<()> {
+    if matches!(value, ConstValue::Function(_)) {
+        return Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "callable alias passed to compile-time parameter '{}' of '{}'; callable aliases cannot be passed as arguments",
+                    interner.resolve(&param_name),
+                    interner.resolve(&function_name)
+                ),
+            },
+            span,
+        ));
+    }
+    if let ConstValue::Integer(integer) = value
+        && expected.is_integer()
+    {
+        if const_int_fits(integer, expected) {
+            return Ok(());
+        }
+        return Err(CompileError::new(
+            ErrorKind::ComptimeEvaluationFailed {
+                reason: format!(
+                    "compile-time argument '{}' for '{}' has value {} outside the range of {}",
+                    interner.resolve(&param_name),
+                    interner.resolve(&function_name),
+                    integer,
+                    expected.safe_name_with_pool(Some(type_pool))
+                ),
+            },
+            span,
+        ));
+    }
+    let found = value.get_type();
+    if found != expected {
+        return Err(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: expected.safe_name_with_pool(Some(type_pool)),
+                found: found.safe_name_with_pool(Some(type_pool)),
+            },
+            span,
+        )
+        .with_help(format!(
+            "compile-time argument '{}' must match its declared type in '{}'",
+            interner.resolve(&param_name),
+            interner.resolve(&function_name)
+        )));
+    }
+    Ok(())
+}
+use super::{DeferredOwnershipGate, DeferredOwnershipGateKind, FunctionInfo};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -300,7 +357,7 @@ fn comptime_panic_err(reason: String, span: Span) -> CompileError {
     CompileError::new(ErrorKind::ComptimeEvaluationFailed { reason }, span)
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Try to evaluate an RIR expression as a compile-time constant, with no
     /// substitutions or type context.
     ///
@@ -355,10 +412,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ) -> Option<ConstValue> {
         let mut env = ComptimeEnv::with_subst(type_subst, value_subst);
         env.producer = Some(inst_ref);
-        env.canonical_identity = self.active_anonymous_producer.clone();
+        env.canonical_identity = self.active_anonymous_producer().cloned();
         // A module-qualified comptime call in the evaluated expression resolves
         // its receiver against the expression's own file's imports (RUE-511).
-        env.defining_file = Some(self.rir.get(inst_ref).span.file_id);
+        env.defining_file = Some(self.body_rir_ref().get(inst_ref).span.file_id);
         self.eval_const_expr(inst_ref, &mut env).ok().flatten()
     }
 
@@ -423,7 +480,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         inst_ref: InstRef,
         ctx: &AnalysisContext,
     ) -> bool {
-        if let InstData::VarRef { name, .. } = &self.rir.get(inst_ref).data {
+        if let InstData::VarRef { name, .. } = &self.body_rir_ref().get(inst_ref).data {
             // A runtime local of the same name shadows the parameter.
             !ctx.locals.contains_key(name)
                 && ctx.params.iter().any(|p| p.name == *name && p.is_comptime)
@@ -458,7 +515,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             Some(ty) => match value {
                 Some(v) if const_int_fits(v, ty) => Ok(Some(ConstValue::Integer(v))),
                 _ => {
-                    let ty_name = ty.safe_name_with_pool(Some(&self.type_pool));
+                    let ty_name = ty.safe_name_with_pool(Some(self.body_type_pool()));
                     let detail = match value {
                         Some(v) => format!("the result {} does not fit in {}", v, ty_name),
                         None => format!("the result does not fit in {}", ty_name),
@@ -525,7 +582,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         inst_ref: InstRef,
         env: &mut ComptimeEnv,
     ) -> CompileResult<Option<ConstValue>> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
         let span = inst.span;
         match &inst.data {
             // Integer literals. The literal itself must fit its resolved type
@@ -538,7 +601,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         return Err(CompileError::new(
                             ErrorKind::LiteralOutOfRange {
                                 value: *value,
-                                ty: ty.safe_name_with_pool(Some(&self.type_pool)),
+                                ty: ty.safe_name_with_pool(Some(self.body_type_pool())),
                             },
                             span,
                         ));
@@ -559,18 +622,21 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 if let Some(ty) = ty {
                     if ty.is_unsigned() {
                         return Err(CompileError::new(
-                            ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool))),
+                            ErrorKind::CannotNegate(
+                                ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            ),
                             span,
                         ));
                     }
                 }
                 // Negated literals bypass the literal range check so that
                 // `-128` works for i8 (the magnitude alone exceeds i8::MAX).
-                let operand_value = if let InstData::IntConst(mag) = &self.rir.get(*operand).data {
-                    Some(ConstValue::Integer(*mag as i128))
-                } else {
-                    self.eval_const_expr(*operand, env)?
-                };
+                let operand_value =
+                    if let InstData::IntConst(mag) = &self.body_rir_ref().get(*operand).data {
+                        Some(ConstValue::Integer(*mag as i128))
+                    } else {
+                        self.eval_const_expr(*operand, env)?
+                    };
                 match operand_value {
                     Some(ConstValue::Integer(n)) => self.finish_arith(Some(-n), ty, "-", span),
                     // Can't negate a boolean, type, or unit
@@ -798,34 +864,35 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // tail expression. Loops, assignments and calls are not supported
             // and make the block non-evaluable.
             InstData::Block { instructions } => {
-                let stmt_refs = self.rir.block_insts(instructions);
+                let stmt_refs = self.body_rir_ref().block_insts(instructions).to_vec();
                 if stmt_refs.is_empty() {
                     return Ok(Some(ConstValue::Unit));
                 }
                 // Bindings are scoped to the block.
                 let saved_locals = env.locals.clone();
                 let mut result = Some(ConstValue::Unit);
-                for (i, stmt_ref) in stmt_refs.values().enumerate() {
+                for (i, stmt_ref) in stmt_refs.iter().copied().enumerate() {
                     let is_tail = i + 1 == stmt_refs.len();
-                    let value =
-                        if let InstData::Alloc { name, init, .. } = &self.rir.get(stmt_ref).data {
-                            let (name, init) = (*name, *init);
-                            let Some(v) = self.eval_const_expr(init, env)? else {
-                                env.locals = saved_locals;
-                                return Ok(None);
-                            };
-                            if let Some(name) = name {
-                                env.locals.insert(name, v);
-                            }
-                            // A `let` statement itself evaluates to unit.
-                            ConstValue::Unit
-                        } else {
-                            let Some(v) = self.eval_const_expr(stmt_ref, env)? else {
-                                env.locals = saved_locals;
-                                return Ok(None);
-                            };
-                            v
+                    let value = if let InstData::Alloc { name, init, .. } =
+                        &self.body_rir_ref().get(stmt_ref).data
+                    {
+                        let (name, init) = (*name, *init);
+                        let Some(v) = self.eval_const_expr(init, env)? else {
+                            env.locals = saved_locals;
+                            return Ok(None);
                         };
+                        if let Some(name) = name {
+                            env.locals.insert(name, v);
+                        }
+                        // A `let` statement itself evaluates to unit.
+                        ConstValue::Unit
+                    } else {
+                        let Some(v) = self.eval_const_expr(stmt_ref, env)? else {
+                            env.locals = saved_locals;
+                            return Ok(None);
+                        };
+                        v
+                    };
                     if is_tail {
                         result = Some(value);
                     }
@@ -868,10 +935,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 let Some(scrut) = self.eval_const_expr(scrutinee, env)? else {
                     return Ok(None);
                 };
-                let arms = self.rir.match_arms(arms);
+                let arms = self.body_rir_ref().match_arms(arms).to_vec();
                 for (pattern, body) in arms.iter() {
                     match const_pattern_matches(&pattern, scrut) {
-                        Some(true) => return self.eval_const_expr(body, env),
+                        Some(true) => return self.eval_const_expr(*body, env),
                         Some(false) => continue,
                         // Undecidable pattern (e.g. an enum-variant `Path`
                         // against a non-representable scrutinee): bail out.
@@ -890,7 +957,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 methods,
                 anchor,
             } => {
-                let field_decls = self.rir.anon_struct_fields(fields);
+                let field_decls = self.body_rir_ref().anon_struct_fields(fields).to_vec();
 
                 // Comptime `let` locals in scope participate in field-type
                 // resolution (`let Inner = Mk(T); struct { x: Inner }`,
@@ -899,7 +966,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
-                    let name_str = self.interner.resolve(&name_sym).to_string();
+                    let name_str = self.body_interner().resolve(&name_sym).to_string();
                     // Field types resolve through both the type substitution
                     // (`comptime T: type`) and the value substitution
                     // (`comptime N: i32`, so an `[i32; N]` field gets a concrete
@@ -941,7 +1008,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
                 // Register methods if present and not yet registered for this
                 // struct (it may have been created earlier without methods).
-                if !self.rir.anon_struct_methods(methods).is_empty() {
+                if !self.body_rir_ref().anon_struct_methods(methods).is_empty() {
                     // A method that declares its own `comptime T: type`
                     // parameter would need per-call monomorphization over that
                     // parameter, which is unsupported (RUE-284). Reject it at
@@ -969,9 +1036,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         return Ok(None);
                     };
 
-                    let method_refs = self.rir.anon_struct_methods(methods);
+                    let method_refs = self.body_rir_ref().anon_struct_methods(methods);
                     let first_method_ref = method_refs.get(0).unwrap();
-                    let first_method_inst = self.rir.get(first_method_ref);
+                    let first_method_inst = self.body_rir_ref().get(first_method_ref);
                     if let InstData::FnDecl {
                         name: method_name, ..
                     } = &first_method_inst.data
@@ -984,7 +1051,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                                     struct_id,
                                     struct_ty,
                                     methods,
-                                    span,
                                     &local_type_subst,
                                     &local_value_subst,
                                 )
@@ -1003,8 +1069,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         // a separate pass that has no other way to recover the
                         // constructor's type parameters.
                         if needs_registration && !local_type_subst.is_empty() {
-                            self.anon_struct_type_subst
-                                .insert(struct_id, local_type_subst.clone());
+                            self.set_anon_struct_type_subst(struct_id, local_type_subst.clone());
                         }
                     }
                 }
@@ -1021,9 +1086,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 payloads,
                 anchor,
             } => {
-                let variant_syms: Vec<lasso::Spur> = self.rir.anon_enum_variants(variants).to_vec();
+                let variant_syms: Vec<lasso::Spur> =
+                    self.body_rir_ref().anon_enum_variants(variants).to_vec();
                 let payload_symbols: Vec<Vec<lasso::Spur>> = self
-                    .rir
+                    .body_rir_ref()
                     .anon_enum_payloads(payloads, variants)
                     .map(|payload| payload.to_vec())
                     .collect();
@@ -1038,7 +1104,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
                 let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
                 for (&vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
-                    variant_names.push(self.interner.resolve(&vsym).to_string());
+                    variant_names.push(self.body_interner().resolve(&vsym).to_string());
                     let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
                         let Some(ty) = self
@@ -1116,7 +1182,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 let len = match count {
                     RepeatCount::Literal(n) => n,
                     RepeatCount::Named(sym) => {
-                        let name = self.interner.resolve(&sym).to_string();
+                        let name = self.body_interner().resolve(&sym).to_string();
                         match self.resolve_array_length(
                             &ArrayLen::Named(name),
                             span,
@@ -1181,16 +1247,16 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 //    VarRef's own span locates the referencing file;
                 //    speculative callers (`try_evaluate_const*`) swallow the
                 //    error and defer to runtime analysis, which re-checks.
-                if let Some(info) = self.value_const(&(span.file_id, *name)).cloned() {
-                    self.record_named_const_dependency(
+                if let Some(info) = self.value_const(&(span.file_id, *name)) {
+                    self.record_body_named_dependency(
                         super::NamedConstDependencyTargetEvent::ValueConst {
                             file: info.span.file_id.index(),
-                            name: self.interner.resolve(name).to_string(),
+                            name: self.body_interner().resolve(name).to_string(),
                         },
                     );
                     self.check_unqualified_visibility(
                         "constant",
-                        self.interner.resolve(name),
+                        self.body_interner().resolve(name),
                         info.span.file_id,
                         info.is_pub,
                         span,
@@ -1213,10 +1279,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     match ty.kind() {
                         TypeKind::Struct(id) => {
                             let def = self
-                                .type_pool
+                                .body_type_pool()
                                 .struct_metadata(id)
                                 .expect("struct type must have declaration metadata");
-                            self.record_named_const_dependency(
+                            self.record_body_named_dependency(
                                 super::NamedConstDependencyTargetEvent::NamedType {
                                     file: def.file_id.index(),
                                     name: def.name,
@@ -1226,10 +1292,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                         }
                         TypeKind::Enum(id) => {
                             let def = self
-                                .type_pool
+                                .body_type_pool()
                                 .enum_metadata(id)
                                 .expect("enum type must have declaration metadata");
-                            self.record_named_const_dependency(
+                            self.record_body_named_dependency(
                                 super::NamedConstDependencyTargetEvent::NamedType {
                                     file: def.file_id.index(),
                                     name: def.name,
@@ -1287,7 +1353,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             // are not comptime-foldable here and stay non-evaluable.
             InstData::TypeIntrinsic { name, type_arg } => {
                 let (name, type_arg) = (*name, *type_arg);
-                let gate = self.interner.resolve(&name);
+                let gate = self.body_interner().resolve(&name);
                 // Both well-formedness gates reduce to unit at comptime:
                 // `@require_droppable` (instantiation-time, rejects `linear`) and
                 // `@require_trivially_droppable` (read-time, rejects drop glue —
@@ -1369,7 +1435,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let mut chain_rev: Vec<Spur> = Vec::new();
         let mut cursor = receiver;
         let recv_name = loop {
-            match self.rir.get(cursor).data {
+            match self.body_rir_ref().get(cursor).data {
                 InstData::VarRef { name, .. } => break name,
                 InstData::FieldGet { base, field } => {
                     chain_rev.push(field);
@@ -1414,12 +1480,19 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             let Some(module_id) = binding.ty.as_module() else {
                 return Ok(None);
             };
-            let module_def = self.module_registry.get_def(module_id);
+            let module_def = self.module_def(module_id);
             let module_file_id = module_def.file_id;
             module_file_id
         } else {
-            let mut segments: Vec<&str> = vec![self.interner.resolve(&recv_name)];
-            segments.extend(chain_rev.iter().rev().map(|s| self.interner.resolve(s)));
+            let mut segment_strings: Vec<String> =
+                vec![self.body_interner().resolve(&recv_name).to_owned()];
+            segment_strings.extend(
+                chain_rev
+                    .iter()
+                    .rev()
+                    .map(|s| self.body_interner().resolve(s).to_owned()),
+            );
+            let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
             // Walk failures (unknown member, non-module segment, privacy) make
             // the call non-evaluable here; the caller reports the comptime
             // failure and sema's other paths carry the precise diagnostics.
@@ -1434,23 +1507,18 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // Declaration binding may reach this call before its source-order
         // signature pass. Once `BoundSema` exists, membership is read-only and
         // a missing signature is authoritative.
-        if self.declaration_binding_active {
-            self.collect_free_function_signature_during_binding(method, Some(module_file_id))?;
-        }
         let Some(function_key) = self.resolve_function_name_local(method, module_file_id) else {
             return Ok(None);
         };
         let Some(fn_info) = self
-            .functions
-            .get(&function_key)
-            .copied()
+            .function_info(function_key)
             .filter(|info| info.file_id == module_file_id)
         else {
             return Ok(None);
         };
         // Visibility: a non-`pub` member accessed through a module object is not
         // usable from another directory (spec 10.3:7).
-        let member_name = self.interner.resolve(&method).to_string();
+        let member_name = self.body_interner().resolve(&method).to_string();
         self.check_unqualified_visibility(
             "function",
             &member_name,
@@ -1492,7 +1560,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let mut chain_rev: Vec<Spur> = Vec::new();
         let mut cursor = inst_ref;
         let root_name = loop {
-            match self.rir.get(cursor).data {
+            match self.body_rir_ref().get(cursor).data {
                 InstData::VarRef { name, .. } => break name,
                 InstData::FieldGet { base, field } => {
                     chain_rev.push(field);
@@ -1531,8 +1599,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let Some(root_file) = env.defining_file else {
             return Ok(None);
         };
-        let mut segments: Vec<&str> = vec![self.interner.resolve(&root_name)];
-        segments.extend(chain_rev.iter().rev().map(|s| self.interner.resolve(s)));
+        let mut segment_strings: Vec<String> =
+            vec![self.body_interner().resolve(&root_name).to_owned()];
+        segment_strings.extend(
+            chain_rev
+                .iter()
+                .rev()
+                .map(|s| self.body_interner().resolve(s).to_owned()),
+        );
+        let segments: Vec<&str> = segment_strings.iter().map(String::as_str).collect();
         match self.resolve_qualified_type_name_in_file(root_file, &segments, span) {
             Ok(ty) => Ok(Some(ConstValue::Type(ty))),
             // An unknown member / non-module base is simply not a type path
@@ -1574,7 +1649,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let mut fields_rev: Vec<Spur> = Vec::new();
         let mut cursor = arg;
         let root_name = loop {
-            match self.rir.get(cursor).data {
+            match self.body_rir_ref().get(cursor).data {
                 InstData::VarRef { name, .. } => break name,
                 InstData::FieldGet { base, field } => {
                     fields_rev.push(field);
@@ -1599,8 +1674,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // a module-qualified member-access path at all.
         let binding = self.module_binding(&(ctx.current_file_id, root_name))?;
         binding.ty.as_module()?;
-        let mut segments: Vec<&str> = vec![self.interner.resolve(&root_name)];
-        segments.extend(fields_rev.iter().rev().map(|s| self.interner.resolve(s)));
+        let mut segments: Vec<&str> = vec![self.body_interner().resolve(&root_name)];
+        segments.extend(
+            fields_rev
+                .iter()
+                .rev()
+                .map(|s| self.body_interner().resolve(s)),
+        );
         let path = segments.join(".");
         Some(format!(
             "the module-qualified path `{path}` names a compile-time value that \
@@ -1629,7 +1709,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// rejected. A droppable element (primitives, pointers, `Copy` structs,
     /// destructor-bearing structs, nested containers) passes.
     pub(crate) fn check_require_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
-        if self.declaration_binding_active {
+        if self.declaration_binding_active() {
             match self.known_linear_during_binding(ty) {
                 Some(true) => return Err(self.require_droppable_error(ty, span)),
                 Some(false) => return Ok(()),
@@ -1682,7 +1762,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     /// A `linear` `T` never reaches here: `@require_droppable` already rejects it
     /// at instantiation, so `ArrayBuf(linear)` cannot be constructed to be read.
     pub(crate) fn check_trivially_droppable(&mut self, ty: Type, span: Span) -> CompileResult<()> {
-        if self.declaration_binding_active {
+        if self.declaration_binding_active() {
             match self.known_drop_glue_during_binding(ty) {
                 Some(true) => return Err(self.trivially_droppable_error(ty, span)),
                 Some(false) => return Ok(()),
@@ -1716,18 +1796,18 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 
     fn defer_ownership_gate(&mut self, kind: DeferredOwnershipGateKind, ty: Type, span: Span) {
-        debug_assert!(self.declaration_binding_active);
+        debug_assert!(self.declaration_binding_active());
         debug_assert!(self.type_ownership_depends_on_nominal(ty));
         let gate = DeferredOwnershipGate { kind, ty, span };
-        if !self.deferred_ownership_gates.contains(&gate) {
-            self.deferred_ownership_gates.push(gate);
+        if !self.deferred_ownership_gates_mut().contains(&gate) {
+            self.deferred_ownership_gates_mut().push(gate);
         }
     }
 
     /// Discharge ownership gates after declaration binding has completed every
     /// nominal payload, infectious-linearity fixpoint, and destructor.
     pub(crate) fn validate_deferred_ownership_gates(&mut self) -> CompileResult<()> {
-        for gate in std::mem::take(&mut self.deferred_ownership_gates) {
+        for gate in std::mem::take(self.deferred_ownership_gates_mut()) {
             match gate.kind {
                 DeferredOwnershipGateKind::RequireDroppable => {
                     self.check_require_droppable_finalized(gate.ty, gate.span)?
@@ -1781,9 +1861,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let Some(file_id) = env.defining_file else {
             return Ok(None);
         };
-        if self.declaration_binding_active {
-            self.collect_free_function_signature_during_binding(name, Some(file_id))?;
-        }
         // Qualified callers have already resolved the source member through
         // the receiver module's defining file and pass the exact internal
         // function key here. Unqualified callers pass a source name, which
@@ -1791,28 +1868,28 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // those representations explicit so neither path can fall back to a
         // graph-global source-name lookup.
         let resolved = if name_is_resolved_key {
-            self.functions.get(&name).copied().map(|info| (name, info))
+            self.function_info(name).map(|info| (name, info))
         } else {
             self.resolve_function_name_local(name, file_id)
-                .and_then(|key| self.functions.get(&key).copied().map(|info| (key, info)))
+                .and_then(|key| self.function_info(key).map(|info| (key, info)))
         };
         let Some((name_key, fn_info)) = resolved else {
             return Ok(None);
         };
         let is_type_fn = self.function_returns_type(&fn_info);
-        self.record_named_const_dependency(super::NamedConstDependencyTargetEvent::FreeFunction {
+        self.record_body_named_dependency(super::NamedConstDependencyTargetEvent::FreeFunction {
             file: fn_info.file_id.index(),
             name: self
-                .interner
+                .body_interner()
                 .resolve(&self.source_function_name(name_key))
                 .to_string(),
         });
         let params = fn_info.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_modes = self.param_arena.modes(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
+        let param_names = self.body_param_arena().names(params).to_vec();
+        let param_modes = self.body_param_arena().modes(params).to_vec();
+        let param_comptime = self.body_param_arena().comptime(params).to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
-        let args = self.rir.call_args(args);
+        let args = self.body_rir_ref().call_args(args).to_vec();
         if args.len() != param_names.len() {
             return Ok(None);
         }
@@ -1876,55 +1953,15 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         expected: Type,
         span: Span,
     ) -> CompileResult<()> {
-        if matches!(value, ConstValue::Function(_)) {
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "callable alias passed to compile-time parameter '{}' of '{}'; callable aliases cannot be passed as arguments",
-                        self.interner.resolve(&param_name),
-                        self.interner.resolve(&function_name)
-                    ),
-                },
-                span,
-            ));
-        }
-
-        if let ConstValue::Integer(integer) = value
-            && expected.is_integer()
-        {
-            if const_int_fits(integer, expected) {
-                return Ok(());
-            }
-            return Err(CompileError::new(
-                ErrorKind::ComptimeEvaluationFailed {
-                    reason: format!(
-                        "compile-time argument '{}' for '{}' has value {} outside the range of {}",
-                        self.interner.resolve(&param_name),
-                        self.interner.resolve(&function_name),
-                        integer,
-                        expected.safe_name_with_pool(Some(&self.type_pool))
-                    ),
-                },
-                span,
-            ));
-        }
-
-        let found = value.get_type();
-        if found != expected {
-            return Err(CompileError::new(
-                ErrorKind::TypeMismatch {
-                    expected: expected.safe_name_with_pool(Some(&self.type_pool)),
-                    found: found.safe_name_with_pool(Some(&self.type_pool)),
-                },
-                span,
-            )
-            .with_help(format!(
-                "compile-time argument '{}' must match its declared type in '{}'",
-                self.interner.resolve(&param_name),
-                self.interner.resolve(&function_name)
-            )));
-        }
-        Ok(())
+        validate_comptime_value_for_type_impl(
+            self.body_interner(),
+            self.body_type_pool(),
+            function_name,
+            param_name,
+            value,
+            expected,
+            span,
+        )
     }
 
     /// Validate the complete comptime argument contract at the shared
@@ -1939,9 +1976,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         callee_values: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<()> {
         let params = function.params;
-        let param_names = self.param_arena.names(params).to_vec();
-        let param_types = self.param_arena.types(params).to_vec();
-        let param_comptime = self.param_arena.comptime(params).to_vec();
+        let param_names = self.body_param_arena().names(params).to_vec();
+        let param_types = self.body_param_arena().types(params).to_vec();
+        let param_comptime = self.body_param_arena().comptime(params).to_vec();
         let param_comptime_type = self.comptime_type_param_flags(function);
 
         let expected_type_args = param_comptime
@@ -1958,7 +1995,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             return Err(CompileError::new(
                 ErrorKind::InternalError(format!(
                     "comptime argument maps for '{}' do not match its declaration: received {}/{} type/value arguments, expected {expected_type_args}/{expected_value_args}",
-                    self.interner.resolve(&function_name),
+                    self.body_interner().resolve(&function_name),
                     callee_types.len(),
                     callee_values.len(),
                 )),
@@ -1980,8 +2017,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     return Err(CompileError::new(
                         ErrorKind::InternalError(format!(
                             "comptime type argument for '{}' is missing while reducing '{}'",
-                            self.interner.resolve(name),
-                            self.interner.resolve(&function_name)
+                            self.body_interner().resolve(name),
+                            self.body_interner().resolve(&function_name)
                         )),
                         function.span,
                     ));
@@ -1992,8 +2029,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                 CompileError::new(
                     ErrorKind::InternalError(format!(
                         "comptime value argument for '{}' is missing while reducing '{}'",
-                        self.interner.resolve(name),
-                        self.interner.resolve(&function_name)
+                        self.body_interner().resolve(name),
+                        self.body_interner().resolve(&function_name)
                     )),
                     function.span,
                 )
@@ -2028,7 +2065,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         callee_types: &HashMap<Spur, Type>,
         callee_values: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<Option<ConstValue>> {
-        let Some(fn_info) = self.functions.get(&name).copied() else {
+        let Some(fn_info) = self.function_info(name) else {
             return Ok(None);
         };
         self.validate_comptime_call_substitutions(name, &fn_info, callee_types, callee_values)?;
@@ -2053,9 +2090,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // file, so the receiver must resolve against the callee's module
         // bindings, not the instantiation site's (RUE-511).
         callee_env.defining_file = Some(fn_file);
-        self.comptime_type_call_depth += 1;
-        if self.comptime_type_call_depth > MAX_SPECIALIZATION_ROUNDS {
-            self.comptime_type_call_depth -= 1;
+        let depth = self.comptime_type_call_depth() + 1;
+        self.set_comptime_type_call_depth(depth);
+        if self.comptime_type_call_depth() > MAX_SPECIALIZATION_ROUNDS {
+            self.set_comptime_type_call_depth(self.comptime_type_call_depth() - 1);
             return Err(CompileError::new(
                 ErrorKind::ComptimeEvaluationFailed {
                     reason: format!(
@@ -2063,7 +2101,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                          is a comptime-recursive function missing a compile-time-known \
                          base case, or a generic function recursively instantiating \
                          itself with new types?",
-                        self.interner.resolve(&name),
+                        self.body_interner().resolve(&name),
                         MAX_SPECIALIZATION_ROUNDS
                     ),
                 },
@@ -2071,7 +2109,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             ));
         }
         let result = self.eval_const_expr(fn_body, &mut callee_env);
-        self.comptime_type_call_depth -= 1;
+        self.set_comptime_type_call_depth(self.comptime_type_call_depth() - 1);
         // Record the human-readable instantiation spelling for a
         // constructor-produced anonymous type, so diagnostics print
         // `ArrayBuf(i64)` instead of `__anon_struct_4` (RUE-610).
@@ -2094,20 +2132,24 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ) {
         let is_anon = match ty.kind() {
             TypeKind::Struct(id) => self
-                .type_pool
+                .body_type_pool()
                 .struct_def(id)
                 .name
                 .starts_with("__anon_struct_"),
-            TypeKind::Enum(id) => self.type_pool.enum_def(id).name.starts_with("enum {"),
+            TypeKind::Enum(id) => self
+                .body_type_pool()
+                .enum_def(id)
+                .name
+                .starts_with("enum {"),
             _ => false,
         };
-        if !is_anon || self.ctor_type_displays.contains_key(&ty) {
+        if !is_anon || self.has_ctor_type_display(ty) {
             return;
         }
-        let Some(fn_info) = self.functions.get(&ctor) else {
+        let Some(fn_info) = self.function_info(ctor) else {
             return;
         };
-        let param_names = self.param_arena.names(fn_info.params).to_vec();
+        let param_names = self.body_param_arena().names(fn_info.params).to_vec();
         let mut args: Vec<String> = Vec::with_capacity(param_names.len());
         for param in &param_names {
             if let Some(arg_ty) = callee_types.get(param) {
@@ -2126,10 +2168,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         let source_name = self.source_function_name(ctor);
         let display = format!(
             "{}({})",
-            self.interner.resolve(&source_name),
+            self.body_interner().resolve(&source_name),
             args.join(", ")
         );
-        self.ctor_type_displays.insert(ty, display);
+        self.record_body_ctor_type_display(ty, display);
     }
 
     /// Pre-resolve `let`-bound compile-time type aliases in a function body,
@@ -2196,9 +2238,13 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         runtime_bindings: &mut HashSet<Spur>,
         frame: &mut Vec<(Spur, Option<Type>, bool)>,
     ) {
-        match &self.rir.get(inst_ref).data {
+        match &self.body_rir_ref().get(inst_ref).data {
             InstData::Block { instructions } => {
-                let stmts: Vec<InstRef> = self.rir.block_insts(instructions).values().collect();
+                let stmts: Vec<InstRef> = self
+                    .body_rir_ref()
+                    .block_insts(instructions)
+                    .values()
+                    .collect();
                 let mut inner_frame = Vec::new();
                 for stmt in stmts {
                     self.walk_comptime_type_locals(
@@ -2280,7 +2326,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             }
             InstData::Match { arms, .. } => {
                 let bodies: Vec<InstRef> = self
-                    .rir
+                    .body_rir_ref()
                     .match_arms(arms)
                     .iter()
                     .map(|(_, body)| body)
@@ -2318,9 +2364,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // `let P = struct { .. };`, and `let P = Pair(i32);` alike (RUE-251).
         let mut env = ComptimeEnv::with_subst(eval_types, eval_values);
         env.producer = Some(init);
-        env.canonical_identity = self.active_anonymous_producer.clone();
+        env.canonical_identity = self.active_anonymous_producer().cloned();
         env.runtime_binding_names = Some(runtime_bindings);
-        env.defining_file = Some(self.rir.get(init).span.file_id);
+        env.defining_file = Some(self.body_rir_ref().get(init).span.file_id);
         match self.eval_const_expr(init, &mut env).ok().flatten() {
             Some(ConstValue::Type(t)) => Some(t),
             _ => None,
@@ -2367,11 +2413,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // `foo(x).bar()` are collected too but fail the reduction cheaply
         // (the comptime engine rejects callees with runtime parameters).
         let candidates: Vec<InstRef> = self
-            .rir
+            .body_rir_ref()
             .iter()
             .filter_map(|(_, inst)| match inst.data {
                 InstData::MethodCall { receiver, .. } => matches!(
-                    self.rir.get(receiver).data,
+                    self.body_rir_ref().get(receiver).data,
                     InstData::Call { .. } | InstData::MethodCall { .. }
                 )
                 .then_some(receiver),
