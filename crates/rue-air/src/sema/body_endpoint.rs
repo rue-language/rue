@@ -23,12 +23,12 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstRef, Rir};
+use rue_rir::InstRef;
 use rue_span::FileId;
 
 use super::anon_structs::IssuedAnonymousNominalKey;
 use super::body_identity::{
-    BodyRirIndex, ConstIdentityHandle, DurableAnonymousSource, DurableConstSource,
+    BodyRirView, ConstIdentityHandle, DurableAnonymousSource, DurableConstSource,
     DurableNominalSource, ProviderIdentityContext,
 };
 use super::declaration_index::RirDestructorDeclaration;
@@ -823,12 +823,7 @@ impl<K> Default for EndpointOverlay<K> {
 pub struct ProviderEndpointFacts<'a, P, S, K, M> {
     provider: &'a P,
     identity: ProviderIdentityContext<K, M, S>,
-    rir: &'a Rir,
-    rir_index: BodyRirIndex,
-    /// The whole-program RIR interner. The RIR-index ops resolve their `&str`
-    /// keys through this interner (the shared `Rir`'s symbol space), distinct
-    /// from the pool's own interner the nominal ops key on.
-    rir_interner: &'a ThreadedRodeo,
+    rir: BodyRirView<'a>,
     overlay: RefCell<EndpointOverlay<K>>,
     /// The issued→durable anonymous seam (RUE-1091 r6b): the anonymous producer
     /// key `resolve_instance_type` carries is in the issued-token domain, so a
@@ -846,33 +841,22 @@ where
     K: Clone + Eq + Hash,
     M: Clone + Eq + Hash,
 {
-    /// Construct the driver over a provider, a durable nominal source, and the
-    /// shared whole-program `Rir` + interner. The pool and RIR index are built
-    /// here; nominals are minted lazily on first consult and the overlay token
-    /// space starts empty (a caller mints a token per nominal with
-    /// [`Self::register_named_nominal`]).
-    pub fn new(provider: &'a P, source: S, rir: &'a Rir, rir_interner: &'a ThreadedRodeo) -> Self {
-        Self::with_identity(
-            provider,
-            ProviderIdentityContext::new(source),
-            rir,
-            rir_interner,
-        )
+    /// Construct the driver over one request-local RIR view and identity
+    /// context. The view's declaration index is shared rather than rebuilt.
+    pub fn new(provider: &'a P, source: S, rir: BodyRirView<'a>) -> Self {
+        Self::with_identity(provider, ProviderIdentityContext::new(source), rir)
     }
 
     /// Construct the driver inside an existing per-body identity universe.
     pub fn with_identity(
         provider: &'a P,
         identity: ProviderIdentityContext<K, M, S>,
-        rir: &'a Rir,
-        rir_interner: &'a ThreadedRodeo,
+        rir: BodyRirView<'a>,
     ) -> Self {
         Self {
             provider,
             identity,
             rir,
-            rir_index: BodyRirIndex::new(rir),
-            rir_interner,
             overlay: RefCell::new(EndpointOverlay::default()),
             anon_by_issued: RefCell::new(HashMap::new()),
         }
@@ -891,6 +875,25 @@ where
         durable: crate::AnonymousNominalKey<K, M>,
     ) {
         self.anon_by_issued.borrow_mut().insert(issued, durable);
+    }
+
+    /// Register one anonymous method atomically under both lookup preimages in
+    /// the identity context shared with the call facade.
+    pub fn register_anonymous_method(
+        &self,
+        file: FileId,
+        owner: &str,
+        method: &str,
+        info: MethodInfo,
+    ) -> bool {
+        self.identity
+            .register_anonymous_method(file, owner, method, info)
+    }
+
+    /// Return the registered method for a compact receiver/name pair,
+    /// preserving the canonical anonymous-before-named order.
+    pub fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.identity.method((struct_id, name))
     }
 
     /// Mint (or dedup) the anonymous nominal for a durable identity key directly,
@@ -1092,12 +1095,12 @@ where
     }
 
     /// (R) The first free-function RIR declaration for `(source_name, file)`,
-    /// answered by [`BodyRirIndex`] over the shared `Rir` — the exact `InstRef`
+    /// answered by [`BodyRirIndex`] over the request-local `Rir` — the exact `InstRef`
     /// [`EpochFacts::first_free_function`] returns, keyed provider-naturally by
     /// the source name string.
     pub fn first_free_function(&self, source_name: &str, file: FileId) -> Option<InstRef> {
-        let symbol = self.rir_interner.get(source_name)?;
-        self.rir_index.first_free_function(symbol, file)
+        let symbol = self.rir.rir_interner().get(source_name)?;
+        self.rir.rir_index().first_free_function(symbol, file)
     }
 
     /// (R) The named-method RIR declaration for `(owner_file, owner_type_name,
@@ -1110,9 +1113,10 @@ where
         owner_type_name: &str,
         method: &str,
     ) -> Option<InstRef> {
-        let owner = self.rir_interner.get(owner_type_name)?;
-        let method_sym = self.rir_interner.get(method)?;
-        self.rir_index
+        let owner = self.rir.rir_interner().get(owner_type_name)?;
+        let method_sym = self.rir.rir_interner().get(method)?;
+        self.rir
+            .rir_index()
             .named_method_declaration(owner_file, owner, method_sym)
     }
 
@@ -1122,8 +1126,9 @@ where
     /// destructor record's public handle); the epoch keys the same record by the
     /// same `(file, type_name)` scan.
     pub fn destructor(&self, file: FileId, type_name: &str) -> Option<InstRef> {
-        let symbol = self.rir_interner.get(type_name)?;
-        self.rir_index
+        let symbol = self.rir.rir_interner().get(type_name)?;
+        self.rir
+            .rir_index()
             .destructor(file.index(), symbol)
             .map(|record| record.declaration)
     }
@@ -1211,14 +1216,17 @@ where
         declaring_file: FileId,
         source_name: &str,
     ) -> Option<ConstInfo> {
-        let name = self.rir_interner.get(source_name)?;
-        let declaration = self.rir_index.const_declaration(declaring_file, name)?;
+        let name = self.rir.rir_interner().get(source_name)?;
+        let declaration = self
+            .rir
+            .rir_index()
+            .const_declaration(declaring_file, name)?;
         self.identity
             .pool_mut()?
             .resolve_const(
                 key,
                 ConstIdentityHandle {
-                    span: self.rir.get(declaration).span,
+                    span: self.rir.rir().get(declaration).span,
                 },
             )
             .ok()
@@ -1233,15 +1241,18 @@ where
         target: &M,
         is_public: bool,
     ) -> Option<ConstInfo> {
-        let name = self.rir_interner.get(source_name)?;
-        let declaration = self.rir_index.const_declaration(declaring_file, name)?;
+        let name = self.rir.rir_interner().get(source_name)?;
+        let declaration = self
+            .rir
+            .rir_index()
+            .const_declaration(declaring_file, name)?;
         let module = self.identity.modules().id_for_durable(target)?;
         let ty = Type::new_module(module);
         Some(ConstInfo {
             is_pub: is_public,
             ty,
             value: super::ConstValue::Type(ty),
-            span: self.rir.get(declaration).span,
+            span: self.rir.rir().get(declaration).span,
         })
     }
 
@@ -1387,9 +1398,11 @@ where
         None
     }
 
-    fn method_info(&self, _struct_id: StructId, _name: Spur) -> Option<MethodInfo> {
-        // r4b-3: the receiver→pool identity the endpoint seam owns.
-        None
+    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        // The shared registry preserves Sema's anonymous-before-named order.
+        // Named entries are installed from the exact call fact before analysis
+        // consumes the endpoint view; both facades then observe one authority.
+        self.method_info(struct_id, name)
     }
 
     fn source_function_name(&self, name: Spur) -> Spur {
@@ -1410,7 +1423,8 @@ where
         owner_type_name: Spur,
         method_name: Spur,
     ) -> Option<InstRef> {
-        self.rir_index
+        self.rir
+            .rir_index()
             .named_method_declaration(owner_file, owner_type_name, method_name)
     }
 

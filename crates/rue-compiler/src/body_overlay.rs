@@ -101,9 +101,8 @@ pub(crate) struct BodySemanticOverlay {
     /// type-world analog of the definition/module token space: it lets the
     /// overlay own the nominal metadata a body later renders, materialized on
     /// demand through the exact body-fact provider instead of read from the
-    /// whole-epoch `type_pool`. Only the test-only `ProviderTypeFacts` path
-    /// fills it; production never does.
-    #[cfg(test)]
+    /// whole-epoch `type_pool`. The provider-backed body path fills it from
+    /// exact durable facts; it is request-local and never published.
     materialized_nominals: HashMap<StableDefinitionKey, crate::DurableDeclarationPayload>,
     counters: Arc<OverlayMaterializationCounters>,
 }
@@ -130,7 +129,6 @@ impl BodySemanticOverlay {
             module_ids: Vec::new(),
             module_slots: HashMap::new(),
             recipe_tokens: HashMap::new(),
-            #[cfg(test)]
             materialized_nominals: HashMap::new(),
             counters,
         }
@@ -146,7 +144,6 @@ impl BodySemanticOverlay {
     /// recorded by the body-fact provider op that supplied `payload`, not here:
     /// materialization is where metadata lands, the provider call is where the
     /// edge lands, and the two happen together (never at render).
-    #[cfg(test)]
     pub(crate) fn materialize_nominal(
         &mut self,
         key: &StableDefinitionKey,

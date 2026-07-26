@@ -36,12 +36,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::Hash;
 
-use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstData, InstRef, Rir};
+use lasso::Spur;
+use rue_rir::{InstData, InstRef};
 use rue_span::FileId;
 
 use super::body_identity::{
-    BodyRirIndex, DurableCallableSource, DurableNominalSource, FunctionIdentityHandle,
+    BodyRirView, DurableCallableSource, DurableNominalSource, FunctionIdentityHandle,
     MethodIdentityHandle, ProviderIdentityContext,
 };
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
@@ -381,12 +381,7 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 pub struct ProviderCallFacts<'a, P, S, K, M> {
     provider: &'a P,
     identity: ProviderIdentityContext<K, M, S>,
-    rir_index: BodyRirIndex,
-    rir: &'a Rir,
-    /// The whole-program RIR interner. Input names arrive already interned here
-    /// (the provider path resolves them to `&str` and re-interns into the pool's
-    /// own interner); the RIR index is keyed on this interner's [`Spur`]s.
-    rir_interner: &'a ThreadedRodeo,
+    rir: BodyRirView<'a>,
     value_consts: RefCell<HashMap<(u32, Spur), ConstInfo>>,
     module_bindings: RefCell<HashMap<(u32, Spur), ConstInfo>>,
 }
@@ -398,31 +393,22 @@ where
     K: Clone + Eq + Hash,
     M: Eq + Hash,
 {
-    /// Construct the driver over a provider, a durable source, and the shared
-    /// whole-program `Rir` + interner. The pool and RIR index are built here;
-    /// nominals and callables are minted lazily on first consult.
-    pub fn new(provider: &'a P, source: S, rir: &'a Rir, rir_interner: &'a ThreadedRodeo) -> Self {
-        Self::with_identity(
-            provider,
-            ProviderIdentityContext::new(source),
-            rir,
-            rir_interner,
-        )
+    /// Construct the driver over one request-local RIR bundle and identity
+    /// context. The bundle's declaration index is shared rather than rebuilt.
+    pub fn new(provider: &'a P, source: S, rir: BodyRirView<'a>) -> Self {
+        Self::with_identity(provider, ProviderIdentityContext::new(source), rir)
     }
 
     /// Construct the driver inside an existing per-body identity universe.
     pub fn with_identity(
         provider: &'a P,
         identity: ProviderIdentityContext<K, M, S>,
-        rir: &'a Rir,
-        rir_interner: &'a ThreadedRodeo,
+        rir: BodyRirView<'a>,
     ) -> Self {
         Self {
             provider,
             identity,
-            rir_index: BodyRirIndex::new(rir),
             rir,
-            rir_interner,
             value_consts: RefCell::new(HashMap::new()),
             module_bindings: RefCell::new(HashMap::new()),
         }
@@ -448,6 +434,11 @@ where
     /// parity is asserted through resolved strings.
     pub fn resolve_symbol(&self, symbol: Spur) -> String {
         self.identity.pool().resolve_symbol(symbol).to_owned()
+    }
+
+    /// Intern a body-local name in the shared provider identity universe.
+    pub fn name_symbol(&self, name: &str) -> Spur {
+        self.identity.pool().intern_name(name)
     }
 
     /// Install an already materialized value constant into the call family's
@@ -513,8 +504,8 @@ where
     /// `span`/`file_id` from the located `FnDecl` inst, the same inst production
     /// sources them from — a differential asserts, never assumes, the equality.
     pub fn function_info(&self, key: &K, source_name: &str, file: FileId) -> Option<FunctionInfo> {
-        let source_sym = self.rir_interner.get(source_name)?;
-        let declaration = self.rir_index.first_free_function(source_sym, file)?;
+        let source_sym = self.rir.rir_interner().get(source_name)?;
+        let declaration = self.rir.rir_index().first_free_function(source_sym, file)?;
         let handle = self.function_handle(declaration)?;
         self.identity.pool_mut()?.resolve_function(key, handle).ok()
     }
@@ -529,9 +520,13 @@ where
         owner_type_name: &str,
         method: &str,
     ) -> Option<MethodInfo> {
-        let declaration = self.named_method_declaration(owner_file, owner_type_name, method)?;
-        let handle = self.method_handle(declaration)?;
-        self.identity.pool_mut()?.resolve_method(key, handle).ok()
+        if let Some(info) = self
+            .identity
+            .method_for_owner(owner_file, owner_type_name, method)
+        {
+            return Some(info);
+        }
+        self.resolve_and_register_named_method(key, owner_file, owner_type_name, method)
     }
 
     /// (P) The *named* method info for `(owner, method)`. Anonymous-owner methods
@@ -545,7 +540,42 @@ where
         owner_type_name: &str,
         method: &str,
     ) -> Option<MethodInfo> {
-        self.method_info(key, owner_file, owner_type_name, method)
+        if let Some(info) =
+            self.identity
+                .named_method_for_owner(owner_file, owner_type_name, method)
+        {
+            return Some(info);
+        }
+        self.resolve_and_register_named_method(key, owner_file, owner_type_name, method)
+    }
+
+    fn resolve_and_register_named_method(
+        &self,
+        key: &K,
+        owner_file: FileId,
+        owner_type_name: &str,
+        method: &str,
+    ) -> Option<MethodInfo> {
+        let declaration = self.named_method_declaration(owner_file, owner_type_name, method)?;
+        let handle = self.method_handle(declaration)?;
+        let info = self.identity.pool_mut()?.resolve_method(key, handle).ok()?;
+        self.identity
+            .register_named_method(owner_file, owner_type_name, method, info)
+            .then_some(info)
+    }
+
+    /// Install one anonymous method atomically under its compact and
+    /// durable-owner lookup preimages. Endpoint and call facades cloned from
+    /// this context therefore observe the same anonymous-first result.
+    pub fn register_anonymous_method(
+        &self,
+        file: FileId,
+        owner: &str,
+        method: &str,
+        info: MethodInfo,
+    ) -> bool {
+        self.identity
+            .register_anonymous_method(file, owner, method, info)
     }
 
     /// (P) The named-method RIR declaration for `(owner_file, owner_type_name,
@@ -563,9 +593,10 @@ where
         owner_type_name: &str,
         method: &str,
     ) -> Option<InstRef> {
-        let owner_sym = self.rir_interner.get(owner_type_name)?;
-        let method_sym = self.rir_interner.get(method)?;
-        self.rir_index
+        let owner_sym = self.rir.rir_interner().get(owner_type_name)?;
+        let method_sym = self.rir.rir_interner().get(method)?;
+        self.rir
+            .rir_index()
             .named_method_declaration(owner_file, owner_sym, method_sym)
     }
 
@@ -604,7 +635,7 @@ where
     /// `body`, the pre-resolution return symbol, the RIR-only
     /// `is_extern`/`is_c_export`, and the `@allow` directive flags.
     fn function_handle(&self, declaration: InstRef) -> Option<FunctionIdentityHandle> {
-        let inst = self.rir.get(declaration);
+        let inst = self.rir.rir().get(declaration);
         let InstData::FnDecl {
             body,
             return_type,
@@ -616,7 +647,7 @@ where
         else {
             return None;
         };
-        let dirs = self.rir.directives(directives);
+        let dirs = self.rir.rir().directives(directives);
         Some(FunctionIdentityHandle {
             body: *body,
             declaration,
@@ -633,7 +664,7 @@ where
 
     /// Fill a [`MethodIdentityHandle`] from the located method `FnDecl` inst.
     fn method_handle(&self, declaration: InstRef) -> Option<MethodIdentityHandle> {
-        let inst = self.rir.get(declaration);
+        let inst = self.rir.rir().get(declaration);
         let InstData::FnDecl {
             body,
             self_mode,
@@ -659,8 +690,8 @@ where
         mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
         warning_name: &str,
     ) -> bool {
-        let allow_sym = self.rir_interner.get("allow");
-        let warning_sym = self.rir_interner.get(warning_name);
+        let allow_sym = self.rir.rir_interner().get("allow");
+        let warning_sym = self.rir.rir_interner().get(warning_name);
         directives.any(|directive| {
             Some(directive.name) == allow_sym
                 && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
