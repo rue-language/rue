@@ -471,6 +471,10 @@ pub(crate) struct RevisionedQueryDatabase {
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    stable_declaration_classifications: QueryFamily<
+        StableDeclarationClassificationQueryKey,
+        StableDeclarationClassificationQueryValue,
+    >,
     #[cfg(test)]
     raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
     #[cfg(test)]
@@ -867,6 +871,51 @@ impl QueryKey for DeclarationShellQueryKey {
 enum DeclarationShellQueryValue {
     Available(crate::declaration_candidate::DeclarationShellFact),
     Failure(crate::declaration_candidate::DeclarationShellFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct StableDeclarationClassificationQueryKey(crate::StableDefinitionKey);
+
+impl QueryKey for StableDeclarationClassificationQueryKey {
+    fn stable_identity(&self) -> String {
+        let owner = self.0.owner().map_or_else(
+            || "-".to_owned(),
+            |owner| format!("{:?}:{}:{}", owner.kind(), owner.name().len(), owner.name()),
+        );
+        format!(
+            "{}:{}:{:?}:{:?}:{}:{}:{}",
+            self.0.module().as_str().len(),
+            self.0.module().as_str(),
+            self.0.namespace(),
+            self.0.kind(),
+            self.0.name().len(),
+            self.0.name(),
+            owner,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StableDeclarationClassificationQueryValue {
+    Selected(crate::declaration_candidate::DeclarationCandidateKey),
+    Absent,
+    Invalid(StableDeclarationClassificationFailure),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StableDeclarationClassificationFailure {
+    MalformedStableKey(crate::StableDefinitionKey),
+    OccurrencesUnavailable(crate::declaration_candidate::DeclarationOccurrenceFailure),
+    Ambiguous(crate::declaration_candidate::DeclarationCandidateKey),
+    DuplicateMultiplicity {
+        key: crate::declaration_candidate::DeclarationCandidateKey,
+        multiplicity: u32,
+    },
+    ParserCapabilityMismatch(crate::declaration_candidate::DeclarationCandidateKey),
+    MultipleAvailable {
+        first: crate::declaration_candidate::DeclarationCandidateKey,
+        second: crate::declaration_candidate::DeclarationCandidateKey,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1976,19 +2025,25 @@ fn body_source_definition_key(
 fn declaration_candidate_for_stable_key(
     key: &StableDefinitionKey,
 ) -> Option<crate::declaration_candidate::DeclarationCandidateKey> {
+    stable_syntax_candidate_set(key)?[0].clone()
+}
+
+fn stable_syntax_candidate_set(
+    key: &StableDefinitionKey,
+) -> Option<[Option<crate::declaration_candidate::DeclarationCandidateKey>; 2]> {
     use crate::StableDefinitionKind as K;
     use crate::declaration_candidate::{
         DeclarationCandidateCategory as C, DeclarationCandidateOwner,
     };
 
-    let category = match key.kind() {
-        K::Function => C::Function,
-        K::Struct => C::Struct,
-        K::Enum => C::Enum,
-        K::ValueConst | K::ModuleBinding => C::ConstCandidate,
-        K::Method => C::Method,
-        K::AssociatedFunction => C::AssociatedFunction,
-        K::Destructor => C::Destructor,
+    let categories = match key.kind() {
+        K::Function => [Some(C::Function), Some(C::ExternFunction)],
+        K::Struct => [Some(C::Struct), None],
+        K::Enum => [Some(C::Enum), None],
+        K::ValueConst | K::ModuleBinding => [Some(C::ConstCandidate), None],
+        K::Method => [Some(C::Method), None],
+        K::AssociatedFunction => [Some(C::AssociatedFunction), None],
+        K::Destructor => [Some(C::Destructor), None],
     };
     let owner = match key.owner() {
         Some(owner) => Some(DeclarationCandidateOwner {
@@ -2004,13 +2059,17 @@ fn declaration_candidate_for_stable_key(
     if key.kind().requires_owner() && owner.is_none() {
         return None;
     }
-    Some(crate::declaration_candidate::DeclarationCandidateKey {
-        module: key.module().clone(),
-        category,
-        name: Arc::from(key.name()),
-        owner,
-        duplicate_discriminator: 0,
-    })
+    Some(categories.map(|category| {
+        category.map(
+            |category| crate::declaration_candidate::DeclarationCandidateKey {
+                module: key.module().clone(),
+                category,
+                name: Arc::from(key.name()),
+                owner: owner.clone(),
+                duplicate_discriminator: 0,
+            },
+        )
+    }))
 }
 
 fn anonymous_nominal_query_key(
@@ -6523,6 +6582,159 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the DeclarationShell family has one canonical name");
+        let occurrences_for_stable_classification = declaration_occurrence_indexes.clone();
+        let shells_for_stable_classification = declaration_shells.clone();
+        let stable_declaration_classifications = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.stable-declaration-classification",
+                declaration_memo_retention,
+                |left: &StableDeclarationClassificationQueryValue,
+                 right: &StableDeclarationClassificationQueryValue| left == right,
+                move |context, _, key: &StableDeclarationClassificationQueryKey| {
+                    use crate::declaration_candidate::{
+                        DeclarationOccurrenceCapability, DeclarationShellFailure,
+                    };
+
+                    let Some(candidates) = stable_syntax_candidate_set(&key.0) else {
+                        return Ok(QueryOutput::success(
+                            StableDeclarationClassificationQueryValue::Invalid(
+                                StableDeclarationClassificationFailure::MalformedStableKey(
+                                    key.0.clone(),
+                                ),
+                            ),
+                        )
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                    };
+                    let indexed = context.query_registered(
+                        &occurrences_for_stable_classification,
+                        ModuleQueryKey(key.0.module().clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("DeclarationOccurrenceIndex publishes typed values")
+                    };
+                    let value = match indexed {
+                        DeclarationOccurrenceIndexValue::Failure(failure) => {
+                            StableDeclarationClassificationQueryValue::Invalid(
+                                StableDeclarationClassificationFailure::OccurrencesUnavailable(
+                                    failure.clone(),
+                                ),
+                            )
+                        }
+                        DeclarationOccurrenceIndexValue::Available(index) => {
+                            let mut selected = None;
+                            let mut invalid = None;
+                            for candidate in candidates.into_iter().flatten() {
+                                match index.capabilities.get(&candidate) {
+                                    None => {}
+                                    Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
+                                        invalid.get_or_insert_with(|| {
+                                            StableDeclarationClassificationFailure::Ambiguous(
+                                                candidate,
+                                            )
+                                        });
+                                    }
+                                    Some(DeclarationOccurrenceCapability::Exact {
+                                        duplicate_multiplicity,
+                                        ..
+                                    }) if *duplicate_multiplicity != 1 => {
+                                        invalid.get_or_insert_with(|| {
+                                            StableDeclarationClassificationFailure::DuplicateMultiplicity {
+                                                key: candidate,
+                                                multiplicity: *duplicate_multiplicity,
+                                            }
+                                        });
+                                    }
+                                    Some(DeclarationOccurrenceCapability::Exact { .. }) => {
+                                        let shell = context.query_registered(
+                                            &shells_for_stable_classification,
+                                            DeclarationShellQueryKey(candidate.clone()),
+                                        )?;
+                                        let rue_query::QueryOutcome::Success(shell) =
+                                            shell.outcome()
+                                        else {
+                                            unreachable!(
+                                                "DeclarationShell publishes typed values"
+                                            )
+                                        };
+                                        match shell {
+                                            DeclarationShellQueryValue::Available(fact)
+                                                if fact.key == candidate =>
+                                            {
+                                                if let Some(first) =
+                                                    selected.replace(candidate.clone())
+                                                {
+                                                    invalid.get_or_insert(
+                                                        StableDeclarationClassificationFailure::MultipleAvailable {
+                                                            first,
+                                                            second: candidate,
+                                                        },
+                                                    );
+                                                }
+                                            }
+                                            DeclarationShellQueryValue::Available(_) => {
+                                                invalid.get_or_insert(
+                                                    StableDeclarationClassificationFailure::ParserCapabilityMismatch(
+                                                        candidate,
+                                                    ),
+                                                );
+                                            }
+                                            DeclarationShellQueryValue::Failure(
+                                                DeclarationShellFailure::OccurrencesUnavailable(
+                                                    failure,
+                                                ),
+                                            ) => {
+                                                invalid.get_or_insert(
+                                                    StableDeclarationClassificationFailure::OccurrencesUnavailable(
+                                                        failure.clone(),
+                                                    ),
+                                                );
+                                            }
+                                            DeclarationShellQueryValue::Failure(
+                                                DeclarationShellFailure::Ambiguous(_),
+                                            ) => {
+                                                invalid.get_or_insert(
+                                                    StableDeclarationClassificationFailure::Ambiguous(
+                                                        candidate,
+                                                    ),
+                                                );
+                                            }
+                                            DeclarationShellQueryValue::Failure(
+                                                DeclarationShellFailure::Absent(_)
+                                                | DeclarationShellFailure::ParserCapabilityMismatch(
+                                                    _,
+                                                ),
+                                            ) => {
+                                                invalid.get_or_insert(
+                                                    StableDeclarationClassificationFailure::ParserCapabilityMismatch(
+                                                        candidate,
+                                                    ),
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some(failure) = invalid {
+                                StableDeclarationClassificationQueryValue::Invalid(failure)
+                            } else if let Some(candidate) = selected {
+                                StableDeclarationClassificationQueryValue::Selected(candidate)
+                            } else {
+                                StableDeclarationClassificationQueryValue::Absent
+                            }
+                        }
+                    };
+                    let kind = if matches!(
+                        value,
+                        StableDeclarationClassificationQueryValue::Invalid(_)
+                    ) {
+                        QueryTerminalKind::Failure
+                    } else {
+                        QueryTerminalKind::Success
+                    };
+                    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+                },
+            )
+            .expect("the StableDeclarationClassification family has one canonical name");
         let occurrences_for_raw_const = declaration_occurrence_indexes.clone();
         let shells_for_raw_const = declaration_shells.clone();
         let parse_for_raw_const = parse_modules.clone();
@@ -8883,6 +9095,7 @@ impl RevisionedQueryDatabase {
             module_indexes,
             declaration_occurrence_indexes,
             declaration_shells,
+            stable_declaration_classifications,
             #[cfg(test)]
             raw_const_syntax,
             #[cfg(test)]
@@ -9288,12 +9501,6 @@ impl RevisionedQueryDatabase {
         &self,
         revision: Revision,
         key: crate::body_query::BodyQueryKey,
-        declaration_candidates: Arc<
-            BTreeMap<
-                crate::StableDefinitionKey,
-                crate::declaration_candidate::DeclarationCandidateKey,
-            >,
-        >,
         producer_body_terminal_required: bool,
         well_known_demands: Arc<[crate::body_query::WellKnownOptionDemand]>,
         cancellation: CancellationToken,
@@ -9653,33 +9860,40 @@ impl RevisionedQueryDatabase {
                 // negative and qualified lookup inputs.
                 for definition in semantic_dependencies {
                     // Synthetic builtins have stable semantic identities but
-                    // no source declaration candidate. Their semantics are
-                    // fixed by the compiler build and the target/preview
+                    // no available source declaration shell. Their semantics
+                    // are fixed by the compiler build and the target/preview
                     // configuration already carried by the body key.
-                    let candidate = declaration_candidates.get(&definition).or_else(|| {
-                        matches!(
-                            definition.kind(),
-                            crate::StableDefinitionKind::ValueConst
-                                | crate::StableDefinitionKind::ModuleBinding
-                        )
-                        .then(|| {
-                            declaration_candidates.iter().find_map(|(candidate, value)| {
-                                (candidate.module() == definition.module()
-                                    && candidate.name() == definition.name()
-                                    && candidate.owner() == definition.owner()
-                                    && matches!(
-                                        candidate.kind(),
-                                        crate::StableDefinitionKind::ValueConst
-                                            | crate::StableDefinitionKind::ModuleBinding
-                                    ))
-                                .then_some(value)
-                            })
-                        })
-                        .flatten()
-                    });
-                    let Some(candidate) = candidate.cloned() else {
-                        continue;
+                    let classification = context.query_registered(
+                        &self.stable_declaration_classifications,
+                        StableDeclarationClassificationQueryKey(definition),
+                    )?;
+                    let rue_query::QueryOutcome::Success(classification) =
+                        classification.outcome()
+                    else {
+                        unreachable!("StableDeclarationClassification publishes typed values")
                     };
+                    let candidate = match classification {
+                        StableDeclarationClassificationQueryValue::Selected(candidate) => {
+                            candidate.clone()
+                        }
+                        StableDeclarationClassificationQueryValue::Absent => continue,
+                        StableDeclarationClassificationQueryValue::Invalid(_) => {
+                            return Err(QueryAbort::Canceled);
+                        }
+                    };
+                    let shell = context.query_registered(
+                        &self.declaration_shells,
+                        DeclarationShellQueryKey(candidate.clone()),
+                    )?;
+                    let rue_query::QueryOutcome::Success(
+                        DeclarationShellQueryValue::Available(shell),
+                    ) = shell.outcome()
+                    else {
+                        return Err(QueryAbort::Canceled);
+                    };
+                    if shell.key != candidate {
+                        return Err(QueryAbort::Canceled);
+                    }
                     let query = crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
                         declaration: candidate.clone(),
                         configuration: key.configuration.clone(),
@@ -9924,7 +10138,6 @@ impl RevisionedQueryDatabase {
             let terminal = self.body_transaction(
                 revision,
                 key,
-                Arc::new(BTreeMap::new()),
                 false,
                 Arc::from([]),
                 CancellationToken::new(),
@@ -9957,7 +10170,6 @@ impl RevisionedQueryDatabase {
             .body_transaction(
                 revision,
                 key,
-                Arc::new(BTreeMap::new()),
                 false,
                 Arc::from([]),
                 CancellationToken::new(),
@@ -13810,6 +14022,175 @@ mod tests {
     };
     use rue_span::FileId;
     use std::collections::{BTreeSet, HashMap};
+
+    #[test]
+    fn stable_definition_kinds_have_fixed_syntax_candidate_sets() {
+        use crate::StableDefinitionKind as K;
+        use crate::declaration_candidate::DeclarationCandidateCategory as C;
+
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        for (kind, owner, expected) in [
+            (K::Function, None, &[C::Function, C::ExternFunction][..]),
+            (K::Struct, None, &[C::Struct][..]),
+            (K::Enum, None, &[C::Enum][..]),
+            (K::ValueConst, None, &[C::ConstCandidate][..]),
+            (K::ModuleBinding, None, &[C::ConstCandidate][..]),
+            (
+                K::Method,
+                Some((K::Struct, Arc::from("Owner"))),
+                &[C::Method][..],
+            ),
+            (
+                K::AssociatedFunction,
+                Some((K::Struct, Arc::from("Owner"))),
+                &[C::AssociatedFunction][..],
+            ),
+            (
+                K::Destructor,
+                Some((K::Struct, Arc::from("Owner"))),
+                &[C::Destructor][..],
+            ),
+        ] {
+            let key = StableDefinitionKey::from_stable_parts(
+                module.clone(),
+                crate::StableDefinitionNamespace::Value,
+                kind,
+                "item",
+                owner.clone(),
+            );
+            let candidates = stable_syntax_candidate_set(&key)
+                .expect("every well-formed stable definition kind has a syntax candidate set")
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            assert_eq!(
+                candidates
+                    .iter()
+                    .map(|candidate| candidate.category)
+                    .collect::<Vec<_>>(),
+                expected,
+                "{kind:?}"
+            );
+            for candidate in candidates {
+                assert_eq!(candidate.module, module);
+                assert_eq!(candidate.name.as_ref(), "item");
+                assert_eq!(candidate.duplicate_discriminator, 0);
+                assert_eq!(
+                    candidate.owner.as_ref().map(|owner| owner.name.as_ref()),
+                    owner.as_ref().map(|(_, name)| name.as_ref())
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn stable_declaration_classification_is_narrow_green_and_multiplicity_sensitive() {
+        let first = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn helper(value: i32) -> i32 { value + 1 }\nfn main() -> i32 { helper(1) }",
+            )],
+            1,
+        );
+        let unrelated = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn helper(value: i32) -> i32 { value + 1 }\nfn extra() -> i32 { 9 }\nfn main() -> i32 { helper(1) }",
+            )],
+            1,
+        );
+        let duplicate = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn helper(value: i32) -> i32 { value + 1 }\nfn helper(value: i32) -> i32 { value + 2 }\nfn main() -> i32 { helper(1) }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = StableDeclarationClassificationQueryKey(StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            "helper",
+            None,
+        ));
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let first = database.runtime.request_registered(
+            &database.stable_declaration_classifications,
+            first_revision,
+            key.clone(),
+            CancellationToken::new(),
+        );
+        let first_terminal = first.terminal().unwrap();
+        let first_stamp = first_terminal.stamp();
+        assert!(matches!(
+            first_terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                StableDeclarationClassificationQueryValue::Selected(candidate)
+            ) if candidate.category
+                == crate::declaration_candidate::DeclarationCandidateCategory::Function
+        ));
+        assert_eq!(
+            first
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.family())
+                .collect::<Vec<_>>(),
+            vec![
+                "compiler.declaration-occurrence-index",
+                "compiler.declaration-shell"
+            ]
+        );
+
+        let unrelated_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&unrelated),
+            &unrelated,
+        );
+        let unrelated = database.runtime.request_registered(
+            &database.stable_declaration_classifications,
+            unrelated_revision,
+            key.clone(),
+            CancellationToken::new(),
+        );
+        assert_eq!(
+            unrelated.terminal().unwrap().stamp(),
+            first_stamp,
+            "an unrelated declaration may rebuild the module occurrence index but must keep the \
+             narrow classification green"
+        );
+
+        let duplicate_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&duplicate),
+            &duplicate,
+        );
+        let duplicate = database.runtime.request_registered(
+            &database.stable_declaration_classifications,
+            duplicate_revision,
+            key,
+            CancellationToken::new(),
+        );
+        let duplicate_terminal = duplicate.terminal().unwrap();
+        assert_ne!(duplicate_terminal.stamp(), first_stamp);
+        assert!(matches!(
+            duplicate_terminal.outcome(),
+            rue_query::QueryOutcome::Success(StableDeclarationClassificationQueryValue::Invalid(
+                StableDeclarationClassificationFailure::DuplicateMultiplicity {
+                    multiplicity: 2,
+                    ..
+                }
+            ))
+        ));
+    }
 
     fn source_snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries

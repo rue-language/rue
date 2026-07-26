@@ -7254,7 +7254,6 @@ impl CompilerSession {
                     let transaction = self.queries.revisioned.body_transaction(
                         runtime_revision,
                         key.clone(),
-                        declaration_candidates.clone(),
                         producer_body_terminal_required,
                         well_known_demands.clone(),
                         cancellation.clone(),
@@ -17928,7 +17927,6 @@ fn main() -> i32 { selected.value() }"#,
             .body_transaction(
                 revision,
                 key.clone(),
-                Arc::new(BTreeMap::new()),
                 false,
                 Arc::from([]),
                 cancellation.clone(),
@@ -17977,7 +17975,6 @@ fn main() -> i32 { selected.value() }"#,
             .body_transaction(
                 revision,
                 key.clone(),
-                Arc::new(BTreeMap::new()),
                 false,
                 Arc::from([]),
                 rue_query::CancellationToken::new(),
@@ -18005,7 +18002,6 @@ fn main() -> i32 { selected.value() }"#,
             .body_transaction(
                 revision,
                 key.clone(),
-                Arc::new(BTreeMap::new()),
                 false,
                 Arc::from([]),
                 rue_query::CancellationToken::new(),
@@ -18719,6 +18715,259 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn body_callable_dependencies_select_exact_shell_candidate_sets() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "extern \"C\" { fn foreign() -> i32; }\n\
+             fn helper(value: i32) -> i32 { value + 1 }\n\
+             fn unrelated() -> i32 { 7 }\n\
+             fn main() -> i32 { helper(1) + checked { foreign() } }",
+        )
+        .unwrap();
+        let options = CompileOptions {
+            preview_features: PreviewFeatures::from([PreviewFeature::CFfi]),
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let main = body_query_key(&mut session, &options, "main");
+        let main_transaction = retained_body_transaction(&session, &main).2;
+        let dependencies = retained_body_dependency_nodes(&session, &main);
+
+        for name in ["helper", "foreign"] {
+            assert!(
+                dependencies.iter().any(|node| {
+                    node.contains("compiler.stable-declaration-classification")
+                        && node.contains(name)
+                }),
+                "body transaction must observe the fixed candidate-set classifier for {name}: \
+                 transaction={main_transaction:?}; dependencies={dependencies:?}"
+            );
+        }
+        for (category, name) in [("Function", "helper"), ("ExternFunction", "foreign")] {
+            assert!(
+                dependencies.iter().any(|node| {
+                    node.contains("compiler.declaration-shell")
+                        && node.contains(&format!(":{category}:"))
+                        && node.contains(name)
+                }),
+                "body transaction must observe the exactly selected shell for {name}: \
+                 transaction={main_transaction:?}; dependencies={dependencies:?}"
+            );
+        }
+        for (category, name) in [("ExternFunction", "helper"), ("Function", "foreign")] {
+            assert!(
+                dependencies.iter().all(|node| {
+                    !(node.contains("compiler.declaration-shell")
+                        && node.contains(&format!(":{category}:"))
+                        && node.contains(name))
+                }),
+                "the unselected opposite-category shell must stay behind the classifier for \
+                 {name}: dependencies={dependencies:?}"
+            );
+        }
+        assert!(
+            dependencies.iter().any(|node| {
+                node.contains("compiler.semantic-nucleus")
+                    && node.contains("signature:")
+                    && node.contains(":Function:")
+                    && node.contains("helper")
+            }),
+            "{dependencies:?}"
+        );
+        assert!(
+            dependencies.iter().any(|node| {
+                node.contains("compiler.semantic-nucleus")
+                    && node.contains("signature:")
+                    && node.contains(":ExternFunction:")
+                    && node.contains("foreign")
+            }),
+            "{dependencies:?}"
+        );
+        assert!(
+            dependencies.iter().all(|node| !node.contains("unrelated")),
+            "an unrelated declaration must not become a body dependency: {dependencies:?}"
+        );
+        assert!(
+            dependencies
+                .iter()
+                .all(|node| !node.contains("compiler.declaration-occurrence-index")),
+            "the module-wide occurrence index must stay behind the stable classifier: \
+             {dependencies:?}"
+        );
+
+        let ambiguous = SourceSnapshot::single(
+            "main.rue",
+            "extern \"C\" { fn foreign() -> i32; fn helper(value: i32) -> i32; }\n\
+             fn helper(value: i32) -> i32 { value + 1 }\n\
+             fn unrelated() -> i32 { 7 }\n\
+             fn main() -> i32 { helper(1) + checked { foreign() } }",
+        )
+        .unwrap();
+        session.update(&ambiguous).into_result().unwrap();
+        assert!(session.canonical_semantic(&options).is_err());
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("failed semantic attempt publishes its revision");
+        let recomputed = std::cell::Cell::new(false);
+        let result = session.queries.revisioned.body_transaction(
+            revision,
+            main.clone(),
+            false,
+            Arc::from([]),
+            rue_query::CancellationToken::new(),
+            |_, _| {
+                recomputed.set(true);
+                Ok(main_transaction.clone())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(
+                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                    rue_query::QueryAbort::Canceled
+                )
+            )
+        ));
+        assert!(
+            recomputed.get(),
+            "the opposite-category shell edge must invalidate the retained body"
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&ambiguous).into_result().unwrap();
+        assert!(fresh.canonical_semantic(&options).is_err());
+        let fresh_revision = fresh
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("fresh failed semantic attempt publishes its revision");
+        let fresh_computed = std::cell::Cell::new(false);
+        let fresh_result = fresh.queries.revisioned.body_transaction(
+            fresh_revision,
+            main,
+            false,
+            Arc::from([]),
+            rue_query::CancellationToken::new(),
+            |_, _| {
+                fresh_computed.set(true);
+                Ok(main_transaction.clone())
+            },
+        );
+        assert!(matches!(
+            fresh_result,
+            Err(
+                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                    rue_query::QueryAbort::Canceled
+                )
+            )
+        ));
+        assert!(
+            fresh_computed.get(),
+            "a fresh body task must enter computation before the dual-category classifier cancels"
+        );
+    }
+
+    #[test]
+    fn body_candidate_classifier_invalidates_same_category_duplicates_warm_and_fresh() {
+        let valid = SourceSnapshot::single(
+            "main.rue",
+            "fn helper(value: i32) -> i32 { value + 1 }\n\
+             fn main() -> i32 { helper(1) }",
+        )
+        .unwrap();
+        let duplicate = SourceSnapshot::single(
+            "main.rue",
+            "fn helper(value: i32) -> i32 { value + 1 }\n\
+             fn helper(value: i32) -> i32 { value + 2 }\n\
+             fn main() -> i32 { helper(1) }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let main = body_query_key(&mut session, &options, "main");
+        let prior = retained_body_transaction(&session, &main).2;
+        let dependencies = retained_body_dependency_nodes(&session, &main);
+        assert!(
+            dependencies.iter().any(|node| {
+                node.contains("compiler.stable-declaration-classification")
+                    && node.contains("helper")
+            }),
+            "{dependencies:?}"
+        );
+
+        session.update(&duplicate).into_result().unwrap();
+        assert!(session.canonical_semantic(&options).is_err());
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("failed semantic attempt publishes its revision");
+        let recomputed = std::cell::Cell::new(false);
+        let result = session.queries.revisioned.body_transaction(
+            revision,
+            main.clone(),
+            false,
+            Arc::from([]),
+            rue_query::CancellationToken::new(),
+            |_, _| {
+                recomputed.set(true);
+                Ok(prior.clone())
+            },
+        );
+        assert!(matches!(
+            result,
+            Err(
+                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                    rue_query::QueryAbort::Canceled
+                )
+            )
+        ));
+        assert!(
+            recomputed.get(),
+            "duplicate multiplicity must invalidate the retained classifier/body edge"
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&duplicate).into_result().unwrap();
+        assert!(fresh.canonical_semantic(&options).is_err());
+        let fresh_revision = fresh
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("fresh failed semantic attempt publishes its revision");
+        let fresh_computed = std::cell::Cell::new(false);
+        let fresh_result = fresh.queries.revisioned.body_transaction(
+            fresh_revision,
+            main,
+            false,
+            Arc::from([]),
+            rue_query::CancellationToken::new(),
+            |_, _| {
+                fresh_computed.set(true);
+                Ok(prior.clone())
+            },
+        );
+        assert!(matches!(
+            fresh_result,
+            Err(
+                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
+                    rue_query::QueryAbort::Canceled
+                )
+            )
+        ));
+        assert!(
+            fresh_computed.get(),
+            "a fresh body task must enter computation before duplicate multiplicity cancels"
+        );
+    }
+
+    #[test]
     fn unreachable_body_is_not_requested_by_production_reachability() {
         let source =
             SourceSnapshot::single("main.rue", "fn dead() -> i32 { 1 } fn main() -> i32 { 42 }")
@@ -18737,7 +18986,6 @@ fn main() -> i32 {
         let result = session.queries.revisioned.body_transaction(
             revision,
             dead,
-            Arc::new(BTreeMap::new()),
             false,
             Arc::from([]),
             rue_query::CancellationToken::new(),

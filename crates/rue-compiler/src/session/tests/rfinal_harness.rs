@@ -532,6 +532,19 @@ const EDGE_FAMILY_EXCEPTIONS: &[EdgeFamilyException] = &[
                  keeping this input on the transaction, not on the fact drivers",
     },
     EdgeFamilyException {
+        family: "compiler.declaration-shell",
+        side: EdgeExceptionSide::EpochOnly,
+        reason: "the production transaction roots the exact shell selected by its stable \
+                 declaration classifier; side B starts from already selected declaration facts",
+    },
+    EdgeFamilyException {
+        family: "compiler.stable-declaration-classification",
+        side: EdgeExceptionSide::EpochOnly,
+        reason: "the production transaction classifies each stable semantic dependency through \
+                 its complete fixed syntax-candidate set; side B starts from already selected \
+                 declaration facts",
+    },
+    EdgeFamilyException {
         family: "compiler.semantic-nucleus",
         side: EdgeExceptionSide::ProviderOnly,
         reason: "declaration identity/signature/const facts consulted through the boundary \
@@ -745,7 +758,6 @@ fn capture_terminal(
         .body_transaction(
             revision,
             key.clone(),
-            Arc::new(BTreeMap::new()),
             false,
             Arc::from([]),
             rue_query::CancellationToken::new(),
