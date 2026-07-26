@@ -24,7 +24,7 @@ runtime_timeout_ms = 120000
 
 [[automatic_example]]
 path = "harbor/main.rue"
-contract = "heavyweight"
+contract = "heavyweight_long"
 
 [[automatic_example]]
 path = "lattice/main.rue"

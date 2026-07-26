@@ -3,7 +3,11 @@
 id = "cli.examples_harbor"
 name = "Harbor logistics simulator written in Rue"
 description = "exercise std.json, routing, simulation, replay, reporting, deterministic selftests, and generated scaling workloads"
-contract = "heavyweight"
+# Harbor's cold compile sits right at the 30-second heavyweight ceiling on
+# cold Linux ARM64 CI runners while per-body incremental work continues (two
+# cases were killed at 30.009s and 30.010s); the long contract keeps the
+# coverage real with honest bounded headroom.
+contract = "heavyweight_long"
 
 [[case]]
 name = "harbor_validates_and_simulates_scenario"

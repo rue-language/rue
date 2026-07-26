@@ -3,10 +3,12 @@
 id = "cli.examples_meridian"
 name = "Meridian relational database and query engine written in Rue"
 description = "exercise parsing, validation, catalogs, planning, optimization, execution, transactions, recovery, replication, analysis, reporting, and generated scaling workloads"
-# Meridian's cold compile exceeds the 120-second long ceiling on cold CI
-# runners while per-body incremental work continues (a shard-2 case was
-# killed at 120.025s); the extra-long contract keeps the coverage real with
-# honest bounded headroom.
+# RUE-1083: Meridian's cold compile no longer fits a reasonable per-case
+# budget on cold CI runners while per-body incremental work continues
+# (linux-x64 killed a case at 120.025s/120s; linux-arm64 killed the automatic
+# example at 300.022s/300s), so CI skips this section and the automatic
+# example (see _CLI_TEST_ARGS in BUCK). The extra-long contract still bounds
+# filtered local runs.
 contract = "heavyweight_extra_long"
 
 [[case]]
