@@ -6,7 +6,7 @@ fn production_generate_entry_points_require_validated_cfg() {
         include_str!("x86_64/mod.rs"),
         include_str!("aarch64/mod.rs"),
     ] {
-        for entry_point in ["generate", "generate_with_asm", "generate_regalloc_info"] {
+        for entry_point in ["generate", "generate_product_with_symbols_and_atoms"] {
             let signature = backend
                 .split(&format!("pub fn {entry_point}("))
                 .nth(1)
@@ -17,6 +17,15 @@ fn production_generate_entry_points_require_validated_cfg() {
                 "{entry_point} accepts an unvalidated CFG"
             );
             assert!(!signature.contains("cfg: &Cfg,"));
+        }
+        for removed in [
+            "pub fn generate_with_asm(",
+            "pub fn generate_regalloc_info(",
+        ] {
+            assert!(
+                !backend.contains(removed),
+                "presentation-only backend entry point returned: {removed}"
+            );
         }
     }
 

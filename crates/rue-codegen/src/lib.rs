@@ -248,6 +248,37 @@ pub struct MachineCode {
     pub strings: Vec<String>,
 }
 
+/// Optional observations captured while the production backend pipeline runs.
+///
+/// These flags never select a different lowering, allocation, scheduling, or
+/// emission implementation. They only retain diagnostic projections from the
+/// exact execution which produces [`MachineCode`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BackendArtifactRequest {
+    pub lowering: bool,
+    pub mir: bool,
+    pub liveness: bool,
+    pub regalloc: bool,
+    pub asm: bool,
+}
+
+/// Diagnostic projections retained by one production backend execution.
+#[derive(Debug, Default)]
+pub struct BackendArtifacts {
+    pub lowering: Option<LoweringDebugInfo>,
+    pub mir: Option<String>,
+    pub liveness: Option<String>,
+    pub regalloc: Option<String>,
+    pub asm: Option<String>,
+}
+
+/// Canonical per-function backend product before object-file projection.
+#[derive(Debug)]
+pub struct BackendProduct {
+    pub machine_code: MachineCode,
+    pub artifacts: BackendArtifacts,
+}
+
 /// Stable local-data identity projected onto the current program string table.
 ///
 /// Multiple occurrence identities may intentionally share one dense ID when
@@ -753,33 +784,40 @@ mod tests {
         let (cfg, type_pool, interner) = aggregate_cfg(40);
         assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, 6));
         assert!(cfg_lower::fn_uses_sret_return(&cfg, &type_pool, 8));
-        assert!(
-            !x86_64::generate_regalloc_info(&cfg, &type_pool, &interner)
-                .expect("x86 register allocation should succeed")
-                .spills
-                .is_empty(),
-            "fixture must exercise x86 spills"
-        );
-        assert!(
-            !aarch64::generate_regalloc_info(
-                &cfg,
-                &type_pool,
-                &interner,
-                rue_target::Target::Aarch64Linux,
-            )
-            .expect("AArch64 register allocation should succeed")
-            .spills
-            .is_empty(),
-            "fixture must exercise AArch64 spills"
-        );
         let strings = vec!["pipeline parity sentinel".to_owned()];
+        let request = BackendArtifactRequest {
+            lowering: true,
+            mir: true,
+            liveness: true,
+            regalloc: true,
+            asm: true,
+        };
 
         let x86 = x86_64::generate(&cfg, &type_pool, &strings, &interner)
             .expect("x86 normal generation should succeed");
-        let (x86_asm_code, x86_asm) =
-            x86_64::generate_with_asm(&cfg, &type_pool, &strings, &interner)
-                .expect("x86 assembly generation should succeed");
-        assert_same_machine_code(&x86, &x86_asm_code);
+        let x86_product = x86_64::generate_product_with_symbols_and_atoms(
+            &cfg,
+            &type_pool,
+            &strings,
+            &interner,
+            MachineSymbolResolver::default(),
+            &[],
+            request,
+        )
+        .expect("x86 diagnostic product should succeed");
+        assert_same_machine_code(&x86, &x86_product.machine_code);
+        assert!(x86_product.artifacts.lowering.is_some());
+        assert!(x86_product.artifacts.mir.is_some());
+        assert!(x86_product.artifacts.liveness.is_some());
+        let x86_regalloc = x86_product
+            .artifacts
+            .regalloc
+            .expect("x86 register allocation projection");
+        assert!(
+            !x86_regalloc.contains("Spills:\n  none"),
+            "fixture must exercise x86 spills"
+        );
+        let x86_asm = x86_product.artifacts.asm.expect("x86 assembly projection");
         assert!(!x86_asm.is_empty());
         assert!(x86_asm.contains("jno "), "fixture must retain rel32 fixups");
 
@@ -789,10 +827,33 @@ mod tests {
         ] {
             let arm = aarch64::generate(&cfg, &type_pool, &strings, &interner, target)
                 .expect("AArch64 normal generation should succeed");
-            let (arm_asm_code, arm_asm) =
-                aarch64::generate_with_asm(&cfg, &type_pool, &strings, &interner, target)
-                    .expect("AArch64 assembly generation should succeed");
-            assert_same_machine_code(&arm, &arm_asm_code);
+            let arm_product = aarch64::generate_product_with_symbols_and_atoms(
+                &cfg,
+                &type_pool,
+                &strings,
+                &interner,
+                target,
+                MachineSymbolResolver::default(),
+                &[],
+                request,
+            )
+            .expect("AArch64 diagnostic product should succeed");
+            assert_same_machine_code(&arm, &arm_product.machine_code);
+            assert!(arm_product.artifacts.lowering.is_some());
+            assert!(arm_product.artifacts.mir.is_some());
+            assert!(arm_product.artifacts.liveness.is_some());
+            let arm_regalloc = arm_product
+                .artifacts
+                .regalloc
+                .expect("AArch64 register allocation projection");
+            assert!(
+                !arm_regalloc.contains("Spills:\n  none"),
+                "fixture must exercise AArch64 spills"
+            );
+            let arm_asm = arm_product
+                .artifacts
+                .asm
+                .expect("AArch64 assembly projection");
             assert!(!arm_asm.is_empty());
             assert!(
                 arm_asm.contains("b.vc "),
@@ -812,15 +873,25 @@ mod tests {
             rue_target::Target::Aarch64Linux,
         )
         .expect("AArch64 Linux normal generation should succeed");
-        let (linux_asm_code, linux_asm) = aarch64::generate_with_asm(
+        let linux_product = aarch64::generate_product_with_symbols_and_atoms(
             &cfg,
             &type_pool,
             &[],
             &interner,
             rue_target::Target::Aarch64Linux,
+            MachineSymbolResolver::default(),
+            &[],
+            BackendArtifactRequest {
+                asm: true,
+                ..Default::default()
+            },
         )
         .expect("AArch64 Linux assembly generation should succeed");
-        assert_same_machine_code(&linux, &linux_asm_code);
+        assert_same_machine_code(&linux, &linux_product.machine_code);
+        let linux_asm = linux_product
+            .artifacts
+            .asm
+            .expect("Linux assembly projection");
         assert!(linux_asm.contains("svc #0x0"));
         assert!(!linux_asm.contains("b.lo "));
         assert!(!linux_asm.contains("neg x0, x0"));
@@ -833,15 +904,25 @@ mod tests {
             rue_target::Target::Aarch64Macos,
         )
         .expect("AArch64 macOS normal generation should succeed");
-        let (macos_asm_code, macos_asm) = aarch64::generate_with_asm(
+        let macos_product = aarch64::generate_product_with_symbols_and_atoms(
             &cfg,
             &type_pool,
             &[],
             &interner,
             rue_target::Target::Aarch64Macos,
+            MachineSymbolResolver::default(),
+            &[],
+            BackendArtifactRequest {
+                asm: true,
+                ..Default::default()
+            },
         )
         .expect("AArch64 macOS assembly generation should succeed");
-        assert_same_machine_code(&macos, &macos_asm_code);
+        assert_same_machine_code(&macos, &macos_product.machine_code);
+        let macos_asm = macos_product
+            .artifacts
+            .asm
+            .expect("macOS assembly projection");
         assert!(macos_asm.contains("svc #0x80"));
         let svc = macos_asm
             .find("svc #0x80")

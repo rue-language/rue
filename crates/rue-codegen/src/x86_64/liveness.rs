@@ -69,6 +69,11 @@ pub fn analyze_debug(mir: &X86Mir) -> LivenessDebugInfo {
     crate::liveness::analyze_debug_adapter(&X86LivenessAdapter { mir })
 }
 
+/// Compute allocator liveness and its diagnostic projection together.
+pub(crate) fn analyze_with_debug(mir: &X86Mir) -> (LivenessInfo, LivenessDebugInfo) {
+    crate::liveness::analyze_with_debug_adapter(&X86LivenessAdapter { mir })
+}
+
 /// Compute loop information for X86Mir.
 pub fn analyze_loops(mir: &X86Mir) -> LoopInfo {
     crate::liveness::analyze_loops_adapter(&X86LivenessAdapter { mir })

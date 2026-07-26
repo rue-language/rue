@@ -35,13 +35,31 @@ pub(crate) fn test_cfg(source: &str) -> MultiErrorResult<CompileState> {
     let semantic = std::sync::Arc::try_unwrap(semantic)
         .expect("test session uniquely owns its semantic output after return");
     let (_, symbols) = rir.into_parts();
-    let (functions, type_pool, _, warnings) = semantic.into_parts();
+    let (functions, type_pool, strings, warnings) = semantic.into_parts();
     Ok(CompileState {
         interner: symbols.into_interner(),
         functions,
         type_pool,
+        strings,
         warnings,
     })
+}
+
+pub(crate) fn test_codegen_state(state: &CompileState, target: Target) -> MultiErrorResult<()> {
+    let options = CompileOptions {
+        target,
+        ..Default::default()
+    };
+    crate::backend::generate_backend_products(
+        &state.functions,
+        &state.type_pool,
+        &state.strings,
+        &state.interner,
+        &options,
+        &[],
+        rue_codegen::BackendArtifactRequest::default(),
+    )
+    .map(drop)
 }
 
 pub(crate) fn test_frontend_snapshot(

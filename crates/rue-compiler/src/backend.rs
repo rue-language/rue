@@ -59,6 +59,13 @@ fn foreign_call_symbol_mappings(
     symbol_mappings
 }
 
+/// Canonical per-function result of the production backend pipeline.
+pub(crate) struct FunctionBackendProduct {
+    pub(crate) machine_name: String,
+    pub(crate) machine_code: rue_codegen::MachineCode,
+    pub(crate) artifacts: rue_codegen::BackendArtifacts,
+}
+
 /// Compile analyzed functions to a binary.
 ///
 /// This backend handles both architectures. It:
@@ -150,25 +157,25 @@ pub(crate) fn generate_pre_link_objects(
         }
     }
 
-    // Generate object files based on target architecture
-    let mut object_files = match options.target.arch() {
-        Arch::X86_64 => generate_x86_64_objects(
-            functions,
-            type_pool,
-            strings,
-            interner,
-            options,
-            foreign_symbols,
-        )?,
-        Arch::Aarch64 => generate_aarch64_objects(
-            functions,
-            type_pool,
-            strings,
-            interner,
-            options,
-            foreign_symbols,
-        )?,
-    };
+    let products = generate_backend_products(
+        functions,
+        type_pool,
+        strings,
+        interner,
+        options,
+        foreign_symbols,
+        rue_codegen::BackendArtifactRequest::default(),
+    )?;
+    let mut object_files = products
+        .into_iter()
+        .map(|product| project_backend_object(product, options.target))
+        .collect::<CompileResult<Vec<_>>>()
+        .map_err(CompileErrors::from)?;
+    info!(
+        function_count = functions.len(),
+        object_bytes = object_files.iter().map(Vec::len).sum::<usize>(),
+        "codegen complete"
+    );
 
     // Emit a C-ABI entry thunk object for every `pub extern "C" fn` export
     // (ADR-0064 P4). The native body was already generated above under its
@@ -182,23 +189,25 @@ pub(crate) fn generate_pre_link_objects(
     Ok(object_files)
 }
 
-/// Generate x86-64 object files for all functions.
+/// Run the production per-function backend pipeline, optionally retaining
+/// diagnostic projections from that exact execution.
 #[allow(clippy::too_many_arguments)]
-fn generate_x86_64_objects(
+pub(crate) fn generate_backend_products(
     functions: &[FunctionWithCfg],
     type_pool: &FrozenTypeInternPool,
     strings: &[String],
     interner: &ThreadedRodeo,
     options: &CompileOptions,
     foreign_symbols: &[String],
-) -> MultiErrorResult<Vec<Vec<u8>>> {
-    let _span = info_span!("codegen", arch = "x86_64").entered();
+    request: rue_codegen::BackendArtifactRequest,
+) -> MultiErrorResult<Vec<FunctionBackendProduct>> {
+    let _span = info_span!("codegen", arch = ?options.target.arch()).entered();
     let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
     let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
     let symbols =
         rue_codegen::MachineSymbolResolver::new_with_foreign(&symbol_mappings, &foreign_set);
 
-    let results: Vec<CompileResult<Vec<u8>>> = functions
+    let results: Vec<CompileResult<FunctionBackendProduct>> = functions
         .par_iter()
         .map(|func| {
             let stable_atom_ids = func
@@ -220,122 +229,77 @@ fn generate_x86_64_objects(
                     content: &atom.content,
                 })
                 .collect::<Vec<_>>();
-            let machine_code = rue_codegen::x86_64::generate_with_symbols_and_atoms(
-                &func.cfg,
-                type_pool,
-                strings,
-                interner,
-                symbols,
-                &atom_projection,
-            )?;
-            validate_production_call_relocations(&machine_code.relocations, &symbol_mappings)?;
-
-            let mut obj_builder = ObjectBuilder::new(options.target, &func.machine_name)
-                .code(machine_code.code)
-                .strings(machine_code.strings);
-
-            for reloc in machine_code.relocations {
-                let rel_type = match reloc.kind {
-                    RelocationKind::X86Pc32 => RelocationType::Pc32,
-                    RelocationKind::X86Plt32 => RelocationType::Plt32,
-                    RelocationKind::Aarch64AdrpPage21
-                    | RelocationKind::Aarch64AddLo12
-                    | RelocationKind::Aarch64Call26 => {
-                        unreachable!("x86-64 codegen emitted AArch64 relocation {:?}", reloc.kind)
-                    }
-                };
-
-                obj_builder = obj_builder.relocation(CodeRelocation {
-                    offset: reloc.offset,
-                    symbol: reloc.symbol,
-                    rel_type,
-                    addend: reloc.addend,
-                });
+            let mut product = match options.target.arch() {
+                Arch::X86_64 => rue_codegen::x86_64::generate_product_with_symbols_and_atoms(
+                    &func.cfg,
+                    type_pool,
+                    strings,
+                    interner,
+                    symbols,
+                    &atom_projection,
+                    request,
+                )?,
+                Arch::Aarch64 => rue_codegen::aarch64::generate_product_with_symbols_and_atoms(
+                    &func.cfg,
+                    type_pool,
+                    strings,
+                    interner,
+                    options.target,
+                    symbols,
+                    &atom_projection,
+                    request,
+                )?,
+            };
+            if let Some(lowering) = &mut product.artifacts.lowering {
+                lowering.fn_name.clone_from(&func.machine_name);
             }
-
-            Ok(obj_builder.build())
+            validate_production_call_relocations(
+                &product.machine_code.relocations,
+                &symbol_mappings,
+            )?;
+            Ok(FunctionBackendProduct {
+                machine_name: func.machine_name.clone(),
+                machine_code: product.machine_code,
+                artifacts: product.artifacts,
+            })
         })
         .collect();
 
-    collect_codegen_results(results, functions.len())
+    results
+        .into_iter()
+        .collect::<CompileResult<Vec<_>>>()
+        .map_err(CompileErrors::from)
 }
 
-/// Generate AArch64 object files for all functions.
-#[allow(clippy::too_many_arguments)]
-fn generate_aarch64_objects(
-    functions: &[FunctionWithCfg],
-    type_pool: &FrozenTypeInternPool,
-    strings: &[String],
-    interner: &ThreadedRodeo,
-    options: &CompileOptions,
-    foreign_symbols: &[String],
-) -> MultiErrorResult<Vec<Vec<u8>>> {
-    let _span = info_span!("codegen", arch = "aarch64").entered();
-    let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
-    let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
-    let symbols =
-        rue_codegen::MachineSymbolResolver::new_with_foreign(&symbol_mappings, &foreign_set);
+fn project_backend_object(
+    product: FunctionBackendProduct,
+    target: Target,
+) -> CompileResult<Vec<u8>> {
+    let mut obj_builder = ObjectBuilder::new(target, &product.machine_name)
+        .code(product.machine_code.code)
+        .strings(product.machine_code.strings);
 
-    let results: Vec<CompileResult<Vec<u8>>> = functions
-        .par_iter()
-        .map(|func| {
-            let stable_atom_ids = func
-                .local_atoms
-                .iter()
-                .map(|atom| {
-                    crate::StableSymbolEncoder::encode(&crate::StableSymbolId::LocalAtom(
-                        atom.identity.clone(),
-                    ))
-                })
-                .collect::<Vec<_>>();
-            let atom_projection = func
-                .local_atoms
-                .iter()
-                .zip(&stable_atom_ids)
-                .map(|(atom, stable_id)| rue_codegen::LocalAtomProjection {
-                    stable_id,
-                    dense_id: atom.dense_id,
-                    content: &atom.content,
-                })
-                .collect::<Vec<_>>();
-            let machine_code = rue_codegen::aarch64::generate_with_symbols_and_atoms(
-                &func.cfg,
-                type_pool,
-                strings,
-                interner,
-                options.target,
-                symbols,
-                &atom_projection,
-            )?;
-            validate_production_call_relocations(&machine_code.relocations, &symbol_mappings)?;
-
-            let mut obj_builder = ObjectBuilder::new(options.target, &func.machine_name)
-                .code(machine_code.code)
-                .strings(machine_code.strings);
-
-            for reloc in machine_code.relocations {
-                let rel_type = match reloc.kind {
-                    RelocationKind::Aarch64AdrpPage21 => RelocationType::AdrpPage21,
-                    RelocationKind::Aarch64AddLo12 => RelocationType::AddLo12,
-                    RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                    RelocationKind::X86Pc32 | RelocationKind::X86Plt32 => {
-                        unreachable!("AArch64 codegen emitted x86-64 relocation {:?}", reloc.kind)
-                    }
-                };
-
-                obj_builder = obj_builder.relocation(CodeRelocation {
-                    offset: reloc.offset,
-                    symbol: reloc.symbol,
-                    rel_type,
-                    addend: reloc.addend,
-                });
+    for reloc in product.machine_code.relocations {
+        let rel_type = match (target.arch(), reloc.kind) {
+            (Arch::X86_64, RelocationKind::X86Pc32) => RelocationType::Pc32,
+            (Arch::X86_64, RelocationKind::X86Plt32) => RelocationType::Plt32,
+            (Arch::Aarch64, RelocationKind::Aarch64AdrpPage21) => RelocationType::AdrpPage21,
+            (Arch::Aarch64, RelocationKind::Aarch64AddLo12) => RelocationType::AddLo12,
+            (Arch::Aarch64, RelocationKind::Aarch64Call26) => RelocationType::Call26,
+            (arch, kind) => {
+                return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                    format!("{arch:?} codegen emitted incompatible relocation {kind:?}"),
+                )));
             }
-
-            Ok(obj_builder.build())
-        })
-        .collect();
-
-    collect_codegen_results(results, functions.len())
+        };
+        obj_builder = obj_builder.relocation(CodeRelocation {
+            offset: reloc.offset,
+            symbol: reloc.symbol,
+            rel_type,
+            addend: reloc.addend,
+        });
+    }
+    Ok(obj_builder.build())
 }
 
 /// Emit the C-ABI entry thunk objects for every `pub extern "C" fn` export
@@ -412,28 +376,6 @@ fn generate_export_thunk_objects(
     objects
 }
 
-/// Collect codegen results, propagating errors and logging stats.
-fn collect_codegen_results(
-    results: Vec<CompileResult<Vec<u8>>>,
-    function_count: usize,
-) -> MultiErrorResult<Vec<Vec<u8>>> {
-    let mut object_files = Vec::with_capacity(results.len());
-    let mut total_object_bytes = 0usize;
-
-    for result in results {
-        let obj = result.map_err(CompileErrors::from)?;
-        total_object_bytes += obj.len();
-        object_files.push(obj);
-    }
-
-    info!(
-        function_count,
-        object_bytes = total_object_bytes,
-        "codegen complete"
-    );
-    Ok(object_files)
-}
-
 /// Standalone codegen APIs retain their historical passthrough behavior, but
 /// the compiler's production path must never let an unresolved source or glue
 /// name reach the linker. Runtime exports and already-projected canonical
@@ -463,201 +405,6 @@ fn validate_production_call_relocations(
         )));
     }
     Ok(())
-}
-
-/// Machine IR that can hold either x86-64 or AArch64 MIR.
-///
-/// This enum allows the `--emit mir` and `--emit asm` commands to work
-/// with any target architecture.
-pub enum Mir {
-    /// x86-64 machine IR.
-    X86_64(X86Mir),
-    /// AArch64 machine IR.
-    Aarch64(Aarch64Mir),
-}
-
-impl std::fmt::Display for Mir {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Mir::X86_64(mir) => write!(f, "{}", mir),
-            Mir::Aarch64(mir) => write!(f, "{}", mir),
-        }
-    }
-}
-
-impl Mir {
-    /// Format MIR as assembly text.
-    ///
-    /// This prints the MIR instructions in assembly-like format.
-    /// When called with allocated MIR (post-regalloc), physical registers
-    /// are shown (rax, rbx, r12 for x86-64; x0, x1, x19 for aarch64).
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub fn format_assembly(&self) -> String {
-        let mut output = String::new();
-        match self {
-            Mir::X86_64(mir) => {
-                use rue_codegen::x86_64::X86Inst;
-                for inst in mir.instructions() {
-                    match inst {
-                        X86Inst::Label { id } => {
-                            output.push_str(&format!("{}:\n", id));
-                        }
-                        X86Inst::CallRel { symbol_id } => {
-                            output.push_str(&format!("    call {}\n", mir.get_symbol(*symbol_id)));
-                        }
-                        _ => {
-                            output.push_str(&format!("    {}\n", inst));
-                        }
-                    }
-                }
-            }
-            Mir::Aarch64(mir) => {
-                use rue_codegen::aarch64::Aarch64Inst;
-                for inst in mir.instructions() {
-                    match inst {
-                        Aarch64Inst::Label { id } => {
-                            output.push_str(&format!("{}:\n", id));
-                        }
-                        Aarch64Inst::Bl { symbol_id } => {
-                            output.push_str(&format!("    bl {}\n", mir.get_symbol(*symbol_id)));
-                        }
-                        _ => {
-                            output.push_str(&format!("    {}\n", inst));
-                        }
-                    }
-                }
-            }
-        }
-        output
-    }
-}
-
-/// Generate MIR from CFG for the given target (for debugging/inspection).
-///
-/// This returns the MIR before register allocation, with virtual registers.
-pub fn generate_mir(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<Mir> {
-    match target.arch() {
-        Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower()?;
-            Ok(Mir::X86_64(mir))
-        }
-        Arch::Aarch64 => {
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower()?;
-            Ok(Mir::Aarch64(mir))
-        }
-    }
-}
-
-/// Generate liveness debug information for a CFG.
-///
-/// This performs liveness analysis on the MIR (before register allocation)
-/// and returns detailed per-instruction liveness information.
-///
-/// Used by `--emit liveness` to visualize which values are live at each program point.
-pub fn generate_liveness_info(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<rue_codegen::LivenessDebugInfo> {
-    match target.arch() {
-        Arch::X86_64 => {
-            let mir = rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower()?;
-            Ok(rue_codegen::x86_64::liveness::analyze_debug(&mir))
-        }
-        Arch::Aarch64 => {
-            let mir =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target).lower()?;
-            Ok(rue_codegen::aarch64::liveness::analyze_debug(&mir))
-        }
-    }
-}
-
-/// Generate lowering debug information for a CFG.
-///
-/// This performs CFG-to-MIR lowering (instruction selection) and returns
-/// detailed information about how each CFG instruction maps to MIR instructions.
-///
-/// Used by `--emit lowering` to visualize the instruction selection process.
-pub fn generate_lowering_info(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<rue_codegen::LoweringDebugInfo> {
-    match target.arch() {
-        Arch::X86_64 => {
-            let (_mir, debug_info) =
-                rue_codegen::x86_64::CfgLower::new(cfg, type_pool, interner).lower_with_debug()?;
-            Ok(debug_info)
-        }
-        Arch::Aarch64 => {
-            let (_mir, debug_info) =
-                rue_codegen::aarch64::CfgLower::new(cfg, type_pool, interner, target)
-                    .lower_with_debug()?;
-            Ok(debug_info)
-        }
-    }
-}
-
-/// Generate the actual emitted assembly text for a CFG.
-///
-/// Unlike `format_assembly()` on Mir which shows MIR instructions,
-/// this returns the actual assembly that will be emitted, including
-/// prologue/epilogue code that the emitter adds.
-///
-/// This is useful for debugging and for --emit asm output that accurately
-/// reflects what's in the binary.
-pub fn generate_emitted_asm(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    strings: &[String],
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<String> {
-    match target.arch() {
-        Arch::X86_64 => {
-            let (_machine_code, asm) =
-                rue_codegen::x86_64::generate_with_asm(cfg, type_pool, strings, interner)?;
-            Ok(asm)
-        }
-        Arch::Aarch64 => {
-            let (_machine_code, asm) =
-                rue_codegen::aarch64::generate_with_asm(cfg, type_pool, strings, interner, target)?;
-            Ok(asm)
-        }
-    }
-}
-
-/// Generate register allocation debug information for a CFG.
-///
-/// This returns information about the register allocation process,
-/// including live ranges, interference edges, and allocation decisions.
-/// The output is formatted as a human-readable string.
-pub fn generate_regalloc_info(
-    cfg: &Cfg,
-    type_pool: &FrozenTypeInternPool,
-    interner: &ThreadedRodeo,
-    target: Target,
-) -> CompileResult<String> {
-    match target.arch() {
-        Arch::X86_64 => {
-            let debug_info = rue_codegen::x86_64::generate_regalloc_info(cfg, type_pool, interner)?;
-            Ok(debug_info.to_string())
-        }
-        Arch::Aarch64 => {
-            let debug_info =
-                rue_codegen::aarch64::generate_regalloc_info(cfg, type_pool, interner, target)?;
-            Ok(debug_info.to_string())
-        }
-    }
 }
 
 // ============================================================================
@@ -816,19 +563,30 @@ drop fn StrBuf(self) { }
 
     fn assert_three_result_slots_cross_cleanup(target: Target) {
         let (rir, semantic) = strbuf_concat_frontend();
-        let main = semantic
-            .functions()
-            .iter()
-            .find(|function| function.analyzed.name == "main")
-            .unwrap();
-        let assembly = generate_emitted_asm(
-            &main.cfg,
+        let options = CompileOptions {
+            target,
+            ..Default::default()
+        };
+        let interner = rir.semantic_symbols().interner();
+        let foreign_symbols = collect_foreign_symbols(rir.rir(), interner);
+        let products = generate_backend_products(
+            semantic.functions(),
             semantic.type_pool(),
             semantic.strings(),
-            rir.semantic_symbols().interner(),
-            target,
+            interner,
+            &options,
+            &foreign_symbols,
+            rue_codegen::BackendArtifactRequest {
+                asm: true,
+                ..Default::default()
+            },
         )
         .unwrap();
+        let assembly = products
+            .into_iter()
+            .find(|product| product.machine_name == "main")
+            .and_then(|product| product.artifacts.asm)
+            .expect("main assembly projection");
         let instructions = assembly
             .lines()
             .map(|line| line.split_once(":   ").map_or(line, |(_, inst)| inst))
@@ -878,9 +636,24 @@ drop fn StrBuf(self) { }
         let stores = frame_accesses(true);
         let loads = frame_accesses(false);
 
+        let concat_symbols = semantic
+            .functions()
+            .iter()
+            .filter(|function| function.analyzed.name.contains("concat_borrowed"))
+            .map(|function| function.machine_name.as_str())
+            .collect::<HashSet<_>>();
+        let cleanup_symbols = semantic
+            .functions()
+            .iter()
+            .filter(|function| {
+                function.analyzed.name.contains(".__drop")
+                    || function.analyzed.name.starts_with("__rue_drop_")
+            })
+            .map(|function| function.machine_name.as_str())
+            .collect::<HashSet<_>>();
         let concats: Vec<_> = calls
             .iter()
-            .filter(|(_, symbol)| symbol.contains("concat_borrowed"))
+            .filter(|(_, symbol)| concat_symbols.contains(symbol.as_str()))
             .collect();
         assert_eq!(concats.len(), 2, "{target}: expected both concatenations");
 
@@ -897,7 +670,7 @@ drop fn StrBuf(self) { }
                 .filter(|(index, symbol)| {
                     index > concat_index
                         && *index < println_index
-                        && (symbol.contains(".__drop") || symbol.starts_with("__rue_drop_"))
+                        && cleanup_symbols.contains(symbol.as_str())
                 })
                 .map(|(index, _)| *index)
                 .collect();
@@ -936,24 +709,15 @@ drop fn StrBuf(self) { }
                 target,
                 ..CompileOptions::default()
             };
-            let objects = match target.arch() {
-                Arch::X86_64 => generate_x86_64_objects(
-                    semantic.functions(),
-                    semantic.type_pool(),
-                    semantic.strings(),
-                    interner,
-                    &options,
-                    &[],
-                ),
-                Arch::Aarch64 => generate_aarch64_objects(
-                    semantic.functions(),
-                    semantic.type_pool(),
-                    semantic.strings(),
-                    interner,
-                    &options,
-                    &[],
-                ),
-            }
+            let objects = generate_pre_link_objects(
+                semantic.functions(),
+                semantic.type_pool(),
+                semantic.strings(),
+                interner,
+                &options,
+                &[],
+                &[],
+            )
             .unwrap();
 
             let all_object_bytes: Vec<_> = objects.into_iter().flatten().collect();
@@ -978,24 +742,15 @@ drop fn StrBuf(self) { }
                 target,
                 ..CompileOptions::default()
             };
-            let objects = match target.arch() {
-                Arch::X86_64 => generate_x86_64_objects(
-                    semantic.functions(),
-                    semantic.type_pool(),
-                    semantic.strings(),
-                    interner,
-                    &options,
-                    &[],
-                ),
-                Arch::Aarch64 => generate_aarch64_objects(
-                    semantic.functions(),
-                    semantic.type_pool(),
-                    semantic.strings(),
-                    interner,
-                    &options,
-                    &[],
-                ),
-            }
+            let objects = generate_pre_link_objects(
+                semantic.functions(),
+                semantic.type_pool(),
+                semantic.strings(),
+                interner,
+                &options,
+                &[],
+                &[],
+            )
             .unwrap();
 
             let mut undefined = HashSet::new();

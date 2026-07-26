@@ -585,20 +585,24 @@ mod tests {
         assert_eq!(parameter_type("aliased"), Type::new_struct(canonical_id));
 
         for &target in Target::all() {
-            for function in semantic.functions() {
-                generate_mir(
-                    &function.cfg,
-                    pool,
-                    rir.semantic_symbols().interner(),
-                    target,
-                )
-                .unwrap_or_else(|error| {
-                    panic!(
-                        "canonical source StrBuf function {} should lower for {target}: {error}",
-                        function.analyzed.name
-                    )
-                });
-            }
+            let options = CompileOptions {
+                target,
+                ..Default::default()
+            };
+            let interner = rir.semantic_symbols().interner();
+            let foreign_symbols = crate::backend::collect_foreign_symbols(rir.rir(), interner);
+            crate::backend::generate_backend_products(
+                semantic.functions(),
+                pool,
+                semantic.strings(),
+                interner,
+                &options,
+                &foreign_symbols,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap_or_else(|error| {
+                panic!("canonical source StrBuf functions should lower for {target}: {error}")
+            });
         }
     }
 
@@ -1933,15 +1937,8 @@ mod tests {
         }
 
         for &target in Target::all() {
-            for function in &state.functions {
-                generate_mir(&function.cfg, &state.type_pool, &state.interner, target)
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "{} should lower for {target}: {error}",
-                            function.analyzed.name
-                        )
-                    });
-            }
+            test_codegen_state(&state, target)
+                .unwrap_or_else(|error| panic!("drop glue should lower for {target}: {error}"));
         }
     }
 

@@ -69,6 +69,11 @@ pub fn analyze_debug(mir: &Aarch64Mir) -> LivenessDebugInfo {
     crate::liveness::analyze_debug_adapter(&Aarch64LivenessAdapter { mir })
 }
 
+/// Compute allocator liveness and its diagnostic projection together.
+pub(crate) fn analyze_with_debug(mir: &Aarch64Mir) -> (LivenessInfo, LivenessDebugInfo) {
+    crate::liveness::analyze_with_debug_adapter(&Aarch64LivenessAdapter { mir })
+}
+
 /// Compute loop information for Aarch64Mir.
 pub fn analyze_loops(mir: &Aarch64Mir) -> LoopInfo {
     crate::liveness::analyze_loops_adapter(&Aarch64LivenessAdapter { mir })

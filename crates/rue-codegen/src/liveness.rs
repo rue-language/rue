@@ -97,6 +97,23 @@ where
     )
 }
 
+/// Compute allocator liveness and its diagnostic projection in one dataflow
+/// execution for a target adapter.
+pub fn analyze_with_debug_adapter<A>(adapter: &A) -> (LivenessInfo<A::Reg>, LivenessDebugInfo)
+where
+    A: LivenessAdapter,
+{
+    analyze_with_debug(
+        adapter.instructions(),
+        adapter.vreg_count(),
+        |inst| adapter.label(inst),
+        |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
+        |inst| adapter.uses(inst),
+        |inst| adapter.defs(inst),
+        |inst| adapter.clobbers(inst),
+    )
+}
+
 /// Compute loop information for any backend implementing [`LivenessAdapter`].
 pub fn analyze_loops_adapter<A>(adapter: &A) -> LoopInfo
 where
@@ -177,14 +194,78 @@ pub fn analyze<I, R>(
 where
     R: Copy + Eq + std::hash::Hash,
 {
+    analyze_inner(
+        instructions,
+        vreg_count,
+        get_label,
+        get_successors,
+        get_uses,
+        get_defs,
+        get_clobbers,
+        false,
+    )
+    .0
+}
+
+/// Compute production liveness and its diagnostic projection in one dataflow
+/// execution.
+pub fn analyze_with_debug<I, R>(
+    instructions: &[I],
+    vreg_count: u32,
+    get_label: impl Fn(&I) -> Option<LabelId>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
+    get_uses: impl Fn(&I) -> Vec<VReg>,
+    get_defs: impl Fn(&I) -> Vec<VReg>,
+    get_clobbers: impl Fn(&I) -> Vec<R>,
+) -> (LivenessInfo<R>, LivenessDebugInfo)
+where
+    R: Copy + Eq + std::hash::Hash,
+{
+    let (liveness, debug) = analyze_inner(
+        instructions,
+        vreg_count,
+        get_label,
+        get_successors,
+        get_uses,
+        get_defs,
+        get_clobbers,
+        true,
+    );
+    (
+        liveness,
+        debug.expect("debug liveness requested from the canonical analysis"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn analyze_inner<I, R>(
+    instructions: &[I],
+    vreg_count: u32,
+    get_label: impl Fn(&I) -> Option<LabelId>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
+    get_uses: impl Fn(&I) -> Vec<VReg>,
+    get_defs: impl Fn(&I) -> Vec<VReg>,
+    get_clobbers: impl Fn(&I) -> Vec<R>,
+    collect_debug: bool,
+) -> (LivenessInfo<R>, Option<LivenessDebugInfo>)
+where
+    R: Copy + Eq + std::hash::Hash,
+{
     let num_insts = instructions.len();
 
     if num_insts == 0 {
-        return LivenessInfo {
-            ranges: IndexMap::new(),
-            live_at: Vec::new(),
-            clobbers_at: Vec::new(),
-        };
+        return (
+            LivenessInfo {
+                ranges: IndexMap::new(),
+                live_at: Vec::new(),
+                clobbers_at: Vec::new(),
+            },
+            collect_debug.then(|| LivenessDebugInfo {
+                instructions: Vec::new(),
+                live_ranges: IndexMap::new(),
+                vreg_count,
+            }),
+        );
     }
 
     // Step 1: Build label -> instruction index map
@@ -219,11 +300,34 @@ where
     // Step 7: Collect clobbers
     let clobbers_at: Vec<Vec<R>> = instructions.iter().map(|i| get_clobbers(i)).collect();
 
-    LivenessInfo {
-        ranges,
-        live_at,
-        clobbers_at,
-    }
+    let debug = collect_debug.then(|| {
+        let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
+            bs.ones().map(|idx| VReg::new(idx as u32)).collect()
+        };
+        let instruction_liveness = (0..num_insts)
+            .map(|idx| InstructionLiveness {
+                index: idx,
+                live_in: bitset_to_hashset(&live_in[idx]),
+                live_out: bitset_to_hashset(&live_out[idx]),
+                defs: inst_defs[idx].clone(),
+                uses: inst_uses[idx].clone(),
+            })
+            .collect();
+        LivenessDebugInfo {
+            instructions: instruction_liveness,
+            live_ranges: ranges.clone(),
+            vreg_count,
+        }
+    });
+
+    (
+        LivenessInfo {
+            ranges,
+            live_at,
+            clobbers_at,
+        },
+        debug,
+    )
 }
 
 /// Compute detailed liveness debug information.
@@ -241,62 +345,16 @@ pub fn analyze_debug<I, R>(
 where
     R: Copy + Eq + std::hash::Hash,
 {
-    let num_insts = instructions.len();
-
-    if num_insts == 0 {
-        return LivenessDebugInfo {
-            instructions: Vec::new(),
-            live_ranges: IndexMap::new(),
-            vreg_count,
-        };
-    }
-
-    // Step 1: Build label -> instruction index map
-    let label_to_idx = build_label_map(instructions, &get_label);
-
-    // Step 2: Build successor lists for each instruction
-    let successors = build_successor_lists(instructions, &label_to_idx, &get_successors);
-
-    // Step 3: Pre-compute uses and defs for each instruction
-    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(&get_uses).collect();
-    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(&get_defs).collect();
-
-    // Step 4: Backward dataflow analysis to compute live sets
-    let (live_in, live_out) =
-        compute_dataflow(num_insts, vreg_count, &successors, &inst_uses, &inst_defs);
-
-    // Step 5: Build live ranges from dataflow results
-    let has_back_edge = has_back_edge(&successors);
-    let live_ranges = build_live_ranges(
-        num_insts,
+    analyze_with_debug(
+        instructions,
         vreg_count,
-        &inst_uses,
-        &inst_defs,
-        &live_in,
-        &live_out,
-        has_back_edge,
-    );
-
-    // Step 6: Build per-instruction liveness info
-    let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
-        bs.ones().map(|idx| VReg::new(idx as u32)).collect()
-    };
-
-    let instruction_liveness: Vec<InstructionLiveness> = (0..num_insts)
-        .map(|idx| InstructionLiveness {
-            index: idx,
-            live_in: bitset_to_hashset(&live_in[idx]),
-            live_out: bitset_to_hashset(&live_out[idx]),
-            defs: inst_defs[idx].clone(),
-            uses: inst_uses[idx].clone(),
-        })
-        .collect();
-
-    LivenessDebugInfo {
-        instructions: instruction_liveness,
-        live_ranges,
-        vreg_count,
-    }
+        get_label,
+        get_successors,
+        get_uses,
+        get_defs,
+        |_| Vec::<R>::new(),
+    )
+    .1
 }
 
 // ============================================================================

@@ -196,8 +196,6 @@ pub(crate) use source_identity::{
 
 // Immutable query artifacts and stable identities returned by CompilerSession.
 #[cfg(test)]
-pub(crate) use backend::generate_mir;
-#[cfg(test)]
 pub(crate) use body_query::{BodyTransaction, transaction_equal};
 pub(crate) use bound_definitions::{
     BoundDefinitionRecord, BoundDefinitionSet, StableDefinitionKey, StableDefinitionKind,
@@ -264,7 +262,7 @@ pub(crate) use syntax::SyntaxWork;
 pub(crate) use lasso::ThreadedRodeo;
 pub(crate) use rue_air::{AnalyzedFunction, SemaOutput, Type};
 pub(crate) use rue_cfg::{CfgBuilder, ValidatedCfg as Cfg};
-pub(crate) use rue_codegen::{RelocationKind, X86Mir, aarch64::Aarch64Mir};
+pub(crate) use rue_codegen::RelocationKind;
 pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,
 };

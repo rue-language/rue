@@ -127,6 +127,8 @@ pub(crate) struct CompileState {
     pub functions: Vec<FunctionWithCfg>,
     /// Type intern pool containing all struct and enum definitions.
     pub type_pool: FrozenTypeInternPool,
+    /// String literals referenced by test CFGs.
+    pub strings: Vec<String>,
     /// Warnings collected during compilation.
     pub warnings: Vec<CompileWarning>,
 }

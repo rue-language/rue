@@ -225,7 +225,15 @@ fn main() -> i32 {
 """ }]
 args = ["--emit", "mir", "main.rue"]
 compile_only = true
-compile_stdout_contains = ["duplicate", "byte_range", "concat_borrowed", "copy_packed_bytes"]
+# Backend views expose production machine symbols. These are the stable-symbol
+# hex payloads for duplicate, byte_range, concat_borrowed, and
+# copy_packed_bytes respectively.
+compile_stdout_contains = [
+    "6475706c6963617465",
+    "627974655f72616e6765",
+    "636f6e6361745f626f72726f776564",
+    "636f70795f7061636b65645f6279746573",
+]
 
 [[case]]
 name = "raw_pointer_helpers_are_not_associated_surface"

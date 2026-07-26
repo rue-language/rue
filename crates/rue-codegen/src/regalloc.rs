@@ -944,6 +944,7 @@ pub trait RegAllocBackend {
     fn vreg_count(mir: &Self::Mir) -> u32;
     fn instructions(mir: &Self::Mir) -> &[Self::Inst];
     fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg>;
+    fn analyze_with_debug(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo);
     fn analyze_loops(mir: &Self::Mir) -> LoopInfo;
     fn coalesce_candidates(instructions: &[Self::Inst]) -> Vec<CoalesceCandidate>;
     fn allocatable_regs() -> &'static [Self::Reg];
@@ -1036,6 +1037,7 @@ pub struct RegAllocDriver<B: RegAllocBackend> {
     mir: B::Mir,
     allocation: IndexMap<VReg, Option<Allocation<B::Reg>>>,
     liveness: LivenessInfo<B::Reg>,
+    liveness_debug: Option<LivenessDebugInfo>,
     loop_info: LoopInfo,
     coalesce_result: CoalesceResult,
     num_spills: u32,
@@ -1046,8 +1048,19 @@ pub struct RegAllocDriver<B: RegAllocBackend> {
 impl<B: RegAllocBackend> RegAllocDriver<B> {
     /// Create the shared allocator state and perform target-provided analyses.
     pub fn new(mir: B::Mir, existing_locals: u32) -> Self {
+        Self::new_with_artifacts(mir, existing_locals, false)
+    }
+
+    /// Create allocator state while optionally retaining the diagnostic
+    /// projection of the same liveness dataflow used for allocation.
+    pub fn new_with_artifacts(mir: B::Mir, existing_locals: u32, capture_liveness: bool) -> Self {
         let vreg_count = B::vreg_count(&mir) as usize;
-        let mut liveness = B::analyze(&mir);
+        let (mut liveness, liveness_debug) = if capture_liveness {
+            let (liveness, debug) = B::analyze_with_debug(&mir);
+            (liveness, Some(debug))
+        } else {
+            (B::analyze(&mir), None)
+        };
         let loop_info = B::analyze_loops(&mir);
         let candidates = B::coalesce_candidates(B::instructions(&mir));
         let coalesce_result = coalesce(&candidates, &mut liveness);
@@ -1059,6 +1072,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
             mir,
             allocation,
             liveness,
+            liveness_debug,
             loop_info,
             coalesce_result,
             num_spills: 0,
@@ -1086,6 +1100,35 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         self.validate_spill_budget()?;
         self.rewrite_instructions()?;
         Ok((self.mir, self.num_spills, self.used_callee_saved))
+    }
+
+    /// Run the canonical allocation/rewrite execution while optionally
+    /// retaining the diagnostic allocation projection.
+    pub fn allocate_with_artifacts(
+        mut self,
+        capture_regalloc: bool,
+    ) -> CompileResult<(
+        B::Mir,
+        u32,
+        Vec<B::Reg>,
+        Option<LivenessDebugInfo>,
+        Option<RegAllocDebugInfo<B::Reg>>,
+    )> {
+        let regalloc_debug = if capture_regalloc {
+            Some(self.assign_registers_with_debug())
+        } else {
+            self.assign_registers();
+            None
+        };
+        self.validate_spill_budget()?;
+        self.rewrite_instructions()?;
+        Ok((
+            self.mir,
+            self.num_spills,
+            self.used_callee_saved,
+            self.liveness_debug,
+            regalloc_debug,
+        ))
     }
 
     /// Run the debug assignment path, followed by the same rewrite path.

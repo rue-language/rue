@@ -290,7 +290,7 @@ assert_semantic_stage_markers() {
             return 1
         fi
     done
-    if ! grep -Fq '.globl Payload$left_2ftypes_2erue.__drop' "$output"; then
+    if ! grep -Fq '.globl __rue_sem_v1_' "$output"; then
         printf 'FAIL: semantic-order assembly stage emitted no pinned function body\n' >&2
         return 1
     fi
@@ -299,7 +299,7 @@ assert_semantic_stage_markers() {
 assert_cross_target_assembly() {
     local target="$1" output="$2"
     if ! grep -Fq "=== Assembly ($target) ===" "$output" ||
-        ! grep -Fq '.globl Payload$left_2ftypes_2erue.__drop' "$output"; then
+        ! grep -Fq '.globl __rue_sem_v1_' "$output"; then
         printf 'FAIL: %s assembly output is empty or incomplete\n' "$target" >&2
         return 1
     fi
