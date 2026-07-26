@@ -123,6 +123,7 @@ mod tests {
     const CALL_RESOLUTION_SOURCE: &str = include_str!("call_resolution.rs");
     const AGGREGATE_RESOLUTION_SOURCE: &str = include_str!("aggregate_resolution.rs");
     const INFERENCE_CONTEXT_SOURCE: &str = include_str!("inference_ctx.rs");
+    const TYPECK_SOURCE: &str = include_str!("typeck.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
@@ -459,6 +460,75 @@ mod tests {
         assert!(FACT_MODE_SOURCE.contains("= EpochCallFacts<'a, Self>"));
         assert!(FACT_MODE_SOURCE.contains("= EpochAggregateFacts<'a, Self>"));
         assert!(FACT_MODE_SOURCE.contains("= HostInferenceFacts<'a, Self>"));
+    }
+
+    #[test]
+    fn frozen_type_syntax_uses_only_the_declaration_phase_extension() {
+        fn item<'source>(source: &'source str, header: &str) -> &'source str {
+            let start = source.find(header).expect("item header is present");
+            let rest = &source[start..];
+            let open = rest.find('{').expect("item body opens");
+            let mut depth = 0;
+            for (offset, ch) in rest[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &rest[..open + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("item body closes");
+        }
+
+        for (extension, count) in [
+            ("D::resolve_indexed_const", 4),
+            ("D::collect_free_function_signature", 2),
+        ] {
+            assert_eq!(
+                TYPECK_SOURCE.matches(extension).count(),
+                count,
+                "type syntax must use {extension} at its exact recovery sites"
+            );
+        }
+        for forbidden in [
+            "binding_impl",
+            "declaration_index",
+            "during_binding",
+            "declaration_binding_active",
+        ] {
+            assert!(
+                !TYPECK_SOURCE.contains(forbidden),
+                "type syntax must not select binding recovery with {forbidden}"
+            );
+        }
+
+        let source_phase = item(
+            SEMA_ROOT_SOURCE,
+            "impl DeclarationPhase for SourceDeclarations",
+        );
+        for method_name in ["resolve_indexed_const", "collect_free_function_signature"] {
+            let method = item(source_phase, &format!("fn {method_name}("));
+            let normalized = method
+                .chars()
+                .filter(|ch| !ch.is_whitespace())
+                .collect::<String>();
+            assert!(
+                normalized.contains("_sema:&mutSema<'_,Self>"),
+                "frozen {method_name} must receive but not use the analyzer"
+            );
+            let open = method.find('{').expect("method body opens");
+            let body = &method[open + 1..method.len() - 1];
+            assert!(
+                body.chars()
+                    .filter(|ch| !ch.is_whitespace())
+                    .eq("Ok(None)".chars()),
+                "frozen {method_name} must make misses authoritative"
+            );
+        }
     }
 
     #[test]

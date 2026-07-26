@@ -246,11 +246,8 @@ impl<D: DeclarationPhase>
             .sema
             .resolve_const_info_in_file(symbol, root_file)
             .map(|info| info.value);
-        if value.is_none() && self.sema.declaration_binding_active {
-            value = provider_failure(
-                self.sema
-                    .try_resolve_indexed_const_during_binding(symbol, root_file),
-            )?;
+        if value.is_none() {
+            value = provider_failure(D::resolve_indexed_const(self.sema, symbol, root_file))?;
         }
         let Some(ConstValue::Type(value)) = value else {
             return Ok(None);
@@ -316,12 +313,8 @@ impl<D: DeclarationPhase>
         let file = self.sema.module_registry.get_def(*module).file_id;
         let symbol = self.sema.interner.get_or_intern(name);
         self.sema.record_body_module_item_lookup(file, symbol);
-        if self.sema.declaration_binding_active && self.sema.value_const(&(file, symbol)).is_none()
-        {
-            provider_failure(
-                self.sema
-                    .try_resolve_indexed_const_during_binding(symbol, file),
-            )?;
+        if self.sema.value_const(&(file, symbol)).is_none() {
+            provider_failure(D::resolve_indexed_const(self.sema, symbol, file))?;
         }
         let Some(info) = self.sema.value_const(&(file, symbol)) else {
             return Ok(None);
@@ -464,14 +457,14 @@ impl<D: DeclarationPhase>
             TypeRootAuthority::GlobalSpeculative => Some(symbol),
         };
         if key.is_none()
-            && self.sema.declaration_binding_active
             && let TypeRootAuthority::KnownFile(root_file) = self.root_authority
         {
             let observer = self.sema.declaration_type_observer.clone();
-            provider_failure(
-                self.sema
-                    .collect_free_function_signature_during_binding(symbol, Some(root_file)),
-            )?;
+            provider_failure(D::collect_free_function_signature(
+                self.sema,
+                symbol,
+                Some(root_file),
+            ))?;
             self.sema.declaration_type_observer = observer;
             key = self.sema.resolve_function_name_local(symbol, root_file);
         }
@@ -496,14 +489,13 @@ impl<D: DeclarationPhase>
     ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
         let file = self.sema.module_registry.get_def(*module).file_id;
         let symbol = self.sema.interner.get_or_intern(name);
-        if self.sema.declaration_binding_active {
-            let observer = self.sema.declaration_type_observer.clone();
-            provider_failure(
-                self.sema
-                    .collect_free_function_signature_during_binding(symbol, Some(file)),
-            )?;
-            self.sema.declaration_type_observer = observer;
-        }
+        let observer = self.sema.declaration_type_observer.clone();
+        provider_failure(D::collect_free_function_signature(
+            self.sema,
+            symbol,
+            Some(file),
+        ))?;
+        self.sema.declaration_type_observer = observer;
         let Some(key) = self.sema.resolve_function_name_local(symbol, file) else {
             return Ok(None);
         };
@@ -639,11 +631,7 @@ impl<'s, 'a, 'c, D: DeclarationPhase> SemaTypeSyntaxProvider<'s, 'a, 'c, D> {
                     },
                 );
                 info.value
-            } else if self.sema.declaration_binding_active
-                && let Some(value) = self
-                    .sema
-                    .try_resolve_indexed_const_during_binding(symbol, root_file)?
-            {
+            } else if let Some(value) = D::resolve_indexed_const(self.sema, symbol, root_file)? {
                 self.sema.record_named_const_dependency(
                     super::NamedConstDependencyTargetEvent::ValueConst {
                         file: root_file.index(),
@@ -2492,11 +2480,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         if let Some(binding) = self.module_binding(&(file_id, name)) {
             return Ok(Some(binding.clone()));
         }
-        if !self.declaration_binding_active {
-            return Ok(None);
-        }
-
-        self.try_resolve_indexed_const_during_binding(name, file_id)?;
+        D::resolve_indexed_const(self, name, file_id)?;
         Ok(self.module_binding(&(file_id, name)).cloned())
     }
 
