@@ -112,8 +112,8 @@ mod tests {
     const AGGREGATES_SOURCE: &str = include_str!("aggregates.rs");
     const BUILTIN_OPS_SOURCE: &str = include_str!("analysis/builtin_ops.rs");
     const CALLS_SOURCE: &str = include_str!("analysis/calls.rs");
-    const FUNCTIONS_SOURCE: &str = include_str!("analysis/functions.rs");
     const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
+    const ORDINARY_ENGINE_SOURCE: &str = include_str!("ordinary_engine.rs");
     const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
@@ -400,6 +400,101 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_engine_is_the_single_canonical_body_algorithm() {
+        fn function_body<'a>(source: &'a str, marker: &str) -> &'a str {
+            let item = source
+                .split(marker)
+                .nth(1)
+                .unwrap_or_else(|| panic!("missing adapter function: {marker}"));
+            let open = item.find('{').expect("adapter body opens");
+            let mut depth = 0;
+            for (offset, ch) in item[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &item[open + 1..open + offset];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("adapter body closes")
+        }
+
+        fn normalize_whitespace(source: &str) -> String {
+            source.chars().filter(|ch| !ch.is_whitespace()).collect()
+        }
+
+        let engine = include_str!("ordinary_engine.rs");
+        assert!(engine.contains("pub(crate) trait OrdinaryBodyAnalysisHost"));
+        assert!(engine.contains("pub(crate) struct OrdinaryBodyEngine"));
+        assert!(engine.contains("pub(crate) fn analyze_single_function"));
+        assert!(engine.contains("pub(crate) fn analyze_function_internal"));
+        assert!(!engine.contains("#[allow(dead_code)]"));
+        assert!(engine.contains("semantic_type_syntax_compile_error("));
+        assert!(!engine.contains("InternalError(format!(\"{failure:?}\"))"));
+        assert!(engine.contains("self.body_type_pool().type_carries_linear(ty)"));
+        assert!(engine.contains("self.storage.known_linear_during_binding(ty)"));
+        assert!(engine.contains("self.storage.known_drop_glue_during_binding(ty)"));
+        assert!(engine.contains("self.storage.resolve_canonical_import(path, span)"));
+        assert!(!engine.contains("resolve(import_path, Span::default())"));
+        assert!(!engine.contains(".resolve(import_path, Span::default()).ok()"));
+        for forbidden in [
+            "ProviderBodyAnalysisState",
+            "ProviderInferenceFacts",
+            "impl std::ops::Deref for OrdinaryBodyEngine",
+            "analyze_function_internal_legacy",
+        ] {
+            assert!(
+                !engine.contains(forbidden),
+                "C0 canonical engine retains provider/legacy escape hatch: {forbidden}"
+            );
+        }
+        let functions = include_str!("analysis/functions.rs");
+        assert_eq!(functions.matches("fn analyze_single_function").count(), 1);
+        assert_eq!(functions.matches("fn analyze_function_internal").count(), 1);
+        let single = function_body(functions, "fn analyze_single_function<P>");
+        let internal = function_body(functions, "fn analyze_function_internal(");
+        assert_eq!(
+            normalize_whitespace(single),
+            normalize_whitespace(
+                "super::super::ordinary_engine::OrdinaryBodyEngine::new(self)
+                    .analyze_single_function(
+                        infer_ctx,
+                        fn_name,
+                        return_type,
+                        params,
+                        body,
+                        span,
+                        allow_unused_variable,
+                        allow_unreachable_code,
+                    )"
+            ),
+            "analyze_single_function must be exactly one forwarding expression"
+        );
+        assert_eq!(
+            normalize_whitespace(internal),
+            normalize_whitespace(
+                "super::super::ordinary_engine::OrdinaryBodyEngine::new(self)
+                    .analyze_function_internal(
+                        infer_ctx,
+                        return_type,
+                        params,
+                        body,
+                        type_subst,
+                        value_subst,
+                        is_destructor,
+                        allow_unused_variable,
+                        self_is_mut,
+                    )"
+            ),
+            "analyze_function_internal must be exactly one forwarding expression"
+        );
+    }
+
+    #[test]
     fn body_publication_and_shared_identity_have_exact_receivers() {
         fn impl_items(source: &str) -> Vec<&str> {
             let mut items = Vec::new();
@@ -592,13 +687,13 @@ mod tests {
             "str_fixed_capacity",
             "is_str_like",
         ];
-        let body_owner = typeck_impls
+        let engine_owner = typeck_impls
             .iter()
             .find(|item| item.contains("fn is_str_struct("))
             .expect("string classification owner is present");
         assert!(
-            body_owner.starts_with("impl BodySema<'_>"),
-            "string classification must be body-only"
+            engine_owner.starts_with("impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H>"),
+            "string classification must belong to the neutral ordinary-body engine"
         );
 
         for method in classification_methods {
@@ -609,12 +704,12 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(owners.len(), 1, "{method} has one implementation");
             assert_eq!(
-                *owners[0], *body_owner,
-                "{method} shares the cohesive body-only owner"
+                *owners[0], *engine_owner,
+                "{method} shares the cohesive ordinary-engine owner"
             );
         }
 
-        let mut actual_methods = method_names(body_owner);
+        let mut actual_methods = method_names(engine_owner);
         actual_methods.sort_unstable();
         let mut expected_methods = classification_methods.to_vec();
         expected_methods.sort_unstable();
@@ -684,11 +779,6 @@ mod tests {
                 "self.str_fixed_capacity(",
             ),
             ("aggregates.rs", AGGREGATES_SOURCE, "self.is_str_struct("),
-            (
-                "functions.rs",
-                FUNCTIONS_SOURCE,
-                "self.is_str_fixed_struct(",
-            ),
             ("ownership.rs", OWNERSHIP_SOURCE, "self.is_str_like("),
             (
                 "type_inference.rs",
@@ -802,13 +892,13 @@ mod tests {
             "checked_abi_slot_count",
             "abi_slot_count",
         ];
-        let body_owner = typeck_impls
+        let engine_owner = typeck_impls
             .iter()
             .find(|item| item.contains("fn require_layout_slots("))
             .expect("materialized-layout owner is present");
         assert!(
-            body_owner.starts_with("impl BodySema<'_>"),
-            "materialized layout policy must be body-only"
+            engine_owner.starts_with("impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H>"),
+            "materialized layout policy must belong to the neutral ordinary-body engine"
         );
 
         for method in layout_methods {
@@ -819,12 +909,12 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(owners.len(), 1, "{method} has one implementation");
             assert_eq!(
-                *owners[0], *body_owner,
-                "{method} shares the cohesive body-only owner"
+                *owners[0], *engine_owner,
+                "{method} shares the cohesive ordinary-engine owner"
             );
         }
 
-        let mut actual_methods = method_names(body_owner);
+        let mut actual_methods = method_names(engine_owner);
         actual_methods.sort_unstable();
         let mut expected_methods = layout_methods.to_vec();
         expected_methods.sort_unstable();
@@ -842,30 +932,43 @@ mod tests {
             }
         }
 
+        let array_constructor = typeck_impls
+            .iter()
+            .filter(|item| item.contains("fn get_or_create_array_type("))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            array_constructor.len(),
+            1,
+            "declaration-phase array construction has one implementation"
+        );
+        assert!(
+            array_constructor[0].starts_with("impl<'a, D: DeclarationPhase> Sema<'a, D>"),
+            "declaration-phase array construction remains generic"
+        );
         for method in [
-            "get_or_create_array_type",
             "pre_create_array_types_from_infer_type",
             "infer_type_to_concrete_type_for_key",
         ] {
-            let needle = format!("fn {method}(");
-            let owners = typeck_impls
-                .iter()
-                .filter(|item| item.contains(&needle))
-                .collect::<Vec<_>>();
-            assert_eq!(owners.len(), 1, "{method} has one implementation");
+            assert_eq!(
+                ORDINARY_ENGINE_SOURCE
+                    .matches(&format!("fn {method}("))
+                    .count(),
+                1,
+                "{method} has one ordinary-engine implementation"
+            );
             assert!(
-                owners[0].starts_with("impl<'a, D: DeclarationPhase> Sema<'a, D>"),
-                "{method} remains declaration-phase generic"
+                !TYPECK_SOURCE.contains(&format!("fn {method}(")),
+                "{method} must not retain a peer declaration-phase implementation"
             );
         }
 
-        let require = method_item(body_owner, "require_layout_slots");
+        let require = method_item(engine_owner, "require_layout_slots");
         assert!(require.contains("match self.checked_abi_slot_count(ty)"));
 
-        let reserve = method_item(body_owner, "reserve_frame_slots");
+        let reserve = method_item(engine_owner, "reserve_frame_slots");
         assert!(reserve.contains("crate::layout::checked_function_frame_slots(start, additional)"));
 
-        let checked = method_item(body_owner, "checked_abi_slot_count");
+        let checked = method_item(engine_owner, "checked_abi_slot_count");
         for edge in [
             "self.checked_abi_slot_count(element_type)?",
             "self.checked_abi_slot_count(f.ty)?",
@@ -878,10 +981,10 @@ mod tests {
             );
         }
 
-        let abi = method_item(body_owner, "abi_slot_count");
+        let abi = method_item(engine_owner, "abi_slot_count");
         assert!(
-            abi.contains("self.type_pool.provisional_abi_slot_count(ty)"),
-            "the Sema helper delegates to the distinct TypeInternPool computation"
+            abi.contains("self.body_type_pool().provisional_abi_slot_count(ty)"),
+            "the engine delegates to the host's canonical TypeInternPool computation"
         );
 
         for (name, source, anchors) in [
@@ -896,8 +999,8 @@ mod tests {
                 &["self.require_layout_slots("][..],
             ),
             (
-                "functions.rs",
-                FUNCTIONS_SOURCE,
+                "ordinary_engine.rs",
+                ORDINARY_ENGINE_SOURCE,
                 &["self.require_layout_slots(", "self.reserve_frame_slots("][..],
             ),
             (
@@ -963,10 +1066,12 @@ mod tests {
             .iter()
             .find(|item| item.starts_with("impl<D: DeclarationPhase> Sema<'_, D>"))
             .expect("shared visibility receiver exists");
-        let body = impls
+        let engine = impls
             .iter()
-            .find(|item| item.starts_with("impl BodySema<'_>"))
-            .expect("body visibility receiver exists");
+            .find(|item| {
+                item.starts_with("impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H>")
+            })
+            .expect("ordinary-engine visibility receiver exists");
 
         let mut generic_methods = method_names(generic);
         generic_methods.sort_unstable();
@@ -974,10 +1079,10 @@ mod tests {
             generic_methods,
             ["check_unqualified_visibility", "is_accessible"]
         );
-        let mut body_methods = method_names(body);
-        body_methods.sort_unstable();
+        let mut engine_methods = method_names(engine);
+        engine_methods.sort_unstable();
         assert_eq!(
-            body_methods,
+            engine_methods,
             ["module_file_for_ref", "resolve_enum_through_module"]
         );
 
@@ -988,7 +1093,10 @@ mod tests {
                 1,
                 "{method} has one implementation"
             );
-            assert!(body.contains(&needle), "{method} is body-only");
+            assert!(
+                engine.contains(&needle),
+                "{method} belongs to the ordinary engine"
+            );
             assert!(
                 !generic.contains(&needle),
                 "{method} has no generic forwarding shim"
@@ -1110,7 +1218,10 @@ mod tests {
             );
         }
 
-        assert!(CONTROL_FLOW_SOURCE.contains("impl<'a> BodySema<'a>"));
+        assert!(
+            CONTROL_FLOW_SOURCE
+                .contains("impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H>")
+        );
         assert!(!CONTROL_FLOW_SOURCE.contains("struct BodySema"));
     }
 
@@ -1145,7 +1256,8 @@ mod tests {
         assert!(SEMA_ROOT_SOURCE.contains("fn endpoint_facts("));
         assert!(SEMA_ROOT_SOURCE.contains("fn call_facts("));
         assert!(SEMA_ROOT_SOURCE.contains("fn aggregate_facts("));
-        assert!(SEMA_ROOT_SOURCE.contains("fn inference_facts"));
+        assert!(ORDINARY_ENGINE_SOURCE.contains("fn inference_facts"));
+        assert!(!SEMA_ROOT_SOURCE.contains("fn inference_facts"));
     }
 
     #[test]
@@ -1486,7 +1598,10 @@ mod tests {
         assert!(OWNERSHIP_SOURCE.contains("struct PlaceTrace"));
         assert!(OWNERSHIP_SOURCE.contains("struct ProjectionInfo"));
         assert!(OWNERSHIP_SOURCE.contains("fn moved_state<'ctx>("));
-        assert!(OWNERSHIP_SOURCE.contains("impl<'a> BodySema<'a>"));
+        assert!(
+            OWNERSHIP_SOURCE
+                .contains("impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H>")
+        );
         assert!(!OWNERSHIP_SOURCE.contains("struct BodySema"));
         assert!(!OWNERSHIP_SOURCE.contains("analyze_field_set_impl"));
         assert!(!OWNERSHIP_SOURCE.contains("analyze_index_set_impl"));
@@ -1692,14 +1807,14 @@ mod tests {
             );
         }
 
-        assert!(SEMA_ROOT_SOURCE.contains("fn validate_explicit_call_modes"));
+        assert!(ORDINARY_ENGINE_SOURCE.contains("fn validate_explicit_call_modes"));
         assert!(!CALLS_SOURCE.contains("fn validate_explicit_call_modes"));
 
         assert!(CALLS_SOURCE.contains("self.analyze_call_args_coerced("));
         assert!(CALLS_SOURCE.contains("fn check_module_member_access("));
         assert!(!ANALYSIS_ROOT_SOURCE.contains("fn check_module_member_call("));
         assert!(!ANALYSIS_ROOT_SOURCE.contains("fn emit_module_member_call("));
-        assert!(INTRINSICS_SOURCE.contains("let known = &self.known;"));
+        assert!(INTRINSICS_SOURCE.contains("let known = &self.known_symbols();"));
         assert!(!ANALYZE_OPS_SOURCE.contains("KnownSymbols"));
     }
 }

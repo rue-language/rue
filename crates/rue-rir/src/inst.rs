@@ -4057,7 +4057,7 @@ impl InternalIntrinsic {
 }
 
 /// Instruction data - the actual operation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum InstData {
     /// Integer constant
     IntConst(u64),

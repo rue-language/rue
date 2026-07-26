@@ -20,10 +20,10 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use lasso::Spur;
-use rue_error::{CompileError, CompileResult, ErrorKind};
+use rue_error::CompileResult;
 
 use crate::sema::context::ConstValue;
-use crate::types::{EnumDef, StructDef, StructField, Type};
+use crate::types::{StructField, Type};
 
 use super::info::AnonMethodSig;
 use super::{DeclarationPhase, Sema};
@@ -331,7 +331,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ) -> Result<(IssuedStableProducerId, IssuedCanonicalArguments), crate::SemanticBodyExportFailure>
     {
         use crate::SemanticBodyExportFailure as F;
-
         let function = self
             .function_info(function_name)
             .ok_or(F::MissingStableIdentity)?;
@@ -392,99 +391,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 }
 
 impl<D: DeclarationPhase> Sema<'_, D> {
-    /// Stable, allocation-order-independent digest of a producer-nominal
-    /// anonymous identity (ADR-0066, RUE-1089).
-    ///
-    /// The AIR-domain `AnonymousNominalKey` embeds issuer-scoped definition and
-    /// module tokens whose numeric `slot`/`issuer` are session-local and change
-    /// across warm/fresh and differently-scheduled compiles. This relocates
-    /// every embedded token to its request-independent endpoint content — the
-    /// `(file, name, owner, kind)` of a definition and the `file` of a module —
-    /// before hashing, so the digest is a pure function of the program. The
-    /// nominal kind, structural anchor, and scalar/string argument values are
-    /// already stable content and hash directly. Two independent cold compiles
-    /// of the same program therefore derive the same digest for one producer
-    /// key, and distinct producer keys derive distinct digests.
-    fn stable_anonymous_identity_digest(&self, identity: &IssuedAnonymousNominalKey) -> u128 {
-        // Test-only forced-collision seam (RUE-1089, Theme 4b): point specific
-        // keys at a chosen digest so two DISTINCT producer keys collide,
-        // exercising the fail-closed registry without a real 128-bit hash
-        // collision. Inert for keys no test registered here.
-        #[cfg(test)]
-        if let Some(&forced) = self.forced_anonymous_digests.get(identity) {
-            return forced;
-        }
-
-        let stable: crate::AnonymousNominalKey<String, String> =
-            self.stable_anonymous_identity_content(identity);
-
-        crate::stable_digest::stable_anonymous_identity_digest(&stable)
-    }
-
-    /// Relocate an anonymous identity to its request-independent `(String, String)`
-    /// content — the form the digest hashes and the collision diagnostic spells
-    /// (producer/anchor identities, never pool indices).
-    fn stable_anonymous_identity_content(
+    /// Return the request-independent content of one definition token.
+    pub(in crate::sema) fn stable_definition_symbol_component(
         &self,
-        identity: &IssuedAnonymousNominalKey,
-    ) -> crate::AnonymousNominalKey<String, String> {
-        identity
-            .try_map_identities::<String, String, std::convert::Infallible>(
-                &|token| Ok(self.stable_definition_symbol_component(token)),
-                &|token| Ok(self.stable_module_symbol_component(token)),
-            )
-            .expect("anonymous identity relocation to stable content is infallible")
-    }
-
-    /// Fail-closed digest-collision gate shared by the anonymous struct and enum
-    /// minting paths (RUE-1089, Theme 4b).
-    ///
-    /// The 128-bit digest spells presentation names only; it must never decide
-    /// type identity nor permit pool/symbol reuse. This records the exact
-    /// `AnonymousNominalKey` that owns each digest and rejects any SECOND,
-    /// distinct key that hashes to a digest already owned — a `register_enum`/
-    /// `register_struct` name dedup would otherwise silently collapse the two
-    /// producer-distinct types onto one `EnumId`/`StructId`. Re-presenting the
-    /// SAME key is legitimate reuse and proceeds. On collision it returns a typed
-    /// internal error naming both stable keys and the digest, and the caller
-    /// publishes neither the nominal nor its symbol.
-    fn guard_anonymous_digest_collision(
-        &mut self,
-        digest: u128,
-        identity: &IssuedAnonymousNominalKey,
-    ) -> CompileResult<()> {
-        match self.anonymous_digest_owners.get(&digest) {
-            Some(existing) if existing == identity => Ok(()),
-            Some(existing) => {
-                let existing_spelling =
-                    format!("{:?}", self.stable_anonymous_identity_content(existing));
-                let incoming_spelling =
-                    format!("{:?}", self.stable_anonymous_identity_content(identity));
-                Err(CompileError::without_span(ErrorKind::InternalError(
-                    format!(
-                        "anonymous-symbol digest collision: two distinct producer-nominal keys hash \
-                         to digest {digest:032x}; existing owner {existing_spelling}, colliding key \
-                         {incoming_spelling}. The digest is a presentation name only and must never \
-                         decide type identity (RUE-1089)."
-                    ),
-                )))
-            }
-            None => {
-                self.anonymous_digest_owners
-                    .insert(digest, identity.clone());
-                Ok(())
-            }
-        }
-    }
-
-    /// The request-independent content of one definition token. When the token
-    /// resolves to an installed endpoint (every compiler-issued universe) the
-    /// content is its `(file, name, owner, kind)`. The standalone-pool embedding
-    /// installs no endpoints, but there the token's `slot` is itself a
-    /// content-derived FNV of that same tuple (see `stable_definition_token`), so
-    /// the raw token is already stable; it is used verbatim as a distinct
-    /// fallback namespace.
-    fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String {
+        token: &crate::SemanticDefinitionToken,
+    ) -> String {
         match self.stable_definition_endpoints.get(token) {
             Some(endpoint) => crate::stable_digest::stable_definition_component(
                 self.stable_logical_module_component(endpoint.file),
@@ -496,10 +407,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
     }
 
-    /// The request-independent content of one module token (its logical module
-    /// identity), with the same installed/standalone split as
-    /// `stable_definition_symbol_component`.
-    fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String {
+    /// Return the request-independent logical module content of one module token.
+    pub(in crate::sema) fn stable_module_symbol_component(
+        &self,
+        token: &crate::SemanticModuleToken,
+    ) -> String {
         match self.stable_module_endpoints.get(token) {
             Some(endpoint) => crate::stable_digest::stable_module_component(
                 self.stable_logical_module_component(endpoint.file),
@@ -508,15 +420,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
     }
 
-    /// The stable LOGICAL identity of a file — its canonical module path — used
-    /// in place of the request-local numeric `FileId`. Two sessions that assign
-    /// different `FileId`s to the same logical program (a different input order,
-    /// added/removed unrelated files) still hash the same module string, so the
-    /// emitted anonymous symbols are `FileId`/input-order independent (ADR-0066,
-    /// RUE-1089 Theme 4). Every installed endpoint's file is a module of the
-    /// current request and therefore has a canonical logical path; its absence is
-    /// a broken request invariant and fails loud.
-    fn stable_logical_module_component(&self, file: u32) -> &str {
+    /// Resolve an installed endpoint's request-independent logical module path.
+    ///
+    /// Installed endpoints without a canonical path violate the sealed request
+    /// identity invariant and must fail closed.
+    pub(in crate::sema) fn stable_logical_module_component(&self, file: u32) -> &str {
         self.symbol_paths
             .get(&rue_span::FileId::new(file))
             .map(String::as_str)
@@ -543,88 +451,12 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         method_sigs: &[AnonMethodSig],
         captured_values: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<(Type, bool)> {
-        if let Some(struct_id) = self.anon_struct_identities.get(&identity) {
-            return Ok((Type::new_struct(*struct_id), false));
-        }
-
-        // The synthetic name distinguishes every producer and is spelled from a
-        // STABLE digest of the producer identity, not the allocation-order pool
-        // index: two independent or differently-scheduled compiles of the same
-        // program must emit identical anonymous symbols (ADR-0066, RUE-1089).
-        // The digest is a presentation name only; guard against a distinct key
-        // colliding on it BEFORE reserving/registering, so no colliding entity or
-        // symbol is ever published (Theme 4b).
-        let digest = self.stable_anonymous_identity_digest(&identity);
-        self.guard_anonymous_digest_collision(digest, &identity)?;
-
-        // Producer-nominal: a key that has not been seen mints its own entity.
-        // Create a new one using ID reservation. This avoids the fragile
-        // two-phase naming where a temp name is replaced.
-        let struct_id = self.type_pool.reserve_struct_id();
-
-        // The `__anon_struct_` prefix stays load-bearing — the pool's
-        // symbol/destructor spellings and every `starts_with` classifier key on
-        // it — so only the disambiguating suffix changes.
-        let name = format!("__anon_struct_{digest:032x}");
-        let name_spur = self.interner.get_or_intern(&name);
-
-        // A `drop fn(self)` inside the struct body is carried as a method under
-        // the reserved `__drop` name (RUE-312). Its presence means this struct
-        // has a user destructor: register `{name}.__drop` as the destructor so
-        // the CFG drop glue runs it at scope exit, and force the struct
-        // non-Copy (a type with a destructor cannot be `@copy` — the spirit of
-        // the named-struct E0457 check).
-        let drop_marker = self.interner.get_or_intern("__drop");
-        let has_destructor = method_sigs.iter().any(|sig| sig.name == drop_marker);
-
-        // Determine if the struct is Copy (all fields are Copy, and there is no
-        // destructor).
-        let is_copy =
-            !has_destructor && fields.iter().all(|f| f.ty.is_copy_in_pool(&self.type_pool));
-
-        let destructor = if has_destructor {
-            Some(format!("{}.__drop", name))
-        } else {
-            None
-        };
-
-        let struct_def = StructDef {
-            name,
-            fields: fields.to_vec(),
-            is_copy,
-            is_linear: false,
-            destructor,
-            is_builtin: false,
-            is_pub: false,                     // Anonymous structs are private
-            file_id: rue_span::FileId::new(0), // Anonymous, no source file
-        };
-
-        // Complete the registration with the final name
-        self.type_pool
-            .complete_struct_registration(struct_id, name_spur, struct_def);
-
-        // Store method signatures for future structural equality checks
-        if !method_sigs.is_empty() {
-            self.anon_struct_method_sigs
-                .insert(struct_id, method_sigs.to_vec());
-        }
-
-        // Store captured comptime values for future structural equality checks and method analysis
-        if !captured_values.is_empty() {
-            self.anon_struct_captured_values
-                .insert(struct_id, captured_values.clone());
-        }
-
-        // Register in struct lookup
-        self.generated_structs.insert(name_spur, struct_id);
-        self.anonymous_struct_ids.insert(struct_id);
-        let ty = Type::new_struct(struct_id);
-        self.anon_struct_identities
-            .insert(identity.clone(), struct_id);
-        self.canonical_anonymous_types.insert(ty, identity);
-
-        // Return with is_new=true
-        Ok((Type::new_struct(struct_id), true))
+        super::ordinary_engine::OrdinaryBodyEngine::new(self).find_or_create_anon_struct(
+            identity,
+            fields,
+            method_sigs,
+            captured_values,
+        )
     }
 
     /// Return the producer-nominal anonymous enum for `identity`, creating it
@@ -644,66 +476,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         variant_names: &[String],
         variant_payloads: &[Vec<Type>],
     ) -> CompileResult<Type> {
-        if let Some(enum_id) = self.anon_enum_identities.get(&identity) {
-            return Ok(Type::new_enum(*enum_id));
-        }
-
-        // Names are presentation/lookup handles only. Source anonymous enums
-        // receive a unique live name because producer-distinct identities must
-        // not be collapsed by the pool's name interning (`register_enum` dedups
-        // by interned name). The disambiguating component is a STABLE digest of
-        // the producer identity, not an allocation-order counter, so two
-        // independent or differently-scheduled compiles emit identical anonymous
-        // symbols and distinct producers never share a name (ADR-0066,
-        // RUE-1089). The digest is a presentation name only; guard against a
-        // distinct key colliding on it BEFORE registering, so a `register_enum`
-        // name dedup can never silently collapse two producer-distinct enums onto
-        // one `EnumId` (Theme 4b).
-        let digest = self.stable_anonymous_identity_digest(&identity);
-        self.guard_anonymous_digest_collision(digest, &identity)?;
-        let mut name = format!("__anon_enum_{digest:032x} {{ ");
-        for (i, vname) in variant_names.iter().enumerate() {
-            if i > 0 {
-                name.push_str(", ");
-            }
-            name.push_str(vname);
-            let payload = &variant_payloads[i];
-            if !payload.is_empty() {
-                name.push('(');
-                for (j, ty) in payload.iter().enumerate() {
-                    if j > 0 {
-                        name.push_str(", ");
-                    }
-                    name.push_str(&ty.safe_name_with_pool(Some(&self.type_pool)));
-                }
-                name.push(')');
-            }
-        }
-        name.push_str(" }");
-
-        let name_spur = self.interner.get_or_intern(&name);
-
-        let def = EnumDef {
-            name,
-            variants: variant_names.to_vec(),
-            variant_payloads: variant_payloads.to_vec(),
-            is_pub: false,                     // Anonymous enums are private
-            file_id: rue_span::FileId::new(0), // Anonymous, no source file
-        };
-
-        // `register_enum` dedups by interned name, so an equivalent anonymous
-        // enum interned earlier is reused.
-        let (enum_id, _is_new) = self.type_pool.register_enum(name_spur, def);
-
-        // Mirror `find_or_create_anon_struct`, which records the type in the
-        // name→id lookup so later resolution paths see it.
-        self.generated_enums.insert(name_spur, enum_id);
-        self.anonymous_enum_ids.insert(enum_id);
-        let ty = Type::new_enum(enum_id);
-        self.anon_enum_identities.insert(identity.clone(), enum_id);
-        self.canonical_anonymous_types.insert(ty, identity);
-
-        Ok(Type::new_enum(enum_id))
+        super::ordinary_engine::OrdinaryBodyEngine::new(self).find_or_create_anon_enum(
+            identity,
+            variant_names,
+            variant_payloads,
+        )
     }
 
     /// Canonical semantic type equivalence.
@@ -780,10 +557,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             (Some(left), Some(right)) => left == right,
             _ => false,
         }
-    }
-
-    pub(crate) fn types_compatible(&self, found: Type, expected: Type) -> bool {
-        found.is_never() || found.is_error() || self.types_equivalent(found, expected)
     }
 }
 

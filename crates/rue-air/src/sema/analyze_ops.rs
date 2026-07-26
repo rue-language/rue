@@ -19,17 +19,17 @@
 //! - `analyze_comparison` - Eq, Ne, Lt, Gt, Le, Ge
 //! - Logical And/Or are simple enough to remain inline
 
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, InstRef};
 
-use super::BodySema;
 use super::context::{AnalysisContext, AnalysisResult};
 use crate::inst::{Air, AirInst, AirInstData};
 use crate::types::{Type, TypeKind};
 
 // ============================================================================
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     // ========================================================================
     // Literals: IntConst, BoolConst, StringConst, UnitConst
     // ========================================================================
@@ -43,7 +43,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::IntConst(value) => {
@@ -55,7 +61,7 @@ impl<'a> BodySema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: ty.safe_name_with_pool(Some(&self.type_pool)),
+                            ty: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         inst.span,
                     ));
@@ -103,7 +109,7 @@ impl<'a> BodySema<'a> {
                     Self::get_resolved_type(ctx, inst_ref, inst.span, "string literal")?
                 };
                 // Add string to the local per-function string table.
-                let string_content = self.interner.resolve(&*symbol).to_string();
+                let string_content = self.body_interner().resolve(&*symbol).to_string();
 
                 // Capacity-fits legality (ADR-0043 Phase 5, RUE-326): a string
                 // literal materialized as a fixed `Str(N)` must fit — its UTF-8
@@ -162,7 +168,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::Neg { operand } => {
@@ -180,14 +192,16 @@ impl<'a> BodySema<'a> {
                         "unary `-` requires a signed integer operand (i8, i16, i32, i64, isize)"
                     };
                     return Err(CompileError::new(
-                        ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool))),
+                        ErrorKind::CannotNegate(
+                            ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                        ),
                         inst.span,
                     )
                     .with_note(note));
                 }
 
                 // Special case: negating a literal that equals |MIN| for signed types.
-                let operand_inst = self.rir.get(*operand);
+                let operand_inst = self.body_rir_ref().get(*operand);
                 if let InstData::IntConst(value) = &operand_inst.data {
                     // Check if this value, when negated, fits in the target signed type
                     if ty.negated_literal_fits(*value) && !ty.literal_fits(*value) {
@@ -238,7 +252,7 @@ impl<'a> BodySema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "integer type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                            found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         inst.span,
                     ));
@@ -277,7 +291,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::And { lhs, rhs } => {
@@ -327,7 +347,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         _ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::DropFnDecl { .. } => {

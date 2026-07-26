@@ -5,12 +5,12 @@
 //! bounds, move, borrow, and reinitialization semantics to the canonical
 //! `analysis::ownership` API.
 
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, MissingFieldsError, OptionExt};
 use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::Span;
 
-use super::BodySema;
 use super::aggregate_resolution::{
     AggregateFacts, ModuleTypeMember, QualifiedType, StructLiteralHead,
     resolve_aggregate_module_ref, resolve_enum_type_name, resolve_struct_type_name,
@@ -22,7 +22,7 @@ use super::context::{AnalysisContext, AnalysisResult, ConstValue};
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
 use crate::types::{Type, TypeKind};
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve a path/pattern enum type name that may be a comptime
     /// type-variable binding (`let O = Option(i32); O::Some(..)`), falling
     /// back to the named-enum table. Returns `(enum_id, via_comptime_binding)`,
@@ -85,7 +85,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let def = self.type_pool.enum_def(enum_id);
+        let def = self.body_type_pool().enum_def(enum_id);
         let payload_types = def.variant_payload(variant_index as usize).to_vec();
         let variant_name = def.variants[variant_index as usize].clone();
         let enum_name = def.name.clone();
@@ -97,14 +97,14 @@ impl<'a> BodySema<'a> {
         if !privacy_exempt {
             self.check_unqualified_visibility(
                 "enum",
-                self.interner.resolve(&type_name),
+                self.body_interner().resolve(&type_name),
                 def.file_id,
                 def.is_pub,
                 span,
             )?;
         }
 
-        let args = self.rir.call_args(args);
+        let args = self.body_rir_ref().call_args(args).to_vec();
 
         // Arity check.
         if args.len() != payload_types.len() {
@@ -137,7 +137,7 @@ impl<'a> BodySema<'a> {
                 return Err(self.type_mismatch_error(
                     expected,
                     actual,
-                    self.rir.get(arg.value).span,
+                    self.body_rir_ref().get(arg.value).span,
                 ));
             }
             payload_refs.push(arg_result.air_ref);
@@ -171,7 +171,7 @@ impl<'a> BodySema<'a> {
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
                 expected: "integer, bool, string, unit, struct, array, or enum".to_string(),
-                found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
             },
             span,
         ))
@@ -189,11 +189,11 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<Option<AnalysisResult>> {
         let Some(struct_id) = lhs.ty.as_struct().filter(|struct_id| {
-            self.type_pool.struct_lang_item(*struct_id) == Some(crate::LangItem::StrBuf)
+            self.body_type_pool().struct_lang_item(*struct_id) == Some(crate::LangItem::StrBuf)
         }) else {
             return Ok(None);
         };
-        let method = self.interner.get_or_intern("equals_borrowed");
+        let method = self.body_interner().get_or_intern("equals_borrowed");
         if self.method_info((struct_id, method)).is_none() {
             return Ok(None);
         }
@@ -203,9 +203,11 @@ impl<'a> BodySema<'a> {
         let (rhs_arg, rhs_scope) =
             self.materialize_borrow_argument(air, rhs.air_ref, rhs.ty, span, ctx)?;
         temp_scope.extend(rhs_scope);
-        let call_name =
-            self.interner
-                .get_or_intern(&self.method_symbol(struct_id, "equals_borrowed", false));
+        let call_name = self.body_interner().get_or_intern(&self.method_symbol(
+            struct_id,
+            "equals_borrowed",
+            false,
+        ));
         let equal = air.add_call(
             None,
             call_name,
@@ -248,7 +250,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::StructDecl { .. } => {
@@ -314,10 +322,10 @@ impl<'a> BodySema<'a> {
         // desugared the shorthand to explicit `x: x` field inits before this
         // point, so `_shorthand_span` (the first shorthand field's span, retained
         // as diagnostic provenance) is no longer consumed here.
-        let field_inits = self.rir.field_inits(fields);
+        let field_inits = self.body_rir_ref().field_inits(fields).to_vec();
         // Look up the struct type
         // First check if it's a comptime type variable (e.g., `let Point = make_point(); Point { ... }`)
-        let type_name_str = self.interner.resolve(&type_name);
+        let type_name_str = self.body_interner().resolve(&type_name).to_owned();
         let struct_id = if let Some(head_ref) = ctor_head {
             // Inline type-constructor struct-literal head `F(args) { ... }`
             // (RUE-596, spec 4.14:23): the head call reduces to a concrete type
@@ -328,7 +336,9 @@ impl<'a> BodySema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "a type".to_string(),
-                        found: head_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: head_result
+                            .ty
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 ));
@@ -339,7 +349,7 @@ impl<'a> BodySema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: reduced_ty.safe_name_with_pool(Some(&self.type_pool)),
+                            found: reduced_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         span,
                     ));
@@ -351,7 +361,9 @@ impl<'a> BodySema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "module".to_string(),
-                        found: module_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: module_result
+                            .ty
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 ));
@@ -364,7 +376,7 @@ impl<'a> BodySema<'a> {
             // Module-qualified visibility is E0706 (RUE-525), uniform with
             // enum members and associated-function calls through a module;
             // E0460 is the diagnostic for unqualified naming forms.
-            let def = self.type_pool.struct_def(struct_id);
+            let def = self.body_type_pool().struct_def(struct_id);
             if !self.is_accessible(span.file_id, def.file_id, def.is_pub) {
                 return Err(CompileError::new(
                     ErrorKind::PrivateMemberAccess {
@@ -392,17 +404,17 @@ impl<'a> BodySema<'a> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: "struct type".to_string(),
-                                found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                                found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                             },
                             span,
                         ));
                     }
                 },
                 StructLiteralHead::Named(struct_id) => {
-                    let def = self.type_pool.struct_def(struct_id);
+                    let def = self.body_type_pool().struct_def(struct_id);
                     self.check_unqualified_visibility(
                         "struct",
-                        type_name_str,
+                        &type_name_str,
                         def.file_id,
                         def.is_pub,
                         span,
@@ -420,7 +432,7 @@ impl<'a> BodySema<'a> {
 
         // Get struct def (returns owned copy from pool)
         self.record_resolved_declaration_type(Type::new_struct(struct_id));
-        let struct_def = self.type_pool.struct_def(struct_id);
+        let struct_def = self.body_type_pool().struct_def(struct_id);
         let struct_type = Type::new_struct(struct_id);
 
         // Build a map from field name to struct field index
@@ -433,10 +445,10 @@ impl<'a> BodySema<'a> {
 
         // Check for unknown or duplicate fields
         let mut seen_fields = std::collections::HashSet::new();
-        for (init_field_name, _) in field_inits.values() {
-            let init_name = self.interner.resolve(&init_field_name);
+        for &(init_field_name, _) in &field_inits {
+            let init_name = self.body_interner().resolve(&init_field_name).to_owned();
 
-            if !field_index_map.contains_key(init_name) {
+            if !field_index_map.contains_key(init_name.as_str()) {
                 return Err(CompileError::new(
                     ErrorKind::UnknownField {
                         struct_name: struct_def.name.clone(),
@@ -446,7 +458,7 @@ impl<'a> BodySema<'a> {
                 ));
             }
 
-            if !seen_fields.insert(init_name) {
+            if !seen_fields.insert(init_name.clone()) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicateField {
                         struct_name: struct_def.name.clone(),
@@ -478,15 +490,15 @@ impl<'a> BodySema<'a> {
         let mut analyzed_fields: Vec<Option<AirRef>> = vec![None; struct_def.fields.len()];
         let mut source_order: Vec<usize> = Vec::with_capacity(field_inits.len());
 
-        for (init_field_name, field_value) in field_inits.values() {
-            let init_name = self.interner.resolve(&init_field_name);
-            let field_idx = field_index_map[init_name];
+        for &(init_field_name, field_value) in &field_inits {
+            let init_name = self.body_interner().resolve(&init_field_name).to_owned();
+            let field_idx = field_index_map[init_name.as_str()];
             let expected_field_type = struct_def.fields[field_idx].ty;
 
             // Check if this is an integer literal that needs type coercion
             // This handles the case where HM inference couldn't resolve the type
             // (e.g., when the struct comes from a comptime type variable)
-            let field_inst = self.rir.get(field_value);
+            let field_inst = self.body_rir_ref().get(field_value);
             let field_result = if let InstData::IntConst(value) = &field_inst.data {
                 // Integer literal - use the expected field type directly, but
                 // range-check it first because this shortcut bypasses
@@ -496,7 +508,8 @@ impl<'a> BodySema<'a> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: expected_field_type.safe_name_with_pool(Some(&self.type_pool)),
+                            ty: expected_field_type
+                                .safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         field_inst.span,
                     ));
@@ -541,8 +554,11 @@ impl<'a> BodySema<'a> {
             if !self.types_compatible(field_result.ty, expected_field_type) {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
-                        expected: expected_field_type.safe_name_with_pool(Some(&self.type_pool)),
-                        found: field_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        expected: expected_field_type
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: field_result
+                            .ty
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 )
@@ -550,7 +566,7 @@ impl<'a> BodySema<'a> {
                     format!(
                         "field '{}' expects type {}",
                         init_name,
-                        expected_field_type.safe_name_with_pool(Some(&self.type_pool))
+                        expected_field_type.safe_name_with_pool(Some(&self.body_type_pool()))
                     ),
                     span,
                 ));
@@ -599,7 +615,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let member_name_str = self.interner.resolve(&member_name).to_string();
+        let member_name_str = self.body_interner().resolve(&member_name).to_string();
 
         // Get the module definition and resolve its file to a canonical
         // FileId, so equivalent path spellings (`helper.rue` vs
@@ -628,7 +644,7 @@ impl<'a> BodySema<'a> {
         // types (RUE-454).
         if let ModuleTypeMember::Struct(struct_id) = &member {
             let struct_id = *struct_id;
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let struct_def = self.body_type_pool().struct_def(struct_id);
 
             // Check visibility: pub structs are visible to all, private only to same directory
             if !struct_def.is_pub {
@@ -666,7 +682,7 @@ impl<'a> BodySema<'a> {
         // Next, try to find an enum with this name defined by the module's file.
         if let ModuleTypeMember::Enum(enum_id) = &member {
             let enum_id = *enum_id;
-            let enum_def = self.type_pool.enum_def(enum_id);
+            let enum_def = self.body_type_pool().enum_def(enum_id);
 
             // Check visibility: pub enums are visible to all, private only to same directory
             if !enum_def.is_pub {
@@ -798,7 +814,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::ArrayInit { elements } => {
@@ -849,7 +871,7 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "a runtime value".to_string(),
-                    found: elem_ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: elem_ty.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 span,
             ));
@@ -882,7 +904,13 @@ impl<'a> BodySema<'a> {
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
         let facts = self.aggregate_facts();
-        resolve_aggregate_module_ref(&facts, self.rir, inst_ref, span.file_id, &ctx.locals)
+        resolve_aggregate_module_ref(
+            &facts,
+            self.body_rir_ref(),
+            inst_ref,
+            span.file_id,
+            &ctx.locals,
+        )
     }
 
     /// Try to analyze a module-qualified type-member call:
@@ -918,17 +946,17 @@ impl<'a> BodySema<'a> {
         // construction. Resolve the enum in the receiver module's defining
         // file and apply module-qualified visibility (E0706).
         if let QualifiedType::Enum(enum_id) = selected {
-            let enum_def = self.type_pool.enum_def(enum_id);
+            let enum_def = self.body_type_pool().enum_def(enum_id);
             if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
                 return Err(CompileError::new(
                     ErrorKind::PrivateMemberAccess {
                         item_kind: "enum".to_string(),
-                        name: self.interner.resolve(&type_name).to_string(),
+                        name: self.body_interner().resolve(&type_name).to_string(),
                     },
                     span,
                 ));
             }
-            let variant_name = self.interner.resolve(&method);
+            let variant_name = self.body_interner().resolve(&method);
             let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                 ErrorKind::UnknownVariant {
                     enum_name: enum_def.name.clone(),
@@ -958,12 +986,12 @@ impl<'a> BodySema<'a> {
         // re-resolve in the caller's file (module-local rules) and miss.
         // Module-qualified visibility is E0706, mirroring the enum branch.
         if let QualifiedType::Struct(struct_id) = selected {
-            let struct_def = self.type_pool.struct_def(struct_id);
+            let struct_def = self.body_type_pool().struct_def(struct_id);
             if !self.is_accessible(span.file_id, struct_def.file_id, struct_def.is_pub) {
                 return Err(CompileError::new(
                     ErrorKind::PrivateMemberAccess {
                         item_kind: "struct".to_string(),
-                        name: self.interner.resolve(&type_name).to_string(),
+                        name: self.body_interner().resolve(&type_name).to_string(),
                     },
                     span,
                 ));
@@ -1014,8 +1042,8 @@ impl<'a> BodySema<'a> {
             return Ok(None);
         };
 
-        let enum_def = self.type_pool.enum_def(enum_id);
-        let type_name_str = self.interner.resolve(&type_name).to_string();
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        let type_name_str = self.body_interner().resolve(&type_name).to_string();
 
         // Module-qualified visibility (E0706): a private enum is reachable only
         // from its defining directory.
@@ -1029,7 +1057,7 @@ impl<'a> BodySema<'a> {
             ));
         }
 
-        let variant_name = self.interner.resolve(&variant);
+        let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
                 enum_name: enum_def.name.clone(),
@@ -1074,15 +1102,15 @@ impl<'a> BodySema<'a> {
         if !via_comptime {
             self.check_unqualified_visibility(
                 "enum",
-                self.interner.resolve(&type_name),
-                self.type_pool.enum_def(enum_id).file_id,
-                self.type_pool.enum_def(enum_id).is_pub,
+                self.body_interner().resolve(&type_name),
+                self.body_type_pool().enum_def(enum_id).file_id,
+                self.body_type_pool().enum_def(enum_id).is_pub,
                 span,
             )?;
         }
 
-        let enum_def = self.type_pool.enum_def(enum_id);
-        let variant_name = self.interner.resolve(&variant);
+        let enum_def = self.body_type_pool().enum_def(enum_id);
+        let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
                 enum_name: enum_def.name.clone(),
@@ -1113,7 +1141,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let elem_refs = self.rir.array_elements(elements);
+        let elem_refs = self.body_rir_ref().array_elements(elements).to_vec();
 
         // An array literal of `type` values (`[i32, i32]`) has no runtime
         // representation: type values only exist at compile time (spec
@@ -1155,14 +1183,14 @@ impl<'a> BodySema<'a> {
 
         let (_array_type_id, _elem_type, expected_len) = match array_type.as_array() {
             Some(type_id) => {
-                let (element_type, length) = self.type_pool.array_def(type_id);
+                let (element_type, length) = self.body_type_pool().array_def(type_id);
                 (type_id, element_type, length)
             }
             None => {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array literal inferred as non-array type: {}",
-                        array_type.safe_name_with_pool(Some(&self.type_pool))
+                        array_type.safe_name_with_pool(Some(&self.body_type_pool()))
                     )),
                     span,
                 ));
@@ -1233,12 +1261,12 @@ impl<'a> BodySema<'a> {
         }
 
         let (elem_type, length) = match array_type.as_array() {
-            Some(type_id) => self.type_pool.array_def(type_id),
+            Some(type_id) => self.body_type_pool().array_def(type_id),
             None => {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array-repeat literal inferred as non-array type: {}",
-                        array_type.safe_name_with_pool(Some(&self.type_pool))
+                        array_type.safe_name_with_pool(Some(&self.body_type_pool()))
                     )),
                     span,
                 ));
@@ -1257,7 +1285,7 @@ impl<'a> BodySema<'a> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::ArrayRepeatNonCopy {
-                    element_type: elem_type.safe_name_with_pool(Some(&self.type_pool)),
+                    element_type: elem_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 span,
             ));
@@ -1297,7 +1325,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             InstData::EnumDecl { .. } => {
@@ -1327,7 +1361,7 @@ impl<'a> BodySema<'a> {
                         .resolve_enum_type_name(*type_name, ctx)
                         .ok_or_compile_error(
                             ErrorKind::UnknownEnumType(
-                                self.interner.resolve(&*type_name).to_string(),
+                                self.body_interner().resolve(&*type_name).to_string(),
                             ),
                             inst.span,
                         )?;
@@ -1339,10 +1373,10 @@ impl<'a> BodySema<'a> {
                     // (E0706, `resolve_enum_through_module`). A comptime-bound
                     // enum is exempt (the type arrived through a binding).
                     if !via_comptime {
-                        let def = self.type_pool.enum_def(enum_id);
+                        let def = self.body_type_pool().enum_def(enum_id);
                         self.check_unqualified_visibility(
                             "enum",
-                            self.interner.resolve(&*type_name),
+                            self.body_interner().resolve(&*type_name),
                             def.file_id,
                             def.is_pub,
                             inst.span,
@@ -1350,10 +1384,10 @@ impl<'a> BodySema<'a> {
                     }
                     enum_id
                 };
-                let enum_def = self.type_pool.enum_def(enum_id);
+                let enum_def = self.body_type_pool().enum_def(enum_id);
 
                 // Find the variant index
-                let variant_name = self.interner.resolve(&*variant);
+                let variant_name = self.body_interner().resolve(&*variant);
                 let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                     ErrorKind::UnknownVariant {
                         enum_name: enum_def.name.clone(),

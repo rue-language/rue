@@ -54,6 +54,7 @@ mod info;
 mod known_symbols;
 mod metadata;
 mod one_body;
+mod ordinary_engine;
 mod output;
 pub mod provider;
 mod provider_module_registry;
@@ -1296,15 +1297,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_callable_dependencies.push((source, symbol));
     }
 
-    pub(crate) fn record_body_method_dependency(&mut self, key: (StructId, Spur)) {
-        let Some(info) = self.method_info(key) else {
-            return;
-        };
-        let symbol = self.method_symbol(key.0, self.interner.resolve(&key.1), info.has_self);
-        let symbol = self.interner.get_or_intern(&symbol);
-        self.record_body_callable_dependency(symbol);
-    }
-
     pub(crate) fn validate_explicit_call_modes<A>(
         &self,
         args: A,
@@ -1427,13 +1419,6 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         &self,
     ) -> <Self as BodyAnalysisHost>::AggregateFacts<'_> {
         BodyAnalysisHost::aggregate_facts(self)
-    }
-
-    pub(in crate::sema) fn inference_facts<'s>(
-        &'s self,
-        ctx: &'s InferenceContext,
-    ) -> <Self as BodyAnalysisHost>::InferenceFacts<'s> {
-        BodyAnalysisHost::inference_facts(self, ctx)
     }
 
     pub(crate) fn body_owner_token(

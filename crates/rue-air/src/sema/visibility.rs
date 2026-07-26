@@ -4,13 +4,14 @@
 //! - `pub` items are always accessible
 //! - Private items are accessible if the files are in the same directory module
 
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
 use super::aggregate_resolution::{
     AggregateFacts, is_accessible, resolve_visibility_module_ref, select_qualified_enum,
 };
-use super::{BodySema, DeclarationPhase, Sema, context::AnalysisContext};
+use super::{DeclarationPhase, Sema, context::AnalysisContext};
 use crate::types::EnumId;
 
 impl<D: DeclarationPhase> Sema<'_, D> {
@@ -88,7 +89,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 }
 
-impl BodySema<'_> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Resolve an enum type through a module reference.
     ///
     /// Used for qualified enum paths like `module.EnumName::Variant` in match patterns.
@@ -100,7 +101,7 @@ impl BodySema<'_> {
         span: rue_span::Span,
         ctx: &AnalysisContext,
     ) -> CompileResult<EnumId> {
-        let type_name_str = self.interner.resolve(&type_name);
+        let type_name_str = self.body_interner().resolve(&type_name);
 
         // Resolve the receiver's full module spine.  The root binding belongs
         // to the source file containing the expression; every subsequent
@@ -123,7 +124,7 @@ impl BodySema<'_> {
             })?;
 
         // Check visibility
-        let enum_def = self.type_pool.enum_def(enum_id);
+        let enum_def = self.body_type_pool().enum_def(enum_id);
         let accessing_file_id = span.file_id;
         let target_file_id = enum_def.file_id;
 
@@ -146,6 +147,6 @@ impl BodySema<'_> {
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
         let facts = self.aggregate_facts();
-        resolve_visibility_module_ref(&facts, self.rir, module_ref, &ctx.locals)
+        resolve_visibility_module_ref(&facts, self.body_rir_ref(), module_ref, &ctx.locals)
     }
 }

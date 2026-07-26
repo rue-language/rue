@@ -3,9 +3,10 @@
 //! This category is the canonical instruction dispatcher and owns assignment
 //! analysis for projected places.
 
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Analyze an RIR instruction, producing AIR instructions.
     ///
     /// Types are determined by Hindley-Milner inference (stored in `resolved_types`).
@@ -42,7 +43,7 @@ impl<'a> BodySema<'a> {
         // boundary at dispatch so every implementation path (including
         // String `+` and place/projection fast paths) gets identical cleanup.
         let clears_result_expectation = matches!(
-            &self.rir.get(inst_ref).data,
+            &self.body_rir_ref().get(inst_ref).data,
             InstData::Add { .. }
                 | InstData::Sub { .. }
                 | InstData::Mul { .. }
@@ -84,7 +85,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         match &inst.data {
             // Literals
@@ -234,7 +241,7 @@ impl<'a> BodySema<'a> {
                                 Err(CompileError::new(
                                     ErrorKind::LiteralOutOfRange {
                                         value: value as u64,
-                                        ty: ty.safe_name_with_pool(Some(&self.type_pool)),
+                                        ty: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                                     },
                                     inst.span,
                                 ))
@@ -244,7 +251,7 @@ impl<'a> BodySema<'a> {
                                         reason: format!(
                                             "value {} is out of range for type {}",
                                             value,
-                                            ty.safe_name_with_pool(Some(&self.type_pool))
+                                            ty.safe_name_with_pool(Some(&self.body_type_pool()))
                                         ),
                                     },
                                     inst.span,
@@ -337,17 +344,19 @@ impl<'a> BodySema<'a> {
                 anchor,
             } => {
                 // Get the field declarations from the RIR
-                let field_decls = self.rir.anon_struct_fields(fields);
+                let field_decls = self.body_rir_ref().anon_struct_fields(fields).to_vec();
 
                 // Empty structs are not allowed (unless they have methods)
-                if field_decls.is_empty() && self.rir.anon_struct_methods(methods).is_empty() {
+                if field_decls.is_empty()
+                    && self.body_rir_ref().anon_struct_methods(methods).is_empty()
+                {
                     return Err(CompileError::new(ErrorKind::EmptyStruct, inst.span));
                 }
 
                 // Resolve each field type and build the struct fields
                 let mut struct_fields = Vec::with_capacity(field_decls.len());
                 for (name_sym, type_sym) in field_decls {
-                    let name_str = self.interner.resolve(&name_sym).to_string();
+                    let name_str = self.body_interner().resolve(&name_sym).to_string();
                     let field_ty = self
                         .resolve_type_for_comptime_with_subst_and_values_at_span(
                             type_sym,
@@ -357,7 +366,9 @@ impl<'a> BodySema<'a> {
                         )
                         .ok_or_else(|| {
                             CompileError::new(
-                                ErrorKind::UnknownType(self.interner.resolve(&type_sym).to_owned()),
+                                ErrorKind::UnknownType(
+                                    self.body_interner().resolve(&type_sym).to_owned(),
+                                ),
                                 inst.span,
                             )
                         })?;
@@ -388,7 +399,7 @@ impl<'a> BodySema<'a> {
                     &method_sigs,
                     &ctx.comptime_value_vars,
                 )?;
-                if is_new && !self.rir.anon_struct_methods(methods).is_empty() {
+                if is_new && !self.body_rir_ref().anon_struct_methods(methods).is_empty() {
                     let struct_id = struct_ty
                         .as_struct()
                         .expect("anonymous struct must have a StructId");
@@ -396,7 +407,6 @@ impl<'a> BodySema<'a> {
                         struct_id,
                         struct_ty,
                         methods,
-                        inst.span,
                         &ctx.comptime_type_vars,
                         &ctx.comptime_value_vars,
                     )
@@ -409,8 +419,7 @@ impl<'a> BodySema<'a> {
                         )
                     })?;
                     if !ctx.comptime_type_vars.is_empty() {
-                        self.anon_struct_type_subst
-                            .insert(struct_id, ctx.comptime_type_vars.clone());
+                        self.set_anon_struct_type_subst(struct_id, ctx.comptime_type_vars.clone());
                     }
                 }
 
@@ -433,9 +442,9 @@ impl<'a> BodySema<'a> {
                 payloads,
                 anchor,
             } => {
-                let variant_syms = self.rir.anon_enum_variants(variants).to_vec();
+                let variant_syms = self.body_rir_ref().anon_enum_variants(variants).to_vec();
                 let payload_symbols: Vec<Vec<Spur>> = self
-                    .rir
+                    .body_rir_ref()
                     .anon_enum_payloads(payloads, variants)
                     .map(|payload| payload.to_vec())
                     .collect();
@@ -443,7 +452,7 @@ impl<'a> BodySema<'a> {
                 let mut variant_names: Vec<String> = Vec::with_capacity(variant_syms.len());
                 let mut variant_payloads: Vec<Vec<Type>> = Vec::with_capacity(variant_syms.len());
                 for (vsym, symbols) in variant_syms.iter().zip(payload_symbols) {
-                    variant_names.push(self.interner.resolve(vsym).to_string());
+                    variant_names.push(self.body_interner().resolve(vsym).to_string());
                     let mut tys: Vec<Type> = Vec::with_capacity(symbols.len());
                     for ty_sym in symbols {
                         let field_ty = self
@@ -456,7 +465,7 @@ impl<'a> BodySema<'a> {
                             .ok_or_else(|| {
                                 CompileError::new(
                                     ErrorKind::UnknownType(
-                                        self.interner.resolve(&ty_sym).to_owned(),
+                                        self.body_interner().resolve(&ty_sym).to_owned(),
                                     ),
                                     inst.span,
                                 )

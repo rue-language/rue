@@ -4,6 +4,7 @@
 //! implementation.
 
 use super::super::call_resolution::CallResolutionFacts;
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -12,7 +13,7 @@ enum IntegerSentinel {
     NegativeOne,
 }
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Convert RIR argument mode to AIR argument mode.
     pub(super) fn convert_arg_mode(mode: RirArgMode) -> AirArgMode {
         match mode {
@@ -84,7 +85,7 @@ impl<'a> BodySema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "StrBuf".to_string(),
-                        found: operand.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: operand.ty.safe_name_with_pool(Some(&self.body_type_pool())),
                     },
                     span,
                 ));
@@ -98,7 +99,7 @@ impl<'a> BodySema<'a> {
             ErrorKind::InternalError("canonical StrBuf lang item is not a struct".to_string()),
             span,
         )?;
-        let method = self.interner.get_or_intern("concat_borrowed");
+        let method = self.body_interner().get_or_intern("concat_borrowed");
         if self.call_facts().method_info(struct_id, method).is_none() {
             return Err(CompileError::new(
                 ErrorKind::InternalError("canonical StrBuf is missing concat_borrowed".to_string()),
@@ -107,9 +108,11 @@ impl<'a> BodySema<'a> {
         }
         ctx.referenced_methods.insert((struct_id, method));
         self.record_body_method_dependency((struct_id, method));
-        let call_name =
-            self.interner
-                .get_or_intern(&self.method_symbol(struct_id, "concat_borrowed", false));
+        let call_name = self.body_interner().get_or_intern(&self.method_symbol(
+            struct_id,
+            "concat_borrowed",
+            false,
+        ));
         let arg_mode = AirArgMode::Borrow;
 
         let (lhs_arg, mut temp_scope) =
@@ -160,13 +163,13 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let fn_name = if name == self.known.println {
+        let fn_name = if name == self.known_symbols().println {
             "println"
         } else {
             "print"
         };
 
-        let args = self.rir.call_args(args);
+        let args = self.body_rir_ref().call_args(args).to_vec();
         if args.len() != 1 {
             return Err(CompileError::new(
                 ErrorKind::WrongArgumentCount {
@@ -193,19 +196,21 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "text".to_string(),
-                    found: arg_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: arg_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 },
-                self.rir.get(arg_value).span,
+                self.body_rir_ref().get(arg_value).span,
             )
             .with_help(format!("`{fn_name}` takes StrBuf, str, or Str(N) text")));
         }
 
         let source_strbuf = arg_result.ty.as_struct().is_some_and(|struct_id| {
-            self.type_pool.struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
+            self.body_type_pool().struct_lang_item(struct_id) == Some(crate::LangItem::StrBuf)
         });
         let shared_text = source_strbuf || self.is_str_like(arg_result.ty);
         debug_assert!(shared_text || arg_result.ty.is_error());
-        let operation = if name == self.known.println {
+        let operation = if name == self.known_symbols().println {
             rue_builtins::TextBuiltinOperation::PrintlnView
         } else {
             rue_builtins::TextBuiltinOperation::PrintView
@@ -213,7 +218,7 @@ impl<'a> BodySema<'a> {
         let runtime_helper = operation
             .runtime_helper()
             .expect("print builtin must map to a runtime helper");
-        let call_name = self.interner.get_or_intern(runtime_helper.symbol);
+        let call_name = self.body_interner().get_or_intern(runtime_helper.symbol);
 
         // A StrBuf source reads its `{ptr, len}` prefix through the trusted
         // accessors and passes them as separate scalars (the `*Projected`
@@ -246,7 +251,7 @@ impl<'a> BodySema<'a> {
         };
         let (extra_data, temp_scope) = extra_data;
         let call_ref = air.add_call(
-            Some(if name == self.known.println {
+            Some(if name == self.known_symbols().println {
                 if source_strbuf {
                     crate::RuntimeCallKind::StrPrintlnProjected
                 } else {
@@ -291,7 +296,9 @@ impl<'a> BodySema<'a> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: lhs_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: lhs_result
+                        .ty
+                        .safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 span,
             ));
@@ -331,7 +338,10 @@ impl<'a> BodySema<'a> {
 
         // Comparisons read values without consuming them (like projections).
         // This matches Rust's PartialEq trait which takes references.
-        let lhs_is_literal = matches!(self.rir.get(lhs).data, InstData::StringConst { .. });
+        let lhs_is_literal = matches!(
+            self.body_rir_ref().get(lhs).data,
+            InstData::StringConst { .. }
+        );
         let (lhs_result, rhs_result) = if lhs_is_literal {
             let rhs_result = self.analyze_inst_for_projection(air, rhs, ctx)?;
             let expected = (self.is_strbuf(rhs_result.ty) || self.is_str_like(rhs_result.ty))
@@ -363,14 +373,14 @@ impl<'a> BodySema<'a> {
 
         // Validate the type is appropriate for this comparison
         if allow_bool {
-            self.validate_equality_operand_type(lhs_type, self.rir.get(lhs).span)?;
+            self.validate_equality_operand_type(lhs_type, self.body_rir_ref().get(lhs).span)?;
         } else if !lhs_type.is_integer() {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer".to_string(),
-                    found: lhs_type.safe_name_with_pool(Some(&self.type_pool)),
+                    found: lhs_type.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
-                self.rir.get(lhs).span,
+                self.body_rir_ref().get(lhs).span,
             ));
         }
 
@@ -414,13 +424,13 @@ impl<'a> BodySema<'a> {
     }
 
     fn is_get_or_with_sentinel(&self, inst: InstRef, sentinel: IntegerSentinel) -> bool {
-        let InstData::MethodCall { method, args, .. } = &self.rir.get(inst).data else {
+        let InstData::MethodCall { method, args, .. } = &self.body_rir_ref().get(inst).data else {
             return false;
         };
-        if self.interner.resolve(method) != "get_or" {
+        if self.body_interner().resolve(method) != "get_or" {
             return false;
         }
-        let args = self.rir.call_args(args);
+        let args = self.body_rir_ref().call_args(args).to_vec();
         let mut args = args.iter();
         let (Some(_index), Some(default), None) = (args.next(), args.next(), args.next()) else {
             return false;
@@ -429,11 +439,11 @@ impl<'a> BodySema<'a> {
     }
 
     fn integer_sentinel(&self, inst: InstRef) -> Option<IntegerSentinel> {
-        match self.rir.get(inst).data {
+        match self.body_rir_ref().get(inst).data {
             InstData::IntConst(u64::MAX) => Some(IntegerSentinel::UnsignedMax),
             InstData::Sub { lhs, rhs }
-                if matches!(self.rir.get(lhs).data, InstData::IntConst(0))
-                    && matches!(self.rir.get(rhs).data, InstData::IntConst(1)) =>
+                if matches!(self.body_rir_ref().get(lhs).data, InstData::IntConst(0))
+                    && matches!(self.body_rir_ref().get(rhs).data, InstData::IntConst(1)) =>
             {
                 Some(IntegerSentinel::NegativeOne)
             }
@@ -446,7 +456,7 @@ impl<'a> BodySema<'a> {
     /// This is used when validating comptime arguments to detect variables
     /// that hold comptime type values (e.g., `let P = Point(); ... Line(P)`).
     pub(crate) fn is_comptime_type_var(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> bool {
-        if let InstData::VarRef { name, .. } = &self.rir.get(inst_ref).data {
+        if let InstData::VarRef { name, .. } = &self.body_rir_ref().get(inst_ref).data {
             ctx.comptime_type_vars.contains_key(name)
         } else {
             false
@@ -455,7 +465,7 @@ impl<'a> BodySema<'a> {
 
     /// Resolve the type of a place without emitting AIR or recording a move.
     pub(crate) fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
-        match &self.rir.get(inst_ref).data {
+        match &self.body_rir_ref().get(inst_ref).data {
             InstData::VarRef { name, .. } => {
                 if let Some(local) = ctx.locals.get(name) {
                     return Some(local.ty);
@@ -465,15 +475,15 @@ impl<'a> BodySema<'a> {
             InstData::FieldGet { base, field } => {
                 let base_ty = self.peek_place_type(*base, ctx)?;
                 let struct_id = base_ty.as_struct()?;
-                let struct_def = self.type_pool.struct_def(struct_id);
-                let field_name_str = self.interner.resolve(field);
+                let struct_def = self.body_type_pool().struct_def(struct_id);
+                let field_name_str = self.body_interner().resolve(field);
                 let (_field_index, struct_field) = struct_def.find_field(field_name_str)?;
                 Some(struct_field.ty)
             }
             InstData::IndexGet { base, .. } => {
                 let base_ty = self.peek_place_type(*base, ctx)?;
                 let array_id = base_ty.as_array()?;
-                let (elem_type, _len) = self.type_pool.array_def(array_id);
+                let (elem_type, _len) = self.body_type_pool().array_def(array_id);
                 Some(elem_type)
             }
             _ => None,

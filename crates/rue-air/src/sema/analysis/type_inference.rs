@@ -3,10 +3,11 @@
 //! This category connects the inference engine to the canonical semantic
 //! analysis and records resolved expression types.
 
+use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
 use crate::inference::LazyInferenceFacts;
 
-impl<'a> BodySema<'a> {
+impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn inference_function_is_selected(
         &self,
         function: Spur,
@@ -26,7 +27,7 @@ impl<'a> BodySema<'a> {
                         || self
                             .check_unqualified_visibility(
                                 "constant",
-                                self.interner.resolve(alias_name),
+                                self.body_interner().resolve(alias_name),
                                 alias.span.file_id,
                                 alias.is_pub,
                                 span,
@@ -44,7 +45,8 @@ impl<'a> BodySema<'a> {
                 Some(
                     self.check_unqualified_visibility(
                         "function",
-                        self.interner.resolve(&self.source_function_name(function)),
+                        self.body_interner()
+                            .resolve(&self.source_function_name(function)),
                         info.file_id,
                         info.is_pub,
                         span,
@@ -57,7 +59,7 @@ impl<'a> BodySema<'a> {
                 member,
                 via_alias,
             } => {
-                let module_file = self.module_registry.get_def(*module).file_id;
+                let module_file = self.module_def(*module).file_id;
                 if *via_alias {
                     // The visible facade const is the module membership and
                     // visibility grant. Its selected function may be private
@@ -82,12 +84,12 @@ impl<'a> BodySema<'a> {
         }
     }
 
-    fn record_inference_body_dependencies(
+    pub(crate) fn record_inference_body_dependencies(
         &mut self,
         dependencies: &[crate::inference::InferenceBodyDependency],
         expr_types: &HashMap<InstRef, InferType>,
     ) -> bool {
-        if !self.one_body_error_recovery {
+        if !self.one_body_error_recovery() {
             return false;
         }
 
@@ -116,7 +118,7 @@ impl<'a> BodySema<'a> {
                     };
                     if info.has_self != *associated {
                         if *associated {
-                            let def = self.type_pool.struct_def(*structure);
+                            let def = self.body_type_pool().struct_def(*structure);
                             if self
                                 .check_unqualified_visibility(
                                     "struct",
@@ -137,7 +139,7 @@ impl<'a> BodySema<'a> {
                     self.record_body_named_dependency(
                         crate::NamedConstDependencyTargetEvent::ModuleBinding {
                             file: file.index(),
-                            name: self.interner.resolve(name).to_owned(),
+                            name: self.body_interner().resolve(name).to_owned(),
                         },
                     );
                 }
@@ -157,7 +159,7 @@ impl<'a> BodySema<'a> {
                     self.record_body_named_dependency(
                         crate::NamedConstDependencyTargetEvent::ValueConst {
                             file: file.index(),
-                            name: self.interner.resolve(name).to_owned(),
+                            name: self.body_interner().resolve(name).to_owned(),
                         },
                     );
                 }
@@ -177,18 +179,16 @@ impl<'a> BodySema<'a> {
                             continue;
                         }
                     }
-                    let Some(source) = self.body_dependency_observer.clone() else {
+                    if self.body_dependency_observer().is_none() {
                         incomplete = true;
                         continue;
-                    };
+                    }
                     match self.canonical_specialization_instance(
                         *function,
                         type_arguments,
                         value_arguments,
                     ) {
-                        Ok(identity) => self
-                            .body_specialization_dependencies
-                            .push((source, identity)),
+                        Ok(identity) => self.record_specialization_dependency(identity),
                         Err(_) => incomplete = true,
                     }
                 }
@@ -203,16 +203,20 @@ impl<'a> BodySema<'a> {
             }
         }
 
-        fn record_concrete(sema: &mut BodySema<'_>, ty: &InferType, access_file: FileId) -> bool {
+        fn record_concrete<H: OrdinaryBodyAnalysisHost>(
+            sema: &mut OrdinaryBodyEngine<'_, H>,
+            ty: &InferType,
+            access_file: FileId,
+        ) -> bool {
             match ty {
                 InferType::Concrete(ty) => {
                     let accessible = match ty.kind() {
                         TypeKind::Struct(id) => {
-                            let def = sema.type_pool.struct_def(id);
+                            let def = sema.body_type_pool().struct_def(id);
                             sema.is_accessible(access_file, def.file_id, def.is_pub)
                         }
                         TypeKind::Enum(id) => {
-                            let def = sema.type_pool.enum_def(id);
+                            let def = sema.body_type_pool().enum_def(id);
                             sema.is_accessible(access_file, def.file_id, def.is_pub)
                         }
                         _ => true,
@@ -227,7 +231,8 @@ impl<'a> BodySema<'a> {
             }
         }
         for (inst_ref, ty) in expr_types {
-            incomplete |= record_concrete(self, ty, self.rir.get(*inst_ref).span.file_id);
+            incomplete |=
+                record_concrete(self, ty, self.body_rir_ref().get(*inst_ref).span.file_id);
         }
         incomplete
     }
@@ -243,7 +248,7 @@ impl<'a> BodySema<'a> {
     /// This avoids rebuilding these maps for each function, reducing O(n²) to O(n).
     ///
     /// Returns a map from RIR instruction refs to their resolved concrete types.
-    pub(super) fn run_type_inference(
+    pub(crate) fn run_type_inference(
         &mut self,
         infer_ctx: &InferenceContext,
         return_type: Type,
@@ -282,12 +287,14 @@ impl<'a> BodySema<'a> {
         flat_bindings.sort_by_key(|(inst_ref, _)| inst_ref.as_u32());
         let comptime_local_types: HashMap<Spur, Type> = flat_bindings
             .into_iter()
-            .filter_map(|(inst_ref, ty)| match self.rir.get(inst_ref).data {
-                rue_rir::InstData::Alloc {
-                    name: Some(name), ..
-                } => Some((name, ty)),
-                _ => None,
-            })
+            .filter_map(
+                |(inst_ref, ty)| match self.body_rir_ref().get(inst_ref).data {
+                    rue_rir::InstData::Alloc {
+                        name: Some(name), ..
+                    } => Some((name, ty)),
+                    _ => None,
+                },
+            )
             .collect();
 
         // Pre-reduce inline type-constructor heads (`F(args).Variant(..)`,
@@ -332,15 +339,15 @@ impl<'a> BodySema<'a> {
 
             // Create constraint generator driven by the demand-population provider.
             let mut cgen = ConstraintGenerator::with_lazy_facts(
-                self.rir,
-                self.interner,
-                &self.type_pool,
+                self.body_rir_ref(),
+                self.body_interner(),
+                &self.body_type_pool(),
                 type_subst,
                 &facts,
             );
             cgen = cgen.with_strbuf_type(self.strbuf_type());
             let str_name = self
-                .interner
+                .body_interner()
                 .get("str")
                 .expect("stable string default was registered before inference");
             let str_ty = facts
@@ -461,7 +468,7 @@ impl<'a> BodySema<'a> {
         let mut string_literal_types = vec![string_literal_default];
         string_literal_types.extend(self.strbuf_type());
         string_literal_types.extend(
-            self.generated_structs
+            self.generated_structs()
                 .values()
                 .copied()
                 .map(Type::new_struct)
@@ -478,7 +485,8 @@ impl<'a> BodySema<'a> {
             equivalence_queries.set(equivalence_queries.get() + 1);
             self.types_equivalent(left, right)
         });
-        self.body_analysis_work.semantic_type_equivalence_queries += equivalence_queries.get();
+        self.body_analysis_work_mut()
+            .semantic_type_equivalence_queries += equivalence_queries.get();
 
         // Convert unification errors to compile errors
         // For now, we collect the first error. In the future, we could
@@ -487,40 +495,40 @@ impl<'a> BodySema<'a> {
             {
                 let inference_dependency_incomplete = self
                     .record_inference_body_dependencies(&inference_body_dependencies, &expr_types);
-                self.one_body_inference_failure_incomplete = inference_dependency_incomplete;
+                self.set_one_body_inference_failure_incomplete(inference_dependency_incomplete);
             }
             // Map each UnifyResult variant to the appropriate ErrorKind
             let error_kind = match &err.kind {
                 UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
                 UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                    expected: expected.name_with_pool(&self.type_pool),
-                    found: found.name_with_pool(&self.type_pool),
+                    expected: expected.name_with_pool(&self.body_type_pool()),
+                    found: found.name_with_pool(&self.body_type_pool()),
                 },
                 UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: found.safe_name_with_pool(Some(&self.type_pool)),
+                    found: found.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
                     expected: "string type".to_string(),
-                    found: found.name_with_pool(&self.type_pool),
+                    found: found.name_with_pool(&self.body_type_pool()),
                 },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
                     found: format!(
                         "{var} = {} (infinite type)",
-                        ty.name_with_pool(&self.type_pool)
+                        ty.name_with_pool(&self.body_type_pool())
                     ),
                 },
                 UnifyResult::NotSigned { ty } => {
-                    ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.type_pool)))
+                    ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.body_type_pool())))
                 }
                 UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
                     expected: "unsigned integer type".to_string(),
-                    found: ty.safe_name_with_pool(Some(&self.type_pool)),
+                    found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
                 },
                 UnifyResult::ArrayLengthMismatch { expected, found } => {
                     ErrorKind::ArrayLengthMismatch {
@@ -541,7 +549,7 @@ impl<'a> BodySema<'a> {
         }
 
         {
-            self.one_body_inference_failure_incomplete = false;
+            self.set_one_body_inference_failure_incomplete(false);
         }
 
         // Default any unconstrained integer literals to i32
@@ -581,7 +589,13 @@ impl<'a> BodySema<'a> {
         inst_ref: InstRef,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        let inst = self.rir.get(inst_ref);
+        let inst = {
+            let source = self.body_rir_ref().get(inst_ref);
+            rue_rir::Inst {
+                data: source.data.clone(),
+                span: source.span,
+            }
+        };
 
         // For VarRef, we handle it specially: check for full moves but don't mark as moved
         if let InstData::VarRef { name, anchor } = &inst.data {
@@ -596,7 +610,7 @@ impl<'a> BodySema<'a> {
                     // (Partial moves are checked at the FieldGet level)
                     if let Some(move_state) = self.moved_state(ctx, name) {
                         if let Some(moved_span) = move_state.full_move {
-                            let name_str = self.interner.resolve(&*name);
+                            let name_str = self.body_interner().resolve(&*name);
                             return Err(CompileError::new(
                                 ErrorKind::UseAfterMove(name_str.to_string()),
                                 inst.span,
@@ -620,7 +634,7 @@ impl<'a> BodySema<'a> {
             }
 
             // Look up the variable in locals
-            let name_str = self.interner.resolve(&*name);
+            let name_str = self.body_interner().resolve(&*name);
             let Some(local) = ctx.locals.get(name) else {
                 // Not a param or local: fall back to the main VarRef path so
                 // file-level constants (and comptime vars/type names) resolve
@@ -678,7 +692,7 @@ impl<'a> BodySema<'a> {
             // as a comparison operand (`Color.Red == Color.Red`). Mirror the
             // reroute in `analyze_field_get`, including the module-qualified
             // form `module.Enum.Variant`.
-            if let InstData::VarRef { name, .. } = self.rir.get(base).data
+            if let InstData::VarRef { name, .. } = self.body_rir_ref().get(base).data
                 && !self.is_runtime_value_binding(name, ctx)
                 && let Some(result) =
                     self.try_analyze_dotted_enum_variant(air, name, field, field_span, ctx)?
@@ -688,7 +702,7 @@ impl<'a> BodySema<'a> {
             if let InstData::FieldGet {
                 base: module_ref,
                 field: type_name,
-            } = self.rir.get(base).data
+            } = self.body_rir_ref().get(base).data
                 && let Some(result) = self.try_analyze_module_dotted_enum_variant(
                     air, module_ref, type_name, field, field_span, ctx,
                 )?
@@ -718,7 +732,7 @@ impl<'a> BodySema<'a> {
                     air,
                     module_id,
                     field,
-                    super::const_use_anchor_of(self.rir, base),
+                    super::const_use_anchor_of(self.body_rir_ref(), base),
                     field_span,
                     ctx,
                 );
@@ -729,15 +743,15 @@ impl<'a> BodySema<'a> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
+                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         field_span,
                     ));
                 }
             };
 
-            let struct_def = self.type_pool.struct_def(struct_id);
-            let field_name_str = self.interner.resolve(&field).to_string();
+            let struct_def = self.body_type_pool().struct_def(struct_id);
+            let field_name_str = self.body_interner().resolve(&field).to_string();
 
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
@@ -825,14 +839,14 @@ impl<'a> BodySema<'a> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.safe_name_with_pool(Some(&self.type_pool)),
+                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
                         },
                         inst.span,
                     ));
                 }
             };
 
-            let (element_type, length) = self.type_pool.array_def(array_type_id);
+            let (element_type, length) = self.body_type_pool().array_def(array_type_id);
 
             // Index must be an integer type (signed or unsigned) per spec
             // 7.1:7. A negative or out-of-range runtime index is not a type
@@ -842,9 +856,11 @@ impl<'a> BodySema<'a> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "integer type".to_string(),
-                        found: index_result.ty.safe_name_with_pool(Some(&self.type_pool)),
+                        found: index_result
+                            .ty
+                            .safe_name_with_pool(Some(&self.body_type_pool())),
                     },
-                    self.rir.get(*index).span,
+                    self.body_rir_ref().get(*index).span,
                 ));
             }
 
@@ -860,7 +876,7 @@ impl<'a> BodySema<'a> {
                             index: const_index,
                             length: array_length,
                         },
-                        self.rir.get(*index).span,
+                        self.body_rir_ref().get(*index).span,
                     ));
                 }
             }

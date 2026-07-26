@@ -25,6 +25,21 @@ use crate::types::StructField;
 use crate::types::{EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
 
 impl<'a, D: DeclarationPhase> Sema<'a, D> {
+    /// Whether directives contain `@allow` for a specific warning name.
+    /// This is a pure RIR/interner read and is available in every declaration phase.
+    pub(crate) fn has_allow_directive<'r>(
+        &self,
+        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
+        warning_name: &str,
+    ) -> bool {
+        let allow_sym = self.interner.get("allow");
+        let warning_sym = self.interner.get(warning_name);
+        directives.any(|directive| {
+            Some(directive.name) == allow_sym
+                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
+        })
+    }
+
     pub(crate) fn source_function_name(&self, internal_name: Spur) -> Spur {
         self.function_source_names
             .get(&internal_name)
@@ -199,19 +214,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 }
 
 impl<'a> Sema<'a, super::MutableDeclarations> {
-    pub(crate) fn has_allow_directive<'r>(
-        &self,
-        mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
-        warning_name: &str,
-    ) -> bool {
-        let allow_sym = self.interner.get("allow");
-        let warning_sym = self.interner.get(warning_name);
-        directives.any(|directive| {
-            Some(directive.name) == allow_sym
-                && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
-        })
-    }
-
     /// Phase 1: Register all type names (enum and struct IDs).
     ///
     /// This creates name → ID mappings for all enums and structs in a single pass,
