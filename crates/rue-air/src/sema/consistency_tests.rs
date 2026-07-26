@@ -119,6 +119,10 @@ mod tests {
     const OWNERSHIP_SOURCE: &str = include_str!("analysis/ownership.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
     const FACT_MODE_SOURCE: &str = include_str!("fact_mode.rs");
+    const BODY_ENDPOINT_SOURCE: &str = include_str!("body_endpoint.rs");
+    const CALL_RESOLUTION_SOURCE: &str = include_str!("call_resolution.rs");
+    const AGGREGATE_RESOLUTION_SOURCE: &str = include_str!("aggregate_resolution.rs");
+    const INFERENCE_CONTEXT_SOURCE: &str = include_str!("inference_ctx.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
@@ -387,6 +391,74 @@ mod tests {
         assert!(SEMA_ROOT_SOURCE.contains("fn call_facts("));
         assert!(SEMA_ROOT_SOURCE.contains("fn aggregate_facts("));
         assert!(SEMA_ROOT_SOURCE.contains("fn inference_facts"));
+    }
+
+    #[test]
+    fn one_body_fact_adapters_are_generic_and_retain_no_concrete_analyzer() {
+        fn item<'source>(source: &'source str, header: &str) -> &'source str {
+            let start = source.find(header).expect("item header is present");
+            let rest = &source[start..];
+            let open = rest.find('{').expect("item body opens");
+            let mut depth = 0;
+            for (offset, ch) in rest[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &rest[..open + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("item body closes");
+        }
+
+        let adapters = [
+            (
+                BODY_ENDPOINT_SOURCE,
+                "pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost>",
+                "impl<H: super::fact_mode::BodyAnalysisReadHost> BodyEndpointProvider for EpochFacts<'_, H>",
+            ),
+            (
+                CALL_RESOLUTION_SOURCE,
+                "pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost>",
+                "impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFacts<'_, H>",
+            ),
+            (
+                AGGREGATE_RESOLUTION_SOURCE,
+                "pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost>",
+                "impl<H: super::fact_mode::BodyAnalysisReadHost> AggregateFacts for EpochFacts<'_, H>",
+            ),
+            (
+                INFERENCE_CONTEXT_SOURCE,
+                "pub(crate) struct HostInferenceFacts<'a, H: BodyAnalysisReadHost>",
+                "impl<H: BodyAnalysisReadHost> LazyInferenceFacts for HostInferenceFacts<'_, H>",
+            ),
+        ];
+        for (source, struct_header, impl_header) in adapters {
+            for adapter_item in [item(source, struct_header), item(source, impl_header)] {
+                for forbidden in [
+                    "Sema<'",
+                    "Sema::",
+                    "&Sema",
+                    "BodySema",
+                    "BoundSema",
+                    "Deref",
+                ] {
+                    assert!(
+                        !adapter_item.contains(forbidden),
+                        "generic adapter must not retain {forbidden}"
+                    );
+                }
+            }
+        }
+        assert!(FACT_MODE_SOURCE.contains("trait BodyAnalysisReadHost"));
+        assert!(FACT_MODE_SOURCE.contains("= EpochEndpointFacts<'a, Self>"));
+        assert!(FACT_MODE_SOURCE.contains("= EpochCallFacts<'a, Self>"));
+        assert!(FACT_MODE_SOURCE.contains("= EpochAggregateFacts<'a, Self>"));
+        assert!(FACT_MODE_SOURCE.contains("= HostInferenceFacts<'a, Self>"));
     }
 
     #[test]

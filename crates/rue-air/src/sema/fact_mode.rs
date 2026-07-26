@@ -10,12 +10,19 @@ use std::collections::HashMap;
 use lasso::Spur;
 use rue_span::{FileId, Span};
 
-use super::aggregate_resolution::{AggregateFacts, EpochFacts as EpochAggregateFacts};
-use super::body_endpoint::{BodyEndpointProvider, EpochFacts as EpochEndpointFacts};
-use super::call_resolution::{CallResolutionFacts, EpochFacts as EpochCallFacts};
+use super::aggregate_resolution::{
+    AggregateFactSource, AggregateFacts, EpochFacts as EpochAggregateFacts,
+};
+use super::body_endpoint::{
+    BodyEndpointFactSource, BodyEndpointProvider, EpochFacts as EpochEndpointFacts,
+};
+use super::call_resolution::{
+    CallResolutionFactSource, CallResolutionFacts, EpochFacts as EpochCallFacts,
+};
 use super::typeck::TypeRootAuthority;
-use super::{ConstValue, DeclarationPhase, InferenceContext, Sema, SemaInferenceFacts};
+use super::{ConstValue, DeclarationPhase, HostInferenceFacts, InferenceContext, Sema};
 use crate::inference::LazyInferenceFacts;
+use crate::sema::inference_ctx::InferenceFactSource;
 use crate::types::{ArrayLen, ModuleId, Type};
 
 /// Exact input for resolving one type-syntax fragment.
@@ -68,12 +75,29 @@ type TypeSyntaxResult = Result<
     crate::SemanticTypeSyntaxError<std::convert::Infallible, rue_error::CompileError, FileId, Spur>,
 >;
 
+/// The read-only slice of a body-analysis host.
+///
+/// The adapters below only need these immutable point-query capabilities. The
+/// mutable receiver/state migration is deliberately outside this extraction.
+pub(crate) trait BodyAnalysisReadHost:
+    BodyEndpointFactSource + CallResolutionFactSource + AggregateFactSource + InferenceFactSource
+{
+}
+
+impl<T> BodyAnalysisReadHost for T where
+    T: BodyEndpointFactSource
+        + CallResolutionFactSource
+        + AggregateFactSource
+        + InferenceFactSource
+{
+}
+
 /// Host capability consumed by the canonical one-body engine.
 ///
 /// Associated fact facades return owned or short-lived read-only values; the
 /// mutable operations take a request object so the contract stays independent
 /// of the current analyzer representation.
-pub(crate) trait BodyAnalysisHost: Sized {
+pub(crate) trait BodyAnalysisHost: BodyAnalysisReadHost + Sized {
     type EndpointFacts<'a>: BodyEndpointProvider
     where
         Self: 'a;
@@ -117,7 +141,7 @@ pub(crate) trait BodyAnalysisHost: Sized {
 /// adapters; the host contract above remains representation-independent.
 impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
     type EndpointFacts<'a>
-        = EpochEndpointFacts<'a, 'source, D>
+        = EpochEndpointFacts<'a, Self>
     where
         Self: 'a;
 
@@ -126,7 +150,7 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
     }
 
     type CallFacts<'a>
-        = EpochCallFacts<'a, 'source, D>
+        = EpochCallFacts<'a, Self>
     where
         Self: 'a;
 
@@ -135,7 +159,7 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
     }
 
     type AggregateFacts<'a>
-        = EpochAggregateFacts<'a, 'source, D>
+        = EpochAggregateFacts<'a, Self>
     where
         Self: 'a;
 
@@ -144,12 +168,12 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
     }
 
     type InferenceFacts<'a>
-        = SemaInferenceFacts<'a, 'source, D>
+        = HostInferenceFacts<'a, Self>
     where
         Self: 'a;
 
     fn inference_facts<'a>(&'a self, ctx: &'a InferenceContext) -> Self::InferenceFacts<'a> {
-        SemaInferenceFacts::new(ctx, self)
+        HostInferenceFacts::new(ctx, self)
     }
 
     fn resolve_type_syntax(&mut self, request: TypeSyntaxRequest<'_>) -> TypeSyntaxResult {
@@ -217,12 +241,13 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
 
 #[cfg(test)]
 mod tests {
-    use std::rc::Rc;
-
+    use lasso::ThreadedRodeo;
     use rue_rir::InstRef;
 
     use super::*;
     use crate::inference::{FunctionSig, MethodSig};
+    use crate::sema::PreviewFeatures;
+    use crate::sema::aggregate_resolution::AggregateModuleFact;
     use crate::sema::anon_structs::IssuedAnonymousNominalKey;
     use crate::sema::declaration_index::RirDestructorDeclaration;
     use crate::sema::info::{ConstInfo, FunctionInfo, MethodInfo};
@@ -232,274 +257,285 @@ mod tests {
         SemanticModuleToken,
     };
 
-    /// A deliberately owned, non-`Clone` host shape. This is compile-only: it
-    /// proves the capability does not need an epoch handle or a cloneable host.
-    struct OwnedStubHost {
-        _owned_label: Box<str>,
+    /// A deliberately non-`Clone` owned test sentinel.
+    struct OwnedHostSentinel {
+        tag: u8,
     }
 
-    /// A zero-sized sentinel used for every read-only fact facade.
-    struct StubFacts;
-
-    impl BodyEndpointProvider for StubFacts {
-        fn name_symbol(&self, _: &str) -> Option<Spur> {
-            None
+    impl OwnedHostSentinel {
+        fn tag(&self) -> u8 {
+            self.tag
         }
-        fn definition_endpoint(
+    }
+
+    /// An owned read host. It models a tiny stable slice rather than wrapping
+    /// an analyzer.
+    struct OwnedReadHost {
+        ownership: OwnedHostSentinel,
+        label: Box<str>,
+        symbol: Spur,
+        path: Box<str>,
+    }
+
+    impl BodyEndpointFactSource for OwnedReadHost {
+        fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
+            (name == self.label.as_ref()).then_some(self.symbol)
+        }
+        fn endpoint_definition_endpoint(
             &self,
             _: SemanticDefinitionToken,
         ) -> Option<SemanticDefinitionEndpoint> {
             None
         }
-        fn module_endpoint(&self, _: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
+        fn endpoint_module_endpoint(
+            &self,
+            _: SemanticModuleToken,
+        ) -> Option<SemanticModuleEndpoint> {
             None
         }
-        fn function_by_file_name(&self, _: FileId, _: Spur) -> Option<Spur> {
+        fn endpoint_function_by_file_name(&self, _: FileId, _: Spur) -> Option<Spur> {
             None
         }
-        fn struct_by_file_name(&self, _: FileId, _: Spur) -> Option<StructId> {
+        fn endpoint_struct_by_file_name(&self, _: FileId, _: Spur) -> Option<StructId> {
             None
         }
-        fn enum_by_file_name(&self, _: FileId, _: Spur) -> Option<EnumId> {
+        fn endpoint_enum_by_file_name(&self, _: FileId, _: Spur) -> Option<EnumId> {
             None
         }
-        fn builtin_or_generated_struct(&self, _: Spur) -> Option<StructId> {
+        fn endpoint_builtin_or_generated_struct(&self, _: Spur) -> Option<StructId> {
             None
         }
-        fn generated_struct(&self, _: Spur) -> Option<StructId> {
+        fn endpoint_generated_struct(&self, _: Spur) -> Option<StructId> {
             None
         }
-        fn builtin_enum(&self, _: Spur) -> Option<EnumId> {
+        fn endpoint_builtin_enum(&self, _: Spur) -> Option<EnumId> {
             None
         }
-        fn anon_struct(&self, _: &IssuedAnonymousNominalKey) -> Option<StructId> {
+        fn endpoint_anon_struct(&self, _: &IssuedAnonymousNominalKey) -> Option<StructId> {
             None
         }
-        fn anon_enum(&self, _: &IssuedAnonymousNominalKey) -> Option<EnumId> {
+        fn endpoint_anon_enum(&self, _: &IssuedAnonymousNominalKey) -> Option<EnumId> {
             None
         }
-        fn is_builtin_or_generated_struct(&self, _: Spur) -> bool {
+        fn endpoint_is_builtin_or_generated_struct(&self, _: Spur) -> bool {
             false
         }
-        fn is_builtin_enum(&self, _: Spur) -> bool {
+        fn endpoint_is_builtin_enum(&self, _: Spur) -> bool {
             false
         }
-        fn function_info(&self, _: Spur) -> Option<FunctionInfo> {
+        fn endpoint_function_info(&self, _: Spur) -> Option<FunctionInfo> {
             None
         }
-        fn method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
+        fn endpoint_method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
             None
         }
-        fn source_function_name(&self, name: Spur) -> Spur {
+        fn endpoint_source_function_name(&self, name: Spur) -> Spur {
             name
         }
-        fn first_free_function(&self, _: Spur, _: FileId) -> Option<InstRef> {
+        fn endpoint_first_free_function(&self, _: Spur, _: FileId) -> Option<InstRef> {
             None
         }
-        fn named_method_declaration(&self, _: FileId, _: Spur, _: Spur) -> Option<InstRef> {
+        fn endpoint_named_method_declaration(
+            &self,
+            _: FileId,
+            _: Spur,
+            _: Spur,
+        ) -> Option<InstRef> {
             None
         }
-        fn destructor(&self, _: u32, _: Spur) -> Option<RirDestructorDeclaration> {
+        fn endpoint_destructor(&self, _: u32, _: Spur) -> Option<RirDestructorDeclaration> {
             None
         }
-        fn module_id_for_file(&self, _: u32) -> Option<ModuleId> {
+        fn endpoint_module_id_for_file(&self, _: u32) -> Option<ModuleId> {
             None
         }
-        fn intern_array(&self, _: Type, _: u64) -> Option<Type> {
+        fn endpoint_intern_array(&self, _: Type, _: u64) -> Option<Type> {
             None
         }
-        fn intern_ptr_const(&self, _: Type) -> Option<Type> {
+        fn endpoint_intern_ptr_const(&self, _: Type) -> Option<Type> {
             None
         }
-        fn intern_ptr_mut(&self, _: Type) -> Option<Type> {
+        fn endpoint_intern_ptr_mut(&self, _: Type) -> Option<Type> {
             None
         }
     }
 
-    impl CallResolutionFacts for StubFacts {
-        fn function_info(&self, _: Spur) -> Option<FunctionInfo> {
+    impl CallResolutionFactSource for OwnedReadHost {
+        fn call_function_info(&self, _: Spur) -> Option<FunctionInfo> {
             None
         }
-        fn function_contains(&self, _: Spur) -> bool {
+        fn call_function_contains(&self, _: Spur) -> bool {
             false
         }
-        fn source_function_name(&self, name: Spur) -> Spur {
+        fn call_source_function_name(&self, name: Spur) -> Spur {
             name
         }
-        fn resolve_function_name_local(&self, _: Spur, _: FileId) -> Option<Spur> {
+        fn call_resolve_function_name_local(&self, _: Spur, _: FileId) -> Option<Spur> {
             None
         }
-        fn resolve_const_info_in_file(&self, _: Spur, _: FileId) -> Option<ConstInfo> {
+        fn call_resolve_const_info_in_file(&self, _: Spur, _: FileId) -> Option<ConstInfo> {
             None
         }
-        fn value_const(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
+        fn call_value_const(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
             None
         }
-        fn module_binding(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
+        fn call_module_binding(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
             None
         }
-        fn method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
+        fn call_method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
             None
         }
-        fn named_method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
+        fn call_named_method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
             None
         }
-        fn named_method_by_callable_symbol(&self, _: Spur) -> Option<(StructId, Spur, MethodInfo)> {
+        fn call_named_method_by_callable_symbol(
+            &self,
+            _: Spur,
+        ) -> Option<(StructId, Spur, MethodInfo)> {
             None
         }
-        fn named_method_declaration(&self, _: FileId, _: Spur, _: Spur) -> Option<InstRef> {
+        fn call_named_method_declaration(&self, _: FileId, _: Spur, _: Spur) -> Option<InstRef> {
             None
         }
-        fn module_def(&self, _: ModuleId) -> ModuleDef {
-            unreachable!("compile-only stub")
+        fn call_module_def(&self, _: ModuleId) -> ModuleDef {
+            unreachable!("test host has no modules")
         }
     }
 
-    impl AggregateFacts for StubFacts {
-        fn value_const(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
+    impl AggregateFactSource for OwnedReadHost {
+        fn aggregate_value_const(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
             None
         }
-        fn module_binding(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
+        fn aggregate_module_binding(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
             None
         }
-        fn struct_in_file(&self, _: FileId, _: Spur) -> Option<StructId> {
+        fn aggregate_struct_in_file(&self, _: FileId, _: Spur) -> Option<StructId> {
             None
         }
-        fn enum_in_file(&self, _: FileId, _: Spur) -> Option<EnumId> {
+        fn aggregate_enum_in_file(&self, _: FileId, _: Spur) -> Option<EnumId> {
             None
         }
-        fn builtin_struct(&self, _: Spur) -> Option<StructId> {
+        fn aggregate_builtin_struct(&self, _: Spur) -> Option<StructId> {
             None
         }
-        fn builtin_enum(&self, _: Spur) -> Option<EnumId> {
+        fn aggregate_builtin_enum(&self, _: Spur) -> Option<EnumId> {
             None
         }
-        fn module(&self, _: ModuleId) -> super::super::aggregate_resolution::AggregateModuleFact {
-            unreachable!("compile-only stub")
+        fn aggregate_module(&self, _: ModuleId) -> AggregateModuleFact {
+            unreachable!("test host has no modules")
         }
-        fn file_path(&self, _: FileId) -> Option<&str> {
-            None
+        fn aggregate_file_path(&self, file: FileId) -> Option<&str> {
+            (file == FileId::DEFAULT).then_some(self.path.as_ref())
         }
-        fn source_path(&self, _: Span) -> Option<&str> {
-            None
-        }
-    }
-
-    impl LazyInferenceFacts for StubFacts {
-        fn func_sig(&self, _: Spur) -> Option<Rc<FunctionSig>> {
-            None
-        }
-        fn method_sig(&self, _: (StructId, Spur)) -> Option<Rc<MethodSig>> {
-            None
-        }
-        fn builtin_struct_type(&self, _: Spur) -> Option<Type> {
-            None
-        }
-        fn struct_type_by_file(&self, _: (FileId, Spur)) -> Option<Type> {
-            None
-        }
-        fn builtin_enum_type(&self, _: Spur) -> Option<Type> {
-            None
-        }
-        fn enum_type_by_file(&self, _: (FileId, Spur)) -> Option<Type> {
-            None
-        }
-        fn const_type(&self, _: (FileId, Spur)) -> Option<Type> {
-            None
-        }
-        fn const_type_alias(&self, _: (FileId, Spur)) -> Option<Type> {
-            None
-        }
-        fn const_value(&self, _: (FileId, Spur)) -> Option<i128> {
-            None
-        }
-        fn const_function_alias(&self, _: (FileId, Spur)) -> Option<Spur> {
-            None
-        }
-        fn module_binding_type(&self, _: (FileId, Spur)) -> Option<Type> {
-            None
-        }
-        fn module_file_id(&self, _: ModuleId) -> Option<FileId> {
-            None
-        }
-        fn function_by_file(&self, _: (FileId, Spur)) -> Option<Spur> {
+        fn aggregate_source_path(&self, _: Span) -> Option<&str> {
             None
         }
     }
 
-    impl BodyAnalysisHost for OwnedStubHost {
-        type EndpointFacts<'a>
-            = StubFacts
-        where
-            Self: 'a;
-        fn endpoint_facts(&self) -> Self::EndpointFacts<'_> {
-            StubFacts
+    impl InferenceFactSource for OwnedReadHost {
+        fn inference_generated_nominal_overlays(
+            &self,
+        ) -> super::super::inference_ctx::InferenceGeneratedNominalOverlays {
+            super::super::inference_ctx::InferenceGeneratedNominalOverlays {
+                builtin_struct_types: std::collections::HashMap::new(),
+                struct_types_by_file: std::collections::HashMap::new(),
+                enum_types_by_file: std::collections::HashMap::new(),
+            }
         }
-
-        type CallFacts<'a>
-            = StubFacts
-        where
-            Self: 'a;
-        fn call_facts(&self) -> Self::CallFacts<'_> {
-            StubFacts
+        fn uncached_function_sig(&self, _: Spur) -> Option<FunctionSig> {
+            None
         }
-
-        type AggregateFacts<'a>
-            = StubFacts
-        where
-            Self: 'a;
-        fn aggregate_facts(&self) -> Self::AggregateFacts<'_> {
-            StubFacts
+        fn uncached_method_sig(&self, _: (StructId, Spur)) -> Option<MethodSig> {
+            None
         }
-
-        type InferenceFacts<'a>
-            = StubFacts
-        where
-            Self: 'a;
-        fn inference_facts<'a>(&'a self, _: &'a InferenceContext) -> Self::InferenceFacts<'a> {
-            StubFacts
+        fn inference_builtin_struct_type(&self, _: Spur) -> Option<Type> {
+            None
         }
-
-        fn resolve_type_syntax(&mut self, _: TypeSyntaxRequest<'_>) -> TypeSyntaxResult {
-            unreachable!("compile-only stub")
+        fn inference_struct_type_by_file(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
         }
-        fn resolve_type_module_prefix(
-            &mut self,
-            _: ModulePrefixRequest<'_>,
-        ) -> rue_error::CompileResult<(ModuleId, Option<FileId>, String)> {
-            unreachable!("compile-only stub")
+        fn inference_builtin_enum_type(&self, _: Spur) -> Option<Type> {
+            None
         }
-        fn resolve_array_length(
-            &mut self,
-            _: ArrayLengthRequest<'_>,
-        ) -> rue_error::CompileResult<u64> {
-            unreachable!("compile-only stub")
+        fn inference_enum_type_by_file(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
         }
-        fn validate_deferred_type(
-            &mut self,
-            _: DeferredTypeRequest<'_>,
-        ) -> rue_error::CompileResult<Option<Type>> {
-            unreachable!("compile-only stub")
+        fn inference_const_type(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
         }
-        fn validate_deferred_value(
-            &mut self,
-            _: DeferredValueRequest<'_>,
-        ) -> rue_error::CompileResult<Option<ConstValue>> {
-            unreachable!("compile-only stub")
+        fn inference_const_type_alias(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_const_value(&self, _: (FileId, Spur)) -> Option<i128> {
+            None
+        }
+        fn inference_const_function_alias(&self, _: (FileId, Spur)) -> Option<Spur> {
+            None
+        }
+        fn inference_module_binding_type(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_module_file_id(&self, _: ModuleId) -> Option<FileId> {
+            None
+        }
+        fn inference_function_by_file(&self, _: (FileId, Spur)) -> Option<Spur> {
+            None
         }
     }
-
-    fn accepts_host<H: BodyAnalysisHost>(host: H) -> H {
-        host
-    }
-
-    fn assert_owned_host(_: OwnedStubHost) {}
 
     #[test]
-    fn owned_non_clone_host_compiles_by_value() {
-        let host = accepts_host(OwnedStubHost {
-            _owned_label: Box::from("owned host"),
-        });
-        assert_owned_host(host);
+    fn owned_read_host_exercises_the_same_adapter_requests_as_sema() {
+        use crate::inference::LazyInferenceFacts;
+        use crate::sema::aggregate_resolution::EpochFacts as AggregateFactsView;
+        use crate::sema::body_endpoint::EpochFacts as EndpointFactsView;
+        use crate::sema::call_resolution::EpochFacts as CallFactsView;
+
+        let interner = ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("body");
+        let rir = rue_rir::Rir::new();
+        let sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
+        let owned = OwnedReadHost {
+            ownership: OwnedHostSentinel { tag: 1 },
+            label: Box::from("body"),
+            symbol,
+            path: Box::from("synthetic/0.rue"),
+        };
+        assert_eq!(owned.ownership.tag(), 1);
+
+        let epoch_endpoint = EndpointFactsView::new(&sema);
+        let owned_endpoint = EndpointFactsView::new(&owned);
+        assert_eq!(
+            owned_endpoint.name_symbol("body"),
+            epoch_endpoint.name_symbol("body")
+        );
+
+        let epoch_call = CallFactsView::new(&sema);
+        let owned_call = CallFactsView::new(&owned);
+        assert_eq!(
+            owned_call.source_function_name(symbol),
+            epoch_call.source_function_name(symbol)
+        );
+        assert_eq!(
+            owned_call.function_contains(symbol),
+            epoch_call.function_contains(symbol)
+        );
+
+        let epoch_aggregate = AggregateFactsView::new(&sema);
+        let owned_aggregate = AggregateFactsView::new(&owned);
+        assert_eq!(
+            owned_aggregate.file_path(FileId::DEFAULT),
+            epoch_aggregate.file_path(FileId::DEFAULT)
+        );
+
+        let epoch_context = InferenceContext::new(&sema);
+        let owned_context = InferenceContext::new(&owned);
+        let epoch_inference = HostInferenceFacts::new(&epoch_context, &sema);
+        let owned_inference = HostInferenceFacts::new(&owned_context, &owned);
+        assert!(owned_inference.func_sig(symbol).is_none());
+        assert!(epoch_inference.func_sig(symbol).is_none());
+        assert_eq!(
+            owned_inference.function_by_file((FileId::DEFAULT, symbol)),
+            epoch_inference.function_by_file((FileId::DEFAULT, symbol)),
+        );
     }
 }

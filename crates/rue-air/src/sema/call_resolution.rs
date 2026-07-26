@@ -12,12 +12,13 @@
 //! can supply the same facts from a body-fact provider + overlay instead of the
 //! epoch `Sema`.
 //!
-//! [`EpochFacts`] is the one production implementation: each operation is the
-//! verbatim epoch-table read the inline analyzer code performed, so the hoist is
-//! byte-identical. Every operation is `&self` and returns owned or `Copy` data,
-//! so a caller inside an `&mut Sema` stack constructs a short-lived
-//! [`EpochFacts`] per resolution (mirroring `SemaTypeSyntaxProvider`) without
-//! retaining a borrow across the surrounding mutations.
+//! [`EpochFacts`] is the generic production adapter: it delegates each point
+//! query to a [`CallResolutionFactSource`] supplied by its host. `Sema` supplies
+//! the current declaration-epoch source, preserving the existing reads while
+//! keeping the adapter independent of an analyzer representation. Every
+//! operation is `&self` and returns owned or `Copy` data, so a caller inside an
+//! `&mut Sema` stack constructs a short-lived [`EpochFacts`] per resolution
+//! without retaining a borrow across the surrounding mutations.
 //!
 //! Where the analyzer selects a winner across *several* candidate reads — the
 //! reachability classifier's free-function-then-named-method order, and the
@@ -112,88 +113,151 @@ pub(crate) trait CallResolutionFacts {
     fn module_def(&self, module_id: ModuleId) -> ModuleDef;
 }
 
-/// The production [`CallResolutionFacts`]: every operation is the verbatim
-/// epoch-table read the inline analyzer code performed.
-pub(crate) struct EpochFacts<'s, 'a, D: DeclarationPhase> {
-    sema: &'s Sema<'a, D>,
+/// Raw immutable call-resolution reads supplied by a body-analysis host.
+pub(super) trait CallResolutionFactSource {
+    fn call_function_info(&self, name: Spur) -> Option<FunctionInfo>;
+    fn call_function_contains(&self, name: Spur) -> bool;
+    fn call_source_function_name(&self, name: Spur) -> Spur;
+    fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
+    fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo>;
+    fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+    fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
+    fn call_named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
+    fn call_named_method_by_callable_symbol(
+        &self,
+        name: Spur,
+    ) -> Option<(StructId, Spur, MethodInfo)>;
+    fn call_named_method_declaration(
+        &self,
+        file: FileId,
+        ty: Spur,
+        method: Spur,
+    ) -> Option<InstRef>;
+    fn call_module_def(&self, module: ModuleId) -> ModuleDef;
 }
 
-impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
-    pub(in crate::sema) fn new(sema: &'s Sema<'a, D>) -> Self {
-        Self { sema }
-    }
-}
-
-impl<D: DeclarationPhase> CallResolutionFacts for EpochFacts<'_, '_, D> {
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.sema.function_info(name).copied()
+/// Direct epoch reads for the current host. The generic adapter below owns the
+/// read-only abstraction; this impl is only the production source of facts.
+impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
+    fn call_function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.function_info(name).copied()
     }
 
-    fn function_contains(&self, name: Spur) -> bool {
-        self.sema.functions.contains_key(&name)
+    fn call_function_contains(&self, name: Spur) -> bool {
+        self.functions.contains_key(&name)
     }
 
-    fn source_function_name(&self, name: Spur) -> Spur {
-        self.sema.source_function_name(name)
+    fn call_source_function_name(&self, name: Spur) -> Spur {
+        self.source_function_name(name)
     }
 
-    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.resolve_function_name_local(name, file)
+    fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.record_body_module_item_lookup(file, name);
+        self.resolve_function_name_local(name, file)
     }
 
-    fn resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.resolve_const_info_in_file(name, file).cloned()
+    fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
+        self.record_body_module_item_lookup(file, name);
+        self.resolve_const_info_in_file(name, file).cloned()
     }
 
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.value_const(&(file, name)).cloned()
+    fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.record_body_module_item_lookup(file, name);
+        self.value_const(&(file, name)).cloned()
     }
 
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.module_binding(&(file, name)).cloned()
+    fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.record_body_module_item_lookup(file, name);
+        self.module_binding(&(file, name)).cloned()
     }
 
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.sema.record_body_member_lookup(struct_id, name);
-        self.sema.method_info((struct_id, name)).copied()
+    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.record_body_member_lookup(struct_id, name);
+        self.method_info((struct_id, name)).copied()
     }
 
-    fn named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.sema.record_body_member_lookup(struct_id, name);
-        self.sema.methods.get(&(struct_id, name)).copied()
+    fn call_named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.record_body_member_lookup(struct_id, name);
+        self.methods.get(&(struct_id, name)).copied()
     }
 
-    fn named_method_by_callable_symbol(&self, name: Spur) -> Option<(StructId, Spur, MethodInfo)> {
-        self.sema
-            .named_method_by_callable_symbol(name)
+    fn call_named_method_by_callable_symbol(
+        &self,
+        name: Spur,
+    ) -> Option<(StructId, Spur, MethodInfo)> {
+        self.named_method_by_callable_symbol(name)
             .map(|(struct_id, method, info)| (struct_id, method, *info))
     }
 
-    fn named_method_declaration(
+    fn call_named_method_declaration(
         &self,
         owner_file: FileId,
         owner_type_name: Spur,
         method_name: Spur,
     ) -> Option<InstRef> {
-        self.sema
-            .record_body_module_item_lookup(owner_file, owner_type_name);
+        self.record_body_module_item_lookup(owner_file, owner_type_name);
         let struct_id = self
-            .sema
             .structs_by_file_name
             .get(&(owner_file, owner_type_name))?;
-        self.sema.record_body_member_lookup(*struct_id, method_name);
-        self.sema
-            .named_method_declarations
+        self.record_body_member_lookup(*struct_id, method_name);
+        self.named_method_declarations
             .get(&(*struct_id, method_name))
             .copied()
     }
 
+    fn call_module_def(&self, module_id: ModuleId) -> ModuleDef {
+        self.module_registry.get_def(module_id)
+    }
+}
+
+/// Read-only call-resolution adapter used by the canonical body engine.
+pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost> {
+    host: &'host H,
+}
+
+impl<'host, H: super::fact_mode::BodyAnalysisReadHost> EpochFacts<'host, H> {
+    pub(in crate::sema) fn new(host: &'host H) -> Self {
+        Self { host }
+    }
+}
+
+impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFacts<'_, H> {
+    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.host.call_function_info(name)
+    }
+    fn function_contains(&self, name: Spur) -> bool {
+        self.host.call_function_contains(name)
+    }
+    fn source_function_name(&self, name: Spur) -> Spur {
+        self.host.call_source_function_name(name)
+    }
+    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.host.call_resolve_function_name_local(name, file)
+    }
+    fn resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
+        self.host.call_resolve_const_info_in_file(name, file)
+    }
+    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.host.call_value_const(file, name)
+    }
+    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.host.call_module_binding(file, name)
+    }
+    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.host.call_method_info(struct_id, name)
+    }
+    fn named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.host.call_named_method_info(struct_id, name)
+    }
+    fn named_method_by_callable_symbol(&self, name: Spur) -> Option<(StructId, Spur, MethodInfo)> {
+        self.host.call_named_method_by_callable_symbol(name)
+    }
+    fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
+        self.host.call_named_method_declaration(file, ty, method)
+    }
     fn module_def(&self, module_id: ModuleId) -> ModuleDef {
-        self.sema.module_registry.get_def(module_id)
+        self.host.call_module_def(module_id)
     }
 }
 
