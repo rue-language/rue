@@ -300,7 +300,7 @@ fn comptime_panic_err(reason: String, span: Span) -> CompileError {
     CompileError::new(ErrorKind::ComptimeEvaluationFailed { reason }, span)
 }
 
-impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// Try to evaluate an RIR expression as a compile-time constant, with no
     /// substitutions or type context.
     ///

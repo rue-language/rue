@@ -85,9 +85,9 @@ fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
         );
     }
     for oracle in [
-        "fn analyze_all_function_bodies_for_test<",
-        "fn analyze_all_function_bodies_with_work_for_test<",
-        "fn analyze_all_function_bodies_mut_for_test<",
+        "fn analyze_all_function_bodies_for_test(",
+        "fn analyze_all_function_bodies_with_work_for_test(",
+        "fn analyze_all_function_bodies_mut_for_test(",
         "fn analyze_all_bodies_for_test(",
     ] {
         assert!(

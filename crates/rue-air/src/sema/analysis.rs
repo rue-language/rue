@@ -39,15 +39,15 @@ use crate::types::{ModuleId, StructField, StructId, Type, TypeKind};
 ///
 /// Called from Sema::analyze_all after declarations are collected.
 /// Uses the demand-driven driver for every program shape.
-pub(crate) fn analyze_all_function_bodies_for_test<F: super::BodyAnalysisFactMode>(
-    sema: BodySema<'_, F>,
+pub(crate) fn analyze_all_function_bodies_for_test(
+    sema: BodySema<'_>,
 ) -> MultiErrorResult<SemaOutput> {
     analyze_all_function_bodies_with_work_for_test(sema)
         .map_err(super::BodyAnalysisFailure::into_errors)
 }
 
-pub(crate) fn analyze_all_function_bodies_with_work_for_test<F: super::BodyAnalysisFactMode>(
-    mut sema: BodySema<'_, F>,
+pub(crate) fn analyze_all_function_bodies_with_work_for_test(
+    mut sema: BodySema<'_>,
 ) -> Result<SemaOutput, super::BodyAnalysisFailure> {
     let result = analyze_all_function_bodies_mut_for_test(&mut sema);
     let work = result
@@ -57,8 +57,8 @@ pub(crate) fn analyze_all_function_bodies_with_work_for_test<F: super::BodyAnaly
     result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
 }
 
-pub(crate) fn compose_queried_bodies<F: super::BodyAnalysisFactMode>(
-    mut sema: BodySema<'_, F>,
+pub(crate) fn compose_queried_bodies(
+    mut sema: BodySema<'_>,
     candidates: Vec<
         crate::SemanticQueriedBodyCandidate<
             crate::SemanticDefinitionToken,
@@ -74,8 +74,8 @@ pub(crate) fn compose_queried_bodies<F: super::BodyAnalysisFactMode>(
     result.map_err(|errors| super::BodyAnalysisFailure::new(errors, work))
 }
 
-fn compose_queried_bodies_inner<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+fn compose_queried_bodies_inner(
+    sema: &mut BodySema<'_>,
     candidates: Vec<
         crate::SemanticQueriedBodyCandidate<
             crate::SemanticDefinitionToken,
@@ -205,8 +205,8 @@ fn compose_queried_bodies_inner<F: super::BodyAnalysisFactMode>(
     )
 }
 
-fn canonical_composed_identity<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn canonical_composed_identity(
+    sema: &BodySema<'_>,
     identity: &crate::FunctionInstanceKey<
         crate::SemanticDefinitionToken,
         crate::SemanticModuleToken,
@@ -232,8 +232,8 @@ fn canonical_composed_identity<F: super::BodyAnalysisFactMode>(
     })
 }
 
-fn composed_callable_metadata<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn composed_callable_metadata(
+    sema: &BodySema<'_>,
     identity: &crate::FunctionInstanceKey<
         crate::SemanticDefinitionToken,
         crate::SemanticModuleToken,
@@ -390,8 +390,8 @@ fn composed_callable_metadata<F: super::BodyAnalysisFactMode>(
     }
 }
 
-pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+pub(crate) fn import_staged_body(
+    sema: &mut BodySema<'_>,
     body: &crate::SemanticBody<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     body_span: Span,
 ) -> Result<
@@ -451,8 +451,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
             .map_err(|_| BF::Semantic(F::InvalidStructuralType))?;
     }
 
-    fn definition_endpoint<'a, Mode: super::BodyAnalysisFactMode>(
-        sema: &'a BodySema<'_, Mode>,
+    fn definition_endpoint<'a>(
+        sema: &'a BodySema<'_>,
         token: &crate::SemanticDefinitionToken,
     ) -> Result<&'a crate::SemanticDefinitionEndpoint, BF> {
         if let Some(endpoint) = sema.stable_definition_endpoints.get(token) {
@@ -470,8 +470,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
         Err(BF::StableResolution(failure))
     }
 
-    fn module_endpoint<'a, Mode: super::BodyAnalysisFactMode>(
-        sema: &'a BodySema<'_, Mode>,
+    fn module_endpoint<'a>(
+        sema: &'a BodySema<'_>,
         token: &crate::SemanticModuleToken,
     ) -> Result<&'a crate::SemanticModuleEndpoint, BF> {
         if let Some(endpoint) = sema.stable_module_endpoints.get(token) {
@@ -489,8 +489,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
         Err(BF::StableResolution(failure))
     }
 
-    fn import_type<Mode: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, Mode>,
+    fn import_type(
+        sema: &BodySema<'_>,
         pool: &crate::TypeInternPool,
         value: &T<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     ) -> Result<Type, BF> {
@@ -632,8 +632,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
         })
     }
 
-    fn resolve_struct_nominal<Mode: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, Mode>,
+    fn resolve_struct_nominal(
+        sema: &BodySema<'_>,
         identity: &crate::NominalInstanceKey<
             crate::SemanticDefinitionToken,
             crate::SemanticModuleToken,
@@ -699,8 +699,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
         }
     }
 
-    fn resolve_enum_nominal<Mode: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, Mode>,
+    fn resolve_enum_nominal(
+        sema: &BodySema<'_>,
         identity: &crate::NominalInstanceKey<
             crate::SemanticDefinitionToken,
             crate::SemanticModuleToken,
@@ -765,8 +765,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
         }
     }
 
-    fn resolve_body_function_definition<Mode: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, Mode>,
+    fn resolve_body_function_definition(
+        sema: &BodySema<'_>,
         token: &crate::SemanticDefinitionToken,
     ) -> Result<Spur, BF> {
         let identity = definition_endpoint(sema, token)?;
@@ -814,8 +814,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
             .ok_or(BF::Semantic(F::MissingFunction))
     }
 
-    fn resolve_body_function<Mode: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, Mode>,
+    fn resolve_body_function(
+        sema: &BodySema<'_>,
         identity: &crate::FunctionInstanceKey<
             crate::SemanticDefinitionToken,
             crate::SemanticModuleToken,
@@ -938,8 +938,8 @@ pub(crate) fn import_staged_body<F: super::BodyAnalysisFactMode>(
     Ok(imported)
 }
 
-pub(crate) fn imported_body_references<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+pub(crate) fn imported_body_references(
+    sema: &BodySema<'_>,
     air: &Air,
 ) -> (HashSet<Spur>, HashSet<(crate::StructId, Spur)>) {
     let mut functions = HashSet::new();
@@ -962,10 +962,8 @@ pub(crate) fn imported_body_references<F: super::BodyAnalysisFactMode>(
 }
 
 #[cfg(test)]
-pub(crate) fn analyze_all_function_bodies_with_namespace_probe_for_test<
-    F: super::BodyAnalysisFactMode,
->(
-    mut sema: BodySema<'_, F>,
+pub(crate) fn analyze_all_function_bodies_with_namespace_probe_for_test(
+    mut sema: BodySema<'_>,
 ) -> (
     MultiErrorResult<SemaOutput>,
     super::NamespaceBoundarySnapshot,
@@ -977,8 +975,8 @@ pub(crate) fn analyze_all_function_bodies_with_namespace_probe_for_test<
     (result, before, after)
 }
 
-fn analyze_all_function_bodies_mut_for_test<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+fn analyze_all_function_bodies_mut_for_test(
+    sema: &mut BodySema<'_>,
 ) -> MultiErrorResult<SemaOutput> {
     debug_assert!(!sema.declaration_binding_active);
     debug_assert!(sema.const_resolution_in_progress.is_empty());
@@ -1017,7 +1015,7 @@ fn analyze_all_function_bodies_mut_for_test<F: super::BodyAnalysisFactMode>(
 /// Materialize every qualified named callable symbol after declaration
 /// binding, before either fresh analysis or durable import can observe the
 /// body worklist. Hash-map iteration order must not affect Spur allocation.
-fn intern_named_callable_symbols<F: super::BodyAnalysisFactMode>(sema: &BodySema<'_, F>) {
+fn intern_named_callable_symbols(sema: &BodySema<'_>) {
     let mut symbols = sema
         .methods
         .iter()
@@ -1080,8 +1078,8 @@ fn find_undiagnosed_error_type(output: &SemaOutput) -> Option<CompileError> {
 }
 
 /// Shared finalization for demand-driven function-body analysis.
-fn finalize_function_body_analysis<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+fn finalize_function_body_analysis(
+    sema: &mut BodySema<'_>,
     functions_with_strings: Vec<(AnalyzedFunction, Vec<String>)>,
     active_aggregate_types: &HashSet<Type>,
     mut all_warnings: Vec<CompileWarning>,
@@ -1314,8 +1312,8 @@ fn finalize_function_body_analysis<F: super::BodyAnalysisFactMode>(
 ///
 /// This intentionally excludes methods/destructors; they have different
 /// reachability rules and are not covered by the current spec/UI cases.
-fn add_unused_function_warnings<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn add_unused_function_warnings(
+    sema: &BodySema<'_>,
     referenced_functions: &HashSet<Spur>,
     warnings: &mut Vec<CompileWarning>,
 ) {
@@ -1342,9 +1340,7 @@ fn add_unused_function_warnings<F: super::BodyAnalysisFactMode>(
     }
 }
 
-fn collect_static_function_references<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
-) -> HashSet<Spur> {
+fn collect_static_function_references(sema: &BodySema<'_>) -> HashSet<Spur> {
     let mut referenced = HashSet::new();
 
     for (_, inst) in sema.rir.iter() {
@@ -1410,8 +1406,8 @@ fn enqueue_references_sorted(
     pending_methods.extend(meths);
 }
 
-fn named_method_dependency_events<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn named_method_dependency_events(
+    sema: &BodySema<'_>,
     caller_struct: StructId,
     caller_method: Spur,
     referenced_functions: &HashSet<Spur>,
@@ -1505,8 +1501,8 @@ fn named_method_dependency_events<F: super::BodyAnalysisFactMode>(
     Ok(events)
 }
 
-fn named_destructor_dependency_events<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn named_destructor_dependency_events(
+    sema: &BodySema<'_>,
     caller_struct: StructId,
     caller_span: rue_span::Span,
     referenced_functions: &HashSet<Spur>,
@@ -1578,16 +1574,12 @@ fn named_destructor_dependency_events<F: super::BodyAnalysisFactMode>(
 
 /// Collect aggregate owners carried by committed AIR. Only owning aggregate
 /// edges recurse: raw pointers do not make their pointees live for drop glue.
-fn extend_owned_aggregate_types<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn extend_owned_aggregate_types(
+    sema: &BodySema<'_>,
     roots: impl IntoIterator<Item = Type>,
     active: &mut HashSet<Type>,
 ) {
-    fn visit<F: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, F>,
-        ty: Type,
-        active: &mut HashSet<Type>,
-    ) {
+    fn visit(sema: &BodySema<'_>, ty: Type, active: &mut HashSet<Type>) {
         match ty.kind() {
             TypeKind::Struct(id) => {
                 if !active.insert(ty) {
@@ -1636,8 +1628,8 @@ fn extend_owned_aggregate_types<F: super::BodyAnalysisFactMode>(
     }
 }
 
-fn extend_committed_air_aggregate_types<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn extend_committed_air_aggregate_types(
+    sema: &BodySema<'_>,
     functions_with_strings: &[(AnalyzedFunction, Vec<String>)],
     active: &mut HashSet<Type>,
 ) {
@@ -1657,8 +1649,8 @@ fn extend_committed_air_aggregate_types<F: super::BodyAnalysisFactMode>(
 /// frontier drains. Declaration-time aggregates are eager roots; a type made
 /// during body analysis is a root only when the current attempt's AIR owns it.
 /// Persistent slots created only by an abandoned attempt therefore stay inert.
-fn enqueue_anonymous_destructors<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn enqueue_anonymous_destructors(
+    sema: &BodySema<'_>,
     drop_marker_sym: Spur,
     active_aggregate_types: &HashSet<Type>,
     analyzed_methods: &HashSet<(StructId, Spur)>,
@@ -1686,9 +1678,7 @@ fn enqueue_anonymous_destructors<F: super::BodyAnalysisFactMode>(
 /// from the full type pool.
 ///
 /// This is the same trade-off Zig makes for faster builds and smaller binaries.
-fn analyze_function_bodies_lazy<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
-) -> MultiErrorResult<SemaOutput> {
+fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<SemaOutput> {
     // Register core `str` before freezing the shared inference context even
     // when source never spells it, because every unconstrained literal uses
     // this canonical identity.
@@ -3446,7 +3436,7 @@ where
     Ok(())
 }
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     /// Create a type mismatch error with safe type name resolution.
     ///
     /// This helper method safely resolves type names even for anonymous structs

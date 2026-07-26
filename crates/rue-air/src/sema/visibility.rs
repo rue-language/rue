@@ -13,7 +13,7 @@ use super::aggregate_resolution::{
 use super::{DeclarationPhase, Sema, context::AnalysisContext};
 use crate::types::EnumId;
 
-impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// Check if the accessing file can see a private item from the target file.
     ///
     /// Visibility rules (per ADR-0026):

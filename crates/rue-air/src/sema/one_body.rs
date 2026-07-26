@@ -218,8 +218,8 @@ fn interruption_outcome(interruption: OneBodyInterruption) -> OneBodyTransaction
     }
 }
 
-fn stable_token<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn stable_token(
+    sema: &BodySema<'_>,
     file: u32,
     name: &str,
     owner: Option<&str>,
@@ -228,8 +228,8 @@ fn stable_token<F: super::BodyAnalysisFactMode>(
     sema.stable_definition_token(file, name, owner, kind)
 }
 
-fn target_dependency<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn target_dependency(
+    sema: &BodySema<'_>,
     target: &super::NamedConstDependencyTargetEvent,
 ) -> Result<OneBodyDependency, crate::SemanticBodyExportFailure> {
     use super::{DeclarationTypeDependencyTargetKind as TK, NamedConstDependencyTargetEvent as T};
@@ -314,13 +314,13 @@ fn semantic_parameter_mode(mode: rue_rir::RirParamMode) -> crate::SemanticParame
     }
 }
 
-fn produced_method_type<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn produced_method_type(
+    sema: &BodySema<'_>,
     ty: &super::AnonMethodType,
     owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<SemanticProducedAnonymousMethodType, crate::SemanticBodyExportFailure> {
-    fn concrete<F: super::BodyAnalysisFactMode>(
-        sema: &BodySema<'_, F>,
+    fn concrete(
+        sema: &BodySema<'_>,
         ty: &super::AnonMethodType,
         owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
     ) -> Result<
@@ -354,8 +354,8 @@ fn produced_method_type<F: super::BodyAnalysisFactMode>(
     })
 }
 
-fn produced_anonymous_nominals<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn produced_anonymous_nominals(
+    sema: &BodySema<'_>,
 ) -> Result<Arc<[SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure> {
     let mut identities = sema
         .canonical_anonymous_types
@@ -369,7 +369,7 @@ fn produced_anonymous_nominals<F: super::BodyAnalysisFactMode>(
         .collect::<Vec<_>>();
     // Deterministic total order over the direct producer keys so the exported
     // nominal stream never depends on `HashMap` iteration order.
-    identities.sort_by(|(_, left), (_, right)| BodySema::<F>::anonymous_key_cmp(left, right));
+    identities.sort_by(|(_, left), (_, right)| BodySema::anonymous_key_cmp(left, right));
 
     identities
         .into_iter()
@@ -577,8 +577,8 @@ fn dependency_has_issuer(dependency: &OneBodyDependency, issuer: u64) -> bool {
     }
 }
 
-fn body_references<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn body_references(
+    sema: &BodySema<'_>,
     owner: Option<super::BodyOwnerToken>,
     referenced_functions: &HashSet<Spur>,
     referenced_methods: &HashSet<(crate::StructId, Spur)>,
@@ -728,8 +728,8 @@ fn body_references<F: super::BodyAnalysisFactMode>(
     Ok(references)
 }
 
-fn fail<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn fail(
+    sema: &BodySema<'_>,
     owner: Option<super::BodyOwnerToken>,
     error: CompileError,
 ) -> OneBodyTransactionOutcome {
@@ -769,8 +769,8 @@ fn fail<F: super::BodyAnalysisFactMode>(
     }
 }
 
-fn finalize_ordinary<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+fn finalize_ordinary(
+    sema: &BodySema<'_>,
     owner: super::BodyOwnerToken,
     body_span: Span,
     function: AnalyzedFunction,
@@ -827,8 +827,8 @@ fn finalize_ordinary<F: super::BodyAnalysisFactMode>(
     }
 }
 
-pub(super) fn analyze_one_body<F: super::BodyAnalysisFactMode>(
-    mut sema: BodySema<'_, F>,
+pub(super) fn analyze_one_body(
+    mut sema: BodySema<'_>,
     request: OneBodyRequest,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
@@ -988,8 +988,8 @@ pub(super) fn analyze_one_body<F: super::BodyAnalysisFactMode>(
     }
 }
 
-pub(super) fn analyze_one_body_instance<K, M, F: super::BodyAnalysisFactMode>(
-    mut sema: BodySema<'_, F>,
+pub(super) fn analyze_one_body_instance<K, M>(
+    mut sema: BodySema<'_>,
     instance: &FunctionInstanceKey<K, M>,
     definition: impl Fn(&K) -> Result<SemanticDefinitionToken, crate::SemanticStableResolutionFailure>,
     module: impl Fn(&M) -> Result<SemanticModuleToken, crate::SemanticStableResolutionFailure>,
@@ -1139,8 +1139,8 @@ fn function_instance_contains_str<D, M>(instance: &FunctionInstanceKey<D, M>) ->
     }
 }
 
-fn analyze_anonymous_member<F: super::BodyAnalysisFactMode>(
-    mut sema: BodySema<'_, F>,
+fn analyze_anonymous_member(
+    mut sema: BodySema<'_>,
     owner: TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
     member: crate::AnonymousMemberKey,
     interruption: Option<OneBodyInterruption>,
@@ -1348,8 +1348,8 @@ fn analyze_anonymous_member<F: super::BodyAnalysisFactMode>(
     }
 }
 
-pub(in crate::sema) fn materialize_argument_value<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+pub(in crate::sema) fn materialize_argument_value(
+    sema: &BodySema<'_>,
     value: &crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<super::ConstValue, crate::SemanticBodyExportFailure> {
     use crate::CanonicalArgumentValue as V;
@@ -1373,15 +1373,15 @@ pub(in crate::sema) fn materialize_argument_value<F: super::BodyAnalysisFactMode
     })
 }
 
-pub(in crate::sema) fn materialize_instance_type<F: super::BodyAnalysisFactMode>(
-    sema: &BodySema<'_, F>,
+pub(in crate::sema) fn materialize_instance_type(
+    sema: &BodySema<'_>,
     value: &TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<Type, crate::SemanticBodyExportFailure> {
     super::body_endpoint::resolve_instance_type(&sema.endpoint_facts(), value)
 }
 
-fn analyze_definition<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+fn analyze_definition(
+    sema: &mut BodySema<'_>,
     infer_ctx: &super::InferenceContext,
     token: SemanticDefinitionToken,
     interruption: Option<OneBodyInterruption>,
@@ -1517,8 +1517,8 @@ fn analyze_definition<F: super::BodyAnalysisFactMode>(
     }
 }
 
-fn analyze_named_method<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+fn analyze_named_method(
+    sema: &mut BodySema<'_>,
     infer_ctx: &super::InferenceContext,
     endpoint: &crate::SemanticDefinitionEndpoint,
     interruption: Option<OneBodyInterruption>,
@@ -1659,8 +1659,8 @@ fn analyze_named_method<F: super::BodyAnalysisFactMode>(
     }
 }
 
-fn analyze_named_destructor<F: super::BodyAnalysisFactMode>(
-    sema: &mut BodySema<'_, F>,
+fn analyze_named_destructor(
+    sema: &mut BodySema<'_>,
     infer_ctx: &super::InferenceContext,
     endpoint: &crate::SemanticDefinitionEndpoint,
     interruption: Option<OneBodyInterruption>,

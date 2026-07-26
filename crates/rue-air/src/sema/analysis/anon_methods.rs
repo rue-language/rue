@@ -5,9 +5,7 @@
 
 use super::*;
 
-impl<'a, D: crate::sema::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode>
-    crate::sema::Sema<'a, D, Mode>
-{
+impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
     /// Register methods from an anonymous struct type.
     ///
     /// This is called when an anonymous struct with methods is encountered during
@@ -486,8 +484,8 @@ impl<'a, D: crate::sema::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMo
         type_subst: &std::collections::HashMap<Spur, Type>,
         value_subst: &std::collections::HashMap<Spur, ConstValue>,
     ) -> Vec<super::super::AnonMethodSig> {
-        fn resolve<D: crate::sema::DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>(
-            sema: &mut crate::sema::Sema<'_, D, F>,
+        fn resolve<D: crate::sema::DeclarationPhase>(
+            sema: &mut crate::sema::Sema<'_, D>,
             symbol: Spur,
             type_subst: &std::collections::HashMap<Spur, Type>,
             value_subst: &std::collections::HashMap<Spur, ConstValue>,

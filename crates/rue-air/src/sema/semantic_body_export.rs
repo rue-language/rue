@@ -14,7 +14,7 @@ use crate::{
     TypeKind,
 };
 
-impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn export_specialized_body(
         &self,
         base_name: Spur,

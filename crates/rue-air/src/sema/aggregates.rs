@@ -22,7 +22,7 @@ use super::context::{AnalysisContext, AnalysisResult, ConstValue};
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
 use crate::types::{Type, TypeKind};
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     /// Resolve a path/pattern enum type name that may be a comptime
     /// type-variable binding (`let O = Option(i32); O::Some(..)`), falling
     /// back to the named-enum table. Returns `(enum_id, via_comptime_binding)`,

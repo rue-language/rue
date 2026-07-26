@@ -30,10 +30,10 @@ use crate::types::{
     parse_type_call_syntax,
 };
 
-struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase, F: super::BodyAnalysisFactMode> {
-    sema: &'s mut Sema<'a, D, F>,
+struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
+    sema: &'s mut Sema<'a, D>,
     span: Span,
-    root_authority: SemaTypeRootAuthority,
+    root_authority: TypeRootAuthority,
     resolution_context: SemaTypeResolutionContext,
     type_substitutions: Option<&'c HashMap<Spur, Type>>,
     value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
@@ -41,7 +41,7 @@ struct SemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase, F: super::BodyAna
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SemaTypeRootAuthority {
+pub(crate) enum TypeRootAuthority {
     KnownFile(FileId),
     GlobalSpeculative,
 }
@@ -58,9 +58,8 @@ fn provider_failure<T>(result: CompileResult<T>) -> SemaProviderResult<T> {
     result.map_err(crate::SemanticProviderError::Failure)
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
-    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
-    for SemaTypeSyntaxProvider<'_, '_, '_, D, F>
+impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+    for SemaTypeSyntaxProvider<'_, '_, '_, D>
 {
     type Abort = Infallible;
     type Failure = CompileError;
@@ -71,7 +70,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         name: &str,
     ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
     {
-        let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority else {
+        let TypeRootAuthority::KnownFile(root_file) = self.root_authority else {
             return Ok(None);
         };
         let name = self.sema.interner.get_or_intern(name);
@@ -86,7 +85,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         name: &str,
     ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
     {
-        if self.root_authority == SemaTypeRootAuthority::GlobalSpeculative {
+        if self.root_authority == TypeRootAuthority::GlobalSpeculative {
             return Ok(None);
         }
         let file = self.sema.module_registry.get_def(*module).file_id;
@@ -108,17 +107,17 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
 
     fn accessing_domain(&self, _scope: &FileId) -> crate::SemanticVisibilityDomain {
         match self.root_authority {
-            SemaTypeRootAuthority::KnownFile(root_file) => {
+            TypeRootAuthority::KnownFile(root_file) => {
                 crate::SemanticVisibilityDomain::from_file_path(self.sema.get_file_path(root_file))
             }
-            SemaTypeRootAuthority::GlobalSpeculative => {
+            TypeRootAuthority::GlobalSpeculative => {
                 crate::SemanticVisibilityDomain::from_file_path(None)
             }
         }
     }
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
+impl<D: DeclarationPhase>
     crate::SemanticTypeSyntaxProvider<
         FileId,
         crate::types::ModuleId,
@@ -127,7 +126,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         Spur,
         Type,
         ConstValue,
-    > for SemaTypeSyntaxProvider<'_, '_, '_, D, F>
+    > for SemaTypeSyntaxProvider<'_, '_, '_, D>
 {
     fn substituted_type(
         &mut self,
@@ -146,7 +145,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     }
 
     fn builtin_type(&mut self, _scope: &FileId, name: &str) -> SemaProviderResult<Option<Type>> {
-        if name == "str" && self.root_authority != SemaTypeRootAuthority::GlobalSpeculative {
+        if name == "str" && self.root_authority != TypeRootAuthority::GlobalSpeculative {
             provider_failure(self.sema.get_or_create_str_struct(self.span).map(Some))
         } else {
             Ok(None)
@@ -160,7 +159,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.sema.interner.get_or_intern(name);
         let (id, bypass_visibility) = match self.root_authority {
-            SemaTypeRootAuthority::KnownFile(root_file) => {
+            TypeRootAuthority::KnownFile(root_file) => {
                 self.sema.record_body_module_item_lookup(root_file, symbol);
                 (
                     self.sema
@@ -171,7 +170,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
                     false,
                 )
             }
-            SemaTypeRootAuthority::GlobalSpeculative => (
+            TypeRootAuthority::GlobalSpeculative => (
                 self.sema
                     .struct_id_for_name(symbol)
                     .or_else(|| self.sema.resolve_builtin_struct_name(symbol)),
@@ -200,7 +199,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
         let symbol = self.sema.interner.get_or_intern(name);
         let (id, bypass_visibility) = match self.root_authority {
-            SemaTypeRootAuthority::KnownFile(root_file) => {
+            TypeRootAuthority::KnownFile(root_file) => {
                 self.sema.record_body_module_item_lookup(root_file, symbol);
                 (
                     self.sema
@@ -211,7 +210,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
                     false,
                 )
             }
-            SemaTypeRootAuthority::GlobalSpeculative => (
+            TypeRootAuthority::GlobalSpeculative => (
                 self.sema
                     .enum_id_for_name(symbol)
                     .or_else(|| self.sema.resolve_builtin_enum_name(symbol)),
@@ -238,7 +237,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         _scope: &FileId,
         name: &str,
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
-        let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority else {
+        let TypeRootAuthority::KnownFile(root_file) = self.root_authority else {
             return Ok(None);
         };
         let symbol = self.sema.interner.get_or_intern(name);
@@ -361,7 +360,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     }
 
     fn allows_qualified_paths(&self, _scope: &FileId) -> bool {
-        self.root_authority != SemaTypeRootAuthority::GlobalSpeculative
+        self.root_authority != TypeRootAuthority::GlobalSpeculative
     }
 
     fn allows_qualified_comptime_call_head(
@@ -369,7 +368,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         _scope: &FileId,
         expectation: crate::SemanticComptimeCallExpectation,
     ) -> bool {
-        self.root_authority != SemaTypeRootAuthority::GlobalSpeculative
+        self.root_authority != TypeRootAuthority::GlobalSpeculative
             && !(self.resolution_context == SemaTypeResolutionContext::ArrayLength
                 && expectation == crate::SemanticComptimeCallExpectation::Value)
     }
@@ -459,14 +458,14 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     ) -> SemaProviderResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
         let symbol = self.sema.interner.get_or_intern(name);
         let mut key = match self.root_authority {
-            SemaTypeRootAuthority::KnownFile(root_file) => {
+            TypeRootAuthority::KnownFile(root_file) => {
                 self.sema.resolve_function_name_local(symbol, root_file)
             }
-            SemaTypeRootAuthority::GlobalSpeculative => Some(symbol),
+            TypeRootAuthority::GlobalSpeculative => Some(symbol),
         };
         if key.is_none()
             && self.sema.declaration_binding_active
-            && let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority
+            && let TypeRootAuthority::KnownFile(root_file) = self.root_authority
         {
             let observer = self.sema.declaration_type_observer.clone();
             provider_failure(
@@ -484,7 +483,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         };
         self.sema.record_declaration_type_call_head(key, info);
         let mut fact = self.constructor_fact(key, info);
-        if self.root_authority == SemaTypeRootAuthority::GlobalSpeculative {
+        if self.root_authority == TypeRootAuthority::GlobalSpeculative {
             fact.is_public = true;
         }
         Ok(Some(fact))
@@ -571,13 +570,11 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     }
 }
 
-impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
-    SemaTypeSyntaxProvider<'s, 'a, 'c, D, F>
-{
+impl<'s, 'a, 'c, D: DeclarationPhase> SemaTypeSyntaxProvider<'s, 'a, 'c, D> {
     fn new(
-        sema: &'s mut Sema<'a, D, F>,
+        sema: &'s mut Sema<'a, D>,
         span: Span,
-        root_authority: SemaTypeRootAuthority,
+        root_authority: TypeRootAuthority,
         resolution_context: SemaTypeResolutionContext,
         type_substitutions: Option<&'c HashMap<Spur, Type>>,
         value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
@@ -629,7 +626,7 @@ impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
             .and_then(|substitutions| substitutions.get(&symbol))
         {
             *value
-        } else if let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority {
+        } else if let TypeRootAuthority::KnownFile(root_file) = self.root_authority {
             if let Some(info) = self
                 .sema
                 .resolve_const_info_in_file(symbol, root_file)
@@ -881,7 +878,7 @@ impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         {
             return Ok(ConstValue::Type(*ty));
         }
-        if let SemaTypeRootAuthority::KnownFile(root_file) = self.root_authority
+        if let TypeRootAuthority::KnownFile(root_file) = self.root_authority
             && let Some(info) = self.sema.resolve_const_info_in_file(symbol, root_file)
         {
             return Ok(info.value);
@@ -984,24 +981,16 @@ enum DeferredValueResolution {
     Pending,
 }
 
-struct DeferredSemaTypeSyntaxProvider<
-    's,
-    'a,
-    'c,
-    D: DeclarationPhase,
-    F: super::BodyAnalysisFactMode,
-> {
-    inner: SemaTypeSyntaxProvider<'s, 'a, 'c, D, F>,
+struct DeferredSemaTypeSyntaxProvider<'s, 'a, 'c, D: DeclarationPhase> {
+    inner: SemaTypeSyntaxProvider<'s, 'a, 'c, D>,
     type_params: &'c [Spur],
     value_params: &'c [Spur],
     value_param_type_syms: &'c [(Spur, Spur)],
 }
 
-impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
-    DeferredSemaTypeSyntaxProvider<'s, 'a, 'c, D, F>
-{
+impl<'s, 'a, 'c, D: DeclarationPhase> DeferredSemaTypeSyntaxProvider<'s, 'a, 'c, D> {
     fn new(
-        sema: &'s mut Sema<'a, D, F>,
+        sema: &'s mut Sema<'a, D>,
         span: Span,
         type_params: &'c [Spur],
         value_params: &'c [Spur],
@@ -1011,7 +1000,7 @@ impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
             inner: SemaTypeSyntaxProvider::new(
                 sema,
                 span,
-                SemaTypeRootAuthority::KnownFile(span.file_id),
+                TypeRootAuthority::KnownFile(span.file_id),
                 SemaTypeResolutionContext::Type,
                 None,
                 None,
@@ -1027,9 +1016,8 @@ impl<'s, 'a, 'c, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     }
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
-    crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
-    for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D, F>
+impl<D: DeclarationPhase> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
+    for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D>
 {
     type Abort = Infallible;
     type Failure = CompileError;
@@ -1061,7 +1049,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     }
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
+impl<D: DeclarationPhase>
     crate::SemanticTypeSyntaxProvider<
         FileId,
         crate::types::ModuleId,
@@ -1070,7 +1058,7 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
         Spur,
         DeferredTypeResolution,
         DeferredValueResolution,
-    > for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D, F>
+    > for DeferredSemaTypeSyntaxProvider<'_, '_, '_, D>
 {
     fn substituted_type(
         &mut self,
@@ -1594,7 +1582,7 @@ fn private_qualified_item_error(
     ))
 }
 
-impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Get a human-readable name for a type.
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         // A constructor-produced anonymous type prints its instantiation
@@ -2111,7 +2099,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         self.resolve_type_syntax_with_substitutions(
             syntax,
             root_file,
-            SemaTypeRootAuthority::KnownFile(root_file),
+            TypeRootAuthority::KnownFile(root_file),
             span,
             type_substitutions,
             value_substitutions,
@@ -2132,20 +2120,21 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         &mut self,
         syntax: &str,
         root_file: FileId,
-        root_authority: SemaTypeRootAuthority,
+        root_authority: TypeRootAuthority,
         span: Span,
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> Result<Type, crate::SemanticTypeSyntaxError<Infallible, CompileError, FileId, Spur>> {
-        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
-        fact_mode.resolve_type_syntax_with_substitutions(
+        super::BodyAnalysisHost::resolve_type_syntax(
             self,
-            syntax,
-            root_file,
-            root_authority,
-            span,
-            type_substitutions,
-            value_substitutions,
+            super::fact_mode::TypeSyntaxRequest {
+                syntax,
+                root_file,
+                root_authority,
+                span,
+                type_substitutions,
+                value_substitutions,
+            },
         )
     }
 
@@ -2153,7 +2142,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         &mut self,
         syntax: &str,
         root_file: FileId,
-        root_authority: SemaTypeRootAuthority,
+        root_authority: TypeRootAuthority,
         span: Span,
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
@@ -2449,8 +2438,14 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         segments: &[&str],
         span: Span,
     ) -> CompileResult<(crate::types::ModuleId, Option<FileId>, String)> {
-        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
-        fact_mode.resolve_type_module_prefix(self, root_file, segments, span)
+        super::BodyAnalysisHost::resolve_type_module_prefix(
+            self,
+            super::fact_mode::ModulePrefixRequest {
+                root_file,
+                segments,
+                span,
+            },
+        )
     }
 
     pub(crate) fn resolve_type_module_prefix_with_epoch_facts(
@@ -2462,7 +2457,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         let mut provider = SemaTypeSyntaxProvider::new(
             self,
             span,
-            SemaTypeRootAuthority::KnownFile(root_file),
+            TypeRootAuthority::KnownFile(root_file),
             SemaTypeResolutionContext::Type,
             None,
             None,
@@ -2593,7 +2588,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         self.resolve_type_syntax_with_substitutions(
             &type_name,
             span.file_id,
-            SemaTypeRootAuthority::KnownFile(span.file_id),
+            TypeRootAuthority::KnownFile(span.file_id),
             span,
             Some(type_subst),
             Some(value_subst),
@@ -2643,7 +2638,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         self.resolve_type_syntax_with_substitutions(
             &syntax,
             FileId::DEFAULT,
-            SemaTypeRootAuthority::GlobalSpeculative,
+            TypeRootAuthority::GlobalSpeculative,
             Span::default(),
             Some(type_subst),
             Some(value_subst),
@@ -2662,7 +2657,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         self.resolve_type_syntax_with_substitutions(
             &syntax,
             span.file_id,
-            SemaTypeRootAuthority::KnownFile(span.file_id),
+            TypeRootAuthority::KnownFile(span.file_id),
             span,
             Some(type_subst),
             Some(value_subst),
@@ -2708,8 +2703,14 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         span: Span,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<u64> {
-        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
-        fact_mode.resolve_array_length_fact(self, length, span, value_substitutions)
+        super::BodyAnalysisHost::resolve_array_length(
+            self,
+            super::fact_mode::ArrayLengthRequest {
+                length,
+                span,
+                value_substitutions,
+            },
+        )
     }
 
     pub(crate) fn resolve_array_length_with_epoch_facts(
@@ -2721,7 +2722,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         let mut provider = SemaTypeSyntaxProvider::new(
             self,
             span,
-            SemaTypeRootAuthority::KnownFile(span.file_id),
+            TypeRootAuthority::KnownFile(span.file_id),
             SemaTypeResolutionContext::Type,
             None,
             value_substitutions,
@@ -2926,14 +2927,15 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         value_param_type_syms: &[(Spur, Spur)],
         span: Span,
     ) -> CompileResult<Option<Type>> {
-        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
-        fact_mode.validate_deferred_type_position(
+        super::BodyAnalysisHost::validate_deferred_type(
             self,
-            type_name,
-            type_params,
-            value_params,
-            value_param_type_syms,
-            span,
+            super::fact_mode::DeferredTypeRequest {
+                type_name,
+                type_params,
+                value_params,
+                value_param_type_syms,
+                span,
+            },
         )
     }
 
@@ -3002,17 +3004,18 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         require_integer: bool,
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        let fact_mode = std::sync::Arc::clone(&self.fact_mode);
-        fact_mode.validate_deferred_value_position(
+        super::BodyAnalysisHost::validate_deferred_value(
             self,
-            value_name,
-            type_params,
-            value_params,
-            value_param_type_syms,
-            expected,
-            contract,
-            require_integer,
-            span,
+            super::fact_mode::DeferredValueRequest {
+                value_name,
+                type_params,
+                value_params,
+                value_param_type_syms,
+                expected,
+                contract,
+                require_integer,
+                span,
+            },
         )
     }
 
@@ -3183,7 +3186,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
         let mut provider = SemaTypeSyntaxProvider::new(
             self,
             span,
-            SemaTypeRootAuthority::KnownFile(span.file_id),
+            TypeRootAuthority::KnownFile(span.file_id),
             SemaTypeResolutionContext::Type,
             None,
             None,

@@ -143,7 +143,7 @@ impl PlaceTrace {
             .any(|p| matches!(p.proj, AirProjection::Index { .. }) && p.index_segment.is_none())
     }
 }
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     /// Read move state without exposing the move-state store to phase peers.
     pub(super) fn moved_state<'ctx>(
         &self,

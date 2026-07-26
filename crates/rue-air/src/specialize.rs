@@ -123,9 +123,9 @@ struct SpecializedBody {
 pub const MAX_SPECIALIZATION_ROUNDS: usize = 64;
 
 impl Specializer {
-    fn stable_identity<F: crate::sema::BodyAnalysisFactMode>(
+    fn stable_identity(
         key: &SpecializationKey,
-        sema: &crate::sema::BodySema<'_, F>,
+        sema: &crate::sema::BodySema<'_>,
     ) -> Result<
         crate::SemanticSpecializationIdentity<
             crate::SemanticDefinitionToken,
@@ -168,10 +168,10 @@ impl Specializer {
         })
     }
 
-    fn take_reusable_body<F: crate::sema::BodyAnalysisFactMode>(
+    fn take_reusable_body(
         &self,
         key: &SpecializationKey,
-        sema: &mut crate::sema::BodySema<'_, F>,
+        sema: &mut crate::sema::BodySema<'_>,
     ) -> Option<
         crate::SemanticSpecializedBodyCandidate<
             crate::SemanticDefinitionToken,
@@ -193,11 +193,11 @@ impl Specializer {
     /// `Specializer` itself persists across outer sema waves so an ordinary
     /// helper analyzed later can request a specialization without duplicating
     /// one created by an earlier wave.
-    pub(crate) fn run_to_fixpoint<F: crate::sema::BodyAnalysisFactMode>(
+    pub(crate) fn run_to_fixpoint(
         &mut self,
         functions_with_strings: &mut Vec<(AnalyzedFunction, Vec<String>)>,
         all_warnings: &mut Vec<CompileWarning>,
-        sema: &mut crate::sema::BodySema<'_, F>,
+        sema: &mut crate::sema::BodySema<'_>,
         infer_ctx: &InferenceContext,
         interner: &ThreadedRodeo,
     ) -> CompileResult<DiscoveredReferences> {
@@ -619,8 +619,8 @@ fn rewrite_call_generic(
 /// its existing expansion policy until the compiler query cutover.  Keeping
 /// selection here ensures the transaction does not guess specialization edges
 /// by rescanning RIR syntax.
-pub(crate) fn select_one_body_specializations<F: crate::sema::BodyAnalysisFactMode>(
-    sema: &crate::sema::BodySema<'_, F>,
+pub(crate) fn select_one_body_specializations(
+    sema: &crate::sema::BodySema<'_>,
     mut function: AnalyzedFunction,
 ) -> CompileResult<(
     AnalyzedFunction,
@@ -710,8 +710,8 @@ pub(crate) struct OneSpecializedBody {
 /// Analyze exactly one concrete specialization.  No call-site scan or
 /// specialization fixed point is performed here; the caller supplies the
 /// already-selected local key and receives references for later scheduling.
-pub(crate) fn analyze_one_specialization<F: crate::sema::BodyAnalysisFactMode>(
-    sema: &mut crate::sema::BodySema<'_, F>,
+pub(crate) fn analyze_one_specialization(
+    sema: &mut crate::sema::BodySema<'_>,
     infer_ctx: &InferenceContext,
     key: SpecializationKey,
 ) -> CompileResult<OneSpecializedBody> {
@@ -839,8 +839,8 @@ fn mangle_type(ty: Type) -> String {
 /// their concrete type arguments and a value substitution map from the
 /// comptime value parameters to their concrete values (RUE-166), then
 /// re-analyzes the function body with these substitutions.
-fn create_specialized_function<F: crate::sema::BodyAnalysisFactMode>(
-    sema: &mut crate::sema::BodySema<'_, F>,
+fn create_specialized_function(
+    sema: &mut crate::sema::BodySema<'_>,
     infer_ctx: &InferenceContext,
     key: &SpecializationKey,
     specialized_name: Spur,
