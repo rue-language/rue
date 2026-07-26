@@ -152,20 +152,18 @@ RUE
 cat > "$work/san_fallible_initializer.rue" <<'RUE'
 // EOF returns from the initializer before `line` owns a StrBuf. Cleanup must
 // end its storage without reading or dropping the uninitialized slot.
+// `?` on a fallible intrinsic resolves the trusted std Option by identity
+// (RUE-1112), so the helper returns std.option.Option rather than a local
+// structurally Option-shaped enum.
 const std = @import("std");
-const StrBuf = std.strbuf.StrBuf;
 
-fn Option(comptime T: type) -> type {
-    enum { Some(T), None }
-}
-
-fn read_num() -> Option(i64) {
+fn read_num() -> std.option.Option(i64) {
     let line = @read_line()?;
     @parse_i64(line)
 }
 
 fn main() -> i32 {
-    let O = Option(i64);
+    let O = std.option.Option(i64);
     match read_num() {
         O.Some(_) => 1,
         O.None => 0,
