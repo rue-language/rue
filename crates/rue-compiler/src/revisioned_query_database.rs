@@ -11630,36 +11630,6 @@ fn import_resolution_from_value(value: &LookupImportValue) -> rue_air::ImportRes
     }
 }
 
-/// Build the body query key for a plain-function declaration candidate. Producer
-/// and toolchain facts are keyed by body instance; only a free function is
-/// derivable here, which is exactly what the representative differential bodies
-/// exercise. Non-function candidates yield `None`.
-#[cfg(test)]
-fn function_body_query_key_for_candidate(
-    candidate: &crate::declaration_candidate::DeclarationCandidateKey,
-    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
-) -> Option<crate::body_query::BodyQueryKey> {
-    use crate::declaration_candidate::DeclarationCandidateCategory as Cat;
-    let (namespace, kind) = match candidate.category {
-        Cat::Function => (
-            crate::StableDefinitionNamespace::Value,
-            crate::StableDefinitionKind::Function,
-        ),
-        _ => return None,
-    };
-    let key = crate::StableDefinitionKey::from_stable_parts(
-        candidate.module.clone(),
-        namespace,
-        kind,
-        candidate.name.clone(),
-        None,
-    );
-    Some(crate::body_query::BodyQueryKey {
-        instance: crate::FunctionInstanceKey::Definition(key),
-        configuration: configuration.clone(),
-    })
-}
-
 /// The compiler-side implementation of the rue-air exact provider boundary.
 ///
 /// Bound entirely inside one query task: `context` records each edge, `database`
@@ -11732,32 +11702,13 @@ impl<'a> CompilerBodyFactProvider<'a> {
         &self.database.provider_observation_meter
     }
 
-    /// Observe producer facts under the producer's exact function-instance
-    /// identity. This preserves specialization wrappers carried by the
-    /// declaration projection instead of lossy definition-key reconstruction.
-    pub(crate) fn producer_instance_body_facts(
+    fn body_query_key(
         &self,
         instance: &crate::FunctionInstanceKey,
-    ) -> Option<crate::body_query::ProducedAnonymous> {
-        self.meter()
-            .producer_facts
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let body_key = crate::body_query::BodyQueryKey {
+    ) -> crate::body_query::BodyQueryKey {
+        crate::body_query::BodyQueryKey {
             instance: instance.clone(),
             configuration: self.configuration.clone(),
-        };
-        match self
-            .context
-            .query_registered(&self.database.body_produced_anonymous, body_key)
-        {
-            Ok(terminal) => match terminal.outcome() {
-                rue_query::QueryOutcome::Success(value) => Some(value.clone()),
-                _ => None,
-            },
-            Err(abort) => {
-                self.observe_abort(abort);
-                None
-            }
         }
     }
 
@@ -11927,6 +11878,7 @@ struct MemberObservation {
 impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
     type ModuleRef = ModuleId;
     type DeclarationRef = crate::declaration_candidate::DeclarationCandidateKey;
+    type BodyInstanceRef = crate::FunctionInstanceKey;
     type ReceiverType = ReceiverTypeIdentity;
 
     type DeclarationIdentity = crate::semantic_query_nucleus::DeclarationIdentityProjection;
@@ -12336,16 +12288,15 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
 
     fn producer_body_facts(
         &self,
-        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+        instance: &crate::FunctionInstanceKey,
     ) -> Option<crate::body_query::ProducedAnonymous> {
         self.meter()
             .producer_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let body_key = function_body_query_key_for_candidate(decl, &self.configuration)?;
-        match self
-            .context
-            .query_registered(&self.database.body_produced_anonymous, body_key)
-        {
+        match self.context.query_registered(
+            &self.database.body_produced_anonymous,
+            self.body_query_key(instance),
+        ) {
             Ok(terminal) => match terminal.outcome() {
                 rue_query::QueryOutcome::Success(value) => Some(value.clone()),
                 _ => None,
@@ -12364,20 +12315,16 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
 
     fn trusted_toolchain_facts(
         &self,
-        decl: &crate::declaration_candidate::DeclarationCandidateKey,
+        instance: &crate::FunctionInstanceKey,
     ) -> crate::BodyToolchainDemand {
         self.meter()
             .toolchain_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let empty = crate::BodyToolchainDemand::from_payload_kinds([], None);
-        let Some(body_key) = function_body_query_key_for_candidate(decl, &self.configuration)
-        else {
-            return empty;
-        };
-        match self
-            .context
-            .query_registered(&self.database.body_toolchain_demands, body_key)
-        {
+        match self.context.query_registered(
+            &self.database.body_toolchain_demands,
+            self.body_query_key(instance),
+        ) {
             Ok(terminal) => match terminal.outcome() {
                 rue_query::QueryOutcome::Success(value) => value.clone(),
                 _ => empty,
@@ -13889,6 +13836,16 @@ mod tests {
             target: rue_target::Target::X86_64Linux,
             preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
         }
+    }
+
+    fn free_function_instance(module: &ModuleId, name: &str) -> crate::FunctionInstanceKey {
+        crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+            module.clone(),
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            Arc::from(name),
+            None,
+        ))
     }
 
     fn declaration_candidate(
@@ -20843,6 +20800,7 @@ mod tests {
         let config = semantic_configuration();
 
         let helper = declaration_candidate(&database, revision, &m, Cat::Function, "helper");
+        let helper_instance = free_function_instance(&m, "helper");
         let box_struct = declaration_candidate(&database, revision, &m, Cat::Struct, "Box");
         let copy_receiver = ReceiverTypeIdentity::new(m.clone(), "Box", Cat::Struct);
         let res_receiver = ReceiverTypeIdentity::new(m.clone(), "Res", Cat::Struct);
@@ -20862,7 +20820,7 @@ mod tests {
                     provider.language_item(&m, rue_air::ProviderNamespace::ModuleItem, "Box"),
                     provider.drop_copy_metadata(&copy_probe),
                     provider.drop_copy_metadata(&res_probe),
-                    provider.trusted_toolchain_facts(&helper_probe),
+                    provider.trusted_toolchain_facts(&helper_instance),
                 )
             });
         let (
@@ -23885,6 +23843,7 @@ mod tests {
         let bad = declaration_candidate(&database, revision, &m, Cat::Struct, "Bad");
         let good = declaration_candidate(&database, revision, &m, Cat::Struct, "Good");
         let plain = declaration_candidate(&database, revision, &m, Cat::Function, "plain");
+        let plain_instance = free_function_instance(&m, "plain");
 
         let bad_probe = bad.clone();
         let good_probe = good.clone();
@@ -23897,7 +23856,7 @@ mod tests {
                 (
                     provider.nominal_well_formedness(&bad_probe),
                     provider.nominal_well_formedness(&good_probe),
-                    provider.producer_body_facts(&plain_probe),
+                    provider.producer_body_facts(&plain_instance),
                     provider.signature(&plain_probe),
                 )
             },
@@ -23942,8 +23901,10 @@ mod tests {
         let epoch_produced = database.runtime.request_registered(
             &database.body_produced_anonymous,
             revision,
-            function_body_query_key_for_candidate(&plain, &config)
-                .expect("plain is a free function"),
+            crate::body_query::BodyQueryKey {
+                instance: free_function_instance(&m, "plain"),
+                configuration: config.clone(),
+            },
             CancellationToken::new(),
         );
         assert!(
@@ -23959,6 +23920,105 @@ mod tests {
             "a deferred producer publishes no terminal, so no producer edge is \
              recorded: {:?}",
             outcome.dependencies
+        );
+    }
+
+    #[test]
+    fn provider_producer_facts_preserve_specialization_instance_terminal() {
+        use rue_air::BodyFactProvider;
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "fn Pair() -> type { struct { value: i32 } }\n\
+                 fn main() -> i32 { 0 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let configuration = semantic_configuration();
+        let pair_instance = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Pair")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let registered_key = crate::body_query::BodyQueryKey {
+            instance: pair_instance.clone(),
+            configuration: configuration.clone(),
+        };
+
+        let provider_instance = pair_instance.clone();
+        let outcome = database.probe_body_facts(
+            revision,
+            configuration,
+            "producer-specialization-instance",
+            move |provider| {
+                (
+                    provider.producer_body_facts(&provider_instance),
+                    provider.trusted_toolchain_facts(&provider_instance),
+                )
+            },
+        );
+        let (provided, provider_toolchain) = outcome.result;
+        let provided = provided.expect("the Pair specialization publishes producer facts");
+
+        let direct = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            registered_key.clone(),
+            CancellationToken::new(),
+        );
+        let terminal = direct
+            .terminal()
+            .expect("the specialization-shaped registered terminal is retained");
+        let rue_query::QueryOutcome::Success(expected) = terminal.outcome() else {
+            panic!("the specialization-shaped registered terminal succeeds")
+        };
+        assert!(crate::body_query::produced_anonymous_equal(
+            &provided, expected
+        ));
+        assert!(matches!(
+            provided,
+            crate::body_query::ProducedAnonymous::Produced(ref produced) if !produced.0.is_empty()
+        ));
+        let producer_edges = outcome
+            .dependencies
+            .iter()
+            .filter(|node| node.family() == "compiler.body-produced-anonymous")
+            .map(|node| node.key().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            producer_edges,
+            BTreeSet::from([registered_key.stable_identity()]),
+            "the provider must observe only the exact specialization body terminal"
+        );
+
+        let direct_toolchain = database.runtime.request_registered(
+            &database.body_toolchain_demands,
+            revision,
+            registered_key.clone(),
+            CancellationToken::new(),
+        );
+        let toolchain_terminal = direct_toolchain
+            .terminal()
+            .expect("the specialization-shaped toolchain terminal is retained");
+        let rue_query::QueryOutcome::Success(expected_toolchain) = toolchain_terminal.outcome()
+        else {
+            panic!("the specialization-shaped toolchain terminal succeeds")
+        };
+        assert_eq!(provider_toolchain, *expected_toolchain);
+        let toolchain_edges = outcome
+            .dependencies
+            .iter()
+            .filter(|node| node.family() == "compiler.body-toolchain-demands")
+            .map(|node| node.key().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            toolchain_edges,
+            BTreeSet::from([registered_key.stable_identity()]),
+            "the provider must observe only the exact specialization toolchain terminal"
         );
     }
 

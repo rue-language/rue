@@ -307,6 +307,13 @@ pub trait BodyFactProvider {
     type ModuleRef: Clone;
     /// The implementation's owned handle for a consulted declaration.
     type DeclarationRef: Clone;
+    /// The implementation's owned identity for one exact body instance.
+    ///
+    /// Producer and trusted-toolchain facts are properties of the body that
+    /// actually runs, not merely of the declaration that supplied its source.
+    /// In particular, a specialization, anonymous member, or drop-glue body
+    /// must keep its wrapper identity when it crosses this boundary.
+    type BodyInstanceRef: Clone;
     /// The implementation's owned handle for a receiver type's identity.
     type ReceiverType: Clone;
 
@@ -453,9 +460,12 @@ pub trait BodyFactProvider {
     /// never guesses a winner. Winner-picking stays inside this point query.
     fn callable_symbol_method(&self, symbol: &str) -> Option<(Self::ReceiverType, Arc<str>)>;
 
-    /// Exact producer-body facts already required by the body.
-    fn producer_body_facts(&self, decl: &Self::DeclarationRef) -> Option<Self::ProducerBodyFacts>;
+    /// Exact producer-body facts for one body instance.
+    fn producer_body_facts(
+        &self,
+        instance: &Self::BodyInstanceRef,
+    ) -> Option<Self::ProducerBodyFacts>;
 
-    /// Exact trusted-toolchain facts already required by the body.
-    fn trusted_toolchain_facts(&self, decl: &Self::DeclarationRef) -> Self::ToolchainFacts;
+    /// Exact trusted-toolchain facts already required by one body instance.
+    fn trusted_toolchain_facts(&self, instance: &Self::BodyInstanceRef) -> Self::ToolchainFacts;
 }
