@@ -3,6 +3,7 @@
 //! This crate owns execution mechanics only. Compiler query families keep
 //! their typed keys, results, equality, and algorithms outside the runtime.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::hash::Hash;
@@ -13,6 +14,38 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    static HANDOFF_CALLBACK_PHASE: Cell<Option<HandoffCallbackPhase>> = const { Cell::new(None) };
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandoffCallbackPhase {
+    Commit,
+    Abort,
+}
+
+struct HandoffCallbackGuard {
+    previous: Option<HandoffCallbackPhase>,
+}
+
+impl HandoffCallbackGuard {
+    fn enter(phase: HandoffCallbackPhase) -> Self {
+        let previous = HANDOFF_CALLBACK_PHASE.with(|active| active.replace(Some(phase)));
+        assert!(previous.is_none(), "attempt handoff callbacks do not nest");
+        Self { previous }
+    }
+
+    fn active() -> bool {
+        HANDOFF_CALLBACK_PHASE.with(|active| active.get().is_some())
+    }
+}
+
+impl Drop for HandoffCallbackGuard {
+    fn drop(&mut self) {
+        HANDOFF_CALLBACK_PHASE.with(|active| active.set(self.previous));
+    }
+}
 
 /// A logical key suitable for a retained query family.
 ///
@@ -274,6 +307,41 @@ impl<V> QueryOutput<V> {
         self.kind = kind;
         self
     }
+}
+
+/// One non-semantic resource whose ownership follows a computed query attempt.
+///
+/// Evaluators register a handoff through
+/// [`QueryContext::register_attempt_handoff`] while the attempt is active. The
+/// resulting terminal retains the handoff internally while it is pending. The
+/// runtime calls [`Self::commit`] exactly once only when the whole top-level
+/// rooted task that observed it completes successfully. Speculative validation
+/// does not commit; a later observed reuse can. A rooted abort leaves a published
+/// handoff pending for a later root, while terminal eviction calls
+/// [`Self::abort`].
+///
+/// Handoffs are attempt-local control resources. They are never stored in
+/// [`QueryOutput`] or [`QueryTerminal`], do not participate in equality or
+/// stamps, and receive no [`QueryContext`], so committing one cannot execute a
+/// nested dependency query. Public query requests made reentrantly by a commit
+/// or abort callback fail immediately with [`QueryAbort::Canceled`]; callbacks
+/// cannot publish work outside the enclosing root's rollback boundary.
+pub trait QueryAttemptHandoff: fmt::Debug + Send + 'static {
+    /// Transfer the resource at successful rooted-task completion.
+    ///
+    /// If this method unwinds, the runtime calls [`Self::abort`] on every
+    /// handoff in the rooted commit batch, including this one. Lifecycles whose
+    /// abort callbacks return are restored to pending before the original panic
+    /// resumes. If an abort callback also unwinds, that lifecycle is permanently
+    /// marked aborted; any terminal graph containing it becomes unavailable and
+    /// cannot be reused as a partial publication.
+    fn commit(&mut self);
+
+    /// Roll back a partial commit, or release a pending resource on eviction.
+    ///
+    /// Implementations should not unwind. An unwind fails the lifecycle closed
+    /// as described on [`Self::commit`]; it is never restored to pending.
+    fn abort(&mut self);
 }
 
 /// An immutable published terminal.
@@ -603,7 +671,8 @@ pub struct CancellationToken {
 #[derive(Debug, Default)]
 struct CancellationInner {
     canceled: AtomicBool,
-    watchers: Mutex<Vec<Weak<WaitCell>>>,
+    next_watcher: AtomicU64,
+    watchers: Mutex<Vec<(u64, Weak<WaitCell>)>>,
 }
 
 impl CancellationToken {
@@ -618,11 +687,11 @@ impl CancellationToken {
             return;
         }
         let mut watchers = lock(&self.inner.watchers);
-        watchers.retain(|watcher| {
+        watchers.retain(|(_, watcher)| {
             let Some(waiter) = watcher.upgrade() else {
                 return false;
             };
-            waiter.cv.notify_all();
+            waiter.notify_all();
             true
         });
     }
@@ -632,11 +701,17 @@ impl CancellationToken {
         self.inner.canceled.load(Ordering::Acquire)
     }
 
-    fn watch(&self, waiter: &Arc<WaitCell>) {
-        lock(&self.inner.watchers).push(Arc::downgrade(waiter));
+    fn watch(&self, waiter: &Arc<WaitCell>) -> u64 {
+        let id = self.inner.next_watcher.fetch_add(1, Ordering::Relaxed);
+        lock(&self.inner.watchers).push((id, Arc::downgrade(waiter)));
         if self.is_canceled() {
-            waiter.cv.notify_all();
+            waiter.notify_all();
         }
+        id
+    }
+
+    fn unwatch(&self, id: u64) {
+        lock(&self.inner.watchers).retain(|(current, _)| *current != id);
     }
 }
 
@@ -808,6 +883,12 @@ enum InterposeSite {
     /// Reuse candidates have been discovered and pinned under the node lock,
     /// before recursive validation releases the lock.
     ReuseDiscovered,
+    /// A node joiner observed a still-computing attempt and live cancellation
+    /// token while holding the predicate lock, immediately before parking.
+    NodeJoinPark,
+    /// A lifecycle waiter observed neither completion nor cancellation while
+    /// holding the predicate lock, immediately before atomically parking.
+    HandoffCommitPark,
 }
 
 const REVISION_RETENTION_LIMIT: usize = 64;
@@ -1383,6 +1464,20 @@ impl QueryRuntime {
         V: Clone + Send + Sync + 'static,
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
     {
+        if HandoffCallbackGuard::active() {
+            return QueryRequestAttempt {
+                id: 0,
+                origin_request: origin_request.unwrap_or(0),
+                execution: RequestExecution::Aborted,
+                terminal: None,
+                abort: Some(QueryAbort::Canceled),
+                dependencies: Arc::from([]),
+                inputs: Arc::from([]),
+                work: Arc::from([]),
+                nested_attempts: Arc::from([]),
+                result_lease: Mutex::new(None),
+            };
+        }
         if !Arc::ptr_eq(&self.core, &family.core) {
             return QueryRequestAttempt {
                 id: 0,
@@ -1422,10 +1517,50 @@ impl QueryRuntime {
             stack: Mutex::new(Vec::new()),
             nested_attempts: Mutex::new(Vec::new()),
             leases: Mutex::new(TaskLeases::default()),
+            observed_handoffs: Mutex::new(Vec::new()),
         });
         let result = match compute {
             Some(compute) => family.query_task(task.clone(), key, origin_request, compute),
             None => family.query_task_registered(task.clone(), key, origin_request),
+        };
+        let result = match result {
+            TaskQueryResult::Terminal { terminal, work, .. } if task.cancellation.is_canceled() => {
+                task.discard_observed_handoffs();
+                TaskQueryResult::Aborted {
+                    abort: QueryAbort::Canceled,
+                    dependencies: terminal.dependencies().to_vec(),
+                    inputs: terminal.inputs().to_vec(),
+                    work,
+                }
+            }
+            TaskQueryResult::Terminal {
+                terminal,
+                execution,
+                work,
+            } => match task.commit_handoffs() {
+                Ok(()) => TaskQueryResult::Terminal {
+                    terminal,
+                    execution,
+                    work,
+                },
+                Err(RootHandoffCommitFailure::Canceled) => TaskQueryResult::Aborted {
+                    abort: QueryAbort::Canceled,
+                    dependencies: terminal.dependencies().to_vec(),
+                    inputs: terminal.inputs().to_vec(),
+                    work,
+                },
+                Err(RootHandoffCommitFailure::Invalidated) => TaskQueryResult::Aborted {
+                    abort: QueryAbort::Canceled,
+                    dependencies: terminal.dependencies().to_vec(),
+                    inputs: terminal.inputs().to_vec(),
+                    work,
+                },
+                Err(RootHandoffCommitFailure::Panicked(payload)) => resume_unwind(payload),
+            },
+            aborted @ TaskQueryResult::Aborted { .. } => {
+                task.discard_observed_handoffs();
+                aborted
+            }
         };
         let nested_attempts: Arc<[NestedQueryAttempt]> = lock(&task.nested_attempts).clone().into();
         match result {
@@ -1676,7 +1811,7 @@ impl<K, V> fmt::Debug for Node<K, V> {
 trait ErasedNode: fmt::Debug + Send + Sync {
     fn validated_stamp(
         &self,
-        core: &RuntimeCore,
+        _core: &RuntimeCore,
         task: &Arc<Task>,
         active: &mut BTreeSet<u64>,
     ) -> Result<Option<u64>, QueryAbort>;
@@ -1764,6 +1899,27 @@ where
 #[derive(Debug)]
 struct WaitCell {
     cv: Condvar,
+    generation: Mutex<u64>,
+}
+
+impl WaitCell {
+    fn notify_all(&self) {
+        *lock(&self.generation) += 1;
+        self.cv.notify_all();
+    }
+
+    fn wait_until(
+        &self,
+        mut predicate: impl FnMut() -> bool,
+        #[cfg(test)] mut before_park: impl FnMut(),
+    ) {
+        let mut generation = lock(&self.generation);
+        while !predicate() {
+            #[cfg(test)]
+            before_park();
+            generation = wait(&self.cv, generation);
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1789,6 +1945,7 @@ enum AttemptState<V> {
     Terminal {
         terminal: Arc<QueryTerminal<V>>,
         waiters: usize,
+        handoffs: Arc<AttemptHandoffLifecycle>,
     },
 }
 
@@ -1971,7 +2128,10 @@ where
                 },
                 incarnation,
                 users: AtomicUsize::new(0),
-                wait: Arc::new(WaitCell { cv: Condvar::new() }),
+                wait: Arc::new(WaitCell {
+                    cv: Condvar::new(),
+                    generation: Mutex::new(0),
+                }),
                 demand,
                 state: Mutex::new(NodeState {
                     next_attempt: 1,
@@ -2110,22 +2270,30 @@ where
                     .iter()
                     .rev()
                     .filter_map(|attempt| match &attempt.state {
-                        AttemptState::Terminal { terminal, .. } => Some(
+                        AttemptState::Terminal {
+                            terminal, handoffs, ..
+                        } => Some((
+                            attempt.id,
+                            handoffs.clone(),
                             self.pin_terminal(terminal)
                                 .expect("a family pins its own retained terminal"),
-                        ),
+                        )),
                         AttemptState::Computing { .. } => None,
                     })
-                    .collect::<Vec<TerminalPin<K, V>>>()
+                    .collect::<Vec<_>>()
             };
             #[cfg(test)]
             if !candidates.is_empty() {
                 self.core.interpose(InterposeSite::ReuseDiscovered);
             }
-            for pin in candidates {
+            for (attempt_id, handoffs, pin) in candidates {
                 let terminal = pin.terminal().clone();
                 match self.core.valid_for_revision(&terminal, &task) {
                     Ok(true) => {
+                        if observe_result && !task.observe_handoff(handoffs) {
+                            self.detach_terminal_attempt(node, attempt_id);
+                            continue;
+                        }
                         self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
                         if observe_result {
                             // Transfer the temporary discovery pin into the task's
@@ -2205,13 +2373,17 @@ where
                                 work: Vec::new(),
                             };
                         }
-                        Ok(Some(pin)) => {
+                        Ok(Some((joined_attempt, handoffs, pin))) => {
                             // `join` transferred the waiter's protection into this
                             // pin before decrementing the waiter count, so the
                             // joined terminal has been continuously protected. Move
                             // that protection into the request lease (or drop it,
                             // leaving an unobserved validation join speculative).
                             let terminal = pin.terminal().clone();
+                            if observe_result && !task.observe_handoff(handoffs) {
+                                self.detach_terminal_attempt(node, joined_attempt);
+                                continue;
+                            }
                             if observe_result {
                                 task.observe(&terminal);
                                 self.lease_observed_pin(&task, pin);
@@ -2245,7 +2417,7 @@ where
                         .metrics
                         .body_completions
                         .fetch_add(1, Ordering::Relaxed);
-                    let (dependencies, inputs, work_prefix) = task.pop(&exact_node);
+                    let frame = task.pop(&exact_node);
 
                     let result = match body {
                         Ok(result) if !task.cancellation.is_canceled() => result,
@@ -2255,12 +2427,20 @@ where
                             if acquired_here {
                                 task.release_permit(&self.core);
                             }
+                            frame.abort_handoffs();
                             resume_unwind(payload)
                         }
                     };
 
                     match result {
                         Ok(output) => {
+                            let TaskFrameOutput {
+                                dependencies,
+                                inputs,
+                                mut work,
+                                handoffs,
+                            } = frame;
+                            let handoffs = handoffs.into_lifecycle();
                             let terminal = self.publish(
                                 node,
                                 attempt,
@@ -2271,11 +2451,15 @@ where
                                 inputs,
                                 &task,
                                 observe_result,
+                                handoffs.clone(),
                             );
                             if acquired_here {
                                 task.release_permit(&self.core);
                             }
-                            let mut work = work_prefix;
+                            if observe_result && !task.observe_handoff(handoffs) {
+                                self.detach_terminal_attempt(node, attempt);
+                                continue;
+                            }
                             work.extend(terminal.work().iter().cloned());
                             let work = canonical_reduced_work(work);
                             if observe_result {
@@ -2299,12 +2483,19 @@ where
                                     .cancellations
                                     .fetch_add(1, Ordering::Relaxed);
                             }
-                            task.observe_abort_prefix(&dependencies, &inputs, &work_prefix);
+                            let TaskFrameOutput {
+                                dependencies,
+                                inputs,
+                                work,
+                                handoffs,
+                            } = frame;
+                            task.observe_abort_prefix(&dependencies, &inputs, &work);
+                            handoffs.abort();
                             return TaskQueryResult::Aborted {
                                 abort,
                                 dependencies,
                                 inputs,
-                                work: work_prefix,
+                                work,
                             };
                         }
                     }
@@ -2319,7 +2510,7 @@ where
         node: &Arc<Node<K, V>>,
         attempt_id: u64,
         owner: TaskId,
-    ) -> Result<Option<TerminalPin<K, V>>, QueryAbort> {
+    ) -> Result<Option<(u64, Arc<AttemptHandoffLifecycle>, TerminalPin<K, V>)>, QueryAbort> {
         let mut state = lock(&node.state);
         if task.cancellation.is_canceled() {
             decrement_waiter(&mut state, attempt_id);
@@ -2333,7 +2524,11 @@ where
             return Ok(None);
         };
         match &mut attempt.state {
-            AttemptState::Terminal { terminal, waiters } => {
+            AttemptState::Terminal {
+                terminal,
+                waiters,
+                handoffs,
+            } => {
                 // Transfer this waiter's protection into a pin *before* dropping
                 // the waiter count. Even when this is the last waiter — the count
                 // falls to zero here — the pin is already established, so the
@@ -2342,12 +2537,13 @@ where
                 let pin = self
                     .pin_terminal(terminal)
                     .expect("a family pins its own retained terminal");
+                let handoffs = handoffs.clone();
                 *waiters -= 1;
                 drop(state);
                 #[cfg(test)]
                 self.core.interpose(InterposeSite::JoinHandoff);
                 self.enforce_retention();
-                return Ok(Some(pin));
+                return Ok(Some((attempt_id, handoffs, pin)));
             }
             AttemptState::Computing {
                 owner: actual_owner,
@@ -2366,7 +2562,7 @@ where
             self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
             return Err(QueryAbort::Cycle(cycle));
         }
-        task.cancellation.watch(&node.wait);
+        let cancellation_watch = task.cancellation.watch(&node.wait);
         let donated = task.release_permit(&self.core);
         if donated {
             self.core
@@ -2374,7 +2570,9 @@ where
                 .donated_permits
                 .fetch_add(1, Ordering::Relaxed);
         }
+        drop(state);
         let result = loop {
+            let mut state = lock(&node.state);
             if task.cancellation.is_canceled() {
                 decrement_waiter(&mut state, attempt_id);
                 break Err(QueryAbort::Canceled);
@@ -2384,20 +2582,38 @@ where
             };
             match &mut attempt.state {
                 AttemptState::Computing { .. } => {
-                    state = wait(&node.wait.cv, state);
+                    drop(state);
+                    node.wait.wait_until(
+                        || {
+                            if task.cancellation.is_canceled() {
+                                return true;
+                            }
+                            let state = lock(&node.state);
+                            !state.attempts.iter().any(|attempt| {
+                                attempt.id == attempt_id
+                                    && matches!(attempt.state, AttemptState::Computing { .. })
+                            })
+                        },
+                        #[cfg(test)]
+                        || self.core.interpose(InterposeSite::NodeJoinPark),
+                    );
                 }
-                AttemptState::Terminal { terminal, waiters } => {
+                AttemptState::Terminal {
+                    terminal,
+                    waiters,
+                    handoffs,
+                } => {
                     // Transfer waiter protection into a pin before decrementing,
                     // as above: no unprotected instant even for the last waiter.
                     let pin = self
                         .pin_terminal(terminal)
                         .expect("a family pins its own retained terminal");
                     *waiters -= 1;
-                    break Ok(Some(pin));
+                    break Ok(Some((attempt_id, handoffs.clone(), pin)));
                 }
             }
         };
-        drop(state);
+        task.cancellation.unwatch(cancellation_watch);
         self.core.end_wait(task.id);
         if donated {
             task.acquire_permit(&self.core);
@@ -2422,7 +2638,30 @@ where
             state.attempts.remove(index);
         }
         drop(state);
-        node.wait.cv.notify_all();
+        node.wait.notify_all();
+    }
+
+    fn detach_terminal_attempt(&self, node: &Arc<Node<K, V>>, attempt_id: u64) {
+        let removed = {
+            let mut state = lock(&node.state);
+            let Some(index) = state.attempts.iter().position(|item| item.id == attempt_id) else {
+                return;
+            };
+            if !matches!(state.attempts[index].state, AttemptState::Terminal { .. }) {
+                return;
+            }
+            state.attempts.remove(index);
+            true
+        };
+        if removed {
+            self.core
+                .metrics
+                .retained_terminals
+                .fetch_sub(1, Ordering::Relaxed);
+            self.inner.retained_count.fetch_sub(1, Ordering::Relaxed);
+            node.wait.notify_all();
+            self.enforce_retention();
+        }
     }
 
     fn publish(
@@ -2436,6 +2675,7 @@ where
         inputs: Vec<InputObservation>,
         task: &Arc<Task>,
         lease: bool,
+        handoffs: Arc<AttemptHandoffLifecycle>,
     ) -> Arc<QueryTerminal<V>> {
         let diagnostics = canonical_diagnostics(output.diagnostics);
         let work = canonical_work(output.work);
@@ -2487,6 +2727,7 @@ where
         attempt.state = AttemptState::Terminal {
             terminal: terminal.clone(),
             waiters,
+            handoffs,
         };
         // Acquire the request lease *under the node lock*, before the terminal is
         // enqueued for retention or made reachable to a concurrent enforcer. The
@@ -2536,7 +2777,7 @@ where
         if let Some(pin) = lease_pin {
             self.lease_observed_pin(task, pin);
         }
-        node.wait.cv.notify_all();
+        node.wait.notify_all();
         self.enforce_retention();
         terminal
     }
@@ -2547,6 +2788,7 @@ where
             .retention_enforcements
             .fetch_add(1, Ordering::Relaxed);
         let mut retention = lock(&self.inner.retention);
+        let mut evicted_handoffs = Vec::new();
         let mut remaining = retention.len();
         while self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit
             && remaining > 0
@@ -2569,7 +2811,9 @@ where
             };
             let protected = match &state.attempts[index].state {
                 AttemptState::Computing { .. } => true,
-                AttemptState::Terminal { terminal, waiters } => {
+                AttemptState::Terminal {
+                    terminal, waiters, ..
+                } => {
                     *waiters > 0
                         || terminal.pins.load(Ordering::Acquire) > 0
                         || lock(&self.inner.retained_revisions).contains_key(&terminal.revision)
@@ -2580,7 +2824,13 @@ where
                 retention.push_back(entry);
                 continue;
             }
-            state.attempts.remove(index);
+            let removed = state
+                .attempts
+                .remove(index)
+                .expect("retention selected an existing attempt");
+            if let AttemptState::Terminal { handoffs, .. } = removed.state {
+                evicted_handoffs.push(handoffs);
+            }
             let empty = state.attempts.is_empty();
             drop(state);
             self.core.metrics.evictions.fetch_add(1, Ordering::Relaxed);
@@ -2613,6 +2863,10 @@ where
                 .metrics
                 .retention_growth
                 .fetch_add(1, Ordering::Relaxed);
+        }
+        drop(retention);
+        for handoffs in evicted_handoffs {
+            handoffs.abort();
         }
     }
 
@@ -2785,6 +3039,7 @@ where
                 state: AttemptState::Terminal {
                     terminal: adopted.clone(),
                     waiters: 0,
+                    handoffs: Arc::new(AttemptHandoffLifecycle::committed()),
                 },
             });
             // Pin UNDER the node lock, before the endorsement is enqueued or
@@ -3074,6 +3329,17 @@ impl QueryContext {
         self.task.record_work(item);
     }
 
+    /// Registers one non-semantic resource for atomic attempt completion.
+    ///
+    /// The handoff belongs to the current evaluator frame and, after successful
+    /// publication, to that internal terminal attempt. The whole top-level root
+    /// commits all handoffs it observed, including through nested query, reuse,
+    /// and join. A root abort leaves published handoffs pending; speculative
+    /// validation never claims them; terminal eviction aborts them.
+    pub fn register_attempt_handoff(&self, handoff: impl QueryAttemptHandoff) {
+        self.task.register_attempt_handoff(Box::new(handoff));
+    }
+
     /// Requests a dependency in the same task and pinned revision.
     pub fn query<K, V, F>(
         &self,
@@ -3173,6 +3439,10 @@ struct Task {
     /// automatically while the request lives, and gains no permanent retention
     /// after it ends.
     leases: Mutex<TaskLeases>,
+    /// Pending terminal handoffs observed anywhere in this rooted task,
+    /// including nested queries. Only successful top-level completion claims
+    /// and commits this aggregate; abort and unwind leave it `Pending`.
+    observed_handoffs: Mutex<Vec<Arc<AttemptHandoffLifecycle>>>,
 }
 
 /// Terminals leased for the lifetime of one rooted request (its task).
@@ -3404,6 +3674,289 @@ struct TaskFrame {
     dependencies: BTreeMap<ExactNodeIdentity, u64>,
     inputs: BTreeMap<InputIdentity, u64>,
     work: BTreeMap<Arc<str>, u64>,
+    handoffs: Vec<Box<dyn QueryAttemptHandoff>>,
+    observed_handoffs: Vec<Arc<AttemptHandoffLifecycle>>,
+}
+
+struct TaskFrameOutput {
+    dependencies: Vec<Observation>,
+    inputs: Vec<InputObservation>,
+    work: Vec<(Arc<str>, u64)>,
+    handoffs: AttemptHandoffs,
+}
+
+fn commit_handoff(
+    handoff: &mut dyn QueryAttemptHandoff,
+) -> Result<(), Box<dyn std::any::Any + Send>> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let _phase = HandoffCallbackGuard::enter(HandoffCallbackPhase::Commit);
+        handoff.commit();
+    }))
+}
+
+fn abort_handoff(
+    handoff: &mut dyn QueryAttemptHandoff,
+) -> Result<(), Box<dyn std::any::Any + Send>> {
+    catch_unwind(AssertUnwindSafe(|| {
+        let _phase = HandoffCallbackGuard::enter(HandoffCallbackPhase::Abort);
+        handoff.abort();
+    }))
+}
+
+impl TaskFrameOutput {
+    fn abort_handoffs(self) {
+        self.handoffs.abort();
+    }
+}
+
+struct AttemptHandoffs {
+    pending: Vec<Box<dyn QueryAttemptHandoff>>,
+    observed: Vec<Arc<AttemptHandoffLifecycle>>,
+}
+
+impl AttemptHandoffs {
+    fn into_lifecycle(mut self) -> Arc<AttemptHandoffLifecycle> {
+        Arc::new(AttemptHandoffLifecycle::new(
+            std::mem::take(&mut self.pending),
+            std::mem::take(&mut self.observed),
+        ))
+    }
+
+    fn abort(mut self) {
+        self.abort_pending();
+    }
+
+    fn abort_pending(&mut self) {
+        for handoff in self.pending.iter_mut().rev() {
+            let _ = abort_handoff(&mut **handoff);
+        }
+        self.pending.clear();
+    }
+}
+
+impl Drop for AttemptHandoffs {
+    fn drop(&mut self) {
+        self.abort_pending();
+    }
+}
+
+#[derive(Debug)]
+struct AttemptHandoffLifecycle {
+    observed: Arc<[Arc<AttemptHandoffLifecycle>]>,
+    state: Mutex<AttemptHandoffState>,
+    completed: Arc<WaitCell>,
+}
+
+#[derive(Debug)]
+enum AttemptHandoffState {
+    Pending(Vec<Box<dyn QueryAttemptHandoff>>),
+    Committing { owner: TaskId },
+    Committed,
+    Aborted,
+}
+
+enum AttemptHandoffCommit {
+    Claimed(Vec<Box<dyn QueryAttemptHandoff>>),
+    Committed,
+    Aborted,
+    Canceled,
+}
+
+enum RootHandoffCommitFailure {
+    Canceled,
+    Invalidated,
+    Panicked(Box<dyn std::any::Any + Send>),
+}
+
+type HandoffCommitBatch = (
+    Arc<AttemptHandoffLifecycle>,
+    Vec<Box<dyn QueryAttemptHandoff>>,
+);
+
+fn rollback_handoff_batches(
+    owner: TaskId,
+    mut batches: Vec<HandoffCommitBatch>,
+    abort_callbacks: bool,
+) {
+    let mut rollback_safe = vec![true; batches.len()];
+    if abort_callbacks {
+        for (index, (_, handoffs)) in batches.iter_mut().enumerate().rev() {
+            for handoff in handoffs.iter_mut().rev() {
+                if abort_handoff(&mut **handoff).is_err() {
+                    rollback_safe[index] = false;
+                }
+            }
+        }
+    }
+    for ((lifecycle, handoffs), rollback_safe) in batches.into_iter().zip(rollback_safe) {
+        if rollback_safe {
+            lifecycle.rollback_commit(owner, handoffs);
+        } else {
+            lifecycle.abort_failed_commit(owner, handoffs);
+        }
+    }
+}
+
+impl AttemptHandoffLifecycle {
+    fn new(
+        handoffs: Vec<Box<dyn QueryAttemptHandoff>>,
+        observed: Vec<Arc<AttemptHandoffLifecycle>>,
+    ) -> Self {
+        Self {
+            observed: observed.into(),
+            state: Mutex::new(AttemptHandoffState::Pending(handoffs)),
+            completed: Arc::new(WaitCell {
+                cv: Condvar::new(),
+                generation: Mutex::new(0),
+            }),
+        }
+    }
+
+    fn committed() -> Self {
+        Self {
+            observed: Arc::from([]),
+            state: Mutex::new(AttemptHandoffState::Committed),
+            completed: Arc::new(WaitCell {
+                cv: Condvar::new(),
+                generation: Mutex::new(0),
+            }),
+        }
+    }
+
+    fn available(&self) -> bool {
+        !matches!(*lock(&self.state), AttemptHandoffState::Aborted)
+    }
+
+    fn collect_observed(lifecycle: &Arc<Self>, observed: &mut Vec<Arc<Self>>) -> bool {
+        if !lifecycle.available() {
+            return false;
+        }
+        for dependency in lifecycle.observed.iter() {
+            if !Self::collect_observed(dependency, observed) {
+                return false;
+            }
+        }
+        if !observed
+            .iter()
+            .any(|current| Arc::ptr_eq(current, lifecycle))
+        {
+            observed.push(lifecycle.clone());
+        }
+        true
+    }
+
+    fn begin_commit(
+        &self,
+        owner: TaskId,
+        cancellation: &CancellationToken,
+        _core: &RuntimeCore,
+    ) -> AttemptHandoffCommit {
+        let cancellation_watch = cancellation.watch(&self.completed);
+        let result = loop {
+            if cancellation.is_canceled() {
+                break AttemptHandoffCommit::Canceled;
+            }
+            let mut state = lock(&self.state);
+            match &mut *state {
+                AttemptHandoffState::Committed => break AttemptHandoffCommit::Committed,
+                AttemptHandoffState::Aborted => break AttemptHandoffCommit::Aborted,
+                AttemptHandoffState::Committing { .. } => {
+                    drop(state);
+                    self.completed.wait_until(
+                        || {
+                            cancellation.is_canceled()
+                                || !matches!(
+                                    *lock(&self.state),
+                                    AttemptHandoffState::Committing { .. }
+                                )
+                        },
+                        #[cfg(test)]
+                        || _core.interpose(InterposeSite::HandoffCommitPark),
+                    );
+                }
+                AttemptHandoffState::Pending(_) => {
+                    let AttemptHandoffState::Pending(handoffs) =
+                        std::mem::replace(&mut *state, AttemptHandoffState::Aborted)
+                    else {
+                        unreachable!("pending handoffs were selected above")
+                    };
+                    *state = AttemptHandoffState::Committing { owner };
+                    break AttemptHandoffCommit::Claimed(handoffs);
+                }
+            }
+        };
+        cancellation.unwatch(cancellation_watch);
+        result
+    }
+
+    fn finish_commit(&self, owner: TaskId) {
+        let mut state = lock(&self.state);
+        let AttemptHandoffState::Committing { owner: current } = &*state else {
+            panic!("only a committing attempt handoff may finish root commit")
+        };
+        assert_eq!(*current, owner);
+        *state = AttemptHandoffState::Committed;
+        drop(state);
+        self.completed.notify_all();
+    }
+
+    fn rollback_commit(&self, owner: TaskId, handoffs: Vec<Box<dyn QueryAttemptHandoff>>) {
+        let mut state = lock(&self.state);
+        let AttemptHandoffState::Committing { owner: current } = &*state else {
+            panic!("only a committing attempt handoff may roll back")
+        };
+        assert_eq!(*current, owner);
+        *state = AttemptHandoffState::Pending(handoffs);
+        drop(state);
+        self.completed.notify_all();
+    }
+
+    fn abort_failed_commit(&self, owner: TaskId, handoffs: Vec<Box<dyn QueryAttemptHandoff>>) {
+        let mut state = lock(&self.state);
+        let AttemptHandoffState::Committing { owner: current } = &*state else {
+            panic!("only a committing attempt handoff may fail rollback")
+        };
+        assert_eq!(*current, owner);
+        *state = AttemptHandoffState::Aborted;
+        drop(state);
+        drop(handoffs);
+        self.completed.notify_all();
+    }
+
+    fn abort(&self) {
+        let handoffs = loop {
+            let mut state = lock(&self.state);
+            match &*state {
+                AttemptHandoffState::Committed | AttemptHandoffState::Aborted => return,
+                AttemptHandoffState::Committing { .. } => {
+                    drop(state);
+                    self.completed.wait_until(
+                        || !matches!(*lock(&self.state), AttemptHandoffState::Committing { .. }),
+                        #[cfg(test)]
+                        || {},
+                    );
+                }
+                AttemptHandoffState::Pending(_) => {
+                    let AttemptHandoffState::Pending(handoffs) =
+                        std::mem::replace(&mut *state, AttemptHandoffState::Aborted)
+                    else {
+                        unreachable!("pending handoffs were selected above")
+                    };
+                    break handoffs;
+                }
+            }
+        };
+        for mut handoff in handoffs.into_iter().rev() {
+            let _ = abort_handoff(&mut *handoff);
+        }
+        self.completed.notify_all();
+    }
+}
+
+impl Drop for AttemptHandoffLifecycle {
+    fn drop(&mut self) {
+        self.abort();
+    }
 }
 
 impl Task {
@@ -3478,23 +4031,126 @@ impl Task {
         true
     }
 
+    fn observe_handoff(&self, handoff: Arc<AttemptHandoffLifecycle>) -> bool {
+        let mut stack = lock(&self.stack);
+        if let Some(frame) = stack.last_mut() {
+            let mut closure = Vec::new();
+            if !AttemptHandoffLifecycle::collect_observed(&handoff, &mut closure) {
+                return false;
+            }
+            if !frame
+                .observed_handoffs
+                .iter()
+                .any(|current| Arc::ptr_eq(current, &handoff))
+            {
+                frame.observed_handoffs.push(handoff);
+            }
+            return true;
+        }
+        drop(stack);
+        let mut closure = Vec::new();
+        if !AttemptHandoffLifecycle::collect_observed(&handoff, &mut closure) {
+            return false;
+        }
+        let mut observed = lock(&self.observed_handoffs);
+        for handoff in closure {
+            if !observed
+                .iter()
+                .any(|current| Arc::ptr_eq(current, &handoff))
+            {
+                observed.push(handoff);
+            }
+        }
+        true
+    }
+
+    fn commit_handoffs(&self) -> Result<(), RootHandoffCommitFailure> {
+        assert!(
+            !self.owns_permit.load(Ordering::Acquire),
+            "root handoffs commit only after releasing the execution permit"
+        );
+        let observed = std::mem::take(&mut *lock(&self.observed_handoffs));
+        let mut acquisition_order = observed.into_iter().enumerate().collect::<Vec<_>>();
+        acquisition_order.sort_unstable_by_key(|(_, lifecycle)| Arc::as_ptr(lifecycle));
+        let mut ordered_batches = Vec::with_capacity(acquisition_order.len());
+        for (observation_order, lifecycle) in acquisition_order {
+            match lifecycle.begin_commit(self.id, &self.cancellation, &self.core) {
+                AttemptHandoffCommit::Claimed(handoffs) => {
+                    ordered_batches.push((observation_order, lifecycle, handoffs));
+                }
+                AttemptHandoffCommit::Committed => {}
+                AttemptHandoffCommit::Aborted => {
+                    let batches = ordered_batches
+                        .into_iter()
+                        .map(|(_, lifecycle, handoffs)| (lifecycle, handoffs))
+                        .collect();
+                    rollback_handoff_batches(self.id, batches, false);
+                    return Err(RootHandoffCommitFailure::Invalidated);
+                }
+                AttemptHandoffCommit::Canceled => {
+                    let batches = ordered_batches
+                        .into_iter()
+                        .map(|(_, lifecycle, handoffs)| (lifecycle, handoffs))
+                        .collect();
+                    rollback_handoff_batches(self.id, batches, false);
+                    return Err(RootHandoffCommitFailure::Canceled);
+                }
+            }
+        }
+        ordered_batches.sort_unstable_by_key(|(order, _, _)| *order);
+        let mut batches = ordered_batches
+            .into_iter()
+            .map(|(_, lifecycle, handoffs)| (lifecycle, handoffs))
+            .collect::<Vec<_>>();
+
+        let mut failure = None;
+        let mut commit_started = false;
+        'commit: for (_, handoffs) in &mut batches {
+            for handoff in handoffs {
+                if self.cancellation.is_canceled() {
+                    failure = Some(RootHandoffCommitFailure::Canceled);
+                    break 'commit;
+                }
+                commit_started = true;
+                if let Err(payload) = commit_handoff(&mut **handoff) {
+                    failure = Some(RootHandoffCommitFailure::Panicked(payload));
+                    break 'commit;
+                }
+            }
+        }
+        if failure.is_none() && self.cancellation.is_canceled() {
+            failure = Some(RootHandoffCommitFailure::Canceled);
+        }
+        if let Some(failure) = failure {
+            // Root publication is one transaction. Roll back every handoff,
+            // including earlier successful callbacks, before making any of the
+            // terminals claimable by another root.
+            rollback_handoff_batches(self.id, batches, commit_started);
+            return Err(failure);
+        }
+
+        for (lifecycle, _) in batches {
+            lifecycle.finish_commit(self.id);
+        }
+        Ok(())
+    }
+
+    fn discard_observed_handoffs(&self) {
+        lock(&self.observed_handoffs).clear();
+    }
+
     fn push(&self, node: ExactNodeIdentity) {
         lock(&self.stack).push(TaskFrame {
             node,
             dependencies: BTreeMap::new(),
             inputs: BTreeMap::new(),
             work: BTreeMap::new(),
+            handoffs: Vec::new(),
+            observed_handoffs: Vec::new(),
         });
     }
 
-    fn pop(
-        &self,
-        expected: &ExactNodeIdentity,
-    ) -> (
-        Vec<Observation>,
-        Vec<InputObservation>,
-        Vec<(Arc<str>, u64)>,
-    ) {
+    fn pop(&self, expected: &ExactNodeIdentity) -> TaskFrameOutput {
         let frame = lock(&self.stack)
             .pop()
             .expect("query computation owns one dependency frame");
@@ -3513,7 +4169,23 @@ impl Task {
             .into_iter()
             .map(|(input, stamp)| InputObservation { input, stamp })
             .collect();
-        (dependencies, inputs, frame.work.into_iter().collect())
+        TaskFrameOutput {
+            dependencies,
+            inputs,
+            work: frame.work.into_iter().collect(),
+            handoffs: AttemptHandoffs {
+                pending: frame.handoffs,
+                observed: frame.observed_handoffs,
+            },
+        }
+    }
+
+    fn register_attempt_handoff(&self, handoff: Box<dyn QueryAttemptHandoff>) {
+        let mut stack = lock(&self.stack);
+        let frame = stack
+            .last_mut()
+            .expect("attempt handoffs may be registered only inside a query evaluator");
+        frame.handoffs.push(handoff);
     }
 
     fn observe<V>(&self, terminal: &QueryTerminal<V>) {
@@ -3592,6 +4264,12 @@ impl Task {
                 .map(|frame| frame.node.display.clone())
                 .chain(std::iter::once(node.display.clone())),
         ))
+    }
+}
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        self.discard_observed_handoffs();
     }
 }
 
@@ -3876,6 +4554,7 @@ mod tests {
     use std::sync::Barrier;
     use std::sync::mpsc;
     use std::thread;
+    use std::time::Duration;
 
     use super::*;
 
@@ -3981,6 +4660,1586 @@ mod tests {
         for revision in revisions {
             runtime.publish_revision(revision, []).unwrap();
         }
+    }
+
+    #[derive(Debug)]
+    struct RecordingHandoff {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl RecordingHandoff {
+        fn new(events: Arc<Mutex<Vec<&'static str>>>) -> Self {
+            Self { events }
+        }
+    }
+
+    impl QueryAttemptHandoff for RecordingHandoff {
+        fn commit(&mut self) {
+            lock(&self.events).push("commit");
+        }
+
+        fn abort(&mut self) {
+            lock(&self.events).push("abort");
+        }
+    }
+
+    #[derive(Debug)]
+    struct PublicationHandoff {
+        family: QueryFamily<Key, u64>,
+        key: Key,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl QueryAttemptHandoff for PublicationHandoff {
+        fn commit(&mut self) {
+            assert!(
+                self.family.contains_retained_key(&self.key),
+                "attempt handoff commits only after its terminal is installed"
+            );
+            lock(&self.events).push("commit");
+        }
+
+        fn abort(&mut self) {
+            lock(&self.events).push("abort");
+        }
+    }
+
+    #[derive(Debug)]
+    struct PinSetHandoff {
+        pins: Option<RetainedPinSet>,
+        committed: Arc<Mutex<Option<RetainedPinSet>>>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl QueryAttemptHandoff for PinSetHandoff {
+        fn commit(&mut self) {
+            let pins = self
+                .pins
+                .take()
+                .expect("a rolled-back handoff restores its pending pins");
+            *lock(&self.committed) = Some(pins);
+            lock(&self.events).push("commit");
+        }
+
+        fn abort(&mut self) {
+            if self.pins.is_none() {
+                self.pins = lock(&self.committed).take();
+            }
+            lock(&self.events).push("abort");
+        }
+    }
+
+    #[derive(Debug)]
+    struct CountingHandoff {
+        commits: Arc<AtomicUsize>,
+        aborts: Arc<AtomicUsize>,
+    }
+
+    impl QueryAttemptHandoff for CountingHandoff {
+        fn commit(&mut self) {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+        }
+
+        fn abort(&mut self) {
+            self.aborts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Debug)]
+    struct BlockingHandoff {
+        commit_started: mpsc::Sender<()>,
+        release_commit: Arc<Barrier>,
+        commits: Arc<AtomicUsize>,
+    }
+
+    impl QueryAttemptHandoff for BlockingHandoff {
+        fn commit(&mut self) {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            self.commit_started.send(()).unwrap();
+            self.release_commit.wait();
+        }
+
+        fn abort(&mut self) {}
+    }
+
+    #[derive(Debug)]
+    struct CancelBlockingHandoff {
+        commit_started: mpsc::Sender<()>,
+        release_commit: Arc<Barrier>,
+        block_once: Arc<AtomicBool>,
+        commits: Arc<AtomicUsize>,
+        aborts: Arc<AtomicUsize>,
+    }
+
+    impl QueryAttemptHandoff for CancelBlockingHandoff {
+        fn commit(&mut self) {
+            self.commits.fetch_add(1, Ordering::SeqCst);
+            if self.block_once.swap(false, Ordering::SeqCst) {
+                self.commit_started.send(()).unwrap();
+                self.release_commit.wait();
+            }
+        }
+
+        fn abort(&mut self) {
+            self.aborts.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[derive(Debug)]
+    struct ReentrantRequestHandoff {
+        runtime: QueryRuntime,
+        family: QueryFamily<Key, u64>,
+        other: QueryFamily<Key, u64>,
+        key: Key,
+        revision: Revision,
+        evaluator_runs: Arc<AtomicUsize>,
+        results: Arc<Mutex<Vec<(&'static str, QueryAbort)>>>,
+    }
+
+    impl ReentrantRequestHandoff {
+        fn probe(&self, phase: &'static str) {
+            let same_runs = self.evaluator_runs.clone();
+            let same = self
+                .runtime
+                .query(
+                    &self.family,
+                    self.revision,
+                    self.key.clone(),
+                    CancellationToken::new(),
+                    move |_| {
+                        same_runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(QueryOutput::success(9))
+                    },
+                )
+                .unwrap_err();
+            let other_runs = self.evaluator_runs.clone();
+            let other = self
+                .runtime
+                .query(
+                    &self.other,
+                    self.revision,
+                    Key("different-root"),
+                    CancellationToken::new(),
+                    move |_| {
+                        other_runs.fetch_add(1, Ordering::SeqCst);
+                        Ok(QueryOutput::success(10))
+                    },
+                )
+                .unwrap_err();
+            lock(&self.results).extend([(phase, same), (phase, other)]);
+        }
+    }
+
+    impl QueryAttemptHandoff for ReentrantRequestHandoff {
+        fn commit(&mut self) {
+            self.probe("commit");
+        }
+
+        fn abort(&mut self) {
+            self.probe("abort");
+        }
+    }
+
+    #[test]
+    fn attempt_handoff_commits_after_publication_without_becoming_memo_state() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "handoff");
+        let first_revision = revision(1);
+        let second_revision = revision(2);
+        runtime
+            .publish_revision(first_revision, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second_revision, [(input.clone(), 2)])
+            .unwrap();
+        let family = runtime.family::<Key, u64>("attempt-handoff", 4).unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let run = |revision, offset| {
+            let family_for_handoff = family.clone();
+            let events = events.clone();
+            let input = input.clone();
+            runtime
+                .query(
+                    &family,
+                    revision,
+                    Key("body"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.input(input)?;
+                        context.register_attempt_handoff(PublicationHandoff {
+                            family: family_for_handoff,
+                            key: Key("body"),
+                            events,
+                        });
+                        Ok(QueryOutput::success(7)
+                            .with_diagnostics(vec![QueryDiagnostic::new(
+                                "stable",
+                                "payload",
+                                Some(PresentationPosition::new("main.rue", offset)),
+                            )])
+                            .with_work(vec![WorkItem::new("body", 3)]))
+                    },
+                )
+                .unwrap()
+        };
+
+        let first = run(first_revision, 10);
+        let second = run(second_revision, 20);
+        assert_eq!(first.stamp(), second.stamp(), "equal semantics stay red");
+        assert_eq!(first.outcome(), second.outcome());
+        assert_eq!(first.work(), second.work());
+        assert_eq!(
+            second.diagnostics()[0]
+                .presentation
+                .as_ref()
+                .unwrap()
+                .offset,
+            20
+        );
+        assert_eq!(*lock(&events), ["commit", "commit"]);
+
+        let reused = runtime.request(
+            &family,
+            second_revision,
+            Key("body"),
+            CancellationToken::new(),
+            |_| panic!("a warm reuse does not execute an evaluator or a handoff"),
+        );
+        assert_eq!(reused.execution(), RequestExecution::Reused);
+        assert_eq!(*lock(&events), ["commit", "commit"]);
+    }
+
+    #[test]
+    fn joined_request_runs_only_the_owner_attempts_handoff() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let barrier = Arc::new(Barrier::new(2));
+        let evaluator_events = events.clone();
+        let evaluator_barrier = barrier.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "attempt-handoff-join",
+                4,
+                move |context, _, _| {
+                    context
+                        .register_attempt_handoff(RecordingHandoff::new(evaluator_events.clone()));
+                    evaluator_barrier.wait();
+                    evaluator_barrier.wait();
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let owner_runtime = runtime.clone();
+        let owner_family = family.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            )
+        });
+        barrier.wait();
+        let waiter_runtime = runtime.clone();
+        let waiter_family = family.clone();
+        let waiter = thread::spawn(move || {
+            waiter_runtime.request_registered(
+                &waiter_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            )
+        });
+        runtime.wait_for_metrics(|metrics| metrics.joins == 1);
+        barrier.wait();
+
+        let owner = owner.join().unwrap();
+        let waiter = waiter.join().unwrap();
+        assert_eq!(owner.execution(), RequestExecution::Computed);
+        assert_eq!(waiter.execution(), RequestExecution::Joined);
+        assert_eq!(*lock(&events), ["commit"]);
+    }
+
+    #[test]
+    fn attempt_handoff_aborts_on_error_and_post_body_cancellation() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<Key, u64>("attempt-handoff-abort", 4)
+            .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let error_events = events.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Key("error"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.register_attempt_handoff(RecordingHandoff::new(error_events));
+                        Err(QueryAbort::MissingInput(InputIdentity::new(
+                            "source", "missing",
+                        )))
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::MissingInput(InputIdentity::new("source", "missing"))
+        );
+
+        let cancellation = CancellationToken::new();
+        let cancel_from_body = cancellation.clone();
+        let cancel_events = events.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Key("canceled"),
+                    cancellation,
+                    move |context| {
+                        context.register_attempt_handoff(RecordingHandoff::new(cancel_events));
+                        cancel_from_body.cancel();
+                        Ok(QueryOutput::success(1))
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+
+        assert_eq!(*lock(&events), ["abort", "abort"]);
+        assert!(!family.contains_retained_key(&Key("error")));
+        assert!(!family.contains_retained_key(&Key("canceled")));
+    }
+
+    #[test]
+    fn handoff_callbacks_cannot_reenter_same_or_different_query_roots() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<Key, u64>("handoff-reentrant-root", 4)
+            .unwrap();
+        let other = runtime
+            .family::<Key, u64>("handoff-reentrant-other", 4)
+            .unwrap();
+        let evaluator_runs = Arc::new(AtomicUsize::new(0));
+        let results = Arc::new(Mutex::new(Vec::new()));
+
+        let commit_handoff = ReentrantRequestHandoff {
+            runtime: runtime.clone(),
+            family: family.clone(),
+            other: other.clone(),
+            key: Key("commit"),
+            revision: revision(1),
+            evaluator_runs: evaluator_runs.clone(),
+            results: results.clone(),
+        };
+        runtime
+            .query(
+                &family,
+                revision(1),
+                Key("commit"),
+                CancellationToken::new(),
+                move |context| {
+                    context.register_attempt_handoff(commit_handoff);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let abort_handoff = ReentrantRequestHandoff {
+            runtime: runtime.clone(),
+            family: family.clone(),
+            other: other.clone(),
+            key: Key("abort"),
+            revision: revision(1),
+            evaluator_runs: evaluator_runs.clone(),
+            results: results.clone(),
+        };
+        assert_eq!(
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Key("abort"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.register_attempt_handoff(abort_handoff);
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+
+        assert_eq!(
+            *lock(&results),
+            [
+                ("commit", QueryAbort::Canceled),
+                ("commit", QueryAbort::Canceled),
+                ("abort", QueryAbort::Canceled),
+                ("abort", QueryAbort::Canceled),
+            ]
+        );
+        assert_eq!(evaluator_runs.load(Ordering::SeqCst), 0);
+
+        let runs = evaluator_runs.clone();
+        runtime
+            .query(
+                &other,
+                revision(1),
+                Key("after-callback"),
+                CancellationToken::new(),
+                move |_| {
+                    runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(11))
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            evaluator_runs.load(Ordering::SeqCst),
+            1,
+            "the thread-local phase guard is removed after each callback"
+        );
+    }
+
+    #[test]
+    fn panic_unwind_aborts_attempt_handoffs_before_resuming() {
+        // The Rue unit runner treats even a caught panic as a failed test, so
+        // guard the unwind branch structurally and exercise the same consuming
+        // abort operation directly.
+        let events = Arc::new(Mutex::new(Vec::new()));
+        TaskFrameOutput {
+            dependencies: Vec::new(),
+            inputs: Vec::new(),
+            work: Vec::new(),
+            handoffs: AttemptHandoffs {
+                pending: vec![Box::new(RecordingHandoff::new(events.clone()))],
+                observed: Vec::new(),
+            },
+        }
+        .abort_handoffs();
+        assert_eq!(*lock(&events), ["abort"]);
+
+        let source = include_str!("lib.rs");
+        let unwind = source
+            .split("Err(payload) => {")
+            .nth(1)
+            .expect("query evaluator has a panic-unwind branch")
+            .split("resume_unwind(payload)")
+            .next()
+            .expect("panic-unwind branch resumes the original payload");
+        assert!(
+            unwind.contains("frame.abort_handoffs();"),
+            "panic unwinding must abort attempt resources before resuming"
+        );
+    }
+
+    #[test]
+    fn attempt_handoff_transfers_retained_pins_only_on_commit() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime
+            .family::<Slot, u64>("attempt-handoff-leaf", 1)
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("attempt-handoff-root", 2)
+            .unwrap();
+        let leaf_computes = Arc::new(AtomicUsize::new(0));
+        let committed = Arc::new(Mutex::new(None));
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let leaf_for_root = leaf.clone();
+        let computes = leaf_computes.clone();
+        let committed_for_root = committed.clone();
+        let events_for_root = events.clone();
+        runtime
+            .query(
+                &root,
+                revision(1),
+                Key("commit"),
+                CancellationToken::new(),
+                move |context| {
+                    let terminal = context.query(&leaf_for_root, Slot(0), move |_| {
+                        computes.fetch_add(1, Ordering::SeqCst);
+                        Ok(QueryOutput::success(0))
+                    })?;
+                    let mut pins = RetainedPinSet::new();
+                    assert!(pins.lease(leaf_for_root.pin_terminal(&terminal).unwrap()));
+                    context.register_attempt_handoff(PinSetHandoff {
+                        pins: Some(pins),
+                        committed: committed_for_root,
+                        events: events_for_root,
+                    });
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+
+        for slot in 1..=8 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(slot),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(slot)),
+                )
+                .unwrap();
+        }
+        runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                |_| panic!("the committed handoff retains the observed terminal"),
+            )
+            .unwrap();
+        assert_eq!(leaf_computes.load(Ordering::SeqCst), 1);
+
+        drop(lock(&committed).take());
+        for slot in 9..=16 {
+            runtime
+                .query(
+                    &leaf,
+                    revision(1),
+                    Slot(slot),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(slot)),
+                )
+                .unwrap();
+        }
+        let computes = leaf_computes.clone();
+        runtime
+            .query(
+                &leaf,
+                revision(1),
+                Slot(0),
+                CancellationToken::new(),
+                move |_| {
+                    computes.fetch_add(1, Ordering::SeqCst);
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+        assert_eq!(leaf_computes.load(Ordering::SeqCst), 2);
+        assert_eq!(*lock(&events), ["commit"]);
+
+        let leaf_for_abort = leaf.clone();
+        let abort_events = events.clone();
+        let abort_committed = committed.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &root,
+                    revision(1),
+                    Key("abort"),
+                    CancellationToken::new(),
+                    move |context| {
+                        let terminal = context
+                            .query(&leaf_for_abort, Slot(99), |_| Ok(QueryOutput::success(99)))?;
+                        let mut pins = RetainedPinSet::new();
+                        assert!(pins.lease(leaf_for_abort.pin_terminal(&terminal).unwrap()));
+                        context.register_attempt_handoff(PinSetHandoff {
+                            pins: Some(pins),
+                            committed: abort_committed,
+                            events: abort_events,
+                        });
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+        assert!(lock(&committed).is_none());
+        assert_eq!(*lock(&events), ["commit", "abort"]);
+    }
+
+    #[test]
+    fn speculative_validation_defers_handoff_until_an_observed_reuse() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "speculative-handoff");
+        let first_revision = Revision::new(1, 1);
+        let second_revision = Revision::new(2, 1);
+        runtime
+            .publish_revision(first_revision, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second_revision, [(input.clone(), 2)])
+            .unwrap();
+
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let child_input = input.clone();
+        let child_commits = commits.clone();
+        let child_aborts = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "speculative-handoff-child",
+                8,
+                move |context, _, _| {
+                    context.input(child_input.clone())?;
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: child_commits.clone(),
+                        aborts: child_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(7))
+                },
+            )
+            .unwrap();
+        let root_child = child.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "speculative-handoff-root",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&root_child, Key("child"))?;
+                    Ok(QueryOutput::success(9))
+                },
+            )
+            .unwrap();
+
+        let first = runtime.request_registered(
+            &root,
+            first_revision,
+            Key("root"),
+            CancellationToken::new(),
+        );
+        assert_eq!(first.execution(), RequestExecution::Computed);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+
+        let validated = runtime.request_registered(
+            &root,
+            second_revision,
+            Key("root"),
+            CancellationToken::new(),
+        );
+        assert_eq!(validated.execution(), RequestExecution::Reused);
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            1,
+            "speculative validation must not promote its newly computed child"
+        );
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        let observed = runtime.request_registered(
+            &child,
+            second_revision,
+            Key("child"),
+            CancellationToken::new(),
+        );
+        assert_eq!(observed.execution(), RequestExecution::Reused);
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn speculative_nested_handoffs_follow_their_parent_terminal_until_observed() {
+        let runtime = QueryRuntime::new(1);
+        let child_input = InputIdentity::new("source", "speculative-nested-child");
+        let middle_input = InputIdentity::new("source", "speculative-nested-middle");
+        let first_revision = Revision::new(10, 1);
+        let second_revision = Revision::new(11, 1);
+        runtime
+            .publish_revision(
+                first_revision,
+                [(child_input.clone(), 1), (middle_input.clone(), 1)],
+            )
+            .unwrap();
+        runtime
+            .publish_revision(
+                second_revision,
+                [(child_input.clone(), 2), (middle_input.clone(), 2)],
+            )
+            .unwrap();
+
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let child_source = child_input.clone();
+        let child_commits = commits.clone();
+        let child_aborts = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "speculative-nested-handoff-child",
+                8,
+                move |context, _, _| {
+                    context.input(child_source.clone())?;
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: child_commits.clone(),
+                        aborts: child_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let middle_child = child.clone();
+        let middle_source = middle_input.clone();
+        let middle_commits = commits.clone();
+        let middle_aborts = aborts.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "speculative-nested-handoff-middle",
+                8,
+                move |context, _, _| {
+                    context.input(middle_source.clone())?;
+                    context.query_registered(&middle_child, Key("child"))?;
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: middle_commits.clone(),
+                        aborts: middle_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        let root_middle = middle.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "speculative-nested-handoff-root",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&root_middle, Key("middle"))?;
+                    Ok(QueryOutput::success(3))
+                },
+            )
+            .unwrap();
+
+        let first = runtime.request_registered(
+            &root,
+            first_revision,
+            Key("root"),
+            CancellationToken::new(),
+        );
+        assert_eq!(first.execution(), RequestExecution::Computed);
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+
+        let validated = runtime.request_registered(
+            &root,
+            second_revision,
+            Key("root"),
+            CancellationToken::new(),
+        );
+        assert_eq!(validated.execution(), RequestExecution::Reused);
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            2,
+            "nested handoffs created by speculative evaluation stay pending"
+        );
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        let observed = runtime.request_registered(
+            &middle,
+            second_revision,
+            Key("middle"),
+            CancellationToken::new(),
+        );
+        assert_eq!(observed.execution(), RequestExecution::Reused);
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            4,
+            "observing the parent commits both its own and nested handoffs"
+        );
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nested_handoff_stays_pending_when_the_outer_root_aborts() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let child_commits = commits.clone();
+        let child_aborts = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "nested-pending-handoff-child",
+                4,
+                move |context, _, _| {
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: child_commits.clone(),
+                        aborts: child_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("nested-pending-handoff-root", 4)
+            .unwrap();
+        let child_for_root = child.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &root,
+                    revision(1),
+                    Key("root"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.query_registered(&child_for_root, Key("child"))?;
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        let child_for_reused_root = child.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &root,
+                    revision(1),
+                    Key("root"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.query_registered(&child_for_reused_root, Key("child"))?;
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+        assert_eq!(
+            commits.load(Ordering::SeqCst),
+            0,
+            "a nested reuse remains pending when its outer root aborts"
+        );
+
+        let observed =
+            runtime.request_registered(&child, revision(1), Key("child"), CancellationToken::new());
+        assert_eq!(observed.execution(), RequestExecution::Reused);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn nested_join_handoff_stays_pending_when_both_outer_roots_abort() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let body_barrier = Arc::new(Barrier::new(2));
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let evaluator_barrier = body_barrier.clone();
+        let evaluator_commits = commits.clone();
+        let evaluator_aborts = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "nested-join-pending-handoff-child",
+                4,
+                move |context, _, _| {
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: evaluator_commits.clone(),
+                        aborts: evaluator_aborts.clone(),
+                    });
+                    evaluator_barrier.wait();
+                    evaluator_barrier.wait();
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("nested-join-pending-handoff-root", 4)
+            .unwrap();
+
+        let owner_runtime = runtime.clone();
+        let owner_root = root.clone();
+        let owner_child = child.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.query(
+                &owner_root,
+                revision(1),
+                Key("owner"),
+                CancellationToken::new(),
+                move |context| {
+                    context.query_registered(&owner_child, Key("child"))?;
+                    Err(QueryAbort::Canceled)
+                },
+            )
+        });
+        body_barrier.wait();
+        let waiter_runtime = runtime.clone();
+        let waiter_root = root.clone();
+        let waiter_child = child.clone();
+        let waiter = thread::spawn(move || {
+            waiter_runtime.query(
+                &waiter_root,
+                revision(1),
+                Key("waiter"),
+                CancellationToken::new(),
+                move |context| {
+                    context.query_registered(&waiter_child, Key("child"))?;
+                    Err(QueryAbort::Canceled)
+                },
+            )
+        });
+        runtime.wait_for_metrics(|metrics| metrics.joins == 1);
+        body_barrier.wait();
+        assert_eq!(owner.join().unwrap().unwrap_err(), QueryAbort::Canceled);
+        assert_eq!(waiter.join().unwrap().unwrap_err(), QueryAbort::Canceled);
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        let observed =
+            runtime.request_registered(&child, revision(1), Key("child"), CancellationToken::new());
+        assert_eq!(observed.execution(), RequestExecution::Reused);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn opposite_order_roots_commit_shared_pending_handoffs_without_deadlock() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let child_commits = commits.clone();
+        let child_aborts = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "opposite-order-handoff-child",
+                4,
+                move |context, _, key| {
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: child_commits.clone(),
+                        aborts: child_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(u64::from(key.0 == "b")))
+                },
+            )
+            .unwrap();
+        let seed = runtime
+            .family::<Key, u64>("opposite-order-handoff-seed", 2)
+            .unwrap();
+        let seed_child = child.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &seed,
+                    revision(1),
+                    Key("seed"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.query_registered(&seed_child, Key("a"))?;
+                        context.query_registered(&seed_child, Key("b"))?;
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+
+        let root = runtime
+            .family::<Key, u64>("opposite-order-handoff-root", 2)
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let first_runtime = runtime.clone();
+        let first_root = root.clone();
+        let first_child = child.clone();
+        let first_barrier = barrier.clone();
+        let first = thread::spawn(move || {
+            first_runtime.query(
+                &first_root,
+                revision(1),
+                Key("first"),
+                CancellationToken::new(),
+                move |context| {
+                    context.query_registered(&first_child, Key("a"))?;
+                    context.query_registered(&first_child, Key("b"))?;
+                    first_barrier.wait();
+                    Ok(QueryOutput::success(1))
+                },
+            )
+        });
+        let second_runtime = runtime.clone();
+        let second_root = root.clone();
+        let second_child = child.clone();
+        let second = thread::spawn(move || {
+            second_runtime.query(
+                &second_root,
+                revision(1),
+                Key("second"),
+                CancellationToken::new(),
+                move |context| {
+                    context.query_registered(&second_child, Key("b"))?;
+                    context.query_registered(&second_child, Key("a"))?;
+                    barrier.wait();
+                    Ok(QueryOutput::success(2))
+                },
+            )
+        });
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn pending_handoff_aborts_when_its_terminal_is_evicted() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let child_commits = commits.clone();
+        let child_aborts = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "evicted-pending-handoff-child",
+                1,
+                move |context, _, key| {
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: child_commits.clone(),
+                        aborts: child_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("evicted-pending-handoff-root", 1)
+            .unwrap();
+        let child_for_root = child.clone();
+        assert_eq!(
+            runtime
+                .query(
+                    &root,
+                    revision(1),
+                    Key("root"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.query_registered(&child_for_root, Slot(0))?;
+                        Err(QueryAbort::Canceled)
+                    },
+                )
+                .unwrap_err(),
+            QueryAbort::Canceled
+        );
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        runtime.request_registered(&child, revision(1), Slot(1), CancellationToken::new());
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            aborts.load(Ordering::SeqCst),
+            1,
+            "eviction aborts the still-pending resource outside memo state"
+        );
+    }
+
+    #[test]
+    fn blocking_commit_gates_concurrent_reuse() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_commit = Arc::new(Barrier::new(2));
+        let commits = Arc::new(AtomicUsize::new(0));
+        let evaluator_release = release_commit.clone();
+        let evaluator_commits = commits.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "blocking-handoff-reuse",
+                4,
+                move |context, _, _| {
+                    context.register_attempt_handoff(BlockingHandoff {
+                        commit_started: commit_started_tx.clone(),
+                        release_commit: evaluator_release.clone(),
+                        commits: evaluator_commits.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let owner_runtime = runtime.clone();
+        let owner_family = family.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            )
+        });
+        commit_started_rx.recv().unwrap();
+
+        let (waiter_done_tx, waiter_done_rx) = mpsc::channel();
+        let waiter_runtime = runtime.clone();
+        let waiter_family = family.clone();
+        let waiter = thread::spawn(move || {
+            let result = waiter_runtime.request_registered(
+                &waiter_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            );
+            waiter_done_tx.send(()).unwrap();
+            result
+        });
+        assert!(
+            waiter_done_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "a reusable terminal is not returned before its handoff commits"
+        );
+        release_commit.wait();
+
+        assert_eq!(
+            owner.join().unwrap().execution(),
+            RequestExecution::Computed
+        );
+        assert_eq!(waiter.join().unwrap().execution(), RequestExecution::Reused);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn canceled_reuse_waiter_does_not_wait_for_a_blocked_commit() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_commit = Arc::new(Barrier::new(2));
+        let evaluator_release = release_commit.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "cancel-blocked-handoff-reuse",
+                4,
+                move |context, _, _| {
+                    context.register_attempt_handoff(BlockingHandoff {
+                        commit_started: commit_started_tx.clone(),
+                        release_commit: evaluator_release.clone(),
+                        commits: Arc::new(AtomicUsize::new(0)),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let owner_runtime = runtime.clone();
+        let owner_family = family.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            )
+        });
+        commit_started_rx.recv().unwrap();
+
+        let cancellation = CancellationToken::new();
+        let (at_park_tx, at_park_rx) = mpsc::channel();
+        let hook_cancellation = cancellation.clone();
+        runtime.set_interpose(Arc::new(move |site| {
+            if site == InterposeSite::HandoffCommitPark {
+                at_park_tx.send(()).unwrap();
+                while !hook_cancellation.is_canceled() {
+                    thread::yield_now();
+                }
+            }
+        }));
+        let cancel_token = cancellation.clone();
+        let canceler = thread::spawn(move || {
+            at_park_rx.recv().unwrap();
+            // The waiter still owns the predicate lock here. `cancel` must
+            // set its predicate, synchronize with that lock, then notify only
+            // after parking begins.
+            cancel_token.cancel();
+        });
+        let waiter_cancellation = cancellation.clone();
+        let (waiter_done_tx, waiter_done_rx) = mpsc::channel();
+        let waiter_runtime = runtime.clone();
+        let waiter_family = family.clone();
+        let waiter = thread::spawn(move || {
+            let result = waiter_runtime.request_registered(
+                &waiter_family,
+                revision(1),
+                Key("shared"),
+                waiter_cancellation,
+            );
+            waiter_done_tx.send(()).unwrap();
+            result
+        });
+        let waiter_woke = waiter_done_rx.recv_timeout(Duration::from_secs(1));
+        if waiter_woke.is_err() {
+            release_commit.wait();
+            let _ = owner.join().unwrap();
+            let _ = waiter.join().unwrap();
+            canceler.join().unwrap();
+            runtime.clear_interpose();
+            panic!("cancellation did not wake a root waiting for another root's commit");
+        }
+        let canceled = waiter.join().unwrap();
+        canceler.join().unwrap();
+        runtime.clear_interpose();
+        assert_eq!(canceled.abort(), Some(&QueryAbort::Canceled));
+
+        release_commit.wait();
+        owner.join().unwrap();
+    }
+
+    #[test]
+    fn blocking_commit_does_not_hold_the_execution_permit() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_commit = Arc::new(Barrier::new(2));
+        let evaluator_release = release_commit.clone();
+        let committing = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "blocking-handoff-permit",
+                2,
+                move |context, _, _| {
+                    context.register_attempt_handoff(BlockingHandoff {
+                        commit_started: commit_started_tx.clone(),
+                        release_commit: evaluator_release.clone(),
+                        commits: Arc::new(AtomicUsize::new(0)),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let unrelated = runtime
+            .family::<Key, u64>("blocking-handoff-unrelated", 2)
+            .unwrap();
+        let owner_runtime = runtime.clone();
+        let owner_family = committing.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_family,
+                revision(1),
+                Key("commit"),
+                CancellationToken::new(),
+            )
+        });
+        commit_started_rx.recv().unwrap();
+
+        runtime
+            .query(
+                &unrelated,
+                revision(1),
+                Key("ready"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(2)),
+            )
+            .unwrap();
+        release_commit.wait();
+        owner.join().unwrap();
+    }
+
+    #[test]
+    fn blocking_commit_gates_a_waiter_that_joined_before_publication() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let body_barrier = Arc::new(Barrier::new(2));
+        let release_commit = Arc::new(Barrier::new(2));
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let commits = Arc::new(AtomicUsize::new(0));
+        let evaluator_body = body_barrier.clone();
+        let evaluator_release = release_commit.clone();
+        let evaluator_commits = commits.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "blocking-handoff-join",
+                4,
+                move |context, _, _| {
+                    context.register_attempt_handoff(BlockingHandoff {
+                        commit_started: commit_started_tx.clone(),
+                        release_commit: evaluator_release.clone(),
+                        commits: evaluator_commits.clone(),
+                    });
+                    evaluator_body.wait();
+                    evaluator_body.wait();
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let owner_runtime = runtime.clone();
+        let owner_family = family.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            )
+        });
+        body_barrier.wait();
+
+        let (waiter_done_tx, waiter_done_rx) = mpsc::channel();
+        let waiter_runtime = runtime.clone();
+        let waiter_family = family.clone();
+        let waiter = thread::spawn(move || {
+            let result = waiter_runtime.request_registered(
+                &waiter_family,
+                revision(1),
+                Key("shared"),
+                CancellationToken::new(),
+            );
+            waiter_done_tx.send(()).unwrap();
+            result
+        });
+        runtime.wait_for_metrics(|metrics| metrics.joins == 1);
+        body_barrier.wait();
+        commit_started_rx.recv().unwrap();
+        assert!(
+            waiter_done_rx
+                .recv_timeout(Duration::from_millis(50))
+                .is_err(),
+            "a joined terminal is not returned before its handoff commits"
+        );
+        release_commit.wait();
+
+        assert_eq!(
+            owner.join().unwrap().execution(),
+            RequestExecution::Computed
+        );
+        assert_eq!(waiter.join().unwrap().execution(), RequestExecution::Joined);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancellation_during_commit_rolls_the_handoff_back_to_pending() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let (commit_started_tx, commit_started_rx) = mpsc::channel();
+        let release_commit = Arc::new(Barrier::new(2));
+        let block_once = Arc::new(AtomicBool::new(true));
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let evaluator_release = release_commit.clone();
+        let evaluator_block = block_once.clone();
+        let evaluator_commits = commits.clone();
+        let evaluator_aborts = aborts.clone();
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "canceled-handoff-commit",
+                4,
+                move |context, _, _| {
+                    context.register_attempt_handoff(CancelBlockingHandoff {
+                        commit_started: commit_started_tx.clone(),
+                        release_commit: evaluator_release.clone(),
+                        block_once: evaluator_block.clone(),
+                        commits: evaluator_commits.clone(),
+                        aborts: evaluator_aborts.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        let owner_cancellation = cancellation.clone();
+        let owner_runtime = runtime.clone();
+        let owner_family = family.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_family,
+                revision(1),
+                Key("shared"),
+                owner_cancellation,
+            )
+        });
+        commit_started_rx.recv().unwrap();
+        cancellation.cancel();
+        release_commit.wait();
+        let canceled = owner.join().unwrap();
+        assert_eq!(canceled.abort(), Some(&QueryAbort::Canceled));
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(aborts.load(Ordering::SeqCst), 1);
+
+        let retry = runtime.request_registered(
+            &family,
+            revision(1),
+            Key("shared"),
+            CancellationToken::new(),
+        );
+        assert_eq!(retry.execution(), RequestExecution::Reused);
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+        assert_eq!(aborts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn successful_handoff_commit_unregisters_its_cancellation_watcher() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "handoff-cancellation-watcher",
+                2,
+                move |context, _, _| {
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: Arc::new(AtomicUsize::new(0)),
+                        aborts: Arc::new(AtomicUsize::new(0)),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let cancellation = CancellationToken::new();
+        for _ in 0..8 {
+            let attempt = runtime.request_registered(
+                &family,
+                revision(1),
+                Key("shared"),
+                cancellation.clone(),
+            );
+            assert!(attempt.terminal().is_some());
+            assert!(
+                lock(&cancellation.inner.watchers).is_empty(),
+                "root completion unregisters its lifecycle wait"
+            );
+        }
+    }
+
+    #[test]
+    fn panicking_commit_uses_transactional_rollback_before_retry() {
+        // Rue's unit runner marks any unwind as a failed test, even when the
+        // runtime catches it. Exercise the exact rollback helper directly and
+        // structurally pin the catch branch that invokes it.
+        let runtime = QueryRuntime::new(1);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let first = Arc::new(AttemptHandoffLifecycle::new(
+            vec![Box::new(RecordingHandoff::new(events.clone()))],
+            Vec::new(),
+        ));
+        let second = Arc::new(AttemptHandoffLifecycle::new(
+            vec![Box::new(RecordingHandoff::new(events.clone()))],
+            Vec::new(),
+        ));
+        let first_owner = TaskId(1);
+        let cancellation = CancellationToken::new();
+        let AttemptHandoffCommit::Claimed(mut first_handoffs) =
+            first.begin_commit(first_owner, &cancellation, &runtime.core)
+        else {
+            panic!("fresh lifecycle is claimable")
+        };
+        let AttemptHandoffCommit::Claimed(mut second_handoffs) =
+            second.begin_commit(first_owner, &cancellation, &runtime.core)
+        else {
+            panic!("every lifecycle in the root batch is claimable")
+        };
+        first_handoffs[0].commit();
+        second_handoffs[0].commit();
+        rollback_handoff_batches(
+            first_owner,
+            vec![
+                (first.clone(), first_handoffs),
+                (second.clone(), second_handoffs),
+            ],
+            true,
+        );
+
+        let retry_owner = TaskId(2);
+        let AttemptHandoffCommit::Claimed(mut first_handoffs) =
+            first.begin_commit(retry_owner, &cancellation, &runtime.core)
+        else {
+            panic!("rollback returns the lifecycle to pending")
+        };
+        let AttemptHandoffCommit::Claimed(mut second_handoffs) =
+            second.begin_commit(retry_owner, &cancellation, &runtime.core)
+        else {
+            panic!("aggregate rollback returns every lifecycle to pending")
+        };
+        first_handoffs[0].commit();
+        second_handoffs[0].commit();
+        first.finish_commit(retry_owner);
+        second.finish_commit(retry_owner);
+        assert_eq!(
+            *lock(&events),
+            ["commit", "commit", "abort", "abort", "commit", "commit"]
+        );
+
+        let source = include_str!("lib.rs");
+        let commit_body = source
+            .split("fn commit_handoffs(&self)")
+            .nth(1)
+            .expect("root task has a handoff commit barrier")
+            .split("fn discard_observed_handoffs")
+            .next()
+            .expect("commit barrier ends before root-abort cleanup");
+        assert!(commit_body.contains("commit_handoff(&mut **handoff)"));
+        assert!(commit_body.contains("rollback_handoff_batches(self.id, batches, commit_started)"));
+    }
+
+    #[test]
+    fn abort_unwind_marks_the_lifecycle_fail_closed() {
+        // The test runner rejects caught unwinds, so model the exact
+        // post-catch transition and structurally pin the abort catch site.
+        let runtime = QueryRuntime::new(1);
+        let lifecycle = Arc::new(AttemptHandoffLifecycle::new(
+            vec![Box::new(RecordingHandoff::new(Arc::new(Mutex::new(
+                Vec::new(),
+            ))))],
+            Vec::new(),
+        ));
+        let owner = TaskId(7);
+        let cancellation = CancellationToken::new();
+        let AttemptHandoffCommit::Claimed(handoffs) =
+            lifecycle.begin_commit(owner, &cancellation, &runtime.core)
+        else {
+            panic!("fresh lifecycle is claimable")
+        };
+        lifecycle.abort_failed_commit(owner, handoffs);
+        let mut observed = Vec::new();
+        assert!(
+            !AttemptHandoffLifecycle::collect_observed(&lifecycle, &mut observed),
+            "an abort unwind leaves no reusable partial lifecycle"
+        );
+        assert!(matches!(
+            lifecycle.begin_commit(TaskId(8), &cancellation, &runtime.core),
+            AttemptHandoffCommit::Aborted
+        ));
+
+        let source = include_str!("lib.rs");
+        let rollback = source
+            .split("fn rollback_handoff_batches")
+            .nth(1)
+            .expect("root rollback helper exists")
+            .split("impl AttemptHandoffLifecycle")
+            .next()
+            .expect("rollback helper has a bounded body");
+        assert!(rollback.contains("abort_handoff(&mut **handoff).is_err()"));
+        assert!(rollback.contains("lifecycle.abort_failed_commit(owner, handoffs)"));
+    }
+
+    #[test]
+    fn nested_handoff_eviction_during_root_claim_is_nonterminal() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let child = Arc::new(AttemptHandoffLifecycle::new(
+            vec![Box::new(RecordingHandoff::new(events.clone()))],
+            Vec::new(),
+        ));
+        let parent = Arc::new(AttemptHandoffLifecycle::new(
+            vec![Box::new(RecordingHandoff::new(events.clone()))],
+            vec![child.clone()],
+        ));
+        let task = Arc::new(Task {
+            id: TaskId(99),
+            core: runtime.core.clone(),
+            revision: revision(1),
+            cancellation: CancellationToken::new(),
+            owns_permit: AtomicBool::new(false),
+            stack: Mutex::new(Vec::new()),
+            nested_attempts: Mutex::new(Vec::new()),
+            leases: Mutex::new(TaskLeases::default()),
+            observed_handoffs: Mutex::new(Vec::new()),
+        });
+        assert!(task.observe_handoff(parent.clone()));
+        child.abort();
+        assert!(matches!(
+            task.commit_handoffs(),
+            Err(RootHandoffCommitFailure::Invalidated)
+        ));
+        assert_eq!(*lock(&events), ["abort"]);
+        drop(task);
+        drop(parent);
+        drop(child);
+        assert_eq!(*lock(&events), ["abort", "abort"]);
     }
 
     #[test]
@@ -4581,21 +6840,54 @@ mod tests {
         });
         started_rx.recv().unwrap();
         let waiter_token = CancellationToken::new();
+        let (at_park_tx, at_park_rx) = mpsc::channel();
+        let hook_token = waiter_token.clone();
+        runtime.set_interpose(Arc::new(move |site| {
+            if site == InterposeSite::NodeJoinPark {
+                at_park_tx.send(()).unwrap();
+                while !hook_token.is_canceled() {
+                    thread::yield_now();
+                }
+            }
+        }));
         let waiter_runtime = runtime.clone();
         let waiter_family = family.clone();
         let waiter_cancel = waiter_token.clone();
+        let watcher_token = waiter_token.clone();
+        let (waiter_done_tx, waiter_done_rx) = mpsc::channel();
         let waiter = thread::spawn(move || {
-            waiter_runtime.query(
+            let result = waiter_runtime.query(
                 &waiter_family,
                 revision(1),
                 Key("shared"),
                 waiter_token,
                 |_| panic!("waiter cannot become owner while shared work is live"),
-            )
+            );
+            waiter_done_tx.send(()).unwrap();
+            result
         });
-        runtime.wait_for_metrics(|metrics| metrics.joins == 1);
-        waiter_cancel.cancel();
+        let canceler = thread::spawn(move || {
+            at_park_rx.recv().unwrap();
+            // The joiner owns the predicate lock and has observed a computing
+            // attempt. Cancellation becomes true before that lock is released.
+            waiter_cancel.cancel();
+        });
+        let waiter_woke = waiter_done_rx.recv_timeout(Duration::from_secs(1));
+        if waiter_woke.is_err() {
+            finish_tx.send(()).unwrap();
+            let _ = owner.join().unwrap();
+            let _ = waiter.join().unwrap();
+            canceler.join().unwrap();
+            runtime.clear_interpose();
+            panic!("cancellation did not wake a parked node join");
+        }
         assert_eq!(waiter.join().unwrap().unwrap_err(), QueryAbort::Canceled);
+        canceler.join().unwrap();
+        runtime.clear_interpose();
+        assert!(
+            lock(&watcher_token.inner.watchers).is_empty(),
+            "the canceled node join unregisters its watcher"
+        );
         finish_tx.send(()).unwrap();
         assert_eq!(
             owner.join().unwrap().unwrap().outcome(),
