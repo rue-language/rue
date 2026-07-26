@@ -316,6 +316,9 @@ pub(super) struct PendingNominalPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclarationInstallFailure {
+    /// Body-owner installation was attempted after the declaration base was
+    /// sealed; refreshing only the live epoch would leave derivation data stale.
+    AlreadySealed,
     DuplicatePayload,
     MissingPayload,
     UnexpectedPayload,
@@ -2410,6 +2413,9 @@ impl<'a> BoundSema<'a> {
         mut self,
         endpoints: &[super::BodyOwnerEndpoint],
     ) -> Result<Self, DeclarationInstallFailure> {
+        if self.body_base.is_some() {
+            return Err(DeclarationInstallFailure::AlreadySealed);
+        }
         let issuer = endpoints.first().map(|e| e.token.issuer());
         let mut installed = HashMap::with_capacity(endpoints.len());
         let mut tokens = HashSet::with_capacity(endpoints.len());

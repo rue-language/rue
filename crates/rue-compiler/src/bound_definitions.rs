@@ -714,6 +714,13 @@ pub(crate) fn compare_canonical_durable_declaration_install(
                 "durable semantic installation failed: {failure:?}"
             )))
         })?;
+    let installed = installed
+        .install_body_owner_tokens(&definitions.body_owner_endpoints())
+        .map_err(|failure| {
+            CompileErrors::from(invalid(format!(
+                "comparison body-owner endpoint install failed: {failure:?}"
+            )))
+        })?;
     let binding_work = installed.binding_work();
     let installed_durable = installed
         .with_declaration_semantics(|records, _| {

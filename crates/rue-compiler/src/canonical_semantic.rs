@@ -479,8 +479,18 @@ pub(crate) fn bind_query_owned_declarations_for_test<'a>(
     target: crate::Target,
     imports: &CanonicalImportGraph,
 ) -> MultiErrorResult<rue_air::BoundSema<'a>> {
-    query_owned_declaration_shells_for_test(merged, rir, preview_features, target, imports)?
-        .resolve_declarations_for_test()
+    let prepared =
+        prepared_query_declarations_for_test(merged, rir, preview_features, target, imports)?;
+    let CanonicalPreparedDeclarations {
+        shells,
+        definitions,
+        ..
+    } = prepared;
+    let body_owner_endpoints = definitions.body_owner_endpoints();
+    Ok(shells
+        .resolve_declarations_for_test()?
+        .install_body_owner_tokens(&body_owner_endpoints)
+        .expect("query-owned test declarations install their owner endpoints"))
 }
 
 /// The [`bind_query_owned_declarations_for_test`] recipe, additionally handing
@@ -500,8 +510,16 @@ pub(crate) fn bind_query_owned_declarations_with_definitions_for_test<'a>(
 ) -> MultiErrorResult<(rue_air::BoundSema<'a>, BoundDefinitionSet)> {
     let prepared =
         prepared_query_declarations_for_test(merged, rir, preview_features, target, imports)?;
-    let definitions = prepared.definitions;
-    let bound = prepared.shells.resolve_declarations_for_test()?;
+    let CanonicalPreparedDeclarations {
+        shells,
+        definitions,
+        ..
+    } = prepared;
+    let body_owner_endpoints = definitions.body_owner_endpoints();
+    let bound = shells
+        .resolve_declarations_for_test()?
+        .install_body_owner_tokens(&body_owner_endpoints)
+        .expect("query-owned test declarations install their owner endpoints");
     Ok((bound, definitions))
 }
 
