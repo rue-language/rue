@@ -6627,22 +6627,22 @@ impl RevisionedQueryDatabase {
                                 match index.capabilities.get(&candidate) {
                                     None => {}
                                     Some(DeclarationOccurrenceCapability::Ambiguous { .. }) => {
-                                        invalid.get_or_insert_with(|| {
+                                        invalid.get_or_insert(
                                             StableDeclarationClassificationFailure::Ambiguous(
                                                 candidate,
-                                            )
-                                        });
+                                            ),
+                                        );
                                     }
                                     Some(DeclarationOccurrenceCapability::Exact {
                                         duplicate_multiplicity,
                                         ..
                                     }) if *duplicate_multiplicity != 1 => {
-                                        invalid.get_or_insert_with(|| {
+                                        invalid.get_or_insert(
                                             StableDeclarationClassificationFailure::DuplicateMultiplicity {
                                                 key: candidate,
                                                 multiplicity: *duplicate_multiplicity,
-                                            }
-                                        });
+                                            },
+                                        );
                                     }
                                     Some(DeclarationOccurrenceCapability::Exact { .. }) => {
                                         let shell = context.query_registered(
