@@ -3,7 +3,11 @@
 id = "cli.examples_lattice"
 name = "Lattice workflow compiler and scheduler written in Rue"
 description = "exercise parsing, validation, graph algorithms, scheduling, replay, operational analytics, reporting, selftests, and generated scaling workloads"
-contract = "heavyweight"
+# Lattice's cold compile sits right at the 30-second heavyweight ceiling on
+# cold CI runners while per-body incremental work continues (a shard-2 case
+# was killed at 30.014s); the long contract keeps the coverage real with
+# honest bounded headroom.
+contract = "heavyweight_long"
 
 [[case]]
 name = "lattice_runs_built_in_demo"
