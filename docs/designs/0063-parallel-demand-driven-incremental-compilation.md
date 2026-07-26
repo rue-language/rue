@@ -12,7 +12,7 @@ superseded-by:
 supersedes: [0045, 0053]
 amends: [0051]
 amended-by: [0066]
-relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", "RUE-812", "RUE-1021", "RUE-1022", "RUE-1023", "RUE-1024", "RUE-1025", "RUE-1026", "RUE-1027", "RUE-1028", "RUE-1029", "RUE-1030", "RUE-1031", "RUE-1032", "RUE-1033"]
+relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", "RUE-812", "RUE-1021", "RUE-1022", "RUE-1023", "RUE-1024", "RUE-1025", "RUE-1026", "RUE-1027", "RUE-1028", "RUE-1029", "RUE-1030", "RUE-1031", "RUE-1032", "RUE-1033", "RUE-1137"]
 ---
 
 # ADR-0063: Parallel demand-driven incremental compilation
@@ -193,6 +193,75 @@ unrelated source therefore does not invalidate an already-parsed module.
 Current-versus-last-good selection belongs to a request/session publication
 layer over immutable revisions. It is not mutable state inside every query
 algorithm.
+
+#### 2.1 Filesystem observation authority
+
+Ruled by Steve on 2026-07-26 (RUE-1137). This subsection defines when a new
+rooted import-input request may validate retained terminals against its
+predecessor. It is the input contract RUE-1023 refers to.
+
+**The compatibility token is observation-regime identity, not request
+identity.** A revision's compatibility slot carries a stable digest of the rules
+governing reads — discovery epoch, project root, std root, read policy revision.
+It changes when those rules change and *not* when a file changes. File changes
+are per-leaf stamp changes, so a retained terminal remains validatable across an
+ordinary edit; a regime change resets the epoch wholesale because the compiler
+can no longer relate its retained observations to the new rules.
+
+Per-request identity remains separate and is what a trusted-toolchain successor
+delta must match. Conflating the two is what previously made warm reuse
+unreachable: a per-request counter in the compatibility slot meant no
+predecessor terminal was ever eligible for red/green validation, so every rooted
+compilation recomputed every body irrespective of its dependencies.
+
+**Two authority tiers may assert filesystem stability. Bare assertions may
+not.**
+
+- *Tier A (watched).* The host supplies a proof attesting an active watcher
+  covering the accepted-read set. Content changes arrive as ordinary leaf
+  updates.
+- *Tier B (unwatched, default).* The compiler is its own authority via a
+  re-observation sweep over the previous rooted closure's accepted-read set at
+  request start.
+
+Tier B is the correctness baseline and Tier A is a latency optimization over it.
+Warm reuse is therefore available to unwatched hosts, including a plain CLI and
+a future watch mode, rather than only to a watcher-equipped editor.
+
+**The sweep compares content, not metadata.** For each entry: stat it; on any
+size/mtime/identity mismatch re-read and re-hash; republish the leaf only when
+the *content digest* differs. A metadata mismatch alone is not a change, because
+editors and build tools routinely rewrite files without changing bytes.
+
+**Unreliable timestamps fall back to hashing.** A stat whose mtime lies within
+the filesystem's indistinguishable window of now must not be trusted: such a
+timestamp cannot separate "written before we hashed it" from "written after."
+Those leaves are content-hashed. This rule is not optional hardening — it is why
+the preceding rule is sound.
+
+**Absent leaves invalidate; they do not demand.** A retained terminal whose
+already-observed input leaf is absent from the successor's published view is
+invalid and recomputes. Missing-input demand is for leaves a computation has not
+yet discovered, not for leaves a retained terminal already observed. Without
+this distinction an import edit that removes a module aborts every dependent
+instead of recomputing it. Cancellation, dependency cycles, and engine invariant
+violations continue to propagate, since none of them indicate staleness.
+
+**Remaining rulings.** Missing, denied, unreadable, ambiguous, and malformed
+reads stay distinguishable typed observations, so any transition between them
+invalidates the dependent closure; a read-policy change is a regime change and
+still fails closed. Speculative work inherits no authority and drives no
+re-observation. A canceled or abandoned request establishes no freshness, and
+its successor re-sweeps any leaf an incomplete sweep did not cover. A regime
+change makes prior terminals ineligible for validation but forces no eviction;
+they age out under existing bounded retention, so a watcher restart does not
+produce a retention cliff.
+
+**Implementation status.** The compatibility token and absent-leaf invalidation
+are implemented. **The Tier B sweep is not.** Nothing currently retains
+terminals across a filesystem re-read the compiler did not itself perform, so no
+present host is affected; a long-lived filesystem-reading host must not ship
+before the sweep exists.
 
 ### 3. Query identity, computation, and publication
 
