@@ -5,7 +5,7 @@ mod tests {
 
     use crate::ConstValue;
     use crate::inst::{AirArgMode, AirInstData, AirRef};
-    use crate::sema::{Sema, SemaOutput};
+    use crate::sema::{BodySema, Sema, SemaOutput};
     use crate::types::{StructId, Type};
     use lasso::ThreadedRodeo;
     use rue_error::{
@@ -134,23 +134,24 @@ mod tests {
     }
 
     #[test]
-    fn body_epoch_clone_shares_canonical_import_context() {
+    fn body_epoch_base_derivation_shares_canonical_import_context() {
         let sema = gather_two_file_declarations_for_testing(
             "const dep = @import(\"dep.rue\"); fn main() -> i32 { dep.value() }",
             "pub fn value() -> i32 { 1 }",
         )
         .freeze_declarations();
-        let cloned = sema.clone();
+        let base = sema.body_semantic_base();
+        let derived = BodySema::derive_from_body_semantic_base(&base);
         let original = sema
             .canonical_imports
             .as_ref()
             .expect("the two-file fixture installs canonical imports");
-        let cloned = cloned
+        let derived = derived
             .canonical_imports
             .as_ref()
-            .expect("cloning preserves canonical imports");
+            .expect("base derivation preserves canonical imports");
         assert!(
-            Arc::ptr_eq(original, cloned),
+            Arc::ptr_eq(original, derived),
             "body-epoch derivation must share, not copy, the import maps"
         );
         assert!(
@@ -2867,7 +2868,7 @@ mod tests {
         let anonymous = (StructId(u32::MAX - 1), method);
         let symbol = "__anon_struct_5.f".to_string();
         Sema::<crate::sema::MutableDeclarations>::insert_callable_method_candidate(
-            &mut sema.named_callable_methods_by_symbol,
+            Arc::make_mut(&mut sema.named_callable_methods_by_symbol),
             symbol.clone(),
             named,
         );

@@ -41,7 +41,9 @@
 //! merely asserted: it reports what a derivation shared and what it copied, read
 //! from the derived containers themselves.
 
-use super::{BoundSema, DeclarationPhase, Sema};
+use std::sync::Arc;
+
+use super::BoundSema;
 
 /// Structural accounting for one epoch derivation (RUE-1135).
 ///
@@ -106,11 +108,11 @@ impl EpochDerivationUnits {
     }
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
-    /// Per-family unit counts for one derivation of this epoch, read from the
-    /// live containers rather than from the inputs the epoch was built from.
+impl super::BodySemanticBase<'_> {
+    /// Per-family unit counts for one derivation, read from the immutable base
+    /// and its local seed rather than from a previously analyzed body epoch.
     fn derivation_unit_sizes(&self) -> EpochDerivationUnits {
-        let namespace = &**self;
+        let namespace = &*self.declarations;
         let declaration_namespace_entries_shared = namespace.functions.len()
             + namespace.functions_by_file_name.len()
             + namespace.function_source_names.len()
@@ -120,7 +122,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             + namespace.enums_by_file_name.len()
             + namespace.methods.len()
             + namespace.named_method_declarations.len()
-            + namespace.const_resolutions.len();
+            + namespace.const_resolutions.len()
+            // The callable-symbol reversal is built while declarations are
+            // mutable, then frozen in the base alongside the source namespace.
+            // It is an Arc in derived epochs, never a per-body map clone.
+            + self.named_callable_methods_by_symbol.len();
         let endpoint_entries_shared = self.stable_definition_tokens.len()
             + self.stable_definition_endpoints.len()
             + self.const_candidate_tokens.len()
@@ -131,25 +137,31 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // The per-body owned state a derivation really does copy. Anonymous
         // nominal identity maps and generated-name overlays dominate it; it is
         // sized by the epoch's anonymous universe, not by its declarations.
-        let body_local_entries_copied = self.anonymous_methods.len()
-            + self.named_callable_methods_by_symbol.len()
-            + self.anonymous_callable_methods_by_symbol.len()
-            + self.generated_structs.len()
-            + self.generated_enums.len()
-            + self.anon_struct_identities.len()
-            + self.anon_enum_identities.len()
-            + self.anonymous_digest_owners.len()
-            + self.anonymous_struct_ids.len()
-            + self.anonymous_enum_ids.len()
-            + self.canonical_anonymous_types.len()
-            + self.anon_struct_method_sigs.len()
-            + self.anon_struct_captured_values.len()
-            + self.anon_struct_type_subst.len()
-            + self.destructor_spans.len()
-            + self.infectious_linear.len()
-            + self.ctor_type_displays.len()
-            + self.well_known_option_by_payload.len()
-            + self.well_known_option_identities.len();
+        let local = &self.local_seed;
+        #[cfg(test)]
+        let forced_anonymous_digest_entries = local.forced_anonymous_digests.len();
+        #[cfg(not(test))]
+        let forced_anonymous_digest_entries = 0;
+        let body_local_entries_copied = local.anonymous_methods.len()
+            + local.anonymous_callable_methods_by_symbol.len()
+            + local.generated_structs.len()
+            + local.generated_enums.len()
+            + local.anon_struct_identities.len()
+            + local.anon_enum_identities.len()
+            + local.anonymous_digest_owners.len()
+            + local.anonymous_struct_ids.len()
+            + local.anonymous_enum_ids.len()
+            + local.canonical_anonymous_types.len()
+            + local.anon_struct_method_sigs.len()
+            + local.anon_struct_captured_values.len()
+            + local.anon_struct_type_subst.len()
+            + local.destructor_spans.len()
+            + local.infectious_linear.len()
+            + local.deferred_ownership_gates.len()
+            + local.ctor_type_displays.len()
+            + local.well_known_option_by_payload.len()
+            + local.well_known_option_identities.len()
+            + forced_anonymous_digest_entries;
         EpochDerivationUnits {
             bases_built: 0,
             epochs_derived: 1,
@@ -185,6 +197,7 @@ impl BoundSema<'_> {
     pub fn seal_as_declaration_base(&mut self) {
         self.sema.type_pool = self.sema.type_pool.derive_overlay();
         self.sema.param_arena = self.sema.param_arena.derive_overlay();
+        self.body_base = Some(Arc::new(self.sema.body_semantic_base()));
     }
 
     /// Derive one body-local epoch from this declaration base, charging what the
@@ -196,11 +209,12 @@ impl BoundSema<'_> {
     /// the two layered containers place every local write above the base's
     /// entries rather than into them.
     pub fn derive_body_epoch(&self, units: &mut EpochDerivationUnits) -> Self {
-        units.absorb(self.sema.derivation_unit_sizes());
-        let mut derived = self.clone();
-        derived.sema.type_pool = self.sema.type_pool.derive_overlay();
-        derived.sema.param_arena = self.sema.param_arena.derive_overlay();
-        derived
+        let base = self
+            .body_base
+            .as_ref()
+            .expect("a declaration base must be sealed before deriving a body epoch");
+        units.absorb(base.derivation_unit_sizes());
+        self.derive_from_body_base(base.clone())
     }
 
     /// Type-pool entries this epoch interned itself, excluding everything it
