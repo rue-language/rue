@@ -101,6 +101,74 @@ const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
     "StackFrameInfo",
 ];
 
+fn source_between_exact_boundaries<'a>(source: &'a str, start: &str, next: &str) -> &'a str {
+    let start = source.find(start).expect("source boundary starts");
+    let tail = &source[start..];
+    let end = tail.find(next).expect("source boundary ends");
+    &tail[..end]
+}
+
+#[test]
+fn exact_source_boundaries_ignore_braces_in_comments_and_strings() {
+    let fixture = r#"
+    fn selected() {
+        let _ = "}";
+        // }}} must not truncate the selected method
+        observed();
+    }
+
+    fn next() {}
+"#;
+    let selected = source_between_exact_boundaries(fixture, "    fn selected()", "\n    fn next()");
+    assert!(selected.contains("observed();"));
+    assert!(!selected.contains("fn next"));
+}
+
+#[test]
+fn body_transaction_has_no_complete_declaration_candidate_map() {
+    let runtime = include_str!("revisioned_query_database.rs");
+    let method = source_between_exact_boundaries(
+        runtime,
+        "    pub(crate) fn body_transaction(",
+        "\n    pub(crate) fn canonical_body_projection(",
+    );
+    assert!(
+        !method.contains("declaration_candidates"),
+        "body_transaction must not regain the coordinator's complete candidate map"
+    );
+    let compact = method
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .collect::<String>();
+    assert!(
+        !compact.contains(
+            "Arc<BTreeMap<crate::StableDefinitionKey,crate::declaration_candidate::DeclarationCandidateKey>>"
+        ),
+        "body_transaction must derive exact shell candidates from stable keys"
+    );
+    for required in [
+        "&self.stable_declaration_classifications",
+        "StableDeclarationClassificationQueryValue::Selected",
+        "&self.declaration_shells",
+        "DeclarationShellQueryValue::Available",
+    ] {
+        assert!(
+            method.contains(required),
+            "body_transaction lost candidate-set shell classification: {required}"
+        );
+    }
+    for forbidden in [
+        "declaration_occurrence_indexes",
+        "DeclarationOccurrenceIndex",
+        "stable_syntax_candidate_set",
+    ] {
+        assert!(
+            !method.contains(forbidden),
+            "body_transaction bypassed the narrow stable classifier: {forbidden}"
+        );
+    }
+}
+
 const RUE_869_INTERNAL_ROOT_VOCABULARY: &[&str] = &[
     "BoundDefinitionId",
     "BoundDefinitionRecord",
