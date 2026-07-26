@@ -2347,13 +2347,6 @@ fn example_trials(
 }
 
 fn main() {
-    // RUE-1083: keep the required Caldera CI target present while its query
-    // cutover performance regression is repaired. Only that target sets this
-    // marker; the ordinary CLI corpus and filtered local runs remain real.
-    if std::env::var_os("RUE_CALDERA_SUCCESS_STUB").is_some() {
-        return;
-    }
-
     // RUE-1116: an optional `INDEX/COUNT` spec runs a stable hash-partitioned
     // 1/N slice of the corpus so CI can fan the slices across parallel runners.
     // Unset (the default, and every local/filtered run) means the whole corpus.

@@ -37,16 +37,10 @@ not historical/current/candidate value.
 ## Regressed-example cold workloads
 
 `rill`, `mosaic`, `harbor`, `lattice`, and `meridian` are the five large example
-programs the RUE-1026/RUE-1027 query cutover regressed. All five are `--skip`ped
-from `//:cli-tests`, so their compile cost is not part of the required corpus.
-
-The large-example compile guard
-([`.github/workflows/large-examples.yml`](../../.github/workflows/large-examples.yml))
-does compile all six programs, but it deliberately answers a different question:
-it proves they still compile at all, under a 3600-second timeout, and a Caldera
-timeout is downgraded to a warning because pure slowness is a tracked
-performance follow-up rather than a compile-correctness regression. It makes no
-performance claim. These rows are where cold *cost* is gated.
+programs the RUE-1026/RUE-1027 query cutover regressed. Their `//:cli-tests`
+cases bound each compile with a per-case contract budget, but the required
+corpus only answers pass/fail at that budget. These rows are where cold *cost*
+is gated against the pre-cutover reference.
 
 Each carries an absolute `cold_wall_seconds` gate derived from the checked-in
 `[historical_reference]` table, which transcribes the pre-cutover and

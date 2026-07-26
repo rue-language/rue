@@ -12,12 +12,6 @@ class = "heavyweight"
 compile_timeout_ms = 30000
 runtime_timeout_ms = 30000
 
-[contract.heavyweight_medium]
-class = "heavyweight"
-# RUE-1083: temporary Linux ARM64 headroom for the real Rill coverage.
-compile_timeout_ms = 60000
-runtime_timeout_ms = 30000
-
 [contract.heavyweight_long]
 class = "heavyweight"
 compile_timeout_ms = 120000
@@ -25,8 +19,7 @@ runtime_timeout_ms = 120000
 
 [contract.heavyweight_extra_long]
 class = "heavyweight"
-# RUE-1083: temporary headroom while the query regression is fixed.
-compile_timeout_ms = 900000
+compile_timeout_ms = 300000
 runtime_timeout_ms = 120000
 
 [[automatic_example]]
@@ -43,7 +36,7 @@ contract = "heavyweight"
 
 [[automatic_example]]
 path = "rill/main.rue"
-contract = "heavyweight_medium"
+contract = "heavyweight"
 
 [[automatic_example]]
 path = "ruelex/main.rue"

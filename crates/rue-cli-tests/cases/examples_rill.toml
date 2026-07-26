@@ -5,10 +5,10 @@
 id = "cli.examples_rill"
 name = "Rill bytecode language and VM written in Rue"
 description = "exercise source lexing, bytecode compilation, globals, calls, loops, pooled strings, and deterministic failures"
-# RUE-1083: every case below compiles the same maintained large Rill program.
-# Give the whole section temporary 60-second compile headroom on Linux ARM64
-# while the query regression is repaired.
-contract = "heavyweight_medium"
+# Every case below compiles the same maintained large Rill program, so the
+# whole section carries the bounded heavyweight contract, matching the
+# automatic rill example.
+contract = "heavyweight"
 
 [[case]]
 name = "rill_executes_nontrivial_file"

@@ -498,8 +498,8 @@ test_sanitizer_recursive_discovery_contract() {
     "$(grep -Fxq "$sb/examples/std/arraybuf_demo.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   check "run-sanitizer: does not compile a root's helper module independently" \
     "$(! grep -Fxq "$sb/examples/calculator/lib/helper.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
-  check "run-sanitizer: temporarily defers Caldera under RUE-1083" \
-    "$(! grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: compiles the Caldera root" \
+    "$(grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -767,20 +767,10 @@ EOF
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
-  : >"$sb/calls.log"
-  rc=0
-  (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: ordinary CLI shard receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
-
-  : >"$sb/calls.log"
-  rc=0
-  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-caldera FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-caldera) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: Caldera shard receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-caldera -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
-
   local other_target
   for other_target in \
+    //:cli-tests \
+    //:cli-tests-caldera \
     //:spec-tests \
     //:ui-tests \
     //:oracle-diff-generated-smoke \

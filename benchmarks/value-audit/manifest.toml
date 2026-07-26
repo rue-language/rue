@@ -226,10 +226,11 @@ supported_scenarios = ["cold"]
 cold_wall_seconds = 300
 cold_timeout_seconds = 330
 
-# The five large example programs the query cutover regressed.  Each is
-# `--skip`ped from //:cli-tests today (BUCK), so the audit is currently the only
-# place their cold cost is gated at all.  They are cold-driver workloads with no
-# persistent-session protocol, exactly like `medium_ordinary_rue`.
+# The five large example programs the query cutover regressed.  Their
+# //:cli-tests cases bound each compile with a per-case contract budget; these
+# rows gate the cold cost itself against the pre-cutover reference.  They are
+# cold-driver workloads with no persistent-session protocol, exactly like
+# `medium_ordinary_rue`.
 #
 # `cold_wall_seconds` is the absolute per-role gate and is checked without any
 # role-vs-role pairing, so these rows produce a real verdict even in a

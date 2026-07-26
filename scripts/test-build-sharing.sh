@@ -289,12 +289,8 @@ EOF
         "$(grep -Fxq 'test //... --exclude rue_heavy_suite --always-exclude' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: ordinary CLI shard receives the extended executor timeout" \
-        "$(grep -Fxq 'test //:cli-tests -- --timeout 1200' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: Caldera shard receives the extended executor timeout" \
-        "$(grep -Fxq 'test //:cli-tests-caldera -- --timeout 1200' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: every other heavy target retains the default executor timeout" \
-        "$([ "$(grep -Ec '^test //:(spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 4 ] && echo 0 || echo 1)"
+    check "suite: every heavy target uses the default executor timeout" \
+        "$([ "$(grep -Ec '^test //:(cli-tests|cli-tests-caldera|spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 6 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \
         "$(! grep -Fq -- '--include rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
     check "suite: host lock is released" "$([[ ! -e "$sb/lock" ]] && echo 0 || echo 1)"

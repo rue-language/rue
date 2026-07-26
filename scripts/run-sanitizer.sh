@@ -191,14 +191,6 @@ add_program() {
 discover_examples() {
     local dir="$1"
     local entry
-    # RUE-1083: Caldera alone exceeds the temporary 900-second compiler
-    # budget after the query cutover, while this sanitizer driver has no
-    # compile timeout. Keep the required Valgrind job and every other example
-    # real; restore this one root when RUE-1083 fixes large-program latency.
-    if [[ "$dir" == "$repo_root/examples/caldera" ]]; then
-        echo "run-sanitizer: deferring examples/caldera/main.rue (RUE-1083)" >&2
-        return
-    fi
     if [[ -f "$dir/main.rue" ]]; then
         add_program "$dir/main.rue" "memory-only" "${dir#"$repo_root/"}/main.rue"
         return

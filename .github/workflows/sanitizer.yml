@@ -79,14 +79,7 @@ jobs:
         run: ./buck2 build //crates/rue:rue
 
       - name: Run programs under valgrind memcheck
-        # RUE-1083: the semantic-query cutover makes several large example
-        # compilations take long enough that this formerly ~2-minute job now
-        # runs for more than 28 minutes. Keep the required job and compiler
-        # build wired while the urgent performance follow-up restores the real
-        # corpus run.
-        run: |
-          echo "Valgrind corpus temporarily deferred by RUE-1083."
-          true
+        run: scripts/run-sanitizer.sh
 
   # AddressSanitizer over rue-runtime's arena allocator (RUE-211, RUE-560).
   # Standalone cargo crate (crates/rue-runtime-asan) driven by nightly rustc —
