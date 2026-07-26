@@ -112,11 +112,13 @@ mod tests {
     const AGGREGATES_SOURCE: &str = include_str!("aggregates.rs");
     const BUILTIN_OPS_SOURCE: &str = include_str!("analysis/builtin_ops.rs");
     const CALLS_SOURCE: &str = include_str!("analysis/calls.rs");
+    const FUNCTIONS_SOURCE: &str = include_str!("analysis/functions.rs");
     const INTRINSICS_SOURCE: &str = include_str!("analysis/intrinsics.rs");
     const SEMA_ROOT_SOURCE: &str = include_str!("mod.rs");
     const ANALYSIS_ROOT_SOURCE: &str = include_str!("analysis.rs");
     const INSTRUCTIONS_SOURCE: &str = include_str!("analysis/instructions.rs");
     const OWNERSHIP_SOURCE: &str = include_str!("analysis/ownership.rs");
+    const TYPE_INFERENCE_SOURCE: &str = include_str!("analysis/type_inference.rs");
     const CONTROL_FLOW_SOURCE: &str = include_str!("control_flow.rs");
     const FACT_MODE_SOURCE: &str = include_str!("fact_mode.rs");
     const BODY_ENDPOINT_SOURCE: &str = include_str!("body_endpoint.rs");
@@ -449,6 +451,173 @@ mod tests {
         }
         assert!(ANALYSIS_ROOT_SOURCE.contains("sema.export_ordinary_body("));
         assert!(BINDING_MANIFEST_SOURCE.contains("self.stable_definition_token("));
+    }
+
+    #[test]
+    fn string_shape_classification_has_exact_body_receiver() {
+        fn impl_items(source: &str) -> Vec<&str> {
+            let mut items = Vec::new();
+            let mut remaining = source;
+            while let Some(start) = remaining.find("\nimpl") {
+                let item = &remaining[start + 1..];
+                let open = item.find('{').expect("impl body opens");
+                let mut depth = 0;
+                let mut end = None;
+                for (offset, ch) in item[open..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(open + offset + 1);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let end = end.expect("impl body closes");
+                items.push(&item[..end]);
+                remaining = &item[end..];
+            }
+            items
+        }
+
+        fn method_names(item: &str) -> Vec<&str> {
+            item.lines()
+                .filter_map(|line| {
+                    let line = line.strip_prefix("    ")?;
+                    let declaration = line
+                        .strip_prefix("fn ")
+                        .or_else(|| line.split_once(" fn ").map(|(_, declaration)| declaration))?;
+                    declaration.split_once('(').map(|(name, _)| name)
+                })
+                .collect()
+        }
+
+        let typeck_impls = impl_items(TYPECK_SOURCE);
+        let classification_methods = [
+            "is_str_struct",
+            "is_str_fixed_struct",
+            "str_fixed_capacity",
+            "is_str_like",
+        ];
+        let body_owner = typeck_impls
+            .iter()
+            .find(|item| item.contains("fn is_str_struct("))
+            .expect("string classification owner is present");
+        assert!(
+            body_owner.starts_with("impl BodySema<'_>"),
+            "string classification must be body-only"
+        );
+
+        for method in classification_methods {
+            let needle = format!("fn {method}(");
+            let owners = typeck_impls
+                .iter()
+                .filter(|item| item.contains(&needle))
+                .collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1, "{method} has one implementation");
+            assert_eq!(
+                *owners[0], *body_owner,
+                "{method} shares the cohesive body-only owner"
+            );
+        }
+
+        let mut actual_methods = method_names(body_owner);
+        actual_methods.sort_unstable();
+        let mut expected_methods = classification_methods.to_vec();
+        expected_methods.sort_unstable();
+        assert_eq!(actual_methods, expected_methods);
+
+        for item in typeck_impls.iter().filter(|item| {
+            let header = item.lines().next().expect("impl has a header");
+            header.contains("DeclarationPhase") && header.contains("Sema<")
+        }) {
+            for method in classification_methods {
+                assert!(
+                    !item.contains(&format!("fn {method}(")),
+                    "{method} must not remain generically available"
+                );
+            }
+        }
+
+        let constructor_owners = typeck_impls
+            .iter()
+            .filter(|item| item.contains("fn get_or_create_str_fixed_struct("))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            constructor_owners.len(),
+            1,
+            "fixed-string constructor has one implementation"
+        );
+        assert!(
+            constructor_owners[0].starts_with("impl<'a, D: DeclarationPhase> Sema<'a, D>"),
+            "fixed-string construction remains declaration-phase generic"
+        );
+
+        let type_syntax_call_owners = typeck_impls
+            .iter()
+            .filter(|item| item.contains("self.get_or_create_str_fixed_struct(capacity, span)"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            type_syntax_call_owners.len(),
+            1,
+            "type-syntax fixed-string construction has one generic owner"
+        );
+        assert!(
+            type_syntax_call_owners[0]
+                .starts_with("impl<'source, D: DeclarationPhase> TypeSyntaxHost")
+        );
+
+        let binding_impls = impl_items(BINDING_MANIFEST_SOURCE);
+        let declaration_install_owners = binding_impls
+            .iter()
+            .filter(|item| {
+                item.contains(".get_or_create_str_fixed_struct(capacity, Span::default())")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            declaration_install_owners.len(),
+            1,
+            "declaration installation has one fixed-string construction call"
+        );
+        assert!(
+            declaration_install_owners[0].starts_with("impl<'a> DeclarationShells<'a>"),
+            "declaration installation owns its generic-constructor call"
+        );
+
+        for (name, source, anchor) in [
+            (
+                "analyze_ops.rs",
+                ANALYZE_OPS_SOURCE,
+                "self.str_fixed_capacity(",
+            ),
+            ("aggregates.rs", AGGREGATES_SOURCE, "self.is_str_struct("),
+            (
+                "functions.rs",
+                FUNCTIONS_SOURCE,
+                "self.is_str_fixed_struct(",
+            ),
+            ("ownership.rs", OWNERSHIP_SOURCE, "self.is_str_like("),
+            (
+                "type_inference.rs",
+                TYPE_INFERENCE_SOURCE,
+                "self.is_str_fixed_struct(",
+            ),
+            ("intrinsics.rs", INTRINSICS_SOURCE, "self.is_str_like("),
+            ("builtin_ops.rs", BUILTIN_OPS_SOURCE, "self.is_str_like("),
+            (
+                "control_flow.rs",
+                CONTROL_FLOW_SOURCE,
+                "self.is_str_struct(",
+            ),
+        ] {
+            assert!(
+                source.contains(anchor),
+                "{name} keeps a representative body-only production caller"
+            );
+        }
     }
 
     #[test]
