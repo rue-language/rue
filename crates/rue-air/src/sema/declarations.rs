@@ -117,7 +117,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// O(universe) pass paid before any body was analyzed (and, on the
     /// per-body-query hot path, paid afresh for every reached body). It now
     /// returns a context whose signature caches start empty and materialize on
-    /// first consult through [`SemaInferenceFacts`], so only the signatures and
+    /// first consult through [`HostInferenceFacts`], so only the signatures and
     /// types a body actually names are converted. The only eager work retained
     /// is a small snapshot of the generated-nominal overlays, which must be
     /// frozen at this point so a nominal generated while analyzing a later body

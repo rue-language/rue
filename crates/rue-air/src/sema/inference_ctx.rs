@@ -1,7 +1,7 @@
 //! Demand-populated type information for constraint generation.
 //!
 //! This module contains [`InferenceContext`], the per-analysis cache that backs
-//! Hindley-Milner constraint generation, and [`SemaInferenceFacts`], the
+//! Hindley-Milner constraint generation, and [`HostInferenceFacts`], the
 //! [`LazyInferenceFacts`] provider that materializes each consulted
 //! function/struct/enum/method/const family on first lookup instead of eagerly
 //! projecting the whole declaration universe (RUE-1091 slice r5b).
@@ -13,9 +13,39 @@ use std::rc::Rc;
 use lasso::Spur;
 use rue_span::FileId;
 
+use super::fact_mode::BodyAnalysisReadHost;
 use super::{ConstValue, DeclarationPhase, Sema};
 use crate::inference::{FunctionSig, LazyInferenceFacts, MethodSig};
 use crate::types::{ModuleId, StructId, Type};
+
+/// The generated-nominal overlay snapshot consumed by [`InferenceContext`].
+/// It is a construction-time input, not a replay cache for semantic results.
+pub(crate) struct InferenceGeneratedNominalOverlays {
+    pub(crate) builtin_struct_types: HashMap<Spur, Type>,
+    pub(crate) struct_types_by_file: HashMap<(FileId, Spur), Type>,
+    pub(crate) enum_types_by_file: HashMap<(FileId, Spur), Type>,
+}
+
+/// Immutable declaration reads required by the inference fact facade.
+///
+/// This is deliberately narrower than body evaluation: it supplies only the
+/// point queries and construction snapshot used by constraint generation.
+pub(super) trait InferenceFactSource {
+    fn inference_generated_nominal_overlays(&self) -> InferenceGeneratedNominalOverlays;
+    fn uncached_function_sig(&self, name: Spur) -> Option<FunctionSig>;
+    fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig>;
+    fn inference_builtin_struct_type(&self, name: Spur) -> Option<Type>;
+    fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type>;
+    fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn inference_const_type(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn inference_const_type_alias(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn inference_const_value(&self, key: (FileId, Spur)) -> Option<i128>;
+    fn inference_const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur>;
+    fn inference_module_binding_type(&self, key: (FileId, Spur)) -> Option<Type>;
+    fn inference_module_file_id(&self, module: ModuleId) -> Option<FileId>;
+    fn inference_function_by_file(&self, key: (FileId, Spur)) -> Option<Spur>;
+}
 
 /// Demand-population cache for constraint generation (RUE-1091 slice r5b).
 ///
@@ -27,7 +57,7 @@ use crate::types::{ModuleId, StructId, Type};
 ///
 /// - **positive-only caches** for the two non-`Copy` signature families
 ///   (`func_sigs`, `method_sigs`), materialized on first consult through
-///   [`SemaInferenceFacts`]; and
+///   [`HostInferenceFacts`]; and
 /// - **small frozen snapshots** of the generated (synthetic) nominal overlays
 ///   that the eager projection merged at build time, so a slice/`Str(N)` struct
 ///   generated while analyzing a *later* body cannot retroactively change an
@@ -36,11 +66,10 @@ use crate::types::{ModuleId, StructId, Type};
 /// Every other family is answered by a direct keyed lookup against the frozen
 /// declaration state, which is already O(consumed).
 ///
-/// The cache carries no borrow of `Sema`: it is built once and shared across
-/// every reached body's `&mut self` analysis, so it cannot hold `&Sema`. The
-/// fill source (immutable `Sema` sub-borrows) is threaded separately per body
-/// via [`SemaInferenceFacts`], which is sound because Phase-1 constraint
-/// generation only reads `Sema` immutably.
+/// The cache carries no borrow of its host: it is built once and shared across
+/// every reached body's analysis. The immutable fact source is threaded
+/// separately per body via [`HostInferenceFacts`], which is sound because
+/// Phase-1 constraint generation only performs reads.
 ///
 /// # Cross-body caching soundness
 ///
@@ -73,25 +102,12 @@ impl InferenceContext {
     /// Construct the context, snapshotting the generated-nominal overlays that
     /// the eager projection merged. The signature caches start empty and fill on
     /// demand.
-    pub(crate) fn new<D: DeclarationPhase>(sema: &Sema<'_, D>) -> Self {
-        let mut gen_builtin_struct_types = HashMap::new();
-        let mut gen_struct_types_by_file = HashMap::new();
-        for (name, id) in &sema.generated_structs {
-            let def = sema.type_pool.struct_def(*id);
-            if def.is_builtin {
-                gen_builtin_struct_types.insert(*name, Type::new_struct(*id));
-            }
-            gen_struct_types_by_file
-                .entry((def.file_id, *name))
-                .or_insert_with(|| Type::new_struct(*id));
-        }
-        let mut gen_enum_types_by_file = HashMap::new();
-        for (name, id) in &sema.generated_enums {
-            let def = sema.type_pool.enum_def(*id);
-            gen_enum_types_by_file
-                .entry((def.file_id, *name))
-                .or_insert_with(|| Type::new_enum(*id));
-        }
+    pub(crate) fn new<H: BodyAnalysisReadHost>(host: &H) -> Self {
+        let InferenceGeneratedNominalOverlays {
+            builtin_struct_types: gen_builtin_struct_types,
+            struct_types_by_file: gen_struct_types_by_file,
+            enum_types_by_file: gen_enum_types_by_file,
+        } = host.inference_generated_nominal_overlays();
         Self {
             func_sigs: RefCell::new(HashMap::new()),
             method_sigs: RefCell::new(HashMap::new()),
@@ -103,75 +119,32 @@ impl InferenceContext {
 }
 
 /// The demand-population provider that materializes inference-context families
-/// from a body's frozen `Sema` state (RUE-1091 slice r5b).
+/// from a body's frozen read host (RUE-1091 slice r5b).
 ///
 /// Constructed fresh per `run_type_inference` call, holding the shared
-/// [`InferenceContext`] cache plus an immutable borrow of the analyzing `Sema`.
+/// [`InferenceContext`] cache plus an immutable borrow of the analyzing host.
 /// The generator consults it through [`LazyInferenceFacts`]; every answer equals
 /// the value the eager projection would have held for that key.
-pub(crate) struct SemaInferenceFacts<'a, 'src, D: DeclarationPhase> {
+pub(crate) struct HostInferenceFacts<'a, H: BodyAnalysisReadHost> {
     ctx: &'a InferenceContext,
-    sema: &'a Sema<'src, D>,
+    host: &'a H,
 }
 
-impl<'a, 'src, D: DeclarationPhase> SemaInferenceFacts<'a, 'src, D> {
-    pub(crate) fn new(ctx: &'a InferenceContext, sema: &'a Sema<'src, D>) -> Self {
-        Self { ctx, sema }
+impl<'a, H: BodyAnalysisReadHost> HostInferenceFacts<'a, H> {
+    pub(crate) fn new(ctx: &'a InferenceContext, host: &'a H) -> Self {
+        Self { ctx, host }
     }
 
     fn build_func_sig(&self, name: Spur) -> Option<FunctionSig> {
-        let info = self.sema.functions.get(&name)?;
-        Some(FunctionSig {
-            param_types: self
-                .sema
-                .param_arena
-                .types(info.params)
-                .iter()
-                .map(|t| self.sema.type_to_infer_type(*t))
-                .collect(),
-            return_type: self.sema.type_to_infer_type(info.return_type),
-            is_generic: info.is_generic,
-            param_modes: self.sema.param_arena.modes(info.params).to_vec(),
-            param_comptime: self.sema.param_arena.comptime(info.params).to_vec(),
-            param_comptime_type: self.sema.comptime_type_param_flags(info),
-            param_names: self.sema.param_arena.names(info.params).to_vec(),
-            param_type_syms: self
-                .sema
-                .rir
-                .params(info.rir_params(self.sema.rir))
-                .iter()
-                .map(|p| p.ty)
-                .collect(),
-            return_type_sym: info.return_type_sym,
-        })
+        self.host.uncached_function_sig(name)
     }
 
     fn build_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
-        // Anonymous-wins, matching `Sema::method_info` and the retired eager
-        // projection's chain order. The keyspaces are disjoint today, so the
-        // order is unobservable — but every consult site must agree on it.
-        let info = self
-            .sema
-            .anonymous_methods
-            .get(&key)
-            .or_else(|| self.sema.methods.get(&key))?;
-        Some(MethodSig {
-            struct_type: info.struct_type,
-            has_self: info.has_self,
-            param_types: self
-                .sema
-                .param_arena
-                .types(info.params)
-                .iter()
-                .map(|t| self.sema.type_to_infer_type(*t))
-                .collect(),
-            param_modes: self.sema.param_arena.modes(info.params).to_vec(),
-            return_type: self.sema.type_to_infer_type(info.return_type),
-        })
+        self.host.uncached_method_sig(key)
     }
 }
 
-impl<D: DeclarationPhase> LazyInferenceFacts for SemaInferenceFacts<'_, '_, D> {
+impl<H: BodyAnalysisReadHost> LazyInferenceFacts for HostInferenceFacts<'_, H> {
     fn func_sig(&self, name: Spur) -> Option<Rc<FunctionSig>> {
         if let Some(cached) = self.ctx.func_sigs.borrow().get(&name) {
             return Some(Rc::clone(cached));
@@ -203,82 +176,184 @@ impl<D: DeclarationPhase> LazyInferenceFacts for SemaInferenceFacts<'_, '_, D> {
             .gen_builtin_struct_types
             .get(&name)
             .copied()
-            .or_else(|| {
-                self.sema
-                    .builtin_structs
-                    .get(&name)
-                    .map(|id| Type::new_struct(*id))
-            })
+            .or_else(|| self.host.inference_builtin_struct_type(name))
     }
 
     fn struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
         // Base declarations win; generated overlays only filled gaps.
-        self.sema
-            .structs_by_file_name
-            .get(&key)
-            .map(|id| Type::new_struct(*id))
+        self.host
+            .inference_struct_type_by_file(key)
             .or_else(|| self.ctx.gen_struct_types_by_file.get(&key).copied())
     }
 
     fn builtin_enum_type(&self, name: Spur) -> Option<Type> {
         // The eager projection built builtin enum types from the base table
         // only (no generated overlay).
-        self.sema
-            .builtin_enums
-            .get(&name)
-            .map(|id| Type::new_enum(*id))
+        self.host.inference_builtin_enum_type(name)
     }
 
     fn enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.sema
-            .enums_by_file_name
-            .get(&key)
-            .map(|id| Type::new_enum(*id))
+        self.host
+            .inference_enum_type_by_file(key)
             .or_else(|| self.ctx.gen_enum_types_by_file.get(&key).copied())
     }
 
     fn const_type(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.sema.value_const(&key).map(|info| match info.value {
+        self.host.inference_const_type(key)
+    }
+
+    fn const_type_alias(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.host.inference_const_type_alias(key)
+    }
+
+    fn const_value(&self, key: (FileId, Spur)) -> Option<i128> {
+        self.host.inference_const_value(key)
+    }
+
+    fn const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.host.inference_const_function_alias(key)
+    }
+
+    fn module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.host.inference_module_binding_type(key)
+    }
+
+    fn module_file_id(&self, module: ModuleId) -> Option<FileId> {
+        self.host.inference_module_file_id(module)
+    }
+
+    fn function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.host.inference_function_by_file(key)
+    }
+}
+
+impl<D: DeclarationPhase> InferenceFactSource for Sema<'_, D> {
+    fn inference_generated_nominal_overlays(&self) -> InferenceGeneratedNominalOverlays {
+        let mut builtin_struct_types = HashMap::new();
+        let mut struct_types_by_file = HashMap::new();
+        for (name, id) in &self.generated_structs {
+            let def = self.type_pool.struct_def(*id);
+            if def.is_builtin {
+                builtin_struct_types.insert(*name, Type::new_struct(*id));
+            }
+            struct_types_by_file
+                .entry((def.file_id, *name))
+                .or_insert_with(|| Type::new_struct(*id));
+        }
+        let mut enum_types_by_file = HashMap::new();
+        for (name, id) in &self.generated_enums {
+            let def = self.type_pool.enum_def(*id);
+            enum_types_by_file
+                .entry((def.file_id, *name))
+                .or_insert_with(|| Type::new_enum(*id));
+        }
+        InferenceGeneratedNominalOverlays {
+            builtin_struct_types,
+            struct_types_by_file,
+            enum_types_by_file,
+        }
+    }
+
+    fn uncached_function_sig(&self, name: Spur) -> Option<FunctionSig> {
+        let info = self.functions.get(&name)?;
+        Some(FunctionSig {
+            param_types: self
+                .param_arena
+                .types(info.params)
+                .iter()
+                .map(|ty| self.type_to_infer_type(*ty))
+                .collect(),
+            return_type: self.type_to_infer_type(info.return_type),
+            is_generic: info.is_generic,
+            param_modes: self.param_arena.modes(info.params).to_vec(),
+            param_comptime: self.param_arena.comptime(info.params).to_vec(),
+            param_comptime_type: self.comptime_type_param_flags(info),
+            param_names: self.param_arena.names(info.params).to_vec(),
+            param_type_syms: self
+                .rir
+                .params(info.rir_params(self.rir))
+                .iter()
+                .map(|param| param.ty)
+                .collect(),
+            return_type_sym: info.return_type_sym,
+        })
+    }
+
+    fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
+        let info = self
+            .anonymous_methods
+            .get(&key)
+            .or_else(|| self.methods.get(&key))?;
+        Some(MethodSig {
+            struct_type: info.struct_type,
+            has_self: info.has_self,
+            param_types: self
+                .param_arena
+                .types(info.params)
+                .iter()
+                .map(|ty| self.type_to_infer_type(*ty))
+                .collect(),
+            param_modes: self.param_arena.modes(info.params).to_vec(),
+            return_type: self.type_to_infer_type(info.return_type),
+        })
+    }
+
+    fn inference_builtin_struct_type(&self, name: Spur) -> Option<Type> {
+        self.builtin_structs
+            .get(&name)
+            .map(|id| Type::new_struct(*id))
+    }
+
+    fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.structs_by_file_name
+            .get(&key)
+            .map(|id| Type::new_struct(*id))
+    }
+
+    fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type> {
+        self.builtin_enums.get(&name).map(|id| Type::new_enum(*id))
+    }
+
+    fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.enums_by_file_name
+            .get(&key)
+            .map(|id| Type::new_enum(*id))
+    }
+
+    fn inference_const_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.value_const(&key).map(|info| match info.value {
             ConstValue::Type(_) => Type::COMPTIME_TYPE,
             _ => info.ty,
         })
     }
 
-    fn const_type_alias(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.sema
-            .value_const(&key)
-            .and_then(|info| match info.value {
-                ConstValue::Type(ty) => Some(ty),
-                _ => None,
-            })
+    fn inference_const_type_alias(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.value_const(&key).and_then(|info| match info.value {
+            ConstValue::Type(ty) => Some(ty),
+            _ => None,
+        })
     }
 
-    fn const_value(&self, key: (FileId, Spur)) -> Option<i128> {
-        self.sema
-            .value_const(&key)
+    fn inference_const_value(&self, key: (FileId, Spur)) -> Option<i128> {
+        self.value_const(&key)
             .and_then(|info| info.value.as_int_value())
     }
 
-    fn const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
-        self.sema
-            .value_const(&key)
+    fn inference_const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.value_const(&key)
             .and_then(|info| info.value.as_function())
     }
 
-    fn module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
-        self.sema.module_binding(&key).map(|info| info.ty)
+    fn inference_module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.module_binding(&key).map(|info| info.ty)
     }
 
-    fn module_file_id(&self, module: ModuleId) -> Option<FileId> {
-        // The eager projection keyed every module id in `0..registry.len()`.
-        if (module.index() as usize) < self.sema.module_registry.len() {
-            Some(self.sema.module_registry.get_def(module).file_id)
-        } else {
-            None
-        }
+    fn inference_module_file_id(&self, module: ModuleId) -> Option<FileId> {
+        ((module.index() as usize) < self.module_registry.len())
+            .then(|| self.module_registry.get_def(module).file_id)
     }
 
-    fn function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
-        self.sema.functions_by_file_name.get(&key).copied()
+    fn inference_function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.functions_by_file_name.get(&key).copied()
     }
 }

@@ -9,11 +9,12 @@
 //! the selection *logic* is provider-generic and a later slice can supply the
 //! same facts from a body-fact provider + overlay instead of the epoch `Sema`.
 //!
-//! [`EpochFacts`] is the one production implementation: each operation is the
-//! verbatim epoch-table read the inline `one_body.rs` code performed, so the
-//! hoist is byte-identical. Every operation is `&self` and returns owned or
-//! `Copy` data, so a caller inside an `&mut Sema` stack constructs a
-//! short-lived [`EpochFacts`] per resolution (mirroring `SemaTypeSyntaxProvider`)
+//! [`EpochFacts`] is the generic production adapter: it delegates each point
+//! query to a [`BodyEndpointFactSource`] supplied by its host. `Sema` supplies
+//! the current declaration-epoch source, preserving the existing reads while
+//! keeping the adapter independent of an analyzer representation. Every
+//! operation is `&self` and returns owned or `Copy` data, so a caller inside an
+//! `&mut Sema` stack constructs a short-lived [`EpochFacts`] per resolution
 //! without retaining a borrow across the surrounding mutations.
 
 use std::cell::RefCell;
@@ -129,148 +130,261 @@ pub(crate) trait BodyEndpointProvider {
     fn intern_ptr_mut(&self, pointee: Type) -> Option<Type>;
 }
 
-/// The production [`BodyEndpointProvider`]: every operation is the verbatim
-/// epoch-table read the inline `one_body.rs` code performed.
-pub(crate) struct EpochFacts<'s, 'a, D: DeclarationPhase> {
-    sema: &'s Sema<'a, D>,
+/// Raw immutable endpoint reads supplied by a body-analysis host.
+pub(super) trait BodyEndpointFactSource {
+    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur>;
+    fn endpoint_definition_endpoint(
+        &self,
+        token: SemanticDefinitionToken,
+    ) -> Option<SemanticDefinitionEndpoint>;
+    fn endpoint_module_endpoint(
+        &self,
+        token: SemanticModuleToken,
+    ) -> Option<SemanticModuleEndpoint>;
+    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur>;
+    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId>;
+    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId>;
+    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId>;
+    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId>;
+    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId>;
+    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId>;
+    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId>;
+    fn endpoint_is_builtin_or_generated_struct(&self, name: Spur) -> bool;
+    fn endpoint_is_builtin_enum(&self, name: Spur) -> bool;
+    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo>;
+    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
+    fn endpoint_source_function_name(&self, name: Spur) -> Spur;
+    fn endpoint_first_free_function(&self, source: Spur, file: FileId) -> Option<InstRef>;
+    fn endpoint_named_method_declaration(
+        &self,
+        file: FileId,
+        ty: Spur,
+        method: Spur,
+    ) -> Option<InstRef>;
+    fn endpoint_destructor(&self, file: u32, ty: Spur) -> Option<RirDestructorDeclaration>;
+    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId>;
+    fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type>;
+    fn endpoint_intern_ptr_const(&self, pointee: Type) -> Option<Type>;
+    fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type>;
 }
 
-impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
-    pub(in crate::sema) fn new(sema: &'s Sema<'a, D>) -> Self {
-        Self { sema }
-    }
-}
-
-impl<D: DeclarationPhase> BodyEndpointProvider for EpochFacts<'_, '_, D> {
-    fn name_symbol(&self, name: &str) -> Option<Spur> {
-        self.sema.interner.get(name)
+/// Direct epoch reads for the current host. The generic adapter below owns the
+/// read-only abstraction; this impl is only the production source of facts.
+impl<D: DeclarationPhase> BodyEndpointFactSource for Sema<'_, D> {
+    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
+        self.interner.get(name)
     }
 
-    fn definition_endpoint(
+    fn endpoint_definition_endpoint(
         &self,
         token: SemanticDefinitionToken,
     ) -> Option<SemanticDefinitionEndpoint> {
-        self.sema.stable_definition_endpoints.get(&token).cloned()
+        self.stable_definition_endpoints.get(&token).cloned()
     }
 
-    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
-        self.sema.stable_module_endpoints.get(&token).copied()
+    fn endpoint_module_endpoint(
+        &self,
+        token: SemanticModuleToken,
+    ) -> Option<SemanticModuleEndpoint> {
+        self.stable_module_endpoints.get(&token).copied()
     }
 
-    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.functions_by_file_name.get(&(file, name)).copied()
+    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+        self.record_body_module_item_lookup(file, name);
+        self.functions_by_file_name.get(&(file, name)).copied()
     }
 
-    fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.structs_by_file_name.get(&(file, name)).copied()
+    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.record_body_module_item_lookup(file, name);
+        self.structs_by_file_name.get(&(file, name)).copied()
     }
 
-    fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.enums_by_file_name.get(&(file, name)).copied()
+    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.record_body_module_item_lookup(file, name);
+        self.enums_by_file_name.get(&(file, name)).copied()
     }
 
-    fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.sema
-            .builtin_structs
+    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.builtin_structs
             .get(&name)
-            .or_else(|| self.sema.generated_structs.get(&name))
+            .or_else(|| self.generated_structs.get(&name))
             .copied()
     }
 
-    fn generated_struct(&self, name: Spur) -> Option<StructId> {
-        self.sema.generated_structs.get(&name).copied()
+    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.generated_structs.get(&name).copied()
     }
 
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.sema.builtin_enums.get(&name).copied()
+    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        self.builtin_enums.get(&name).copied()
     }
 
-    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
-        self.sema.anon_struct_identities.get(identity).copied()
+    fn endpoint_anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
+        self.anon_struct_identities.get(identity).copied()
     }
 
-    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
-        self.sema.anon_enum_identities.get(identity).copied()
+    fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
+        self.anon_enum_identities.get(identity).copied()
     }
 
-    fn is_builtin_or_generated_struct(&self, name: Spur) -> bool {
-        self.sema.builtin_structs.contains_key(&name)
-            || self.sema.generated_structs.contains_key(&name)
+    fn endpoint_is_builtin_or_generated_struct(&self, name: Spur) -> bool {
+        self.builtin_structs.contains_key(&name) || self.generated_structs.contains_key(&name)
     }
 
-    fn is_builtin_enum(&self, name: Spur) -> bool {
-        self.sema.builtin_enums.contains_key(&name)
+    fn endpoint_is_builtin_enum(&self, name: Spur) -> bool {
+        self.builtin_enums.contains_key(&name)
     }
 
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.sema.function_info(name).copied()
+    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.function_info(name).copied()
     }
 
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.sema.record_body_member_lookup(struct_id, name);
-        self.sema.method_info((struct_id, name)).copied()
+    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.record_body_member_lookup(struct_id, name);
+        self.method_info((struct_id, name)).copied()
     }
 
-    fn source_function_name(&self, name: Spur) -> Spur {
-        self.sema.source_function_name(name)
+    fn endpoint_source_function_name(&self, name: Spur) -> Spur {
+        self.source_function_name(name)
     }
 
-    fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
-        self.sema.record_body_module_item_lookup(file_id, source);
-        self.sema
-            .declaration_index
+    fn endpoint_first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
+        self.record_body_module_item_lookup(file_id, source);
+        self.declaration_index
             .first_free_function(source, Some(file_id))
     }
 
-    fn named_method_declaration(
+    fn endpoint_named_method_declaration(
         &self,
         owner_file: FileId,
         owner_type_name: Spur,
         method_name: Spur,
     ) -> Option<InstRef> {
-        self.sema
-            .record_body_module_item_lookup(owner_file, owner_type_name);
+        self.record_body_module_item_lookup(owner_file, owner_type_name);
         let struct_id = self
-            .sema
             .structs_by_file_name
             .get(&(owner_file, owner_type_name))?;
-        self.sema.record_body_member_lookup(*struct_id, method_name);
-        self.sema
-            .named_method_declarations
+        self.record_body_member_lookup(*struct_id, method_name);
+        self.named_method_declarations
             .get(&(*struct_id, method_name))
             .copied()
     }
 
-    fn destructor(&self, file: u32, type_name: Spur) -> Option<RirDestructorDeclaration> {
-        self.sema
-            .record_body_destructor_lookup(FileId::new(file), type_name);
-        self.sema
-            .declaration_index
+    fn endpoint_destructor(&self, file: u32, type_name: Spur) -> Option<RirDestructorDeclaration> {
+        self.record_body_destructor_lookup(FileId::new(file), type_name);
+        self.declaration_index
             .destructors()
             .iter()
             .find(|record| record.span.file_id.index() == file && record.type_name == type_name)
             .copied()
     }
 
-    fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
-        (0..self.sema.module_registry.len())
+    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
+        (0..self.module_registry.len())
             .map(|index| ModuleId::new(index as u32))
-            .find(|id| self.sema.module_registry.get_def(*id).file_id.index() == file)
+            .find(|id| self.module_registry.get_def(*id).file_id.index() == file)
     }
 
+    fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
+        self.type_pool.try_intern_array(element, len).ok()
+    }
+
+    fn endpoint_intern_ptr_const(&self, pointee: Type) -> Option<Type> {
+        self.type_pool.try_intern_ptr_const(pointee).ok()
+    }
+
+    fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
+        self.type_pool.try_intern_ptr_mut(pointee).ok()
+    }
+}
+
+/// Read-only endpoint adapter used by the canonical body engine.
+///
+/// It carries only a host capability; the current epoch-backed host is one
+/// production source, while an owned body state can supply the same reads next.
+pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost> {
+    host: &'host H,
+}
+
+impl<'host, H: super::fact_mode::BodyAnalysisReadHost> EpochFacts<'host, H> {
+    pub(in crate::sema) fn new(host: &'host H) -> Self {
+        Self { host }
+    }
+}
+
+impl<H: super::fact_mode::BodyAnalysisReadHost> BodyEndpointProvider for EpochFacts<'_, H> {
+    fn name_symbol(&self, name: &str) -> Option<Spur> {
+        self.host.endpoint_name_symbol(name)
+    }
+    fn definition_endpoint(
+        &self,
+        token: SemanticDefinitionToken,
+    ) -> Option<SemanticDefinitionEndpoint> {
+        self.host.endpoint_definition_endpoint(token)
+    }
+    fn module_endpoint(&self, token: SemanticModuleToken) -> Option<SemanticModuleEndpoint> {
+        self.host.endpoint_module_endpoint(token)
+    }
+    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+        self.host.endpoint_function_by_file_name(file, name)
+    }
+    fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.host.endpoint_struct_by_file_name(file, name)
+    }
+    fn enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.host.endpoint_enum_by_file_name(file, name)
+    }
+    fn builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.host.endpoint_builtin_or_generated_struct(name)
+    }
+    fn generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.host.endpoint_generated_struct(name)
+    }
+    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        self.host.endpoint_builtin_enum(name)
+    }
+    fn anon_struct(&self, identity: &IssuedAnonymousNominalKey) -> Option<StructId> {
+        self.host.endpoint_anon_struct(identity)
+    }
+    fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
+        self.host.endpoint_anon_enum(identity)
+    }
+    fn is_builtin_or_generated_struct(&self, name: Spur) -> bool {
+        self.host.endpoint_is_builtin_or_generated_struct(name)
+    }
+    fn is_builtin_enum(&self, name: Spur) -> bool {
+        self.host.endpoint_is_builtin_enum(name)
+    }
+    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.host.endpoint_function_info(name)
+    }
+    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.host.endpoint_method_info(struct_id, name)
+    }
+    fn source_function_name(&self, name: Spur) -> Spur {
+        self.host.endpoint_source_function_name(name)
+    }
+    fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
+        self.host.endpoint_first_free_function(source, file_id)
+    }
+    fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
+        self.host
+            .endpoint_named_method_declaration(file, ty, method)
+    }
+    fn destructor(&self, file: u32, ty: Spur) -> Option<RirDestructorDeclaration> {
+        self.host.endpoint_destructor(file, ty)
+    }
+    fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
+        self.host.endpoint_module_id_for_file(file)
+    }
     fn intern_array(&self, element: Type, len: u64) -> Option<Type> {
-        self.sema.type_pool.try_intern_array(element, len).ok()
+        self.host.endpoint_intern_array(element, len)
     }
-
     fn intern_ptr_const(&self, pointee: Type) -> Option<Type> {
-        self.sema.type_pool.try_intern_ptr_const(pointee).ok()
+        self.host.endpoint_intern_ptr_const(pointee)
     }
-
     fn intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
-        self.sema.type_pool.try_intern_ptr_mut(pointee).ok()
+        self.host.endpoint_intern_ptr_mut(pointee)
     }
 }
 

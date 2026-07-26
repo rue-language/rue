@@ -1,7 +1,8 @@
 //! Provider-generic aggregate, field, and variant resolution.
 //!
-//! Selection order lives here. [`EpochFacts`] is the production adapter that
-//! reproduces the declaration-epoch reads used by body analysis.
+//! Selection order lives here. [`EpochFacts`] is the generic production adapter
+//! that delegates declaration reads to an [`AggregateFactSource`] supplied by
+//! its host; `Sema` supplies the current declaration-epoch source.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -30,6 +31,19 @@ pub(crate) trait AggregateFacts {
     fn source_path(&self, span: rue_span::Span) -> Option<&str>;
 }
 
+/// Raw immutable aggregate-resolution reads supplied by a body-analysis host.
+pub(super) trait AggregateFactSource {
+    fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+    fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
+    fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId>;
+    fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId>;
+    fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId>;
+    fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId>;
+    fn aggregate_module(&self, module: ModuleId) -> AggregateModuleFact;
+    fn aggregate_file_path(&self, file: FileId) -> Option<&str>;
+    fn aggregate_source_path(&self, span: rue_span::Span) -> Option<&str>;
+}
+
 pub(crate) struct AggregateModuleFact {
     pub(crate) file: FileId,
     file_path: String,
@@ -46,47 +60,39 @@ impl AggregateModuleFact {
     }
 }
 
-pub(crate) struct EpochFacts<'s, 'a, D: DeclarationPhase> {
-    sema: &'s Sema<'a, D>,
-}
-
-impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
-    pub(crate) fn new(sema: &'s Sema<'a, D>) -> Self {
-        Self { sema }
-    }
-}
-
-impl<D: DeclarationPhase> AggregateFacts for EpochFacts<'_, '_, D> {
-    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.value_const(&(file, name)).cloned()
+/// Direct epoch reads for the current host. The generic adapter below owns the
+/// read-only abstraction; this impl is only the production source of facts.
+impl<D: DeclarationPhase> AggregateFactSource for Sema<'_, D> {
+    fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.record_body_module_item_lookup(file, name);
+        self.value_const(&(file, name)).cloned()
     }
 
-    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.module_binding(&(file, name)).cloned()
+    fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.record_body_module_item_lookup(file, name);
+        self.module_binding(&(file, name)).cloned()
     }
 
-    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.structs_by_file_name.get(&(file, name)).copied()
+    fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.record_body_module_item_lookup(file, name);
+        self.structs_by_file_name.get(&(file, name)).copied()
     }
 
-    fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.sema.record_body_module_item_lookup(file, name);
-        self.sema.enums_by_file_name.get(&(file, name)).copied()
+    fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.record_body_module_item_lookup(file, name);
+        self.enums_by_file_name.get(&(file, name)).copied()
     }
 
-    fn builtin_struct(&self, name: Spur) -> Option<StructId> {
-        self.sema.resolve_builtin_struct_name(name)
+    fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {
+        self.resolve_builtin_struct_name(name)
     }
 
-    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
-        self.sema.resolve_builtin_enum_name(name)
+    fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        self.resolve_builtin_enum_name(name)
     }
 
-    fn module(&self, module: ModuleId) -> AggregateModuleFact {
-        let def = self.sema.module_registry.get_def(module);
+    fn aggregate_module(&self, module: ModuleId) -> AggregateModuleFact {
+        let def = self.module_registry.get_def(module);
         AggregateModuleFact {
             file: def.file_id,
             file_path: def.file_path,
@@ -94,12 +100,53 @@ impl<D: DeclarationPhase> AggregateFacts for EpochFacts<'_, '_, D> {
         }
     }
 
-    fn file_path(&self, file: FileId) -> Option<&str> {
-        self.sema.get_file_path(file)
+    fn aggregate_file_path(&self, file: FileId) -> Option<&str> {
+        self.get_file_path(file)
     }
 
+    fn aggregate_source_path(&self, span: rue_span::Span) -> Option<&str> {
+        self.get_source_path(span)
+    }
+}
+
+/// Read-only aggregate-resolution adapter used by the canonical body engine.
+pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost> {
+    host: &'host H,
+}
+
+impl<'host, H: super::fact_mode::BodyAnalysisReadHost> EpochFacts<'host, H> {
+    pub(in crate::sema) fn new(host: &'host H) -> Self {
+        Self { host }
+    }
+}
+
+impl<H: super::fact_mode::BodyAnalysisReadHost> AggregateFacts for EpochFacts<'_, H> {
+    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.host.aggregate_value_const(file, name)
+    }
+    fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.host.aggregate_module_binding(file, name)
+    }
+    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.host.aggregate_struct_in_file(file, name)
+    }
+    fn enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.host.aggregate_enum_in_file(file, name)
+    }
+    fn builtin_struct(&self, name: Spur) -> Option<StructId> {
+        self.host.aggregate_builtin_struct(name)
+    }
+    fn builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        self.host.aggregate_builtin_enum(name)
+    }
+    fn module(&self, module: ModuleId) -> AggregateModuleFact {
+        self.host.aggregate_module(module)
+    }
+    fn file_path(&self, file: FileId) -> Option<&str> {
+        self.host.aggregate_file_path(file)
+    }
     fn source_path(&self, span: rue_span::Span) -> Option<&str> {
-        self.sema.get_source_path(span)
+        self.host.aggregate_source_path(span)
     }
 }
 
