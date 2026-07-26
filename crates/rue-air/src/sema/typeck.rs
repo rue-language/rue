@@ -3632,7 +3632,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             }
         }
     }
+}
 
+impl BodySema<'_> {
     /// Reject a type whose layout exceeds the implementation's maximum object
     /// size (Appendix C practical limit, RUE-561), returning the slot count on
     /// success. Call this wherever a value of `ty` is MATERIALIZED — a local
