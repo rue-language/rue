@@ -203,35 +203,13 @@ sh_test(
     },
 )
 
-# RUE-1083: these large example programs exceed their compiler budgets after the
-# query cutover. Keep the CLI targets running the other 1,667 cases while
-# RUE-1083 restores their automatic and explicit example coverage; Caldera
-# remains isolated below. Shared verbatim by //:cli-tests and its shards so a
-# slice runs exactly the same cases the monolithic target would.
-#
-# These skips are a PERFORMANCE deferral, not a coverage decision, and they are
-# owned by RUE-1083 rather than left unattributed:
-#
-# * that these programs still COMPILE is covered by the large-example guard
-#   (.github/workflows/large-examples.yml), which is no longer stubbed;
-# * that their compile COST is bounded is gated by the regressed_example
-#   workloads in benchmarks/value-audit/manifest.toml, whose budgets come from
-#   the pre-cutover figures in docs/notes/rue-1083-closure-evidence.md.
-#
-# Restoring them here requires the compile time, not more coverage. Remove a
-# name from this list when its program fits the ordinary CLI budget again; do
-# not remove the list wholesale until every name below is back.
+# Shared verbatim by //:cli-tests and its shards so a slice runs exactly the
+# same cases the monolithic target would. Caldera is skipped here because it
+# deliberately exceeds the ordinary corpus's aggregate budget; it runs as the
+# isolated //:cli-tests-caldera target below.
 _CLI_TEST_ARGS = [
     "--quiet",
     "--skip", "cli.examples::caldera::main",
-    "--skip", "cli.examples::harbor::main",
-    "--skip", "cli.examples_harbor",
-    "--skip", "cli.examples::lattice::main",
-    "--skip", "cli.examples_lattice",
-    "--skip", "cli.examples::meridian::main",
-    "--skip", "cli.examples_meridian",
-    "--skip", "cli.examples::mosaic::main",
-    "--skip", "cli.examples_mosaic",
 ]
 
 _CLI_TEST_ENV = {
@@ -295,24 +273,12 @@ CLI_TEST_SHARD_COUNT = 4
 # Caldera deliberately pushes a single compiler invocation past the ordinary
 # CLI corpus's aggregate budget. Keep it in the required corpus, but isolate it
 # so CI can run the stress program in parallel with the ordinary CLI cases.
-#
-# RUE-1083: the query cutover currently exceeds even Caldera's temporary
-# 15-minute compiler budget. Keep the required job and target wired up, but
-# make this exact target a transparent success stub until RUE-1083 restores
-# the real stress compile and its original 5-minute budget.
 sh_test(
     name = "cli-tests-caldera",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet", "caldera"],
-    env = {
-        "RUE_CALDERA_SUCCESS_STUB": "RUE-1083",
-        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
-        "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
-        "RUE_REPO_DIR": "$(location :cli-test-fixtures)",
-        "RUE_STD_DIR": "$(location :std)/std",
-    },
+    env = _CLI_TEST_ENV,
 )
 
 # RUE-1083: `examples/` is a declared input because this suite now also checks a

@@ -3,9 +3,9 @@
 id = "cli.examples_mosaic"
 name = "Mosaic static-site generator written in Rue"
 description = "exercise manifests, front matter, block/inline markup, graph validation, deterministic rendering, filesystem output, audits, and scaling"
-# RUE-1083: every case below compiles the same maintained large Mosaic
-# program. Give the whole section the existing 30-second phase budgets while
-# the declaration-query regression is repaired.
+# Every case below compiles the same maintained large Mosaic program, so the
+# whole section carries the bounded heavyweight contract, matching the
+# automatic mosaic example.
 contract = "heavyweight"
 
 [[case]]

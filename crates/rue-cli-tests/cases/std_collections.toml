@@ -15,9 +15,6 @@ description = "Stack, Queue, Grid2D, BinaryHeap, PriorityQueue, IntMap, and Arra
 [[case]]
 name = "std_collections_m2_smoke"
 description = "All M2 collections produce correct results (17 checks -> exit 42)."
-# RUE-1083: this real-std integration compile exceeds the ordinary 10-second
-# cold-Linux budget after the query cutover; keep it real with bounded headroom.
-contract = "heavyweight"
 env = { RUE_STD_PATH = "${REAL_STD}" }
 args = ["main.rue", "-o", "prog"]
 exit_code = 42

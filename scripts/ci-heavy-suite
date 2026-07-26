@@ -23,18 +23,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-test_args=("$target")
-case "$target" in
-    //:cli-tests | //:cli-tests-caldera)
-        # RUE-1083: these CLI shards can exceed the test executor's 600-second
-        # default while the declaration-query regression is being repaired.
-        # Caldera also carries a 900-second per-compile budget. Keep the outer
-        # margin explicit and local to the two affected targets.
-        test_args+=(-- --timeout 1200)
-        ;;
-esac
-
-./buck2 test "${test_args[@]}" 2>&1 | tee "$log"
+./buck2 test "$target" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
