@@ -262,6 +262,9 @@ impl DeclarationPhase for MutableDeclarations {
         name: Spur,
         file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>> {
+        if !sema.declaration_binding_active {
+            return Ok(None);
+        }
         sema.resolve_indexed_const_binding_impl(name, file_id)
     }
 
@@ -270,6 +273,9 @@ impl DeclarationPhase for MutableDeclarations {
         target: Spur,
         file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
+        if !sema.declaration_binding_active {
+            return Ok(None);
+        }
         sema.collect_free_function_signature_binding_impl(target, file_id)
     }
 }
@@ -1012,14 +1018,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 feature.adr()
             )))
         }
-    }
-
-    pub(crate) fn try_resolve_indexed_const_during_binding(
-        &mut self,
-        name: Spur,
-        file_id: FileId,
-    ) -> rue_error::CompileResult<Option<ConstValue>> {
-        D::resolve_indexed_const(self, name, file_id)
     }
 
     pub(crate) fn collect_free_function_signature_during_binding(
