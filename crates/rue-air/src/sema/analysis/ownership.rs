@@ -899,10 +899,10 @@ impl<'a> BodySema<'a> {
         };
 
         // A resolved enum annotation is the expected type for the initializer.
-        // This is how a fallible intrinsic learns its `Option(T)` return from a
-        // `let x: Option(T) = @read_line()` annotation (RUE-6): only sema can
-        // resolve the comptime-generic `Option` alias, so inference cannot
-        // thread it. Narrow to enums so unrelated `let`s are unaffected.
+        // A fallible intrinsic uses this to validate that
+        // `let x: Option(T) = @read_line()` names its exact registry-installed
+        // result (RUE-6); context does not select the intrinsic's nominal.
+        // Narrow to enums so unrelated `let`s are unaffected.
         let prev_expected = ctx.expected_type.take();
         if let Some(annot) = annotation_type {
             // A `str` annotation is the expected type for the initializer so a

@@ -6783,16 +6783,6 @@ impl CompilerSession {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
             };
-            // Plan the trusted-std `Option(payload)` demands once for this
-            // semantic request (RUE-1112). The plan is empty — leaving the
-            // legacy AIR structural scan in force — unless the trusted `Option`
-            // module is present AND the program uses a fallible intrinsic. Each
-            // reached body roots these demands under its own lease below.
-            let well_known_demands = crate::well_known_option::plan_well_known_option_demands(
-                &merged,
-                &rir,
-                &configuration,
-            );
             let mut pending = std::collections::BTreeSet::new();
             for record in prepared_definitions.definitions().definitions() {
                 let stable = record.stable_key();
@@ -7255,7 +7245,6 @@ impl CompilerSession {
                         runtime_revision,
                         key.clone(),
                         producer_body_terminal_required,
-                        well_known_demands.clone(),
                         cancellation.clone(),
                         |selected_anonymous, well_known| {
                             queried_body_work.bodies_attempted += 1;
@@ -7413,6 +7402,61 @@ impl CompilerSession {
                                 instance.clone(),
                                 semantic_nucleus_failure_diagnostics(merged.ast(), None, &failure),
                             );
+                            break;
+                        }
+                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::WellKnownOptionResolution(
+                            failure,
+                        )) => {
+                            use crate::revisioned_query_database::WellKnownOptionResolutionFailure;
+                            let errors = match failure {
+                                WellKnownOptionResolutionFailure::Incomplete {
+                                    payload,
+                                    prerequisite,
+                                    detail,
+                                } => crate::CompileErrors::from(
+                                    crate::CompileError::without_span(
+                                        rue_error::ErrorKind::InternalError(format!(
+                                            "exact trusted Option({payload:?}) prerequisite \
+                                             resolution was incomplete{}: {detail}",
+                                            prerequisite.as_ref().map_or_else(
+                                                String::new,
+                                                |key| format!(" at {key:?}")
+                                            )
+                                        )),
+                                    ),
+                                ),
+                                WellKnownOptionResolutionFailure::Semantic {
+                                    payload,
+                                    failure,
+                                } => {
+                                    let mut errors = semantic_nucleus_failure_diagnostics(
+                                        merged.ast(),
+                                        None,
+                                        &failure,
+                                    );
+                                    if errors.is_empty() {
+                                        errors = crate::CompileErrors::from(
+                                            crate::CompileError::without_span(
+                                                rue_error::ErrorKind::InternalError(format!(
+                                                    "trusted Option({payload:?}) resolution failed without diagnostics: {failure:?}"
+                                                )),
+                                            ),
+                                        );
+                                    }
+                                    errors
+                                }
+                                WellKnownOptionResolutionFailure::WrongProjection {
+                                    payload,
+                                    detail,
+                                } => crate::CompileErrors::from(
+                                    crate::CompileError::without_span(
+                                        rue_error::ErrorKind::InternalError(format!(
+                                            "trusted Option({payload:?}) resolution returned the wrong semantic projection: {detail}"
+                                        )),
+                                    ),
+                                ),
+                            };
+                            body_query_errors.insert(instance.clone(), errors);
                             break;
                         }
                         Err(crate::revisioned_query_database::BodyTransactionRequestFailure::DeferredAnonymousProducers(
@@ -17928,7 +17972,6 @@ fn main() -> i32 { selected.value() }"#,
                 revision,
                 key.clone(),
                 false,
-                Arc::from([]),
                 cancellation.clone(),
                 |_, _| panic!("semantic request must have materialized this body terminal"),
             )
@@ -17976,7 +18019,6 @@ fn main() -> i32 { selected.value() }"#,
                 revision,
                 key.clone(),
                 false,
-                Arc::from([]),
                 rue_query::CancellationToken::new(),
                 |_, _| panic!("semantic request must have materialized this body terminal"),
             )
@@ -18003,7 +18045,6 @@ fn main() -> i32 { selected.value() }"#,
                 revision,
                 key.clone(),
                 false,
-                Arc::from([]),
                 rue_query::CancellationToken::new(),
                 |_, _| panic!("semantic request must have materialized this body terminal"),
             )
@@ -18019,6 +18060,16 @@ fn main() -> i32 { selected.value() }"#,
     /// is provided at `\0rue-std/option.rue`, reached with
     /// `@import("std/option.rue")` (physical-suffix match).
     fn well_known_option_isolation_snapshot(root_source: &str) -> SourceSnapshot {
+        well_known_option_snapshot_with_source(
+            root_source,
+            "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }",
+        )
+    }
+
+    fn well_known_option_snapshot_with_source(
+        root_source: &str,
+        option_source: &str,
+    ) -> SourceSnapshot {
         let root = FileId::new(1);
         let option = FileId::new(2);
         let metadata = SourceMetadata::new_with_trusted_standard_library(
@@ -18038,16 +18089,71 @@ fn main() -> i32 { selected.value() }"#,
             metadata,
             vec![
                 (root, Arc::new(root_source.to_owned())),
-                (
-                    option,
-                    Arc::new(
-                        "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }"
-                            .to_owned(),
-                    ),
-                ),
+                (option, Arc::new(option_source.to_owned())),
             ],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn malformed_well_known_option_repairs_to_fresh_canonical_semantics() {
+        let options = CompileOptions::default();
+        let program = r#"
+const opt = @import("std/option.rue");
+fn main() -> i32 {
+    let O = opt.Option(i32);
+    match @parse_i32("42") {
+        O.Some(value) => value,
+        O.None => 0,
+    }
+}
+"#;
+        let malformed = well_known_option_snapshot_with_source(
+            program,
+            "pub fn Option(comptime T: type) -> type { missing }",
+        );
+        let repaired = well_known_option_isolation_snapshot(program);
+
+        let mut warm = CompilerSession::new();
+        publish_with_test_imports(&mut warm, &malformed);
+        let errors = warm
+            .canonical_semantic(&options)
+            .expect_err("the malformed trusted Option specialization must fail");
+        assert!(
+            errors.to_string().contains("missing"),
+            "the failed attempt must retain the trusted declaration diagnostic: {errors}"
+        );
+        assert!(
+            !warm.queries.revisioned.any_body_transaction_terminal(),
+            "the malformed attempt must not publish a body transaction"
+        );
+        assert!(
+            !warm.queries.revisioned.any_body_reference_terminal(),
+            "the malformed attempt must not publish a body-reference projection"
+        );
+        assert_eq!(
+            warm.queries.revisioned.lookup_promotion_entries(),
+            0,
+            "the malformed attempt must not promote a body lookup root"
+        );
+
+        publish_with_test_imports(&mut warm, &repaired);
+        let warm_repaired = warm
+            .canonical_semantic(&options)
+            .expect("the repaired successor must compile");
+
+        let mut fresh = CompilerSession::new();
+        publish_with_test_imports(&mut fresh, &repaired);
+        let fresh_repaired = fresh
+            .canonical_semantic(&options)
+            .expect("the repaired snapshot must compile fresh");
+
+        assert_eq!(
+            warm_repaired.unstable_parity_snapshot(),
+            fresh_repaired.unstable_parity_snapshot(),
+            "malformed-state warming must not change repaired canonical semantics"
+        );
+        assert!(warm.queries.revisioned.any_body_transaction_terminal());
     }
 
     /// Query-edge isolation. Two reached bodies demand DIFFERENT well-known
@@ -18817,7 +18923,6 @@ fn main() -> i32 {
             revision,
             main.clone(),
             false,
-            Arc::from([]),
             rue_query::CancellationToken::new(),
             |_, _| {
                 recomputed.set(true);
@@ -18850,7 +18955,6 @@ fn main() -> i32 {
             fresh_revision,
             main,
             false,
-            Arc::from([]),
             rue_query::CancellationToken::new(),
             |_, _| {
                 fresh_computed.set(true);
@@ -18913,7 +19017,6 @@ fn main() -> i32 {
             revision,
             main.clone(),
             false,
-            Arc::from([]),
             rue_query::CancellationToken::new(),
             |_, _| {
                 recomputed.set(true);
@@ -18946,7 +19049,6 @@ fn main() -> i32 {
             fresh_revision,
             main,
             false,
-            Arc::from([]),
             rue_query::CancellationToken::new(),
             |_, _| {
                 fresh_computed.set(true);
@@ -18987,7 +19089,6 @@ fn main() -> i32 {
             revision,
             dead,
             false,
-            Arc::from([]),
             rue_query::CancellationToken::new(),
             |_, _| {
                 compute_called.set(true);

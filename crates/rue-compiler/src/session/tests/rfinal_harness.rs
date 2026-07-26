@@ -759,7 +759,6 @@ fn capture_terminal(
             revision,
             key.clone(),
             false,
-            Arc::from([]),
             rue_query::CancellationToken::new(),
             |_, _| {
                 panic!(

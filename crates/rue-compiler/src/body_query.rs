@@ -42,24 +42,11 @@ pub(crate) enum BodyReference {
     Type(crate::TypeInstanceKey),
 }
 
-/// One trusted-standard-library `Option(payload)` demanded by a body's
-/// fallible-intrinsic use. The `call` is rooted under the requesting body's
-/// lease so the specialization is memoized across bodies that share a payload;
-/// `payload` is the demanded `Some`-variant type. `kind` is the fallible-payload
-/// tag used to select exactly the demands a body's own raw source requires, so a
-/// body roots no specialization it does not use.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct WellKnownOptionDemand {
-    pub(crate) kind: crate::well_known_option::FalliblePayload,
-    pub(crate) payload: crate::durable_semantics::DurableType,
-    pub(crate) call: crate::semantic_query_nucleus::ComptimeCallQueryKey,
-}
-
 /// The per-body resolution of the well-known `Option` demands: the resolved
 /// enum for each demanded payload, plus every anonymous nominal to materialize
-/// narrowly. Empty whenever a body demands nothing (no fallible intrinsics or
-/// no trusted `Option` module present), so freestanding programs keep the
-/// structural `find_compatible_anon_enum` fallback.
+/// narrowly. Empty only when a body contains no fallible intrinsic. A body with
+/// demands reaches analysis only after every exact trusted specialization has
+/// resolved successfully.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct WellKnownOptionResolution {
     pub(crate) option_by_payload: Arc<

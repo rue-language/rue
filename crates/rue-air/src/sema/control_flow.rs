@@ -778,12 +778,11 @@ impl<'a> BodySema<'a> {
         }
 
         // Derive the expected scrutinee type from the arm patterns, so a
-        // fallible-intrinsic scrutinee learns which in-scope `Option(T)` to
-        // return (`match @read_line() { Option::Some(l) => .., Option::None =>
-        // .. }`, RUE-6). Only sema resolves the comptime-generic `Option`
-        // alias the pattern names, so we resolve the first enum pattern's type
-        // here and expose it while the scrutinee is analyzed. Resolution errors
-        // are ignored — pattern legality is checked on the normal path below.
+        // fallible-intrinsic scrutinee can validate the pattern's `Option(T)`
+        // against its exact registry-installed result (`match @read_line() {
+        // Option::Some(l) => .., Option::None => .. }`, RUE-6). Context does not
+        // select the intrinsic nominal. Resolution errors are ignored — pattern
+        // legality is checked on the normal path below.
         let arms_for_expected = self.rir.match_arms(arms);
         let expected_scrutinee = arms_for_expected.iter().find_map(|(pattern, _)| {
             if let RirPattern::Path { type_name, .. } = &pattern {
@@ -1328,9 +1327,9 @@ impl<'a> BodySema<'a> {
         // A BARE fallible-intrinsic operand — `@read_line()?` / `@parse_i64(s)?`
         // — is special: the intrinsic needs its exact `Option` return type and
         // the `?` site cannot supply it as an `expected_type` (RUE-318), so we
-        // clear `expected_type` and set `try_operand` so the intrinsic
-        // instantiates its OWN fixed payload. A non-intrinsic operand ignores
-        // both flags — its type is resolved independently.
+        // clear `expected_type` and set `try_operand` so the intrinsic uses its
+        // exact registry-installed fixed-payload result. A non-intrinsic operand
+        // ignores both flags — its type is resolved independently.
         let prev_expected = ctx.expected_type.take();
         let prev_try_operand = ctx.try_operand;
         ctx.try_operand = true;

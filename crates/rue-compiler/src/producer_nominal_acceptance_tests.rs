@@ -27,19 +27,17 @@ use rue_target::Target;
 // try-operand consumption.
 //
 // Every fallible intrinsic (`@read_line`, `@parse_i32/i64/u32/u64`) returns the
-// exact trusted standard-library `Option(payload)`. When the trusted `Option`
-// module is present, the per-body demand loop roots the matching
-// `Option(payload)` comptime specialization under the requesting body's lease,
-// projects it through a narrow per-body `WellKnownTypes` input, and AIR's
-// `resolve_option_result_type` binds it under `?` — winning over any same-shape
-// local lookalike the legacy structural scan would otherwise pick. When the
-// module is absent, the plan is empty and the legacy `find_compatible_anon_enum`
-// scan stays in force (freestanding programs are unchanged).
+// exact trusted standard-library `Option(payload)`. Each registered body derives
+// its exact payload set from its canonical body-toolchain-demand node and maps
+// every payload directly to one trusted `Option(payload)` comptime query. The
+// complete registry is installed atomically before AIR analysis; a failed or
+// wrong-result specialization fails closed, and no same-shape local lookalike
+// can supply the missing identity.
 // ===========================================================================
 
 /// The trusted standard-library `Option` module source, verbatim from
-/// `std/option.rue`. Provided at the trusted logical path so the demand planner
-/// and projection resolve the real std producer identity.
+/// `std/option.rue`. Provided at the trusted logical path so each exact per-body
+/// query and projection resolves the real std producer identity.
 const TRUSTED_OPTION_SOURCE: &str = r#"
 pub fn Option(comptime T: type) -> type {
     enum {
@@ -60,8 +58,12 @@ const TRUSTED_OPTION_FILE: FileId = FileId::new(2);
 /// Build a snapshot whose root module is `root_source`, with the trusted std
 /// `Option` module provided at `\0rue-std/option.rue`. The root reaches it with
 /// `@import("std/option.rue")` (physical-path suffix match). The trusted flag is
-/// what makes `plan_well_known_option_demands` treat the module as present.
+/// what makes this module the canonical toolchain-owned `Option` declaration.
 fn trusted_option_snapshot(root_source: &str) -> SourceSnapshot {
+    trusted_option_snapshot_with_source(root_source, TRUSTED_OPTION_SOURCE)
+}
+
+fn trusted_option_snapshot_with_source(root_source: &str, option_source: &str) -> SourceSnapshot {
     let metadata = SourceMetadata::new_with_trusted_standard_library(
         ROOT_FILE,
         HashMap::from([
@@ -79,10 +81,7 @@ fn trusted_option_snapshot(root_source: &str) -> SourceSnapshot {
         metadata,
         vec![
             (ROOT_FILE, Arc::new(root_source.to_owned())),
-            (
-                TRUSTED_OPTION_FILE,
-                Arc::new(TRUSTED_OPTION_SOURCE.to_owned()),
-            ),
+            (TRUSTED_OPTION_FILE, Arc::new(option_source.to_owned())),
         ],
     )
     .expect("trusted-option snapshot is valid")
@@ -266,10 +265,10 @@ fn main() -> i32 {
 
 /// t-win (registry wins over a materialized local lookalike). The requesting
 /// body materializes a LOCAL same-shape `Option(i64)` in its own universe — the
-/// exact enum the legacy structural scan would pick — yet `@parse_i64(s)?` still
-/// binds the TRUSTED std `Option(i64)`. The narrow well-known registry is
-/// consulted before the scan, so provenance is the trusted producer even though
-/// a compatible local enum is in scope.
+/// exact enum a shape-based lookup could pick — yet `@parse_i64(s)?` still binds
+/// the TRUSTED std `Option(i64)`. The narrow well-known registry is authoritative,
+/// so provenance is the trusted producer even though a compatible local enum is
+/// in scope.
 #[test]
 fn well_known_registry_wins_over_local_lookalike() {
     let options = CompileOptions::default();
@@ -277,8 +276,8 @@ fn well_known_registry_wins_over_local_lookalike() {
 const opt = @import("std/option.rue");
 fn Local(comptime T: type) -> type { enum { Some(T), None } }
 fn read_num(s: str) -> opt.Option(i64) {
-    // A local Option(i64) lookalike, materialized in THIS body's universe so the
-    // legacy `find_compatible_anon_enum` scan would find and bind it.
+    // A local Option(i64) lookalike, materialized in THIS body's universe. It
+    // remains independently observable but cannot supply the intrinsic result.
     let L = Local(i64);
     let _decoy: L = L.None;
     let O = opt.Option(i64);
@@ -312,6 +311,31 @@ fn main() -> i32 {
         bound_parse_i64_digest(&semantic),
         std_digest,
         "the registry must win: `?` binds the trusted std Option, not the local lookalike",
+    );
+}
+
+#[test]
+fn malformed_trusted_option_surfaces_diagnostics_instead_of_using_a_lookalike() {
+    let source = r#"
+const opt = @import("std/option.rue");
+fn LocalOption(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let L = LocalOption(i32);
+    let _lookalike: L = L.None;
+    let _result = @parse_i32("42");
+    0
+}
+"#;
+    let snapshot = trusted_option_snapshot_with_source(
+        source,
+        "pub fn Option(comptime T: type) -> type { missing }",
+    );
+    let errors = crate::test_frontend_snapshot(&snapshot, &CompileOptions::default())
+        .expect_err("a committed malformed trusted specialization must fail the semantic request");
+    let rendered = errors.to_string();
+    assert!(
+        rendered.contains("missing"),
+        "the trusted Option semantic failure must surface its diagnostics: {rendered}"
     );
 }
 
@@ -387,220 +411,61 @@ fn main() -> i32 {
     );
 }
 
-/// The number of well-known `Option` demands the planner roots for a snapshot.
-/// Built through the same lower path the session uses (`merge_parsed_modules`
-/// then `lower_canonical_rir`), then `plan_well_known_option_demands` directly —
-/// the exact function the session calls once per semantic request.
-fn planned_demand_count(snapshot: &SourceSnapshot, options: &CompileOptions) -> usize {
-    planned_demands(snapshot, options).len()
-}
-
-/// The `FileId` the StrBuf helper assigns to the trusted `\0rue-std/strbuf.rue`
-/// module.
-const TRUSTED_STRBUF_FILE: FileId = FileId::new(3);
-
-/// A minimal trusted `\0rue-std/strbuf.rue` carrying just the `StrBuf` struct in
-/// the canonical `{buf, len, cap}` shape (RUE-1066). The planner only needs the
-/// module present to spell the `StrBuf` nominal `DurableType`; this is enough.
-const TRUSTED_STRBUF_SOURCE: &str = r#"
-pub struct StrBuf {
-    buf: ptr mut u8,
-    len: u64,
-    cap: u64,
-}
-"#;
-
-/// Build a snapshot whose root is `root_source`, with BOTH the trusted std
-/// `Option` and `StrBuf` modules provided at their trusted logical paths.
-fn trusted_option_and_strbuf_snapshot(root_source: &str) -> SourceSnapshot {
-    let metadata = SourceMetadata::new_with_trusted_standard_library(
-        ROOT_FILE,
-        HashMap::from([
-            (ROOT_FILE, "/project/main.rue".to_owned()),
-            (TRUSTED_OPTION_FILE, "/project/std/option.rue".to_owned()),
-            (TRUSTED_STRBUF_FILE, "/project/std/strbuf.rue".to_owned()),
-        ]),
-        HashMap::from([
-            (ROOT_FILE, "main.rue".to_owned()),
-            (TRUSTED_OPTION_FILE, "\0rue-std/option.rue".to_owned()),
-            (TRUSTED_STRBUF_FILE, "\0rue-std/strbuf.rue".to_owned()),
-        ]),
-        HashSet::from([TRUSTED_OPTION_FILE, TRUSTED_STRBUF_FILE]),
-    )
-    .expect("trusted-std metadata is valid");
-    SourceSnapshot::new(
-        metadata,
-        vec![
-            (ROOT_FILE, Arc::new(root_source.to_owned())),
-            (
-                TRUSTED_OPTION_FILE,
-                Arc::new(TRUSTED_OPTION_SOURCE.to_owned()),
-            ),
-            (
-                TRUSTED_STRBUF_FILE,
-                Arc::new(TRUSTED_STRBUF_SOURCE.to_owned()),
-            ),
-        ],
-    )
-    .expect("trusted-option+strbuf snapshot is valid")
-}
-
 /// StrBuf-payload encoding (RUE-1112). `@read_line`'s `Option(StrBuf)` carries a
-/// NOMINAL payload, unlike the scalar `@parse_*` intrinsics. When both trusted
-/// `Option` and `StrBuf` modules are present, the planner roots a demand whose
-/// `ComptimeCallQueryKey` type-argument is the canonical trusted `StrBuf`
-/// `DurableType::Nominal` — the exact spelling `durable_semantics` blesses. Drop
-/// the `StrBuf` module and the read_line demand is skipped (its payload cannot be
-/// spelled), leaving only the scalar demand; the program falls through the scan.
+/// NOMINAL payload, unlike the scalar `@parse_*` intrinsics. The body's lexical
+/// scan names that payload independent of module presence, and the exact-key
+/// helper spells the trusted `StrBuf` stable key directly. Missing modules are
+/// parked before the body transaction rather than filtering this demand.
 #[test]
-fn read_line_plans_a_strbuf_nominal_option_demand() {
-    let options = CompileOptions::default();
-    // The demand planner roots an `Option(payload)` only for a fallible
-    // intrinsic that is the operand of `?` (RUE-1112): that is the sole context
-    // where the registry, not the surrounding annotation/`match`, supplies the
-    // intrinsic's trusted std `Option`. So the probe uses `@read_line()?` /
-    // `@parse_i64(s)?` to exercise the StrBuf and i64 demands.
-    let root = r#"
-fn probe(s: str) {
+fn read_line_has_an_exact_strbuf_nominal_option_key() {
+    let body = r#"{
     let _ = @read_line()?;
     let _ = @parse_i64(s)?;
 }
-fn main() -> i32 { 0 }
 "#;
-
-    // Expected canonical StrBuf nominal DurableType, spelled exactly as the
-    // planner (and durable_semantics) do.
-    let strbuf_module =
-        crate::ModuleId::from_trusted_standard_library_path("\0rue-std/strbuf.rue").unwrap();
+    let kinds = crate::well_known_option::scan_body_payload_kinds(body);
+    assert_eq!(
+        kinds,
+        BTreeSet::from([
+            crate::well_known_option::FalliblePayload::I64,
+            crate::well_known_option::FalliblePayload::StrBuf,
+        ])
+    );
+    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+        target: Target::X86_64Linux,
+        preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
+    };
+    let (strbuf_payload, strbuf_call) = crate::well_known_option::exact_option_query(
+        crate::well_known_option::FalliblePayload::StrBuf,
+        &configuration,
+    );
     let strbuf_nominal = crate::durable_semantics::DurableType::Nominal(
         crate::StableDefinitionKey::from_stable_parts(
-            strbuf_module,
+            crate::ModuleId::from_trusted_standard_library_path(crate::STRBUF_MODULE_LOGICAL_PATH)
+                .unwrap(),
             crate::StableDefinitionNamespace::Type,
             crate::StableDefinitionKind::Struct,
             "StrBuf",
             None,
         ),
     );
-
-    // Both modules present: read_line's StrBuf demand is rooted.
-    let with_strbuf = trusted_option_and_strbuf_snapshot(root);
-    let demands = planned_demands(&with_strbuf, &options);
-    assert!(
-        demands.iter().any(|d| d.payload == strbuf_nominal),
-        "the read_line demand must carry the trusted StrBuf nominal payload; got {:?}",
-        demands.iter().map(|d| &d.payload).collect::<Vec<_>>(),
-    );
-    assert!(
-        demands
-            .iter()
-            .any(|d| d.payload == crate::durable_semantics::DurableType::I64),
-        "the parse_i64 demand must also be planned",
-    );
-    // And that StrBuf demand's ComptimeCall type-argument is the same nominal.
-    let strbuf_demand = demands
-        .iter()
-        .find(|d| d.payload == strbuf_nominal)
-        .expect("StrBuf demand present");
-    assert!(
-        strbuf_demand
-            .call
-            .type_arguments
-            .iter()
-            .any(|(name, ty)| name.as_ref() == "T" && *ty == strbuf_nominal),
-        "the ComptimeCallQueryKey must bind T = the trusted StrBuf nominal",
-    );
-
-    // Without the StrBuf module the read_line demand is dropped; only i64 remains.
-    let option_only = trusted_option_snapshot(root);
-    let scalar_only = planned_demands(&option_only, &options);
-    assert!(
-        scalar_only.iter().all(|d| d.payload != strbuf_nominal),
-        "without the StrBuf module no StrBuf demand may be planned",
-    );
-    assert!(
-        scalar_only
-            .iter()
-            .any(|d| d.payload == crate::durable_semantics::DurableType::I64),
-        "the scalar i64 demand must still be planned without StrBuf",
+    assert_eq!(strbuf_payload, strbuf_nominal);
+    assert_eq!(
+        strbuf_call.type_arguments.as_ref(),
+        &[(Arc::<str>::from("T"), strbuf_nominal)]
     );
 }
 
-/// The well-known `Option` demands the planner roots for a snapshot — the exact
-/// `WellKnownOptionDemand` list the session builds once per semantic request.
-fn planned_demands(
-    snapshot: &SourceSnapshot,
-    options: &CompileOptions,
-) -> Arc<[crate::body_query::WellKnownOptionDemand]> {
-    let parsed =
-        crate::parsed_modules::parse_source_snapshot_modules(snapshot).expect("snapshot parses");
-    let merged = crate::merge_parsed_modules(&parsed).expect("modules merge");
-    let rir = crate::canonical_lower::lower_canonical_rir(&merged).expect("rir lowers");
-    let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
-        target: options.target,
-        preview_features: crate::StablePreviewFeatures::new(&options.preview_features),
-    };
-    crate::well_known_option::plan_well_known_option_demands(&merged, &rir, &configuration)
-}
-
-/// t1. A body with NO fallible intrinsic plans ZERO `Option` demands even with
-/// the trusted std module present; a body that DOES use one plans a demand;
-/// and a fallible intrinsic with NO trusted module present plans zero (the gate
-/// keeps freestanding programs on the legacy scan). This is the assertable
-/// "zero demands" signal: the count of demands the session roots per request.
+/// t1. The canonical body scan is exact and presence-independent. A quiet body
+/// has no payload; a fallible body always names its payload so the session can
+/// park missing trusted modules before entering the transaction.
 #[test]
-fn no_fallible_intrinsic_plans_zero_option_demands() {
-    let options = CompileOptions::default();
-
-    // Std present, no fallible intrinsic → zero demands.
-    let quiet = trusted_option_snapshot(
-        r#"
-const opt = @import("std/option.rue");
-fn main() -> i32 {
-    let O = opt.Option(i64);
-    match O.Some(41) { O.Some(v) => @intCast(v) + 1, O.None => 0 }
-}
-"#,
-    );
+fn no_fallible_intrinsic_has_zero_exact_body_demands() {
+    assert!(crate::well_known_option::scan_body_payload_kinds("{ let x = 1; x }").is_empty());
     assert_eq!(
-        planned_demand_count(&quiet, &options),
-        0,
-        "a std-present program with no fallible intrinsic must plan zero demands",
-    );
-
-    // Std present, a fallible intrinsic → a demand is planned.
-    let loud = trusted_option_snapshot(
-        r#"
-const opt = @import("std/option.rue");
-fn read_num(s: str) -> opt.Option(i64) {
-    let O = opt.Option(i64);
-    O.Some(@parse_i64(s)?)
-}
-fn main() -> i32 { 0 }
-"#,
-    );
-    assert_eq!(
-        planned_demand_count(&loud, &options),
-        1,
-        "a std-present program using @parse_i64 must plan exactly one (i64) demand",
-    );
-
-    // Fallible intrinsic but NO trusted module → gate keeps the plan empty.
-    let freestanding = SourceSnapshot::single(
-        "<freestanding>",
-        r#"
-fn Option(comptime T: type) -> type { enum { Some(T), None } }
-fn read_num(s: str) -> Option(i64) {
-    let O = Option(i64);
-    O.Some(@parse_i64(s)?)
-}
-fn main() -> i32 { 0 }
-"#,
-    )
-    .expect("snapshot");
-    assert_eq!(
-        planned_demand_count(&freestanding, &options),
-        0,
-        "without a trusted std module the plan must be empty (legacy scan stays in force)",
+        crate::well_known_option::scan_body_payload_kinds("{ let value = @parse_i64(s)?; value }"),
+        BTreeSet::from([crate::well_known_option::FalliblePayload::I64]),
+        "module presence cannot filter a reached body's exact payload demand",
     );
 }
 

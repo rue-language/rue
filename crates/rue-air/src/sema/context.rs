@@ -471,21 +471,18 @@ pub(crate) struct AnalysisContext<'a> {
     /// a surrounding annotation or pattern. Set narrowly around a
     /// let-initializer (to the resolved annotation type) and around a `match`
     /// scrutinee (to the enum named by the arm patterns). The fallible
-    /// intrinsics (`@read_line`, `@parse_*`) read this to learn which in-scope
-    /// `Option(T)` to return (RUE-6, ADR-0038) — inference cannot supply it
-    /// because comptime-generic library enums are resolved only in sema. Left
+    /// intrinsics (`@read_line`, `@parse_*`) read this to validate that an
+    /// annotation or pattern expects their exact registry-installed
+    /// `Option(T)` (RUE-6, ADR-0038). Context never selects that nominal. Left
     /// `None` everywhere else, so no other analysis is affected.
     pub expected_type: Option<Type>,
     /// True only while analyzing the operand of a `?` expression (RUE-318). The
     /// `?` site cannot supply an `expected_type` for a *bare* fallible intrinsic
     /// (`@read_line()?` / `@parse_i64(s)?`): the enclosing function's `Option(U)`
-    /// has the wrong payload (e.g. `@read_line` is `Option(String)`, not the
-    /// function's `Option(i64)`). When this flag is set and no valid expected
-    /// `Option` is available, a fallible intrinsic instantiates its *own* fixed
-    /// `Option(payload)` (it knows its payload) via `find_or_create_anon_enum`,
-    /// the same canonical library enum an in-scope `Option(T)` would produce.
-    /// Left `false` everywhere else, so the plain "context supplies the Option"
-    /// path (a `let` annotation or `match` arms) is unaffected.
+    /// has the wrong payload (e.g. `@read_line` is `Option(StrBuf)`, not the
+    /// function's `Option(i64)`). The fallible intrinsic instead uses its exact
+    /// registry-installed `Option(payload)`. Left `false` everywhere else, where
+    /// a contextual enum may validate — but never select — the result identity.
     pub try_operand: bool,
 }
 

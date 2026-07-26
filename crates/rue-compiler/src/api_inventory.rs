@@ -169,6 +169,52 @@ fn body_transaction_has_no_complete_declaration_candidate_map() {
     }
 }
 
+#[test]
+fn well_known_option_resolution_stays_per_body_exact_and_fail_closed() {
+    let runtime = include_str!("revisioned_query_database.rs");
+    let method = source_between_exact_boundaries(
+        runtime,
+        "    pub(crate) fn body_transaction(",
+        "\n    pub(crate) fn canonical_body_projection(",
+    );
+    for required in [
+        "&self.body_toolchain_demands",
+        "exact_option_prerequisites(",
+        "exact_option_query(",
+        "WellKnownOptionResolutionFailure::Incomplete",
+        "WellKnownOptionResolutionFailure::Semantic",
+        "WellKnownOptionResolutionFailure::WrongProjection",
+    ] {
+        assert!(
+            method.contains(required),
+            "body_transaction lost exact atomic Option resolution: {required}"
+        );
+    }
+    for forbidden in [
+        "well_known_demands",
+        "plan_well_known_option_demands",
+        "WellKnownOptionDemand",
+    ] {
+        assert!(
+            !method.contains(forbidden),
+            "body_transaction regained request-global Option planning: {forbidden}"
+        );
+    }
+
+    let exact_keys = include_str!("well_known_option.rs");
+    for forbidden in [
+        "CanonicalRirOutput",
+        "CanonicalMergedProgram",
+        "plan_well_known_option_demands",
+        "WellKnownOptionDemand",
+    ] {
+        assert!(
+            !exact_keys.contains(forbidden),
+            "exact Option-key derivation regained whole-request input: {forbidden}"
+        );
+    }
+}
+
 const RUE_869_INTERNAL_ROOT_VOCABULARY: &[&str] = &[
     "BoundDefinitionId",
     "BoundDefinitionRecord",

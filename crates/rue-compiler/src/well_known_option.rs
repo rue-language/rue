@@ -1,39 +1,28 @@
-//! Per-body well-known `Option(payload)` demand planning.
+//! Exact per-body well-known `Option(payload)` query keys.
 //!
 //! Every fallible intrinsic (`@read_line`, `@parse_i32/i64/u32/u64`) yields the
-//! exact trusted standard-library `Option(payload)`. When a trusted `Option`
-//! module is present in the program, this planner computes the set of payloads
-//! the program demands and roots the matching comptime-`Option` specializations
-//! under each requesting body's lease (see `revisioned_query_database.rs`). The
-//! resolved enums reach AIR through a narrow per-body `WellKnownTypes` input,
-//! never the body's composition/import universe.
-//!
-//! Planning is two-staged. This module builds the whole-program *catalogue* of
-//! demandable `Option(payload)` specializations (one per payload the program
-//! uses anywhere), each tagged with its [`FalliblePayload`] kind. Each reached
-//! body then derives its OWN exact payload set from its canonical raw body
-//! ([`scan_body_payload_kinds`]) and roots only the catalogue entries that set
-//! selects, so a body gains a query edge to a specialization only for a payload
-//! it actually uses and cannot inherit failure or cancellation from an unrelated
-//! body's specialization. The semantic nucleus memoizes each specialization, so
-//! bodies sharing a payload share one terminal. A program with no fallible
-//! intrinsic demands nothing at all.
+//! exact trusted standard-library `Option(payload)`. A registered body derives
+//! its own canonical payload set from [`scan_body_payload_kinds`], then maps each
+//! payload directly to the exact trusted `Option` comptime-call key with
+//! [`exact_option_query`]. No whole-program RIR scan, presence catalogue, or
+//! structural fallback participates in that identity.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use crate::body_query::WellKnownOptionDemand;
-use crate::canonical_lower::CanonicalRirOutput;
-use crate::canonical_merge::CanonicalMergedProgram;
 use crate::declaration_candidate::{DeclarationCandidateCategory, DeclarationCandidateKey};
 use crate::durable_semantics::DurableType;
 use crate::semantic_query_nucleus::{
     ComptimeCallQueryKey, DeclarationSemanticQueryKey, SemanticQueryConfiguration,
 };
+use crate::toolchain_module_demand::{OPTION_MODULE_LOGICAL_PATH, STRBUF_MODULE_LOGICAL_PATH};
 use crate::{ModuleId, StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace};
 
-const TRUSTED_OPTION_MODULE_PATH: &str = "\0rue-std/option.rue";
-const TRUSTED_STRBUF_MODULE_PATH: &str = "\0rue-std/strbuf.rue";
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExactOptionPrerequisite {
+    pub(crate) stable: StableDefinitionKey,
+    pub(crate) candidate: DeclarationCandidateKey,
+}
 
 /// One fallible-intrinsic payload demanded by a body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -86,122 +75,171 @@ pub(crate) fn scan_body_payload_kinds(body: &str) -> BTreeSet<FalliblePayload> {
     payloads
 }
 
-/// Whether `module` is present among the program's canonical modules.
-fn module_present(merged: &CanonicalMergedProgram, module: &ModuleId) -> bool {
-    merged
-        .ast()
-        .modules()
-        .iter()
-        .any(|candidate| candidate.module_id() == module)
-}
-
-/// Scan the whole-program RIR for every fallible-intrinsic call, returning the
-/// sorted, deduplicated set of demanded payloads.
+/// Map one body's canonical fallible payload kind to its exact trusted
+/// `Option(payload)` comptime query.
 ///
-/// Every fallible intrinsic yields the exact trusted std `Option(payload)` in
-/// every context, so every use — bare, contextually annotated, matched, or the
-/// operand of a `?` — demands the canonical `Option(payload)`. The registry is
-/// the single durable source for that identity; context only checks it. Scanning
-/// all uses (not only `?`-operands) is what lets a plain `let x = @parse_i64(…)`
-/// or `match @parse_i32(…)` resolve to the canonical trusted `Option` rather
-/// than depending on a surrounding annotation to supply the nominal.
-fn scan_fallible_payloads(rir: &CanonicalRirOutput) -> BTreeSet<FalliblePayload> {
-    let interner = rir.semantic_symbols().interner();
-    let mut payloads = BTreeSet::new();
-    for (_, inst) in rir.rir().iter() {
-        if let rue_rir::InstData::Intrinsic { name, .. } = &inst.data
-            && let Some(payload) = FalliblePayload::from_intrinsic_name(interner.resolve(name))
-        {
-            payloads.insert(payload);
-        }
-    }
-    payloads
-}
-
-/// The trusted `StrBuf` nominal `DurableType`, when the trusted `StrBuf` module
-/// is present. `@read_line`'s `Option(StrBuf)` cannot be demanded without it.
-fn trusted_strbuf_type(merged: &CanonicalMergedProgram) -> Option<DurableType> {
-    let module = ModuleId::from_trusted_standard_library_path(TRUSTED_STRBUF_MODULE_PATH).ok()?;
-    module_present(merged, &module).then(|| {
-        DurableType::Nominal(StableDefinitionKey::from_stable_parts(
-            module,
-            StableDefinitionNamespace::Type,
-            StableDefinitionKind::Struct,
-            "StrBuf",
-            None,
-        ))
-    })
-}
-
-/// Plan the well-known `Option` demand catalogue for a semantic request.
-///
-/// Returns an empty catalogue whenever the trusted `Option` module is absent or
-/// the program uses no fallible intrinsic; otherwise it holds one entry per
-/// payload the program uses anywhere, each carrying the exact `ComptimeCall` to
-/// root under a body's lease and the payload it satisfies. Per-body selection
-/// from this catalogue happens in `body_transaction`.
-pub(crate) fn plan_well_known_option_demands(
-    merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
+/// This is a pure identity derivation. It performs no module-presence check and
+/// accepts no merged program, RIR, or request-global catalogue. The session
+/// parks missing trusted modules before the body transaction; once the body
+/// enters, this exact key must resolve or the request fails closed.
+pub(crate) fn exact_option_query(
+    kind: FalliblePayload,
     configuration: &SemanticQueryConfiguration,
-) -> Arc<[WellKnownOptionDemand]> {
-    let Ok(option_module) =
-        ModuleId::from_trusted_standard_library_path(TRUSTED_OPTION_MODULE_PATH)
-    else {
-        return Arc::from(Vec::new());
+) -> (DurableType, ComptimeCallQueryKey) {
+    let option_module = ModuleId::from_trusted_standard_library_path(OPTION_MODULE_LOGICAL_PATH)
+        .expect("the canonical trusted Option module path is valid");
+    let option_candidate = exact_option_candidate(option_module);
+    let payload = exact_payload_type(kind);
+    let call = ComptimeCallQueryKey {
+        declaration: DeclarationSemanticQueryKey {
+            declaration: option_candidate,
+            configuration: configuration.clone(),
+        },
+        type_arguments: Arc::from([(Arc::<str>::from("T"), payload.clone())]),
+        value_arguments: Arc::from([]),
     };
-    // The trusted `Option` module must be present to name any specialization.
-    // When it is absent the catalogue is empty and fallible-intrinsic resolution
-    // uses its structural context check instead.
-    if !module_present(merged, &option_module) {
-        return Arc::from(Vec::new());
-    }
-    let payloads = scan_fallible_payloads(rir);
-    if payloads.is_empty() {
-        return Arc::from(Vec::new());
-    }
-    let option_candidate = DeclarationCandidateKey {
+    (payload, call)
+}
+
+fn exact_option_candidate(option_module: ModuleId) -> DeclarationCandidateKey {
+    DeclarationCandidateKey {
         module: option_module,
         category: DeclarationCandidateCategory::Function,
         name: Arc::from("Option"),
         owner: None,
         duplicate_discriminator: 0,
-    };
-    let strbuf = trusted_strbuf_type(merged);
-    let mut demands = Vec::new();
-    for payload in payloads {
-        let payload_type = match payload {
-            FalliblePayload::I32 => DurableType::I32,
-            FalliblePayload::I64 => DurableType::I64,
-            FalliblePayload::U32 => DurableType::U32,
-            FalliblePayload::U64 => DurableType::U64,
-            // Without the trusted StrBuf module the payload cannot be spelled;
-            // the read_line demand is simply not rooted and falls through.
-            FalliblePayload::StrBuf => match &strbuf {
-                Some(strbuf) => strbuf.clone(),
-                None => continue,
+    }
+}
+
+fn exact_payload_type(kind: FalliblePayload) -> DurableType {
+    match kind {
+        FalliblePayload::I32 => DurableType::I32,
+        FalliblePayload::I64 => DurableType::I64,
+        FalliblePayload::U32 => DurableType::U32,
+        FalliblePayload::U64 => DurableType::U64,
+        FalliblePayload::StrBuf => DurableType::Nominal(StableDefinitionKey::from_stable_parts(
+            ModuleId::from_trusted_standard_library_path(STRBUF_MODULE_LOGICAL_PATH)
+                .expect("the canonical trusted StrBuf module path is valid"),
+            StableDefinitionNamespace::Type,
+            StableDefinitionKind::Struct,
+            "StrBuf",
+            None,
+        )),
+    }
+}
+
+/// Exact declarations that must already be present before resolving one
+/// body-owned `Option(payload)` specialization.
+///
+/// The stable classifier observes only these independently keyed declarations:
+/// trusted `Option` for every payload, plus trusted `StrBuf` only for
+/// `@read_line`. Host parking remains the acquisition authority; this is the
+/// query-owned fail-closed check for callers that bypass or race that boundary.
+pub(crate) fn exact_option_prerequisites(kind: FalliblePayload) -> Vec<ExactOptionPrerequisite> {
+    let option_module = ModuleId::from_trusted_standard_library_path(OPTION_MODULE_LOGICAL_PATH)
+        .expect("the canonical trusted Option module path is valid");
+    let mut prerequisites = vec![ExactOptionPrerequisite {
+        stable: StableDefinitionKey::from_stable_parts(
+            option_module.clone(),
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::Function,
+            "Option",
+            None,
+        ),
+        candidate: exact_option_candidate(option_module),
+    }];
+    if kind == FalliblePayload::StrBuf {
+        let module = ModuleId::from_trusted_standard_library_path(STRBUF_MODULE_LOGICAL_PATH)
+            .expect("the canonical trusted StrBuf module path is valid");
+        prerequisites.push(ExactOptionPrerequisite {
+            stable: StableDefinitionKey::from_stable_parts(
+                module.clone(),
+                StableDefinitionNamespace::Type,
+                StableDefinitionKind::Struct,
+                "StrBuf",
+                None,
+            ),
+            candidate: DeclarationCandidateKey {
+                module,
+                category: DeclarationCandidateCategory::Struct,
+                name: Arc::from("StrBuf"),
+                owner: None,
+                duplicate_discriminator: 0,
             },
-        };
-        let call = ComptimeCallQueryKey {
-            declaration: DeclarationSemanticQueryKey {
-                declaration: option_candidate.clone(),
-                configuration: configuration.clone(),
-            },
-            type_arguments: Arc::from(vec![(Arc::<str>::from("T"), payload_type.clone())]),
-            value_arguments: Arc::from(Vec::new()),
-        };
-        demands.push(WellKnownOptionDemand {
-            kind: payload,
-            payload: payload_type,
-            call,
         });
     }
-    Arc::from(demands)
+    prerequisites
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_payload_maps_to_one_exact_trusted_option_key() {
+        let configuration = SemanticQueryConfiguration {
+            target: rue_target::Target::X86_64Linux,
+            preview_features: crate::StablePreviewFeatures::new(&crate::PreviewFeatures::default()),
+        };
+        for (kind, expected) in [
+            (FalliblePayload::I32, DurableType::I32),
+            (FalliblePayload::I64, DurableType::I64),
+            (FalliblePayload::U32, DurableType::U32),
+            (FalliblePayload::U64, DurableType::U64),
+            (
+                FalliblePayload::StrBuf,
+                DurableType::Nominal(StableDefinitionKey::from_stable_parts(
+                    ModuleId::from_trusted_standard_library_path(STRBUF_MODULE_LOGICAL_PATH)
+                        .unwrap(),
+                    StableDefinitionNamespace::Type,
+                    StableDefinitionKind::Struct,
+                    "StrBuf",
+                    None,
+                )),
+            ),
+        ] {
+            let (payload, query) = exact_option_query(kind, &configuration);
+            assert_eq!(payload, expected, "{kind:?}");
+            assert_eq!(
+                query.declaration.declaration.module.as_str(),
+                OPTION_MODULE_LOGICAL_PATH
+            );
+            assert_eq!(
+                query.declaration.declaration.category,
+                DeclarationCandidateCategory::Function
+            );
+            assert_eq!(query.declaration.declaration.name.as_ref(), "Option");
+            assert_eq!(query.declaration.declaration.duplicate_discriminator, 0);
+            assert_eq!(query.declaration.configuration, configuration);
+            assert_eq!(
+                query.type_arguments.as_ref(),
+                &[(Arc::<str>::from("T"), expected)]
+            );
+            assert!(query.value_arguments.is_empty());
+
+            let prerequisites = exact_option_prerequisites(kind);
+            assert_eq!(
+                prerequisites[0].stable.module().as_str(),
+                OPTION_MODULE_LOGICAL_PATH
+            );
+            assert_eq!(prerequisites[0].stable.name(), "Option");
+            assert_eq!(prerequisites[0].candidate, query.declaration.declaration);
+            if kind == FalliblePayload::StrBuf {
+                assert_eq!(prerequisites.len(), 2);
+                assert_eq!(
+                    prerequisites[1].stable.module().as_str(),
+                    STRBUF_MODULE_LOGICAL_PATH
+                );
+                assert_eq!(prerequisites[1].stable.name(), "StrBuf");
+                assert_eq!(
+                    prerequisites[1].candidate.category,
+                    DeclarationCandidateCategory::Struct
+                );
+            } else {
+                assert_eq!(prerequisites.len(), 1);
+            }
+        }
+    }
 
     #[test]
     fn per_body_scan_derives_only_the_body_s_own_payloads() {

@@ -1817,10 +1817,10 @@ mod tests {
     fn fallible_intrinsic_rejects_local_option_context() {
         // RUE-1112: a fallible intrinsic's result IS the exact trusted std
         // `Option`; a local same-shape `Option` lookalike used as its
-        // annotation is not accepted — context only *checks* the identity, and a
-        // lookalike is an ordinary intrinsic type error (E0702), never a way to
-        // select a different nominal. (The trusted-std positive path is covered by
-        // the compiler-crate acceptance tests, which supply the trusted module.)
+        // annotation is not accepted. This direct AIR harness intentionally has
+        // no registry install, so the intrinsic fails closed with an internal
+        // incompleteness diagnostic before context can adopt the lookalike. (The
+        // trusted-std positive path is covered by compiler-crate acceptance tests.)
         let source = r#"
             fn Option(comptime T: type) -> type { enum { Some(T), None } }
 
@@ -1837,8 +1837,21 @@ mod tests {
             compile_to_air(source).expect_err("a local-Option annotation is no longer accepted");
         assert!(
             errors.to_string().contains("parse_i64"),
-            "expected an E0702 intrinsic type mismatch on @parse_i64: {errors}",
+            "expected fail-closed missing-registry diagnostics on @parse_i64: {errors}",
         );
+    }
+
+    #[test]
+    fn fallible_intrinsic_resolver_has_no_registry_miss_shape_fallback() {
+        let source = include_str!("analysis/intrinsics.rs");
+        for forbidden in ["trusted_try_producer", "find_compatible_anon_enum"] {
+            assert!(
+                !source.contains(forbidden),
+                "fallible intrinsic resolution regained a registry-miss fallback: {forbidden}"
+            );
+        }
+        assert!(source.contains("reached body analysis without"));
+        assert!(source.contains("ErrorKind::InternalError"));
     }
 
     #[test]

@@ -2098,6 +2098,75 @@ pub(crate) enum BodyTransactionRequestFailure {
     /// (RUE-1089). The dependent body cannot be built and must fail closed; the
     /// failure is never retried and never rescued by RIR recomputation.
     ProducerFailed(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
+    /// One exact trusted `Option(payload)` specialization failed before body
+    /// analysis. No partial registry or body terminal is published.
+    WellKnownOptionResolution(WellKnownOptionResolutionFailure),
+}
+
+#[derive(Debug)]
+pub(crate) enum WellKnownOptionResolutionFailure {
+    Incomplete {
+        payload: crate::well_known_option::FalliblePayload,
+        prerequisite: Option<crate::StableDefinitionKey>,
+        detail: Arc<str>,
+    },
+    Semantic {
+        payload: crate::well_known_option::FalliblePayload,
+        failure: Box<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+    },
+    WrongProjection {
+        payload: crate::well_known_option::FalliblePayload,
+        detail: Arc<str>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BodyTransactionFailureClass {
+    RequestCanceled,
+    ProducerFailed,
+    DeferredAnonymousProducers,
+    WellKnownOptionResolution,
+    Query,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WellKnownDependencyAbortClass {
+    Incomplete,
+    Propagate,
+}
+
+fn classify_well_known_dependency_abort(abort: &QueryAbort) -> WellKnownDependencyAbortClass {
+    match abort {
+        QueryAbort::Canceled | QueryAbort::MissingInput(_) => {
+            WellKnownDependencyAbortClass::Incomplete
+        }
+        QueryAbort::Cycle(_) | QueryAbort::ForeignRuntime | QueryAbort::UnpublishedRevision(_) => {
+            WellKnownDependencyAbortClass::Propagate
+        }
+    }
+}
+
+fn classify_body_transaction_failure(
+    abort: &QueryAbort,
+    request_canceled: bool,
+    producer_failed: bool,
+    deferred_anonymous_producers: bool,
+    well_known_option_resolution_failed: bool,
+) -> BodyTransactionFailureClass {
+    if !matches!(abort, QueryAbort::Canceled) {
+        return BodyTransactionFailureClass::Query;
+    }
+    if request_canceled {
+        BodyTransactionFailureClass::RequestCanceled
+    } else if producer_failed {
+        BodyTransactionFailureClass::ProducerFailed
+    } else if deferred_anonymous_producers {
+        BodyTransactionFailureClass::DeferredAnonymousProducers
+    } else if well_known_option_resolution_failed {
+        BodyTransactionFailureClass::WellKnownOptionResolution
+    } else {
+        BodyTransactionFailureClass::Query
+    }
 }
 
 /// Whether a committed semantic-nucleus failure is an internal-error
@@ -9502,7 +9571,6 @@ impl RevisionedQueryDatabase {
         revision: Revision,
         key: crate::body_query::BodyQueryKey,
         producer_body_terminal_required: bool,
-        well_known_demands: Arc<[crate::body_query::WellKnownOptionDemand]>,
         cancellation: CancellationToken,
         compute: impl FnOnce(
             Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
@@ -9519,6 +9587,7 @@ impl RevisionedQueryDatabase {
             .ok_or(BodyTransactionRequestFailure::Query(QueryAbort::Canceled))?;
         let deferred_anonymous_producers = std::cell::RefCell::new(BTreeSet::new());
         let observed_lookups = std::cell::RefCell::new(ObservedLookupRoot::new());
+        let request_cancellation = cancellation.clone();
         // Set when a depended-on anonymous producer committed an anchor-transport
         // internal error (RUE-1089). It is carried out of the query closure — which
         // can only signal a bare `QueryAbort` — and mapped to a fatal
@@ -9526,6 +9595,9 @@ impl RevisionedQueryDatabase {
         // this body instead of being retried or rescued by RIR recomputation.
         let producer_transport_failure: std::cell::RefCell<
             Option<Box<crate::semantic_query_nucleus::SemanticNucleusFailure>>,
+        > = std::cell::RefCell::new(None);
+        let well_known_resolution_failure: std::cell::RefCell<
+            Option<WellKnownOptionResolutionFailure>,
         > = std::cell::RefCell::new(None);
         let result = self.runtime.query(
             &self.body_transactions,
@@ -9633,41 +9705,163 @@ impl RevisionedQueryDatabase {
                         );
                     }
                 }
-                // Root the trusted-std `Option(payload)` demands under THIS
-                // body's lease (RUE-1112). Each `ComptimeCall` resolves the real
-                // materialized `Option` specialization with std provenance; the
-                // nucleus memoizes it so bodies sharing a payload share one
-                // terminal while keeping their own per-body edge. The resolved
-                // enums reach AIR through the narrow per-body `WellKnownTypes`
-                // input, never this body's composition universe. A demand that
-                // fails to project (e.g. an absent payload type) is skipped so
-                // the body simply falls through to the legacy structural scan.
+                // Resolve THIS body's exact trusted-std `Option(payload)` set
+                // atomically (RUE-1112). Every key is derived directly from the
+                // registered body's canonical payload kinds. The session already
+                // parked any missing trusted module before entering this task, so
+                // a committed semantic failure or wrong projection is fatal:
+                // publish neither a partial registry nor a body terminal.
                 let well_known = {
                     let mut option_by_payload = Vec::new();
                     let mut nominals = BTreeMap::new();
-                    for demand in well_known_demands
-                        .iter()
-                        .filter(|demand| body_payload_kinds.contains(&demand.kind))
-                    {
-                        let projected = context.query_registered(
+                    for &payload_kind in body_payload_kinds {
+                        for prerequisite in
+                            crate::well_known_option::exact_option_prerequisites(payload_kind)
+                        {
+                            let classified = match context.query_registered(
+                                &self.stable_declaration_classifications,
+                                StableDeclarationClassificationQueryKey(
+                                    prerequisite.stable.clone(),
+                                ),
+                            ) {
+                                Ok(classified) => classified,
+                                Err(abort) => {
+                                    if matches!(
+                                        classify_well_known_dependency_abort(&abort),
+                                        WellKnownDependencyAbortClass::Propagate
+                                    ) {
+                                        return Err(abort);
+                                    }
+                                    *well_known_resolution_failure.borrow_mut() =
+                                        Some(WellKnownOptionResolutionFailure::Incomplete {
+                                            payload: payload_kind,
+                                            prerequisite: Some(prerequisite.stable),
+                                            detail: Arc::from(format!(
+                                                "exact trusted declaration prerequisite is \
+                                                 unavailable: {abort:?}"
+                                            )),
+                                        });
+                                    return Err(QueryAbort::Canceled);
+                                }
+                            };
+                            match classified.outcome() {
+                                rue_query::QueryOutcome::Success(
+                                    StableDeclarationClassificationQueryValue::Selected(
+                                        candidate,
+                                    ),
+                                ) if candidate == &prerequisite.candidate => {}
+                                rue_query::QueryOutcome::Success(value) => {
+                                    *well_known_resolution_failure.borrow_mut() =
+                                        Some(WellKnownOptionResolutionFailure::Incomplete {
+                                            payload: payload_kind,
+                                            prerequisite: Some(prerequisite.stable),
+                                            detail: Arc::from(format!(
+                                                "exact trusted declaration prerequisite did not \
+                                                 select its required candidate: {value:?}"
+                                            )),
+                                        });
+                                    return Err(QueryAbort::Canceled);
+                                }
+                                rue_query::QueryOutcome::Failure(failure) => {
+                                    *well_known_resolution_failure.borrow_mut() =
+                                        Some(WellKnownOptionResolutionFailure::Incomplete {
+                                            payload: payload_kind,
+                                            prerequisite: Some(prerequisite.stable),
+                                            detail: Arc::from(format!(
+                                                "exact trusted declaration prerequisite query \
+                                                 failed: {failure:?}"
+                                            )),
+                                        });
+                                    return Err(QueryAbort::Canceled);
+                                }
+                            }
+                        }
+                        let (payload, call) = crate::well_known_option::exact_option_query(
+                            payload_kind,
+                            &key.configuration,
+                        );
+                        let projected = match context.query_registered(
                             &self.semantic_nucleus,
                             crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(
-                                demand.call.clone(),
+                                call,
                             ),
-                        )?;
-                        if let rue_query::QueryOutcome::Success(
-                            crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
-                                projection,
-                            ),
-                        ) = projected.outcome()
-                            && let crate::semantic_query_nucleus::ComptimeCallResultProjection::Type(
-                                option_type,
-                            ) = &projection.result
-                        {
-                            option_by_payload.push((demand.payload.clone(), option_type.clone()));
-                            for nominal in projection.anonymous_nominals.iter() {
-                                nominals.insert(nominal.identity.clone(), nominal.clone());
+                        ) {
+                            Ok(projected) => projected,
+                            Err(abort) => {
+                                if matches!(
+                                    classify_well_known_dependency_abort(&abort),
+                                    WellKnownDependencyAbortClass::Propagate
+                                ) {
+                                    return Err(abort);
+                                }
+                                *well_known_resolution_failure.borrow_mut() =
+                                    Some(WellKnownOptionResolutionFailure::Incomplete {
+                                        payload: payload_kind,
+                                        prerequisite: None,
+                                        detail: Arc::from(format!(
+                                            "exact trusted Option specialization is unavailable: \
+                                             {abort:?}"
+                                        )),
+                                    });
+                                return Err(QueryAbort::Canceled);
                             }
+                        };
+                        let projection = match projected.outcome() {
+                            rue_query::QueryOutcome::Success(
+                                crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(
+                                    projection,
+                                ),
+                            ) => projection,
+                            rue_query::QueryOutcome::Success(
+                                crate::semantic_query_nucleus::SemanticNucleusValue::Failure(
+                                    failure,
+                                ),
+                            ) => {
+                                *well_known_resolution_failure.borrow_mut() =
+                                    Some(WellKnownOptionResolutionFailure::Semantic {
+                                        payload: payload_kind,
+                                        failure: Box::new(failure.clone()),
+                                    });
+                                return Err(QueryAbort::Canceled);
+                            }
+                            rue_query::QueryOutcome::Success(other) => {
+                                *well_known_resolution_failure.borrow_mut() =
+                                    Some(WellKnownOptionResolutionFailure::WrongProjection {
+                                        payload: payload_kind,
+                                        detail: Arc::from(format!(
+                                            "expected ComptimeCall(Type), found {other:?}"
+                                        )),
+                                    });
+                                return Err(QueryAbort::Canceled);
+                            }
+                            rue_query::QueryOutcome::Failure(failure) => {
+                                *well_known_resolution_failure.borrow_mut() =
+                                    Some(WellKnownOptionResolutionFailure::WrongProjection {
+                                        payload: payload_kind,
+                                        detail: Arc::from(format!(
+                                            "expected a semantic nucleus value, found query failure {failure:?}"
+                                        )),
+                                    });
+                                return Err(QueryAbort::Canceled);
+                            }
+                        };
+                        let crate::semantic_query_nucleus::ComptimeCallResultProjection::Type(
+                            option_type,
+                        ) = &projection.result
+                        else {
+                            *well_known_resolution_failure.borrow_mut() =
+                                Some(WellKnownOptionResolutionFailure::WrongProjection {
+                                    payload: payload_kind,
+                                    detail: Arc::from(format!(
+                                        "expected ComptimeCall(Type), found ComptimeCall({:?})",
+                                        projection.result
+                                    )),
+                                });
+                            return Err(QueryAbort::Canceled);
+                        };
+                        option_by_payload.push((payload, option_type.clone()));
+                        for nominal in projection.anonymous_nominals.iter() {
+                            nominals.insert(nominal.identity.clone(), nominal.clone());
                         }
                     }
                     crate::body_query::WellKnownOptionResolution {
@@ -9953,26 +10147,51 @@ impl RevisionedQueryDatabase {
                 }
                 Ok(terminal)
             }
-            // A committed anchor-transport internal error takes precedence over a
-            // deferral: the producer definitively failed, so this body must fail
-            // closed rather than reschedule the producer forever (RUE-1089).
-            Err(QueryAbort::Canceled) if producer_transport_failure.borrow().is_some() => {
-                Err(BodyTransactionRequestFailure::ProducerFailed(
-                    producer_transport_failure
-                        .into_inner()
-                        .expect("guarded by is_some"),
-                ))
+            Err(abort) => {
+                let class = classify_body_transaction_failure(
+                    &abort,
+                    request_cancellation.is_canceled(),
+                    producer_transport_failure.borrow().is_some(),
+                    !deferred_anonymous_producers.borrow().is_empty(),
+                    well_known_resolution_failure.borrow().is_some(),
+                );
+                Err(match class {
+                    // Real request cancellation dominates all out-of-band
+                    // domain failures collected while the closure was running.
+                    BodyTransactionFailureClass::RequestCanceled => {
+                        BodyTransactionRequestFailure::Query(QueryAbort::Canceled)
+                    }
+                    // A committed anchor-transport internal error takes
+                    // precedence over deferral and well-known incompleteness:
+                    // the producer definitively failed (RUE-1089).
+                    BodyTransactionFailureClass::ProducerFailed => {
+                        BodyTransactionRequestFailure::ProducerFailed(
+                            producer_transport_failure
+                                .into_inner()
+                                .expect("failure class requires a producer failure"),
+                        )
+                    }
+                    BodyTransactionFailureClass::DeferredAnonymousProducers => {
+                        BodyTransactionRequestFailure::DeferredAnonymousProducers(
+                            deferred_anonymous_producers
+                                .into_inner()
+                                .into_iter()
+                                .collect::<Vec<_>>()
+                                .into(),
+                        )
+                    }
+                    BodyTransactionFailureClass::WellKnownOptionResolution => {
+                        BodyTransactionRequestFailure::WellKnownOptionResolution(
+                            well_known_resolution_failure
+                                .into_inner()
+                                .expect("failure class requires a well-known failure"),
+                        )
+                    }
+                    BodyTransactionFailureClass::Query => {
+                        BodyTransactionRequestFailure::Query(abort)
+                    }
+                })
             }
-            Err(QueryAbort::Canceled) if !deferred_anonymous_producers.borrow().is_empty() => {
-                Err(BodyTransactionRequestFailure::DeferredAnonymousProducers(
-                    deferred_anonymous_producers
-                        .into_inner()
-                        .into_iter()
-                        .collect::<Vec<_>>()
-                        .into(),
-                ))
-            }
-            Err(abort) => Err(BodyTransactionRequestFailure::Query(abort)),
         }
     }
 
@@ -10063,6 +10282,12 @@ impl RevisionedQueryDatabase {
         self.body_transactions.any_retained_key(|_| true)
     }
 
+    /// Whether the body-reference projection has published any terminal.
+    #[cfg(test)]
+    pub(crate) fn any_body_reference_terminal(&self) -> bool {
+        self.body_references.any_retained_key(|_| true)
+    }
+
     /// Whether the exact body key already has a retained memo node.
     ///
     /// This is deliberately narrower than provenance: a newly reached body has
@@ -10135,17 +10360,11 @@ impl RevisionedQueryDatabase {
                 continue;
             };
             let compute_called = std::cell::Cell::new(false);
-            let terminal = self.body_transaction(
-                revision,
-                key,
-                false,
-                Arc::from([]),
-                CancellationToken::new(),
-                |_, _| {
+            let terminal =
+                self.body_transaction(revision, key, false, CancellationToken::new(), |_, _| {
                     compute_called.set(true);
                     Err(QueryAbort::Canceled)
-                },
-            );
+                });
             if let Ok(terminal) = terminal {
                 assert!(
                     !compute_called.get(),
@@ -10167,14 +10386,9 @@ impl RevisionedQueryDatabase {
         key: crate::body_query::BodyQueryKey,
     ) -> Option<crate::BodyTransaction> {
         let terminal = self
-            .body_transaction(
-                revision,
-                key,
-                false,
-                Arc::from([]),
-                CancellationToken::new(),
-                |_, _| Err(QueryAbort::Canceled),
-            )
+            .body_transaction(revision, key, false, CancellationToken::new(), |_, _| {
+                Err(QueryAbort::Canceled)
+            })
             .ok()?;
         let rue_query::QueryOutcome::Success(transaction) = terminal.outcome() else {
             unreachable!("BodyTransaction publishes typed values")
@@ -14227,6 +14441,307 @@ mod tests {
             Arc::from(name),
             None,
         ))
+    }
+
+    fn trusted_option_body_snapshot(root_source: &str, option_source: &str) -> SourceSnapshot {
+        let option = FileId::new(2);
+        trusted_body_snapshot(root_source, Some((option, option_source)), None)
+    }
+
+    fn trusted_body_snapshot(
+        root_source: &str,
+        option_source: Option<(FileId, &str)>,
+        strbuf_source: Option<(FileId, &str)>,
+    ) -> SourceSnapshot {
+        let root = FileId::new(1);
+        let mut physical = HashMap::from([(root, "/project/main.rue".to_owned())]);
+        let mut logical = HashMap::from([(root, "main.rue".to_owned())]);
+        let mut trusted = std::collections::HashSet::new();
+        let mut sources = vec![(root, Arc::new(root_source.to_owned()))];
+        if let Some((option, source)) = option_source {
+            physical.insert(option, "/sdk/option.rue".to_owned());
+            logical.insert(option, crate::OPTION_MODULE_LOGICAL_PATH.to_owned());
+            trusted.insert(option);
+            sources.push((option, Arc::new(source.to_owned())));
+        }
+        if let Some((strbuf, source)) = strbuf_source {
+            physical.insert(strbuf, "/sdk/strbuf.rue".to_owned());
+            logical.insert(strbuf, crate::STRBUF_MODULE_LOGICAL_PATH.to_owned());
+            trusted.insert(strbuf);
+            sources.push((strbuf, Arc::new(source.to_owned())));
+        }
+        let metadata =
+            SourceMetadata::new_with_trusted_standard_library(root, physical, logical, trusted)
+                .expect("trusted Option metadata is valid");
+        SourceSnapshot::new(metadata, sources).expect("trusted body snapshot is valid")
+    }
+
+    fn main_body_key() -> crate::body_query::BodyQueryKey {
+        crate::body_query::BodyQueryKey {
+            instance: free_function_instance(
+                &ModuleId::from_logical_path("main.rue").unwrap(),
+                "main",
+            ),
+            configuration: semantic_configuration(),
+        }
+    }
+
+    #[test]
+    fn malformed_exact_option_fails_body_request_without_compute_or_publication() {
+        let snapshot = trusted_option_body_snapshot(
+            r#"
+fn LocalOption(comptime T: type) -> type { enum { Some(T), None } }
+fn main() -> i32 {
+    let L = LocalOption(i32);
+    let _lookalike: L = L.None;
+    let _result = @parse_i32("1");
+    0
+}
+"#,
+            "pub fn Option(comptime T: type) -> type { missing }",
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        let key = main_body_key();
+        let compute_called = std::cell::Cell::new(false);
+        let result = database.body_transaction(
+            revision,
+            key.clone(),
+            false,
+            CancellationToken::new(),
+            |_, _| {
+                compute_called.set(true);
+                Err(QueryAbort::Canceled)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BodyTransactionRequestFailure::WellKnownOptionResolution(
+                WellKnownOptionResolutionFailure::Semantic {
+                    payload: crate::well_known_option::FalliblePayload::I32,
+                    ..
+                }
+            ))
+        ));
+        assert!(
+            !compute_called.get(),
+            "a local same-shape enum must not rescue the failed trusted specialization"
+        );
+        assert!(!database.has_retained_body_key(&key));
+        assert!(!database.any_body_transaction_terminal());
+        assert!(!database.any_body_reference_terminal());
+        assert_eq!(database.lookup_promotion_entries(), 0);
+    }
+
+    #[test]
+    fn missing_trusted_option_is_typed_incomplete_without_body_publication() {
+        let snapshot = trusted_body_snapshot(
+            r#"fn main() -> i32 { let _result = @parse_i32("1"); 0 }"#,
+            None,
+            None,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        let key = main_body_key();
+        let compute_called = std::cell::Cell::new(false);
+        let result = database.body_transaction(
+            revision,
+            key.clone(),
+            false,
+            CancellationToken::new(),
+            |_, _| {
+                compute_called.set(true);
+                Err(QueryAbort::Canceled)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BodyTransactionRequestFailure::WellKnownOptionResolution(
+                WellKnownOptionResolutionFailure::Incomplete {
+                    payload: crate::well_known_option::FalliblePayload::I32,
+                    prerequisite: Some(ref key),
+                    ..
+                }
+            )) if key.module().as_str() == crate::OPTION_MODULE_LOGICAL_PATH
+        ));
+        assert!(!compute_called.get());
+        assert!(!database.has_retained_body_key(&key));
+        assert!(!database.any_body_transaction_terminal());
+        assert!(!database.any_body_reference_terminal());
+        assert_eq!(database.lookup_promotion_entries(), 0);
+    }
+
+    #[test]
+    fn missing_trusted_strbuf_is_typed_incomplete_without_body_publication() {
+        let snapshot = trusted_body_snapshot(
+            r#"fn main() -> i32 { let _result = @read_line(); 0 }"#,
+            Some((
+                FileId::new(2),
+                "pub fn Option(comptime T: type) -> type { enum { Some(T), None } }",
+            )),
+            None,
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        let (_, unchecked_call) = crate::well_known_option::exact_option_query(
+            crate::well_known_option::FalliblePayload::StrBuf,
+            &semantic_configuration(),
+        );
+        let unchecked = database.runtime.request_registered(
+            &database.semantic_nucleus,
+            revision,
+            crate::semantic_query_nucleus::SemanticNucleusKey::ComptimeCall(unchecked_call),
+            CancellationToken::new(),
+        );
+        assert!(
+            matches!(
+                unchecked.terminal().map(|terminal| terminal.outcome()),
+                Some(rue_query::QueryOutcome::Success(
+                    crate::semantic_query_nucleus::SemanticNucleusValue::ComptimeCall(_)
+                ))
+            ),
+            "the raw comptime call currently accepts an unverified durable StrBuf key; the exact \
+             stable-classification preflight must remain authoritative: {:?}",
+            unchecked.abort()
+        );
+        let key = main_body_key();
+        let compute_called = std::cell::Cell::new(false);
+        let result = database.body_transaction(
+            revision,
+            key.clone(),
+            false,
+            CancellationToken::new(),
+            |_, _| {
+                compute_called.set(true);
+                Err(QueryAbort::Canceled)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BodyTransactionRequestFailure::WellKnownOptionResolution(
+                WellKnownOptionResolutionFailure::Incomplete {
+                    payload: crate::well_known_option::FalliblePayload::StrBuf,
+                    prerequisite: Some(ref key),
+                    ..
+                }
+            )) if key.module().as_str() == crate::STRBUF_MODULE_LOGICAL_PATH
+        ));
+        assert!(!compute_called.get());
+        assert!(!database.has_retained_body_key(&key));
+        assert!(!database.any_body_transaction_terminal());
+        assert!(!database.any_body_reference_terminal());
+        assert_eq!(database.lookup_promotion_entries(), 0);
+    }
+
+    #[test]
+    fn wrong_exact_option_projection_fails_body_request_atomically() {
+        let snapshot = trusted_option_body_snapshot(
+            r#"fn main() -> i32 { let _result = @parse_u32("1"); 0 }"#,
+            "pub fn Option(comptime T: type) -> i32 { 0 }",
+        );
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&snapshot),
+            &snapshot,
+        );
+        let key = main_body_key();
+        let compute_called = std::cell::Cell::new(false);
+        let result = database.body_transaction(
+            revision,
+            key.clone(),
+            false,
+            CancellationToken::new(),
+            |_, _| {
+                compute_called.set(true);
+                Err(QueryAbort::Canceled)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(BodyTransactionRequestFailure::WellKnownOptionResolution(
+                WellKnownOptionResolutionFailure::WrongProjection {
+                    payload: crate::well_known_option::FalliblePayload::U32,
+                    ..
+                }
+            ))
+        ));
+        assert!(!compute_called.get());
+        assert!(!database.has_retained_body_key(&key));
+        assert!(!database.any_body_transaction_terminal());
+        assert!(!database.any_body_reference_terminal());
+        assert_eq!(database.lookup_promotion_entries(), 0);
+    }
+
+    #[test]
+    fn body_transaction_failure_precedence_is_exhaustive() {
+        assert_eq!(
+            classify_body_transaction_failure(&QueryAbort::Canceled, true, true, true, true,),
+            BodyTransactionFailureClass::RequestCanceled,
+            "a canceled request wins even when every typed domain failure was recorded"
+        );
+        assert_eq!(
+            classify_body_transaction_failure(&QueryAbort::Canceled, false, true, true, true,),
+            BodyTransactionFailureClass::ProducerFailed
+        );
+        assert_eq!(
+            classify_body_transaction_failure(&QueryAbort::Canceled, false, false, true, true,),
+            BodyTransactionFailureClass::DeferredAnonymousProducers
+        );
+        assert_eq!(
+            classify_body_transaction_failure(&QueryAbort::Canceled, false, false, false, true,),
+            BodyTransactionFailureClass::WellKnownOptionResolution
+        );
+        assert_eq!(
+            classify_body_transaction_failure(&QueryAbort::Canceled, false, false, false, false,),
+            BodyTransactionFailureClass::Query
+        );
+        assert_eq!(
+            classify_body_transaction_failure(&QueryAbort::ForeignRuntime, true, true, true, true,),
+            BodyTransactionFailureClass::Query,
+            "domain precedence applies only to the internal cancellation carrier"
+        );
+    }
+
+    #[test]
+    fn well_known_dependency_abort_classification_is_exhaustive() {
+        assert_eq!(
+            classify_well_known_dependency_abort(&QueryAbort::Canceled),
+            WellKnownDependencyAbortClass::Incomplete
+        );
+        assert_eq!(
+            classify_well_known_dependency_abort(&QueryAbort::MissingInput(InputIdentity::new(
+                "well-known-test",
+                "missing",
+            ))),
+            WellKnownDependencyAbortClass::Incomplete
+        );
+        assert_eq!(
+            classify_well_known_dependency_abort(&QueryAbort::ForeignRuntime),
+            WellKnownDependencyAbortClass::Propagate
+        );
+        assert_eq!(
+            classify_well_known_dependency_abort(&QueryAbort::Cycle(Arc::from([]))),
+            WellKnownDependencyAbortClass::Propagate
+        );
+        assert_eq!(
+            classify_well_known_dependency_abort(&QueryAbort::UnpublishedRevision(Revision::new(
+                42, 1,
+            ))),
+            WellKnownDependencyAbortClass::Propagate
+        );
     }
 
     fn declaration_candidate(
@@ -22941,9 +23456,9 @@ mod tests {
         use std::collections::HashSet;
 
         // The freestanding fallible-intrinsic program plus the trusted `Option`
-        // module published at its trusted logical path — exactly the presence
-        // condition `plan_well_known_option_demands` requires. `main` names
-        // `@parse_i64` and `@parse_u32`, so the program demands two payloads.
+        // module published at its trusted logical path. `main` names
+        // `@parse_i64` and `@parse_u32`, so its registered demand node names two
+        // payloads and each maps directly to one exact comptime key.
         let root = FileId::new(1);
         let option = FileId::new(2);
         let physical = HashMap::from([
@@ -22987,14 +23502,12 @@ mod tests {
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
 
-        // The production demand catalogue: one entry per demanded payload, each
-        // carrying the exact `ComptimeCall` the per-body demand loop roots.
-        let demands = crate::well_known_option::plan_well_known_option_demands(
-            &merged,
-            &rir,
-            &semantic_configuration(),
-        );
-        assert_eq!(demands.len(), 2, "i64 and u32 payloads are demanded");
+        let configuration = semantic_configuration();
+        let demands = [
+            crate::well_known_option::FalliblePayload::I64,
+            crate::well_known_option::FalliblePayload::U32,
+        ]
+        .map(|kind| crate::well_known_option::exact_option_query(kind, &configuration));
 
         // Resolve each demand through the nucleus — the declaration-level
         // durable truth BOTH installs consume — assembling the same
@@ -23009,12 +23522,9 @@ mod tests {
             crate::AnonymousNominalKey,
             crate::durable_semantics::DurableAnonymousNominal,
         > = BTreeMap::new();
-        for demand in demands.iter() {
-            let value = request_semantic_nucleus(
-                &nucleus_db,
-                nucleus_revision,
-                Key::ComptimeCall(demand.call.clone()),
-            );
+        for (payload, call) in demands {
+            let value =
+                request_semantic_nucleus(&nucleus_db, nucleus_revision, Key::ComptimeCall(call));
             let V::ComptimeCall(projection) = value else {
                 panic!("trusted Option comptime call did not resolve: {value:?}");
             };
@@ -23024,7 +23534,7 @@ mod tests {
                     projection.result
                 );
             };
-            option_by_payload.push((demand.payload.clone(), option_type.clone()));
+            option_by_payload.push((payload, option_type.clone()));
             for nominal in projection.anonymous_nominals.iter() {
                 nominals.insert(nominal.identity.clone(), nominal.clone());
             }
