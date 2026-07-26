@@ -55,7 +55,7 @@ fn check_module_member_access(
     Ok(())
 }
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     /// Validate the source-level contract shared by every ordinary call form.
     /// Receiver exclusivity is checked separately for methods because their
     /// implicit `self` access participates in the same loan set as the explicit

@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     pub(in crate::sema) fn analyze_single_function<P>(
         &mut self,
         infer_ctx: &InferenceContext,

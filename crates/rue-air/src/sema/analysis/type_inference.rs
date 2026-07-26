@@ -6,7 +6,7 @@
 use super::*;
 use crate::inference::LazyInferenceFacts;
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     fn inference_function_is_selected(
         &self,
         function: Spur,
@@ -203,11 +203,7 @@ impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
             }
         }
 
-        fn record_concrete<F: crate::sema::BodyAnalysisFactMode>(
-            sema: &mut BodySema<'_, F>,
-            ty: &InferType,
-            access_file: FileId,
-        ) -> bool {
+        fn record_concrete(sema: &mut BodySema<'_>, ty: &InferType, access_file: FileId) -> bool {
             match ty {
                 InferType::Concrete(ty) => {
                     let accessible = match ty.kind() {

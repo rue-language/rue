@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     /// Analyze @ptr_read / @ptr_read_unaligned intrinsic: reads value through
     /// pointer. Signature: `@ptr_read(ptr: ptr const T) -> T`.
     ///

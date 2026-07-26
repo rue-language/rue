@@ -106,7 +106,7 @@ impl EpochDerivationUnits {
     }
 }
 
-impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// Per-family unit counts for one derivation of this epoch, read from the
     /// live containers rather than from the inputs the epoch was built from.
     fn derivation_unit_sizes(&self) -> EpochDerivationUnits {
@@ -169,7 +169,7 @@ impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, M
     }
 }
 
-impl<F: crate::sema::BodyAnalysisFactMode> BoundSema<'_, F> {
+impl BoundSema<'_> {
     /// Seal this epoch as a request's declaration base (RUE-1135).
     ///
     /// The type pool and parameter arena are moved into shared immutable layers

@@ -386,16 +386,13 @@ impl SemanticBindingManifest {
 
 /// A bound semantic request.
 ///
-/// `F` is a crate-internal/test-injection seam; downstream callers use the
-/// default epoch-backed mode. Splitting this into a separate public wrapper is
-/// outside this transitional refactor's scope.
-pub struct BoundSema<'a, F: super::BodyAnalysisFactMode = super::EpochFactMode> {
-    pub(super) sema: super::BodySema<'a, F>,
+pub struct BoundSema<'a> {
+    pub(super) sema: super::BodySema<'a>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
 }
 
-impl<'a, F: super::BodyAnalysisFactMode> Clone for BoundSema<'a, F> {
+impl<'a> Clone for BoundSema<'a> {
     fn clone(&self) -> Self {
         Self {
             sema: self.sema.clone(),
@@ -413,17 +410,14 @@ impl<'a, F: super::BodyAnalysisFactMode> Clone for BoundSema<'a, F> {
 /// raw AIR handles part of the reusable representation.  Today the only
 /// transition performs the ordinary current-revision resolution pass.
 ///
-/// `F` is a crate-internal/test-injection seam; downstream callers use the
-/// default epoch-backed mode. Splitting this into a separate public wrapper is
-/// outside this transitional refactor's scope.
-pub struct DeclarationShells<'a, F: super::BodyAnalysisFactMode = super::EpochFactMode> {
-    pub(super) sema: Sema<'a, super::MutableDeclarations, F>,
+pub struct DeclarationShells<'a> {
+    pub(super) sema: Sema<'a, super::MutableDeclarations>,
     pub(super) binding_work: DeclarationBindingWork,
     pub(super) pending_payloads: Vec<PendingDeclarationPayload>,
     pub(super) pending_nominals: Vec<PendingNominalPayload>,
 }
 
-impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
+impl<'a> DeclarationShells<'a> {
     pub fn install_stable_identity_endpoints(
         mut self,
         definitions: &[crate::SemanticDefinitionEndpoint],
@@ -481,13 +475,13 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
 
     /// Test-support adapter for resolving source-owned declaration payloads.
     #[doc(hidden)]
-    pub fn resolve_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a, F>> {
+    pub fn resolve_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a>> {
         self.resolve_declarations_with_work_for_test()
             .map_err(DeclarationResolutionFailure::into_errors)
     }
 
     #[cfg(test)]
-    pub fn resolve_declarations(self) -> MultiErrorResult<BoundSema<'a, F>> {
+    pub fn resolve_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
         self.resolve_declarations_for_test()
     }
 
@@ -495,7 +489,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
     #[doc(hidden)]
     pub fn resolve_declarations_with_work_for_test(
         mut self,
-    ) -> Result<BoundSema<'a, F>, DeclarationResolutionFailure> {
+    ) -> Result<BoundSema<'a>, DeclarationResolutionFailure> {
         // This is the explicit payload-install boundary. Const resolution may
         // inspect only the exact occurrence set admitted by these shells. In a
         // canonical epoch that set came from keyed compiler queries; the RIR
@@ -544,7 +538,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
     #[cfg(test)]
     pub fn resolve_declarations_with_work(
         self,
-    ) -> Result<BoundSema<'a, F>, DeclarationResolutionFailure> {
+    ) -> Result<BoundSema<'a>, DeclarationResolutionFailure> {
         self.resolve_declarations_with_work_for_test()
     }
 
@@ -556,7 +550,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
     pub fn install_declaration_semantics(
         self,
         exports: &[SemanticDeclarationExport],
-    ) -> Result<BoundSema<'a, F>, DeclarationInstallFailure> {
+    ) -> Result<BoundSema<'a>, DeclarationInstallFailure> {
         self.install_declaration_semantics_with_anonymous(exports, &[])
     }
 
@@ -564,7 +558,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
         mut self,
         exports: &[SemanticDeclarationExport],
         anonymous_nominals: &[SemanticAnonymousNominalExport],
-    ) -> Result<BoundSema<'a, F>, DeclarationInstallFailure> {
+    ) -> Result<BoundSema<'a>, DeclarationInstallFailure> {
         use std::collections::BTreeMap;
 
         self.binding_work.durable_install_invocations += 1;
@@ -868,8 +862,8 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
             }
         }
 
-        fn import_capture_value<F: super::BodyAnalysisFactMode>(
-            sema: &mut Sema<'_, super::MutableDeclarations, F>,
+        fn import_capture_value(
+            sema: &mut Sema<'_, super::MutableDeclarations>,
             value: &SemanticExportConstValue,
         ) -> Result<ConstValue, DeclarationInstallFailure> {
             Ok(match value {
@@ -897,8 +891,8 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
             })
         }
 
-        fn import_method_type<F: super::BodyAnalysisFactMode>(
-            sema: &mut Sema<'_, super::MutableDeclarations, F>,
+        fn import_method_type(
+            sema: &mut Sema<'_, super::MutableDeclarations>,
             value: &SemanticAnonymousMethodType,
         ) -> Result<super::AnonMethodType, DeclarationInstallFailure> {
             Ok(match value {
@@ -1543,8 +1537,8 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> DeclarationShells<'a, F> {
     }
 }
 
-fn install_const_candidate_endpoints<D: super::DeclarationPhase, F: super::BodyAnalysisFactMode>(
-    sema: &mut super::Sema<'_, D, F>,
+fn install_const_candidate_endpoints<D: super::DeclarationPhase>(
+    sema: &mut super::Sema<'_, D>,
     pending: &[PendingDeclarationPayload],
 ) -> Result<(), crate::SemanticStableResolutionFailure> {
     let issuer = sema
@@ -1611,7 +1605,7 @@ fn install_const_candidate_endpoints<D: super::DeclarationPhase, F: super::BodyA
     Ok(())
 }
 
-impl<D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
+impl<D: super::DeclarationPhase> Sema<'_, D> {
     fn import_anonymous_identity(
         &self,
         identity: &SemanticAnonymousNominalIdentity,
@@ -1805,8 +1799,8 @@ impl<D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'
     }
 }
 
-fn install_stable_identity_endpoints<D: super::DeclarationPhase, F: super::BodyAnalysisFactMode>(
-    sema: &mut super::Sema<'_, D, F>,
+fn install_stable_identity_endpoints<D: super::DeclarationPhase>(
+    sema: &mut super::Sema<'_, D>,
     definitions: &[crate::SemanticDefinitionEndpoint],
     modules: &[crate::SemanticModuleEndpoint],
     expected_definitions: &[(u32, String, Option<String>, StableDefinitionKind)],
@@ -2004,9 +1998,7 @@ fn install_stable_identity_endpoints<D: super::DeclarationPhase, F: super::BodyA
     Ok(())
 }
 
-fn stable_module_files<D: super::DeclarationPhase, F: super::BodyAnalysisFactMode>(
-    sema: &super::Sema<'_, D, F>,
-) -> Vec<FileId> {
+fn stable_module_files<D: super::DeclarationPhase>(sema: &super::Sema<'_, D>) -> Vec<FileId> {
     (0..sema.module_registry.len())
         .map(|index| {
             sema.module_registry
@@ -2016,7 +2008,7 @@ fn stable_module_files<D: super::DeclarationPhase, F: super::BodyAnalysisFactMod
         .collect()
 }
 
-impl<'a, F: crate::sema::BodyAnalysisFactMode> BoundSema<'a, F> {
+impl<'a> BoundSema<'a> {
     /// Install a per-body well-known `Option(payload)` registry (RUE-1112)
     /// narrowly, outside this body's composition/import universe.
     ///
@@ -2469,7 +2461,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> BoundSema<'a, F> {
     /// `MethodInfo` / RIR-index answers through this handle to compare against
     /// the provider-side pool + RIR index.
     #[cfg(test)]
-    pub(in crate::sema) fn body_sema(&self) -> &super::BodySema<'a, F> {
+    pub(in crate::sema) fn body_sema(&self) -> &super::BodySema<'a> {
         &self.sema
     }
 
@@ -2906,7 +2898,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> BoundSema<'a, F> {
     }
 }
 
-impl<'a, D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
+impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     pub(super) fn attach_imported_declaration_shells(
         &self,
         imported: &[SemanticDeclarationShell],
@@ -3285,8 +3277,8 @@ impl<'a, D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Se
     }
 }
 
-fn validate_imported_shell<D: super::DeclarationPhase, F: super::BodyAnalysisFactMode>(
-    sema: &Sema<'_, D, F>,
+fn validate_imported_shell<D: super::DeclarationPhase>(
+    sema: &Sema<'_, D>,
     shell: &SemanticDeclarationShell,
     name: Spur,
     owner: Option<Spur>,
@@ -3333,7 +3325,7 @@ fn validate_imported_shell<D: super::DeclarationPhase, F: super::BodyAnalysisFac
     Ok(())
 }
 
-impl<'a, D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
+impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     fn export_type(
         &self,
         ty: Type,
@@ -3867,11 +3859,11 @@ impl<'a, D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Se
     }
 }
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, super::MutableDeclarations, Mode> {
+impl<'a> Sema<'a, super::MutableDeclarations> {
     pub(super) fn into_bound_with_work(
         mut self,
         binding_work: DeclarationBindingWork,
-    ) -> BoundSema<'a, Mode> {
+    ) -> BoundSema<'a> {
         // This updates source nominal definitions and therefore belongs on
         // the declaration side of the phase boundary. Body analysis receives
         // an immutable namespace with final destructor symbols.

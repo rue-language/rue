@@ -25,7 +25,6 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstRef, Rir};
 use rue_span::FileId;
 
-use super::BodySema;
 use super::anon_structs::IssuedAnonymousNominalKey;
 use super::body_identity::{
     BodyRirIndex, ConstIdentityHandle, DurableAnonymousSource, DurableConstSource,
@@ -34,6 +33,7 @@ use super::body_identity::{
 use super::declaration_index::RirDestructorDeclaration;
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
+use super::{DeclarationPhase, Sema};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{
@@ -131,17 +131,17 @@ pub(crate) trait BodyEndpointProvider {
 
 /// The production [`BodyEndpointProvider`]: every operation is the verbatim
 /// epoch-table read the inline `one_body.rs` code performed.
-pub(crate) struct EpochFacts<'s, 'a, F: super::BodyAnalysisFactMode = super::EpochFactMode> {
-    sema: &'s BodySema<'a, F>,
+pub(crate) struct EpochFacts<'s, 'a, D: DeclarationPhase> {
+    sema: &'s Sema<'a, D>,
 }
 
-impl<'s, 'a, F: crate::sema::BodyAnalysisFactMode> EpochFacts<'s, 'a, F> {
-    pub(in crate::sema) fn new(sema: &'s BodySema<'a, F>) -> Self {
+impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
+    pub(in crate::sema) fn new(sema: &'s Sema<'a, D>) -> Self {
         Self { sema }
     }
 }
 
-impl<F: super::BodyAnalysisFactMode> BodyEndpointProvider for EpochFacts<'_, '_, F> {
+impl<D: DeclarationPhase> BodyEndpointProvider for EpochFacts<'_, '_, D> {
     fn name_symbol(&self, name: &str) -> Option<Spur> {
         self.sema.interner.get(name)
     }

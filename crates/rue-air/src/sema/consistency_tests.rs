@@ -349,30 +349,40 @@ mod tests {
             );
         }
 
-        assert!(
-            CONTROL_FLOW_SOURCE
-                .contains("impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode>")
-        );
+        assert!(CONTROL_FLOW_SOURCE.contains("impl<'a> BodySema<'a>"));
         assert!(!CONTROL_FLOW_SOURCE.contains("struct BodySema"));
     }
 
     #[test]
-    fn one_body_fact_mode_has_one_epoch_backed_production_configuration() {
-        assert!(FACT_MODE_SOURCE.contains("pub struct EpochFactMode"));
+    fn one_body_host_contract_is_representation_agnostic() {
+        assert!(FACT_MODE_SOURCE.contains("trait BodyAnalysisHost"));
         assert!(FACT_MODE_SOURCE.contains("type EndpointFacts"));
         assert!(FACT_MODE_SOURCE.contains("type CallFacts"));
         assert!(FACT_MODE_SOURCE.contains("type AggregateFacts"));
         assert!(FACT_MODE_SOURCE.contains("type InferenceFacts"));
-        assert!(FACT_MODE_SOURCE.contains("fn resolve_type_syntax_with_substitutions"));
+        assert!(FACT_MODE_SOURCE.contains("struct TypeSyntaxRequest"));
+        assert!(FACT_MODE_SOURCE.contains("struct ModulePrefixRequest"));
+        assert!(FACT_MODE_SOURCE.contains("struct ArrayLengthRequest"));
+        assert!(FACT_MODE_SOURCE.contains("struct DeferredTypeRequest"));
+        assert!(FACT_MODE_SOURCE.contains("struct DeferredValueRequest"));
+        assert!(FACT_MODE_SOURCE.contains("fn resolve_type_syntax("));
         assert!(FACT_MODE_SOURCE.contains("fn resolve_type_module_prefix"));
-        assert!(FACT_MODE_SOURCE.contains("fn resolve_array_length_fact"));
-        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_type_position"));
-        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_value_position"));
-        assert!(!FACT_MODE_SOURCE.contains("SemaTypeSyntaxProvider"));
-        assert!(!FACT_MODE_SOURCE.contains("DeferredSemaTypeSyntaxProvider"));
-        assert!(!FACT_MODE_SOURCE.contains("ProviderFactMode"));
+        assert!(FACT_MODE_SOURCE.contains("fn resolve_array_length("));
+        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_type("));
+        assert!(FACT_MODE_SOURCE.contains("fn validate_deferred_value("));
+        let contract = FACT_MODE_SOURCE
+            .split("pub(crate) trait BodyAnalysisHost")
+            .nth(1)
+            .and_then(|source| source.split("/// The canonical epoch host").next())
+            .expect("host contract is present");
+        for forbidden in ["Sema", "BodySema", "DeclarationPhase", "Epoch"] {
+            assert!(
+                !contract.contains(forbidden),
+                "host contract must not name {forbidden}"
+            );
+        }
         assert!(!FACT_MODE_SOURCE.contains("analyze_one_body"));
-        assert!(SEMA_ROOT_SOURCE.contains("F = EpochFactMode"));
+        assert!(!SEMA_ROOT_SOURCE.contains("\n    fact_mode:"));
         assert!(SEMA_ROOT_SOURCE.contains("fn endpoint_facts("));
         assert!(SEMA_ROOT_SOURCE.contains("fn call_facts("));
         assert!(SEMA_ROOT_SOURCE.contains("fn aggregate_facts("));
@@ -425,10 +435,7 @@ mod tests {
         assert!(OWNERSHIP_SOURCE.contains("struct PlaceTrace"));
         assert!(OWNERSHIP_SOURCE.contains("struct ProjectionInfo"));
         assert!(OWNERSHIP_SOURCE.contains("fn moved_state<'ctx>("));
-        assert!(
-            OWNERSHIP_SOURCE
-                .contains("impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode>")
-        );
+        assert!(OWNERSHIP_SOURCE.contains("impl<'a> BodySema<'a>"));
         assert!(!OWNERSHIP_SOURCE.contains("struct BodySema"));
         assert!(!OWNERSHIP_SOURCE.contains("analyze_field_set_impl"));
         assert!(!OWNERSHIP_SOURCE.contains("analyze_index_set_impl"));

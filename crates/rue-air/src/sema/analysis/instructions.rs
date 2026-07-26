@@ -5,7 +5,7 @@
 
 use super::*;
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
+impl<'a> BodySema<'a> {
     /// Analyze an RIR instruction, producing AIR instructions.
     ///
     /// Types are determined by Hindley-Milner inference (stored in `resolved_types`).

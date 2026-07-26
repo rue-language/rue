@@ -73,9 +73,7 @@ impl InferenceContext {
     /// Construct the context, snapshotting the generated-nominal overlays that
     /// the eager projection merged. The signature caches start empty and fill on
     /// demand.
-    pub(crate) fn new<D: DeclarationPhase, F: super::BodyAnalysisFactMode>(
-        sema: &Sema<'_, D, F>,
-    ) -> Self {
+    pub(crate) fn new<D: DeclarationPhase>(sema: &Sema<'_, D>) -> Self {
         let mut gen_builtin_struct_types = HashMap::new();
         let mut gen_struct_types_by_file = HashMap::new();
         for (name, id) in &sema.generated_structs {
@@ -111,20 +109,13 @@ impl InferenceContext {
 /// [`InferenceContext`] cache plus an immutable borrow of the analyzing `Sema`.
 /// The generator consults it through [`LazyInferenceFacts`]; every answer equals
 /// the value the eager projection would have held for that key.
-pub(crate) struct SemaInferenceFacts<
-    'a,
-    'src,
-    D: DeclarationPhase,
-    F: super::BodyAnalysisFactMode = super::EpochFactMode,
-> {
+pub(crate) struct SemaInferenceFacts<'a, 'src, D: DeclarationPhase> {
     ctx: &'a InferenceContext,
-    sema: &'a Sema<'src, D, F>,
+    sema: &'a Sema<'src, D>,
 }
 
-impl<'a, 'src, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
-    SemaInferenceFacts<'a, 'src, D, F>
-{
-    pub(crate) fn new(ctx: &'a InferenceContext, sema: &'a Sema<'src, D, F>) -> Self {
+impl<'a, 'src, D: DeclarationPhase> SemaInferenceFacts<'a, 'src, D> {
+    pub(crate) fn new(ctx: &'a InferenceContext, sema: &'a Sema<'src, D>) -> Self {
         Self { ctx, sema }
     }
 
@@ -180,9 +171,7 @@ impl<'a, 'src, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode>
     }
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> LazyInferenceFacts
-    for SemaInferenceFacts<'_, '_, D, F>
-{
+impl<D: DeclarationPhase> LazyInferenceFacts for SemaInferenceFacts<'_, '_, D> {
     fn func_sig(&self, name: Spur) -> Option<Rc<FunctionSig>> {
         if let Some(cached) = self.ctx.func_sigs.borrow().get(&name) {
             return Some(Rc::clone(cached));

@@ -1,7 +1,5 @@
-// `Sema`, `BoundSema`, and `DeclarationShells` are public legacy wrappers,
-// while `F` is a crate-internal migration/test seam. Rust lints each generic
-// implementation independently, so a local alternative would require roughly
-// forty-four duplicate suppressions without changing the public API boundary.
+// `Sema`, `BoundSema`, and `DeclarationShells` are public legacy wrappers;
+// one-body fact dispatch is hosted by the analyzer itself.
 #![allow(private_bounds)]
 
 //! Semantic analysis - RIR to AIR conversion.
@@ -77,8 +75,7 @@ pub use binding_manifest::{
 pub use context::ConstValue;
 pub use declaration_base::EpochDerivationUnits;
 pub use declaration_index::RirDeclarationIndexWork;
-pub(crate) use fact_mode::BodyAnalysisFactMode;
-use fact_mode::EpochFactMode;
+pub(crate) use fact_mode::BodyAnalysisHost;
 pub use inference_ctx::InferenceContext;
 pub(crate) use inference_ctx::SemaInferenceFacts;
 use info::ConstResolution;
@@ -246,30 +243,30 @@ impl std::ops::Deref for SourceDeclarations {
 
 #[doc(hidden)]
 pub trait DeclarationPhase: std::ops::Deref<Target = DeclarationNamespace> + Sized {
-    fn resolve_indexed_const<F: BodyAnalysisFactMode>(
-        sema: &mut Sema<'_, Self, F>,
+    fn resolve_indexed_const(
+        sema: &mut Sema<'_, Self>,
         name: Spur,
         file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>>;
 
-    fn collect_free_function_signature<F: BodyAnalysisFactMode>(
-        sema: &mut Sema<'_, Self, F>,
+    fn collect_free_function_signature(
+        sema: &mut Sema<'_, Self>,
         target: Spur,
         file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>>;
 }
 
 impl DeclarationPhase for MutableDeclarations {
-    fn resolve_indexed_const<F: BodyAnalysisFactMode>(
-        sema: &mut Sema<'_, Self, F>,
+    fn resolve_indexed_const(
+        sema: &mut Sema<'_, Self>,
         name: Spur,
         file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>> {
         sema.resolve_indexed_const_binding_impl(name, file_id)
     }
 
-    fn collect_free_function_signature<F: BodyAnalysisFactMode>(
-        sema: &mut Sema<'_, Self, F>,
+    fn collect_free_function_signature(
+        sema: &mut Sema<'_, Self>,
         target: Spur,
         file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
@@ -278,16 +275,16 @@ impl DeclarationPhase for MutableDeclarations {
 }
 
 impl DeclarationPhase for SourceDeclarations {
-    fn resolve_indexed_const<F: BodyAnalysisFactMode>(
-        _sema: &mut Sema<'_, Self, F>,
+    fn resolve_indexed_const(
+        _sema: &mut Sema<'_, Self>,
         _name: Spur,
         _file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>> {
         Ok(None)
     }
 
-    fn collect_free_function_signature<F: BodyAnalysisFactMode>(
-        _sema: &mut Sema<'_, Self, F>,
+    fn collect_free_function_signature(
+        _sema: &mut Sema<'_, Self>,
         _target: Spur,
         _file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
@@ -313,22 +310,8 @@ pub(crate) struct DeferredOwnershipGate {
 /// Cloning is confined to request-scoped body-epoch derivation. Immutable
 /// declaration data is shared by refcount; body-local mutable state is copied.
 ///
-/// `F` is a crate-internal/test-injection seam; downstream callers use the
-/// default epoch-backed mode. Splitting this into a separate public wrapper is
-/// outside this transitional refactor's scope.
-pub struct Sema<
-    'a,
-    D: DeclarationPhase = MutableDeclarations,
-    F: BodyAnalysisFactMode = EpochFactMode,
-> {
+pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     declarations: D,
-    /// The one-body fact facade mode. Production constructs `EpochFactMode` at
-    /// the external construction boundary; transitions retain the stored mode.
-    /// One mode instance is created at the construction boundary and shared
-    /// unchanged through every declaration/body phase transition. Mutable
-    /// operations clone this `Arc`, never the mode value, so stateful modes
-    /// observe the exact same identity for the whole request lineage.
-    fact_mode: Arc<F>,
     pub(crate) rir: &'a Rir,
     pub(crate) interner: &'a ThreadedRodeo,
     /// Request-local declaration candidates for this exact RIR arena.
@@ -584,15 +567,13 @@ pub struct Sema<
         std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
 }
 
-impl<'a, D, F> Clone for Sema<'a, D, F>
+impl<'a, D> Clone for Sema<'a, D>
 where
     D: DeclarationPhase + Clone,
-    F: BodyAnalysisFactMode,
 {
     fn clone(&self) -> Self {
         Self {
             declarations: self.declarations.clone(),
-            fact_mode: Arc::clone(&self.fact_mode),
             rir: self.rir,
             interner: self.interner,
             declaration_index: self.declaration_index.clone(),
@@ -687,7 +668,7 @@ where
     }
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> std::ops::Deref for Sema<'_, D, F> {
+impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
     type Target = DeclarationNamespace;
 
     fn deref(&self) -> &Self::Target {
@@ -695,15 +676,14 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> std::ops::Deref 
     }
 }
 
-impl<'a, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'a, D, F> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Change only the declaration-phase capability while preserving every
     /// other analyzer field by value. Keeping this conversion exhaustive makes
     /// additions to `Sema` fail to compile here until their phase-boundary
     /// semantics are reviewed.
-    fn map_declarations<E: DeclarationPhase>(self, map: impl FnOnce(D) -> E) -> Sema<'a, E, F> {
+    fn map_declarations<E: DeclarationPhase>(self, map: impl FnOnce(D) -> E) -> Sema<'a, E> {
         let Sema {
             declarations,
-            fact_mode,
             rir,
             interner,
             declaration_index,
@@ -788,7 +768,6 @@ impl<'a, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'a, D, 
         } = self;
         Sema {
             declarations: map(declarations),
-            fact_mode,
             rir,
             interner,
             declaration_index,
@@ -1190,13 +1169,13 @@ impl<'a, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'a, D, 
     }
 }
 
-impl<F: crate::sema::BodyAnalysisFactMode> std::ops::DerefMut for Sema<'_, MutableDeclarations, F> {
+impl std::ops::DerefMut for Sema<'_, MutableDeclarations> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.declarations
     }
 }
 
-pub(crate) type BodySema<'a, F = EpochFactMode> = Sema<'a, SourceDeclarations, F>;
+pub(crate) type BodySema<'a> = Sema<'a, SourceDeclarations>;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1208,37 +1187,8 @@ pub(crate) struct NamespaceBoundarySnapshot {
     pub(crate) anonymous_methods: usize,
 }
 
-impl<'a> Sema<'a, MutableDeclarations, EpochFactMode> {
-    /// Create the production epoch-backed semantic analyzer.
-    pub fn new_synthetic(
-        rir: &'a Rir,
-        interner: &'a ThreadedRodeo,
-        preview_features: PreviewFeatures,
-    ) -> Self {
-        Self::new_synthetic_with_mode(rir, interner, preview_features, EpochFactMode)
-    }
-
-    /// Create the production epoch-backed analyzer for an explicit target.
-    pub fn new_for_target(
-        rir: &'a Rir,
-        interner: &'a ThreadedRodeo,
-        preview_features: PreviewFeatures,
-        metadata: SemaMetadata,
-        target: Target,
-    ) -> Self {
-        Self::new_for_target_with_mode(
-            rir,
-            interner,
-            preview_features,
-            metadata,
-            target,
-            EpochFactMode,
-        )
-    }
-}
-
 #[cfg(test)]
-impl<Mode: crate::sema::BodyAnalysisFactMode> BodySema<'_, Mode> {
+impl BodySema<'_> {
     pub(crate) fn namespace_boundary_snapshot(&self) -> NamespaceBoundarySnapshot {
         use std::hash::{Hash, Hasher};
 
@@ -1285,16 +1235,18 @@ impl<Mode: crate::sema::BodyAnalysisFactMode> BodySema<'_, Mode> {
     }
 }
 
-impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'_, D, F> {
-    pub(in crate::sema) fn aggregate_facts(&self) -> F::AggregateFacts<'_, '_, D> {
-        self.fact_mode.aggregate_facts(self)
+impl<D: DeclarationPhase> Sema<'_, D> {
+    pub(in crate::sema) fn aggregate_facts(
+        &self,
+    ) -> <Self as BodyAnalysisHost>::AggregateFacts<'_> {
+        BodyAnalysisHost::aggregate_facts(self)
     }
 
     pub(in crate::sema) fn inference_facts<'s>(
         &'s self,
         ctx: &'s InferenceContext,
-    ) -> F::InferenceFacts<'s, 's, D> {
-        self.fact_mode.inference_facts(ctx, self)
+    ) -> <Self as BodyAnalysisHost>::InferenceFacts<'s> {
+        BodyAnalysisHost::inference_facts(self, ctx)
     }
 
     pub(crate) fn body_owner_token(
@@ -1323,18 +1275,18 @@ impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'_, D, F> {
     }
 }
 
-impl<F: crate::sema::BodyAnalysisFactMode> BodySema<'_, F> {
-    pub(in crate::sema) fn endpoint_facts(&self) -> F::EndpointFacts<'_, '_> {
-        self.fact_mode.endpoint_facts(self)
+impl BodySema<'_> {
+    pub(in crate::sema) fn endpoint_facts(&self) -> <Self as BodyAnalysisHost>::EndpointFacts<'_> {
+        BodyAnalysisHost::endpoint_facts(self)
     }
 
-    pub(in crate::sema) fn call_facts(&self) -> F::CallFacts<'_, '_> {
-        self.fact_mode.call_facts(self)
+    pub(in crate::sema) fn call_facts(&self) -> <Self as BodyAnalysisHost>::CallFacts<'_> {
+        BodyAnalysisHost::call_facts(self)
     }
 }
 
-impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> {
-    fn freeze_declarations(mut self) -> BodySema<'a, F> {
+impl<'a> Sema<'a, MutableDeclarations> {
+    fn freeze_declarations(mut self) -> BodySema<'a> {
         self.rebuild_callable_method_index();
         self.map_declarations(|MutableDeclarations(namespace)| {
             SourceDeclarations(Arc::new(namespace))
@@ -1347,20 +1299,18 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
     /// from the RIR and never participates in durable compiler joins. Supported
     /// compiler construction uses [`Self::new_for_target`] with canonical
     /// metadata.
-    pub(crate) fn new_synthetic_with_mode(
+    pub fn new_synthetic(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
-        fact_mode: F,
     ) -> Self {
-        let mut sema = Self::new_for_target_with_mode(
+        let mut sema = Self::new_for_target(
             rir,
             interner,
             preview_features,
             SemaMetadata::synthetic_for_rir(rir),
             Target::host()
                 .expect("Rue cannot choose a default sema target on this unsupported host"),
-            fact_mode,
         );
         sema.synthetic_declaration_discovery = true;
         let synthetic_const_candidates = sema
@@ -1382,13 +1332,12 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
     }
 
     /// Create a new semantic analyzer for an explicit compilation target.
-    pub(crate) fn new_for_target_with_mode(
+    pub fn new_for_target(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
         metadata: SemaMetadata,
         target: Target,
-        fact_mode: F,
     ) -> Self {
         let SemaMetadata {
             root_file_id,
@@ -1399,7 +1348,6 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
         type_pool.set_symbol_paths(logical_paths.clone());
         Self {
             declarations: MutableDeclarations(DeclarationNamespace::new()),
-            fact_mode: Arc::new(fact_mode),
             rir,
             interner,
             declaration_index: Arc::new(declaration_index::RirDeclarationIndex::new(rir)),
@@ -1590,13 +1538,13 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
 
     /// Test-support adapter for the retired source-owned declaration producer.
     #[doc(hidden)]
-    pub fn bind_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a, F>> {
+    pub fn bind_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a>> {
         self.predeclare_declaration_shells_for_test()?
             .resolve_declarations_for_test()
     }
 
     #[cfg(test)]
-    pub fn bind_declarations(self) -> MultiErrorResult<BoundSema<'a, F>> {
+    pub fn bind_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
         self.bind_declarations_for_test()
     }
 
@@ -1605,7 +1553,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
     #[doc(hidden)]
     pub fn predeclare_declaration_shells_for_test(
         mut self,
-    ) -> MultiErrorResult<DeclarationShells<'a, F>> {
+    ) -> MultiErrorResult<DeclarationShells<'a>> {
         assert!(
             self.synthetic_declaration_discovery,
             "canonical compiler epochs must import query-owned declaration shells"
@@ -1647,7 +1595,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
     pub fn predeclare_imported_declaration_shells(
         mut self,
         imported: &[SemanticDeclarationShell],
-    ) -> MultiErrorResult<DeclarationShells<'a, F>> {
+    ) -> MultiErrorResult<DeclarationShells<'a>> {
         let mut binding_work = DeclarationBindingWork::from_inputs(
             self.rir.len(),
             self.declaration_index.work(),
@@ -1673,7 +1621,7 @@ impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> 
     }
 }
 
-impl<Mode: crate::sema::BodyAnalysisFactMode> BodySema<'_, Mode> {
+impl BodySema<'_> {
     /// Test-only oracle for the retired whole-program body driver.
     fn analyze_all_bodies_for_test(self) -> MultiErrorResult<SemaOutput> {
         analysis::analyze_all_function_bodies_for_test(self)

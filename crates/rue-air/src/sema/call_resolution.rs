@@ -39,13 +39,13 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_rir::{InstData, InstRef, Rir};
 use rue_span::FileId;
 
-use super::BodySema;
 use super::body_identity::{
     BodyRirIndex, DurableCallableSource, DurableNominalSource, FunctionIdentityHandle,
     MethodIdentityHandle, ProviderIdentityContext,
 };
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
+use super::{DeclarationPhase, Sema};
 use crate::types::{ModuleDef, ModuleId, StructId};
 
 /// The exact call/method/operator-resolution fact boundary consumed by the
@@ -114,17 +114,17 @@ pub(crate) trait CallResolutionFacts {
 
 /// The production [`CallResolutionFacts`]: every operation is the verbatim
 /// epoch-table read the inline analyzer code performed.
-pub(crate) struct EpochFacts<'s, 'a, F: super::BodyAnalysisFactMode = super::EpochFactMode> {
-    sema: &'s BodySema<'a, F>,
+pub(crate) struct EpochFacts<'s, 'a, D: DeclarationPhase> {
+    sema: &'s Sema<'a, D>,
 }
 
-impl<'s, 'a, F: crate::sema::BodyAnalysisFactMode> EpochFacts<'s, 'a, F> {
-    pub(in crate::sema) fn new(sema: &'s BodySema<'a, F>) -> Self {
+impl<'s, 'a, D: DeclarationPhase> EpochFacts<'s, 'a, D> {
+    pub(in crate::sema) fn new(sema: &'s Sema<'a, D>) -> Self {
         Self { sema }
     }
 }
 
-impl<F: super::BodyAnalysisFactMode> CallResolutionFacts for EpochFacts<'_, '_, F> {
+impl<D: DeclarationPhase> CallResolutionFacts for EpochFacts<'_, '_, D> {
     fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.sema.function_info(name).copied()
     }

@@ -24,7 +24,7 @@ use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::StructField;
 use crate::types::{EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
 
-impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn source_function_name(&self, internal_name: Spur) -> Spur {
         self.function_source_names
             .get(&internal_name)
@@ -198,7 +198,7 @@ impl<'a, D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, 
     }
 }
 
-impl<'a, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, super::MutableDeclarations, Mode> {
+impl<'a> Sema<'a, super::MutableDeclarations> {
     pub(crate) fn has_allow_directive<'r>(
         &self,
         mut directives: impl Iterator<Item = rue_rir::RirDirectiveView<'r>>,
