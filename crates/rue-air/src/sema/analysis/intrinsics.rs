@@ -8,7 +8,7 @@
 use super::*;
 use crate::sema::anon_structs::TrustedTryProducer;
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     // ========================================================================
     // Intrinsic operations: Intrinsic, TypeIntrinsic
     // ========================================================================

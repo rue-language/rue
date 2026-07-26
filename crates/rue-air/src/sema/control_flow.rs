@@ -19,7 +19,7 @@ use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     /// Analyze a control flow instruction.
     ///
     /// Handles: Branch, Loop, InfiniteLoop, Match, Break, Continue, Ret, Block

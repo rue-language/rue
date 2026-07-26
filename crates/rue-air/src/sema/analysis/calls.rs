@@ -7,7 +7,7 @@
 //! `analysis::ownership`.
 
 use super::*;
-use crate::sema::call_resolution::{CallResolutionFacts, call_facts};
+use crate::sema::call_resolution::CallResolutionFacts;
 use crate::sema::{FunctionInfo, NamedConstDependencyTargetEvent};
 
 /// Validate membership and visibility for a module-member function call.
@@ -55,7 +55,7 @@ fn check_module_member_access(
     Ok(())
 }
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     /// Validate the source-level contract shared by every ordinary call form.
     /// Receiver exclusivity is checked separately for methods because their
     /// implicit `self` access participates in the same loan set as the explicit
@@ -224,7 +224,10 @@ impl<'a> BodySema<'a> {
         let source_name = name;
         let mut name = name;
         let mut resolved_alias = false;
-        if let Some(const_info) = call_facts(self).resolve_const_info_in_file(name, span.file_id)
+        let const_info = self
+            .call_facts()
+            .resolve_const_info_in_file(name, span.file_id);
+        if let Some(const_info) = const_info
             && let Some(callee) = const_info.value.as_function()
         {
             let alias_name = self.interner.resolve(&name).to_string();
@@ -244,7 +247,10 @@ impl<'a> BodySema<'a> {
         }
 
         let local_name = (!resolved_alias)
-            .then(|| call_facts(self).resolve_function_name_local(name, span.file_id))
+            .then(|| {
+                self.call_facts()
+                    .resolve_function_name_local(name, span.file_id)
+            })
             .flatten();
         if let Some(local_name) = local_name {
             name = local_name;
@@ -271,9 +277,10 @@ impl<'a> BodySema<'a> {
         }
 
         // Look up the function
-        let source_name = call_facts(self).source_function_name(name);
+        let source_name = self.call_facts().source_function_name(name);
         let fn_name_str = self.interner.resolve(&source_name).to_string();
-        let fn_info = call_facts(self)
+        let fn_info = self
+            .call_facts()
             .function_info(name)
             .ok_or_compile_error(ErrorKind::UndefinedFunction(fn_name_str.clone()), span)?;
 
@@ -301,7 +308,7 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
         check_unqualified_visibility: bool,
     ) -> CompileResult<AnalysisResult> {
-        let source_name = call_facts(self).source_function_name(name);
+        let source_name = self.call_facts().source_function_name(name);
         let fn_name_str = self.interner.resolve(&source_name).to_string();
 
         // Visibility (E0460, RUE-37/RUE-180): an unqualified call must not
@@ -812,7 +819,7 @@ impl<'a> BodySema<'a> {
                 let ty = self.peek_place_type(receiver, ctx)?;
                 let struct_id = ty.as_struct()?;
 
-                let info = call_facts(self).method_info(struct_id, method)?;
+                let info = self.call_facts().method_info(struct_id, method)?;
                 matches!(info.self_mode, RirParamMode::Inout | RirParamMode::Borrow).then_some(root)
             })
         };
@@ -905,7 +912,8 @@ impl<'a> BodySema<'a> {
 
         // Look up the method using StructId directly
         let method_key = (struct_id, method);
-        let method_info = call_facts(self)
+        let method_info = self
+            .call_facts()
             .method_info(struct_id, method)
             .ok_or_compile_error(
                 ErrorKind::UndefinedMethod {
@@ -1127,10 +1135,11 @@ impl<'a> BodySema<'a> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let fn_name_str = self.interner.resolve(&function_name).to_string();
-        let module_def = call_facts(self).module_def(module_id);
+        let module_def = self.call_facts().module_def(module_id);
         let module_file_id = Some(module_def.file_id);
         let mut function_key = module_file_id.and_then(|file_id| {
-            call_facts(self).resolve_function_name_local(function_name, file_id)
+            self.call_facts()
+                .resolve_function_name_local(function_name, file_id)
         });
 
         // Fallback: a re-exported function member — `pub const f = @import("x").f;`
@@ -1144,7 +1153,8 @@ impl<'a> BodySema<'a> {
         if function_key.is_none()
             && let Some(mfile) = module_file_id
         {
-            let reexport = call_facts(self)
+            let reexport = self
+                .call_facts()
                 .value_const(mfile, function_name)
                 .and_then(|info| match info.value {
                     ConstValue::Function(fkey) => Some((fkey, info.is_pub)),
@@ -1179,7 +1189,8 @@ impl<'a> BodySema<'a> {
                 span,
             )
         })?;
-        let fn_info = call_facts(self)
+        let fn_info = self
+            .call_facts()
             .function_info(function_key)
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
@@ -1289,7 +1300,9 @@ impl<'a> BodySema<'a> {
                     ));
                 }
             }
-        } else if let Some(info) = call_facts(self).value_const(ctx.current_file_id, type_name)
+        } else if let Some(info) = self
+            .call_facts()
+            .value_const(ctx.current_file_id, type_name)
             && let ConstValue::Type(ty) = info.value
         {
             // Module-level `const C = Counter(i32); C.zero()` (RUE-595): the
@@ -1339,7 +1352,8 @@ impl<'a> BodySema<'a> {
 
         // Look up the function using StructId
         let method_key = (struct_id, function);
-        let method_info = call_facts(self)
+        let method_info = self
+            .call_facts()
             .method_info(struct_id, function)
             .ok_or_compile_error(
                 ErrorKind::UndefinedAssocFn {

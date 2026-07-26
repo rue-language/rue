@@ -12,7 +12,7 @@ use rue_span::Span;
 
 use super::BodySema;
 use super::aggregate_resolution::{
-    AggregateFacts, EpochFacts, ModuleTypeMember, QualifiedType, StructLiteralHead,
+    AggregateFacts, ModuleTypeMember, QualifiedType, StructLiteralHead,
     resolve_aggregate_module_ref, resolve_enum_type_name, resolve_struct_type_name,
     select_module_type_member, select_qualified_enum, select_qualified_type,
     select_struct_literal_head,
@@ -22,7 +22,7 @@ use super::context::{AnalysisContext, AnalysisResult, ConstValue};
 use crate::inst::{Air, AirArgMode, AirCallArg, AirInst, AirInstData, AirRef};
 use crate::types::{Type, TypeKind};
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     /// Resolve a path/pattern enum type name that may be a comptime
     /// type-variable binding (`let O = Option(i32); O::Some(..)`), falling
     /// back to the named-enum table. Returns `(enum_id, via_comptime_binding)`,
@@ -36,7 +36,7 @@ impl<'a> BodySema<'a> {
         type_name: Spur,
         ctx: &AnalysisContext,
     ) -> Option<(crate::types::EnumId, bool)> {
-        let facts = EpochFacts::new(self);
+        let facts = self.aggregate_facts();
         resolve_enum_type_name(
             &facts,
             ctx.comptime_type_vars.get(&type_name).copied(),
@@ -62,7 +62,7 @@ impl<'a> BodySema<'a> {
         type_name: Spur,
         ctx: &AnalysisContext,
     ) -> Option<(crate::types::StructId, bool)> {
-        let facts = EpochFacts::new(self);
+        let facts = self.aggregate_facts();
         resolve_struct_type_name(
             &facts,
             ctx.comptime_type_vars.get(&type_name).copied(),
@@ -357,7 +357,7 @@ impl<'a> BodySema<'a> {
                 ));
             };
             let struct_id = {
-                let facts = EpochFacts::new(self);
+                let facts = self.aggregate_facts();
                 facts.struct_in_file(facts.module(module_id).file, type_name)
             }
             .ok_or_compile_error(ErrorKind::UnknownType(type_name_str.to_string()), span)?;
@@ -377,7 +377,7 @@ impl<'a> BodySema<'a> {
             struct_id
         } else {
             let head = {
-                let facts = EpochFacts::new(self);
+                let facts = self.aggregate_facts();
                 select_struct_literal_head(
                     &facts,
                     ctx.comptime_type_vars.get(&type_name).copied(),
@@ -607,7 +607,7 @@ impl<'a> BodySema<'a> {
         // `module_file_path` is then that file's stored path, used for the
         // directory-based visibility checks below.
         let (module_fact, module_file_path) = {
-            let facts = EpochFacts::new(self);
+            let facts = self.aggregate_facts();
             let module = facts.module(module_id);
             let module_file_path = facts
                 .file_path(module.file)
@@ -617,9 +617,9 @@ impl<'a> BodySema<'a> {
         };
 
         // Get the accessing file's directory for visibility check
-        let accessing_file_path = EpochFacts::new(self).source_path(span).map(str::to_string);
+        let accessing_file_path = self.aggregate_facts().source_path(span).map(str::to_string);
         let member = {
-            let facts = EpochFacts::new(self);
+            let facts = self.aggregate_facts();
             select_module_type_member(&facts, module_fact.file, member_name)
         };
 
@@ -881,7 +881,7 @@ impl<'a> BodySema<'a> {
         span: Span,
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
-        let facts = EpochFacts::new(self);
+        let facts = self.aggregate_facts();
         resolve_aggregate_module_ref(&facts, self.rir, inst_ref, span.file_id, &ctx.locals)
     }
 
@@ -909,7 +909,7 @@ impl<'a> BodySema<'a> {
             return Ok(None);
         };
         let selected = {
-            let facts = EpochFacts::new(self);
+            let facts = self.aggregate_facts();
             let file = facts.module(module_id).file;
             select_qualified_type(&facts, file, type_name)
         };
@@ -1005,7 +1005,7 @@ impl<'a> BodySema<'a> {
             return Ok(None);
         };
         let Some(enum_id) = ({
-            let facts = EpochFacts::new(self);
+            let facts = self.aggregate_facts();
             let file = facts.module(module_id).file;
             select_qualified_enum(&facts, file, type_name)
         }) else {

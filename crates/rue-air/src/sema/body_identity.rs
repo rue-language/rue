@@ -4251,7 +4251,7 @@ mod tests {
     // (2c) + a durable signature (2b, resolving types through 2a) and proves it
     // equals production's populated info struct field-for-field.
 
-    use crate::sema::body_endpoint::{BodyEndpointProvider, endpoint_facts};
+    use crate::sema::body_endpoint::BodyEndpointProvider;
     use crate::sema::{BodySema, BoundSema, Sema};
 
     /// Lower one source file to `Rir` through the production frontend.
@@ -4354,7 +4354,7 @@ mod tests {
         let (rir, interner) = lower_rir(source, file);
         let index = BodyRirIndex::new(&rir);
         let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let facts = endpoint_facts(bound.body_sema());
+        let facts = bound.body_sema().endpoint_facts();
 
         for name in ["collide", "helper", "main", "nonexistent"] {
             let sym = interner.get(name);
@@ -4383,7 +4383,7 @@ mod tests {
         let (rir, interner) = lower_rir(source, file);
         let index = BodyRirIndex::new(&rir);
         let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let facts = endpoint_facts(bound.body_sema());
+        let facts = bound.body_sema().endpoint_facts();
 
         let foo = interner.get("Foo").unwrap();
         let pool_foo = index.destructor(file.index(), foo);
@@ -4414,7 +4414,7 @@ mod tests {
         let (rir, interner) = lower_rir(source, file);
         let index = BodyRirIndex::new(&rir);
         let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let facts = endpoint_facts(bound.body_sema());
+        let facts = bound.body_sema().endpoint_facts();
 
         for (type_name, method) in [
             ("Widget", "bump"),
@@ -4506,7 +4506,7 @@ mod tests {
         let index = BodyRirIndex::new(&rir);
         let bound = bind(&rir, &interner, "pkg/main.rue", file);
         let bs = bound.body_sema();
-        let facts = endpoint_facts(bs);
+        let facts = bs.endpoint_facts();
 
         // Production's populated FunctionInfo for `make`.
         let make_src = interner.get("make").unwrap();
@@ -4604,7 +4604,7 @@ mod tests {
         let index = BodyRirIndex::new(&rir);
         let bound = bind(&rir, &interner, "pkg/main.rue", file);
         let bs = bound.body_sema();
-        let facts = endpoint_facts(bs);
+        let facts = bs.endpoint_facts();
 
         let widget = interner.get("Widget").unwrap();
         let bump = interner.get("bump").unwrap();

@@ -1,3 +1,9 @@
+// `Sema`, `BoundSema`, and `DeclarationShells` are public legacy wrappers,
+// while `F` is a crate-internal migration/test seam. Rust lints each generic
+// implementation independently, so a local alternative would require roughly
+// forty-four duplicate suppressions without changing the public API boundary.
+#![allow(private_bounds)]
+
 //! Semantic analysis - RIR to AIR conversion.
 //!
 //! Sema performs type checking and converts untyped RIR to typed AIR.
@@ -43,6 +49,7 @@ mod control_flow;
 mod declaration_base;
 mod declaration_index;
 mod declarations;
+mod fact_mode;
 mod file_paths;
 mod inference_ctx;
 mod info;
@@ -70,6 +77,8 @@ pub use binding_manifest::{
 pub use context::ConstValue;
 pub use declaration_base::EpochDerivationUnits;
 pub use declaration_index::RirDeclarationIndexWork;
+pub(crate) use fact_mode::BodyAnalysisFactMode;
+use fact_mode::EpochFactMode;
 pub use inference_ctx::InferenceContext;
 pub(crate) use inference_ctx::SemaInferenceFacts;
 use info::ConstResolution;
@@ -237,30 +246,30 @@ impl std::ops::Deref for SourceDeclarations {
 
 #[doc(hidden)]
 pub trait DeclarationPhase: std::ops::Deref<Target = DeclarationNamespace> + Sized {
-    fn resolve_indexed_const(
-        sema: &mut Sema<'_, Self>,
+    fn resolve_indexed_const<F: BodyAnalysisFactMode>(
+        sema: &mut Sema<'_, Self, F>,
         name: Spur,
         file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>>;
 
-    fn collect_free_function_signature(
-        sema: &mut Sema<'_, Self>,
+    fn collect_free_function_signature<F: BodyAnalysisFactMode>(
+        sema: &mut Sema<'_, Self, F>,
         target: Spur,
         file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>>;
 }
 
 impl DeclarationPhase for MutableDeclarations {
-    fn resolve_indexed_const(
-        sema: &mut Sema<'_, Self>,
+    fn resolve_indexed_const<F: BodyAnalysisFactMode>(
+        sema: &mut Sema<'_, Self, F>,
         name: Spur,
         file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>> {
         sema.resolve_indexed_const_binding_impl(name, file_id)
     }
 
-    fn collect_free_function_signature(
-        sema: &mut Sema<'_, Self>,
+    fn collect_free_function_signature<F: BodyAnalysisFactMode>(
+        sema: &mut Sema<'_, Self, F>,
         target: Spur,
         file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
@@ -269,16 +278,16 @@ impl DeclarationPhase for MutableDeclarations {
 }
 
 impl DeclarationPhase for SourceDeclarations {
-    fn resolve_indexed_const(
-        _sema: &mut Sema<'_, Self>,
+    fn resolve_indexed_const<F: BodyAnalysisFactMode>(
+        _sema: &mut Sema<'_, Self, F>,
         _name: Spur,
         _file_id: FileId,
     ) -> rue_error::CompileResult<Option<ConstValue>> {
         Ok(None)
     }
 
-    fn collect_free_function_signature(
-        _sema: &mut Sema<'_, Self>,
+    fn collect_free_function_signature<F: BodyAnalysisFactMode>(
+        _sema: &mut Sema<'_, Self, F>,
         _target: Spur,
         _file_id: Option<FileId>,
     ) -> rue_error::CompileResult<Option<(FileId, bool)>> {
@@ -303,9 +312,23 @@ pub(crate) struct DeferredOwnershipGate {
 ///
 /// Cloning is confined to request-scoped body-epoch derivation. Immutable
 /// declaration data is shared by refcount; body-local mutable state is copied.
-#[derive(Clone)]
-pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
+///
+/// `F` is a crate-internal/test-injection seam; downstream callers use the
+/// default epoch-backed mode. Splitting this into a separate public wrapper is
+/// outside this transitional refactor's scope.
+pub struct Sema<
+    'a,
+    D: DeclarationPhase = MutableDeclarations,
+    F: BodyAnalysisFactMode = EpochFactMode,
+> {
     declarations: D,
+    /// The one-body fact facade mode. Production constructs `EpochFactMode` at
+    /// the external construction boundary; transitions retain the stored mode.
+    /// One mode instance is created at the construction boundary and shared
+    /// unchanged through every declaration/body phase transition. Mutable
+    /// operations clone this `Arc`, never the mode value, so stateful modes
+    /// observe the exact same identity for the whole request lineage.
+    fact_mode: Arc<F>,
     pub(crate) rir: &'a Rir,
     pub(crate) interner: &'a ThreadedRodeo,
     /// Request-local declaration candidates for this exact RIR arena.
@@ -561,7 +584,110 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
         std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
 }
 
-impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
+impl<'a, D, F> Clone for Sema<'a, D, F>
+where
+    D: DeclarationPhase + Clone,
+    F: BodyAnalysisFactMode,
+{
+    fn clone(&self) -> Self {
+        Self {
+            declarations: self.declarations.clone(),
+            fact_mode: Arc::clone(&self.fact_mode),
+            rir: self.rir,
+            interner: self.interner,
+            declaration_index: self.declaration_index.clone(),
+            bound_const_candidates: self.bound_const_candidates.clone(),
+            synthetic_declaration_discovery: self.synthetic_declaration_discovery,
+            anonymous_methods: self.anonymous_methods.clone(),
+            named_callable_methods_by_symbol: self.named_callable_methods_by_symbol.clone(),
+            anonymous_callable_methods_by_symbol: self.anonymous_callable_methods_by_symbol.clone(),
+            generated_structs: self.generated_structs.clone(),
+            generated_enums: self.generated_enums.clone(),
+            anon_struct_identities: self.anon_struct_identities.clone(),
+            anon_enum_identities: self.anon_enum_identities.clone(),
+            anonymous_digest_owners: self.anonymous_digest_owners.clone(),
+            #[cfg(test)]
+            forced_anonymous_digests: self.forced_anonymous_digests.clone(),
+            anonymous_struct_ids: self.anonymous_struct_ids.clone(),
+            anonymous_enum_ids: self.anonymous_enum_ids.clone(),
+            canonical_anonymous_types: self.canonical_anonymous_types.clone(),
+            active_anonymous_producer: self.active_anonymous_producer.clone(),
+            body_analysis_work: self.body_analysis_work.clone(),
+            analyzed_body_owners: self.analyzed_body_owners.clone(),
+            ordinary_body_exports: self.ordinary_body_exports.clone(),
+            specialized_body_exports: self.specialized_body_exports.clone(),
+            reusable_ordinary_bodies: self.reusable_ordinary_bodies.clone(),
+            reusable_specialized_bodies: self.reusable_specialized_bodies.clone(),
+            stable_definition_tokens: self.stable_definition_tokens.clone(),
+            stable_definition_endpoints: self.stable_definition_endpoints.clone(),
+            const_candidate_tokens: self.const_candidate_tokens.clone(),
+            const_candidate_endpoints: self.const_candidate_endpoints.clone(),
+            stable_module_tokens: self.stable_module_tokens.clone(),
+            stable_module_endpoints: self.stable_module_endpoints.clone(),
+            body_dependency_observer: self.body_dependency_observer.clone(),
+            body_owner_tokens: self.body_owner_tokens.clone(),
+            body_named_dependencies: self.body_named_dependencies.clone(),
+            body_lookup_collector: self.body_lookup_collector.clone(),
+            one_body_error_recovery: self.one_body_error_recovery,
+            one_body_recovered_errors: self.one_body_recovered_errors.clone(),
+            one_body_inference_failure_incomplete: self.one_body_inference_failure_incomplete,
+            one_body_initial_anonymous_identities: self
+                .one_body_initial_anonymous_identities
+                .clone(),
+            one_body_requested_producer: self.one_body_requested_producer.clone(),
+            body_callable_dependencies: self.body_callable_dependencies.clone(),
+            body_specialization_dependencies: self.body_specialization_dependencies.clone(),
+            ordinary_free_function_dependencies: self.ordinary_free_function_dependencies.clone(),
+            specialized_free_function_origins: self.specialized_free_function_origins.clone(),
+            specialized_free_function_dependencies: self
+                .specialized_free_function_dependencies
+                .clone(),
+            named_method_dependencies: self.named_method_dependencies.clone(),
+            non_generic_named_method_dependencies_complete: self
+                .non_generic_named_method_dependencies_complete,
+            named_destructor_dependencies: self.named_destructor_dependencies.clone(),
+            declaration_type_dependencies: self.declaration_type_dependencies.clone(),
+            declaration_type_call_head_dependencies: self
+                .declaration_type_call_head_dependencies
+                .clone(),
+            declaration_builtin_type_call_head_dependencies: self
+                .declaration_builtin_type_call_head_dependencies
+                .clone(),
+            named_const_dependencies: self.named_const_dependencies.clone(),
+            named_const_dependency_source: self.named_const_dependency_source.clone(),
+            declaration_type_observer: self.declaration_type_observer.clone(),
+            const_resolution_in_progress: self.const_resolution_in_progress.clone(),
+            declaration_binding_active: self.declaration_binding_active,
+            preview_features: self.preview_features.clone(),
+            target: self.target.clone(),
+            builtin_arch_id: self.builtin_arch_id,
+            builtin_os_id: self.builtin_os_id,
+            builtin_data_model_id: self.builtin_data_model_id,
+            known: self.known.clone(),
+            type_pool: self.type_pool.clone(),
+            module_registry: self.module_registry.clone(),
+            canonical_imports: self.canonical_imports.clone(),
+            file_paths: self.file_paths.clone(),
+            symbol_paths: self.symbol_paths.clone(),
+            trusted_standard_library_files: self.trusted_standard_library_files.clone(),
+            root_file_id: self.root_file_id,
+            param_arena: self.param_arena.clone(),
+            anon_struct_method_sigs: self.anon_struct_method_sigs.clone(),
+            anon_struct_captured_values: self.anon_struct_captured_values.clone(),
+            anon_struct_type_subst: self.anon_struct_type_subst.clone(),
+            destructor_spans: self.destructor_spans.clone(),
+            infectious_linear: self.infectious_linear.clone(),
+            deferred_ownership_gates: self.deferred_ownership_gates.clone(),
+            comptime_type_call_depth: self.comptime_type_call_depth,
+            fn_signatures_in_flight: self.fn_signatures_in_flight.clone(),
+            ctor_type_displays: self.ctor_type_displays.clone(),
+            well_known_option_by_payload: self.well_known_option_by_payload.clone(),
+            well_known_option_identities: self.well_known_option_identities.clone(),
+        }
+    }
+}
+
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> std::ops::Deref for Sema<'_, D, F> {
     type Target = DeclarationNamespace;
 
     fn deref(&self) -> &Self::Target {
@@ -569,14 +695,15 @@ impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
     }
 }
 
-impl<'a, D: DeclarationPhase> Sema<'a, D> {
+impl<'a, D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'a, D, F> {
     /// Change only the declaration-phase capability while preserving every
     /// other analyzer field by value. Keeping this conversion exhaustive makes
     /// additions to `Sema` fail to compile here until their phase-boundary
     /// semantics are reviewed.
-    fn map_declarations<E: DeclarationPhase>(self, map: impl FnOnce(D) -> E) -> Sema<'a, E> {
+    fn map_declarations<E: DeclarationPhase>(self, map: impl FnOnce(D) -> E) -> Sema<'a, E, F> {
         let Sema {
             declarations,
+            fact_mode,
             rir,
             interner,
             declaration_index,
@@ -661,6 +788,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         } = self;
         Sema {
             declarations: map(declarations),
+            fact_mode,
             rir,
             interner,
             declaration_index,
@@ -1062,13 +1190,13 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 }
 
-impl std::ops::DerefMut for Sema<'_, MutableDeclarations> {
+impl<F: crate::sema::BodyAnalysisFactMode> std::ops::DerefMut for Sema<'_, MutableDeclarations, F> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.declarations
     }
 }
 
-pub(crate) type BodySema<'a> = Sema<'a, SourceDeclarations>;
+pub(crate) type BodySema<'a, F = EpochFactMode> = Sema<'a, SourceDeclarations, F>;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1080,8 +1208,37 @@ pub(crate) struct NamespaceBoundarySnapshot {
     pub(crate) anonymous_methods: usize,
 }
 
+impl<'a> Sema<'a, MutableDeclarations, EpochFactMode> {
+    /// Create the production epoch-backed semantic analyzer.
+    pub fn new_synthetic(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        preview_features: PreviewFeatures,
+    ) -> Self {
+        Self::new_synthetic_with_mode(rir, interner, preview_features, EpochFactMode)
+    }
+
+    /// Create the production epoch-backed analyzer for an explicit target.
+    pub fn new_for_target(
+        rir: &'a Rir,
+        interner: &'a ThreadedRodeo,
+        preview_features: PreviewFeatures,
+        metadata: SemaMetadata,
+        target: Target,
+    ) -> Self {
+        Self::new_for_target_with_mode(
+            rir,
+            interner,
+            preview_features,
+            metadata,
+            target,
+            EpochFactMode,
+        )
+    }
+}
+
 #[cfg(test)]
-impl BodySema<'_> {
+impl<Mode: crate::sema::BodyAnalysisFactMode> BodySema<'_, Mode> {
     pub(crate) fn namespace_boundary_snapshot(&self) -> NamespaceBoundarySnapshot {
         use std::hash::{Hash, Hasher};
 
@@ -1128,7 +1285,18 @@ impl BodySema<'_> {
     }
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl<D: DeclarationPhase, F: crate::sema::BodyAnalysisFactMode> Sema<'_, D, F> {
+    pub(in crate::sema) fn aggregate_facts(&self) -> F::AggregateFacts<'_, '_, D> {
+        self.fact_mode.aggregate_facts(self)
+    }
+
+    pub(in crate::sema) fn inference_facts<'s>(
+        &'s self,
+        ctx: &'s InferenceContext,
+    ) -> F::InferenceFacts<'s, 's, D> {
+        self.fact_mode.inference_facts(ctx, self)
+    }
+
     pub(crate) fn body_owner_token(
         &self,
         file: FileId,
@@ -1155,8 +1323,18 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     }
 }
 
-impl<'a> Sema<'a> {
-    fn freeze_declarations(mut self) -> BodySema<'a> {
+impl<F: crate::sema::BodyAnalysisFactMode> BodySema<'_, F> {
+    pub(in crate::sema) fn endpoint_facts(&self) -> F::EndpointFacts<'_, '_> {
+        self.fact_mode.endpoint_facts(self)
+    }
+
+    pub(in crate::sema) fn call_facts(&self) -> F::CallFacts<'_, '_> {
+        self.fact_mode.call_facts(self)
+    }
+}
+
+impl<'a, F: crate::sema::BodyAnalysisFactMode> Sema<'a, MutableDeclarations, F> {
+    fn freeze_declarations(mut self) -> BodySema<'a, F> {
         self.rebuild_callable_method_index();
         self.map_declarations(|MutableDeclarations(namespace)| {
             SourceDeclarations(Arc::new(namespace))
@@ -1169,18 +1347,20 @@ impl<'a> Sema<'a> {
     /// from the RIR and never participates in durable compiler joins. Supported
     /// compiler construction uses [`Self::new_for_target`] with canonical
     /// metadata.
-    pub fn new_synthetic(
+    pub(crate) fn new_synthetic_with_mode(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
+        fact_mode: F,
     ) -> Self {
-        let mut sema = Self::new_for_target(
+        let mut sema = Self::new_for_target_with_mode(
             rir,
             interner,
             preview_features,
             SemaMetadata::synthetic_for_rir(rir),
             Target::host()
                 .expect("Rue cannot choose a default sema target on this unsupported host"),
+            fact_mode,
         );
         sema.synthetic_declaration_discovery = true;
         let synthetic_const_candidates = sema
@@ -1202,12 +1382,13 @@ impl<'a> Sema<'a> {
     }
 
     /// Create a new semantic analyzer for an explicit compilation target.
-    pub fn new_for_target(
+    pub(crate) fn new_for_target_with_mode(
         rir: &'a Rir,
         interner: &'a ThreadedRodeo,
         preview_features: PreviewFeatures,
         metadata: SemaMetadata,
         target: Target,
+        fact_mode: F,
     ) -> Self {
         let SemaMetadata {
             root_file_id,
@@ -1218,6 +1399,7 @@ impl<'a> Sema<'a> {
         type_pool.set_symbol_paths(logical_paths.clone());
         Self {
             declarations: MutableDeclarations(DeclarationNamespace::new()),
+            fact_mode: Arc::new(fact_mode),
             rir,
             interner,
             declaration_index: Arc::new(declaration_index::RirDeclarationIndex::new(rir)),
@@ -1408,13 +1590,13 @@ impl<'a> Sema<'a> {
 
     /// Test-support adapter for the retired source-owned declaration producer.
     #[doc(hidden)]
-    pub fn bind_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a>> {
+    pub fn bind_declarations_for_test(self) -> MultiErrorResult<BoundSema<'a, F>> {
         self.predeclare_declaration_shells_for_test()?
             .resolve_declarations_for_test()
     }
 
     #[cfg(test)]
-    pub fn bind_declarations(self) -> MultiErrorResult<BoundSema<'a>> {
+    pub fn bind_declarations(self) -> MultiErrorResult<BoundSema<'a, F>> {
         self.bind_declarations_for_test()
     }
 
@@ -1423,7 +1605,7 @@ impl<'a> Sema<'a> {
     #[doc(hidden)]
     pub fn predeclare_declaration_shells_for_test(
         mut self,
-    ) -> MultiErrorResult<DeclarationShells<'a>> {
+    ) -> MultiErrorResult<DeclarationShells<'a, F>> {
         assert!(
             self.synthetic_declaration_discovery,
             "canonical compiler epochs must import query-owned declaration shells"
@@ -1465,7 +1647,7 @@ impl<'a> Sema<'a> {
     pub fn predeclare_imported_declaration_shells(
         mut self,
         imported: &[SemanticDeclarationShell],
-    ) -> MultiErrorResult<DeclarationShells<'a>> {
+    ) -> MultiErrorResult<DeclarationShells<'a, F>> {
         let mut binding_work = DeclarationBindingWork::from_inputs(
             self.rir.len(),
             self.declaration_index.work(),
@@ -1491,7 +1673,7 @@ impl<'a> Sema<'a> {
     }
 }
 
-impl BodySema<'_> {
+impl<Mode: crate::sema::BodyAnalysisFactMode> BodySema<'_, Mode> {
     /// Test-only oracle for the retired whole-program body driver.
     fn analyze_all_bodies_for_test(self) -> MultiErrorResult<SemaOutput> {
         analysis::analyze_all_function_bodies_for_test(self)

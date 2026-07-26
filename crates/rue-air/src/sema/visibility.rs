@@ -8,12 +8,12 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::FileId;
 
 use super::aggregate_resolution::{
-    AggregateFacts, EpochFacts, is_accessible, resolve_visibility_module_ref, select_qualified_enum,
+    AggregateFacts, is_accessible, resolve_visibility_module_ref, select_qualified_enum,
 };
 use super::{DeclarationPhase, Sema, context::AnalysisContext};
 use crate::types::EnumId;
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl<D: DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'_, D, Mode> {
     /// Check if the accessing file can see a private item from the target file.
     ///
     /// Visibility rules (per ADR-0026):
@@ -31,7 +31,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         target_file_id: FileId,
         is_pub: bool,
     ) -> bool {
-        let facts = EpochFacts::new(self);
+        let facts = self.aggregate_facts();
         is_accessible(&facts, accessing_file_id, target_file_id, is_pub)
     }
 
@@ -66,7 +66,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // `is_accessible` is permissive when either file path is unknown
         // (single-file mode, synthetic items), so the item's path is
         // always known here.
-        let defining_file = EpochFacts::new(self)
+        let defining_file = self
+            .aggregate_facts()
             .file_path(defining_file_id)
             .unwrap_or("<unknown>")
             .to_string();
@@ -111,7 +112,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         // valid qualified type path.
         let enum_id = module_file_id
             .and_then(|module_id| {
-                let facts = EpochFacts::new(self);
+                let facts = self.aggregate_facts();
                 let file = facts.module(module_id).file;
                 select_qualified_enum(&facts, file, type_name)
             })
@@ -142,7 +143,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         module_ref: rue_rir::InstRef,
         ctx: &AnalysisContext,
     ) -> Option<crate::types::ModuleId> {
-        let facts = EpochFacts::new(self);
+        let facts = self.aggregate_facts();
         resolve_visibility_module_ref(&facts, self.rir, module_ref, &ctx.locals)
     }
 }

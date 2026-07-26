@@ -3,7 +3,7 @@
 //! This category owns builtin operations within the canonical semantic-analysis
 //! implementation.
 
-use super::super::call_resolution::{CallResolutionFacts, call_facts};
+use super::super::call_resolution::CallResolutionFacts;
 use super::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -12,7 +12,7 @@ enum IntegerSentinel {
     NegativeOne,
 }
 
-impl<'a> BodySema<'a> {
+impl<'a, Mode: crate::sema::BodyAnalysisFactMode> BodySema<'a, Mode> {
     /// Convert RIR argument mode to AIR argument mode.
     pub(super) fn convert_arg_mode(mode: RirArgMode) -> AirArgMode {
         match mode {
@@ -99,7 +99,7 @@ impl<'a> BodySema<'a> {
             span,
         )?;
         let method = self.interner.get_or_intern("concat_borrowed");
-        if call_facts(self).method_info(struct_id, method).is_none() {
+        if self.call_facts().method_info(struct_id, method).is_none() {
             return Err(CompileError::new(
                 ErrorKind::InternalError("canonical StrBuf is missing concat_borrowed".to_string()),
                 span,

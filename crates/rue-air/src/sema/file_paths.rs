@@ -12,7 +12,7 @@ use rue_span::{FileId, Span};
 
 use super::Sema;
 
-impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
+impl<'a, D: super::DeclarationPhase, Mode: crate::sema::BodyAnalysisFactMode> Sema<'a, D, Mode> {
     /// Install the complete resolved-import input for this semantic epoch.
     pub fn set_canonical_imports(
         &mut self,
