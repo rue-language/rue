@@ -624,8 +624,9 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     /// body's own composition/import universe. Consulted by fallible-intrinsic
     /// resolution (`resolve_option_result_type`) so `@parse_*`/`@read_line`
     /// bind the exact trusted std `Option(payload)` in every context even when
-    /// the body does not `@import` it. A structural fallback stays for programs
-    /// where no trusted module is present.
+    /// the body does not `@import` it. Production installs the complete per-body
+    /// registry before analysis; a missing entry fails closed instead of adopting
+    /// a structurally compatible body-local enum.
     pub(crate) well_known_option_by_payload: HashMap<Type, Type>,
     /// Anonymous enum identities materialized by the well-known `Option`
     /// registry install for this body. They are subtracted from the initial

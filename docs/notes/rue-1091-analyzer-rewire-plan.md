@@ -680,8 +680,8 @@ plus both sides' recorded identity sets agreeing in cardinality and digest ident
 
 **(c) Cross-path differential.** `provider_well_known_option_install_matches_epoch`
 (`revisioned_query_database.rs` test tail) drives BOTH installs from the SAME declaration-level
-durable truth — the nucleus `ComptimeCall` terminals the production demand loop roots
-(`plan_well_known_option_demands` → per-demand `SemanticNucleusKey::ComptimeCall`), for a
+durable truth — the nucleus `ComptimeCall` terminals the production body transaction roots
+(`body-toolchain-demands` → per-payload exact `SemanticNucleusKey::ComptimeCall`), for a
 two-payload program (`@parse_i64` + `@parse_u32`) with the trusted `\0rue-std/option.rue` module
 present. The epoch side binds through the production declaration recipe, projects the registry
 against the SAME `BoundDefinitionSet` that issued the epoch's endpoints
