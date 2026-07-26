@@ -498,8 +498,8 @@ test_sanitizer_recursive_discovery_contract() {
     "$(grep -Fxq "$sb/examples/std/arraybuf_demo.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   check "run-sanitizer: does not compile a root's helper module independently" \
     "$(! grep -Fxq "$sb/examples/calculator/lib/helper.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
-  check "run-sanitizer: compiles the Caldera root" \
-    "$(grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: temporarily defers Caldera under RUE-1083" \
+    "$(! grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
