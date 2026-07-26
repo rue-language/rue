@@ -354,6 +354,55 @@ pub(super) struct BodySemanticBase<'a> {
     local_seed: BodyLocalSeed,
 }
 
+/// Request-local identity state for receiver families that have crossed the
+/// frozen body-epoch boundary. It owns an immutable epoch handle, never an
+/// analyzer; mutable overlays will be added when the next receiver family
+/// crosses the boundary.
+pub(super) struct BodyAnalysisState<'a> {
+    epoch: Arc<BodySemanticBase<'a>>,
+}
+
+impl<'a> BodyAnalysisState<'a> {
+    pub(super) fn from_body_semantic_base(epoch: Arc<BodySemanticBase<'a>>) -> Self {
+        Self { epoch }
+    }
+
+    /// Resolve the exact stable owner identity used by body publication.
+    pub(super) fn body_owner_token(
+        &self,
+        file: FileId,
+        name: &str,
+        owner: Option<&str>,
+        kind: BodyOwnerKind,
+    ) -> BodyOwnerToken {
+        resolve_body_owner_token(&self.epoch.body_owner_tokens, file, name, owner, kind)
+    }
+}
+
+fn resolve_body_owner_token(
+    tokens: &HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
+    file: FileId,
+    name: &str,
+    owner: Option<&str>,
+    kind: BodyOwnerKind,
+) -> BodyOwnerToken {
+    let key = (
+        file.index(),
+        name.to_owned(),
+        owner.map(str::to_owned),
+        kind,
+    );
+    if tokens.is_empty() {
+        return BodyOwnerToken::new(0, file.index());
+    }
+    *tokens.get(&key).unwrap_or_else(|| {
+        panic!(
+            "supported ordinary body must have a validated owner token: {key:?}; installed={:?}",
+            tokens.keys().collect::<Vec<_>>()
+        )
+    })
+}
+
 /// The declaration-time portion of a body-local overlay. Derivation copies
 /// only this anonymous/generated state; all ordinary declaration maps live in
 /// [`BodySemanticBase`].
@@ -1381,22 +1430,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         owner: Option<&str>,
         kind: BodyOwnerKind,
     ) -> BodyOwnerToken {
-        let key = (
-            file.index(),
-            name.to_owned(),
-            owner.map(str::to_owned),
-            kind,
-        );
-        if self.body_owner_tokens.is_empty() {
-            // Explicit synthetic fixtures and declaration-failure recovery do
-            // not cross a durable identity boundary. Issuer zero is reserved
-            // for those present API contracts; successful canonical analysis
-            // installs compiler-issued tokens before bodies are analyzed.
-            return BodyOwnerToken::new(0, file.index());
-        }
-        *self.body_owner_tokens.get(&key).unwrap_or_else(|| {
-            panic!("supported ordinary body must have a validated owner token: {key:?}; installed={:?}", self.body_owner_tokens.keys().collect::<Vec<_>>())
-        })
+        // Explicit synthetic fixtures and declaration-failure recovery do not
+        // cross a durable identity boundary. Issuer zero is reserved for
+        // those present API contracts; successful canonical analysis installs
+        // compiler-issued tokens before bodies are analyzed.
+        resolve_body_owner_token(&self.body_owner_tokens, file, name, owner, kind)
     }
 }
 

@@ -392,6 +392,7 @@ pub struct BoundSema<'a> {
     /// immutable data only; a derived body receives a new analyzer assembled
     /// from it and fresh local overlays.
     pub(super) body_base: Option<Arc<BodySemanticBase<'a>>>,
+    pub(super) body_state: Option<super::BodyAnalysisState<'a>>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
 }
@@ -400,10 +401,19 @@ impl<'a> BoundSema<'a> {
     pub(super) fn derive_from_body_base(&self, base: Arc<BodySemanticBase<'a>>) -> Self {
         Self {
             sema: super::BodySema::derive_from_body_semantic_base(&base),
-            body_base: Some(base),
+            body_base: Some(base.clone()),
+            body_state: Some(super::BodyAnalysisState::from_body_semantic_base(
+                base.clone(),
+            )),
             manifest: self.manifest.clone(),
             binding_work: self.binding_work,
         }
+    }
+
+    fn take_body_state(&mut self) -> super::BodyAnalysisState<'a> {
+        self.body_state
+            .take()
+            .expect("body analysis requires an installed body-analysis state")
     }
 }
 
@@ -2101,17 +2111,18 @@ impl<'a> BoundSema<'a> {
     /// Analyze exactly one callable body. Ordinary callees are reported as
     /// stable references and are never analyzed by this transaction.
     pub fn analyze_one_body(
-        self,
+        mut self,
         request: super::OneBodyRequest,
         interruption: Option<super::OneBodyInterruption>,
     ) -> super::OneBodyTransactionOutcome {
-        super::one_body::analyze_one_body(self.sema, request, interruption)
+        let state = self.take_body_state();
+        super::one_body::analyze_one_body(self.sema, state, request, interruption)
     }
 
     /// Resolve a stable compiler-owned function instance into this fresh
     /// semantic epoch, then analyze exactly that body.
     pub fn analyze_one_body_instance<K, M>(
-        self,
+        mut self,
         instance: &crate::FunctionInstanceKey<K, M>,
         definition: impl Fn(
             &K,
@@ -2129,8 +2140,10 @@ impl<'a> BoundSema<'a> {
         K: Clone,
         M: Clone,
     {
+        let state = self.take_body_state();
         super::one_body::analyze_one_body_instance(
             self.sema,
+            state,
             instance,
             definition,
             module,
@@ -2165,8 +2178,10 @@ impl<'a> BoundSema<'a> {
         M: Clone,
     {
         self.sema.body_lookup_collector = Some(collector);
+        let state = self.take_body_state();
         super::one_body::analyze_one_body_instance(
             self.sema,
+            state,
             instance,
             definition,
             module,
@@ -2453,6 +2468,9 @@ impl<'a> BoundSema<'a> {
             return Err(DeclarationInstallFailure::IdentityMismatch);
         }
         self.sema.body_owner_tokens = std::sync::Arc::new(installed);
+        self.body_state = Some(super::BodyAnalysisState::from_body_semantic_base(Arc::new(
+            self.sema.body_semantic_base(),
+        )));
         Ok(self)
     }
     pub fn binding_work(&self) -> DeclarationBindingWork {
@@ -3873,10 +3891,15 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // the declaration side of the phase boundary. Body analysis receives
         // an immutable namespace with final destructor symbols.
         self.requalify_colliding_destructor_symbols();
+        let sema = self.freeze_declarations();
+        let body_epoch = Arc::new(sema.body_semantic_base());
         BoundSema {
             binding_work,
-            sema: self.freeze_declarations(),
+            sema,
             body_base: None,
+            body_state: Some(super::BodyAnalysisState::from_body_semantic_base(
+                body_epoch,
+            )),
             manifest: OnceLock::new(),
         }
     }
