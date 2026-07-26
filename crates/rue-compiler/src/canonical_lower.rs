@@ -63,20 +63,8 @@ impl ModuleRirOutput {
         self.work
     }
 
-    pub(crate) fn instruction_count(&self) -> usize {
-        self.rir.len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
-        self.rir
-            .iter()
-            .filter_map(|(_, instruction)| match &instruction.data {
-                rue_rir::InstData::AnonStructType { anchor, .. }
-                | rue_rir::InstData::AnonEnumType { anchor, .. } => Some(anchor.clone()),
-                _ => None,
-            })
-            .collect()
+    pub(crate) fn into_body_rir_bundle(self) -> rue_air::BodyRirBundle {
+        rue_air::BodyRirBundle::new(self.rir, self.symbols.into_interner())
     }
 }
 

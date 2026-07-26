@@ -222,10 +222,11 @@ pub(crate) use durable_body::{
 pub(crate) use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticSchemaVersion,
 };
+pub(crate) use durable_semantics::{DurableConstValue, DurableDeclarationPayload, DurableType};
 #[cfg(test)]
 pub(crate) use durable_semantics::{
-    DurableConstValue, DurableDeclarationPayload, DurableParameterMode, DurableSemanticParameter,
-    DurableSemanticProjectionFailure, DurableSemanticProjectionWork, DurableType,
+    DurableParameterMode, DurableSemanticParameter, DurableSemanticProjectionFailure,
+    DurableSemanticProjectionWork,
 };
 
 // Small foundational types callers need to configure or inspect the facade.

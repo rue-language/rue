@@ -515,8 +515,9 @@ pub(crate) struct RevisionedQueryDatabase {
     /// Per-`(module, import-path)` binding-resolution family. Registered query
     /// machinery for the exact provider boundary. Production body import
     /// dependencies are mediated by module-binding name and semantic-nucleus
-    /// terminals; the direct provider remains a differential test adapter.
-    #[cfg(test)]
+    /// terminals; the provider captures these exact family handles for a
+    /// request-local body task.
+    #[allow(dead_code)]
     lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
     /// Test-only log of every module whose immutable name index was built,
     /// proving in-module fan-out (ADR-0066 §4).
@@ -572,11 +573,11 @@ pub(crate) struct RevisionedQueryDatabase {
     /// each exact issued batch and the trusted publish append here at
     /// publication — instead of re-deriving it by scanning complete views.
     lineage_additions: Vec<ModuleRevision>,
-    /// Provider-op observation counters (RUE-1091, ADR-0066 §4). The exact
-    /// [`CompilerBodyFactProvider`] is a test-only differential adapter in this
-    /// slice; no production path constructs it, so every counter here reads zero
-    /// on a production compile. Exposed through the unstable surface, mirroring
-    /// the recipe-cache meter.
+    /// Provider-op observation counters (RUE-1091, ADR-0066 §4), shared by the
+    /// production-compiled exact provider and its differential probes. The
+    /// registered body evaluator becomes the first non-test constructor; until
+    /// that routing slice lands, ordinary production compiles leave them zero.
+    /// Exposed through the unstable surface, mirroring the recipe-cache meter.
     provider_observation_meter: Arc<ProviderObservationCounters>,
     /// Session-held retention lease over the lookup families (RUE-1091,
     /// ADR-0066 §4). A rooted semantic publication promotes its exact observed
@@ -1225,14 +1226,12 @@ impl CanonicalNameResolution {
 /// Key for the per-`(module, import-path)` binding-resolution family. One
 /// logical terminal per distinct consulted import path in a consulting module,
 /// matching ADR-0066 §4 "one logical terminal per … import-path key".
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct LookupImportKey {
     module: ModuleId,
     specifier: Arc<str>,
 }
 
-#[cfg(test)]
 impl QueryKey for LookupImportKey {
     fn stable_identity(&self) -> String {
         format!("{}::@import::{}", self.module, self.specifier)
@@ -1242,7 +1241,6 @@ impl QueryKey for LookupImportKey {
 /// A resolved import binding. Position-free by construction: it carries only the
 /// normalized specifier, never the `@import` call's source offset, so a
 /// trivia-only edit that shifts the call preserves the binding's stamp.
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ResolvedImportBinding {
     normalized_specifier: Arc<str>,
@@ -1253,7 +1251,6 @@ struct ResolvedImportBinding {
 /// absent module binding is a first-class terminal result and dependency
 /// edge"): a later edit that makes the path resolve changes this stamp and
 /// invalidates exactly the consumers of the failed lookup.
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ImportBindingFailure {
     /// No `@import` directive in the consulting module names this specifier.
@@ -1265,11 +1262,9 @@ enum ImportBindingFailure {
     Ambiguous,
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LookupImportValue(Result<ResolvedImportBinding, ImportBindingFailure>);
 
-#[cfg(test)]
 impl LookupImportValue {
     /// Classify a consulted import path against the consulting module's declared
     /// `@import` specifiers. Pure and `O(module imports)`; it reads only the
@@ -2031,12 +2026,12 @@ fn body_source_definition_key(
 #[derive(Debug)]
 struct OwnedBodyLowering {
     module: Arc<crate::parsed_modules::ParsedModule>,
-    rir: crate::canonical_lower::ModuleRirOutput,
+    bundle: rue_air::BodyRirBundle,
 }
 
 impl OwnedBodyLowering {
     fn instruction_count(&self) -> usize {
-        self.rir.instruction_count()
+        self.bundle.instruction_count()
     }
 
     fn function_count(&self) -> usize {
@@ -2054,7 +2049,7 @@ impl OwnedBodyLowering {
 
     #[cfg(test)]
     fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
-        self.rir.anonymous_type_anchors()
+        self.bundle.anonymous_type_anchors()
     }
 }
 
@@ -2128,7 +2123,10 @@ fn lower_owned_body_input(
         &anchors,
     )
     .map_err(|(error, _)| Arc::from(error.to_string()))?;
-    Ok(OwnedBodyLowering { module, rir })
+    Ok(OwnedBodyLowering {
+        module,
+        bundle: rir.into_body_rir_bundle(),
+    })
 }
 
 fn declaration_candidate_for_stable_key(
@@ -7381,17 +7379,16 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the LookupName family has one canonical name");
-        #[cfg(test)]
         let index_for_import_lookup = module_indexes.clone();
         #[cfg(test)]
         let lookup_import_eval_probe = lookup_import_eval_log.clone();
-        #[cfg(test)]
         let lookup_imports = runtime
             .family_with_equality_and_evaluator(
                 "compiler.lookup-import",
                 declaration_memo_retention,
                 |left: &LookupImportValue, right: &LookupImportValue| left == right,
                 move |context, _, key: &LookupImportKey| {
+                    #[cfg(test)]
                     lookup_import_eval_probe
                         .lock()
                         .expect("lookup-import probe is not poisoned")
@@ -9462,7 +9459,6 @@ impl RevisionedQueryDatabase {
             declaration_imports,
             semantic_nucleus,
             lookup_names,
-            #[cfg(test)]
             lookup_imports,
             #[cfg(test)]
             module_index_build_log,
@@ -9500,8 +9496,8 @@ impl RevisionedQueryDatabase {
 
 impl RevisionedQueryDatabase {
     /// An owned snapshot of the provider-op observation counters. Reads all
-    /// zeros on the production path — the exact provider is a test-only
-    /// differential adapter until the RUE-1091 step-4 flip.
+    /// zeros until the registered body evaluator starts constructing the exact
+    /// provider; differential probes exercise the same production-compiled ops.
     pub(crate) fn provider_observation_metrics(
         &self,
     ) -> crate::unstable::ProviderObservationMetrics {
@@ -12190,7 +12186,7 @@ pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExe
 }
 
 // ---------------------------------------------------------------------------
-// RUE-1091 slice 3b — the exact body-fact provider (test-only differential).
+// RUE-1091 slice 3b — the exact body-fact provider.
 //
 // `CompilerBodyFactProvider` implements the rue-air `BodyFactProvider` boundary
 // inside a `BodyTransaction`-style query context: every op requests its exact
@@ -12198,26 +12194,24 @@ pub(crate) fn execution(attempt: &QueryRequestAttempt<impl Sized>) -> RequestExe
 // call *is* the dependency observation (ADR-0066 §4). It converts the private
 // query-terminal values into rue-air's owned candidate-set / durable facts.
 //
-// The whole provider path is `#[cfg(test)]`: it is a differential adapter that
-// cross-checks each returned fact against the production epoch's equivalent
-// terminal, never a selectable production path. The step-4 flip promotes it.
-// It consumes the `#[cfg(test)]` `lookup-import` family, so gating the whole
-// provider on test keeps the family and its one consumer on the same cfg.
+// The provider is production-compiled and is request-scoped; the observation
+// probe below remains test-only. It consumes only the promoted exact lookup
+// and import families and never retains the database or coordinator.
 // ---------------------------------------------------------------------------
 
 /// Owned receiver-type identity the provider keys method/operator candidates
 /// and drop/`@copy` metadata on. It is exactly the `(receiver-type identity,
 /// member name)` key the 3a review binds these ops to — never a per-body
 /// universe walk and never a new module-index column.
-#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) struct ReceiverTypeIdentity {
     module: ModuleId,
     type_name: Arc<str>,
     type_category: crate::declaration_candidate::DeclarationCandidateCategory,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl ReceiverTypeIdentity {
     pub(crate) fn new(
         module: ModuleId,
@@ -12240,7 +12234,7 @@ impl ReceiverTypeIdentity {
 /// sole language item is `StrBuf` (`\0rue-std/strbuf.rue`). A bare name that is
 /// not a known language item (an anonymous owner) yields `None` and stays
 /// refused — the residual owned by r6b / the flip.
-#[cfg(test)]
+#[allow(dead_code)]
 fn bare_language_item_owner(type_name: &str) -> Option<(ModuleId, rue_air::LangItem)> {
     match type_name {
         "StrBuf" => Some((
@@ -12274,7 +12268,7 @@ struct ProviderProbeValue;
 /// Convert a rue-air provider namespace to the compiler's presemantic
 /// namespace, and back, so a body names a namespace without depending on the
 /// compiler's candidate model.
-#[cfg(test)]
+#[allow(dead_code)]
 fn provider_namespace_to_definition(namespace: rue_air::ProviderNamespace) -> DefinitionNamespace {
     match namespace {
         rue_air::ProviderNamespace::ModuleItem => DefinitionNamespace::ModuleItem,
@@ -12282,7 +12276,7 @@ fn provider_namespace_to_definition(namespace: rue_air::ProviderNamespace) -> De
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn definition_namespace_to_provider(namespace: DefinitionNamespace) -> rue_air::ProviderNamespace {
     match namespace {
         DefinitionNamespace::ModuleItem => rue_air::ProviderNamespace::ModuleItem,
@@ -12290,7 +12284,7 @@ fn definition_namespace_to_provider(namespace: DefinitionNamespace) -> rue_air::
     }
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn definition_kind_to_provider(kind: DefinitionKind) -> rue_air::ProviderDefinitionKind {
     match kind {
         DefinitionKind::Function => rue_air::ProviderDefinitionKind::Function,
@@ -12302,7 +12296,7 @@ fn definition_kind_to_provider(kind: DefinitionKind) -> rue_air::ProviderDefinit
 }
 
 /// Project one retained `LookupNameFact` into an owned rue-air candidate.
-#[cfg(test)]
+#[allow(dead_code)]
 fn name_candidate_from_fact(fact: &LookupNameFact) -> rue_air::NameCandidate {
     rue_air::NameCandidate {
         namespace: definition_namespace_to_provider(fact.namespace),
@@ -12314,7 +12308,7 @@ fn name_candidate_from_fact(fact: &LookupNameFact) -> rue_air::NameCandidate {
 }
 
 /// Classify a retained `LookupName` value into the owned rue-air candidate set.
-#[cfg(test)]
+#[allow(dead_code)]
 fn name_resolution_from_value(value: &LookupNameValue) -> rue_air::NameResolution {
     match &value.0 {
         Err(LookupNameFailure::ModuleIndexUnavailable(_)) => {
@@ -12327,7 +12321,7 @@ fn name_resolution_from_value(value: &LookupNameValue) -> rue_air::NameResolutio
 }
 
 /// Classify a retained `LookupImport` value into the owned rue-air result.
-#[cfg(test)]
+#[allow(dead_code)]
 fn import_resolution_from_value(value: &LookupImportValue) -> rue_air::ImportResolution {
     match &value.0 {
         Ok(binding) => rue_air::ImportResolution::Resolved {
@@ -12341,74 +12335,100 @@ fn import_resolution_from_value(value: &LookupImportValue) -> rue_air::ImportRes
 
 /// The compiler-side implementation of the rue-air exact provider boundary.
 ///
-/// Bound entirely inside one query task: `context` records each edge, `database`
-/// supplies the backing family handles, and `configuration` keys the
-/// semantic-nucleus terminals. A `QueryAbort` from any nested request is
-/// captured and surfaced to the task after the batch so the trait methods stay
-/// abort-free (rue-air never sees a query-runtime type).
-#[cfg(test)]
-pub(crate) struct CompilerBodyFactProvider<'a> {
-    context: &'a rue_query::QueryContext,
-    database: &'a RevisionedQueryDatabase,
-    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
-    aborted: std::cell::RefCell<Option<QueryAbort>>,
-    /// The lookup terminals this provider observes for the rooted request,
-    /// pinned while the request lease is still live (RUE-1091, ADR-0066 §4). A
-    /// name lookup pins its `compiler.lookup-name` terminal; an import resolution
-    /// pins its `compiler.lookup-import` terminal. A speculative lookup no
-    /// published root observes is never promoted, so a terminal touched purely to
-    /// probe is left in this set only if the driving request actually publishes a
-    /// root and promotes it. [`Self::take_observed_root`] hands the set to the
-    /// session lease at promotion.
-    observed: std::cell::RefCell<ObservedLookupRoot>,
+/// Bound entirely inside one query task: the cloneable query bundle records
+/// each edge and owns the exact family handles/configuration/status needed by
+/// the provider. No database or coordinator handle is retained by the provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompilerBodyProviderIncomplete {
+    Canceled,
+    MissingInput(rue_query::InputIdentity),
 }
 
-#[cfg(test)]
-impl<'a> CompilerBodyFactProvider<'a> {
-    fn new(
-        context: &'a rue_query::QueryContext,
-        database: &'a RevisionedQueryDatabase,
-        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
-    ) -> Self {
-        Self {
-            context,
-            database,
-            configuration,
-            aborted: std::cell::RefCell::new(None),
-            observed: std::cell::RefCell::new(ObservedLookupRoot::new()),
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CompilerBodyProviderStatus {
+    Ready,
+    Incomplete(CompilerBodyProviderIncomplete),
+    Fatal(QueryAbort),
+}
+
+fn provider_status_should_replace(
+    current: &CompilerBodyProviderStatus,
+    next: &CompilerBodyProviderStatus,
+) -> bool {
+    match (current, next) {
+        (CompilerBodyProviderStatus::Fatal(_), _) => false,
+        (_, CompilerBodyProviderStatus::Fatal(_)) => true,
+        (CompilerBodyProviderStatus::Ready, _) => true,
+        (CompilerBodyProviderStatus::Incomplete(_), _) => false,
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct CompilerBodyProviderQueries<'a> {
+    context: &'a rue_query::QueryContext,
+    lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
+    lookup_imports: QueryFamily<LookupImportKey, LookupImportValue>,
+    semantic_nucleus: QueryFamily<
+        crate::semantic_query_nucleus::SemanticNucleusKey,
+        crate::semantic_query_nucleus::SemanticNucleusValue,
+    >,
+    body_produced_anonymous:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::ProducedAnonymous>,
+    body_toolchain_demands:
+        QueryFamily<crate::body_query::BodyQueryKey, crate::BodyToolchainDemand>,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    status: std::rc::Rc<std::cell::RefCell<CompilerBodyProviderStatus>>,
+    observed: std::rc::Rc<std::cell::RefCell<ObservedLookupRoot>>,
+    meter: Arc<ProviderObservationCounters>,
+}
+
+#[allow(dead_code)]
+impl<'a> CompilerBodyProviderQueries<'a> {
+    fn finish_status(&self) -> Result<(), CompilerBodyProviderStatus> {
+        match self.status.borrow().clone() {
+            CompilerBodyProviderStatus::Ready => Ok(()),
+            status => Err(status),
         }
+    }
+}
+
+pub(crate) struct CompilerBodyFactProvider<'a> {
+    queries: CompilerBodyProviderQueries<'a>,
+}
+
+#[allow(dead_code)]
+impl<'a> CompilerBodyFactProvider<'a> {
+    pub(crate) fn new(queries: CompilerBodyProviderQueries<'a>) -> Self {
+        Self { queries }
     }
 
     /// Take the observed lookup-pin set for promotion into the session lease.
     fn take_observed_root(&self) -> ObservedLookupRoot {
-        self.observed.replace(ObservedLookupRoot::new())
+        self.queries.observed.replace(ObservedLookupRoot::new())
     }
 
-    /// Record a nested request's abort with one uniform rule across every op:
-    /// `QueryAbort::Canceled` is the runtime's universal "not available at this
-    /// revision / deferred" signal, so the provider maps it to an observed
-    /// absence (the op's empty/`None` sentinel) and does not poison the task —
-    /// the request is still recorded as an observed edge either way. Any other
-    /// abort (a true cycle, a foreign runtime, a missing input) is genuinely
-    /// fatal and is captured so the task surfaces it at its boundary. This keeps
-    /// the abort handling identical for name, nucleus, import, member, producer,
-    /// and toolchain observations.
     fn observe_abort(&self, abort: QueryAbort) {
-        if matches!(abort, QueryAbort::Canceled) {
-            return;
-        }
-        let mut slot = self.aborted.borrow_mut();
-        if slot.is_none() {
-            *slot = Some(abort);
+        let status = match abort {
+            QueryAbort::Canceled => {
+                CompilerBodyProviderStatus::Incomplete(CompilerBodyProviderIncomplete::Canceled)
+            }
+            QueryAbort::MissingInput(input) => CompilerBodyProviderStatus::Incomplete(
+                CompilerBodyProviderIncomplete::MissingInput(input),
+            ),
+            fatal => CompilerBodyProviderStatus::Fatal(fatal),
+        };
+        let mut current = self.queries.status.borrow_mut();
+        if provider_status_should_replace(&current, &status) {
+            *current = status;
         }
     }
 
-    fn taken_abort(&self) -> Option<QueryAbort> {
-        self.aborted.borrow_mut().take()
+    pub(crate) fn finish_status(&self) -> Result<(), CompilerBodyProviderStatus> {
+        self.queries.finish_status()
     }
 
     fn meter(&self) -> &ProviderObservationCounters {
-        &self.database.provider_observation_meter
+        &self.queries.meter
     }
 
     fn body_query_key(
@@ -12417,7 +12437,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
     ) -> crate::body_query::BodyQueryKey {
         crate::body_query::BodyQueryKey {
             instance: instance.clone(),
-            configuration: self.configuration.clone(),
+            configuration: self.queries.configuration.clone(),
         }
     }
 
@@ -12435,16 +12455,18 @@ impl<'a> CompilerBodyFactProvider<'a> {
             name: Arc::from(name),
         };
         match self
+            .queries
             .context
-            .query_registered(&self.database.lookup_names, key)
+            .query_registered(&self.queries.lookup_names, key)
         {
             Ok(terminal) => {
                 // Pin the observed lookup-name terminal while the request lease
                 // still protects it, so the promoted set transfers it with no
                 // birth-eviction window.
-                self.observed
+                self.queries
+                    .observed
                     .borrow_mut()
-                    .record(&self.database.lookup_names, &terminal);
+                    .record(&self.queries.lookup_names, &terminal);
                 match terminal.outcome() {
                     rue_query::QueryOutcome::Success(value) => name_resolution_from_value(value),
                     _ => rue_air::NameResolution::IndexUnavailable,
@@ -12458,15 +12480,17 @@ impl<'a> CompilerBodyFactProvider<'a> {
     }
 
     /// Observe one semantic-nucleus terminal, recording its edge. Deterministic
-    /// failures publish as `Success(Failure)`; a `QueryAbort` returns `None`
-    /// (Canceled as observed absence, other aborts captured for the boundary).
+    /// failures publish as `Success(Failure)`; a `QueryAbort` returns the
+    /// trait's absence-shaped value only provisionally and records a typed
+    /// provider status that the request boundary must check before publication.
     fn nucleus(
         &self,
         key: crate::semantic_query_nucleus::SemanticNucleusKey,
     ) -> Option<crate::semantic_query_nucleus::SemanticNucleusValue> {
         match self
+            .queries
             .context
-            .query_registered(&self.database.semantic_nucleus, key)
+            .query_registered(&self.queries.semantic_nucleus, key)
         {
             Ok(terminal) => match terminal.outcome() {
                 rue_query::QueryOutcome::Success(value) => Some(value.clone()),
@@ -12485,7 +12509,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
     ) -> crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
         crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
             declaration: decl.clone(),
-            configuration: self.configuration.clone(),
+            configuration: self.queries.configuration.clone(),
         }
     }
 
@@ -12536,7 +12560,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 self.nucleus(crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
                     crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
                         declaration: key.clone(),
-                        configuration: self.configuration.clone(),
+                        configuration: self.queries.configuration.clone(),
                     },
                 ))
             else {
@@ -12547,7 +12571,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
                 crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
                     crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
                         declaration: key.clone(),
-                        configuration: self.configuration.clone(),
+                        configuration: self.queries.configuration.clone(),
                     },
                 ),
             ) {
@@ -12575,7 +12599,7 @@ impl<'a> CompilerBodyFactProvider<'a> {
 
 /// One observed receiver member: its declaration handle, syntactic kind,
 /// `self`-receiver classification (from the signature), and visibility.
-#[cfg(test)]
+#[allow(dead_code)]
 struct MemberObservation {
     declaration: crate::declaration_candidate::DeclarationCandidateKey,
     kind: rue_air::MemberKind,
@@ -12583,7 +12607,6 @@ struct MemberObservation {
     is_public: bool,
 }
 
-#[cfg(test)]
 impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
     type ModuleRef = ModuleId;
     type DeclarationRef = crate::declaration_candidate::DeclarationCandidateKey;
@@ -12858,15 +12881,17 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
             specifier: Arc::from(specifier),
         };
         match self
+            .queries
             .context
-            .query_registered(&self.database.lookup_imports, key)
+            .query_registered(&self.queries.lookup_imports, key)
         {
             Ok(terminal) => {
                 // Pin the observed lookup-import terminal under the live request
                 // lease, exactly as the name-lookup op does.
-                self.observed
+                self.queries
+                    .observed
                     .borrow_mut()
-                    .record(&self.database.lookup_imports, &terminal);
+                    .record(&self.queries.lookup_imports, &terminal);
                 match terminal.outcome() {
                     rue_query::QueryOutcome::Success(value) => import_resolution_from_value(value),
                     _ => rue_air::ImportResolution::Absent,
@@ -13002,19 +13027,18 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         self.meter()
             .producer_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        match self.context.query_registered(
-            &self.database.body_produced_anonymous,
+        match self.queries.context.query_registered(
+            &self.queries.body_produced_anonymous,
             self.body_query_key(instance),
         ) {
             Ok(terminal) => match terminal.outcome() {
                 rue_query::QueryOutcome::Success(value) => Some(value.clone()),
                 _ => None,
             },
-            // A body with no producer-owned anonymous projection cancels this
-            // terminal. The uniform `observe_abort` rule maps that Canceled to an
-            // observed absence (`None`) exactly as every other op treats a
-            // deferred terminal — the request is still recorded as an observed
-            // edge — while a genuinely fatal abort is captured for the boundary.
+            // A body with no producer-owned anonymous projection may leave this
+            // terminal incomplete. The trait remains abort-free, so the
+            // request-local status records the typed incomplete state and the
+            // terminal boundary rejects publication before any result is used.
             Err(abort) => {
                 self.observe_abort(abort);
                 None
@@ -13030,8 +13054,8 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
             .toolchain_facts
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let empty = crate::BodyToolchainDemand::from_payload_kinds([], None);
-        match self.context.query_registered(
-            &self.database.body_toolchain_demands,
+        match self.queries.context.query_registered(
+            &self.queries.body_toolchain_demands,
             self.body_query_key(instance),
         ) {
             Ok(terminal) => match terminal.outcome() {
@@ -13075,15 +13099,14 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
 // r5); builtin `str` and slice generated-struct names are ANSWERED as of r6a
 // (pure durable name facts); `Str(N)` (a generated fixed-capacity struct) →
 // r6b with the generated-struct/anonymous family; anonymous producer nominals
-// (r4) and well-known `Option` (r6b). Every operation is `#[cfg(test)]`: this is a
-// differential adapter behind the same gate as `CompilerBodyFactProvider`, never
-// a selectable production path.
+// (r4) and well-known `Option` (r6b). These operations are production-compiled
+// provider facades; the eventual body evaluator is the only production caller.
 // ---------------------------------------------------------------------------
 
 /// A recoverable failure surfaced by [`ProviderTypeFacts`]. Aborts never reach
-/// the trait surface — `CompilerBodyFactProvider` captures them and returns the
-/// op's absence sentinel — so the abort associated type is [`Infallible`].
-#[cfg(test)]
+/// the trait surface — `CompilerBodyFactProvider` captures them in its typed
+/// request status and returns only a provisional absence-shaped value — so the
+/// abort associated type is [`Infallible`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ProviderTypeFactsFailure {
     /// A shape whose facts the body-fact boundary does not yet expose in r2. The
@@ -13094,13 +13117,12 @@ pub(crate) enum ProviderTypeFactsFailure {
 
 /// The type-syntax/nominal ProviderFacts: resolves type syntax from the exact
 /// body-fact provider and materializes consulted nominals into the overlay.
-#[cfg(test)]
 pub(crate) struct ProviderTypeFacts<'p, 'o, 'db> {
     provider: &'p CompilerBodyFactProvider<'db>,
     overlay: &'o mut crate::body_overlay::BodySemanticOverlay,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 fn provider_definition_category(
     kind: rue_air::ProviderDefinitionKind,
 ) -> crate::declaration_candidate::DeclarationCandidateCategory {
@@ -13116,7 +13138,7 @@ fn provider_definition_category(
 
 /// The durable type for a primitive type-syntax name, mirroring
 /// `rue_air::Type::from_primitive_name` in the durable algebra.
-#[cfg(test)]
+#[allow(dead_code)]
 fn primitive_durable_type(name: &str) -> Option<crate::DurableType> {
     use crate::DurableType as T;
     Some(match name {
@@ -13138,7 +13160,7 @@ fn primitive_durable_type(name: &str) -> Option<crate::DurableType> {
     })
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl<'p, 'o, 'db> ProviderTypeFacts<'p, 'o, 'db> {
     pub(crate) fn new(
         provider: &'p CompilerBodyFactProvider<'db>,
@@ -13279,7 +13301,6 @@ impl<'p, 'o, 'db> ProviderTypeFacts<'p, 'o, 'db> {
     }
 }
 
-#[cfg(test)]
 impl<'p, 'o, 'db> rue_air::SemanticModulePathProvider<ModuleId, ModuleId, ModuleId>
     for ProviderTypeFacts<'p, 'o, 'db>
 {
@@ -13319,7 +13340,6 @@ impl<'p, 'o, 'db> rue_air::SemanticModulePathProvider<ModuleId, ModuleId, Module
     }
 }
 
-#[cfg(test)]
 impl<'p, 'o, 'db>
     rue_air::SemanticTypeSyntaxProvider<
         ModuleId,
@@ -13735,14 +13755,11 @@ impl<'p, 'o, 'db>
 // SignatureFacts consults only read-only provider terminals and never mints an
 // overlay identity, so it borrows `&CompilerBodyFactProvider` alone — a comptime
 // call that reduces to an anonymous nominal is deferred to the overlay-owning
-// slices (r4/r6), reported as `SignatureReduceOutcome::DeferredAnonymous`. Every
-// item is `#[cfg(test)]`: a differential adapter behind the same gate as
-// `CompilerBodyFactProvider`, never a selectable production path.
+// slices (r4/r6), reported as `SignatureReduceOutcome::DeferredAnonymous`.
 // ---------------------------------------------------------------------------
 
 /// The comptime type-constructor / value-argument ProviderFacts. Resolves
 /// signature-level comptime facts from the exact body-fact provider.
-#[cfg(test)]
 pub(crate) struct SignatureFacts<'p, 'db> {
     provider: &'p CompilerBodyFactProvider<'db>,
 }
@@ -13752,7 +13769,7 @@ pub(crate) struct SignatureFacts<'p, 'db> {
 /// (the anonymous reduction result is a body-level durable value production's
 /// declaration binder rejects exporting); the endpoint pool mints the identity
 /// itself (RUE-1091 r6b).
-#[cfg(test)]
+#[allow(dead_code)]
 fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bool {
     use crate::DurableType as T;
     match ty {
@@ -13768,14 +13785,13 @@ fn durable_type_uses_anonymous_nominal(ty: &crate::DurableType) -> bool {
 /// The outcome of a boundary comptime-call reduction: a reduced non-anonymous
 /// type or value, an anonymous-nominal result deferred in the type-syntax path,
 /// or a head that did not reduce.
-#[cfg(test)]
 enum SignatureReduceOutcome {
     Reduced(rue_air::SemanticComptimeCallResult<crate::DurableType, crate::DurableConstValue>),
     DeferredAnonymous,
     DidNotReduce,
 }
 
-#[cfg(test)]
+#[allow(dead_code)]
 impl<'p, 'db> SignatureFacts<'p, 'db> {
     pub(crate) fn new(provider: &'p CompilerBodyFactProvider<'db>) -> Self {
         Self { provider }
@@ -13969,6 +13985,28 @@ impl<'p, 'db> SignatureFacts<'p, 'db> {
     }
 }
 
+#[allow(dead_code)]
+impl RevisionedQueryDatabase {
+    fn compiler_body_provider_queries<'a>(
+        &self,
+        context: &'a rue_query::QueryContext,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    ) -> CompilerBodyProviderQueries<'a> {
+        CompilerBodyProviderQueries {
+            context,
+            lookup_names: self.lookup_names.clone(),
+            lookup_imports: self.lookup_imports.clone(),
+            semantic_nucleus: self.semantic_nucleus.clone(),
+            body_produced_anonymous: self.body_produced_anonymous.clone(),
+            body_toolchain_demands: self.body_toolchain_demands.clone(),
+            configuration,
+            status: std::rc::Rc::new(std::cell::RefCell::new(CompilerBodyProviderStatus::Ready)),
+            observed: std::rc::Rc::new(std::cell::RefCell::new(ObservedLookupRoot::new())),
+            meter: self.provider_observation_meter.clone(),
+        }
+    }
+}
+
 /// The recorded edges and captured result of one provider-observation probe.
 #[cfg(test)]
 pub(crate) struct ProviderProbeOutcome<R> {
@@ -13990,50 +14028,83 @@ impl RevisionedQueryDatabase {
     }
 
     /// Run `run` against a fresh [`CompilerBodyFactProvider`] inside one query
-    /// task at `revision`. The returned outcome carries the closure's result and
-    /// the exact set of query edges the provider recorded, so a test proves both
-    /// the returned facts (differential vs the production epoch) and that each op
-    /// recorded exactly its backing terminal.
+    /// task at `revision`. A non-ready provider returns its typed status and
+    /// publishes no probe terminal or provisional result.
     pub(crate) fn probe_body_facts<R>(
         &self,
         revision: Revision,
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
         label: &str,
         run: impl FnOnce(&CompilerBodyFactProvider<'_>) -> R,
-    ) -> ProviderProbeOutcome<R> {
+    ) -> Result<ProviderProbeOutcome<R>, CompilerBodyProviderStatus> {
         let captured: std::cell::RefCell<Option<R>> = std::cell::RefCell::new(None);
+        let non_ready: std::cell::RefCell<Option<CompilerBodyProviderStatus>> =
+            std::cell::RefCell::new(None);
         let run_cell = std::cell::RefCell::new(Some(run));
-        let terminal = self
-            .runtime
-            .query(
-                &self.provider_probe,
-                revision,
-                ProviderProbeKey {
-                    label: Arc::from(label),
-                },
-                CancellationToken::new(),
-                |context| {
-                    let provider =
-                        CompilerBodyFactProvider::new(context, self, configuration.clone());
-                    let run = run_cell.borrow_mut().take().expect("probe runs once");
-                    let result = run(&provider);
-                    if let Some(abort) = provider.taken_abort() {
-                        return Err(abort);
+        let terminal = match self.runtime.query(
+            &self.provider_probe,
+            revision,
+            ProviderProbeKey {
+                label: Arc::from(label),
+            },
+            CancellationToken::new(),
+            |context| {
+                let provider = CompilerBodyFactProvider::new(
+                    self.compiler_body_provider_queries(context, configuration.clone()),
+                );
+                let run = run_cell.borrow_mut().take().expect("probe runs once");
+                let result = run(&provider);
+                match provider.finish_status() {
+                    Ok(()) => {
+                        *captured.borrow_mut() = Some(result);
+                        Ok(QueryOutput::success(ProviderProbeValue))
                     }
-                    *captured.borrow_mut() = Some(result);
-                    Ok(QueryOutput::success(ProviderProbeValue))
-                },
-            )
-            .expect("provider probe published a terminal");
+                    Err(status) => {
+                        *non_ready.borrow_mut() = Some(status.clone());
+                        Err(match status {
+                            CompilerBodyProviderStatus::Fatal(abort) => abort,
+                            CompilerBodyProviderStatus::Incomplete(_) => {
+                                // The query runtime has no typed incomplete
+                                // channel. Keep the terminal absent here and
+                                // return the captured provider status below.
+                                QueryAbort::Canceled
+                            }
+                            CompilerBodyProviderStatus::Ready => unreachable!(),
+                        })
+                    }
+                }
+            },
+        ) {
+            Ok(terminal) => terminal,
+            Err(abort) => {
+                return Err(non_ready
+                    .into_inner()
+                    .unwrap_or(CompilerBodyProviderStatus::Fatal(abort)));
+            }
+        };
         let dependencies = terminal
             .dependencies()
             .iter()
             .map(|observation| observation.node.clone())
             .collect();
-        ProviderProbeOutcome {
+        Ok(ProviderProbeOutcome {
             result: captured.into_inner().expect("probe captured a result"),
             dependencies,
-        }
+        })
+    }
+
+    /// Success-only convenience for differential tests whose fixture installs
+    /// every exact provider prerequisite. Tests exercising incompleteness use
+    /// [`Self::probe_body_facts`] and assert its typed status instead.
+    pub(crate) fn probe_ready_body_facts<R>(
+        &self,
+        revision: Revision,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        label: &str,
+        run: impl FnOnce(&CompilerBodyFactProvider<'_>) -> R,
+    ) -> ProviderProbeOutcome<R> {
+        self.probe_body_facts(revision, configuration, label, run)
+            .expect("ready provider fixture published its probe terminal")
     }
 
     /// Drive `run` (a set of provider lookups) as one rooted request under the
@@ -14068,13 +14139,22 @@ impl RevisionedQueryDatabase {
             },
             CancellationToken::new(),
             |context| {
-                let provider = CompilerBodyFactProvider::new(context, self, configuration.clone());
+                let provider = CompilerBodyFactProvider::new(
+                    self.compiler_body_provider_queries(context, configuration.clone()),
+                );
                 let run = run_cell.borrow_mut().take().expect("probe runs once");
                 run(&provider);
                 if cancel {
                     // Abort before publishing a root: the observed pins drop with
                     // the provider and are never promoted (the never-promote rule).
                     return Err(QueryAbort::Canceled);
+                }
+                if let Err(status) = provider.finish_status() {
+                    return Err(match status {
+                        CompilerBodyProviderStatus::Fatal(abort) => abort,
+                        CompilerBodyProviderStatus::Incomplete(_) => QueryAbort::Canceled,
+                        CompilerBodyProviderStatus::Ready => unreachable!(),
+                    });
                 }
                 *captured.borrow_mut() = Some(provider.take_observed_root());
                 Ok(QueryOutput::success(ProviderProbeValue))
@@ -14519,6 +14599,87 @@ mod tests {
     };
     use rue_span::FileId;
     use std::collections::{BTreeSet, HashMap};
+
+    #[test]
+    fn compiler_provider_fatal_status_dominates_incomplete_status() {
+        let incomplete =
+            CompilerBodyProviderStatus::Incomplete(CompilerBodyProviderIncomplete::Canceled);
+        let missing = CompilerBodyProviderStatus::Incomplete(
+            CompilerBodyProviderIncomplete::MissingInput(InputIdentity::new("body", "signature")),
+        );
+        let fatal = CompilerBodyProviderStatus::Fatal(QueryAbort::ForeignRuntime);
+
+        assert!(provider_status_should_replace(&incomplete, &fatal));
+        assert!(!provider_status_should_replace(&fatal, &missing));
+        assert!(!provider_status_should_replace(&incomplete, &missing));
+    }
+
+    #[test]
+    fn production_provider_boundary_uses_owned_handles_and_shared_rir_view() {
+        let compiler = include_str!("revisioned_query_database.rs");
+        let query_start = compiler
+            .find("pub(crate) struct CompilerBodyProviderQueries")
+            .unwrap();
+        let query_end = compiler[query_start..]
+            .find("\n}\n\n#[allow(dead_code)]\nimpl<'a> CompilerBodyProviderQueries")
+            .map(|offset| query_start + offset + 2)
+            .unwrap();
+        let query_fields = &compiler[query_start..query_end];
+        assert!(query_fields.contains("QueryFamily"));
+        for banned in [
+            "RevisionedQueryDatabase",
+            "CanonicalMergedProgram",
+            "CanonicalRirOutput",
+            "declaration_manifest",
+            "reachability",
+            "InstRef",
+            "Spur",
+            "Span",
+            "FileId",
+            "ProviderIdentityContext::new",
+        ] {
+            assert!(
+                !query_fields.contains(banned),
+                "provider query bundle retains banned boundary artifact `{banned}`"
+            );
+        }
+
+        let provider_start = compiler
+            .find("pub(crate) struct CompilerBodyFactProvider")
+            .unwrap();
+        let provider_end = compiler[provider_start..]
+            .find("\n}\n\n#[allow(dead_code)]\nimpl<'a> CompilerBodyFactProvider")
+            .map(|offset| provider_start + offset + 2)
+            .unwrap();
+        assert!(!compiler[provider_start..provider_end].contains("RevisionedQueryDatabase"));
+
+        let type_start = compiler
+            .find("pub(crate) struct ProviderTypeFacts")
+            .unwrap();
+        let type_end = compiler[type_start..]
+            .find("impl<'p, 'o, 'db> rue_air::SemanticModulePathProvider")
+            .map(|offset| type_start + offset)
+            .unwrap();
+        let type_slice = &compiler[type_start..type_end];
+        assert!(type_slice.contains("materialize_nominal"));
+        assert!(!type_slice.contains("intern_definition"));
+        assert!(!type_slice.contains("intern_module"));
+        assert!(!type_slice.contains("ProviderIdentityContext::new"));
+
+        let test_module = compiler
+            .find("\n#[cfg(test)]\nmod tests")
+            .expect("revisioned-query tests have a cfg boundary");
+        assert!(
+            !compiler[..test_module].contains("BodyRirView::from_parts"),
+            "production provider construction must obtain its view from BodyRirBundle::view"
+        );
+        let lower = include_str!("canonical_lower.rs");
+        assert!(lower.contains("BodyRirBundle::new"));
+        assert!(
+            lower.contains("into_body_rir_bundle"),
+            "the production lowerer owns the request-local bundle"
+        );
+    }
 
     #[test]
     fn stable_definition_kinds_have_fixed_syntax_candidate_sets() {
@@ -21228,13 +21389,18 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let config = semantic_configuration();
 
-        let outcome = database.probe_body_facts(revision, config, "name-lookup", |provider| {
-            (
-                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "Uniq"),
-                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "dup"),
-                provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "absent"),
-            )
-        });
+        let outcome =
+            database.probe_ready_body_facts(revision, config, "name-lookup", |provider| {
+                (
+                    provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "Uniq"),
+                    provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "dup"),
+                    provider.lookup_unqualified(
+                        &m,
+                        rue_air::ProviderNamespace::ModuleItem,
+                        "absent",
+                    ),
+                )
+            });
         let (uniq, dup, absent) = &outcome.result;
 
         // Positive / negative / ambiguous are distinct candidate-set outcomes.
@@ -21269,10 +21435,14 @@ fn main() -> i32 {
 
         // Visibility- and kind-filtered views are candidate SETS the caller
         // narrows locally: `Uniq` is public, `Hidden` is not.
-        let hidden =
-            database.probe_body_facts(revision, semantic_configuration(), "vis", |provider| {
+        let hidden = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "vis",
+            |provider| {
                 provider.lookup_unqualified(&m, rue_air::ProviderNamespace::ModuleItem, "Hidden")
-            });
+            },
+        );
         assert!(matches!(hidden.result, rue_air::NameResolution::Unique(_)));
         assert_eq!(hidden.result.visible(true), rue_air::NameResolution::Absent);
         assert_eq!(uniq.visible(true), *uniq);
@@ -21321,8 +21491,11 @@ fn main() -> i32 {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
 
-        let outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "import", |provider| {
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "import",
+            |provider| {
                 (
                     provider.resolve_import(&m, "dep.rue"),
                     // The requested `mixed.rue` normalizes to the same target as both
@@ -21334,7 +21507,8 @@ fn main() -> i32 {
                     provider.resolve_import(&m, "./dep.rue"),
                     provider.resolve_import(&m, "missing.rue"),
                 )
-            });
+            },
+        );
         let (dep, mixed, dot_dep, missing) = &outcome.result;
         assert_eq!(
             *dep,
@@ -21401,8 +21575,11 @@ fn main() -> i32 {
         // distinct label or a repeat would reuse the first probe's terminal and
         // never run its closure.
         let label = format!("type-syntax:{syntax}");
-        let outcome =
-            database.probe_body_facts(revision, semantic_configuration(), &label, |provider| {
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            &label,
+            |provider| {
                 let mut overlay = crate::body_overlay::BodySemanticOverlay::new();
                 let mut facts = ProviderTypeFacts::new(provider, &mut overlay);
                 let resolved =
@@ -21427,7 +21604,8 @@ fn main() -> i32 {
                     .as_ref()
                     .and_then(|key| overlay.materialized_nominal(key).cloned());
                 (resolved, materialized)
-            });
+            },
+        );
         let (resolved, materialized) = outcome.result;
         (resolved, materialized, outcome.dependencies)
     }
@@ -21904,7 +22082,7 @@ fn main() -> i32 {
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "signature-facts:Wrap",
@@ -21937,7 +22115,7 @@ fn main() -> i32 {
             "head carries durable parameter names and the type/value split"
         );
         // Absent / non-callable heads do not resolve.
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "signature-facts:absent",
@@ -21988,8 +22166,11 @@ fn main() -> i32 {
         let box_probe = box_struct.clone();
         let copy_probe = copy_receiver.clone();
         let res_probe = res_receiver.clone();
-        let outcome =
-            database.probe_body_facts(revision, config.clone(), "decl-facts", move |provider| {
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            config.clone(),
+            "decl-facts",
+            move |provider| {
                 (
                     provider.declaration_identity(&helper_probe),
                     provider.signature(&helper_probe),
@@ -22001,7 +22182,8 @@ fn main() -> i32 {
                     provider.drop_copy_metadata(&res_probe),
                     provider.trusted_toolchain_facts(&helper_instance),
                 )
-            });
+            },
+        );
         let (
             identity,
             signature,
@@ -22170,7 +22352,7 @@ fn main() -> i32 {
             }
         };
         let outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "callable", probes);
+            database.probe_ready_body_facts(revision, semantic_configuration(), "callable", probes);
         let (get, make, absent_method, absent_type, get_as_assoc, make_as_method, bare) =
             outcome.result;
 
@@ -22263,7 +22445,7 @@ fn main() -> i32 {
             }
         };
         let outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "siblings", probes);
+            database.probe_ready_body_facts(revision, semantic_configuration(), "siblings", probes);
         let (left_result, right_result, dup_result) = outcome.result;
 
         assert_eq!(
@@ -22370,13 +22552,16 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let source_adapter = DurableDeclSource::from_declarations(&decls);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "call-fn-info",
             move |provider| {
-                let facts =
-                    rue_air::ProviderCallFacts::new(provider, source_adapter, rir_ref, interner);
+                let facts = rue_air::ProviderCallFacts::new(
+                    provider,
+                    source_adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 let info = facts
                     .function_info(&make_key, "make", file)
                     .expect("make resolves through the provider path");
@@ -22467,13 +22652,16 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let source_adapter = DurableDeclSource::from_declarations(&decls);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "call-fn-contains",
             move |provider| {
-                let facts =
-                    rue_air::ProviderCallFacts::new(provider, source_adapter, rir, interner);
+                let facts = rue_air::ProviderCallFacts::new(
+                    provider,
+                    source_adapter,
+                    rue_air::BodyRirView::from_parts(rir, interner),
+                );
                 (
                     // A declared free function is present.
                     facts.function_contains_in_module(&m, "helper"),
@@ -22603,16 +22791,23 @@ fn main() -> i32 {
         // edges (the receiver name lookup + the member semantic-nucleus facts) —
         // the richer provider-era footprint that is the post-flip truth (r4a-1
         // carry-forward: the finer dependencies are the more-correct behavior).
-        let bare_outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "call-bare-lift", {
+        let bare_outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-bare-lift",
+            {
                 let bare = bare_key.clone();
                 let adapter = DurableDeclSource::from_declarations(&decls);
                 move |provider| {
-                    let facts =
-                        rue_air::ProviderCallFacts::new(provider, adapter, rir_ref, interner);
+                    let facts = rue_air::ProviderCallFacts::new(
+                        provider,
+                        adapter,
+                        rue_air::BodyRirView::from_parts(rir_ref, interner),
+                    );
                     facts.callable_symbol_receiver(&bare).is_some()
                 }
-            });
+            },
+        );
         assert!(
             bare_outcome.result,
             "r6a lifts the bare language-item owner symbol the epoch answers: {bare_key}"
@@ -22638,15 +22833,22 @@ fn main() -> i32 {
         // owner) stays refused: `bare_language_item_owner` returns None, so the
         // reversal fails closed before any lookup — the residual r6b / the flip
         // owns.
-        let residual_outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "call-bare-residual", {
+        let residual_outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-bare-residual",
+            {
                 let adapter = DurableDeclSource::from_declarations(&decls);
                 move |provider| {
-                    let facts =
-                        rue_air::ProviderCallFacts::new(provider, adapter, rir_ref, interner);
+                    let facts = rue_air::ProviderCallFacts::new(
+                        provider,
+                        adapter,
+                        rue_air::BodyRirView::from_parts(rir_ref, interner),
+                    );
                     facts.callable_symbol_receiver("Mystery.foo").is_some()
                 }
-            });
+            },
+        );
         assert!(
             !residual_outcome.result,
             "a bare non-language-item owner stays refused (the anonymous-owner residual)"
@@ -22660,16 +22862,23 @@ fn main() -> i32 {
         // Probe B — the QUALIFIED symbol: provider=Some, and the success records
         // exactly the r4a-1 footprint (the receiver name lookup + the member
         // semantic-nucleus facts), nothing else.
-        let ok_outcome =
-            database.probe_body_facts(revision, semantic_configuration(), "call-qual-success", {
+        let ok_outcome = database.probe_ready_body_facts(
+            revision,
+            semantic_configuration(),
+            "call-qual-success",
+            {
                 let qualified = qualified_key.clone();
                 let adapter = DurableDeclSource::from_declarations(&decls);
                 move |provider| {
-                    let facts =
-                        rue_air::ProviderCallFacts::new(provider, adapter, rir_ref, interner);
+                    let facts = rue_air::ProviderCallFacts::new(
+                        provider,
+                        adapter,
+                        rue_air::BodyRirView::from_parts(rir_ref, interner),
+                    );
                     facts.callable_symbol_receiver(&qualified).is_some()
                 }
-            });
+            },
+        );
         assert!(
             ok_outcome.result,
             "the provider reverses the file-qualified user method symbol"
@@ -22740,22 +22949,56 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let source_adapter = DurableDeclSource::from_declarations(&decls);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "call-method-info",
             move |provider| {
-                let facts =
-                    rue_air::ProviderCallFacts::new(provider, source_adapter, rir_ref, interner);
-                let info = facts
-                    .method_info(&shift_key, file, "Widget", "shift")
-                    .expect("Widget.shift resolves through the provider path");
+                let identity = rue_air::ProviderIdentityContext::new(source_adapter);
+                let view = rue_air::BodyRirView::from_parts(rir_ref, interner);
+                let facts = rue_air::ProviderCallFacts::with_identity(
+                    provider,
+                    identity.clone(),
+                    view.clone(),
+                );
+                let endpoints =
+                    rue_air::ProviderEndpointFacts::with_identity(provider, identity, view);
                 // `named_method_info` coincides over the named differential scope
                 // (no anonymous fallback), mirroring the epoch's `methods.get`.
                 let named = facts
                     .named_method_info(&shift_key, file, "Widget", "shift")
                     .expect("named_method_info resolves");
-                assert_eq!(named.body, info.body, "named_method_info agrees on body");
+                let compact_owner = named.struct_type.as_struct().expect("Widget is a struct");
+                let compact_name = facts.name_symbol("shift");
+                assert_eq!(
+                    endpoints
+                        .method_info(compact_owner, compact_name)
+                        .expect("the endpoint facade observes the named registration")
+                        .body,
+                    named.body,
+                    "endpoint method lookup falls back to the shared named entry"
+                );
+                let anonymous = rue_air::MethodInfo {
+                    body: rue_rir::InstRef::from_raw(named.body.as_u32() + 1),
+                    ..named
+                };
+                assert!(
+                    facts.register_anonymous_method(file, "Widget", "shift", anonymous),
+                    "the anonymous method registers atomically under both lookup keys"
+                );
+                let info = facts
+                    .method_info(&shift_key, file, "Widget", "shift")
+                    .expect("anonymous method wins over the named collision");
+                assert_eq!(info.body, anonymous.body, "anonymous method has precedence");
+                assert_ne!(named.body, info.body, "the collision is observable");
+                assert_eq!(
+                    endpoints
+                        .method_info(compact_owner, compact_name)
+                        .expect("the endpoint facade observes the anonymous registration")
+                        .body,
+                    anonymous.body,
+                    "endpoint and call facades agree on anonymous-first precedence"
+                );
                 // Double consult: idempotent, the pool re-mints nothing.
                 let second = facts
                     .method_info(&shift_key, file, "Widget", "shift")
@@ -22789,10 +23032,10 @@ fn main() -> i32 {
                 });
                 assert_eq!(modes[0], rue_rir::RirParamMode::Normal);
 
-                (info, receiver, ret)
+                (info, named, receiver, ret)
             },
         );
-        let (info, receiver, ret) = outcome.result;
+        let (info, named, receiver, ret) = outcome.result;
 
         // Cross-path against the LIVE epoch `MethodInfo` (not literals):
         // pool-independent fields directly, pool-relative types by render.
@@ -22805,8 +23048,12 @@ fn main() -> i32 {
         assert_eq!(info.self_mode, rue_rir::RirParamMode::Borrow);
         assert_eq!(info.self_is_mut, prod.self_is_mut, "self_is_mut matches");
         assert_eq!(
-            info.body, prod.body,
-            "method body InstRef matches the epoch"
+            named.body, prod.body,
+            "named method body InstRef matches the epoch"
+        );
+        assert_ne!(
+            info.body, named.body,
+            "anonymous collision remains selected"
         );
         assert_eq!(info.span, prod.span, "method span matches the epoch");
 
@@ -22861,7 +23108,7 @@ fn main() -> i32 {
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "call-associated-info",
@@ -22869,8 +23116,7 @@ fn main() -> i32 {
                 let facts = rue_air::ProviderCallFacts::new(
                     provider,
                     DurableDeclSource::from_declarations(&decls),
-                    rir_ref,
-                    interner,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
                 );
                 let info = facts
                     .method_info(&make_key, file, "Counter", "make")
@@ -22940,7 +23186,7 @@ fn main() -> i32 {
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-destructor-metadata",
@@ -22948,8 +23194,7 @@ fn main() -> i32 {
                 let facts = rue_air::ProviderEndpointFacts::new(
                     provider,
                     DurableDeclSource::from_declarations(&decls),
-                    rir_ref,
-                    interner,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
                 );
                 let token =
                     facts.register_named_nominal(box_key, file.index(), "Box", Kind::Struct);
@@ -23094,13 +23339,16 @@ fn main() -> i32 {
         let call_adapter = DurableDeclSource::from_declarations(&decls);
         let aggregate_adapter = DurableDeclSource::from_declarations(&decls);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-resolve",
             move |provider| {
-                let facts =
-                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 let named = |token: DTok| -> T<DTok, MTok> { T::Nominal(N::Named(token)) };
                 let point_token =
                     facts.register_named_nominal(point_key.clone(), 1, "Point", Kind::Struct);
@@ -23217,8 +23465,11 @@ fn main() -> i32 {
                     )
                 });
 
-                let call_facts =
-                    rue_air::ProviderCallFacts::new(provider, call_adapter, rir_ref, interner);
+                let call_facts = rue_air::ProviderCallFacts::new(
+                    provider,
+                    call_adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 let call_module = call_facts
                     .register_module(
                         durable_module.clone(),
@@ -23361,12 +23612,16 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let adapter = DurableDeclSource::from_declarations(&decls);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-deferred",
             move |provider| {
-                let facts = rue_air::ProviderEndpointFacts::new(provider, adapter, rir, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir, interner),
+                );
                 let point_token = facts.register_named_nominal(
                     point_key.clone(),
                     file.index(),
@@ -23524,13 +23779,16 @@ fn main() -> i32 {
             .with_anonymous_nominals(&projection.anonymous_nominals);
         let identity_for_probe = durable_identity.clone();
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-anon-mint",
             move |provider| {
-                let facts =
-                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 // Direct pool mint (the keystone): mint the anonymous nominal from
                 // its durable identity + shape.
                 let minted = facts
@@ -23665,13 +23923,16 @@ fn main() -> i32 {
             .with_anonymous_nominals(&projection.anonymous_nominals);
         let identity_for_probe = durable_identity.clone();
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-anon-enum-mint",
             move |provider| {
-                let facts =
-                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 // Direct pool mint from the RAW durable identity + shape.
                 let minted = facts
                     .mint_anonymous(&identity_for_probe)
@@ -23937,13 +24198,16 @@ fn main() -> i32 {
         let interner = rir.semantic_symbols().interner();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "well-known-option-install",
             move |provider| {
-                let facts =
-                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 facts
                     .install_well_known_option_types(&identities, &pairs)
                     .expect("the pool installs the well-known registry");
@@ -24050,13 +24314,16 @@ fn main() -> i32 {
         // so an empty durable source suffices.
         let adapter = DurableDeclSource::from_declarations(&[]);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-slice",
             move |provider| {
-                let facts =
-                    rue_air::ProviderEndpointFacts::new(provider, adapter, rir_ref, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
+                );
                 // Seed the generated slice, then resolve the `Slice` arm.
                 facts
                     .register_generated_slice(&D::I64, "[i64]")
@@ -24119,12 +24386,16 @@ fn main() -> i32 {
         let revision = revision_for(&mut database, &snapshot);
         let adapter = DurableDeclSource::from_declarations(&decls);
 
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-rir-ops",
             move |provider| {
-                let facts = rue_air::ProviderEndpointFacts::new(provider, adapter, rir, interner);
+                let facts = rue_air::ProviderEndpointFacts::new(
+                    provider,
+                    adapter,
+                    rue_air::BodyRirView::from_parts(rir, interner),
+                );
 
                 // (R) first_free_function: a free function resolves; a method
                 // name and an absent name do not.
@@ -24335,24 +24606,20 @@ fn main() -> i32 {
         let adapter = DurableDeclSource::from_declarations(&decls);
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "endpoint-const-info",
             move |provider| {
                 let identity = rue_air::ProviderIdentityContext::new(adapter);
+                let rir_view = rue_air::BodyRirView::from_parts(rir_ref, interner);
                 let facts = rue_air::ProviderEndpointFacts::with_identity(
                     provider,
                     identity.clone(),
-                    rir_ref,
-                    interner,
+                    rir_view.clone(),
                 );
-                let calls = rue_air::ProviderCallFacts::with_identity(
-                    provider,
-                    identity.clone(),
-                    rir_ref,
-                    interner,
-                );
+                let calls =
+                    rue_air::ProviderCallFacts::with_identity(provider, identity.clone(), rir_view);
                 let aggregate = rue_air::ProviderAggregateFacts::with_identity(identity);
                 let mut rendered = Vec::new();
                 for (name, key) in value_keys {
@@ -24623,7 +24890,7 @@ fn main() -> i32 {
         let rir_ref = rir.rir();
         let mut database = RevisionedQueryDatabase::default();
         let revision = revision_for(&mut database, &snapshot);
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             semantic_configuration(),
             "aggregate-selection-order",
@@ -24634,8 +24901,7 @@ fn main() -> i32 {
                 let endpoint = rue_air::ProviderEndpointFacts::with_identity(
                     provider,
                     identity.clone(),
-                    rir_ref,
-                    interner,
+                    rue_air::BodyRirView::from_parts(rir_ref, interner),
                 );
                 let mut facts = rue_air::ProviderAggregateFacts::with_identity(identity);
                 facts.register_named_nominal(point_key, file, "Point");
@@ -24889,7 +25155,7 @@ fn main() -> i32 {
 
         let receiver_probe = receiver.clone();
         let outcome =
-            database.probe_body_facts(revision, config.clone(), "members", move |provider| {
+            database.probe_ready_body_facts(revision, config.clone(), "members", move |provider| {
                 (
                     provider.method_candidates(&receiver_probe, "get"),
                     provider.method_candidates(&receiver_probe, "make"),
@@ -24926,10 +25192,12 @@ fn main() -> i32 {
         // reachable and equals the production epoch's — including receiver mode,
         // parameter modes, and return type.
         let sig_probe = get_candidate.declaration.clone();
-        let sig_outcome =
-            database.probe_body_facts(revision, config.clone(), "member-sig", move |provider| {
-                provider.signature(&sig_probe)
-            });
+        let sig_outcome = database.probe_ready_body_facts(
+            revision,
+            config.clone(),
+            "member-sig",
+            move |provider| provider.signature(&sig_probe),
+        );
         let provider_sig = sig_outcome.result.expect("get has a signature");
         let epoch_sig = request_semantic_nucleus(
             &database,
@@ -25017,12 +25285,11 @@ fn main() -> i32 {
         let bad = declaration_candidate(&database, revision, &m, Cat::Struct, "Bad");
         let good = declaration_candidate(&database, revision, &m, Cat::Struct, "Good");
         let plain = declaration_candidate(&database, revision, &m, Cat::Function, "plain");
-        let plain_instance = free_function_instance(&m, "plain");
 
         let bad_probe = bad.clone();
         let good_probe = good.clone();
         let plain_probe = plain.clone();
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             config.clone(),
             "representative",
@@ -25030,12 +25297,11 @@ fn main() -> i32 {
                 (
                     provider.nominal_well_formedness(&bad_probe),
                     provider.nominal_well_formedness(&good_probe),
-                    provider.producer_body_facts(&plain_instance),
                     provider.signature(&plain_probe),
                 )
             },
         );
-        let (bad_wf, good_wf, produced, plain_sig) = outcome.result;
+        let (bad_wf, good_wf, plain_sig) = outcome.result;
 
         // The diagnostics body's nominal is ill-formed; the good one is not. Both
         // match the semantic-nucleus well-formedness terminal.
@@ -25059,42 +25325,41 @@ fn main() -> i32 {
             "the production epoch also fails Bad's well-formedness"
         );
 
-        // A plain function produces no owned anonymous nominal. The op maps the
-        // producer terminal's deferral to an observed absence (uniform Canceled
-        // rule) rather than swallowing it specially.
-        assert!(produced.is_none());
         assert!(plain_sig.is_some());
 
-        // MINOR-1 differential: the provider's producer result matches the
-        // production epoch's terminal fact-for-fact. A non-producer body's
-        // `body-produced-anonymous` terminal defers (publishes nothing), so both
-        // the provider and the epoch observe the same absence — and, because no
-        // terminal is published, neither records a producer dependency edge (a
-        // deferred producer yields no fact and therefore no observation, which
-        // is exactly what the ADR's "the typed call IS the observation" implies).
-        let epoch_produced = database.runtime.request_registered(
-            &database.body_produced_anonymous,
+        let plain_instance = free_function_instance(&m, "plain");
+        let canceled = database.probe_body_facts(
             revision,
-            crate::body_query::BodyQueryKey {
-                instance: free_function_instance(&m, "plain"),
-                configuration: config.clone(),
+            config.clone(),
+            "representative-canceled",
+            move |provider| provider.producer_body_facts(&plain_instance),
+        );
+        assert!(matches!(
+            canceled,
+            Err(CompilerBodyProviderStatus::Incomplete(
+                CompilerBodyProviderIncomplete::Canceled
+            ))
+        ));
+
+        let missing_module = ModuleId::from_logical_path("missing.rue").unwrap();
+        let missing = database.probe_body_facts(
+            revision,
+            config,
+            "representative-missing",
+            move |provider| {
+                provider.lookup_unqualified(
+                    &missing_module,
+                    rue_air::ProviderNamespace::ModuleItem,
+                    "never",
+                )
             },
-            CancellationToken::new(),
         );
-        assert!(
-            epoch_produced.terminal().is_none(),
-            "the production epoch's producer terminal is equally unavailable for a \
-             non-producer body"
-        );
-        assert!(
-            !outcome
-                .dependencies
-                .iter()
-                .any(|node| node.family() == "compiler.body-produced-anonymous"),
-            "a deferred producer publishes no terminal, so no producer edge is \
-             recorded: {:?}",
-            outcome.dependencies
-        );
+        assert!(matches!(
+            missing,
+            Err(CompilerBodyProviderStatus::Incomplete(
+                CompilerBodyProviderIncomplete::MissingInput(_)
+            ))
+        ));
     }
 
     #[test]
@@ -25124,7 +25389,7 @@ fn main() -> i32 {
         };
 
         let provider_instance = pair_instance.clone();
-        let outcome = database.probe_body_facts(
+        let outcome = database.probe_ready_body_facts(
             revision,
             configuration,
             "producer-specialization-instance",
@@ -25446,8 +25711,9 @@ fn main() -> i32 {
                     },
                     CancellationToken::new(),
                     |context| {
-                        let provider =
-                            CompilerBodyFactProvider::new(context, &database, config.clone());
+                        let provider = CompilerBodyFactProvider::new(
+                            database.compiler_body_provider_queries(context, config.clone()),
+                        );
                         for name in ["A", "B", "C", "main"] {
                             provider.lookup_unqualified(&module, NS, name);
                         }
@@ -25526,6 +25792,28 @@ fn main() -> i32 {
         assert_eq!(
             metrics.leased_terminals, 0,
             "a canceled attempt leases no terminal into the session lease"
+        );
+
+        // A missing exact input is also provisional: it must not be converted
+        // into an absent lookup and promoted as if the provider were ready.
+        let missing_module = ModuleId::from_logical_path("missing.rue").unwrap();
+        assert!(
+            !database.publish_lookup_root(
+                revision,
+                config.clone(),
+                "probe-missing-input",
+                "root-missing-input",
+                false,
+                |p| {
+                    p.lookup_unqualified(&missing_module, NS, "never");
+                },
+            ),
+            "a MissingInput provider status publishes no root"
+        );
+        assert_eq!(
+            database.lookup_pressure_metrics().published_roots,
+            0,
+            "the MissingInput attempt does not promote a root"
         );
 
         // The keys the canceled attempt merely validated are speculative: no

@@ -56,15 +56,14 @@
 //!   underlying `resolve` refuses them. A comptime-*value* parameter (concrete
 //!   type, `is_comptime = true`) resolves fully and marks `is_generic`; only a
 //!   comptime-*type* parameter referencing a generic parameter refuses;
-//! - **anonymous method dispatch / bodies** —
+//! - **anonymous method bodies** —
 //!   [`BodyIdentityPool::find_or_create_anon`] (r6b) mints the producer-nominal
 //!   anonymous struct / enum from its durable identity + shape, and
-//!   [`BodyIdentityPool::install_well_known_option_types`] (r6c) ports the
-//!   trusted well-known `Option` registry onto that machinery, but method
-//!   BODIES and dispatch registration still need the request-local
-//!   whole-program `Rir` and belong to the flip's overlay method installation;
-//!   an issued anonymous key with no registered durable identity still
-//!   resolves by lookup only ([`BodyIdentityPool::register_issued_anonymous`]);
+//!   [`ProviderIdentityContext::register_anonymous_method`] supplies the
+//!   request-local dispatch entry shared by endpoint and call facades. The
+//!   method body itself remains a local RIR concern; an issued anonymous key
+//!   with no registered durable identity still resolves by lookup only
+//!   ([`BodyIdentityPool::register_issued_anonymous`]);
 //! - **module identity** and generic-parameter substitution (endpoint /
 //!   inference families) — these arms are *refused*, never approximated;
 //! - **drop metadata** — durable named and anonymous nominals carry destructor
@@ -81,7 +80,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
-use rue_rir::{InstData, InstRef, Rir, RirParamMode};
+use rue_rir::{InstData, InstRef, Rir, RirParamMode, ValidatedRir};
 use rue_span::{FileId, Span};
 
 use super::ConstValue;
@@ -375,9 +374,77 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
 /// call, endpoint, and aggregate drivers therefore clone this lightweight
 /// handle rather than constructing peer pools. This is the provider-side
 /// equivalent of every epoch adapter borrowing the same `BodySema`.
+#[derive(Default)]
+struct ProviderMethodRegistry {
+    anonymous: HashMap<(StructId, Spur), MethodInfo>,
+    anonymous_by_owner: HashMap<(FileId, Arc<str>, Arc<str>), (StructId, Spur)>,
+    named: HashMap<(StructId, Spur), MethodInfo>,
+    named_by_owner: HashMap<(FileId, Arc<str>, Arc<str>), (StructId, Spur)>,
+}
+
+impl ProviderMethodRegistry {
+    fn register_anonymous(
+        &mut self,
+        compact: (StructId, Spur),
+        owner: (FileId, Arc<str>, Arc<str>),
+        info: MethodInfo,
+    ) -> bool {
+        if self.anonymous.contains_key(&compact) || self.anonymous_by_owner.contains_key(&owner) {
+            return false;
+        }
+        self.anonymous.insert(compact, info);
+        self.anonymous_by_owner.insert(owner, compact);
+        true
+    }
+
+    fn register_named(
+        &mut self,
+        compact: (StructId, Spur),
+        owner: (FileId, Arc<str>, Arc<str>),
+        info: MethodInfo,
+    ) -> bool {
+        if self.named.contains_key(&compact) || self.named_by_owner.contains_key(&owner) {
+            return false;
+        }
+        self.named.insert(compact, info);
+        self.named_by_owner.insert(owner, compact);
+        true
+    }
+
+    fn method(&self, compact: (StructId, Spur)) -> Option<MethodInfo> {
+        self.anonymous
+            .get(&compact)
+            .or_else(|| self.named.get(&compact))
+            .copied()
+    }
+
+    fn method_by_owner(&self, owner: &(FileId, Arc<str>, Arc<str>)) -> Option<MethodInfo> {
+        self.anonymous_by_owner
+            .get(owner)
+            .and_then(|compact| self.anonymous.get(compact))
+            .or_else(|| {
+                self.named_by_owner
+                    .get(owner)
+                    .and_then(|compact| self.named.get(compact))
+            })
+            .copied()
+    }
+
+    fn named_by_owner(&self, owner: &(FileId, Arc<str>, Arc<str>)) -> Option<MethodInfo> {
+        self.named_by_owner
+            .get(owner)
+            .and_then(|compact| self.named.get(compact))
+            .copied()
+    }
+}
+
 pub struct ProviderIdentityContext<K, M, S> {
     pool: Rc<RefCell<BodyIdentityPool<K, M, S>>>,
     modules: Rc<RefCell<ProviderModuleRegistry<M>>>,
+    /// One request-local method authority shared by every provider facade.
+    /// Each entry is registered atomically under its compact and durable-owner
+    /// preimages; the owner maps point back into the canonical compact maps.
+    methods: Rc<RefCell<ProviderMethodRegistry>>,
     frozen: Rc<Cell<bool>>,
 }
 
@@ -386,6 +453,7 @@ impl<K, M, S> Clone for ProviderIdentityContext<K, M, S> {
         Self {
             pool: Rc::clone(&self.pool),
             modules: Rc::clone(&self.modules),
+            methods: Rc::clone(&self.methods),
             frozen: Rc::clone(&self.frozen),
         }
     }
@@ -402,6 +470,7 @@ where
         Self {
             pool: Rc::new(RefCell::new(BodyIdentityPool::new(source))),
             modules: Rc::new(RefCell::new(ProviderModuleRegistry::default())),
+            methods: Rc::new(RefCell::new(ProviderMethodRegistry::default())),
             frozen: Rc::new(Cell::new(false)),
         }
     }
@@ -436,6 +505,73 @@ where
 
     pub(in crate::sema) fn modules_mut(&self) -> RefMut<'_, ProviderModuleRegistry<M>> {
         self.modules.borrow_mut()
+    }
+
+    /// Install one anonymous method under both lookup preimages in one atomic
+    /// operation. Conflicting or duplicate registrations fail closed.
+    pub fn register_anonymous_method(
+        &self,
+        file: FileId,
+        owner: &str,
+        method: &str,
+        info: MethodInfo,
+    ) -> bool {
+        let Some(owner_id) = info.struct_type.as_struct() else {
+            return false;
+        };
+        let method_symbol = self.pool().intern_name(method);
+        self.methods.borrow_mut().register_anonymous(
+            (owner_id, method_symbol),
+            (file, Arc::from(owner), Arc::from(method)),
+            info,
+        )
+    }
+
+    /// Install one named method under both lookup preimages. The registry keeps
+    /// it separate from anonymous entries so lookups preserve anonymous-first
+    /// precedence while `named_method_info` remains named-only.
+    pub(in crate::sema) fn register_named_method(
+        &self,
+        file: FileId,
+        owner: &str,
+        method: &str,
+        info: MethodInfo,
+    ) -> bool {
+        let Some(owner_id) = info.struct_type.as_struct() else {
+            return false;
+        };
+        let method_symbol = self.pool().intern_name(method);
+        self.methods.borrow_mut().register_named(
+            (owner_id, method_symbol),
+            (file, Arc::from(owner), Arc::from(method)),
+            info,
+        )
+    }
+
+    pub(in crate::sema) fn method(&self, key: (StructId, Spur)) -> Option<MethodInfo> {
+        self.methods.borrow().method(key)
+    }
+
+    pub(in crate::sema) fn method_for_owner(
+        &self,
+        file: FileId,
+        owner: &str,
+        method: &str,
+    ) -> Option<MethodInfo> {
+        self.methods
+            .borrow()
+            .method_by_owner(&(file, Arc::from(owner), Arc::from(method)))
+    }
+
+    pub(in crate::sema) fn named_method_for_owner(
+        &self,
+        file: FileId,
+        owner: &str,
+        method: &str,
+    ) -> Option<MethodInfo> {
+        self.methods
+            .borrow()
+            .named_by_owner(&(file, Arc::from(owner), Arc::from(method)))
     }
 }
 
@@ -1814,9 +1950,9 @@ where
 /// inert: it contributes only a span and cannot assemble a [`ConstInfo`] without
 /// the independent durable-record join succeeding.
 ///
-/// Inert per the pool arc: `#![cfg_attr(not(test), allow(dead_code))]` on this
-/// module. There are zero production callers; the flip slice (r4b) wires it
-/// under body analysis.
+/// The index is request-local and is built once by [`BodyRirBundle`]. It is
+/// intentionally not a query value or a durable artifact.
+#[derive(Debug)]
 pub(in crate::sema) struct BodyRirIndex {
     /// Production's body-independent declaration index, re-used verbatim for
     /// `first_free_function` and `destructor`.
@@ -1830,8 +1966,91 @@ pub(in crate::sema) struct BodyRirIndex {
     const_declarations: HashMap<(FileId, Spur), InstRef>,
 }
 
+/// One request-local RIR universe shared by every provider fact facade for a
+/// body. The validated RIR, its matching semantic interner, and the derived
+/// declaration index have one owner so endpoint, call, aggregate, type, and
+/// inference facts cannot accidentally construct independent compact-identity
+/// authorities.
+#[derive(Debug)]
+pub struct BodyRirBundle {
+    rir: ValidatedRir,
+    rir_interner: ThreadedRodeo,
+    rir_index: Arc<BodyRirIndex>,
+}
+
+impl BodyRirBundle {
+    pub fn new(rir: ValidatedRir, rir_interner: ThreadedRodeo) -> Self {
+        let rir_index = Arc::new(BodyRirIndex::new(&rir));
+        Self {
+            rir,
+            rir_interner,
+            rir_index,
+        }
+    }
+
+    pub fn instruction_count(&self) -> usize {
+        self.rir.len()
+    }
+
+    pub fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
+        self.rir
+            .iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                rue_rir::InstData::AnonStructType { anchor, .. }
+                | rue_rir::InstData::AnonEnumType { anchor, .. } => Some(anchor.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Borrow the one local RIR/index/interner authority for provider fact
+    /// facades. The view is cheap and carries no independent identity state.
+    pub fn view(&self) -> BodyRirView<'_> {
+        BodyRirView {
+            rir: &self.rir,
+            rir_interner: &self.rir_interner,
+            index: self.rir_index.clone(),
+        }
+    }
+}
+
+/// A shared read view over one body-local RIR authority. Production callers
+/// obtain it from [`BodyRirBundle::view`]; compatibility/test callers may build
+/// the same view around an already validated RIR and its matching interner.
+#[derive(Debug, Clone)]
+pub struct BodyRirView<'a> {
+    rir: &'a Rir,
+    rir_interner: &'a ThreadedRodeo,
+    index: Arc<BodyRirIndex>,
+}
+
+impl<'a> BodyRirView<'a> {
+    /// Construct the same shared view for an existing RIR/interner pair. The
+    /// index is built by the view once, never independently by endpoint/call
+    /// facades.
+    pub fn from_parts(rir: &'a Rir, rir_interner: &'a ThreadedRodeo) -> Self {
+        Self {
+            rir,
+            rir_interner,
+            index: Arc::new(BodyRirIndex::new(rir)),
+        }
+    }
+
+    pub(in crate::sema) fn rir(&self) -> &Rir {
+        self.rir
+    }
+
+    pub(in crate::sema) fn rir_interner(&self) -> &ThreadedRodeo {
+        self.rir_interner
+    }
+
+    pub(in crate::sema) fn rir_index(&self) -> &BodyRirIndex {
+        &self.index
+    }
+}
+
 impl BodyRirIndex {
-    /// Build the index from the shared whole-program `Rir`. Constructs one
+    /// Build the index from the request-local body `Rir`. Constructs one
     /// [`RirDeclarationIndex`] and derives the named-method point map from the
     /// owner edges it already classified — no second arena walk of the method
     /// universe, no durable metadata, no pool.
@@ -1937,6 +2156,80 @@ mod tests {
     type DType = SemanticImportType<Key, Module>;
 
     type AnonKey = AnonymousNominalKey<Key, Module>;
+
+    #[test]
+    fn provider_method_registry_is_atomic_and_anonymous_first() {
+        let symbols = ThreadedRodeo::new();
+        let method = symbols.get_or_intern("shift");
+        let compact = (StructId(7), method);
+        let owner = (
+            FileId::new(3),
+            Arc::<str>::from("Widget"),
+            Arc::<str>::from("shift"),
+        );
+        let info = |body| MethodInfo {
+            struct_type: Type::new_struct(compact.0),
+            has_self: true,
+            self_mode: RirParamMode::Borrow,
+            self_is_mut: false,
+            params: ParamRange::EMPTY,
+            return_type: Type::I32,
+            body: InstRef::from_raw(body),
+            span: Span::with_file(owner.0, 1, 2),
+        };
+        let named = info(10);
+        let anonymous = info(11);
+        let conflicting = info(12);
+        let mut registry = ProviderMethodRegistry::default();
+
+        assert!(registry.register_named(compact, owner.clone(), named));
+        assert!(registry.register_anonymous(compact, owner.clone(), anonymous));
+        assert_eq!(registry.method(compact).unwrap().body, anonymous.body);
+        assert_eq!(
+            registry.method_by_owner(&owner).unwrap().body,
+            anonymous.body
+        );
+        assert_eq!(registry.named_by_owner(&owner).unwrap().body, named.body);
+
+        assert!(
+            !registry.register_anonymous(compact, owner.clone(), conflicting),
+            "a second compact/owner registration cannot split the two indexes"
+        );
+        assert_eq!(registry.method(compact).unwrap().body, anonymous.body);
+        assert_eq!(
+            registry.method_by_owner(&owner).unwrap().body,
+            anonymous.body
+        );
+    }
+
+    #[test]
+    fn provider_fact_facades_use_the_shared_body_rir_view() {
+        let endpoint = include_str!("body_endpoint.rs");
+        let endpoint_start = endpoint.find("pub struct ProviderEndpointFacts").unwrap();
+        let endpoint_fields = &endpoint[endpoint_start
+            ..endpoint[endpoint_start..]
+                .find("\n}\n\nimpl<'a, P, S, K, M>")
+                .map(|offset| endpoint_start + offset + 2)
+                .unwrap()];
+        assert!(endpoint_fields.contains("BodyRirView"));
+        assert!(!endpoint_fields.contains("&'a Rir"));
+        assert!(!endpoint_fields.contains("ThreadedRodeo"));
+        assert!(!endpoint_fields.contains("BodyRirIndex"));
+        assert!(!endpoint.contains("BodyRirIndex::new"));
+
+        let calls = include_str!("call_resolution.rs");
+        let calls_start = calls.find("pub struct ProviderCallFacts").unwrap();
+        let calls_fields = &calls[calls_start
+            ..calls[calls_start..]
+                .find("\n}\n\nimpl<'a, P, S, K, M>")
+                .map(|offset| calls_start + offset + 2)
+                .unwrap()];
+        assert!(calls_fields.contains("BodyRirView"));
+        assert!(!calls_fields.contains("&'a Rir"));
+        assert!(!calls_fields.contains("ThreadedRodeo"));
+        assert!(!calls_fields.contains("BodyRirIndex"));
+        assert!(!calls.contains("BodyRirIndex::new"));
+    }
 
     /// A durable nominal + callable source backed by fixed maps, standing in for
     /// r4b's stable-keyed provider.

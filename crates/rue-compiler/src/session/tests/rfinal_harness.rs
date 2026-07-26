@@ -1972,14 +1972,10 @@ fn run_body_replay(
     let identity = rue_air::ProviderIdentityContext::new(
         DurableDeclSource::from_declarations(decls).with_anonymous_nominals(produced_union),
     );
-    let endpoint = rue_air::ProviderEndpointFacts::with_identity(
-        provider,
-        identity.clone(),
-        rir,
-        rir_interner,
-    );
-    let calls =
-        rue_air::ProviderCallFacts::with_identity(provider, identity.clone(), rir, rir_interner);
+    let rir_view = rue_air::BodyRirView::from_parts(rir, rir_interner);
+    let endpoint =
+        rue_air::ProviderEndpointFacts::with_identity(provider, identity.clone(), rir_view.clone());
+    let calls = rue_air::ProviderCallFacts::with_identity(provider, identity.clone(), rir_view);
     let aggregate = rue_air::ProviderAggregateFacts::with_identity(identity);
     for (module, file) in module_files {
         let path = module.logical_path();
@@ -2151,8 +2147,11 @@ impl ProviderFactsOverlayAnalyzer {
         let rir = inputs.rir.rir();
         let interner = inputs.rir.semantic_symbols().interner();
         let label = format!("side-b:{run_tag}:{case_name}:{body}");
-        let outcome =
-            database.probe_body_facts(revision, side_b_configuration(), &label, move |provider| {
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            side_b_configuration(),
+            &label,
+            move |provider| {
                 run_body_replay(
                     provider,
                     &decls,
@@ -2164,7 +2163,8 @@ impl ProviderFactsOverlayAnalyzer {
                     rir,
                     interner,
                 )
-            });
+            },
+        );
         let (mut facts, exceptions, agg_seed) = outcome.result;
         if oracle.failed {
             facts.push(
@@ -2542,7 +2542,7 @@ fn side_b_absent_lookup_records_only_its_keyed_terminals() {
     let decls = inputs.decls.clone();
     let rir = inputs.rir.rir();
     let interner = inputs.rir.semantic_symbols().interner();
-    let outcome = database.probe_body_facts(
+    let outcome = database.probe_ready_body_facts(
         revision,
         side_b_configuration(),
         "side-b:e0481:absent",
@@ -2550,8 +2550,7 @@ fn side_b_absent_lookup_records_only_its_keyed_terminals() {
             let calls = rue_air::ProviderCallFacts::new(
                 provider,
                 DurableDeclSource::from_declarations(&decls),
-                rir,
-                interner,
+                rue_air::BodyRirView::from_parts(rir, interner),
             );
             assert!(!calls.function_contains_in_module(&module, "missing"));
         },
@@ -2615,8 +2614,7 @@ fn side_b_forced_eviction_and_cancellation_leave_no_partial_state() {
             let calls = rue_air::ProviderCallFacts::new(
                 provider,
                 DurableDeclSource::from_declarations(&decls),
-                rir,
-                interner,
+                rue_air::BodyRirView::from_parts(rir, interner),
             );
             let _ = calls.function_contains_in_module(&module, "helper");
             let _ = calls.function_contains_in_module(&module, "main");
@@ -2655,16 +2653,19 @@ fn side_b_forced_eviction_and_cancellation_leave_no_partial_state() {
         let decls = decls.clone();
         let module = module.clone();
         let label = format!("side-b:evict:{index}");
-        let outcome =
-            database.probe_body_facts(revision, side_b_configuration(), &label, move |provider| {
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            side_b_configuration(),
+            &label,
+            move |provider| {
                 let calls = rue_air::ProviderCallFacts::new(
                     provider,
                     DurableDeclSource::from_declarations(&decls),
-                    rir,
-                    interner,
+                    rue_air::BodyRirView::from_parts(rir, interner),
                 );
                 calls.function_contains_in_module(&module, &name)
-            });
+            },
+        );
         assert!(!outcome.result, "filler names are absent");
     }
     let after_eviction = analyzer.replay_case(
@@ -2721,7 +2722,7 @@ fn side_b_cross_module_private_lookup_is_driver_supplied() {
     let revision = inputs.revision(&mut database);
     let leaf_module = ModuleId::from_logical_path("sub/leaf.rue").unwrap();
 
-    let outcome = database.probe_body_facts(
+    let outcome = database.probe_ready_body_facts(
         revision,
         side_b_configuration(),
         "side-b:cross-module-private",
@@ -2798,7 +2799,7 @@ fn side_b_finalize_containment_metadata_freeze_hook() {
     let file = inputs.module_files[counter.module()];
     let rir = inputs.rir.rir();
     let interner = inputs.rir.semantic_symbols().interner();
-    let outcome = database.probe_body_facts(
+    let outcome = database.probe_ready_body_facts(
         revision,
         side_b_configuration(),
         "side-b:freeze-hook",
@@ -2808,8 +2809,7 @@ fn side_b_finalize_containment_metadata_freeze_hook() {
             let endpoint = rue_air::ProviderEndpointFacts::with_identity(
                 provider,
                 identity.clone(),
-                rir,
-                interner,
+                rue_air::BodyRirView::from_parts(rir, interner),
             );
             let mut aggregate = rue_air::ProviderAggregateFacts::with_identity(identity);
             let token = endpoint.register_named_nominal(
