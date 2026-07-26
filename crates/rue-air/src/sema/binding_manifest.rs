@@ -2180,8 +2180,9 @@ impl<'a> BoundSema<'a> {
         K: Clone,
         M: Clone,
     {
-        self.sema.body_lookup_collector = Some(collector);
-        let state = self.take_body_state();
+        self.sema.body_lookup_collector = Some(collector.clone());
+        let mut state = self.take_body_state();
+        state.install_body_lookup_collector(collector);
         super::one_body::analyze_one_body_instance(
             self.sema,
             state,
@@ -2295,6 +2296,9 @@ impl<'a> BoundSema<'a> {
             &expected_definitions,
             &expected_modules,
         )?;
+        self.body_state = Some(super::BodyAnalysisState::from_body_semantic_base(Arc::new(
+            self.sema.body_semantic_base(),
+        )));
         Ok(self)
     }
 

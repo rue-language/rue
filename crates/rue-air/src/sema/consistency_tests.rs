@@ -331,6 +331,12 @@ mod tests {
                 "BodyAnalysisState must not retain {forbidden}"
             );
         }
+        for forbidden in ["intern_array", "intern_ptr_const", "intern_ptr_mut"] {
+            assert!(
+                !state.contains(forbidden),
+                "BodyAnalysisState must not expose type interning in this slice: {forbidden}"
+            );
+        }
 
         let ordinary = ONE_BODY_SOURCE
             .split("fn analyze_definition(")
@@ -338,8 +344,42 @@ mod tests {
             .and_then(|source| source.split("fn analyze_named_method(").next())
             .expect("ordinary definition analyzer is present");
         assert!(ordinary.contains("state: &BodyAnalysisState<'_>"));
+        assert!(ordinary.contains("let facts = state.endpoint_facts();"));
+        assert!(ordinary.contains("facts.definition_endpoint(token)"));
+        assert!(ordinary.contains("select_ordinary_definition(&facts, state_endpoint)"));
         assert!(ordinary.contains("let owner = state.body_owner_token("));
         assert!(!ordinary.contains("BodyAnalysisState::from_body_semantic_base"));
+
+        let ordinary_branch = ordinary
+            .split("StableDefinitionKind::Function => {")
+            .nth(1)
+            .and_then(|source| source.split("StableDefinitionKind::Method").next())
+            .expect("ordinary definition branch is present");
+        assert!(ordinary_branch.contains("select_ordinary_definition(&facts, state_endpoint)"));
+        assert!(!ordinary_branch.contains("sema.endpoint_facts()"));
+
+        let unsupported_branches = ordinary
+            .split("StableDefinitionKind::Method")
+            .nth(1)
+            .expect("unsupported callable branches are present");
+        assert!(unsupported_branches.contains("sema.endpoint_facts().definition_endpoint(token)"));
+        assert!(!unsupported_branches.contains("state.endpoint_facts()"));
+
+        let selector = ONE_BODY_SOURCE
+            .split("fn select_ordinary_definition<")
+            .nth(1)
+            .and_then(|source| source.split("fn analyze_named_method(").next())
+            .expect("ordinary endpoint selector is present");
+        assert!(
+            !selector.contains("definition_endpoint("),
+            "ordinary selection must consume the single dispatch endpoint read"
+        );
+        assert!(BODY_ENDPOINT_SOURCE.contains("struct BodyEndpointReadView"));
+        assert!(BODY_ENDPOINT_SOURCE.contains("impl BodyEndpointFactSource for BodyAnalysisState"));
+        assert!(
+            BODY_ENDPOINT_SOURCE
+                .contains("impl<D: DeclarationPhase> BodyEndpointFactSource for Sema")
+        );
 
         let resolver = SEMA_ROOT_SOURCE
             .split("fn resolve_body_owner_token(")
@@ -1133,8 +1173,8 @@ mod tests {
         let adapters = [
             (
                 BODY_ENDPOINT_SOURCE,
-                "pub(crate) struct EpochFacts<'host, H: super::fact_mode::BodyAnalysisReadHost>",
-                "impl<H: super::fact_mode::BodyAnalysisReadHost> BodyEndpointProvider for EpochFacts<'_, H>",
+                "pub(crate) struct EpochFacts<'host, H: BodyEndpointFactSource>",
+                "impl<H: BodyEndpointFactSource> BodyEndpointProvider for EpochFacts<'_, H>",
             ),
             (
                 CALL_RESOLUTION_SOURCE,

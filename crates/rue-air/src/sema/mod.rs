@@ -356,15 +356,26 @@ pub(super) struct BodySemanticBase<'a> {
 
 /// Request-local identity state for receiver families that have crossed the
 /// frozen body-epoch boundary. It owns an immutable epoch handle, never an
-/// analyzer; mutable overlays will be added when the next receiver family
-/// crosses the boundary.
+/// analyzer, plus a request-local lookup collector overlay.
 pub(super) struct BodyAnalysisState<'a> {
     epoch: Arc<BodySemanticBase<'a>>,
+    body_lookup_collector: Option<BodyLookupCollector>,
 }
 
 impl<'a> BodyAnalysisState<'a> {
     pub(super) fn from_body_semantic_base(epoch: Arc<BodySemanticBase<'a>>) -> Self {
-        Self { epoch }
+        Self {
+            epoch,
+            body_lookup_collector: None,
+        }
+    }
+
+    pub(super) fn install_body_lookup_collector(&mut self, collector: BodyLookupCollector) {
+        self.body_lookup_collector = Some(collector);
+    }
+
+    pub(super) fn endpoint_facts(&self) -> body_endpoint::EpochFacts<'_, Self> {
+        body_endpoint::EpochFacts::new(self)
     }
 
     /// Resolve the exact stable owner identity used by body publication.
@@ -1254,16 +1265,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         collector.record(BodyLookupObservation::ModuleItem {
             file: file.index(),
             name: std::sync::Arc::from(self.interner.resolve(&name)),
-        });
-    }
-
-    pub(crate) fn record_body_destructor_lookup(&self, file: FileId, type_name: Spur) {
-        let Some(collector) = &self.body_lookup_collector else {
-            return;
-        };
-        collector.record(BodyLookupObservation::Destructor {
-            file: file.index(),
-            type_name: std::sync::Arc::from(self.interner.resolve(&type_name)),
         });
     }
 

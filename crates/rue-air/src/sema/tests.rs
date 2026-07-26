@@ -319,6 +319,53 @@ mod tests {
     }
 
     #[test]
+    fn body_endpoint_state_preserves_anonymous_methods_and_lookup_filtering() {
+        let (mut bound, _) =
+            one_body_fixture("struct Value { fn run(self) -> i32 { 1 } } fn main() {}");
+        let owner_name = bound.sema.interner.get("Value").expect("fixture owner");
+        let method_name = bound.sema.interner.get("run").expect("fixture method");
+        let owner = bound
+            .sema
+            .structs_by_file_name
+            .get(&(FileId::DEFAULT, owner_name))
+            .copied()
+            .expect("fixture struct id");
+        let named = *bound
+            .sema
+            .methods
+            .get(&(owner, method_name))
+            .expect("fixture named method");
+        bound.sema.anonymous_methods.insert(
+            (owner, method_name),
+            crate::sema::MethodInfo {
+                return_type: Type::BOOL,
+                ..named
+            },
+        );
+        bound.sema.anonymous_struct_ids.insert(owner);
+
+        let collector = crate::BodyLookupCollector::new();
+        let mut state = crate::sema::BodyAnalysisState::from_body_semantic_base(Arc::new(
+            bound.sema.body_semantic_base(),
+        ));
+        state.install_body_lookup_collector(collector.clone());
+        use crate::sema::body_endpoint::BodyEndpointProvider;
+        let info = state
+            .endpoint_facts()
+            .method_info(owner, method_name)
+            .expect("anonymous method endpoint");
+
+        assert_eq!(info.return_type, Type::BOOL);
+        assert!(
+            collector.observations().iter().all(|observation| !matches!(
+                observation,
+                crate::BodyLookupObservation::Member { .. }
+            )),
+            "anonymous owners must not publish member lookup observations"
+        );
+    }
+
+    #[test]
     fn test_analyze_simple_function() {
         let output = compile_to_air("fn main() -> i32 { 42 }").unwrap();
         let functions = &output.functions;

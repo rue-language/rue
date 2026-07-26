@@ -19,9 +19,9 @@ use rue_span::{FileId, Span};
 use super::body_endpoint::BodyEndpointProvider;
 use super::{AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisState, BodyOwnerKind, BodySema};
 use crate::{
-    FunctionInstanceKey, NominalInstanceKey, SemanticBodyExport, SemanticDefinitionToken,
-    SemanticModuleToken, SemanticSpecializationIdentity, SemanticSpecializedBodyExport,
-    StableDefinitionKind, Type, TypeInstanceKey,
+    FunctionInstanceKey, NominalInstanceKey, SemanticBodyExport, SemanticDefinitionEndpoint,
+    SemanticDefinitionToken, SemanticModuleToken, SemanticSpecializationIdentity,
+    SemanticSpecializedBodyExport, StableDefinitionKind, Type, TypeInstanceKey,
 };
 
 #[derive(Debug, Clone)]
@@ -1389,7 +1389,8 @@ fn analyze_definition(
     token: SemanticDefinitionToken,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
-    let Some(endpoint) = sema.endpoint_facts().definition_endpoint(token) else {
+    let facts = state.endpoint_facts();
+    let Some(state_endpoint) = facts.definition_endpoint(token) else {
         return fail(
             sema,
             None,
@@ -1398,33 +1399,18 @@ fn analyze_definition(
             )),
         );
     };
-    match endpoint.kind {
+    match state_endpoint.kind {
         StableDefinitionKind::Function => {
-            let Some(source_name) = sema.interner.get(endpoint.name.as_ref()) else {
-                return fail(
-                    sema,
-                    None,
-                    CompileError::without_span(ErrorKind::UndefinedFunction(
-                        endpoint.name.to_string(),
-                    )),
-                );
+            let selection = match select_ordinary_definition(&facts, state_endpoint) {
+                Ok(selection) => selection,
+                Err(error) => return fail(sema, None, error),
             };
-            let Some(name) = sema
-                .endpoint_facts()
-                .function_by_file_name(FileId::new(endpoint.file), source_name)
-            else {
-                return fail(
-                    sema,
-                    None,
-                    CompileError::without_span(ErrorKind::UndefinedFunction(
-                        endpoint.name.to_string(),
-                    )),
-                );
-            };
-            let info = sema
-                .endpoint_facts()
-                .function_info(name)
-                .expect("functions_by_file_name resolved to a registered function");
+            let OrdinaryDefinitionSelection {
+                endpoint,
+                name,
+                info,
+                declaration,
+            } = selection;
             if info.is_generic || info.is_extern {
                 return OneBodyTransactionOutcome::NonTerminal {
                     reason: OneBodyNonTerminalReason::TypedIncomplete(
@@ -1432,19 +1418,6 @@ fn analyze_definition(
                     ),
                 };
             }
-            let source = sema.endpoint_facts().source_function_name(name);
-            let Some(declaration) = sema
-                .endpoint_facts()
-                .first_free_function(source, info.file_id)
-            else {
-                return fail(
-                    sema,
-                    None,
-                    CompileError::without_span(ErrorKind::UndefinedFunction(
-                        endpoint.name.to_string(),
-                    )),
-                );
-            };
             let InstData::FnDecl {
                 params,
                 return_type,
@@ -1505,9 +1478,27 @@ fn analyze_definition(
             }
         }
         StableDefinitionKind::Method | StableDefinitionKind::AssociatedFunction => {
+            let Some(endpoint) = sema.endpoint_facts().definition_endpoint(token) else {
+                return fail(
+                    sema,
+                    None,
+                    CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                        "one-body request has no current stable endpoint".into(),
+                    )),
+                );
+            };
             analyze_named_method(sema, infer_ctx, &endpoint, interruption)
         }
         StableDefinitionKind::Destructor => {
+            let Some(endpoint) = sema.endpoint_facts().definition_endpoint(token) else {
+                return fail(
+                    sema,
+                    None,
+                    CompileError::without_span(ErrorKind::InvalidCompilerInput(
+                        "one-body request has no current stable endpoint".into(),
+                    )),
+                );
+            };
             analyze_named_destructor(sema, infer_ctx, &endpoint, interruption)
         }
         _ => fail(
@@ -1518,6 +1509,44 @@ fn analyze_definition(
             )),
         ),
     }
+}
+
+struct OrdinaryDefinitionSelection {
+    endpoint: SemanticDefinitionEndpoint,
+    name: Spur,
+    info: crate::FunctionInfo,
+    declaration: rue_rir::InstRef,
+}
+
+fn select_ordinary_definition<P: BodyEndpointProvider>(
+    facts: &P,
+    endpoint: SemanticDefinitionEndpoint,
+) -> Result<OrdinaryDefinitionSelection, CompileError> {
+    let Some(source_name) = facts.name_symbol(endpoint.name.as_ref()) else {
+        return Err(CompileError::without_span(ErrorKind::UndefinedFunction(
+            endpoint.name.to_string(),
+        )));
+    };
+    let Some(name) = facts.function_by_file_name(FileId::new(endpoint.file), source_name) else {
+        return Err(CompileError::without_span(ErrorKind::UndefinedFunction(
+            endpoint.name.to_string(),
+        )));
+    };
+    let info = facts
+        .function_info(name)
+        .expect("functions_by_file_name resolved to a registered function");
+    let source = facts.source_function_name(name);
+    let Some(declaration) = facts.first_free_function(source, info.file_id) else {
+        return Err(CompileError::without_span(ErrorKind::UndefinedFunction(
+            endpoint.name.to_string(),
+        )));
+    };
+    Ok(OrdinaryDefinitionSelection {
+        endpoint,
+        name,
+        info,
+        declaration,
+    })
 }
 
 fn analyze_named_method(
