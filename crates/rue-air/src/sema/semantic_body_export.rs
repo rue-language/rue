@@ -4,7 +4,7 @@ use lasso::Spur;
 use rue_error::CompileWarning;
 use rue_span::Span;
 
-use super::{AnalyzedFunction, BodyOwnerToken, DeclarationPhase, Sema};
+use super::{AnalyzedFunction, BodyOwnerToken, BodySema, DeclarationPhase, Sema};
 use crate::{
     AirInstData, AirPattern, AirProjection, SemanticBody, SemanticBodyAnchor, SemanticBodyCallArg,
     SemanticBodyExport, SemanticBodyExportFailure as F, SemanticBodyInst, SemanticBodyInstData,
@@ -14,7 +14,7 @@ use crate::{
     TypeKind,
 };
 
-impl<D: DeclarationPhase> Sema<'_, D> {
+impl BodySema<'_> {
     pub(crate) fn export_specialized_body(
         &self,
         base_name: Spur,
@@ -639,7 +639,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             },
         })
     }
+}
 
+impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn function_identity(&self, symbol: Spur) -> Result<SemanticDefinitionToken, F> {
         if let Some(info) = self.functions.get(&symbol) {
             return self.stable_definition_token(
@@ -670,7 +672,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             },
         )
     }
+}
 
+impl BodySema<'_> {
     pub(in crate::sema) fn body_function_identity(
         &self,
         symbol: Spur,
@@ -744,7 +748,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             None => crate::NominalInstanceKey::Named(self.enum_identity(id)?),
         })
     }
+}
 
+impl<D: DeclarationPhase> Sema<'_, D> {
     pub(crate) fn struct_identity(
         &self,
         id: crate::StructId,
@@ -818,7 +824,9 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
         Err(F::WrongStableIdentityKind)
     }
+}
 
+impl BodySema<'_> {
     pub(crate) fn export_body_type(
         &self,
         ty: Type,

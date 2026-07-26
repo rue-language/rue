@@ -125,6 +125,9 @@ mod tests {
     const INFERENCE_CONTEXT_SOURCE: &str = include_str!("inference_ctx.rs");
     const TYPECK_SOURCE: &str = include_str!("typeck.rs");
     const DECLARATION_BASE_SOURCE: &str = include_str!("declaration_base.rs");
+    const SEMANTIC_BODY_EXPORT_SOURCE: &str = include_str!("semantic_body_export.rs");
+    const ONE_BODY_SOURCE: &str = include_str!("one_body.rs");
+    const BINDING_MANIFEST_SOURCE: &str = include_str!("binding_manifest.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
@@ -301,6 +304,150 @@ mod tests {
         assert!(construction.contains("body_named_dependencies: Vec::new()"));
         assert!(DECLARATION_BASE_SOURCE.contains("+ local.deferred_ownership_gates.len()"));
         assert!(DECLARATION_BASE_SOURCE.contains("forced_anonymous_digest_entries"));
+    }
+
+    #[test]
+    fn body_publication_and_shared_identity_have_exact_receivers() {
+        fn impl_items(source: &str) -> Vec<&str> {
+            let mut items = Vec::new();
+            let mut remaining = source;
+            while let Some(start) = remaining.find("\nimpl") {
+                let item = &remaining[start + 1..];
+                let open = item.find('{').expect("impl body opens");
+                let mut depth = 0;
+                let mut end = None;
+                for (offset, ch) in item[open..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(open + offset + 1);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let end = end.expect("impl body closes");
+                items.push(&item[..end]);
+                remaining = &item[end..];
+            }
+            items
+        }
+
+        fn method_names(item: &str) -> Vec<&str> {
+            item.lines()
+                .filter_map(|line| {
+                    let line = line.strip_prefix("    ")?;
+                    let declaration = line
+                        .strip_prefix("fn ")
+                        .or_else(|| line.split_once(" fn ").map(|(_, declaration)| declaration))?;
+                    declaration.split_once('(').map(|(name, _)| name)
+                })
+                .collect()
+        }
+
+        let impls = impl_items(SEMANTIC_BODY_EXPORT_SOURCE);
+        assert_eq!(
+            impls.len(),
+            5,
+            "receiver partition has five cohesive blocks"
+        );
+        assert_eq!(
+            impls
+                .iter()
+                .filter(|item| item.starts_with("impl BodySema<'_>"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            impls
+                .iter()
+                .filter(|item| item.starts_with("impl<D: DeclarationPhase> Sema<'_, D>"))
+                .count(),
+            2
+        );
+
+        let body_methods = [
+            "export_specialized_body",
+            "export_ordinary_body",
+            "export_one_body_with_specializations",
+            "export_anonymous_body_with_specializations",
+            "export_body",
+            "export_body_type",
+            "body_function_identity",
+            "body_struct_identity",
+            "body_enum_identity",
+        ];
+        for method in body_methods {
+            let needle = format!("fn {method}(");
+            let owners = impls
+                .iter()
+                .filter(|item| item.contains(&needle))
+                .collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1, "{method} has one implementation");
+            assert!(
+                owners[0].starts_with("impl BodySema<'_>"),
+                "{method} must be body-only"
+            );
+        }
+
+        let shared_methods = [
+            "function_identity",
+            "struct_identity",
+            "enum_identity",
+            "stable_definition_token",
+        ];
+        for method in shared_methods {
+            let needle = format!("fn {method}(");
+            let owners = impls
+                .iter()
+                .filter(|item| item.contains(&needle))
+                .collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1, "{method} has one implementation");
+            assert!(
+                owners[0].starts_with("impl<D: DeclarationPhase> Sema<'_, D>"),
+                "{method} remains shared with declaration installation"
+            );
+        }
+
+        let mut actual_body_methods = impls
+            .iter()
+            .filter(|item| item.starts_with("impl BodySema<'_>"))
+            .flat_map(|item| method_names(item))
+            .collect::<Vec<_>>();
+        actual_body_methods.sort_unstable();
+        let mut expected_body_methods = body_methods.to_vec();
+        expected_body_methods.sort_unstable();
+        assert_eq!(actual_body_methods, expected_body_methods);
+
+        let mut actual_shared_methods = impls
+            .iter()
+            .filter(|item| item.starts_with("impl<D: DeclarationPhase> Sema<'_, D>"))
+            .flat_map(|item| method_names(item))
+            .collect::<Vec<_>>();
+        actual_shared_methods.sort_unstable();
+        let mut expected_shared_methods = shared_methods.to_vec();
+        expected_shared_methods.sort_unstable();
+        assert_eq!(actual_shared_methods, expected_shared_methods);
+
+        for forbidden in ["Deref", "\ntrait "] {
+            assert!(
+                !SEMANTIC_BODY_EXPORT_SOURCE.contains(forbidden),
+                "publication must not gain a wrapper authority through {forbidden}"
+            );
+        }
+
+        for method in [
+            "export_one_body_with_specializations",
+            "export_specialized_body",
+            "export_anonymous_body_with_specializations",
+        ] {
+            assert!(ONE_BODY_SOURCE.contains(&format!("sema.{method}(")));
+        }
+        assert!(ANALYSIS_ROOT_SOURCE.contains("sema.export_ordinary_body("));
+        assert!(BINDING_MANIFEST_SOURCE.contains("self.stable_definition_token("));
     }
 
     #[test]
