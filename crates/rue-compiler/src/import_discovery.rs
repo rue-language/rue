@@ -49,6 +49,48 @@ impl ImportDiscoveryContext {
     pub fn epoch(&self) -> u64 {
         self.epoch
     }
+
+    /// Stable identity of the filesystem *observation regime* (RUE-1137).
+    ///
+    /// This is the revision compatibility token for import-input publication.
+    /// It changes when the rules governing reads change — discovery epoch,
+    /// project root, std root, or read policy — and NOT when an individual
+    /// file changes. File changes are per-leaf stamp changes, so a retained
+    /// terminal stays validatable across an ordinary edit; a regime change
+    /// invalidates wholesale because the compiler can no longer relate its
+    /// retained observations to the new rules.
+    ///
+    /// Deriving this from content rather than from a per-request counter is
+    /// what allows warm reuse under rooted demand. The counter that used to
+    /// occupy this slot minted a fresh epoch per request, so no predecessor
+    /// terminal was ever eligible for red/green validation.
+    ///
+    /// A stable digest is used rather than `DefaultHasher` so the token does
+    /// not vary across processes or toolchain versions; the reproducibility
+    /// harness compares publication identity across runs.
+    pub fn regime_token(&self) -> u64 {
+        use sha2::{Digest, Sha256};
+
+        let mut digest = Sha256::new();
+        // Length-prefix every field so distinct field boundaries cannot be
+        // forged by concatenation (e.g. roots "/a" + "/bc" vs "/ab" + "/c").
+        let mut field = |bytes: &[u8]| {
+            digest.update((bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        };
+        field(&self.epoch.to_le_bytes());
+        field(self.project_root.as_bytes());
+        match self.std_root.as_deref() {
+            Some(root) => {
+                field(b"std");
+                field(root.as_bytes());
+            }
+            None => field(b"no-std"),
+        }
+        field(self.read_policy_revision.as_bytes());
+        let bytes = digest.finalize();
+        u64::from_le_bytes(bytes[..8].try_into().expect("sha256 yields 32 bytes"))
+    }
     pub fn project_root(&self) -> &str {
         &self.project_root
     }
@@ -610,7 +652,16 @@ pub enum ImportDemandMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImportInputRevision {
     pub(crate) revision_id: u64,
+    /// Per-request identity. Distinguishes one rooted import-input request
+    /// from the next, and is what a trusted-toolchain successor delta must
+    /// match. This is deliberately NOT the revision compatibility token
+    /// (RUE-1137): keeping the two separate is what lets a successor request
+    /// reuse retained terminals while still being recognizable as a distinct
+    /// request.
     pub(crate) request_generation: u64,
+    /// Observation-regime identity, from [`ImportDiscoveryContext::regime_token`].
+    /// This occupies the runtime revision's compatibility slot.
+    pub(crate) compatibility_token: u64,
     pub(crate) frontier_round: u64,
 }
 
