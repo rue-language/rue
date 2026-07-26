@@ -14,7 +14,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
 use rue_span::{FileId, Span};
 
 use super::context::AnalysisContext;
-use super::{DeclarationPhase, Sema};
+use super::{BodySema, DeclarationPhase, Sema};
 
 /// Maximum size of a single object in bytes: `i32::MAX`, matching the
 /// codegen frame-offset (disp32) addressing range (Appendix C practical
@@ -2455,18 +2455,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         format!("{}.__drop", self.symbol_type_name(struct_id))
     }
 
-    /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Detected
-    /// by the struct name being exactly `str`. Used to route string literals and
-    /// slice-style `.len()`/index operations through the fat-pointer paths while
-    /// keeping `str` first-class (exempt from the slice second-class rule).
-    pub(crate) fn is_str_struct(&self, ty: Type) -> bool {
-        if let TypeKind::Struct(struct_id) = ty.kind() {
-            self.type_pool.struct_def(struct_id).name == "str"
-        } else {
-            false
-        }
-    }
-
     /// Get (or lazily create) the synthetic 2-field struct representing a
     /// fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326).
     ///
@@ -2525,6 +2513,20 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let _ = span;
         Ok(Type::new_struct(struct_id))
     }
+}
+
+impl BodySema<'_> {
+    /// Is `ty` the synthetic `str` struct (ADR-0043 Phase 3, RUE-324)? Detected
+    /// by the struct name being exactly `str`. Used to route string literals and
+    /// slice-style `.len()`/index operations through the fat-pointer paths while
+    /// keeping `str` first-class (exempt from the slice second-class rule).
+    pub(crate) fn is_str_struct(&self, ty: Type) -> bool {
+        if let TypeKind::Struct(struct_id) = ty.kind() {
+            self.type_pool.struct_def(struct_id).name == "str"
+        } else {
+            false
+        }
+    }
 
     /// Is `ty` a fixed-capacity string `Str(N)` (ADR-0043 Phase 5, RUE-326)?
     /// Detected by the struct name matching `Str(<digits>)`, mirroring the
@@ -2555,7 +2557,9 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn is_str_like(&self, ty: Type) -> bool {
         self.is_str_struct(ty) || self.is_str_fixed_struct(ty)
     }
+}
 
+impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// If `ty` is a synthetic slice struct `[T]` (ADR-0043, RUE-322), return its
     /// element type `T`; otherwise `None`. Detected by the struct name being
     /// slice syntax (`[..]` that is not a fixed-array `[T; N]`), the same naming
