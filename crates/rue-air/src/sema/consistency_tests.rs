@@ -621,6 +621,211 @@ mod tests {
     }
 
     #[test]
+    fn materialized_layout_helpers_have_exact_body_receiver() {
+        fn impl_items(source: &str) -> Vec<&str> {
+            let mut items = Vec::new();
+            let mut remaining = source;
+            while let Some(start) = remaining.find("\nimpl") {
+                let item = &remaining[start + 1..];
+                let open = item.find('{').expect("impl body opens");
+                let mut depth = 0;
+                let mut end = None;
+                for (offset, ch) in item[open..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(open + offset + 1);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let end = end.expect("impl body closes");
+                items.push(&item[..end]);
+                remaining = &item[end..];
+            }
+            items
+        }
+
+        fn method_names(item: &str) -> Vec<&str> {
+            item.lines()
+                .filter_map(|line| {
+                    let mut declaration = line.strip_prefix("    ")?;
+                    if declaration.starts_with(char::is_whitespace) {
+                        return None;
+                    }
+                    if let Some(rest) = declaration.strip_prefix("pub ") {
+                        declaration = rest;
+                    } else if declaration.starts_with("pub(") {
+                        let visibility_end = declaration.find(") ")?;
+                        declaration = &declaration[visibility_end + 2..];
+                    }
+                    let declaration = declaration.strip_prefix("fn ")?;
+                    declaration.split_once('(').map(|(name, _)| name)
+                })
+                .collect()
+        }
+
+        assert_eq!(
+            method_names(
+                "impl Probe {\n\
+                 \x20\x20\x20\x20fn private() {}\n\
+                 \x20\x20\x20\x20pub fn public() {}\n\
+                 \x20\x20\x20\x20pub(crate) fn crate_visible() {}\n\
+                 \x20\x20\x20\x20pub(in crate::sema) fn scoped() {}\n\
+                 \x20\x20\x20\x20\x20\x20\x20\x20fn nested() {}\n\
+                 \x20\x20\x20\x20// pub(crate) fn comment() {}\n\
+                 }"
+            ),
+            ["private", "public", "crate_visible", "scoped"]
+        );
+
+        fn method_item<'a>(item: &'a str, name: &str) -> &'a str {
+            let needle = format!("fn {name}(");
+            let start = item.find(&needle).expect("method is present");
+            let open = start + item[start..].find('{').expect("method body opens");
+            let mut depth = 0;
+            let mut end = None;
+            for (offset, ch) in item[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(open + offset + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            &item[start..end.expect("method body closes")]
+        }
+
+        let typeck_impls = impl_items(TYPECK_SOURCE);
+        let layout_methods = [
+            "require_layout_slots",
+            "reserve_frame_slots",
+            "checked_abi_slot_count",
+            "abi_slot_count",
+        ];
+        let body_owner = typeck_impls
+            .iter()
+            .find(|item| item.contains("fn require_layout_slots("))
+            .expect("materialized-layout owner is present");
+        assert!(
+            body_owner.starts_with("impl BodySema<'_>"),
+            "materialized layout policy must be body-only"
+        );
+
+        for method in layout_methods {
+            let needle = format!("fn {method}(");
+            let owners = typeck_impls
+                .iter()
+                .filter(|item| item.contains(&needle))
+                .collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1, "{method} has one implementation");
+            assert_eq!(
+                *owners[0], *body_owner,
+                "{method} shares the cohesive body-only owner"
+            );
+        }
+
+        let mut actual_methods = method_names(body_owner);
+        actual_methods.sort_unstable();
+        let mut expected_methods = layout_methods.to_vec();
+        expected_methods.sort_unstable();
+        assert_eq!(actual_methods, expected_methods);
+
+        for item in typeck_impls.iter().filter(|item| {
+            let header = item.lines().next().expect("impl has a header");
+            header.contains("DeclarationPhase") && header.contains("Sema<")
+        }) {
+            for method in layout_methods {
+                assert!(
+                    !item.contains(&format!("fn {method}(")),
+                    "{method} must not remain generically available"
+                );
+            }
+        }
+
+        for method in [
+            "get_or_create_array_type",
+            "pre_create_array_types_from_infer_type",
+            "infer_type_to_concrete_type_for_key",
+        ] {
+            let needle = format!("fn {method}(");
+            let owners = typeck_impls
+                .iter()
+                .filter(|item| item.contains(&needle))
+                .collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1, "{method} has one implementation");
+            assert!(
+                owners[0].starts_with("impl<'a, D: DeclarationPhase> Sema<'a, D>"),
+                "{method} remains declaration-phase generic"
+            );
+        }
+
+        let require = method_item(body_owner, "require_layout_slots");
+        assert!(require.contains("match self.checked_abi_slot_count(ty)"));
+
+        let reserve = method_item(body_owner, "reserve_frame_slots");
+        assert!(reserve.contains("crate::layout::checked_function_frame_slots(start, additional)"));
+
+        let checked = method_item(body_owner, "checked_abi_slot_count");
+        for edge in [
+            "self.checked_abi_slot_count(element_type)?",
+            "self.checked_abi_slot_count(f.ty)?",
+            "self.checked_abi_slot_count(vty)?",
+            "u64::from(self.abi_slot_count(ty))",
+        ] {
+            assert!(
+                checked.contains(edge),
+                "checked layout retains its recursive or fallback edge: {edge}"
+            );
+        }
+
+        let abi = method_item(body_owner, "abi_slot_count");
+        assert!(
+            abi.contains("self.type_pool.provisional_abi_slot_count(ty)"),
+            "the Sema helper delegates to the distinct TypeInternPool computation"
+        );
+
+        for (name, source, anchors) in [
+            (
+                "intrinsics.rs",
+                INTRINSICS_SOURCE,
+                &["self.require_layout_slots("][..],
+            ),
+            (
+                "aggregates.rs",
+                AGGREGATES_SOURCE,
+                &["self.require_layout_slots("][..],
+            ),
+            (
+                "functions.rs",
+                FUNCTIONS_SOURCE,
+                &["self.require_layout_slots(", "self.reserve_frame_slots("][..],
+            ),
+            (
+                "ownership.rs",
+                OWNERSHIP_SOURCE,
+                &["self.require_layout_slots(", "self.reserve_frame_slots("][..],
+            ),
+        ] {
+            for anchor in anchors {
+                assert!(
+                    source.contains(anchor),
+                    "{name} keeps its materialized-layout call to {anchor}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn module_enum_visibility_has_exact_body_and_shared_receivers() {
         fn impl_items(source: &str) -> Vec<&str> {
             let mut items = Vec::new();
