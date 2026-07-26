@@ -198,6 +198,10 @@ impl BoundSema<'_> {
         self.sema.type_pool = self.sema.type_pool.derive_overlay();
         self.sema.param_arena = self.sema.param_arena.derive_overlay();
         self.body_base = Some(Arc::new(self.sema.body_semantic_base()));
+        self.body_state = self
+            .body_base
+            .as_ref()
+            .map(|base| super::BodyAnalysisState::from_body_semantic_base(base.clone()));
     }
 
     /// Derive one body-local epoch from this declaration base, charging what the

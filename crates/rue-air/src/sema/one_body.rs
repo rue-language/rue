@@ -17,7 +17,7 @@ use rue_rir::InstData;
 use rue_span::{FileId, Span};
 
 use super::body_endpoint::BodyEndpointProvider;
-use super::{AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyOwnerKind, BodySema};
+use super::{AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisState, BodyOwnerKind, BodySema};
 use crate::{
     FunctionInstanceKey, NominalInstanceKey, SemanticBodyExport, SemanticDefinitionToken,
     SemanticModuleToken, SemanticSpecializationIdentity, SemanticSpecializedBodyExport,
@@ -829,6 +829,7 @@ fn finalize_ordinary(
 
 pub(super) fn analyze_one_body(
     mut sema: BodySema<'_>,
+    state: BodyAnalysisState<'_>,
     request: OneBodyRequest,
     interruption: Option<OneBodyInterruption>,
 ) -> OneBodyTransactionOutcome {
@@ -983,13 +984,14 @@ pub(super) fn analyze_one_body(
             }
         }
         OneBodyRequest::Definition(token) => {
-            analyze_definition(&mut sema, &infer_ctx, token, interruption)
+            analyze_definition(&mut sema, &state, &infer_ctx, token, interruption)
         }
     }
 }
 
 pub(super) fn analyze_one_body_instance<K, M>(
     mut sema: BodySema<'_>,
+    state: BodyAnalysisState<'_>,
     instance: &FunctionInstanceKey<K, M>,
     definition: impl Fn(&K) -> Result<SemanticDefinitionToken, crate::SemanticStableResolutionFailure>,
     module: impl Fn(&M) -> Result<SemanticModuleToken, crate::SemanticStableResolutionFailure>,
@@ -1075,7 +1077,7 @@ where
             };
         }
     };
-    analyze_one_body(sema, request, interruption)
+    analyze_one_body(sema, state, request, interruption)
 }
 
 fn function_instance_contains_str<D, M>(instance: &FunctionInstanceKey<D, M>) -> bool {
@@ -1382,6 +1384,7 @@ pub(in crate::sema) fn materialize_instance_type(
 
 fn analyze_definition(
     sema: &mut BodySema<'_>,
+    state: &BodyAnalysisState<'_>,
     infer_ctx: &super::InferenceContext,
     token: SemanticDefinitionToken,
     interruption: Option<OneBodyInterruption>,
@@ -1451,7 +1454,7 @@ fn analyze_definition(
             else {
                 unreachable!()
             };
-            let owner = sema.body_owner_token(
+            let owner = state.body_owner_token(
                 info.file_id,
                 endpoint.name.as_ref(),
                 None,

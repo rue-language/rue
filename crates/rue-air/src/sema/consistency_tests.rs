@@ -260,7 +260,7 @@ mod tests {
         let base = SEMA_ROOT_SOURCE
             .split("pub(super) struct BodySemanticBase")
             .nth(1)
-            .and_then(|source| source.split("/// The declaration-time portion").next())
+            .and_then(|source| source.split("pub(super) struct BodyAnalysisState").next())
             .expect("BodySemanticBase definition is present");
         for forbidden in ["Sema<", "Sema::", "&Sema", "BodySema", "BoundSema", "Deref"] {
             assert!(
@@ -307,6 +307,39 @@ mod tests {
         assert!(construction.contains("body_named_dependencies: Vec::new()"));
         assert!(DECLARATION_BASE_SOURCE.contains("+ local.deferred_ownership_gates.len()"));
         assert!(DECLARATION_BASE_SOURCE.contains("forced_anonymous_digest_entries"));
+    }
+
+    #[test]
+    fn ordinary_owner_identity_uses_the_owned_body_analysis_state() {
+        let state = SEMA_ROOT_SOURCE
+            .split("pub(super) struct BodyAnalysisState")
+            .nth(1)
+            .and_then(|source| source.split("/// The declaration-time portion").next())
+            .expect("BodyAnalysisState definition is present");
+        for forbidden in [
+            "Sema<",
+            "Sema::",
+            "&Sema",
+            "BodySema<",
+            "BodySema::",
+            "BoundSema",
+            "sema:",
+            "Deref",
+        ] {
+            assert!(
+                !state.contains(forbidden),
+                "BodyAnalysisState must not retain {forbidden}"
+            );
+        }
+
+        let ordinary = ONE_BODY_SOURCE
+            .split("fn analyze_definition(")
+            .nth(1)
+            .and_then(|source| source.split("fn analyze_named_method(").next())
+            .expect("ordinary definition analyzer is present");
+        assert!(ordinary.contains("state: &BodyAnalysisState<'_>"));
+        assert!(ordinary.contains("let owner = state.body_owner_token("));
+        assert!(!ordinary.contains("BodyAnalysisState::from_body_semantic_base"));
     }
 
     #[test]
