@@ -32,9 +32,7 @@ use std::{
 
 use super::*;
 use crate::body_query::BodyReference;
-use crate::declaration_candidate::{
-    DeclarationCandidateCategory, DeclarationCandidateKey, DeclarationCandidateOwner,
-};
+use crate::declaration_candidate::DeclarationCandidateCategory;
 use crate::revisioned_query_database::test_support::{
     DurableDeclSource, endpoint_display, endpoint_nominal_render,
 };
@@ -579,6 +577,7 @@ struct CapturedBody {
 #[derive(Debug, Clone)]
 struct BodyDemandOracle {
     body: String,
+    body_instance: crate::FunctionInstanceKey,
     references: Vec<BodyReference>,
     produced: Vec<crate::durable_semantics::DurableAnonymousNominal>,
     failed: bool,
@@ -917,6 +916,7 @@ impl ProductionAnalyzer {
             };
             oracles.push(BodyDemandOracle {
                 body: (*body).to_owned(),
+                body_instance: key.instance.clone(),
                 references,
                 produced,
                 failed,
@@ -1014,21 +1014,6 @@ fn candidate_category(kind: crate::StableDefinitionKind) -> Option<DeclarationCa
         K::Destructor => Cat::Destructor,
         K::Method => Cat::Method,
         K::AssociatedFunction => Cat::AssociatedFunction,
-    })
-}
-
-fn candidate_for(key: &crate::StableDefinitionKey) -> Option<DeclarationCandidateKey> {
-    let category = candidate_category(key.kind())?;
-    let owner = key.owner().map(|owner| DeclarationCandidateOwner {
-        category: candidate_category(owner.kind()).expect("owner kinds are nominal"),
-        name: Arc::from(owner.name()),
-    });
-    Some(DeclarationCandidateKey {
-        module: key.module().clone(),
-        category,
-        name: Arc::from(key.name()),
-        owner,
-        duplicate_discriminator: 0,
     })
 }
 
@@ -1680,6 +1665,7 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
     /// producer-facts operation. Wrapper/specialization identity is preserved.
     fn replay_producer(&mut self, anon: &crate::AnonymousNominalKey) {
         use crate::FunctionInstanceKey as F;
+        use rue_air::BodyFactProvider;
         use rue_air::StableProducerId as P;
         let canonical = anon.with_canonical_producer().into_owned();
         let mut producer_instance = self
@@ -1712,10 +1698,7 @@ impl<'a, 'db, 'r> ReplayCtx<'a, 'db, 'r> {
         {
             return;
         }
-        match self
-            .provider
-            .producer_instance_body_facts(&producer_instance)
-        {
+        match self.provider.producer_body_facts(&producer_instance) {
             Some(crate::body_query::ProducedAnonymous::Produced(produced)) => {
                 let boundary: BTreeSet<_> = produced
                     .0
@@ -1966,7 +1949,7 @@ fn run_body_replay(
     references: &[BodyReference],
     produced_union: &[crate::durable_semantics::DurableAnonymousNominal],
     absent_lookups: &[&str],
-    body_key: Option<&crate::StableDefinitionKey>,
+    body_instance: Option<&crate::FunctionInstanceKey>,
     rir: &rue_rir::Rir,
     rir_interner: &lasso::ThreadedRodeo,
 ) -> (
@@ -2042,12 +2025,11 @@ fn run_body_replay(
     }
 
     // The body's own trusted-toolchain demand set, observed through the
-    // boundary op (function bodies carry the derivable candidate key).
-    if let Some(body_key) = body_key
-        && body_key.kind() == crate::StableDefinitionKind::Function
-        && let Some(candidate) = candidate_for(body_key)
-    {
-        let demand = provider.trusted_toolchain_facts(&candidate);
+    // boundary op under the exact instance analyzed by side A. A specialization
+    // must remain a specialization here; the provider owns any source-body
+    // projection behind its registered terminal.
+    if let Some(body_instance) = body_instance {
+        let demand = provider.trusted_toolchain_facts(body_instance);
         ctx.facts.push(format!(
             "toolchain-demands kinds={}",
             demand.payload_kinds().len()
@@ -2153,10 +2135,7 @@ impl ProviderFactsOverlayAnalyzer {
         references.sort();
         references.dedup();
         let produced_union = produced_union.to_vec();
-        let body_key = decls
-            .iter()
-            .map(|decl| decl.key.clone())
-            .find(|key| key.kind().owns_body() && key.name() == body);
+        let body_instance = oracle.body_instance.clone();
         let absent: Vec<&str> = absent_lookups.to_vec();
         let rir = inputs.rir.rir();
         let interner = inputs.rir.semantic_symbols().interner();
@@ -2170,7 +2149,7 @@ impl ProviderFactsOverlayAnalyzer {
                     &references,
                     &produced_union,
                     &absent,
-                    body_key.as_ref(),
+                    Some(&body_instance),
                     rir,
                     interner,
                 )
