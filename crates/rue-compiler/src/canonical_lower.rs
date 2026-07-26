@@ -62,6 +62,22 @@ impl ModuleRirOutput {
     pub(crate) fn work(&self) -> CanonicalRirWork {
         self.work
     }
+
+    pub(crate) fn instruction_count(&self) -> usize {
+        self.rir.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
+        self.rir
+            .iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                rue_rir::InstData::AnonStructType { anchor, .. }
+                | rue_rir::InstData::AnonEnumType { anchor, .. } => Some(anchor.clone()),
+                _ => None,
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -273,6 +289,30 @@ impl CanonicalRirWork {
 pub(crate) fn lower_module_rir_with_work(
     module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
 ) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
+    lower_module_rir_with_work_internal(module, None)
+}
+
+pub(crate) fn lower_module_rir_with_work_and_anonymous_anchors(
+    module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
+    anchors: &[(
+        rue_span::Span,
+        rue_rir::AnonymousTypeSiteKind,
+        rue_rir::RirStructuralAnchor,
+    )],
+) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
+    lower_module_rir_with_work_internal(module, Some(anchors))
+}
+
+fn lower_module_rir_with_work_internal(
+    module: std::sync::Arc<crate::parsed_modules::ParsedModule>,
+    authoritative_anchors: Option<
+        &[(
+            rue_span::Span,
+            rue_rir::AnonymousTypeSiteKind,
+            rue_rir::RirStructuralAnchor,
+        )],
+    >,
+) -> Result<ModuleRirOutput, (CompileError, CanonicalRirWork)> {
     let symbols = SemanticSymbolUniverse::from_modules(std::slice::from_ref(&module));
     let view = crate::parsed_modules::ParsedAstView::from_module(module.clone());
     let first_error = RefCell::<Option<CompileError>>::new(None);
@@ -297,6 +337,21 @@ pub(crate) fn lower_module_rir_with_work(
                     }
                 }
             });
+        if let Some(anchors) = authoritative_anchors {
+            generator
+                .install_authoritative_anonymous_anchors(anchors.iter().cloned())
+                .map_err(|error| {
+                    (
+                        CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "authoritative anonymous-anchor transport failed: {error}"
+                            )),
+                            rue_span::Span::new(0, 0),
+                        ),
+                        work,
+                    )
+                })?;
+        }
         generator.append_items(&module.ast().items);
         if let Some(error) = first_error.borrow_mut().take() {
             return Err((error, work));

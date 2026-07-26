@@ -477,10 +477,12 @@ pub(crate) struct RevisionedQueryDatabase {
     >,
     #[cfg(test)]
     raw_const_syntax: QueryFamily<RawConstSyntaxQueryKey, RawConstSyntaxQueryValue>,
-    #[cfg(test)]
+    #[allow(dead_code)]
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
+    #[allow(dead_code)]
+    body_inputs: QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
     // The registered `body-toolchain-demands` node (RUE-1112). It projects one
     // reached body's exact raw declaration body to the sorted, deduplicated set
     // of trusted toolchain modules its fallible intrinsics demand plus the
@@ -2020,6 +2022,113 @@ fn body_source_definition_key(
         };
     }
     function_definition_key(function)
+}
+
+/// The request-local result of lowering one owned body input. This type is
+/// intentionally private to the evaluator module: its parsed module and RIR
+/// are fresh local artifacts and never become query values, keys, or durable
+/// publication data.
+#[derive(Debug)]
+struct OwnedBodyLowering {
+    module: Arc<crate::parsed_modules::ParsedModule>,
+    rir: crate::canonical_lower::ModuleRirOutput,
+}
+
+impl OwnedBodyLowering {
+    fn instruction_count(&self) -> usize {
+        self.rir.instruction_count()
+    }
+
+    fn function_count(&self) -> usize {
+        self.module
+            .ast()
+            .items
+            .iter()
+            .filter(|item| matches!(item, rue_parser::ast::Item::Function(_)))
+            .count()
+    }
+
+    fn is_valid(&self) -> bool {
+        self.function_count() == 1 && self.instruction_count() > 0
+    }
+
+    #[cfg(test)]
+    fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
+        self.rir.anonymous_type_anchors()
+    }
+}
+
+fn lower_owned_body_input(
+    input: &crate::body_query::OwnedBodyInput,
+) -> Result<OwnedBodyLowering, Arc<str>> {
+    // Constructing this parser input is deliberately just concatenation of the
+    // two exact syntax terminals. No module source, declaration slice, RIR, or
+    // live interner is consulted here.
+    let mut source = input
+        .signature
+        .declaration_fragments
+        .iter()
+        .map(AsRef::as_ref)
+        .collect::<Vec<&str>>()
+        .concat();
+    source.push_str(input.body.body.as_ref());
+
+    let snapshot = crate::SourceSnapshot::single("<rue-body-input>", source)
+        .map_err(|errors| Arc::from(errors.to_string()))?;
+    let module_id = snapshot
+        .module_id(crate::FileId::DEFAULT)
+        .cloned()
+        .ok_or_else(|| Arc::from("owned body snapshot has no synthetic module"))?;
+    let (parsed, _) = crate::parsed_modules::parse_source_snapshot_module(&snapshot, &module_id);
+    let module = parsed.map_err(|errors| Arc::from(errors.to_string()))?;
+    if module.ast().items.len() != 1
+        || !matches!(
+            module.ast().items.first(),
+            Some(rue_parser::ast::Item::Function(_))
+        )
+    {
+        return Err(Arc::from(
+            "owned body input did not lower to exactly one ordinary function",
+        ));
+    }
+    let signature_len = input
+        .signature
+        .declaration_fragments
+        .iter()
+        .map(|fragment| fragment.len())
+        .sum::<usize>();
+    let body_len = input.body.body.len();
+    let anchors = input
+        .body
+        .anonymous_sites
+        .iter()
+        .map(|site| {
+            let start = signature_len
+                .checked_add(site.fragment_start as usize)
+                .and_then(|offset| u32::try_from(offset).ok())
+                .ok_or_else(|| Arc::from("anonymous anchor start exceeds local source"))?;
+            let end = signature_len
+                .checked_add(site.fragment_end as usize)
+                .and_then(|offset| u32::try_from(offset).ok())
+                .ok_or_else(|| Arc::from("anonymous anchor end exceeds local source"))?;
+            if site.fragment_start >= site.fragment_end || site.fragment_end as usize > body_len {
+                return Err(Arc::from(
+                    "anonymous anchor locator is outside the exact body syntax",
+                ));
+            }
+            Ok((
+                rue_span::Span::new(start, end),
+                site.kind,
+                site.anchor.clone(),
+            ))
+        })
+        .collect::<Result<Vec<_>, Arc<str>>>()?;
+    let rir = crate::canonical_lower::lower_module_rir_with_work_and_anonymous_anchors(
+        module.clone(),
+        &anchors,
+    )
+    .map_err(|(error, _)| Arc::from(error.to_string()))?;
+    Ok(OwnedBodyLowering { module, rir })
 }
 
 fn declaration_candidate_for_stable_key(
@@ -7723,6 +7832,164 @@ impl RevisionedQueryDatabase {
         let bodies_for_semantic_nucleus = raw_declaration_bodies.clone();
         let names_for_semantic_nucleus = lookup_names.clone();
         let imports_for_semantic_nucleus = declaration_imports.clone();
+        let classifications_for_body_inputs = stable_declaration_classifications.clone();
+        let shells_for_body_inputs = declaration_shells.clone();
+        let signatures_for_body_inputs = raw_declaration_signatures.clone();
+        let bodies_for_body_inputs = raw_declaration_bodies.clone();
+        let body_inputs = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.body-input",
+                BODY_QUERY_MEMO_RETENTION,
+                crate::body_query::body_input_equal,
+                move |context, _, key: &crate::body_query::BodyQueryKey| {
+                    use crate::body_query::{BodyInputIncomplete as Incomplete, BodyInputValue};
+
+                    let Some(definition) = (match &key.instance {
+                        crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                        _ => None,
+                    })
+                    .cloned()
+                    else {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::UnsupportedInstance,
+                        )));
+                    };
+                    if definition.kind() != crate::StableDefinitionKind::Function {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::UnsupportedKind(definition.kind()),
+                        )));
+                    }
+                    let classification = match context.query_registered(
+                        &classifications_for_body_inputs,
+                        StableDeclarationClassificationQueryKey(definition.clone()),
+                    ) {
+                        Ok(value) => value,
+                        Err(QueryAbort::MissingInput(_)) => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::MissingPrerequisite(Arc::from(
+                                    "stable declaration classification",
+                                )),
+                            )));
+                        }
+                        Err(abort) => return Err(abort),
+                    };
+                    let candidate = match classification.outcome() {
+                        rue_query::QueryOutcome::Success(
+                            StableDeclarationClassificationQueryValue::Selected(candidate),
+                        ) => candidate.clone(),
+                        _ => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::MissingPrerequisite(Arc::from(
+                                    "stable declaration candidate",
+                                )),
+                            )));
+                        }
+                    };
+                    let shell = match context.query_registered(
+                        &shells_for_body_inputs,
+                        DeclarationShellQueryKey(candidate.clone()),
+                    ) {
+                        Ok(value) => value,
+                        Err(QueryAbort::MissingInput(_)) => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::MissingPrerequisite(Arc::from(
+                                    "declaration shell",
+                                )),
+                            )));
+                        }
+                        Err(abort) => return Err(abort),
+                    };
+                    let rue_query::QueryOutcome::Success(
+                        DeclarationShellQueryValue::Available(shell),
+                    ) = shell.outcome()
+                    else {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::MissingPrerequisite(Arc::from("declaration shell")),
+                        )));
+                    };
+                    if shell.is_generic {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::Generic,
+                        )));
+                    }
+                    if shell.is_extern
+                        || candidate.category
+                            == crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
+                    {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::Extern,
+                        )));
+                    }
+                    let signature = match context.query_registered(
+                        &signatures_for_body_inputs,
+                        RawDeclarationSignatureQueryKey(candidate.clone()),
+                    ) {
+                        Ok(value) => value,
+                        Err(QueryAbort::MissingInput(_)) => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::MissingPrerequisite(Arc::from(
+                                    "raw declaration signature",
+                                )),
+                            )));
+                        }
+                        Err(abort) => return Err(abort),
+                    };
+                    let rue_query::QueryOutcome::Success(
+                        RawDeclarationSignatureQueryValue::Available(signature),
+                    ) = signature.outcome()
+                    else {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::MissingPrerequisite(Arc::from(
+                                "raw declaration signature",
+                            )),
+                        )));
+                    };
+                    let body = match context.query_registered(
+                        &bodies_for_body_inputs,
+                        RawDeclarationBodyQueryKey(candidate.clone()),
+                    ) {
+                        Ok(value) => value,
+                        Err(QueryAbort::MissingInput(_)) => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::MissingPrerequisite(Arc::from(
+                                    "raw declaration body",
+                                )),
+                            )));
+                        }
+                        Err(abort) => return Err(abort),
+                    };
+                    let rue_query::QueryOutcome::Success(
+                        RawDeclarationBodyQueryValue::Available(body),
+                    ) = body.outcome()
+                    else {
+                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                            Incomplete::MissingPrerequisite(Arc::from("raw declaration body")),
+                        )));
+                    };
+                    let input = crate::body_query::OwnedBodyInput {
+                        owner: definition,
+                        signature: signature.clone(),
+                        body: body.clone(),
+                    };
+                    match lower_owned_body_input(&input) {
+                        Ok(lowering) if lowering.is_valid() => {}
+                        Ok(_) => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::Lowering(Arc::from(
+                                    "owned body input lowered to no local instructions",
+                                )),
+                            )));
+                        }
+                        Err(failure) => {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::Lowering(failure),
+                            )));
+                        }
+                    }
+                    Ok(QueryOutput::success(BodyInputValue::Available(input)))
+                },
+            )
+            .expect("the BodyInput family has one canonical name");
         // Body transactions are supplied per request, but their successful
         // producer-owned anonymous projection has one registered evaluator so
         // SemanticNucleus can observe it without re-running body semantics.
@@ -9167,9 +9434,9 @@ impl RevisionedQueryDatabase {
             stable_declaration_classifications,
             #[cfg(test)]
             raw_const_syntax,
-            #[cfg(test)]
             raw_declaration_signatures,
             raw_declaration_bodies,
+            body_inputs,
             body_toolchain_demands,
             body_transactions,
             canonical_bodies: runtime
@@ -10255,6 +10522,22 @@ impl RevisionedQueryDatabase {
     {
         self.runtime
             .request_registered(&self.body_produced_anonymous, revision, key, cancellation)
+            .into_result()
+    }
+
+    /// Request the exact owned syntax input for one body. The evaluator for
+    /// this family performs all prerequisite requests and keeps any parser/RIR
+    /// artifacts local to that evaluation; callers receive only stable-owned
+    /// syntax or a typed incomplete classification.
+    #[allow(dead_code)]
+    pub(crate) fn body_input(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        cancellation: CancellationToken,
+    ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::BodyInputValue>>, QueryAbort> {
+        self.runtime
+            .request_registered(&self.body_inputs, revision, key, cancellation)
             .into_result()
     }
 
@@ -25404,5 +25687,407 @@ fn main() -> i32 {
             a_incarnation,
             "the prior lease kept `A`'s exact terminal across green revalidation"
         );
+    }
+
+    #[test]
+    fn body_input_registered_evaluator_owns_exact_fragments_and_local_lowering() {
+        let first = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 7 }\n")],
+            1,
+        );
+        let edited_body = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 9 }\n")],
+            1,
+        );
+        let signature_edit = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i64 { 7 }\n")],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let instance = free_function_instance(&module, "selected");
+        let key = |configuration| crate::body_query::BodyQueryKey {
+            instance: instance.clone(),
+            configuration,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&first),
+            &first,
+        );
+        let first_terminal = database
+            .body_input(
+                first_revision,
+                key(semantic_configuration()),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
+            first_terminal.outcome()
+        else {
+            panic!("ordinary function did not produce owned body input: {first_terminal:?}");
+        };
+        assert_eq!(
+            input.owner,
+            match &instance {
+                crate::FunctionInstanceKey::Definition(owner) => owner.clone(),
+                _ => unreachable!(),
+            }
+        );
+        assert_eq!(input.body.body.as_ref(), "{ 7 }");
+        assert_eq!(
+            input.signature.declaration_fragments.concat(),
+            "fn selected() -> i32"
+        );
+        let lowered = lower_owned_body_input(input).unwrap();
+        assert_eq!(lowered.function_count(), 1);
+        assert!(lowered.instruction_count() > 0);
+
+        let body_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&edited_body),
+            &edited_body,
+        );
+        let body_terminal = database
+            .body_input(
+                body_revision,
+                key(semantic_configuration()),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(body)) =
+            body_terminal.outcome()
+        else {
+            panic!("body edit did not produce owned body input: {body_terminal:?}");
+        };
+        assert_eq!(body.signature, input.signature);
+        assert_ne!(body.body, input.body);
+
+        let signature_revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&signature_edit),
+            &signature_edit,
+        );
+        let signature_terminal = database
+            .body_input(
+                signature_revision,
+                key(semantic_configuration()),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(
+            signature,
+        )) = signature_terminal.outcome()
+        else {
+            panic!("signature edit did not produce owned body input: {signature_terminal:?}");
+        };
+        assert_eq!(signature.body, input.body);
+        assert_ne!(signature.signature, input.signature);
+    }
+
+    #[test]
+    fn body_input_preserves_anonymous_anchor_transport_and_boundary_is_owned() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected() -> type { struct { value: i32 } }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let terminal = database
+            .body_input(
+                revision,
+                crate::body_query::BodyQueryKey {
+                    instance: free_function_instance(&module, "selected"),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
+            terminal.outcome()
+        else {
+            panic!("anonymous body did not produce owned input: {terminal:?}");
+        };
+        assert_eq!(input.body.anonymous_sites.len(), 1);
+        let supplied_anchor = rue_rir::RirStructuralAnchor::new(vec![
+            rue_rir::RirStructuralPathSegment::Body,
+            rue_rir::RirStructuralPathSegment::AnonymousType(99),
+        ]);
+        let mut anonymous_sites = input.body.anonymous_sites.to_vec();
+        anonymous_sites[0].anchor = supplied_anchor.clone();
+        let adversarial_input = crate::body_query::OwnedBodyInput {
+            owner: input.owner.clone(),
+            signature: input.signature.clone(),
+            body: crate::declaration_candidate::RawDeclarationBodySyntax {
+                body: input.body.body.clone(),
+                anonymous_sites: anonymous_sites.into(),
+            },
+        };
+        let lowered = lower_owned_body_input(&adversarial_input).unwrap();
+        assert!(lowered.is_valid());
+        assert_eq!(lowered.anonymous_type_anchors(), vec![supplied_anchor]);
+
+        let query_value = include_str!("body_query.rs");
+        let value_start = query_value
+            .find("pub(crate) struct OwnedBodyInput")
+            .unwrap();
+        let value_end = query_value[value_start..]
+            .find("pub(crate) fn body_input_equal")
+            .map(|offset| value_start + offset)
+            .unwrap();
+        let value_definition = &query_value[value_start..value_end];
+        for banned in [
+            "CanonicalMergedProgram",
+            "CanonicalRirOutput",
+            "CanonicalMergedRir",
+            "BodySema",
+            "BoundSema",
+            "Spur",
+            "Rir",
+            "InstRef",
+            "Span",
+            "FileId",
+            "manifest",
+            "slice",
+            "reachability",
+            "declaration slice",
+            "coordinator",
+        ] {
+            assert!(
+                !value_definition.contains(banned),
+                "owned body query value contains banned boundary artifact `{banned}`"
+            );
+        }
+        let source = include_str!("revisioned_query_database.rs");
+        let start = source.find("\"compiler.body-input\"").unwrap();
+        let end = source[start..]
+            .find("// Body transactions are supplied")
+            .map(|offset| start + offset)
+            .unwrap();
+        let evaluator = &source[start..end];
+        assert!(evaluator.contains("Err(QueryAbort::MissingInput(_))"));
+        assert!(evaluator.contains("Err(abort) => return Err(abort)"));
+        assert!(!evaluator.contains("Err(_)"));
+        for banned in [
+            "CanonicalMergedProgram",
+            "CanonicalMergedRir",
+            "BodySema",
+            "BoundSema",
+            "coordinator",
+            "declaration loop",
+        ] {
+            assert!(
+                !evaluator.contains(banned),
+                "BodyInput evaluator boundary contains banned artifact `{banned}`"
+            );
+        }
+    }
+
+    #[test]
+    fn body_input_registered_evaluator_classifies_unsupported_and_missing_inputs() {
+        let generic = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn selected(comptime T: type) -> T { 7 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let instance = free_function_instance(&module, "selected");
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&generic),
+            &generic,
+        );
+        let key = crate::body_query::BodyQueryKey {
+            instance,
+            configuration: semantic_configuration(),
+        };
+        let terminal = database
+            .body_input(revision, key, CancellationToken::new())
+            .unwrap();
+        assert!(matches!(
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Incomplete(
+                crate::body_query::BodyInputIncomplete::Generic
+            ))
+        ));
+
+        let unknown = crate::body_query::BodyQueryKey {
+            instance: free_function_instance(
+                &ModuleId::from_logical_path("other.rue").unwrap(),
+                "missing",
+            ),
+            configuration: semantic_configuration(),
+        };
+        let missing = database
+            .body_input(revision, unknown, CancellationToken::new())
+            .unwrap();
+        assert!(matches!(
+            missing.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Incomplete(
+                crate::body_query::BodyInputIncomplete::MissingPrerequisite(_)
+            ))
+        ));
+
+        let unsupported = crate::body_query::BodyQueryKey {
+            instance: crate::FunctionInstanceKey::Specialization {
+                base: Box::new(free_function_instance(
+                    &ModuleId::from_logical_path("main.rue").unwrap(),
+                    "selected",
+                )),
+                arguments: crate::CanonicalArguments::default(),
+            },
+            configuration: semantic_configuration(),
+        };
+        let unsupported = database
+            .body_input(revision, unsupported, CancellationToken::new())
+            .unwrap();
+        assert!(matches!(
+            unsupported.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Incomplete(
+                crate::body_query::BodyInputIncomplete::UnsupportedInstance
+            ))
+        ));
+
+        for (namespace, kind, name) in [
+            (
+                crate::StableDefinitionNamespace::Method,
+                crate::StableDefinitionKind::Method,
+                "method",
+            ),
+            (
+                crate::StableDefinitionNamespace::Method,
+                crate::StableDefinitionKind::AssociatedFunction,
+                "associated",
+            ),
+            (
+                crate::StableDefinitionNamespace::Destructor,
+                crate::StableDefinitionKind::Destructor,
+                "destructor",
+            ),
+        ] {
+            let unsupported = crate::body_query::BodyQueryKey {
+                instance: crate::FunctionInstanceKey::Definition(
+                    crate::StableDefinitionKey::from_stable_parts(
+                        ModuleId::from_logical_path("main.rue").unwrap(),
+                        namespace,
+                        kind,
+                        Arc::from(name),
+                        None,
+                    ),
+                ),
+                configuration: semantic_configuration(),
+            };
+            let terminal = database
+                .body_input(revision, unsupported, CancellationToken::new())
+                .unwrap();
+            assert!(matches!(
+                terminal.outcome(),
+                rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Incomplete(
+                    crate::body_query::BodyInputIncomplete::UnsupportedKind(actual)
+                )) if *actual == kind
+            ));
+        }
+
+        let extern_source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "extern \"C\" { fn selected() -> i32; }\n",
+            )],
+            1,
+        );
+        let mut extern_database = RevisionedQueryDatabase::default();
+        let extern_revision = extern_database.source_revision(
+            &super::super::session::ExactSourceInput::new(&extern_source),
+            &extern_source,
+        );
+        let extern_terminal = extern_database
+            .body_input(
+                extern_revision,
+                crate::body_query::BodyQueryKey {
+                    instance: free_function_instance(
+                        &ModuleId::from_logical_path("main.rue").unwrap(),
+                        "selected",
+                    ),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            extern_terminal.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Incomplete(
+                crate::body_query::BodyInputIncomplete::Extern
+            ))
+        ));
+
+        let malformed = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 {\n")],
+            1,
+        );
+        let mut malformed_database = RevisionedQueryDatabase::default();
+        let malformed_revision = malformed_database.source_revision(
+            &super::super::session::ExactSourceInput::new(&malformed),
+            &malformed,
+        );
+        let malformed_terminal = malformed_database
+            .body_input(
+                malformed_revision,
+                crate::body_query::BodyQueryKey {
+                    instance: free_function_instance(
+                        &ModuleId::from_logical_path("main.rue").unwrap(),
+                        "selected",
+                    ),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        assert!(matches!(
+            malformed_terminal.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Incomplete(
+                crate::body_query::BodyInputIncomplete::MissingPrerequisite(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn body_input_cancellation_aborts_without_publishing_a_terminal() {
+        let source = source_snapshot(
+            &[(1, "/main.rue", "main.rue", "fn selected() -> i32 { 7 }\n")],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = database.source_revision(
+            &super::super::session::ExactSourceInput::new(&source),
+            &source,
+        );
+        let key = crate::body_query::BodyQueryKey {
+            instance: free_function_instance(&module, "selected"),
+            configuration: semantic_configuration(),
+        };
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let attempt = database.runtime.request_registered(
+            &database.body_inputs,
+            revision,
+            key.clone(),
+            cancellation,
+        );
+        assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
+        assert!(attempt.terminal().is_none());
+        assert!(!database.body_inputs.contains_retained_key(&key));
     }
 }

@@ -4,6 +4,36 @@ use std::sync::Arc;
 
 use rue_query::QueryKey;
 
+/// Exact owned syntax requested by the registered body-input evaluator. The
+/// stable owner is the only identity carried with the syntax; parser and RIR
+/// handles are deliberately confined to the evaluator-local lowering helper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct OwnedBodyInput {
+    pub(crate) owner: crate::StableDefinitionKey,
+    pub(crate) signature: crate::declaration_candidate::RawDeclarationSignatureSyntax,
+    pub(crate) body: crate::declaration_candidate::RawDeclarationBodySyntax,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BodyInputIncomplete {
+    UnsupportedInstance,
+    UnsupportedKind(crate::StableDefinitionKind),
+    Generic,
+    Extern,
+    MissingPrerequisite(Arc<str>),
+    Lowering(Arc<str>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BodyInputValue {
+    Available(OwnedBodyInput),
+    Incomplete(BodyInputIncomplete),
+}
+
+pub(crate) fn body_input_equal(left: &BodyInputValue, right: &BodyInputValue) -> bool {
+    left == right
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BodyQueryKey {
     pub(crate) instance: crate::FunctionInstanceKey,
