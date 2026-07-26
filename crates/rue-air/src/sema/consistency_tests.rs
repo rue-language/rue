@@ -126,6 +126,7 @@ mod tests {
     const TYPECK_SOURCE: &str = include_str!("typeck.rs");
     const DECLARATION_BASE_SOURCE: &str = include_str!("declaration_base.rs");
     const SEMANTIC_BODY_EXPORT_SOURCE: &str = include_str!("semantic_body_export.rs");
+    const VISIBILITY_SOURCE: &str = include_str!("visibility.rs");
     const ONE_BODY_SOURCE: &str = include_str!("one_body.rs");
     const BINDING_MANIFEST_SOURCE: &str = include_str!("binding_manifest.rs");
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
@@ -448,6 +449,95 @@ mod tests {
         }
         assert!(ANALYSIS_ROOT_SOURCE.contains("sema.export_ordinary_body("));
         assert!(BINDING_MANIFEST_SOURCE.contains("self.stable_definition_token("));
+    }
+
+    #[test]
+    fn module_enum_visibility_has_exact_body_and_shared_receivers() {
+        fn impl_items(source: &str) -> Vec<&str> {
+            let mut items = Vec::new();
+            let mut remaining = source;
+            while let Some(start) = remaining.find("\nimpl") {
+                let item = &remaining[start + 1..];
+                let open = item.find('{').expect("impl body opens");
+                let mut depth = 0;
+                let mut end = None;
+                for (offset, ch) in item[open..].char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(open + offset + 1);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let end = end.expect("impl body closes");
+                items.push(&item[..end]);
+                remaining = &item[end..];
+            }
+            items
+        }
+
+        fn method_names(item: &str) -> Vec<&str> {
+            item.lines()
+                .filter_map(|line| {
+                    let line = line.strip_prefix("    ")?;
+                    let declaration = line
+                        .strip_prefix("fn ")
+                        .or_else(|| line.split_once(" fn ").map(|(_, declaration)| declaration))?;
+                    declaration.split_once('(').map(|(name, _)| name)
+                })
+                .collect()
+        }
+
+        let impls = impl_items(VISIBILITY_SOURCE);
+        assert_eq!(impls.len(), 2, "visibility has exactly two receiver blocks");
+        let generic = impls
+            .iter()
+            .find(|item| item.starts_with("impl<D: DeclarationPhase> Sema<'_, D>"))
+            .expect("shared visibility receiver exists");
+        let body = impls
+            .iter()
+            .find(|item| item.starts_with("impl BodySema<'_>"))
+            .expect("body visibility receiver exists");
+
+        let mut generic_methods = method_names(generic);
+        generic_methods.sort_unstable();
+        assert_eq!(
+            generic_methods,
+            ["check_unqualified_visibility", "is_accessible"]
+        );
+        let mut body_methods = method_names(body);
+        body_methods.sort_unstable();
+        assert_eq!(
+            body_methods,
+            ["module_file_for_ref", "resolve_enum_through_module"]
+        );
+
+        for method in ["resolve_enum_through_module", "module_file_for_ref"] {
+            let needle = format!("fn {method}(");
+            assert_eq!(
+                VISIBILITY_SOURCE.matches(&needle).count(),
+                1,
+                "{method} has one implementation"
+            );
+            assert!(body.contains(&needle), "{method} is body-only");
+            assert!(
+                !generic.contains(&needle),
+                "{method} has no generic forwarding shim"
+            );
+        }
+        for forbidden in ["Deref", "\ntrait "] {
+            assert!(
+                !VISIBILITY_SOURCE.contains(forbidden),
+                "visibility must not gain an authority escape through {forbidden}"
+            );
+        }
+        assert!(AGGREGATES_SOURCE.contains("self.resolve_enum_through_module("));
+        assert!(CONTROL_FLOW_SOURCE.contains("self.resolve_enum_through_module("));
     }
 
     #[test]
