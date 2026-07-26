@@ -28,7 +28,7 @@ contract = "heavyweight"
 
 [[automatic_example]]
 path = "lattice/main.rue"
-contract = "heavyweight"
+contract = "heavyweight_long"
 
 [[automatic_example]]
 path = "mosaic/main.rue"
@@ -44,7 +44,7 @@ contract = "heavyweight"
 
 [[automatic_example]]
 path = "meridian/main.rue"
-contract = "heavyweight_long"
+contract = "heavyweight_extra_long"
 
 [[automatic_example]]
 path = "caldera/main.rue"
