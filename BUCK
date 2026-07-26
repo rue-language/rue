@@ -275,9 +275,10 @@ CLI_TEST_SHARD_COUNT = 4
 # so CI can run the stress program in parallel with the ordinary CLI cases.
 #
 # RUE-1083: Caldera's cold compile still measures far past any reasonable
-# required-CI budget (killed at its 300s contract on linux-arm64, and still
-# compiling after ~11 minutes of non-release linux-x64 build in the Valgrind
-# corpus), so this exact target stays a transparent success stub until the
+# required-CI budget: killed at its 300s contract on linux-arm64, and ~31
+# minutes end to end (compile + memcheck) with the non-release linux-x64
+# compiler in the Valgrind corpus (run 30211132077, 16:48:20 -> 17:19:10
+# UTC). This exact target stays a transparent success stub until the
 # remaining per-body incremental work brings the stress compile back into a
 # reasonable budget. Every other example family runs real cases above.
 sh_test(
