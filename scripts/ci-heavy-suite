@@ -23,7 +23,24 @@ cleanup() {
 }
 trap cleanup EXIT
 
-./buck2 test "$target" 2>&1 | tee "$log"
+# RUE-1083 recalibrated several per-case heavyweight compile budgets upward
+# while per-body incremental work continues, so the CLI corpus's serialized
+# heavyweight aggregate can exceed the test executor's 600-second default
+# (linux-arm64 shard 1 hit the outer timeout at 10:00 with zero case
+# failures). The outer margin is plumbing; the per-case contract budgets in
+# execution_contracts.toml remain the honest gates. Re-tighten when the
+# per-case budgets come back down.
+test_args=("$target")
+case "$target" in
+    //:cli-tests)
+        test_args+=(-- --timeout 1800)
+        ;;
+    //:cli-tests-shard-*)
+        test_args+=(-- --timeout 1200)
+        ;;
+esac
+
+./buck2 test "${test_args[@]}" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
