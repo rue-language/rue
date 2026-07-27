@@ -629,13 +629,14 @@ mod tests {
             let merged = crate::merge_parsed_modules(&parsed).unwrap();
             let rir = crate::lower_canonical_rir(&merged).unwrap();
             let options = CompileOptions::default();
-            let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+            let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
             let (definitions, query_declarations, _) =
                 crate::bound_definitions::bind_canonical_declaration_semantics(
                     &merged,
                     &rir,
                     options.preview_features.clone(),
                     options.target,
+                    &imports,
                 )
                 .unwrap();
             let query_shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(

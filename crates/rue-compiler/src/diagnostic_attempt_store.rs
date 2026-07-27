@@ -410,7 +410,7 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::{CanonicalImportGraph, SourceMetadata, StableOptLevel};
+    use crate::{SourceMetadata, StableOptLevel};
 
     #[derive(Debug)]
     struct FakeAttempt {
@@ -501,19 +501,7 @@ mod tests {
                         crate::Target::default(),
                         &crate::PreviewFeatures::default(),
                     ),
-                    CanonicalImportGraph::from_supplied(
-                        valid_source.source_revision().root().clone(),
-                        Vec::new(),
-                        &crate::ModuleResolutionInputs::new(
-                            valid_source.source_revision().root().clone(),
-                            vec![crate::ModuleResolutionInput {
-                                module: valid_source.source_revision().root().clone(),
-                                physical_path: Arc::from("/p/main.rue"),
-                            }],
-                        )
-                        .unwrap(),
-                    )
-                    .unwrap(),
+                    crate::test_support::test_import_graph(&valid_source).unwrap(),
                 ),
                 StableOptLevel::O0,
             )),

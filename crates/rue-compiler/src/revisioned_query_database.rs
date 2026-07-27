@@ -9659,17 +9659,9 @@ impl RevisionedQueryDatabase {
     }
 
     /// Publish an immutable, revisioned import authority for lower-layer
-    /// tests. The fixture graph is an input leaf rather than an out-of-band
-    /// evaluator read, so changing it invalidates exactly the declaration
-    /// import queries which observed it.
-    #[cfg(test)]
-    pub(crate) fn adopt_test_import_graph(&mut self, graph: crate::CanonicalImportGraph) {
-        let parse_revision = self
-            .current_parse_revision()
-            .expect("test import authority requires a selected parsed revision");
-        self.adopt_test_import_graph_for_revision(parse_revision, graph);
-    }
-
+    /// tests. The graph is a discovered one; it enters here as an input leaf
+    /// rather than an out-of-band evaluator read, so changing it invalidates
+    /// exactly the declaration import queries which observed it.
     #[cfg(test)]
     fn adopt_test_import_graph_for_revision(
         &mut self,
@@ -14239,12 +14231,14 @@ pub(crate) mod test_support {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let imports = crate::test_support::test_import_graph(snapshot).unwrap();
         let (_definitions, query_declarations, _work) =
             crate::bound_definitions::bind_canonical_declaration_semantics(
                 &merged,
                 &rir,
                 crate::PreviewFeatures::default(),
                 rue_target::Target::X86_64Linux,
+                &imports,
             )
             .unwrap();
         query_declarations
@@ -16313,14 +16307,13 @@ fn main() -> i32 {
             ],
             1,
         );
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
-        let retired = crate::test_support::test_fixture_import_graph(&parsed).unwrap();
+        let discovered = crate::test_support::test_import_graph(&source).unwrap();
         let main = ModuleId::from_logical_path("main.rue").unwrap();
-        let expected = retired
+        let expected = discovered
             .records()
             .iter()
             .find(|record| record.importer() == &main && record.normalized_specifier() == "dep.rue")
-            .expect("retired import graph omitted dep.rue")
+            .expect("discovered import graph omitted dep.rue")
             .resolution()
             .clone();
 
@@ -16329,7 +16322,7 @@ fn main() -> i32 {
             &super::super::session::ExactSourceInput::new(&source),
             &source,
         );
-        database.adopt_test_import_graph_for_revision(revision, retired);
+        database.adopt_test_import_graph_for_revision(revision, discovered);
         let revision = database.current_semantic_revision().unwrap();
         let requested = database.runtime.request_registered(
             &database.declaration_imports,
@@ -22576,7 +22569,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -22782,7 +22775,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -22973,7 +22966,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -23130,7 +23123,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -23210,7 +23203,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -23325,7 +23318,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -23795,7 +23788,7 @@ fn main() -> i32 {
         // INDEPENDENT comparison side. Its anonymous materialization is the epoch's
         // own `find_or_create_anon_struct`, populated during the same bind.
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -23934,7 +23927,7 @@ fn main() -> i32 {
         // INDEPENDENT comparison side. Its anonymous materialization is the
         // epoch's own `find_or_create_anon_enum`, populated during the same bind.
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -24153,7 +24146,7 @@ fn main() -> i32 {
         // issued the epoch's endpoints, and install — exactly the production
         // `body_transaction` sequence.
         // ------------------------------------------------------------------
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let (bound, definitions) =
             crate::canonical_semantic::bind_query_owned_declarations_with_definitions_for_test(
                 &merged,
@@ -24336,7 +24329,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -24613,7 +24606,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::test_support::test_import_graph(&snapshot).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -24821,7 +24814,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -24912,7 +24905,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,
@@ -25125,7 +25118,7 @@ fn main() -> i32 {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
         let merged = crate::merge_parsed_modules(&parsed).unwrap();
         let rir = crate::lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,

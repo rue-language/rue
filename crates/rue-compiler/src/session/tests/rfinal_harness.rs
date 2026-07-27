@@ -78,7 +78,7 @@ impl DirectProductionInputs {
         let rir = crate::lower_canonical_rir(&merged)
             .map_err(|errors| HarnessError::Compile(errors.to_string()))?;
         let options = CompileOptions::default();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged)
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast())
             .map_err(|errors| HarnessError::Compile(errors.to_string()))?;
         let (_, query_declarations, _) =
             crate::bound_definitions::bind_canonical_declaration_semantics(
@@ -86,6 +86,7 @@ impl DirectProductionInputs {
                 &rir,
                 options.preview_features.clone(),
                 options.target,
+                &imports,
             )
             .map_err(|errors| HarnessError::Compile(errors.to_string()))?;
         let query_shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
@@ -980,11 +981,14 @@ impl SideBCase {
         let rir = crate::lower_canonical_rir(&merged)
             .map_err(|errors| HarnessError::Compile(errors.to_string()))?;
         let options = CompileOptions::default();
+        let imports = crate::test_support::test_import_graph(&snapshot)
+            .map_err(|errors| HarnessError::Compile(errors.to_string()))?;
         let (_, decls, _) = crate::bound_definitions::bind_canonical_declaration_semantics(
             &merged,
             &rir,
             options.preview_features.clone(),
             options.target,
+            &imports,
         )
         .map_err(|errors| HarnessError::Compile(errors.to_string()))?;
         let module_files = merged
