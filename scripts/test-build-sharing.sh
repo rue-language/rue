@@ -289,10 +289,15 @@ EOF
         "$(grep -Fxq 'test //... --exclude rue_heavy_suite --always-exclude' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: monolithic CLI corpus receives the extended executor timeout" \
-        "$(grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: every other heavy target uses the default executor timeout" \
-        "$([ "$(grep -Ec '^test //:(cli-tests-caldera|spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 5 ] && echo 0 || echo 1)"
+    # RUE-1118: every heavy target is now invoked bare. The corpus runs as a
+    # cacheable build action and the test executor only asserts its stamp, so an
+    # executor timeout here would bound a sub-second check while reading as if
+    # the corpus were still bounded; the real outer bound is each suite's
+    # timeout_seconds in BUCK.
+    check "suite: heavy targets are invoked without an executor timeout" \
+        "$(! grep -Fq -- '-- --timeout' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: every heavy target is invoked exactly once" \
+        "$([ "$(grep -Ec '^test //:(cli-tests|cli-tests-caldera|spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs)$' "$sb/calls")" -eq 6 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \
         "$(! grep -Fq -- '--include rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
     check "suite: host lock is released" "$([[ ! -e "$sb/lock" ]] && echo 0 || echo 1)"
