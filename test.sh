@@ -91,6 +91,7 @@ REQUIRED_CORPUS_HARNESSES=(
     //:oracle-diff-generated-smoke
     //:reproducible-programs
     //:tutorial-snippet-tests
+    //:frontend-diff-test
 )
 
 if [[ $# -eq 0 ]]; then

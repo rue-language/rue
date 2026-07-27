@@ -14,7 +14,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const BORROW: u64 = 10;
 const INOUT: u64 = 12;
@@ -25,6 +25,10 @@ const UNDERSCORE: u64 = 95;
 const MANIFEST_PATH: &str = "crates/rue-frontend-diff/src/corpus_manifest.rs";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CAPTURE_BYTES: usize = 16 * 1024 * 1024;
+/// How often the corpus walk emits a progress checkpoint (RUE-1154). Roughly
+/// fifteen lines over the full corpus: enough to bracket where a killed run
+/// stopped, small enough not to bury a real diagnostic.
+const PROGRESS_INTERVAL: usize = 100;
 const SYNTAX_PROBES: &[(&str, &str)] = &[
     (
         "intrinsic-placeholders.rue",
@@ -1214,11 +1218,32 @@ fn compare_source(frontend: &Path, path: &Path, source: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Emit a progress checkpoint every [`PROGRESS_INTERVAL`] files and on the last
+/// one, so the final line printed by a killed run brackets where it stopped.
+fn is_progress_checkpoint(index: usize, total: usize) -> bool {
+    index + 1 == total || (index + 1) % PROGRESS_INTERVAL == 0
+}
+
+/// Write one checkpoint to stderr (RUE-1154).
+///
+/// Rust's stderr is unbuffered, so each line reaches Buck's capture pipe before
+/// the next comparison starts. That matters because this harness can die by
+/// signal rather than by returning an error: a SIGKILL is reported by Buck as a
+/// bare `Fail` with empty stdout and stderr, with the signal discarded. Anything
+/// printed only at the end of the run is lost in exactly the case worth
+/// diagnosing, so progress is streamed instead of summarized.
+fn checkpoint(message: &str) {
+    eprintln!("frontend-diff: {message}");
+}
+
 fn run_differential() -> Result<usize, String> {
     let compiler = env::var_os("RUE_BINARY").ok_or("RUE_BINARY is not set")?;
     let corpus =
         PathBuf::from(env::var_os("RUE_FRONTEND_DIFF_CORPUS").unwrap_or_else(|| ".".into()));
+    checkpoint(&format!("auditing corpus at {}", corpus.display()));
     let files = audit_corpus(&corpus, corpus_manifest::ROOTS)?;
+    let total = files.len();
+    checkpoint(&format!("corpus audit passed: {total} files"));
     let root = corpus.join("examples/ruelex/main.rue");
     if !root.is_file() {
         return Err(format!(
@@ -1230,6 +1255,8 @@ fn run_differential() -> Result<usize, String> {
     let frontend = temp.path().join("ruelex");
     let mut compile = Command::new(compiler);
     compile.arg(&root).arg("-o").arg(&frontend);
+    checkpoint(&format!("compiling ruelex from {}", root.display()));
+    let started = Instant::now();
     let compile = bounded_run(compile, "compile ruelex")?;
     if !compile.status.success() {
         return Err(format!(
@@ -1240,17 +1267,33 @@ fn run_differential() -> Result<usize, String> {
             String::from_utf8_lossy(&compile.stderr)
         ));
     }
-    for path in &files {
+    checkpoint(&format!(
+        "ruelex compiled in {:.1}s of a {}s budget",
+        started.elapsed().as_secs_f64(),
+        PROCESS_TIMEOUT.as_secs()
+    ));
+    for (index, path) in files.iter().enumerate() {
         let source =
             fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
         compare_source(&frontend, path, &source)?;
+        if is_progress_checkpoint(index, total) {
+            checkpoint(&format!(
+                "compared {}/{total} corpus files (last: {})",
+                index + 1,
+                path.display()
+            ));
+        }
     }
+    checkpoint(&format!(
+        "corpus agrees; running {} syntax probes",
+        SYNTAX_PROBES.len()
+    ));
     for (name, source) in SYNTAX_PROBES {
         let path = temp.path().join(name);
         fs::write(&path, source).map_err(|error| format!("write {}: {error}", path.display()))?;
         compare_source(&frontend, &path, source)?;
     }
-    Ok(files.len())
+    Ok(total)
 }
 
 enum Success {
@@ -1369,6 +1412,35 @@ mod tests {
         ] {
             assert!(shape.contains(needle), "missing {needle} in {shape}");
         }
+    }
+
+    #[test]
+    fn progress_checkpoints_bracket_the_walk_and_always_include_the_last_file() {
+        let total = 1443;
+        let reported: Vec<usize> = (0..total)
+            .filter(|&index| is_progress_checkpoint(index, total))
+            .map(|index| index + 1)
+            .collect();
+
+        assert_eq!(reported.first(), Some(&PROGRESS_INTERVAL));
+        assert_eq!(
+            reported.last(),
+            Some(&total),
+            "a completed walk must checkpoint its final file"
+        );
+        // Consecutive checkpoints stay within one interval of each other, so a
+        // killed run's last line pins the failure to a bounded window.
+        for pair in reported.windows(2) {
+            assert!(
+                pair[1] - pair[0] <= PROGRESS_INTERVAL,
+                "gap {pair:?} exceeds the checkpoint interval"
+            );
+        }
+    }
+
+    #[test]
+    fn progress_checkpoints_report_a_single_file_corpus() {
+        assert!(is_progress_checkpoint(0, 1));
     }
 
     #[test]

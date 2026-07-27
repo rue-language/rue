@@ -11,12 +11,6 @@ rue_binary(
     ],
 )
 
-sh_test(
-    name = "frontend-diff-test",
-    test = ":rue-frontend-diff",
-    env = {
-        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
-        "RUE_FRONTEND_DIFF_CORPUS": "$(location root//:frontend-diff-corpus)",
-        "RUE_STD_PATH": "$(location root//:std)/std",
-    },
-)
+# The corpus differential itself is a repo-level suite and lives in the root
+# BUCK file with its peers (RUE-1154), so `buck2 test //crates/...` keeps
+# meaning "unit tests only".

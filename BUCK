@@ -309,6 +309,29 @@ sh_test(
     },
 )
 
+# The independent stage-1 frontend differential: compile `examples/ruelex` with
+# the production compiler, then diff its token dump and AST shape against the
+# production lexer/parser for every corpus file.
+#
+# RUE-1154 moved this here from crates/rue-frontend-diff/BUCK and labeled it.
+# It is a corpus-scale harness — one ruelex compile plus two child processes per
+# corpus file, ~2900 in all, about a minute of wall clock — so leaving it in the
+# crate package had it running inside `buck2 test //crates/...` (contradicting
+# that pattern's unit-only contract, and quick-test.sh's advertised few seconds)
+# and inside the broad `--exclude rue_heavy_suite` pass, contending with every
+# other test on the runner. Heavy-labeled at the root, it runs alone through
+# scripts/ci-heavy-suite like every peer corpus harness.
+sh_test(
+    name = "frontend-diff-test",
+    labels = ["rue_heavy_suite"],
+    test = "//crates/rue-frontend-diff:rue-frontend-diff",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_FRONTEND_DIFF_CORPUS": "$(location :frontend-diff-corpus)",
+        "RUE_STD_PATH": "$(location :std)/std",
+    },
+)
+
 # A fixed generated differential corpus in every full test run. The generator
 # unit contract pins that seeds 0..63 retain every required fragile source
 # shape; this target then compiles and runs those programs through both the
