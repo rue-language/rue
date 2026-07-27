@@ -436,6 +436,37 @@ pub(crate) trait StableIdentityFacts {
     fn module_file(&self, module: crate::types::ModuleId) -> Option<FileId>;
 }
 
+/// One named method a rendered callable symbol reverses to.
+///
+/// The epoch reads this out of its `methods` / `anonymous_methods` tables; the
+/// provider answers it with `BodyFactProvider::callable_symbol_method`, whose
+/// fail-closed single-candidate contract is the same one the export path needs
+/// (an ambiguous receiver or method is `None`, never a guess).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExportedMethodSite {
+    pub(crate) owner: StructId,
+    pub(crate) method: Spur,
+    pub(crate) file: FileId,
+    pub(crate) has_self: bool,
+}
+
+/// The callable facts the export path consults, keyed and exact.
+///
+/// Same adapter discipline as [`StableIdentityFacts`]: the compiler-side
+/// implementation routes each call through the provider boundary so the edge is
+/// recorded, and neither operation has a whole-universe form.
+pub(crate) trait ExportCallableFacts {
+    /// The file declaring a free function, or `None` when the symbol does not
+    /// name one (it may still name a method).
+    fn free_function_file(&self, symbol: Spur) -> Option<FileId>;
+
+    /// The source name behind a possibly-specialized callable symbol.
+    fn source_function_name(&self, symbol: Spur) -> Spur;
+
+    /// The named method a rendered callable symbol reverses to.
+    fn method_by_callable_symbol(&self, symbol: Spur) -> Option<ExportedMethodSite>;
+}
+
 /// The export half of the provider-backed receiver.
 ///
 /// It answers the same questions `BodySema` answers for publication, from the
@@ -444,24 +475,27 @@ pub(crate) trait StableIdentityFacts {
 /// `BodySema::export_body_type` / `body_struct_identity` /
 /// `body_enum_identity` structurally, so a reviewer can read them side by side
 /// and see that the only difference is where the stable token comes from.
-pub(crate) struct ProviderExportHost<'a, I> {
+pub(crate) struct ProviderExportHost<'a, I, C> {
     local: &'a ProviderBodyLocalState,
     type_pool: &'a crate::intern_pool::TypeInternPool,
     identity: &'a I,
+    callables: &'a C,
     interner: &'a lasso::ThreadedRodeo,
 }
 
-impl<'a, I: StableIdentityFacts> ProviderExportHost<'a, I> {
+impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, I, C> {
     pub(crate) fn new(
         local: &'a ProviderBodyLocalState,
         type_pool: &'a crate::intern_pool::TypeInternPool,
         identity: &'a I,
+        callables: &'a C,
         interner: &'a lasso::ThreadedRodeo,
     ) -> Self {
         Self {
             local,
             type_pool,
             identity,
+            callables,
             interner,
         }
     }
@@ -571,6 +605,184 @@ impl<'a, I: StableIdentityFacts> ProviderExportHost<'a, I> {
             }
             None => crate::NominalInstanceKey::Named(self.enum_identity(id)?),
         })
+    }
+
+    /// The stable instance key for a compact type.
+    ///
+    /// Structurally the same walk as [`Self::export_body_type`] over a
+    /// different output algebra, mirroring the epoch's own split.
+    pub(crate) fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<
+        crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        use crate::SemanticBodyExportFailure as Failure;
+        use crate::types::TypeKind;
+        use crate::{AnonymousNominalKind as K, NominalInstanceKey as N, TypeInstanceKey as T};
+
+        Ok(match ty.kind() {
+            TypeKind::I8 => T::I8,
+            TypeKind::I16 => T::I16,
+            TypeKind::I32 => T::I32,
+            TypeKind::I64 => T::I64,
+            TypeKind::U8 => T::U8,
+            TypeKind::U16 => T::U16,
+            TypeKind::U32 => T::U32,
+            TypeKind::U64 => T::U64,
+            TypeKind::Bool => T::Bool,
+            TypeKind::Unit => T::Unit,
+            TypeKind::Never => T::Never,
+            TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::Struct(id) => {
+                if let Some(key) = self.local.canonical_anonymous_types.get(&ty) {
+                    T::Nominal(N::Anonymous(key.clone()))
+                } else {
+                    // Identity comes from the declaration shell, before fields
+                    // are complete: a comptime type constructor can legitimately
+                    // receive a nominal whose layout is still unknown, so
+                    // identity must not depend on layout.
+                    let def = self
+                        .type_pool
+                        .struct_metadata(id)
+                        .ok_or(Failure::UnsupportedType)?;
+                    if def.is_builtin {
+                        T::BuiltinNominal {
+                            kind: K::Struct,
+                            name: std::sync::Arc::from(def.name.as_str()),
+                        }
+                    } else {
+                        T::Nominal(N::Named(self.struct_identity(id)?))
+                    }
+                }
+            }
+            TypeKind::Enum(id) => {
+                if let Some(key) = self.local.canonical_anonymous_types.get(&ty) {
+                    T::Nominal(N::Anonymous(key.clone()))
+                } else {
+                    let def = self
+                        .type_pool
+                        .enum_metadata(id)
+                        .ok_or(Failure::UnsupportedType)?;
+                    if rue_builtins::BUILTIN_ENUMS
+                        .iter()
+                        .any(|builtin| builtin.name == def.name)
+                    {
+                        T::BuiltinNominal {
+                            kind: K::Enum,
+                            name: std::sync::Arc::from(def.name.as_str()),
+                        }
+                    } else {
+                        T::Nominal(N::Named(self.enum_identity(id)?))
+                    }
+                }
+            }
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                T::Array {
+                    element: Box::new(self.canonical_type_instance(element)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => T::PtrConst(Box::new(
+                self.canonical_type_instance(self.type_pool.ptr_const_def(id))?,
+            )),
+            TypeKind::PtrMut(id) => T::PtrMut(Box::new(
+                self.canonical_type_instance(self.type_pool.ptr_mut_def(id))?,
+            )),
+            TypeKind::Module(id) => {
+                let file = self
+                    .identity
+                    .module_file(id)
+                    .ok_or(Failure::MissingStableIdentity)?;
+                T::Module(self.identity.module_token(file)?)
+            }
+            TypeKind::Error => return Err(Failure::UnsupportedType),
+        })
+    }
+
+    /// The stable definition token behind a rendered callable symbol.
+    fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        if let Some(file) = self.callables.free_function_file(symbol) {
+            let source = self.callables.source_function_name(symbol);
+            return self.identity.definition_token(
+                file.index(),
+                self.interner.resolve(&source),
+                None,
+                crate::StableDefinitionKind::Function,
+            );
+        }
+        let site = self
+            .callables
+            .method_by_callable_symbol(symbol)
+            .ok_or(crate::SemanticBodyExportFailure::UnmappedFunction)?;
+        let method = self.interner.resolve(&site.method);
+        let owner = self.type_pool.struct_def(site.owner);
+        if owner.name.starts_with("__anon_struct_") {
+            return Err(crate::SemanticBodyExportFailure::AnonymousNominal);
+        }
+        self.identity.definition_token(
+            site.file.index(),
+            method,
+            Some(owner.name.as_str()),
+            if method == "__drop" {
+                crate::StableDefinitionKind::Destructor
+            } else if site.has_self {
+                crate::StableDefinitionKind::Method
+            } else {
+                crate::StableDefinitionKind::AssociatedFunction
+            },
+        )
+    }
+
+    /// The stable instance a rendered callable symbol names.
+    ///
+    /// A method on a producer-nominal owner is an anonymous member of that
+    /// producer, not a free definition — which is why the anonymous check runs
+    /// against the body-local `canonical_anonymous_types` before falling
+    /// through to definition identity.
+    pub(crate) fn body_function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<
+        crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        if self.callables.free_function_file(symbol).is_some() {
+            return Ok(crate::FunctionInstanceKey::Definition(
+                self.function_identity(symbol)?,
+            ));
+        }
+        let Some(site) = self.callables.method_by_callable_symbol(symbol) else {
+            return Ok(crate::FunctionInstanceKey::Definition(
+                self.function_identity(symbol)?,
+            ));
+        };
+        let method = self.interner.resolve(&site.method);
+        let owner = Type::new_struct(site.owner);
+        if self.local.canonical_anonymous_types.contains_key(&owner) {
+            let kind = if method == "__drop" {
+                crate::AnonymousMemberKind::Destructor
+            } else if site.has_self {
+                crate::AnonymousMemberKind::Method
+            } else {
+                crate::AnonymousMemberKind::AssociatedFunction
+            };
+            return Ok(crate::FunctionInstanceKey::AnonymousMember {
+                owner: Box::new(self.canonical_type_instance(owner)?),
+                member: crate::AnonymousMemberKey {
+                    kind,
+                    name: std::sync::Arc::from(method),
+                },
+            });
+        }
+        Ok(crate::FunctionInstanceKey::Definition(
+            self.function_identity(symbol)?,
+        ))
     }
 
     pub(crate) fn export_body_type(
@@ -768,6 +980,21 @@ mod tests {
         );
     }
 
+    /// Callable facts for a body that names none.
+    struct AbsentCallableFacts;
+
+    impl ExportCallableFacts for AbsentCallableFacts {
+        fn free_function_file(&self, _: Spur) -> Option<FileId> {
+            None
+        }
+        fn source_function_name(&self, symbol: Spur) -> Spur {
+            symbol
+        }
+        fn method_by_callable_symbol(&self, _: Spur) -> Option<ExportedMethodSite> {
+            None
+        }
+    }
+
     /// A `StableIdentityFacts` that records every consult, so a test can assert
     /// not just what was exported but how much of the boundary it cost.
     #[derive(Default)]
@@ -815,7 +1042,8 @@ mod tests {
         let pool = crate::intern_pool::TypeInternPool::new();
         let interner = lasso::ThreadedRodeo::new();
         let identity = RecordingIdentityFacts::default();
-        let host = ProviderExportHost::new(&local, &pool, &identity, &interner);
+        let callables = AbsentCallableFacts;
+        let host = ProviderExportHost::new(&local, &pool, &identity, &callables, &interner);
 
         for (ty, expected) in [
             (Type::I32, crate::SemanticImportType::I32),
@@ -846,12 +1074,38 @@ mod tests {
         let pool = crate::intern_pool::TypeInternPool::new();
         let interner = lasso::ThreadedRodeo::new();
         let identity = RecordingIdentityFacts::default();
-        let host = ProviderExportHost::new(&local, &pool, &identity, &interner);
+        let callables = AbsentCallableFacts;
+        let host = ProviderExportHost::new(&local, &pool, &identity, &callables, &interner);
 
         assert!(matches!(
             host.export_body_type(Type::ERROR),
             Err(crate::SemanticBodyExportFailure::UnsupportedType)
         ));
+    }
+
+    /// A symbol that names neither a free function nor a resolvable method is
+    /// unmapped, not guessed. The provider's `callable_symbol_method` has the
+    /// same fail-closed single-candidate contract, so an ambiguous receiver
+    /// arrives here as `None` and must not become a fabricated definition.
+    #[test]
+    fn an_unmapped_callable_symbol_fails_closed() {
+        let local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let identity = RecordingIdentityFacts::default();
+        let callables = AbsentCallableFacts;
+        let host = ProviderExportHost::new(&local, &pool, &identity, &callables, &interner);
+
+        let symbol = interner.get_or_intern("nowhere");
+        assert!(matches!(
+            host.body_function_identity(symbol),
+            Err(crate::SemanticBodyExportFailure::UnmappedFunction)
+        ));
+        assert!(
+            identity.definition_consults.borrow().is_empty(),
+            "an unmapped symbol consulted the identity boundary: {:?}",
+            identity.definition_consults.borrow()
+        );
     }
 
     /// The only category with design work left in it is the one the flip has
