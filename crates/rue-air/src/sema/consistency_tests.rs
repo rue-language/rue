@@ -1413,12 +1413,28 @@ mod tests {
     /// consults the epoch-shaped read sources. Widening this back to
     /// `BodyAnalysisReadHost` would silently oblige every host — including the
     /// provider-backed receiver — to implement 47 point queries nothing calls.
+    ///
+    /// The assertion compares the WHOLE supertrait list, not a prefix. A prefix
+    /// match passes for `: InferenceFactSource + BodyAnalysisReadHost + Sized`,
+    /// which is how a bound actually gets widened again — by appending, not by
+    /// replacing. `the_narrow_host_contract_has_a_witness` below is the other
+    /// half: a string test cannot prove a 14-method type satisfies the contract,
+    /// only that the source says so.
     #[test]
     fn the_host_contract_requires_only_the_inference_source() {
-        assert!(
-            FACT_MODE_SOURCE.contains("pub(crate) trait BodyAnalysisHost: InferenceFactSource"),
-            "the host contract's supertrait must stay narrowed to the one source \
-             `HostInferenceFacts` actually borrows the host for"
+        let declaration = FACT_MODE_SOURCE
+            .lines()
+            .find(|line| line.starts_with("pub(crate) trait BodyAnalysisHost:"))
+            .expect("the host contract is declared on one line");
+        let bounds = declaration
+            .trim_start_matches("pub(crate) trait BodyAnalysisHost:")
+            .trim_end_matches('{')
+            .trim();
+        assert_eq!(
+            bounds, "InferenceFactSource + Sized",
+            "the host contract's supertrait list must stay exactly the one source \
+             `HostInferenceFacts` borrows the host for, plus `Sized`; appending \
+             another source silently re-imposes its point queries on every host"
         );
     }
 

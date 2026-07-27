@@ -516,4 +516,125 @@ mod tests {
             epoch_inference.function_by_file((FileId::DEFAULT, symbol)),
         );
     }
+
+    /// A host that implements the contract and *only* the narrow supertrait.
+    ///
+    /// This is the compile-time witness the string test in `consistency_tests`
+    /// cannot be. `Sema` satisfies all four fact sources independently, so it
+    /// proves nothing about how much the contract actually demands: if the
+    /// supertrait widened back, `Sema` would keep compiling and only the
+    /// provider-backed receiver would break, much later. `MinimalHost`
+    /// implements `InferenceFactSource` and nothing else, so a widened bound
+    /// fails to compile here, in this crate, immediately.
+    ///
+    /// It answers every fact with `None`. That is the point — the claim under
+    /// test is about which obligations the contract imposes, not about what any
+    /// particular host knows.
+    struct MinimalHost;
+
+    impl InferenceFactSource for MinimalHost {
+        fn inference_generated_nominal_overlays(
+            &self,
+        ) -> super::super::inference_ctx::InferenceGeneratedNominalOverlays {
+            super::super::inference_ctx::InferenceGeneratedNominalOverlays {
+                builtin_struct_types: HashMap::new(),
+                struct_types_by_file: HashMap::new(),
+                enum_types_by_file: HashMap::new(),
+            }
+        }
+        fn uncached_function_sig(&self, _: Spur) -> Option<FunctionSig> {
+            None
+        }
+        fn uncached_method_sig(&self, _: (StructId, Spur)) -> Option<MethodSig> {
+            None
+        }
+        fn inference_builtin_struct_type(&self, _: Spur) -> Option<Type> {
+            None
+        }
+        fn inference_struct_type_by_file(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_builtin_enum_type(&self, _: Spur) -> Option<Type> {
+            None
+        }
+        fn inference_enum_type_by_file(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_const_type(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_const_type_alias(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_const_value(&self, _: (FileId, Spur)) -> Option<i128> {
+            None
+        }
+        fn inference_const_function_alias(&self, _: (FileId, Spur)) -> Option<Spur> {
+            None
+        }
+        fn inference_module_binding_type(&self, _: (FileId, Spur)) -> Option<Type> {
+            None
+        }
+        fn inference_module_file_id(&self, _: ModuleId) -> Option<FileId> {
+            None
+        }
+        fn inference_function_by_file(&self, _: (FileId, Spur)) -> Option<Spur> {
+            None
+        }
+    }
+
+    impl BodyAnalysisHost for MinimalHost {
+        type EndpointFacts<'a> = EpochEndpointFacts<'a, OwnedReadHost>;
+        fn endpoint_facts(&self) -> Self::EndpointFacts<'_> {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+
+        type CallFacts<'a> = EpochCallFacts<'a, OwnedReadHost>;
+        fn call_facts(&self) -> Self::CallFacts<'_> {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+
+        type AggregateFacts<'a> = EpochAggregateFacts<'a, OwnedReadHost>;
+        fn aggregate_facts(&self) -> Self::AggregateFacts<'_> {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+
+        type InferenceFacts<'a> = HostInferenceFacts<'a, Self>;
+        fn inference_facts<'a>(&'a self, ctx: &'a InferenceContext) -> Self::InferenceFacts<'a> {
+            HostInferenceFacts::new(ctx, self)
+        }
+
+        fn resolve_type_syntax(&mut self, _: TypeSyntaxRequest<'_>) -> TypeSyntaxResult {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+        fn resolve_type_module_prefix(
+            &mut self,
+            _: ModulePrefixRequest<'_>,
+        ) -> rue_error::CompileResult<(ModuleId, Option<FileId>, String)> {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+        fn resolve_array_length(
+            &mut self,
+            _: ArrayLengthRequest<'_>,
+        ) -> rue_error::CompileResult<u64> {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+        fn validate_deferred_type(
+            &mut self,
+            _: DeferredTypeRequest<'_>,
+        ) -> rue_error::CompileResult<Option<Type>> {
+            unimplemented!("the witness exists to be type-checked, not run")
+        }
+    }
+
+    /// The narrow contract is satisfiable by a host that implements only it.
+    ///
+    /// The assertion is the `impl BodyAnalysisHost for MinimalHost` above
+    /// compiling at all; this test exists so the witness is not dead code and
+    /// so the intent is greppable from the test list.
+    #[test]
+    fn the_narrow_host_contract_has_a_witness() {
+        fn assert_satisfies_the_contract<H: BodyAnalysisHost>() {}
+        assert_satisfies_the_contract::<MinimalHost>();
+    }
 }
