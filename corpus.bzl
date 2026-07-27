@@ -62,25 +62,13 @@ def cached_corpus_suite(
         if key not in env:
             fail("cached_corpus_suite({}): absolutize names '{}', which is not in env".format(name, key))
 
-    action_env = dict(env.items())
-    action_env["RUE_CORPUS_ABSOLUTIZE"] = " ".join(absolutize)
-    if timeout_seconds != None:
-        action_env["RUE_CORPUS_TIMEOUT_SECONDS"] = str(timeout_seconds)
-
-    # A genrule cmd cannot use shell command substitution: `$(...)` is Buck's
-    # own macro syntax. Everything variable lives in `env` instead, and
-    # scripts/corpus-action does the resolving.
-    cmd = " ".join([
-        "$(exe_target //:corpus-action)",
-        "$OUT",
-        "$(exe_target {})".format(harness),
-    ] + ["'{}'".format(arg) for arg in args])
-
-    native.genrule(
+    _corpus_action(
         name = name + "-action",
-        out = "stamp.txt",
-        cmd = cmd,
-        env = action_env,
+        harness = harness,
+        harness_args = args,
+        corpus_env = env,
+        absolutize = absolutize,
+        timeout_seconds = timeout_seconds,
     )
 
     native.sh_test(
@@ -89,3 +77,56 @@ def cached_corpus_suite(
         test = "//:corpus-stamp-check",
         args = ["$(location :{}-action)".format(name)],
     )
+
+def _corpus_action_impl(ctx: AnalysisContext) -> list[Provider]:
+    stamp = ctx.actions.declare_output("stamp.txt")
+
+    action_env = dict(ctx.attrs.corpus_env.items())
+    action_env["RUE_CORPUS_ABSOLUTIZE"] = " ".join(ctx.attrs.absolutize)
+    if ctx.attrs.timeout_seconds != None:
+        action_env["RUE_CORPUS_TIMEOUT_SECONDS"] = str(ctx.attrs.timeout_seconds)
+
+    ctx.actions.run(
+        cmd_args(
+            ctx.attrs.wrapper[RunInfo],
+            stamp.as_output(),
+            ctx.attrs.harness[RunInfo],
+            ctx.attrs.harness_args,
+        ),
+        env = action_env,
+        category = "rue_corpus",
+        identifier = ctx.label.name,
+        # The corpus spawns the real compiler and links native binaries, so it
+        # belongs on the lane's own platform; this matches the repository's
+        # ordinary --prefer-local policy. It does not affect cache *reads* —
+        # lookup still happens before a miss executes.
+        local_only = True,
+        # THE POINT OF THIS RULE. `genrule` computes
+        #     cacheable = attrs.cacheable and (local_only or prefer_local)
+        # and passes it as allow_cache_upload, where local_only/prefer_local are
+        # driven purely by a Meta-internal label allowlist (uses_sudo, qt_moc,
+        # yarn_install, ...). A plain genrule therefore never uploads its result
+        # in this repository: the first merge_group run of RUE-1118 re-executed
+        # every corpus on a tree byte-identical to the one the PR run had just
+        # built, because nothing had ever been written to the cache. Stating the
+        # intent here is both honest and immune to a prelude bump reorganizing
+        # that label list.
+        allow_cache_upload = True,
+    )
+
+    return [DefaultInfo(default_output = stamp)]
+
+_corpus_action = rule(
+    impl = _corpus_action_impl,
+    attrs = {
+        # `attrs.arg` expands $(location ...) / $(exe_target ...) in the values
+        # and registers what they name as inputs of the action — which is what
+        # keys the cache entry, and what the input contract above is about.
+        "absolutize": attrs.list(attrs.string(), default = []),
+        "corpus_env": attrs.dict(attrs.string(), attrs.arg(), default = {}),
+        "harness": attrs.dep(providers = [RunInfo]),
+        "harness_args": attrs.list(attrs.string(), default = []),
+        "timeout_seconds": attrs.option(attrs.int(), default = None),
+        "wrapper": attrs.dep(providers = [RunInfo], default = "//:corpus-action"),
+    },
+)
