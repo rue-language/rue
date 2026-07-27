@@ -229,9 +229,8 @@ _CLI_TEST_ENV = dict(_CLI_TEST_BASE_ENV.items() + [
     ("RUE_CLI_CASE_TIER", "premerge"),
 ])
 
-# The bounded premerge CLI corpus. Explicit slow sections are registered by
-# //:cli-tests-slow instead; their automatic examples remain here as one
-# compile/run canary per maintained large program.
+# The bounded premerge CLI corpus. Explicit slow sections and automatic
+# examples are registered by //:cli-tests-slow instead.
 rue_sh_test(
     name = "cli-tests",
     labels = ["rue_heavy_suite"],

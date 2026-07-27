@@ -83,11 +83,12 @@ scheduled full-release workflow exercise the complete union.
 The exhaustive CLI- and specification-oracle differential harnesses are
 `slow`: premerge retains the fixed generated oracle smoke corpus as its bounded
 codegen canary. CLI corpus sections may likewise declare `tier = "slow"`.
-`//:cli-tests-slow` owns those real cases, while each maintained large
-program's automatic example remains a single premerge compile/run canary.
-Mosaic's 17 exhaustive behavior cases use that split, so the four required CLI
-shards do not each spend their critical path recompiling the same large
-program.
+Automatic examples have the same declarative tier field.
+`//:cli-tests-slow` owns those real cases. Mosaic's shipped-program smoke and
+17 exhaustive behavior cases are slow, so the four required CLI shards do not
+spend their critical path compiling that large program. A genuinely reduced
+premerge large-program canary remains part of the RUE-1162 follow-up rather
+than being approximated by the full program with a wider timeout.
 
 The normal 100/1k structural scaling matrix remains a dedicated premerge
 canary; `//crates/rue-compiler:scaling-matrix-stress-test` enables the real
