@@ -128,9 +128,20 @@ mod tests {
     const TYPECK_SOURCE: &str = include_str!("typeck.rs");
     const DECLARATION_BASE_SOURCE: &str = include_str!("declaration_base.rs");
     const SEMANTIC_BODY_EXPORT_SOURCE: &str = include_str!("semantic_body_export.rs");
+    const ANON_STRUCTS_SOURCE: &str = include_str!("anon_structs.rs");
     const VISIBILITY_SOURCE: &str = include_str!("visibility.rs");
     const ONE_BODY_SOURCE: &str = include_str!("one_body.rs");
     const BINDING_MANIFEST_SOURCE: &str = include_str!("binding_manifest.rs");
+    const BODY_PUBLICATION_AUTHORITY_SOURCES: &[(&str, &str)] = &[
+        ("analysis.rs", ANALYSIS_ROOT_SOURCE),
+        ("anon_structs.rs", ANON_STRUCTS_SOURCE),
+        ("context.rs", include_str!("context.rs")),
+        ("mod.rs", SEMA_ROOT_SOURCE),
+        ("one_body.rs", ONE_BODY_SOURCE),
+        ("ordinary_engine.rs", ORDINARY_ENGINE_SOURCE),
+        ("provider.rs", include_str!("provider.rs")),
+        ("semantic_body_export.rs", SEMANTIC_BODY_EXPORT_SOURCE),
+    ];
     const CALL_INTRINSIC_PEER_SOURCE: &str = concat!(
         include_str!("mod.rs"),
         include_str!("aggregates.rs"),
@@ -496,6 +507,26 @@ mod tests {
 
     #[test]
     fn body_publication_and_shared_identity_have_exact_receivers() {
+        fn braced_item<'a>(source: &'a str, marker: &str) -> &'a str {
+            let start = source.find(marker).expect("item marker exists");
+            let item = &source[start..];
+            let open = item.find('{').expect("item body opens");
+            let mut depth = 0;
+            for (offset, ch) in item[open..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return &item[..open + offset + 1];
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("item body closes");
+        }
+
         fn impl_items(source: &str) -> Vec<&str> {
             let mut items = Vec::new();
             let mut remaining = source;
@@ -537,17 +568,20 @@ mod tests {
         }
 
         let impls = impl_items(SEMANTIC_BODY_EXPORT_SOURCE);
-        assert_eq!(
-            impls.len(),
-            5,
-            "receiver partition has five cohesive blocks"
-        );
+        assert_eq!(impls.len(), 6, "receiver partition has six cohesive blocks");
         assert_eq!(
             impls
                 .iter()
                 .filter(|item| item.starts_with("impl BodySema<'_>"))
                 .count(),
             3
+        );
+        assert_eq!(
+            impls
+                .iter()
+                .filter(|item| item.starts_with("impl SemanticBodyExportHost for BodySema<'_>"))
+                .count(),
+            1
         );
         assert_eq!(
             impls
@@ -560,9 +594,9 @@ mod tests {
         let body_methods = [
             "export_specialized_body",
             "export_ordinary_body",
-            "export_one_body_with_specializations",
             "export_anonymous_body_with_specializations",
-            "export_body",
+        ];
+        let body_identity_methods = [
             "export_body_type",
             "body_function_identity",
             "body_struct_identity",
@@ -580,6 +614,98 @@ mod tests {
                 "{method} must be body-only"
             );
         }
+        for method in body_identity_methods {
+            let needle = format!("fn {method}(");
+            let owners = impls
+                .iter()
+                .filter(|item| item.contains(&needle))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                owners.len(),
+                2,
+                "{method} has one algorithm and one adapter"
+            );
+            assert!(
+                owners
+                    .iter()
+                    .any(|owner| owner.starts_with("impl BodySema<'_>"))
+            );
+            assert!(owners.iter().any(|owner| {
+                owner.starts_with("impl SemanticBodyExportHost for BodySema<'_>")
+            }));
+        }
+
+        assert_eq!(
+            BODY_PUBLICATION_AUTHORITY_SOURCES
+                .iter()
+                .map(|(_, source)| source.matches("fn export_body<").count())
+                .sum::<usize>(),
+            1,
+            "the publication-relevant sema inventory has one generic exporter authority"
+        );
+        assert_eq!(
+            SEMANTIC_BODY_EXPORT_SOURCE
+                .matches("pub(super) fn export_body<H: SemanticBodyExportHost>(")
+                .count(),
+            1,
+            "stable body serialization is one non-overridable free algorithm"
+        );
+        assert!(SEMANTIC_BODY_EXPORT_SOURCE.contains("pub(super) trait SemanticBodyExportHost"));
+        let host_start = SEMANTIC_BODY_EXPORT_SOURCE
+            .find("pub(super) trait SemanticBodyExportHost")
+            .unwrap();
+        let exporter_start = SEMANTIC_BODY_EXPORT_SOURCE
+            .find("pub(super) fn export_body<H: SemanticBodyExportHost>")
+            .unwrap();
+        let host_contract = &SEMANTIC_BODY_EXPORT_SOURCE[host_start..exporter_start];
+        assert!(
+            !host_contract.contains("fn export_body("),
+            "the host contract cannot override the canonical exporter"
+        );
+        let exporter = &SEMANTIC_BODY_EXPORT_SOURCE[exporter_start..];
+        for forbidden in ["BodySema<'_>", "ProviderBodyAnalysisState", "Sema<"] {
+            let adapter_start = exporter
+                .find("impl SemanticBodyExportHost for BodySema<'_>")
+                .unwrap();
+            assert!(
+                !exporter[..adapter_start].contains(forbidden),
+                "canonical exporter must remain representation-neutral: {forbidden}"
+            );
+        }
+        assert_eq!(
+            BODY_PUBLICATION_AUTHORITY_SOURCES
+                .iter()
+                .map(|(_, source)| source.matches(".export_body(").count())
+                .sum::<usize>(),
+            0,
+            "publication-relevant sema code must not restore exporter method dispatch"
+        );
+
+        let specialized_wrapper =
+            braced_item(SEMANTIC_BODY_EXPORT_SOURCE, "fn export_specialized_body(");
+        assert_eq!(specialized_wrapper.matches("export_body(").count(), 1);
+        assert!(specialized_wrapper.contains(
+            "let body = export_body(
+            self,
+            owner,
+            base_info.span,"
+        ));
+        let ordinary_wrapper = braced_item(SEMANTIC_BODY_EXPORT_SOURCE, "fn export_ordinary_body(");
+        assert_eq!(ordinary_wrapper.matches("export_body(").count(), 1);
+        assert!(
+            ordinary_wrapper
+                .contains("export_body(self, owner, body_span, analyzed, strings, warnings, None)")
+        );
+        let anonymous_wrapper = braced_item(
+            SEMANTIC_BODY_EXPORT_SOURCE,
+            "fn export_anonymous_body_with_specializations(",
+        );
+        assert_eq!(anonymous_wrapper.matches("export_body(").count(), 1);
+        assert!(anonymous_wrapper.contains(
+            "let exported = export_body(
+            self,
+            crate::BodyOwnerToken::new(0, 0),"
+        ));
 
         let shared_methods = [
             "function_identity",
@@ -606,7 +732,10 @@ mod tests {
             .flat_map(|item| method_names(item))
             .collect::<Vec<_>>();
         actual_body_methods.sort_unstable();
-        let mut expected_body_methods = body_methods.to_vec();
+        let mut expected_body_methods = body_methods
+            .into_iter()
+            .chain(body_identity_methods)
+            .collect::<Vec<_>>();
         expected_body_methods.sort_unstable();
         assert_eq!(actual_body_methods, expected_body_methods);
 
@@ -620,20 +749,72 @@ mod tests {
         expected_shared_methods.sort_unstable();
         assert_eq!(actual_shared_methods, expected_shared_methods);
 
-        for forbidden in ["Deref", "\ntrait "] {
-            assert!(
-                !SEMANTIC_BODY_EXPORT_SOURCE.contains(forbidden),
-                "publication must not gain a wrapper authority through {forbidden}"
-            );
-        }
+        assert!(!SEMANTIC_BODY_EXPORT_SOURCE.contains("Deref"));
 
         for method in [
-            "export_one_body_with_specializations",
             "export_specialized_body",
             "export_anonymous_body_with_specializations",
         ] {
             assert!(ONE_BODY_SOURCE.contains(&format!("sema.{method}(")));
         }
+        assert!(ONE_BODY_SOURCE.contains("pub(super) trait OneBodyPublicationHost"));
+        assert!(ONE_BODY_SOURCE.contains("fn publish_ordinary<H: OneBodyPublicationHost>"));
+        assert!(ONE_BODY_SOURCE.contains("fn body_references<H: OneBodyPublicationHost>"));
+        assert!(ONE_BODY_SOURCE.contains("fn fail<H: OneBodyPublicationHost>"));
+        assert!(
+            ONE_BODY_SOURCE.contains("fn produced_anonymous_nominals<H: OneBodyPublicationHost>")
+        );
+        assert_eq!(ONE_BODY_SOURCE.matches("fn publish_ordinary<").count(), 1);
+        assert_eq!(ONE_BODY_SOURCE.matches("fn body_references<").count(), 1);
+        assert_eq!(
+            ONE_BODY_SOURCE
+                .matches("fn produced_anonymous_nominals<")
+                .count(),
+            1
+        );
+        for marker in [
+            "fn produced_anonymous_nominals<H: OneBodyPublicationHost>",
+            "fn body_references<H: OneBodyPublicationHost>",
+            "fn fail<H: OneBodyPublicationHost>",
+            "fn publish_ordinary<H: OneBodyPublicationHost>",
+        ] {
+            assert!(
+                !braced_item(ONE_BODY_SOURCE, marker).contains("BodySema"),
+                "{marker} must remain representation-neutral"
+            );
+        }
+        let ordinary_publication = braced_item(
+            ONE_BODY_SOURCE,
+            "fn publish_ordinary<H: OneBodyPublicationHost>",
+        );
+        assert_eq!(
+            ordinary_publication
+                .matches("super::semantic_body_export::export_body(")
+                .count(),
+            1,
+            "ordinary publication must call the non-overridable exporter"
+        );
+        assert_eq!(
+            BODY_PUBLICATION_AUTHORITY_SOURCES
+                .iter()
+                .map(|(_, source)| source.matches("fn anonymous_key_cmp(").count())
+                .sum::<usize>(),
+            1,
+            "publication-relevant sema code has one anonymous ordering authority"
+        );
+        let comparator = braced_item(ANON_STRUCTS_SOURCE, "pub(crate) fn anonymous_key_cmp(");
+        assert!(comparator.contains(
+            "anonymous_producer_root(&left.producer)
+        .cmp(&anonymous_producer_root(&right.producer))
+        .then_with(|| left.cmp(right))"
+        ));
+        let produced = braced_item(ONE_BODY_SOURCE, "fn produced_anonymous_nominals<H");
+        assert_eq!(
+            produced
+                .matches("super::anon_structs::anonymous_key_cmp(left, right)")
+                .count(),
+            1
+        );
         assert!(ANALYSIS_ROOT_SOURCE.contains("sema.export_ordinary_body("));
         assert!(BINDING_MANIFEST_SOURCE.contains("self.stable_definition_token("));
     }
