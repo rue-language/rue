@@ -41,7 +41,11 @@ echo "Running clippy on ${#CLIPPY_TARGETS[@]} targets..."
 clippy_err="$(mktemp)"
 trap 'rm -f "$clippy_err"' EXIT
 clippy_status=0
-SHOW_OUTPUT="$(./buck2 build "${CLIPPY_TARGETS[@]}" --show-output 2>"$clippy_err")" \
+# `--materializations=all` is load-bearing, not a tuning knob. A remote cache
+# hit satisfies the build without ever writing the diagnostics file to local
+# disk, and the loop below can only read files that exist -- so without this the
+# gate scores cached targets as clean (RUE-1152).
+SHOW_OUTPUT="$(./buck2 build "${CLIPPY_TARGETS[@]}" --materializations=all --show-output 2>"$clippy_err")" \
     || clippy_status=$?
 if [ "$clippy_status" -ne 0 ]; then
     echo "clippy.sh: 'buck2 build' failed (exit $clippy_status) -- a real compile" >&2
@@ -56,8 +60,20 @@ FAILED=0
 # clippy finding into an `error:` line, whereas benign non-lint codegen output
 # (e.g. `-Ctarget-feature` `warning:` notes that rustc emits unconditionally
 # and that ordinary builds also print) must NOT gate. So grep for `^error`.
+CHECKED=0
+MISSING=0
 while read -r TARGET ARTIFACT; do
     [ -z "${ARTIFACT:-}" ] && continue
+    # A file that does not exist is not the same claim as a file that is empty.
+    # The old `[ -s ... ] || continue` collapsed the two, so an unmaterialized
+    # artifact was silently scored as "no findings" and the gate went green on
+    # code it had never actually read (RUE-1152).
+    if [ ! -e "$ARTIFACT" ]; then
+        echo "clippy.sh: diagnostics artifact missing for $TARGET: $ARTIFACT" >&2
+        MISSING=$((MISSING + 1))
+        continue
+    fi
+    CHECKED=$((CHECKED + 1))
     [ -s "$ARTIFACT" ] || continue
     # Strip ANSI colour codes so CI logs stay readable and grep is reliable.
     CLEANED="$(sed -E 's/\x1b\[[0-9;]*m//g' "$ARTIFACT")"
@@ -68,6 +84,17 @@ while read -r TARGET ARTIFACT; do
         echo "::endgroup::"
     fi
 done <<< "$SHOW_OUTPUT"
+
+# Coverage is part of the verdict. A gate that cannot say how many targets it
+# read cannot distinguish "clean" from "never looked", which is precisely how
+# 98 findings reached trunk under a green check.
+if [ "$MISSING" -ne 0 ] || [ "$CHECKED" -ne "${#CLIPPY_TARGETS[@]}" ]; then
+    echo "" >&2
+    echo "clippy gate FAILED: read $CHECKED diagnostics files for ${#CLIPPY_TARGETS[@]}" >&2
+    echo "enumerated targets ($MISSING missing). Refusing to report a pass for" >&2
+    echo "targets whose diagnostics the gate never read." >&2
+    exit 1
+fi
 
 if [ "$FAILED" -ne 0 ]; then
     echo ""

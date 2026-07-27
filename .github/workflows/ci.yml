@@ -29,9 +29,12 @@ jobs:
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       - name: Check formatting
-        # Buck declares all Rust sources as inputs and applies the hermetic
-        # rustfmt target's platform-specific runtime environment.
-        run: ./buck2 test //:fmt-check
+        # Runs the hermetic rustfmt over every Rust source. This used to be
+        # `buck2 test //:fmt-check`, whose file list came from a root-package
+        # `glob(["crates/**/*.rs"])` -- and Buck globs do not descend into
+        # subpackages, so the 30 crates owning a BUCK file were all invisible.
+        # That gate checked 1 file of 281 and passed regardless (RUE-1152).
+        run: ./fmt.sh check
 
       - name: Check production debug assertions
         run: scripts/validate-debug-assert-policy.py
