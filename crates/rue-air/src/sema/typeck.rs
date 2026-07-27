@@ -2345,18 +2345,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// This handles the conversion of Type::new_array(id) to InferType::Array
     /// by looking up the array definition to get element type and length.
     pub(crate) fn type_to_infer_type(&self, ty: Type) -> InferType {
-        match ty.kind() {
-            TypeKind::Array(array_id) => {
-                let (element_type, length) = self.type_pool.array_def(array_id);
-                let element_infer = self.type_to_infer_type(element_type);
-                InferType::Array {
-                    element: Box::new(element_infer),
-                    length,
-                }
-            }
-            // All other types wrap directly
-            _ => InferType::Concrete(ty),
-        }
+        super::inference_ctx::type_to_infer_type(&self.type_pool, ty)
     }
     /// Get (or lazily create) the synthetic 2-field struct that represents the
     /// second-class slice type `[T]` (ADR-0043, RUE-322).

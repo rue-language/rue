@@ -14,8 +14,30 @@ use lasso::Spur;
 use rue_span::FileId;
 
 use super::{ConstValue, DeclarationPhase, Sema};
-use crate::inference::{FunctionSig, LazyInferenceFacts, MethodSig};
+use crate::inference::{FunctionSig, InferType, LazyInferenceFacts, MethodSig};
+use crate::intern_pool::TypeInternPool;
 use crate::types::{ModuleId, StructId, Type};
+
+/// Lift a resolved type into the inference algebra.
+///
+/// Only array types carry structure inference reasons about; everything else is
+/// already concrete. The type pool is the whole input, so this is one function
+/// rather than a method on whichever receiver happens to be analyzing — the
+/// epoch and the provider-backed receiver must agree here exactly, because a
+/// signature that lifts differently on the two would produce different
+/// constraints for the same body.
+pub(super) fn type_to_infer_type(pool: &TypeInternPool, ty: Type) -> InferType {
+    match ty.kind() {
+        crate::types::TypeKind::Array(id) => {
+            let (element, length) = pool.array_def(id);
+            InferType::Array {
+                element: Box::new(type_to_infer_type(pool, element)),
+                length,
+            }
+        }
+        _ => InferType::Concrete(ty),
+    }
+}
 
 /// The generated-nominal overlay snapshot consumed by [`InferenceContext`].
 /// It is a construction-time input, not a replay cache for semantic results.

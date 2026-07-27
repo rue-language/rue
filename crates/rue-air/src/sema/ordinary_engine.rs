@@ -1259,16 +1259,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
     }
     pub(crate) fn type_to_infer_type(&self, ty: Type) -> InferType {
-        match ty.kind() {
-            crate::types::TypeKind::Array(id) => {
-                let (element, length) = self.body_type_pool().array_def(id);
-                InferType::Array {
-                    element: Box::new(self.type_to_infer_type(element)),
-                    length,
-                }
-            }
-            _ => InferType::Concrete(ty),
-        }
+        super::inference_ctx::type_to_infer_type(self.body_type_pool(), ty)
     }
     pub(crate) fn inference_facts<'a>(
         &'a self,
