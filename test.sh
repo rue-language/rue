@@ -164,7 +164,40 @@ if [[ $# -eq 0 ]]; then
     overall_status=0
     set +e
     echo "Running unit tests and lightweight repository checks..."
-    ./buck2 test //... --exclude rue_heavy_suite --always-exclude 2>&1 | tee "$run_log"
+    broad_test_args=(//... --exclude rue_heavy_suite --always-exclude)
+    if [[ -n "${RUE_CI_DEFER_DEDICATED_SUITES:-}" ]]; then
+        if [[ "${CI:-}" != "true" ]]; then
+            echo "error: RUE_CI_DEFER_DEDICATED_SUITES is reserved for required CI" >&2
+            exit 1
+        fi
+
+        # Dedicated targets remain pre-merge coverage, but their explicit CI
+        # jobs must not also execute inside every platform's broad pass. Require
+        # the workflow's declared set to match Buck's live scheduling metadata
+        # exactly before excluding the label, so a newly tagged target cannot
+        # disappear behind a stale environment variable.
+        dedicated_targets="$(./buck2 uquery 'attrfilter(labels, rue_dedicated_suite, //...)')"
+        read -r -a deferred_dedicated <<<"$RUE_CI_DEFER_DEDICATED_SUITES"
+        for deferred in "${deferred_dedicated[@]}"; do
+            if ! grep -Fxq "root${deferred#root}" <<<"$dedicated_targets"; then
+                echo "error: deferred CI target is not labeled rue_dedicated_suite: $deferred" >&2
+                exit 1
+            fi
+        done
+        while IFS= read -r dedicated; do
+            [[ -n "$dedicated" ]] || continue
+            found=0
+            for deferred in "${deferred_dedicated[@]}"; do
+                [[ "${dedicated#root}" == "${deferred#root}" ]] && found=1
+            done
+            if [[ "$found" -ne 1 ]]; then
+                echo "error: dedicated Buck target has no explicit CI owner: $dedicated" >&2
+                exit 1
+            fi
+        done <<<"$dedicated_targets"
+        broad_test_args+=(--exclude rue_dedicated_suite)
+    fi
+    ./buck2 test "${broad_test_args[@]}" 2>&1 | tee "$run_log"
     step_status=${PIPESTATUS[0]}
     [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
     for suite in "${HEAVY_SUITES[@]}"; do
