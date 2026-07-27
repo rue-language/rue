@@ -33,7 +33,7 @@ trap cleanup EXIT
 test_args=("$target")
 timings=""
 case "$target" in
-    //:cli-tests)
+    //:cli-tests|//:cli-tests-slow)
         test_args+=(-- --timeout 1800)
         ;;
     //:cli-tests-shard-*)

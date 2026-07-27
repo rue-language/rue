@@ -812,8 +812,14 @@ EOF
   : >"$sb/calls.log"
   rc=0
   (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: monolithic CLI corpus receives the extended executor timeout" \
+  check "ci-heavy-suite: premerge CLI corpus receives the extended executor timeout" \
     "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-slow FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-slow) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: slow CLI corpus receives the extended executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-slow -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
 
   : >"$sb/calls.log"
   rc=0
@@ -882,6 +888,12 @@ if [ "$1" = "uquery" ]; then
   case "$*" in
     *rue_cli_shard*) for t in ${FAKE_CLI_SHARDS:-}; do printf 'root%s\n' "$t"; done ;;
     *rue_dedicated_suite*) for t in ${FAKE_DEDICATED_SUITES:-}; do printf 'root%s\n' "$t"; done ;;
+    *rue_test_tier_slow*) printf 'root//:cli-tests-slow\n' ;;
+    *rue_test_tier_premerge*)
+      for t in $FAKE_HEAVY_SUITES; do
+        [ "$t" = "//:cli-tests-slow" ] || printf 'root%s\n' "$t"
+      done
+      ;;
     *) for t in $FAKE_HEAVY_SUITES; do printf 'root%s\n' "$t"; done ;;
   esac
   exit 0
@@ -908,7 +920,7 @@ exit 90
 EOF
   chmod +x "$sb/buck2"
 
-  local all="//:cli-tests //:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
+  local all="//:cli-tests //:cli-tests-caldera //:cli-tests-slow //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
 
   # (1) Full corpus present + buck2 green -> test.sh reports success.
   local rc=0 out
@@ -917,8 +929,8 @@ EOF
     "$([ "$rc" -eq 0 ] && grep -Fxq '=== TEST SUITE: PASSED ===' <<< "$out" && echo 0 || echo 1)"
 
   # The required-CI spelling selects premerge from canonical Buck metadata,
-  # while slow selections are allowed to have no heavy corpus targets and do
-  # not claim the premerge omission sentinels executed.
+  # while slow selections audit their own real corpus target without claiming
+  # the premerge omission sentinels executed.
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && RUE_TEST_TIER=premerge RUE_CI_DEFER_HEAVY_SUITES= \
       RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" \
@@ -928,14 +940,14 @@ EOF
 
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && RUE_TEST_TIER=slow RUE_CI_DEFER_HEAVY_SUITES= \
-      RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES= \
-      FAKE_PASS_TARGETS= FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
-  check "test.sh: slow selection is valid without premerge corpus claims" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && echo 0 || echo 1)"
+      RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" \
+      FAKE_PASS_TARGETS='//:cli-tests-slow' FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: slow selection audits its real CLI corpus target" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && grep -Fq 'test //:cli-tests-slow -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
-  local partial="//:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
+  local partial="//:cli-tests-caldera //:cli-tests-slow //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
   rc=0
   out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a silently omitted corpus harness fails the run" \
@@ -957,7 +969,7 @@ EOF
   # targets while retaining every other corpus assertion.
   local owned="//:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
   : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+  out="$(cd "$sb" && CI=true RUE_TEST_TIER=premerge RUE_FULL_SUITE_LOCK_HELD=1 \
       RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:cli-tests-caldera //:spec-tests' \
       FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$owned" \
       FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
@@ -969,7 +981,7 @@ EOF
   # (5) Dedicated pre-merge coverage may leave the broad CI pass only when the
   # workflow-owned set exactly matches Buck's live scheduling metadata.
   : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+  out="$(cd "$sb" && CI=true RUE_TEST_TIER=premerge RUE_FULL_SUITE_LOCK_HELD=1 \
       RUE_CI_DEFER_HEAVY_SUITES= \
       RUE_CI_DEFER_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
       FAKE_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
@@ -979,7 +991,7 @@ EOF
     "$([ "$rc" -eq 0 ] && grep -Fq -- '--exclude rue_dedicated_suite' "$sb/calls.log" && echo 0 || echo 1)"
 
   rc=0
-  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+  out="$(cd "$sb" && CI=true RUE_TEST_TIER=premerge RUE_FULL_SUITE_LOCK_HELD=1 \
       RUE_CI_DEFER_HEAVY_SUITES= \
       RUE_CI_DEFER_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
       FAKE_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test //:unowned-dedicated' \
@@ -989,7 +1001,7 @@ EOF
 
   # (6) A stale shard name or local attempt to suppress coverage fails closed.
   rc=0
-  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+  out="$(cd "$sb" && CI=true RUE_TEST_TIER=premerge RUE_FULL_SUITE_LOCK_HELD=1 \
       RUE_CI_DEFER_HEAVY_SUITES='//:missing-suite' \
       FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
   check "test.sh: unknown deferred CI suite fails closed" \
@@ -1013,14 +1025,15 @@ EOF
 
   # (7) RUE-1116: the CI-only CLI shards are labeled rue_heavy_suite but must be
   #     excluded from a local full run, which covers their union once via the
-  #     monolithic //:cli-tests. The run still succeeds (full corpus present).
+  #     premerge //:cli-tests. The slow target independently owns its cases,
+  #     and the standard run still succeeds with the full union present.
   local with_shards="$all //:cli-tests-shard-0 //:cli-tests-shard-1"
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 \
       FAKE_HEAVY_SUITES="$with_shards" \
       FAKE_CLI_SHARDS='//:cli-tests-shard-0 //:cli-tests-shard-1' \
       FAKE_PASS_TARGETS="$all" FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
-  check "test.sh: local full run runs the monolithic CLI corpus, not the shards" \
+  check "test.sh: local full run runs the premerge CLI target, not the shards" \
     "$([ "$rc" -eq 0 ] && ! grep -Eq '(^| )//:cli-tests-shard-' "$sb/calls.log" && echo 0 || echo 1)"
 
   rm -rf "$sb"

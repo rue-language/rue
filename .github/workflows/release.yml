@@ -42,9 +42,9 @@ jobs:
           scripts/provision-build-cache install
           scripts/provision-build-cache apply
 
-      # The monolithic //:cli-tests target owns the complete CLI corpus here.
-      # Exclude its CI-only shards so the same corpus is not repeated four
-      # additional times by the //... expansion.
+      # //:cli-tests owns the premerge shards' complete union; //:cli-tests-slow
+      # owns declarative slow sections. Exclude the CI-only shards so the
+      # premerge inventory is not repeated four times by the //... expansion.
       - name: Run full release suite
         run: >-
           scripts/ci-timed "full release suite" --

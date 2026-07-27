@@ -74,6 +74,9 @@
 //! - `exit_code`: expected program exit code (default 0)
 //! - `contract`: named execution contract supplying scheduling class and
 //!   separate compile/runtime budgets (ordinary cases default to 10s for each)
+//! - section-level `tier = "slow"`: keep exhaustive large-program behavior
+//!   behind the dedicated slow Buck target while the automatic example remains
+//!   a bounded premerge compile/run canary
 //! - `known_bug = "RUE-NN"`: expected failure (xfail). An ordinary assertion
 //!   failure is ignored with the bug reference. A fatal subprocess failure or
 //!   unexpected pass fails loudly.
@@ -823,6 +826,58 @@ struct Section {
     /// cases may override it when only one scenario is heavyweight.
     #[serde(default)]
     contract: Option<String>,
+    /// Logical execution tier for this section's explicit cases. Automatic
+    /// example smoke tests are independently owned premerge canaries.
+    #[serde(default)]
+    tier: CliCaseTier,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum CliCaseTier {
+    #[default]
+    Premerge,
+    Slow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliCaseTierSelection {
+    All,
+    Premerge,
+    Slow,
+}
+
+impl CliCaseTierSelection {
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("") | Some("all") => Ok(Self::All),
+            Some("premerge") => Ok(Self::Premerge),
+            Some("slow") => Ok(Self::Slow),
+            Some(other) => Err(format!(
+                "unknown RUE_CLI_CASE_TIER {other:?} (expected all, premerge, or slow)"
+            )),
+        }
+    }
+
+    fn from_env() -> Result<Self, String> {
+        match std::env::var("RUE_CLI_CASE_TIER") {
+            Ok(value) => Self::parse(Some(&value)),
+            Err(std::env::VarError::NotPresent) => Self::parse(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    fn includes(self, tier: CliCaseTier) -> bool {
+        self == Self::All
+            || matches!(
+                (self, tier),
+                (Self::Premerge, CliCaseTier::Premerge) | (Self::Slow, CliCaseTier::Slow)
+            )
+    }
+
+    fn includes_automatic_examples(self) -> bool {
+        matches!(self, Self::All | Self::Premerge)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -2427,6 +2482,17 @@ fn main() {
         eprintln!("error: invalid RUE_CLI_TEST_SHARD: {error}");
         std::process::exit(2);
     });
+    let case_tier = CliCaseTierSelection::from_env().unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(2);
+    });
+    if shard_selector.is_some() && case_tier != CliCaseTierSelection::Premerge {
+        eprintln!(
+            "error: RUE_CLI_TEST_SHARD requires RUE_CLI_CASE_TIER=premerge \
+             so shards partition exactly the required CLI inventory"
+        );
+        std::process::exit(2);
+    }
     let timings = CaseTimingRecorder::from_env().unwrap_or_else(|error| {
         eprintln!("error: {error}");
         std::process::exit(2);
@@ -2469,14 +2535,17 @@ fn main() {
         .flat_map(|(_, file)| {
             file.cases
                 .iter()
+                .filter(|_| case_tier.includes(file.section.tier))
                 .map(|case| format!("{}::{}", file.section.id, case.name))
         })
         .chain(
             examples
                 .iter()
+                .filter(|_| case_tier.includes_automatic_examples())
                 .map(|example| example_test_name(&example.relative_path)),
         )
         .collect::<Vec<_>>();
+    let selected_discovered = discovered_names.len();
     let shard = shard_selector.map(|selector| {
         let weights_path = std::env::var_os("RUE_CLI_SHARD_WEIGHTS").unwrap_or_else(|| {
             eprintln!("error: RUE_CLI_SHARD_WEIGHTS is required when RUE_CLI_TEST_SHARD is set");
@@ -2496,11 +2565,11 @@ fn main() {
         std::process::exit(1);
     }
     let mut tests: Vec<Trial> = Vec::with_capacity(total);
-    // Full count of discovered cases (corpus + examples), before shard
-    // selection, for the visibility line printed below.
-    let discovered = total + examples.len();
 
     for (_, file) in corpus.files {
+        if !case_tier.includes(file.section.tier) {
+            continue;
+        }
         let section_id = file.section.id.clone();
         for case in file.cases {
             let contract_name = case_contract_name(&file.section, &case);
@@ -2534,14 +2603,16 @@ fn main() {
     // RUE-48: compile+run every examples/**/*.rue through the real driver, so a
     // regression that breaks a shipped example (or an example referencing a
     // removed flag) can't slip past CI unnoticed.
-    tests.extend(example_trials(
-        examples,
-        &automatic_contracts,
-        &rue_binary,
-        &real_std,
-        shard.as_ref(),
-        &timings,
-    ));
+    if case_tier.includes_automatic_examples() {
+        tests.extend(example_trials(
+            examples,
+            &automatic_contracts,
+            &rue_binary,
+            &real_std,
+            shard.as_ref(),
+            &timings,
+        ));
+    }
 
     if let Some(shard) = &shard {
         eprintln!(
@@ -2550,7 +2621,7 @@ fn main() {
             shard_selector.unwrap().count(),
             shard.platform(),
             tests.len(),
-            discovered,
+            selected_discovered,
             shard.selected_estimated_load_ms(),
             shard.selected_case_count(),
         );
@@ -2608,6 +2679,26 @@ mod tests {
             automatic_examples: file.automatic_example.clone(),
             files: vec![("inline.toml".to_string(), file)],
         }
+    }
+
+    #[test]
+    fn cli_case_tier_selection_is_explicit_and_fail_closed() {
+        let all = CliCaseTierSelection::parse(None).unwrap();
+        assert!(all.includes(CliCaseTier::Premerge));
+        assert!(all.includes(CliCaseTier::Slow));
+        assert!(all.includes_automatic_examples());
+
+        let premerge = CliCaseTierSelection::parse(Some("premerge")).unwrap();
+        assert!(premerge.includes(CliCaseTier::Premerge));
+        assert!(!premerge.includes(CliCaseTier::Slow));
+        assert!(premerge.includes_automatic_examples());
+
+        let slow = CliCaseTierSelection::parse(Some("slow")).unwrap();
+        assert!(!slow.includes(CliCaseTier::Premerge));
+        assert!(slow.includes(CliCaseTier::Slow));
+        assert!(!slow.includes_automatic_examples());
+
+        assert!(CliCaseTierSelection::parse(Some("slwo")).is_err());
     }
 
     #[test]

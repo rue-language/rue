@@ -217,7 +217,7 @@ _CLI_TEST_ARGS = [
     "--skip", "cli.examples_meridian",
 ]
 
-_CLI_TEST_ENV = {
+_CLI_TEST_BASE_ENV = {
     "RUE_BINARY": "$(exe_target //crates/rue:rue)",
     "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
     "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
@@ -225,15 +225,33 @@ _CLI_TEST_ENV = {
     "RUE_STD_DIR": "$(location :std)/std",
 }
 
-# The full CLI corpus in one invocation: the canonical target that a local
-# `./test.sh` full run executes and that the RUE-924 corpus-omission audit
-# tracks (REQUIRED_CORPUS_HARNESSES in test.sh).
+_CLI_TEST_ENV = dict(_CLI_TEST_BASE_ENV.items() + [
+    ("RUE_CLI_CASE_TIER", "premerge"),
+])
+
+# The bounded premerge CLI corpus. Explicit slow sections are registered by
+# //:cli-tests-slow instead; their automatic examples remain here as one
+# compile/run canary per maintained large program.
 rue_sh_test(
     name = "cli-tests",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
     args = _CLI_TEST_ARGS,
     env = _CLI_TEST_ENV,
+)
+
+# Exhaustive behavior for declarative `tier = "slow"` CLI sections. This is a
+# separate real Buck target, not a skipped body: standard/full local runs and
+# scheduled release coverage execute it, while required premerge shards do not.
+rue_sh_test(
+    name = "cli-tests-slow",
+    tier = "slow",
+    labels = ["rue_heavy_suite"],
+    test = "//crates/rue-cli-tests:rue-cli-tests",
+    args = ["--quiet"],
+    env = dict(_CLI_TEST_BASE_ENV.items() + [
+        ("RUE_CLI_CASE_TIER", "slow"),
+    ]),
 )
 
 # Required release coverage is deliberately bounded: compile the real driver
@@ -250,11 +268,11 @@ rue_sh_test(
 
 # RUE-1116: parallel CI shards of the CLI corpus. Same harness and declared
 # inputs as //:cli-tests, but each sets RUE_CLI_TEST_SHARD=k/N so it runs one
-# deterministic cost-balanced slice; the shards' union is the full corpus. They
-# carry BOTH labels deliberately:
+# deterministic cost-balanced slice; the shards' union is the full premerge
+# inventory. They carry BOTH labels deliberately:
 #   * rue_heavy_suite — scripts/ci-heavy-suite accepts them unchanged, and the
 #     broad `buck2 test //... --exclude rue_heavy_suite` pass skips them;
-#   * rue_cli_shard — a local `./test.sh` full run runs the monolithic
+#   * rue_cli_shard — a local `./test.sh` full run runs the premerge
 #     //:cli-tests exactly once instead of re-running every slice (test.sh
 #     subtracts rue_cli_shard from its heavy-suite discovery).
 # The `platform-corpus` matrix in .github/workflows/ci.yml MUST list all

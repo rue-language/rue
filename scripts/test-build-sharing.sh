@@ -256,6 +256,7 @@ if [[ "${1:-}" == "uquery" ]]; then
         printf '%s\n' \
             root//:cli-tests \
             root//:cli-tests-caldera \
+            root//:cli-tests-slow \
             root//:frontend-diff-test \
             root//:oracle-diff-generated-smoke \
             root//:reproducible-programs \
@@ -290,8 +291,10 @@ EOF
         "$(grep -Fxq 'test //... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute --exclude rue_test_tier_stress' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: monolithic CLI corpus receives the extended executor timeout" \
+    check "suite: premerge CLI corpus receives the extended executor timeout" \
         "$(grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: slow CLI corpus receives the extended executor timeout" \
+        "$(grep -Fxq 'test //:cli-tests-slow -- --timeout 1800' "$sb/calls" && echo 0 || echo 1)"
     check "suite: every other heavy target uses the default executor timeout" \
         "$([ "$(grep -Ec '^test //:(cli-tests-caldera|spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs|frontend-diff-test)$' "$sb/calls")" -eq 6 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \
