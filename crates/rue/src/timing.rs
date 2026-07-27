@@ -69,6 +69,18 @@ struct TimingDataInner {
     /// Order in which passes were first seen, for deterministic output.
     pass_order: Vec<String>,
 
+    /// Accumulated measurements per driver-phase name.
+    ///
+    /// Driver phases are host work outside the compiler's timing root, such as
+    /// writing the linked executable. They are measured with the same span
+    /// machinery but kept out of `passes` and out of `root_duration`, so
+    /// `total_ms` keeps meaning "compiler work" and `compile` stays the sole
+    /// timing root (RUE-786).
+    driver_phases: HashMap<String, DriverPhaseAggregate>,
+
+    /// Order in which driver phases were first seen, for deterministic output.
+    driver_phase_order: Vec<String>,
+
     /// Union of intervals in which at least one root span was active.
     ///
     /// Child spans overlap their parents, so summing every pass duration
@@ -104,6 +116,13 @@ struct PassAggregate {
     leaf_invocations: u64,
 }
 
+/// Measurements aggregated across every driver-phase span with the same name.
+#[derive(Debug, Clone, Copy, Default)]
+struct DriverPhaseAggregate {
+    duration: Duration,
+    invocations: u64,
+}
+
 /// JSON output structure for benchmark timing data.
 ///
 /// This structure is designed for machine-readable output that can be
@@ -119,6 +138,13 @@ pub struct BenchmarkTiming {
     pub metadata: BenchmarkMetadata,
     /// Individual pass timings in milliseconds.
     pub passes: Vec<PassTiming>,
+    /// Driver-side phases measured outside the compiler's timing root.
+    ///
+    /// These break down `process - total_ms`, never `total_ms` itself, so they
+    /// must not be added to the pass table. The field is omitted entirely when
+    /// the run measured no driver phase.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub driver_phases: Vec<DriverPhaseTiming>,
     /// Total compilation time in milliseconds.
     pub total_ms: f64,
     /// Source code metrics (lines, bytes, tokens).
@@ -170,6 +196,17 @@ pub struct PassTiming {
     pub leaf_invocations: u64,
 }
 
+/// Timing for one driver-side phase outside the compiler's timing root.
+#[derive(Debug, Clone, Serialize)]
+pub struct DriverPhaseTiming {
+    /// Name of the driver phase (e.g., "output_write").
+    pub name: String,
+    /// Time spent in this phase in milliseconds.
+    pub duration_ms: f64,
+    /// Number of spans aggregated into this row.
+    pub invocations: u64,
+}
+
 impl TimingData {
     /// Create a new empty timing data collector.
     pub fn new() -> Self {
@@ -177,6 +214,8 @@ impl TimingData {
             inner: Arc::new(Mutex::new(TimingDataInner {
                 passes: HashMap::new(),
                 pass_order: Vec::new(),
+                driver_phases: HashMap::new(),
+                driver_phase_order: Vec::new(),
                 root_duration: Duration::ZERO,
                 active_roots: 0,
                 root_active_since: None,
@@ -208,6 +247,18 @@ impl TimingData {
         // Track order of first occurrence
         if !inner.pass_order.contains(&pass.to_string()) {
             inner.pass_order.push(pass.to_string());
+        }
+    }
+
+    /// Record one driver-phase span outside the compiler's timing root.
+    fn record_driver_phase(&self, phase: &str, duration: Duration) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = inner.driver_phases.entry(phase.to_string()).or_default();
+        entry.duration += duration;
+        entry.invocations += 1;
+
+        if !inner.driver_phase_order.contains(&phase.to_string()) {
+            inner.driver_phase_order.push(phase.to_string());
         }
     }
 
@@ -355,6 +406,20 @@ impl TimingData {
         ));
         output.push_str("\n  Pass rows are inclusive; nested rows overlap their parents.\n");
 
+        if !inner.driver_phase_order.is_empty() {
+            output.push_str("\n  Driver phases (outside the compiler total):\n");
+            for phase in &inner.driver_phase_order {
+                if let Some(measurement) = inner.driver_phases.get(phase) {
+                    output.push_str(&format!(
+                        "  {:<width$} {:>8.1}ms\n",
+                        format!("{}:", capitalize(phase)),
+                        measurement.duration.as_secs_f64() * 1000.0,
+                        width = max_name_len + 1
+                    ));
+                }
+            }
+        }
+
         output
     }
 
@@ -399,6 +464,21 @@ impl TimingData {
             })
             .collect();
 
+        let driver_phases = inner
+            .driver_phase_order
+            .iter()
+            .filter_map(|phase| {
+                inner
+                    .driver_phases
+                    .get(phase)
+                    .map(|measurement| DriverPhaseTiming {
+                        name: phase.clone(),
+                        duration_ms: measurement.duration.as_secs_f64() * 1000.0,
+                        invocations: measurement.invocations,
+                    })
+            })
+            .collect();
+
         let metadata = BenchmarkMetadata {
             timestamp: iso8601_now(),
             version: version.to_string(),
@@ -410,6 +490,7 @@ impl TimingData {
             timing_model: "inclusive_spans",
             metadata,
             passes,
+            driver_phases,
             total_ms,
             source_metrics,
             peak_memory_bytes,
@@ -579,6 +660,27 @@ struct SpanTiming {
     /// Store this at creation because a child may outlive its parent; looking
     /// the parent up again during a later enter/close can then be ambiguous.
     is_root: bool,
+    /// Whether this span measures driver work outside the compiler root.
+    ///
+    /// Set by a `driver_phase = true` span field, and inherited by children so
+    /// nested driver work cannot be mistaken for a compiler pass.
+    is_driver_phase: bool,
+}
+
+/// Reads the `driver_phase` marker off a span's creation-time fields.
+#[derive(Default)]
+struct DriverPhaseVisitor {
+    is_driver_phase: bool,
+}
+
+impl tracing::field::Visit for DriverPhaseVisitor {
+    fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+        if field.name() == "driver_phase" {
+            self.is_driver_phase = value;
+        }
+    }
+
+    fn record_debug(&mut self, _field: &tracing::field::Field, _value: &dyn std::fmt::Debug) {}
 }
 
 impl SpanTiming {
@@ -613,7 +715,7 @@ impl<S> Layer<S> for TimingLayer
 where
     S: Subscriber + for<'a> LookupSpan<'a>,
 {
-    fn on_new_span(&self, _attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         // Initialize timing state for this span
         if let Some(span) = ctx.span(id) {
             let parent_id = span.parent().map(|parent| parent.id().clone());
@@ -622,6 +724,17 @@ where
                 .parent()
                 .map(|parent| (parent.name().to_owned(), span.name().to_owned()));
             let is_root = parent_id.is_none();
+            let mut visitor = DriverPhaseVisitor::default();
+            attrs.record(&mut visitor);
+            let parent_is_driver_phase = parent_id
+                .as_ref()
+                .and_then(|parent_id| ctx.span(parent_id))
+                .is_some_and(|parent| {
+                    parent
+                        .extensions()
+                        .get::<SpanTiming>()
+                        .is_some_and(|timing| timing.is_driver_phase)
+                });
             let mut extensions = span.extensions_mut();
             extensions.insert(SpanTiming {
                 active_enters: 0,
@@ -629,6 +742,7 @@ where
                 accumulated: Duration::ZERO,
                 has_children: false,
                 is_root,
+                is_driver_phase: visitor.is_driver_phase || parent_is_driver_phase,
             });
             drop(extensions);
 
@@ -652,7 +766,7 @@ where
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
             if let Some(timing) = extensions.get_mut::<SpanTiming>() {
-                if timing.is_root {
+                if timing.is_root && !timing.is_driver_phase {
                     self.data.enter_root_span(timing);
                 } else {
                     // Sample after acquiring the per-span extension lock so
@@ -667,7 +781,7 @@ where
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
             if let Some(timing) = extensions.get_mut::<SpanTiming>() {
-                if timing.is_root {
+                if timing.is_root && !timing.is_driver_phase {
                     self.data.exit_root_span(timing);
                 } else {
                     // Sample after acquiring the per-span extension lock so
@@ -689,6 +803,7 @@ where
                         timing.duration(),
                         timing.is_root,
                         !timing.has_children,
+                        timing.is_driver_phase,
                     )
                 })
             };
@@ -696,8 +811,12 @@ where
             // Do not hold the span's extension lock while acquiring the
             // aggregate-data lock. Root enter/exit callbacks deliberately use
             // the opposite pair together (extension, then aggregate data).
-            if let Some((name, duration, is_root, is_leaf)) = measurement {
-                self.data.record_span(&name, duration, is_root, is_leaf);
+            if let Some((name, duration, is_root, is_leaf, is_driver_phase)) = measurement {
+                if is_driver_phase {
+                    self.data.record_driver_phase(&name, duration);
+                } else {
+                    self.data.record_span(&name, duration, is_root, is_leaf);
+                }
             }
         }
     }
@@ -770,7 +889,14 @@ mod tests {
             .find(|pass| pass.name == "parse_file")
             .unwrap();
         assert_eq!(direct_parse.invocations, 1);
-        assert_eq!(direct_parse.root_invocations, 1);
+        // The parse query's own phases wrap it (RUE-786), so `parse_query_key`
+        // and its siblings own the root here and `parse_file` nests beneath
+        // `parse_program`.
+        assert_eq!(direct_parse.root_invocations, 0);
+        assert!(
+            direct_edges.contains(&("parse_program".to_owned(), "parse_file".to_owned())),
+            "direct parse edges: {direct_edges:?}"
+        );
 
         let session_data = TimingData::new();
         let session_subscriber =
@@ -789,7 +915,10 @@ mod tests {
         for expected in [
             ("parse_file", "lexer"),
             ("parse_file", "parser"),
-            ("semantic_astgen", "definition_snapshot_modules"),
+            // The definition snapshot is built by the canonical merge, which
+            // RUE-786 gave its own span beneath the astgen aggregate.
+            ("semantic_astgen", "canonical_merge"),
+            ("canonical_merge", "definition_snapshot_modules"),
         ] {
             assert!(
                 session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
@@ -816,16 +945,36 @@ mod tests {
             .unwrap();
         // The session parses the source module once, then lazily reparses the
         // demanded body-free declaration terminal inside the semantic query.
+        // Neither is a root any more: RUE-786 timed the parse query's own
+        // phases around the first, and the shell projection that demands the
+        // second, so both nest beneath the request that asked for them.
         assert_eq!(session_parse_file.invocations, 2);
-        assert_eq!(session_parse_file.root_invocations, 2);
+        assert_eq!(session_parse_file.root_invocations, 0);
+        for expected in [
+            ("parse_program", "parse_file"),
+            ("declaration_nucleus", "parse_file"),
+        ] {
+            assert!(
+                session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "the demanded reparse is timed beneath its request: {session_edges:?}"
+            );
+        }
         // RUE-1027 constructs one declaration-shell epoch plus one isolated
-        // exact-body epoch for the reached `main` terminal. The shell epoch's
-        // index remains a top-level leaf; the exact-body epoch's index is a
-        // leaf timed beneath its body_prepare_declarations pipeline stage.
-        // Neither is nested beneath whole-program sema.
+        // exact-body epoch for the reached `main` terminal. Both indexes stay
+        // leaves; RUE-786 gave each epoch's surrounding stage a span, so the
+        // shell epoch's index is timed beneath `declaration_shells` and the
+        // exact-body epoch's beneath `body_prepare_declarations`. Neither is
+        // nested beneath whole-program sema.
         assert_eq!(rir_declaration_index.invocations, 2);
-        assert_eq!(rir_declaration_index.root_invocations, 1);
+        assert_eq!(rir_declaration_index.root_invocations, 0);
         assert_eq!(rir_declaration_index.leaf_invocations, 2);
+        assert!(
+            session_edges.contains(&(
+                "declaration_shell_prepare".to_owned(),
+                "rir_declaration_index".to_owned()
+            )),
+            "the shell epoch's index is timed beneath its stage: {session_edges:?}"
+        );
         assert!(
             session_edges.contains(&(
                 "body_prepare_declarations".to_owned(),
@@ -853,10 +1002,31 @@ mod tests {
             compile_edges.contains(&("compile".to_owned(), "compile_pipeline".to_owned())),
             "missing compile -> compile_pipeline in batch edges: {compile_edges:?}"
         );
-        for child in ["rir_declaration_index", "sema"] {
+        for edge in [
+            ("compile_pipeline", "declaration_shells"),
+            ("declaration_shells", "declaration_shell_prepare"),
+            ("declaration_shell_prepare", "rir_declaration_index"),
+            ("compile_pipeline", "sema"),
+            // The backend and linker subphases RUE-786 added must reach the
+            // pipeline aggregate rather than escaping to their own roots —
+            // codegen in particular runs its subphases on Rayon workers.
+            ("compile_pipeline", "codegen"),
+            ("codegen", "mir_lowering"),
+            ("codegen", "register_allocation"),
+            ("codegen", "machine_emission"),
+            // Object serialization runs after the parallel fan-out returns, so
+            // it is a sibling of `codegen`, not one of its subphases.
+            ("compile_pipeline", "object_serialization"),
+            ("compile_pipeline", "linker"),
+            ("linker", "link_parse_objects"),
+            ("linker", "link_layout"),
+            ("linker", "link_emit"),
+        ] {
             assert!(
-                compile_edges.contains(&("compile_pipeline".to_owned(), child.to_owned())),
-                "missing compile_pipeline -> {child} in batch edges: {compile_edges:?}"
+                compile_edges.contains(&(edge.0.to_owned(), edge.1.to_owned())),
+                "missing {} -> {} in batch edges: {compile_edges:?}",
+                edge.0,
+                edge.1
             );
         }
         assert!(
@@ -930,15 +1100,30 @@ mod tests {
 
         // Every reached body runs the per-body pipeline stages beneath the one
         // coordinator span, so the timing table can split the semantic query
-        // path that RUE-1083 found unattributed.
+        // path that RUE-1083 found unattributed. RUE-786 interposed the
+        // per-body query, analysis, and epoch-derivation spans between them;
+        // the stages must still descend from the same coordinator.
         let edges = data.parent_edges();
-        for stage in [
-            "body_prepare_declarations",
-            "body_project_declarations",
-            "body_install_declarations",
-            "body_analyze",
-            "body_export",
+        for edge in [
+            ("body_queries", "body_transaction"),
+            ("body_transaction", "body_analysis"),
+            ("body_analysis", "body_derive_epoch"),
+            ("body_derive_epoch", "body_prepare_declarations"),
+            ("body_derive_epoch", "body_project_declarations"),
+            ("body_derive_epoch", "body_install_declarations"),
+            ("body_analysis", "body_analyze"),
+            ("body_analysis", "body_export"),
         ] {
+            assert!(
+                edges.contains(&(edge.0.to_owned(), edge.1.to_owned())),
+                "missing {} -> {} edge: {edges:?}",
+                edge.0,
+                edge.1
+            );
+        }
+        // The coordinator's own per-body work is timed apart from the queries
+        // it drives, so neither can absorb the other's cost.
+        for stage in ["body_schedule", "body_record", "body_toolchain_demands"] {
             assert!(
                 edges.contains(&("body_queries".to_owned(), stage.to_owned())),
                 "missing body_queries -> {stage} edge: {edges:?}"
@@ -1002,6 +1187,73 @@ mod tests {
             validation_edges
                 .contains(&("parser".to_owned(), "parser_grammar_execution".to_owned()))
         );
+    }
+
+    #[test]
+    fn driver_phase_spans_stay_out_of_the_compiler_total() {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            {
+                let _compile = tracing::info_span!("compile").entered();
+                let _leaf = tracing::info_span!("sema").entered();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _write = tracing::info_span!("output_write", driver_phase = true).entered();
+            // A driver phase's own children are driver work too, so they must
+            // not reappear as compiler passes either.
+            let _nested = tracing::info_span!("output_fsync").entered();
+            std::thread::sleep(Duration::from_millis(5));
+        });
+
+        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let pass_names: Vec<_> = timing
+            .passes
+            .iter()
+            .map(|pass| pass.name.as_str())
+            .collect();
+        assert_eq!(pass_names, ["sema", "compile"], "{pass_names:?}");
+        let phase_names: Vec<_> = timing
+            .driver_phases
+            .iter()
+            .map(|phase| phase.name.as_str())
+            .collect();
+        assert_eq!(phase_names, ["output_fsync", "output_write"]);
+        assert!(
+            timing
+                .driver_phases
+                .iter()
+                .all(|phase| phase.invocations == 1)
+        );
+
+        // `compile` remains the sole root and still owns the whole total, so a
+        // driver phase can never inflate or dilute the compiler's percentages.
+        let compile = timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "compile")
+            .unwrap();
+        assert_eq!(compile.root_invocations, 1);
+        assert!((compile.duration_ms - timing.total_ms).abs() < f64::EPSILON);
+        let write = timing
+            .driver_phases
+            .iter()
+            .find(|phase| phase.name == "output_write")
+            .unwrap();
+        assert!(write.duration_ms > 0.0);
+
+        let json = data.to_json_with_metrics("test", "test", None, None);
+        assert!(json.contains("\"driver_phases\""), "{json}");
+        assert!(data.report().contains("Driver phases"));
+    }
+
+    #[test]
+    fn a_run_without_driver_phases_omits_the_field_entirely() {
+        let data = TimingData::new();
+        data.record("lexer", Duration::from_millis(1));
+        let json = data.to_json_with_metrics("test", "test", None, None);
+        assert!(!json.contains("driver_phases"), "{json}");
+        assert!(!data.report().contains("Driver phases"));
     }
 
     #[test]
@@ -1151,6 +1403,7 @@ mod tests {
             accumulated: Duration::ZERO,
             has_children: false,
             is_root: true,
+            is_driver_phase: false,
         };
         let mut delayed = SpanTiming {
             active_enters: 0,
@@ -1158,6 +1411,7 @@ mod tests {
             accumulated: Duration::ZERO,
             has_children: false,
             is_root: true,
+            is_driver_phase: false,
         };
 
         // Model a callback that captured t=10ms, stalled, and was applied
@@ -1192,6 +1446,7 @@ mod tests {
             accumulated: Duration::ZERO,
             has_children: false,
             is_root: false,
+            is_driver_phase: false,
         };
         timing.enter_at(start);
         timing.enter_at(start + Duration::from_millis(10));

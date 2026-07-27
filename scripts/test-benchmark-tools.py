@@ -129,6 +129,9 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         )
         self.assertEqual(result["unattributed_ms"], 2.0)
         self.assertEqual(result["unattributed_mad_ms"], 1.0)
+        # The share is paired per sample before the median, exactly like the
+        # absolute residual: median(2/11, 1/10, 3/12) as percentages.
+        self.assertAlmostEqual(result["unattributed_percent"], 2.0 / 11.0 * 100.0)
         self.assertEqual(result["inclusive_rows"], [("parse", 5.5, 50.0)])
         self.assertEqual(result["overlapping_leaf_work_ms"], 0.0)
         self.assertEqual(result["overlapping_leaf_work_mad_ms"], 0.0)
@@ -137,6 +140,81 @@ class PerfBaselineAggregationTests(unittest.TestCase):
         self.assertEqual(
             [name for name, _ms, _percent in result["rows"]],
             ["lexer", "parser", "codegen"],
+        )
+
+    def test_driver_phases_aggregate_outside_the_compiler_total(self):
+        samples = []
+        for compile_ms, write_ms in ((10.0, 1.0), (12.0, 3.0), (11.0, 2.0)):
+            sample = self.sample(compile_ms, compile_ms + 5.0)
+            sample["driver_phases"] = [
+                {"name": "output_write", "duration_ms": write_ms, "invocations": 1}
+            ]
+            samples.append(sample)
+        result = perf_baseline.aggregate(samples)
+        self.assertEqual(result["driver_phases"], [("output_write", 2.0)])
+        # Driver phases describe process-minus-root overhead only; they must
+        # not enter the leaf table or shrink the unattributed residual.
+        self.assertNotIn("output_write", [name for name, _ms, _pct in result["rows"]])
+        self.assertEqual(result["unattributed_ms"], 2.0)
+
+    def test_driver_phase_shape_and_membership_are_validated(self):
+        def with_phases(phases):
+            sample = self.sample(10.0, 15.0)
+            sample["driver_phases"] = phases
+            return sample
+
+        cases = [
+            ([{"duration_ms": 1.0, "invocations": 1}], "has no name"),
+            (
+                [{"name": "output_write", "duration_ms": -1.0, "invocations": 1}],
+                "must be a finite non-negative number",
+            ),
+            (
+                [{"name": "output_write", "duration_ms": 1.0, "invocations": 0}],
+                "must be greater than zero",
+            ),
+            (
+                [
+                    {"name": "output_write", "duration_ms": 1.0, "invocations": 1},
+                    {"name": "output_write", "duration_ms": 2.0, "invocations": 1},
+                ],
+                "duplicate driver phase",
+            ),
+        ]
+        for phases, message in cases:
+            with self.subTest(phases=phases):
+                with self.assertRaisesRegex(ValueError, message):
+                    perf_baseline.aggregate([with_phases(phases)])
+
+        with self.assertRaisesRegex(ValueError, "driver phase set drifted"):
+            perf_baseline.aggregate(
+                [
+                    with_phases(
+                        [
+                            {
+                                "name": "output_write",
+                                "duration_ms": 1.0,
+                                "invocations": 1,
+                            }
+                        ]
+                    ),
+                    with_phases([]),
+                ]
+            )
+
+    def test_unattributed_bound_fails_only_above_the_configured_tolerance(self):
+        def result(name, percent):
+            return {"name": name, "unattributed_percent": {"median": percent}}
+
+        results = [result("tight", 9.0), result("loose", 30.0), result("edge", 25.0)]
+        self.assertEqual(
+            perf_baseline.unattributed_violations(results, 25.0),
+            [("loose", 30.0)],
+        )
+        self.assertEqual(perf_baseline.unattributed_violations(results, 100.0), [])
+        self.assertEqual(
+            [name for name, _percent in perf_baseline.unattributed_violations(results, 5.0)],
+            ["tight", "loose", "edge"],
         )
 
     def test_inclusive_ratio_handles_zero_root_and_is_paired_before_median(self):
@@ -480,6 +558,8 @@ class PerfBaselineAggregationTests(unittest.TestCase):
             "driver_overhead_ms": {"median": 5.0, "mad": 0.0},
             "leaf_to_root_ratio_percent": {"median": 40.0, "mad": 0.0},
             "unattributed_ms": {"median": 12.0, "mad": 0.0},
+            "unattributed_percent": {"median": 60.0, "mad": 0.0},
+            "driver_phases": [{"name": "output_write", "median_ms": 1.5}],
             "overlapping_leaf_work_ms": {"median": 0.0, "mad": 0.0},
             "peak_memory_bytes": None,
         }

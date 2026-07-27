@@ -496,13 +496,22 @@ pub(crate) enum SourceLoadError {
 pub(crate) fn load(
     request: SourceLoadRequest<'_>,
 ) -> Result<ImportDiscoveryResult, SourceLoadError> {
-    let manifest = request
-        .source_manifest_path
-        .map(SourceManifest::load)
-        .transpose()
-        .map_err(SourceLoadError::Message)?;
-    validate_manifest_allows_source(manifest.as_ref(), request.root_source, "root")
-        .map_err(SourceLoadError::Message)?;
+    // Source loading is the first half of the `compile` root: manifest policy,
+    // then the demand-driven import-discovery frontier. It was previously
+    // timed only through the `parse_file` spans it happens to contain, which
+    // left the rest of discovery in the root's unattributed residual (RUE-786).
+    let _span = tracing::info_span!("source_loading").entered();
+    let manifest = {
+        let _span = tracing::info_span!("source_manifest").entered();
+        let manifest = request
+            .source_manifest_path
+            .map(SourceManifest::load)
+            .transpose()
+            .map_err(SourceLoadError::Message)?;
+        validate_manifest_allows_source(manifest.as_ref(), request.root_source, "root")
+            .map_err(SourceLoadError::Message)?;
+        manifest
+    };
     discover_and_load_imports(request.root_source, manifest, request.std_root)
 }
 
@@ -637,23 +646,36 @@ fn drive_import_discovery_to_close(
     let final_plan;
     let witness;
     loop {
-        let snapshot = assembler
-            .snapshot()
-            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-        let ledger = import_observation_ledger(staging, input_revision)
-            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        // One frontier round: plan and frontier construction (which owns the
+        // canonical parse of everything read so far), then the host reads that
+        // answer the frontier's requests. Both halves are timed so a discovery
+        // regression is localized to compiler planning or to filesystem I/O.
+        let _round_span = tracing::info_span!("import_discovery_round").entered();
+        let plan_span = tracing::info_span!("import_plan").entered();
+        let (snapshot, ledger) = {
+            let _span = tracing::info_span!("import_revision_inputs").entered();
+            let snapshot = assembler
+                .snapshot()
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+            let ledger = import_observation_ledger(staging, input_revision)
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+            (snapshot, ledger)
+        };
         // A trusted-toolchain successor stages from the compiler-published view
         // itself; the host supplies only the opaque capability. The assembler's
         // snapshot/manifest reach the compiler solely through the verified
         // observation-batch publication.
-        let staged = match &reclose {
-            Some(reclose) => stage_import_discovery_successor(staging, reclose.delta),
-            None => staging.stage_import_discovery(
-                &snapshot,
-                context.clone(),
-                assembler.accepted_read_manifest().shared_slice(),
-                ledger.clone(),
-            ),
+        let staged = {
+            let _span = tracing::info_span!("import_stage").entered();
+            match &reclose {
+                Some(reclose) => stage_import_discovery_successor(staging, reclose.delta),
+                None => staging.stage_import_discovery(
+                    &snapshot,
+                    context.clone(),
+                    assembler.accepted_read_manifest().shared_slice(),
+                    ledger.clone(),
+                ),
+            }
         };
         let plan = match staged {
             Ok(plan) => plan,
@@ -676,19 +698,24 @@ fn drive_import_discovery_to_close(
             Some(_) => plan_delta_roots(&plan),
             None => plan.demand_roots(),
         };
-        let frontier = import_demand_frontier_for_roots(
-            staging,
-            input_revision,
-            &plan,
-            ImportDemandMode::Rooted,
-            &roots,
-        )
-        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        let frontier = {
+            let _span = tracing::info_span!("import_frontier").entered();
+            import_demand_frontier_for_roots(
+                staging,
+                input_revision,
+                &plan,
+                ImportDemandMode::Rooted,
+                &roots,
+            )
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+        };
+        drop(plan_span);
         if frontier.requests().is_empty() {
             final_plan = plan;
             witness = frontier;
             break;
         }
+        let _read_span = tracing::info_span!("import_read").entered();
         let observations = frontier
             .requests()
             .iter()
@@ -733,6 +760,7 @@ fn drive_import_discovery_to_close(
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     }
 
+    let _close_span = tracing::info_span!("import_discovery_close").entered();
     let snapshot = assembler
         .snapshot()
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
@@ -910,6 +938,7 @@ pub(crate) fn acquire_reached_toolchain_modules(
     if result.revision.status() != ImportDiscoveryStatus::ClosedValid {
         return Ok(());
     }
+    let _span = tracing::info_span!("toolchain_acquisition").entered();
     for _ in 0..MAX_TOOLCHAIN_ACQUISITION_ROUNDS {
         match semantic_or_toolchain_park(&mut result.session, options) {
             // Analysis satisfied every reached-body demand (or there were none).

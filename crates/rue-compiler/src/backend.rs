@@ -201,7 +201,13 @@ pub(crate) fn generate_backend_products(
     foreign_symbols: &[String],
     request: rue_codegen::BackendArtifactRequest,
 ) -> MultiErrorResult<Vec<FunctionBackendProduct>> {
-    let _span = info_span!("codegen", arch = ?options.target.arch()).entered();
+    // Rayon workers do not inherit the calling thread's current span, so the
+    // per-function subphase spans inside rue-codegen would otherwise be
+    // reported as extra timing roots. Hold the span by value and re-enter it
+    // inside the closure so every worker's subphases nest under this one
+    // `codegen` aggregate (RUE-786).
+    let codegen_span = info_span!("codegen", arch = ?options.target.arch());
+    let _entered = codegen_span.clone().entered();
     let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
     let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
     let symbols =
@@ -210,6 +216,7 @@ pub(crate) fn generate_backend_products(
     let results: Vec<CompileResult<FunctionBackendProduct>> = functions
         .par_iter()
         .map(|func| {
+            let _worker = codegen_span.enter();
             let stable_atom_ids = func
                 .local_atoms
                 .iter()
@@ -275,6 +282,9 @@ fn project_backend_object(
     product: FunctionBackendProduct,
     target: Target,
 ) -> CompileResult<Vec<u8>> {
+    // Object serialization runs after the parallel codegen fan-out, so it is a
+    // sibling leaf of `codegen` rather than one of its subphases (RUE-786).
+    let _span = info_span!("object_serialization").entered();
     let mut obj_builder = ObjectBuilder::new(target, &product.machine_name)
         .code(product.machine_code.code)
         .strings(product.machine_code.strings);

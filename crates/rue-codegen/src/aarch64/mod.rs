@@ -31,6 +31,7 @@ use rue_air::FrozenTypeInternPool;
 use rue_cfg::ValidatedCfg;
 use rue_error::CompileResult;
 use rue_target::Target;
+use tracing::info_span;
 
 use crate::MachineCode;
 // Re-export from parent
@@ -133,17 +134,26 @@ fn generate_inner(
             | Aarch64Inst::StringConstCap { string_id, .. } => Some(*string_id),
             _ => None,
         });
-    let (local_strings, string_id_remap) =
-        crate::compact_string_table(strings, atoms, referenced_strings, require_complete_atoms)?;
-    for inst in prepared.mir.instructions_vec_mut() {
-        let string_id = match inst {
-            Aarch64Inst::StringConstPtr { string_id, .. }
-            | Aarch64Inst::StringConstLen { string_id, .. }
-            | Aarch64Inst::StringConstCap { string_id, .. } => string_id,
-            _ => continue,
-        };
-        *string_id = string_id_remap[string_id];
-    }
+    let local_strings = {
+        let _span = info_span!("string_table_compaction").entered();
+        let (local_strings, string_id_remap) = crate::compact_string_table(
+            strings,
+            atoms,
+            referenced_strings,
+            require_complete_atoms,
+        )?;
+        for inst in prepared.mir.instructions_vec_mut() {
+            let string_id = match inst {
+                Aarch64Inst::StringConstPtr { string_id, .. }
+                | Aarch64Inst::StringConstLen { string_id, .. }
+                | Aarch64Inst::StringConstCap { string_id, .. } => string_id,
+                _ => continue,
+            };
+            *string_id = string_id_remap[string_id];
+        }
+        local_strings
+    };
+    let _emission_span = info_span!("machine_emission").entered();
     let emitter = Emitter::new(
         &prepared.mir,
         prepared.total_locals,

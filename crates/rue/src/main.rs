@@ -1194,7 +1194,13 @@ fn main() {
     }
     match compile_result {
         Ok(output) => {
-            let publication = output.publish();
+            // Publication runs after the compiler's timing root closes, so it
+            // is measured as a driver phase: it breaks down process-minus-root
+            // overhead without becoming a second timing root (RUE-786).
+            let publication = {
+                let _span = tracing::info_span!("output_write", driver_phase = true).entered();
+                output.publish()
+            };
             // Warnings live outside the publication result so failures cannot
             // discard them; present them before inspecting and reporting the
             // publication outcome.
@@ -1339,10 +1345,23 @@ mod tests {
         });
 
         let edges = data.parent_edges();
-        assert!(
-            edges.contains(&("compile".to_owned(), "parse_file".to_owned())),
-            "discovery parse escaped the compile root: {edges:?}"
-        );
+        // Discovery parsing now sits under the driver's own source-loading
+        // phases (RUE-786) rather than directly under the root, so assert the
+        // whole chain: the parse must still reach `compile`, and each link
+        // names the phase that owns that share of discovery time.
+        for expected in [
+            ("compile", "import_discovery_round"),
+            ("import_discovery_round", "import_plan"),
+            ("import_plan", "import_stage"),
+            ("import_stage", "import_parse_staging"),
+            ("import_parse_staging", "parse_program"),
+            ("parse_program", "parse_file"),
+        ] {
+            assert!(
+                edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
+                "discovery parse escaped the compile root at {expected:?}: {edges:?}"
+            );
+        }
         assert!(
             edges.contains(&("compile".to_owned(), "compile_pipeline".to_owned())),
             "post-discovery pipeline escaped the compile root: {edges:?}"

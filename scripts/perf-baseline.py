@@ -38,6 +38,14 @@ samples are never combined into a fictional timing breakdown. It also measures
 the fresh process around `subprocess.run`: that includes startup, source
 discovery, and driver work outside the `compile` span.
 
+Two v2 surfaces exist for work outside the pass table. `driver_phases` breaks
+down driver overhead (`process - root`) with spans the compiler deliberately
+keeps out of its timing root, such as writing the linked executable; they are
+never added to `total_ms`. And the harness enforces a ceiling on unattributed
+time — the share of the root span no leaf pass claims — so a phase that ships
+without instrumentation fails this run instead of quietly widening the gap.
+See `--max-unattributed-percent`.
+
 In JSON phase rows, `median_percent` is the median of the per-sample
 phase/root ratios. It is intentionally not the ratio between the independently
 aggregated `median_ms` phase duration and compile median.
@@ -80,6 +88,17 @@ DEEP_NESTING_TIMEOUT_SECONDS = 10.0
 # leaf the compiler emits that is not listed here is appended afterwards in
 # first-seen order, so a newly instrumented pass still shows up.
 CANONICAL_LEAF_ORDER = [
+    # Driver-side source loading and import discovery.
+    "source_manifest",
+    "import_revision_inputs",
+    "parse_query_key",
+    "parse_query_commit",
+    "import_plan_build",
+    "import_plan_publish",
+    "import_frontier",
+    "import_read",
+    "import_discovery_close",
+    # Frontend.
     "parse_file",  # schema-v1 combined lexer/parser leaf
     "lexer",
     "parser",  # pre-RUE-892 parser leaf
@@ -88,15 +107,72 @@ CANONICAL_LEAF_ORDER = [
     "parser_grammar_execution",
     "parser_directive_validation",
     "definition_snapshot",
+    "definition_snapshot_modules",
     "merge_" + "symbols",  # historical schema-v1 name
+    "module_index_projection",
+    "canonical_merge",
     "astgen",
     "semantic_astgen",
+    "module_rir_lowering",
+    "rir_projection",
     "rir_declaration_index",
+    # Semantic analysis.
+    "declaration_shells",
+    "declaration_shell_projection",
+    "declaration_shell_prepare",
+    "declaration_occurrence_index",
+    "declaration_nucleus",
+    "declaration_reuse",
+    "body_schedule",
+    "body_toolchain_demands",
+    "body_query_prerequisites",
+    "body_anonymous_scope",
+    "body_prepare_declarations",
+    "body_project_declarations",
+    "body_install_declarations",
+    "body_analyze",
+    "body_export",
+    "body_query_lookups",
+    "body_cache_references",
+    "body_anonymous_projection",
+    "body_enqueue_references",
+    "body_canonical_projection",
     "sema",
     "cfg_construction",
+    "semantic_finalization",
+    # Backend.
     "codegen",
+    "mir_lowering",
+    "register_allocation",
+    "mir_peephole",
+    "mir_scheduling",
+    "mir_verification",
+    "string_table_compaction",
+    "machine_emission",
+    "object_serialization",
+    # Linking.
     "linker",
+    "link_parse_objects",
+    "link_archive_resolve",
+    "link_layout",
+    "link_relocate",
+    "link_emit",
 ]
+
+# Default ceiling on the share of the compiler's root span that no leaf pass
+# claims (RUE-786). The harness fails when a workload exceeds it, so newly
+# uninstrumented work has to be either given a span or explicitly accepted by
+# raising the bound, rather than silently widening the telemetry-dark region.
+#
+# The measured range across the current corpus on a release compiler is roughly
+# 12% (small examples) to 39% (large_structs). What remains is concentrated in
+# the rue-query request machinery rather than in any compiler pass: the gap
+# between `body_transaction` and its children, and the same shape inside
+# `declaration_shell_projection`, `declaration_nucleus`, and `parse_program`,
+# which are all per-module/per-body `request_registered` loops. Attributing that
+# means instrumenting the query runtime itself (RUE-817), so this bound leaves
+# headroom over the worst workload today and is meant to ratchet DOWN once it is.
+DEFAULT_MAX_UNATTRIBUTED_PERCENT = 50.0
 
 
 def repo_root() -> Path:
@@ -315,8 +391,11 @@ def aggregate(samples):
             "leaf_to_root_ratio_mad_percent": 0.0,
             "unattributed_ms": 0.0,
             "unattributed_mad_ms": 0.0,
+            "unattributed_percent": 0.0,
+            "unattributed_mad_percent": 0.0,
             "overlapping_leaf_work_ms": 0.0,
             "overlapping_leaf_work_mad_ms": 0.0,
+            "driver_phases": [],
             "source_metrics": None,
             "target": None,
             "compiler_version": None,
@@ -332,7 +411,11 @@ def aggregate(samples):
     overhead_samples = []
     leaf_to_root_ratio_samples = []
     unattributed_samples = []
+    unattributed_percent_samples = []
     overlapping_leaf_work_samples = []
+    per_driver_phase = {}
+    driver_phase_order = []
+    expected_driver_phase_names = None
     memory_samples = []
     memory_available = None
     source_metrics = None
@@ -479,8 +562,58 @@ def aggregate(samples):
         leaf_to_root_ratio_samples.append(
             leaf_work_ms / compile_ms * 100.0 if compile_ms > 0 else 0.0
         )
-        unattributed_samples.append(max(compile_ms - leaf_work_ms, 0.0))
+        unattributed_ms_sample = max(compile_ms - leaf_work_ms, 0.0)
+        unattributed_samples.append(unattributed_ms_sample)
+        unattributed_percent_samples.append(
+            unattributed_ms_sample / compile_ms * 100.0 if compile_ms > 0 else 0.0
+        )
         overlapping_leaf_work_samples.append(max(leaf_work_ms - compile_ms, 0.0))
+
+        # Driver phases measure host work outside the compiler root, so they
+        # never appear in `passes` and never enter the accounting above. They
+        # are aggregated separately as a breakdown of driver overhead.
+        sample_driver_phases = sample.get("driver_phases", [])
+        if not isinstance(sample_driver_phases, list):
+            raise ValueError(f"sample {sample_number} driver_phases must be a list")
+        driver_phase_ms = {}
+        for phase_index, phase in enumerate(sample_driver_phases):
+            if not isinstance(phase, dict):
+                raise ValueError(
+                    f"sample {sample_number} driver phase {phase_index + 1} "
+                    "must be an object"
+                )
+            phase_name = phase.get("name")
+            if not isinstance(phase_name, str) or not phase_name:
+                raise ValueError(
+                    f"sample {sample_number} driver phase {phase_index + 1} has no name"
+                )
+            if phase_name in driver_phase_ms:
+                raise ValueError(
+                    f"sample {sample_number} has duplicate driver phase {phase_name!r}"
+                )
+            driver_phase_ms[phase_name] = finite_nonnegative(
+                phase.get("duration_ms"),
+                f"sample {sample_number} driver phase {phase_name!r}",
+            )
+            nonnegative_int(
+                phase.get("invocations"),
+                f"sample {sample_number} driver phase {phase_name!r} invocations",
+                positive=True,
+            )
+        driver_phase_names = set(driver_phase_ms)
+        if expected_driver_phase_names is None:
+            expected_driver_phase_names = driver_phase_names
+            driver_phase_order.extend(driver_phase_ms)
+            per_driver_phase = {name: [] for name in driver_phase_ms}
+        elif driver_phase_names != expected_driver_phase_names:
+            missing = sorted(expected_driver_phase_names - driver_phase_names)
+            extra = sorted(driver_phase_names - expected_driver_phase_names)
+            raise ValueError(
+                f"sample {sample_number} driver phase set drifted; "
+                f"missing={missing}, extra={extra}"
+            )
+        for name in per_driver_phase:
+            per_driver_phase[name].append(driver_phase_ms[name])
 
         process_ms = finite_nonnegative(
             sample.get("_process_ms", compile_ms),
@@ -547,6 +680,9 @@ def aggregate(samples):
         leaf_to_root_ratio_samples
     )
     unattributed_ms, unattributed_mad_ms = median_and_mad(unattributed_samples)
+    unattributed_percent, unattributed_mad_percent = median_and_mad(
+        unattributed_percent_samples
+    )
     overlapping_leaf_work_ms, overlapping_leaf_work_mad_ms = median_and_mad(
         overlapping_leaf_work_samples
     )
@@ -589,8 +725,14 @@ def aggregate(samples):
         "leaf_to_root_ratio_mad_percent": leaf_to_root_ratio_mad_percent,
         "unattributed_ms": unattributed_ms,
         "unattributed_mad_ms": unattributed_mad_ms,
+        "unattributed_percent": unattributed_percent,
+        "unattributed_mad_percent": unattributed_mad_percent,
         "overlapping_leaf_work_ms": overlapping_leaf_work_ms,
         "overlapping_leaf_work_mad_ms": overlapping_leaf_work_mad_ms,
+        "driver_phases": [
+            (name, statistics.median(per_driver_phase[name]))
+            for name in driver_phase_order
+        ],
         "source_metrics": source_metrics,
         "target": compiler_identity[0] if compiler_identity else None,
         "compiler_version": compiler_identity[1] if compiler_identity else None,
@@ -670,6 +812,14 @@ def run_corpus(rue_bin, corpus, iterations, warmup, workdir, timeout, jobs):
                     "median": aggregated["unattributed_ms"],
                     "mad": aggregated["unattributed_mad_ms"],
                 },
+                "unattributed_percent": {
+                    "median": aggregated["unattributed_percent"],
+                    "mad": aggregated["unattributed_mad_percent"],
+                },
+                "driver_phases": [
+                    {"name": name, "median_ms": ms}
+                    for name, ms in aggregated["driver_phases"]
+                ],
                 "overlapping_leaf_work_ms": {
                     "median": aggregated["overlapping_leaf_work_ms"],
                     "mad": aggregated["overlapping_leaf_work_mad_ms"],
@@ -709,6 +859,22 @@ def hot_passes(results, top=3):
     grand = sum(result["compile_ms"]["median"] for result in results) or 1.0
     ranked = sorted(totals.items(), key=lambda kv: kv[1], reverse=True)
     return [(name, ms, ms / grand * 100.0) for name, ms in ranked]
+
+
+def unattributed_violations(results, bound_percent):
+    """Workloads whose median unattributed share exceeds `bound_percent`.
+
+    The bound is a ceiling on `max(root - leaf work, 0) / root`, computed per
+    sample and then medianed, so a phase that runs with no span of its own has
+    to fail the harness rather than quietly widen the residual (RUE-786).
+    Parallel leaf spans can overlap and inflate leaf work, which only makes
+    this check more permissive — never falsely failing.
+    """
+    return [
+        (result["name"], result["unattributed_percent"]["median"])
+        for result in results
+        if result["unattributed_percent"]["median"] > bound_percent
+    ]
 
 
 def print_text(results, iterations):
@@ -755,10 +921,17 @@ def print_text(results, iterations):
             f"(MAD {leaf_ratio['mad']:.1f}, paired samples)"
         )
         unattributed = r["unattributed_ms"]
+        unattributed_pct = r["unattributed_percent"]
         print(
             f"  {'UNATTRIBUTED':<{namew}}  {unattributed['median']:>8.2f} ms  "
-            f"(MAD {unattributed['mad']:.2f}, paired samples)"
+            f"(MAD {unattributed['mad']:.2f}, {unattributed_pct['median']:.1f}% of root, "
+            "paired samples)"
         )
+        for phase in r["driver_phases"]:
+            print(
+                f"  {phase['name']:<{namew}}  {phase['median_ms']:>8.2f} ms  "
+                "(driver phase, outside the compiler total)"
+            )
         overlap = r["overlapping_leaf_work_ms"]
         if overlap["median"] > 0 or overlap["mad"] > 0:
             print(
@@ -859,6 +1032,16 @@ def main():
         default=1,
         help="compiler jobs per fresh process (default 1; use 0 for auto)",
     )
+    ap.add_argument(
+        "--max-unattributed-percent",
+        type=float,
+        default=DEFAULT_MAX_UNATTRIBUTED_PERCENT,
+        help=(
+            "fail when a workload's median unattributed share of the compiler "
+            f"root exceeds this (default {DEFAULT_MAX_UNATTRIBUTED_PERCENT:g}; "
+            "pass 100 to only report it)"
+        ),
+    )
     ap.add_argument("--rue-bin", help="path to an already-built rue binary")
     ap.add_argument("--release", action="store_true", help="locate the compiler via //platforms:release")
     ap.add_argument("--format", choices=["text", "markdown", "json"], default="text")
@@ -869,6 +1052,8 @@ def main():
         ap.error("--warmup must be non-negative")
     if args.jobs < 0:
         ap.error("--jobs must be non-negative")
+    if not 0.0 <= args.max_unattributed_percent <= 100.0:
+        ap.error("--max-unattributed-percent must be between 0 and 100")
     if args.release and (args.rue_bin or os.environ.get("RUE")):
         ap.error("--release cannot be combined with --rue-bin or RUE")
 
@@ -929,6 +1114,16 @@ def main():
         print_markdown(results)
     else:
         print_text(results, args.iterations)
+
+    violations = unattributed_violations(results, args.max_unattributed_percent)
+    if violations:
+        detail = ", ".join(f"{name} {percent:.1f}%" for name, percent in violations)
+        sys.exit(
+            "perf-baseline: unattributed compiler time exceeds "
+            f"{args.max_unattributed_percent:g}% of the root span: {detail}\n"
+            "Give the new work a tracing span, or raise "
+            "--max-unattributed-percent deliberately."
+        )
 
 
 if __name__ == "__main__":

@@ -56,23 +56,144 @@ The compiler wraps each pass in a tracing span, and some spans are **nested**,
 so the raw timing JSON contains both leaf passes and their aggregate parents:
 
 ```
-compile                 <- canonical discovery parsing + compiler work
-├─ parse_file           <- aggregate, repeated for each canonical module
-│  ├─ lexer             <- leaf
-│  └─ parser            <- aggregate
-│     ├─ parser_nesting_scan       <- leaf
-│     ├─ parser_state_setup        <- leaf
-│     ├─ parser_grammar_execution   <- leaf
-│     └─ parser_directive_validation <- leaf after grammar success
-└─ compile_pipeline     <- post-discovery query/backend aggregate
-   ├─ semantic_astgen   <- aggregate: canonical semantic AST -> RIR
-   │  └─ definition_snapshot_modules <- durable module/name-candidate index
-   ├─ rir_declaration_index <- leaf: snapshot-local RIR declaration candidates
-   ├─ sema              <- leaf: type checking / AIR
-   ├─ cfg_construction  <- leaf
-   ├─ codegen           <- leaf: MIR lower + regalloc + emit
-   └─ linker            <- leaf: built-in ELF link in these baseline runs
+compile                        <- canonical discovery + compiler work
+├─ source_loading              <- driver: manifest policy + import discovery
+│  ├─ source_manifest          <- leaf
+│  ├─ import_discovery_round   <- aggregate, one per frontier round
+│  │  ├─ import_plan           <- aggregate: plan + frontier construction
+│  │  │  ├─ import_revision_inputs <- leaf: snapshot + observation ledger
+│  │  │  ├─ import_stage       <- aggregate: staging this round's plan
+│  │  │  │  ├─ import_parse_staging <- aggregate: the canonical parse
+│  │  │  │  │  ├─ parse_query_key    <- leaf: whole-snapshot content keying
+│  │  │  │  │  ├─ parse_program      <- aggregate: per-module parse requests
+│  │  │  │  │  │  └─ parse_file      <- aggregate, per canonical module
+│  │  │  │  │  │     ├─ lexer        <- leaf
+│  │  │  │  │  │     └─ parser       <- aggregate
+│  │  │  │  │  │        ├─ parser_nesting_scan          <- leaf
+│  │  │  │  │  │        ├─ parser_state_setup           <- leaf
+│  │  │  │  │  │        ├─ parser_grammar_execution     <- leaf
+│  │  │  │  │  │        └─ parser_directive_validation  <- leaf after grammar
+│  │  │  │  │  └─ parse_query_commit <- leaf: terminal publication
+│  │  │  │  ├─ import_plan_build   <- leaf
+│  │  │  │  └─ import_plan_publish <- leaf
+│  │  │  └─ import_frontier    <- leaf: demanded reads for this round
+│  │  └─ import_read           <- leaf: host filesystem reads
+│  └─ import_discovery_close   <- leaf
+├─ toolchain_acquisition       <- driver: park-aware reached-body semantics
+│  └─ (the semantic phases below; see "Where semantic analysis runs")
+└─ compile_pipeline            <- post-discovery query/backend aggregate
+   ├─ semantic_astgen          <- aggregate: canonical semantic AST -> RIR
+   │  ├─ module_index_projection <- leaf
+   │  ├─ canonical_merge       <- aggregate: merge parsed modules
+   │  │  └─ definition_snapshot_modules <- durable module/name-candidate index
+   │  ├─ module_rir_lowering   <- leaf: per-module RIR
+   │  └─ rir_projection        <- leaf: project/remap module RIR
+   ├─ declaration_shells       <- aggregate: shell epoch
+   │  ├─ declaration_shell_projection <- aggregate: per-module index requests
+   │  └─ declaration_shell_prepare    <- aggregate
+   │     └─ rir_declaration_index <- leaf: snapshot-local declaration candidates
+   ├─ declaration_semantics_projection <- aggregate
+   │  ├─ declaration_occurrence_index  <- leaf, per module
+   │  └─ declaration_nucleus   <- aggregate, per declaration query
+   ├─ body_queries             <- aggregate: reached-body traversal
+   │  ├─ body_schedule         <- leaf: worklist scheduling
+   │  ├─ body_toolchain_demands <- leaf
+   │  ├─ body_transaction      <- aggregate: the per-body query node
+   │  │  ├─ body_query_prerequisites <- leaf
+   │  │  ├─ body_anonymous_scope     <- leaf
+   │  │  ├─ body_analysis      <- aggregate
+   │  │  │  ├─ body_derive_epoch <- aggregate
+   │  │  │  │  ├─ body_prepare_declarations <- aggregate
+   │  │  │  │  ├─ body_project_declarations <- leaf
+   │  │  │  │  └─ body_install_declarations <- leaf
+   │  │  │  ├─ body_analyze    <- leaf
+   │  │  │  └─ body_export     <- leaf
+   │  │  └─ body_query_lookups <- leaf: lookup dependency edges
+   │  └─ body_record           <- aggregate: publish this body's outcome
+   │     ├─ body_cache_references     <- leaf
+   │     ├─ body_anonymous_projection <- leaf
+   │     ├─ body_enqueue_references   <- leaf
+   │     └─ body_canonical_projection <- leaf
+   ├─ declaration_reuse        <- leaf: durable declaration rebinding
+   ├─ sema                     <- leaf: whole-program type checking / AIR
+   ├─ cfg_construction         <- leaf
+   ├─ semantic_finalization    <- leaf: post-CFG assembly and warning order
+   ├─ codegen                  <- aggregate, per function on Rayon workers
+   │  ├─ mir_lowering          <- leaf
+   │  ├─ register_allocation   <- leaf
+   │  ├─ mir_peephole          <- leaf
+   │  ├─ mir_scheduling        <- leaf
+   │  ├─ mir_verification      <- leaf
+   │  ├─ string_table_compaction <- leaf
+   │  └─ machine_emission      <- leaf
+   ├─ object_serialization     <- leaf, after the parallel fan-out returns
+   └─ linker                   <- aggregate: built-in link in baseline runs
+      ├─ link_parse_objects    <- leaf
+      ├─ link_archive_resolve  <- leaf
+      ├─ link_layout           <- leaf
+      ├─ link_relocate         <- leaf
+      └─ link_emit             <- leaf
 ```
+
+RUE-786 added the driver, pipeline, backend, and linker rows above. Note the
+consequences for comparisons across that boundary: `codegen` and `linker` used
+to be **leaves** whose internals were fully counted as attributed work, and are
+now aggregates whose leaf children are counted instead. A pre-RUE-786 leaf sum
+is therefore not comparable to a post-RUE-786 one.
+
+### Where semantic analysis runs
+
+For the filesystem CLI, the whole-program semantic query is evaluated inside
+`toolchain_acquisition`, not inside `compile_pipeline`. The driver runs a rooted,
+park-aware semantic attempt there so it can satisfy a reached body's
+trusted-toolchain demands before compiling; the query is memoized, so the later
+`compile_pipeline` call reads the cached result. Phase rows aggregate by span
+name regardless of position, so `sema` and its neighbours still appear as single
+rows — but their parent in a CLI run is the driver phase, and that is why
+`compile` minus `compile_pipeline` is large.
+
+### Driver phases
+
+Some driver work happens outside the compiler's timing root entirely. Writing
+the linked executable is the current example: it deliberately runs after
+`compile` closes so the compiler total measures compiler work. Such spans
+declare `driver_phase = true` and are reported in a separate `driver_phases`
+array rather than in `passes`. They are a breakdown of `process - total_ms`;
+they never contribute to `total_ms`, and `compile` remains the sole timing root.
+The field is omitted when a run measured no driver phase.
+
+### The unattributed bound
+
+`scripts/perf-baseline.py` fails when a workload's median unattributed share —
+`max(root - leaf work, 0) / root`, paired per sample — exceeds
+`--max-unattributed-percent` (default 50). The point is that a phase shipped
+without a span fails the harness instead of quietly widening the telemetry-dark
+region. Measured shares on a release compiler currently run from about 12% on
+the small examples to about 39% on `large_structs`.
+
+Parallel leaf spans can overlap and inflate leaf work, which only makes the
+check more permissive, so it never fails spuriously under `--jobs > 1`.
+
+### Where the remaining residual is
+
+The residual is no longer spread across the compiler; it is concentrated in the
+**rue-query request machinery**. Every remaining large gap has the same shape —
+an aggregate whose children are the compute work and whose residual is the
+runtime's own per-request cost (key hashing, memo lookup, dependency recording,
+terminal publication):
+
+| aggregate | what its residual measures |
+| --- | --- |
+| `body_transaction` | one `body_transaction` request per reached body |
+| `declaration_shell_projection` | one `declaration_occurrence_indexes` request per module |
+| `declaration_nucleus` | one `semantic_nucleus` request per declaration |
+| `parse_program` | one `parse_modules` request per module |
+
+That is a real and useful finding rather than a gap in this work: it says the
+cost is in `rue_query::Runtime::request_impl`, not in any pass. Attributing it
+requires spans inside the query runtime's request path, which is the accounting
+boundary RUE-817 owns, so it is deliberately out of scope here. The bound above
+should ratchet down when that lands.
 
 Since RUE-642, timing JSON schema v2 labels the model as `inclusive_spans`.
 `total_ms` is the inclusive duration of root compiler spans, and pass
@@ -206,9 +327,10 @@ compiler bottleneck; an arena conversion is not justified by current data.
    interner merging and AST symbol remapping.
 
 2. **`codegen` is second (~17%)**, concentrated where there is a lot of code to
-   emit (`many_functions`, `large_structs`). This covers MIR lowering, register
-   allocation, and instruction emission together — worth splitting into finer
-   spans before optimizing, so the hot sub-phase is visible.
+   emit (`many_functions`, `large_structs`). At the time of this table it was a
+   single leaf covering MIR lowering, register allocation, and instruction
+   emission together; RUE-786 split it into the per-sub-phase leaves listed in
+   "Reading the numbers", so the hot sub-phase is now visible directly.
 
 3. **`sema` is third (~11%)** and scales with type/expression volume
    (`arithmetic_heavy`, `large_structs`, `register_pressure`).
@@ -227,8 +349,10 @@ compiler bottleneck; an arena conversion is not justified by current data.
 - **parser (historical):** the baseline confirmed lexing was cheap relative to
   the former parser. RUE-905 replaced that implementation; profile the current
   parser before choosing further parser work.
-- **codegen:** add per-sub-phase spans (lower / regalloc / emit) to see which
-  dominates before touching it; regalloc is the usual suspect under pressure.
+- **codegen:** the per-sub-phase spans now exist (RUE-786). Read
+  `register_allocation` against `mir_lowering`, `mir_scheduling`, and
+  `machine_emission` before touching it; regalloc is the usual suspect under
+  pressure and does measure largest on the stress corpus.
 - **sema:** watch for quadratic scans over symbols/types as programs grow.
 
 ## Resolved historical pathology: exponential parse time on nested blocks

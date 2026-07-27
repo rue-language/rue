@@ -41,6 +41,22 @@ handwritten parser reports nesting scan, parser-state setup, grammar execution,
 and directive validation as direct leaves. Parsing runs on the caller thread;
 there is no parser graph construction, token adaptation, or worker lifecycle.
 
+A span may declare `driver_phase = true` to mark host work that runs outside the
+compiler's timing root, such as writing the linked executable. Those spans (and
+their children) are reported in `driver_phases` instead of `passes`; they break
+down process-minus-root overhead and never contribute to the compiler total, so
+`compile` stays the sole timing root. Reserve this for driver work that is
+genuinely outside `compile` — instrument compiler work with an ordinary span.
+
+Work that runs on Rayon workers needs its parent passed explicitly: workers do
+not inherit the caller's current span, so a nested span created there would be
+reported as its own timing root. Hold the parent span by value and re-enter it
+as the first statement inside the closure, as `codegen` does in
+`crates/rue-compiler/src/backend.rs`.
+
+The full current span tree, and the harness bound on unattributed time, are in
+[perf-baseline.md](perf-baseline.md).
+
 ### Adding Instrumentation
 
 Each compilation pass should have a tracing span wrapping the work:
