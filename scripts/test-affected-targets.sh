@@ -119,9 +119,9 @@ check_gate() { # check_gate <desc> <expected-status> <full> <selected> <target>
 # full run => every corpus runs
 check_gate "full=true runs corpus" 0 "true" "" "//:spec-tests"
 # selective, target selected => runs
-check_gate "selected target runs" 0 "false" "//:spec-tests //:cli-tests-caldera" "//:spec-tests"
+check_gate "selected target runs" 0 "false" "//:spec-tests //:cli-tests-shard-0" "//:spec-tests"
 # selective, target not selected => deselected
-check_gate "unselected target deselected" 1 "false" "//:cli-tests-caldera" "//:spec-tests"
+check_gate "unselected target deselected" 1 "false" "//:cli-tests-shard-0" "//:spec-tests"
 # selective, empty selection => everything deselected
 check_gate "empty selection deselects" 1 "false" "" "//:spec-tests"
 # fail-open: unset full runs

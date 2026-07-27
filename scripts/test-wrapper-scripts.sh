@@ -431,7 +431,7 @@ EOF
 # std directory supplies the required nested ordinary-file sentinel.
 make_sanitizer_sandbox() {
   local sb; sb="$(mktemp -d)"
-  mkdir -p "$sb/scripts" "$sb/examples/calculator/lib" "$sb/examples/caldera" "$sb/examples/std" \
+  mkdir -p "$sb/scripts" "$sb/examples/calculator/lib" "$sb/examples/caldera" "$sb/examples/meridian" "$sb/examples/std" \
     "$sb/std" "$sb/fakebin" "$sb/tmp"
   cp "$SRC_ROOT/scripts/run-sanitizer.sh" "$sb/scripts/run-sanitizer.sh"
   chmod +x "$sb/scripts/run-sanitizer.sh"
@@ -439,6 +439,7 @@ make_sanitizer_sandbox() {
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/calculator/main.rue"
   printf 'pub fn helper() -> i32 { 0 }\n' >"$sb/examples/calculator/lib/helper.rue"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/caldera/main.rue"
+  printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/meridian/main.rue"
   printf 'fn main() -> i32 { 0 }\n' >"$sb/examples/std/arraybuf_demo.rue"
   echo '// fake bundled standard library' >"$sb/std/_std.rue"
 
@@ -525,8 +526,18 @@ test_sanitizer_recursive_discovery_contract() {
     "$(grep -Fxq "$sb/examples/std/arraybuf_demo.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   check "run-sanitizer: does not compile a root's helper module independently" \
     "$(! grep -Fxq "$sb/examples/calculator/lib/helper.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
-  check "run-sanitizer: temporarily defers Caldera under RUE-1083" \
+  check "run-sanitizer: default policy explicitly excludes Caldera" \
     "$(! grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: default policy explicitly excludes Meridian" \
+    "$(! grep -Fxq "$sb/examples/meridian/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+
+  sb="$(make_sanitizer_sandbox)"; rc=0
+  RUE_SANITIZER_LARGE_PROGRAMS=caldera run_sanitizer_sandbox "$sb" >/dev/null 2>&1 || rc=$?
+  check "run-sanitizer: explicit Caldera selection includes its full root" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq "$sb/examples/caldera/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
+  check "run-sanitizer: selecting Caldera does not implicitly include Meridian" \
+    "$(! grep -Fxq "$sb/examples/meridian/main.rue" "$sb/compile.log" 2>/dev/null && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -829,7 +840,6 @@ EOF
 
   local other_target
   for other_target in \
-    //:cli-tests-caldera \
     //:spec-tests \
     //:ui-tests \
     //:oracle-diff-generated-smoke \
@@ -920,7 +930,7 @@ exit 90
 EOF
   chmod +x "$sb/buck2"
 
-  local all="//:cli-tests //:cli-tests-caldera //:cli-tests-slow //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
+  local all="//:cli-tests //:cli-tests-slow //:large-example-caldera-canary //:large-example-meridian-canary //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
 
   # (1) Full corpus present + buck2 green -> test.sh reports success.
   local rc=0 out
@@ -947,7 +957,7 @@ EOF
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
-  local partial="//:cli-tests-caldera //:cli-tests-slow //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
+  local partial="//:cli-tests-slow //:large-example-caldera-canary //:large-example-meridian-canary //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
   rc=0
   out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a silently omitted corpus harness fails the run" \
@@ -967,16 +977,16 @@ EOF
   # (4) Required CI may explicitly defer known live heavy targets to separate
   # jobs. The owning invocation must skip and stop auditing exactly those
   # targets while retaining every other corpus assertion.
-  local owned="//:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
+  local owned="//:large-example-caldera-canary //:large-example-meridian-canary //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && CI=true RUE_TEST_TIER=premerge RUE_FULL_SUITE_LOCK_HELD=1 \
-      RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:cli-tests-caldera //:spec-tests' \
+      RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:spec-tests' \
       FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$owned" \
       FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: required CI may defer live heavy suites" \
     "$([ "$rc" -eq 0 ] && grep -Fq 'Deferring heavy suite root//:cli-tests' <<<"$out" && echo 0 || echo 1)"
   check "test.sh: deferred suites are not executed by the owning shard" \
-    "$(! grep -Eq '^test (root)?//:(cli-tests(-caldera)?|spec-tests)' "$sb/calls.log" && echo 0 || echo 1)"
+    "$(! grep -Eq '^test (root)?//:(cli-tests|spec-tests)' "$sb/calls.log" && echo 0 || echo 1)"
 
   # (5) Dedicated pre-merge coverage may leave the broad CI pass only when the
   # workflow-owned set exactly matches Buck's live scheduling metadata.

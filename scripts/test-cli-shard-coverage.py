@@ -22,10 +22,8 @@ def buck(count: int, shard_targets: list[int]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def workflow(shards_by_platform: dict[str, list[int]], caldera_platforms: list[str]) -> str:
+def workflow(shards_by_platform: dict[str, list[int]]) -> str:
     lines = ["jobs:", "  platform-corpus:", "    strategy:", "      matrix:", "        include:"]
-    for platform in caldera_platforms:
-        lines.append(f"          - check_name: {platform}-cli-caldera")
     for platform, shards in shards_by_platform.items():
         for shard in shards:
             lines.append(f"          - target: //:cli-tests-shard-{shard}")
@@ -46,7 +44,7 @@ class CliShardCoverageTests(unittest.TestCase):
         platforms = ["linux-x64", "linux-arm64", "macos"]
         errors = self.validate(
             buck(2, [0, 1]),
-            workflow({p: [0, 1] for p in platforms}, platforms),
+            workflow({p: [0, 1] for p in platforms}),
         )
         self.assertEqual(errors, [])
 
@@ -60,14 +58,14 @@ class CliShardCoverageTests(unittest.TestCase):
         )
         errors = self.validate(
             buck_text,
-            workflow({"linux-x64": [0, 1, 2]}, ["linux-x64"]),
+            workflow({"linux-x64": [0, 1, 2]}),
         )
         self.assertEqual(errors, [])
 
     def test_no_shard_targets_at_all_fails(self) -> None:
         errors = self.validate(
             "CLI_TEST_SHARD_COUNT = 2\n# no shard targets here\n",
-            workflow({"linux-x64": [0, 1]}, ["linux-x64"]),
+            workflow({"linux-x64": [0, 1]}),
         )
         self.assertTrue(any("found no cli-tests-shard targets" in e for e in errors), errors)
 
@@ -75,43 +73,42 @@ class CliShardCoverageTests(unittest.TestCase):
         # A multi-segment platform name (linux-arm64) must not be truncated.
         errors = self.validate(
             buck(2, [0, 1]),
-            workflow({"linux-arm64": [0, 1]}, ["linux-arm64"]),
+            workflow({"linux-arm64": [0, 1]}),
         )
         self.assertEqual(errors, [])
 
     def test_shard_missing_from_matrix_fails(self) -> None:
         errors = self.validate(
             buck(4, [0, 1, 2, 3]),
-            workflow({"linux-x64": [0, 1, 2]}, ["linux-x64"]),
+            workflow({"linux-x64": [0, 1, 2]}),
         )
         self.assertTrue(any("missing shards [3]" in e for e in errors), errors)
 
     def test_extra_shard_in_matrix_fails(self) -> None:
         errors = self.validate(
             buck(2, [0, 1]),
-            workflow({"linux-x64": [0, 1, 2]}, ["linux-x64"]),
+            workflow({"linux-x64": [0, 1, 2]}),
         )
         self.assertTrue(any("unexpected shards [2]" in e for e in errors), errors)
 
     def test_buck_shard_targets_must_match_count(self) -> None:
         errors = self.validate(
             buck(4, [0, 1, 2]),  # count says 4 but only 3 targets defined
-            workflow({"linux-x64": [0, 1, 2, 3]}, ["linux-x64"]),
+            workflow({"linux-x64": [0, 1, 2, 3]}),
         )
         self.assertTrue(any("expected exactly 0..3" in e for e in errors), errors)
 
-    def test_platform_with_shards_but_no_caldera_fails(self) -> None:
+    def test_no_shard_jobs_fails(self) -> None:
         errors = self.validate(
             buck(1, [0]),
-            # 'ghost' runs shards but has no cli-caldera job.
-            workflow({"linux-x64": [0], "ghost": [0]}, ["linux-x64"]),
+            workflow({}),
         )
-        self.assertTrue(any("ghost" in e and "inconsistent" in e for e in errors), errors)
+        self.assertTrue(any("no *-cli-shard-N jobs" in e for e in errors), errors)
 
     def test_missing_shard_count_is_reported(self) -> None:
         errors = self.validate(
             'sh_test(name = "cli-tests-shard-0")\n',
-            workflow({"linux-x64": [0]}, ["linux-x64"]),
+            workflow({"linux-x64": [0]}),
         )
         self.assertTrue(any("CLI_TEST_SHARD_COUNT is not defined" in e for e in errors), errors)
 

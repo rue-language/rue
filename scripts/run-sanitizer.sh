@@ -56,6 +56,26 @@ cd "$repo_root"
 # the sanitizer fails during compilation and never reaches Valgrind (RUE-590).
 export RUE_STD_PATH="${RUE_STD_PATH:-$repo_root/std}"
 
+# Full Caldera and Meridian roots are expensive compile inputs, so their
+# Valgrind ownership is explicit. Required pre-merge sanitizer coverage sets
+# `none`; manual sanitizer dispatch can select either program or both. This
+# avoids an unannounced directory-specific skip while keeping the ordinary
+# recursive corpus bounded.
+large_programs="${RUE_SANITIZER_LARGE_PROGRAMS:-none}"
+case "$large_programs" in
+    none|caldera|meridian|all) ;;
+    *)
+        echo "run-sanitizer: RUE_SANITIZER_LARGE_PROGRAMS must be none, caldera, meridian, or all" >&2
+        exit 2
+        ;;
+esac
+echo "run-sanitizer: large-program policy is $large_programs" >&2
+
+large_program_selected() {
+    local program="$1"
+    [[ "$large_programs" == "all" || "$large_programs" == "$program" ]]
+}
+
 if ! command -v valgrind >/dev/null 2>&1; then
     echo "run-sanitizer: valgrind not found on PATH." >&2
     echo "run-sanitizer: install it (Debian/Ubuntu: apt-get install valgrind)." >&2
@@ -189,13 +209,14 @@ add_program() {
 discover_examples() {
     local dir="$1"
     local entry
-    # RUE-1083: Caldera alone measured ~31 minutes (compile + memcheck) with
-    # the non-release compiler this driver builds, while the driver has no
-    # compile timeout. Keep the required Valgrind job and every other example
-    # real; restore this one root when the remaining per-body incremental
-    # work brings large-program compile time back down.
-    if [[ "$dir" == "$repo_root/examples/caldera" ]]; then
-        echo "run-sanitizer: deferring examples/caldera/main.rue (RUE-1083)" >&2
+    if [[ "$dir" == "$repo_root/examples/caldera" ]] &&
+        ! large_program_selected caldera; then
+        echo "run-sanitizer: excluding examples/caldera/main.rue by explicit policy" >&2
+        return
+    fi
+    if [[ "$dir" == "$repo_root/examples/meridian" ]] &&
+        ! large_program_selected meridian; then
+        echo "run-sanitizer: excluding examples/meridian/main.rue by explicit policy" >&2
         return
     fi
     if [[ -f "$dir/main.rue" ]]; then

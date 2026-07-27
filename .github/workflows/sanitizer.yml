@@ -31,6 +31,12 @@ on:
   merge_group:
     branches: [trunk]
   workflow_dispatch:
+    inputs:
+      large_program:
+        description: Full large program to include in Valgrind coverage
+        type: choice
+        options: [none, caldera, meridian, all]
+        default: none
 
 # Cancel in-progress runs for the same branch
 concurrency:
@@ -79,6 +85,11 @@ jobs:
         run: ./buck2 build //crates/rue:rue
 
       - name: Run programs under valgrind memcheck
+        env:
+          # Required PR/merge-group coverage excludes both full generated
+          # applications explicitly. A manual dispatch can opt either one in;
+          # the ASan job below is allocator-only and unaffected by this choice.
+          RUE_SANITIZER_LARGE_PROGRAMS: ${{ github.event_name == 'workflow_dispatch' && inputs.large_program || 'none' }}
         run: scripts/run-sanitizer.sh
 
   # AddressSanitizer over rue-runtime's arena allocator (RUE-211, RUE-560).

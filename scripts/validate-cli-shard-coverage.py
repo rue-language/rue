@@ -8,9 +8,8 @@ exists in BUCK but is missing from the matrix silently drops that fraction of
 the corpus — exactly the RUE-924 false-green failure mode. This gate fails the
 build when BUCK and the workflow disagree.
 
-The set of platforms that must run the CLI corpus is derived from the existing
-`*-cli-caldera` jobs (every platform that runs Caldera also runs the ordinary
-CLI corpus), so no platform list is hardcoded here.
+The platform set is derived directly from the `*-cli-shard-N` check names, so
+no unrelated corpus job or hardcoded platform list is needed as a sentinel.
 """
 
 from __future__ import annotations
@@ -32,10 +31,8 @@ BUCK_SHARD_LOOP_RE = re.compile(r'name\s*=\s*"cli-tests-shard-\{\}"\.format\(')
 BUCK_SHARD_RANGE_RE = re.compile(r"range\(\s*CLI_TEST_SHARD_COUNT\s*\)")
 # platform-corpus jobs are identified by their check_name, e.g.
 #   check_name: linux-arm64-cli-shard-2
-#   check_name: macos-cli-caldera
-# The non-greedy platform group stops at the "-cli-shard"/"-cli-caldera" suffix.
+# The non-greedy platform group stops at the "-cli-shard" suffix.
 CHECK_SHARD_RE = re.compile(r"([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?)-cli-shard-(\d+)\b")
-CHECK_CALDERA_RE = re.compile(r"([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?)-cli-caldera\b")
 
 
 def shard_count(buck_text: str) -> int | None:
@@ -73,18 +70,14 @@ def validate(buck_path: Path, workflow_path: Path) -> list[str]:
             "generator over range(CLI_TEST_SHARD_COUNT)"
         )
 
-    # 2. Every platform that runs the CLI corpus (i.e. has a *-cli-caldera job)
-    #    must list all shards 0..count-1, and no others.
-    platforms = sorted(set(CHECK_CALDERA_RE.findall(workflow_text)))
-    if not platforms:
-        errors.append(
-            f"{workflow_path}: no *-cli-caldera platform-corpus jobs found; "
-            "cannot determine which platforms must run the CLI shards"
-        )
-
+    # 2. Every platform represented by a shard check must list all shards
+    #    0..count-1, and no others.
     by_platform: dict[str, set[int]] = {}
     for platform, shard in CHECK_SHARD_RE.findall(workflow_text):
         by_platform.setdefault(platform, set()).add(int(shard))
+    platforms = sorted(by_platform)
+    if not platforms:
+        errors.append(f"{workflow_path}: no *-cli-shard-N jobs found")
 
     for platform in platforms:
         got = by_platform.get(platform, set())
@@ -100,13 +93,6 @@ def validate(buck_path: Path, workflow_path: Path) -> list[str]:
                 f"{workflow_path}: platform {platform!r} cli shards = {sorted(got)}, "
                 f"expected 0..{count - 1} ({'; '.join(detail)})"
             )
-
-    # 3. No shard jobs for a platform that does not run the CLI corpus.
-    for platform in sorted(set(by_platform) - set(platforms)):
-        errors.append(
-            f"{workflow_path}: platform {platform!r} has cli-shard jobs but no "
-            "*-cli-caldera job — shard/platform sets are inconsistent"
-        )
 
     return errors
 
