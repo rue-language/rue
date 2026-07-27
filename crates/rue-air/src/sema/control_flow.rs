@@ -359,7 +359,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
-            let recovered_before = self.one_body_recovered_errors_mut().len();
+            let recovered_before = self.body_analysis_recovered_errors_mut().len();
             let result = (|| -> CompileResult<()> {
                 self.analyze_inst(air, cond, &mut scratch_ctx)?;
                 scratch_ctx.push_scope();
@@ -372,7 +372,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Ok(())
             })();
             air.rollback(checkpoint);
-            for error in &mut self.one_body_recovered_errors_mut()[recovered_before..] {
+            for error in &mut self.body_analysis_recovered_errors_mut()[recovered_before..] {
                 *error = error
                     .clone()
                     .with_note("value was moved in a previous iteration of the loop");
@@ -436,7 +436,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
-            let recovered_before = self.one_body_recovered_errors_mut().len();
+            let recovered_before = self.body_analysis_recovered_errors_mut().len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
             scratch_ctx.loop_break_stack.push(false);
@@ -445,7 +445,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
             let result = self.analyze_inst(air, body, &mut scratch_ctx);
             air.rollback(checkpoint);
-            for error in &mut self.one_body_recovered_errors_mut()[recovered_before..] {
+            for error in &mut self.body_analysis_recovered_errors_mut()[recovered_before..] {
                 *error = error
                     .clone()
                     .with_note("value was moved in a previous iteration of the loop");
@@ -1868,7 +1868,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // during constraint generation instead; substitution-dependent
             // selections make that transaction non-terminal.
             let recovery_checkpoint = self
-                .one_body_error_recovery()
+                .body_analysis_error_recovery()
                 .then(|| (air.checkpoint(), ctx.clone()));
             let outcome = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)
@@ -1877,12 +1877,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
             let result = match outcome {
                 Ok(result) => result,
-                Err(error) if self.one_body_error_recovery() => {
+                Err(error) if self.body_analysis_error_recovery() => {
                     let (air_checkpoint, ctx_checkpoint) = recovery_checkpoint
-                        .expect("one-body recovery checkpoint must accompany recovery mode");
+                        .expect("body-analysis recovery checkpoint must accompany recovery mode");
                     air.rollback(air_checkpoint);
                     *ctx = ctx_checkpoint;
-                    self.one_body_recovered_errors_mut().push(error);
+                    self.body_analysis_recovered_errors_mut().push(error);
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::UnitConst,
                         ty: Type::ERROR,

@@ -124,6 +124,13 @@ pub(crate) struct TypeContainmentWork {
     pub(crate) edges: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TypeContainmentMetrics {
+    pub(crate) finalize_checks: usize,
+    pub(crate) nodes: usize,
+    pub(crate) edges: usize,
+}
+
 impl TypeData {
     fn is_incomplete(&self) -> bool {
         matches!(
@@ -363,6 +370,12 @@ struct TypeInternPoolInner {
     /// metadata mutation await the next canonical containment pass.
     containment_facts: Vec<Option<TypeContainmentFacts>>,
 
+    /// Whether any containment fact may be stale or unavailable. This is the
+    /// O(1) clean-state authority: hot accessors never scan the pool to discover
+    /// whether finalization is needed.
+    containment_dirty: bool,
+    containment_metrics: TypeContainmentMetrics,
+
     /// Nominal struct lookup: (defining file, source name) -> canonical `Type`.
     struct_by_file_name: HashMap<(FileId, Spur), Type>,
 
@@ -455,6 +468,8 @@ impl TypeInternPoolInner {
             ptr_const_map: HashMap::new(),
             ptr_mut_map: HashMap::new(),
             containment_facts: Vec::new(),
+            containment_dirty: false,
+            containment_metrics: TypeContainmentMetrics::default(),
             struct_by_file_name: HashMap::new(),
             enum_by_file_name: HashMap::new(),
             symbol_paths: Arc::default(),
@@ -517,6 +532,7 @@ impl TypeInternPoolInner {
         let index = self.entry_count();
         self.types.push(entry);
         self.containment_facts.push(facts);
+        self.containment_dirty |= facts.is_none();
         index
     }
 
@@ -535,6 +551,7 @@ impl TypeInternPoolInner {
     }
 
     fn set_facts(&mut self, index: usize, value: Option<TypeContainmentFacts>) {
+        self.containment_dirty |= value.is_none();
         if index >= self.base_len {
             self.containment_facts[index - self.base_len] = value;
         } else {
@@ -601,6 +618,10 @@ impl TypeInternPoolInner {
         flat.types.extend(self.types.iter().cloned());
         flat.containment_facts
             .extend(self.containment_facts.iter().copied());
+        flat.containment_dirty |= self.containment_dirty;
+        flat.containment_metrics.finalize_checks += self.containment_metrics.finalize_checks;
+        flat.containment_metrics.nodes += self.containment_metrics.nodes;
+        flat.containment_metrics.edges += self.containment_metrics.edges;
         flat.array_map.extend(self.array_map.iter());
         flat.ptr_const_map.extend(self.ptr_const_map.iter());
         flat.ptr_mut_map.extend(self.ptr_mut_map.iter());
@@ -621,9 +642,8 @@ impl TypeInternPoolInner {
     /// appended nothing of its own — shares that base's `Arc` and copies
     /// nothing, which is what makes every per-body derivation O(1). Deriving
     /// from an unsealed or grown universe materializes one flat base first;
-    /// sealing a request's declaration base once
-    /// (`BoundSema::seal_as_declaration_base`) is what keeps that cost off the
-    /// per-body path.
+    /// finalizing containment metadata before body analysis is what keeps
+    /// repeated derivation on the shared-base path.
     fn derive_overlay(&self) -> Self {
         let untouched =
             self.types.is_empty() && self.overrides.is_empty() && self.override_facts.is_empty();
@@ -632,6 +652,7 @@ impl TypeInternPoolInner {
             (Some(_), false) => Arc::new(self.flatten()),
             (None, _) => Arc::new(self.clone()),
         };
+        let containment_dirty = base.containment_dirty;
         Self {
             base_len: base.entry_count(),
             base: Some(base),
@@ -642,6 +663,8 @@ impl TypeInternPoolInner {
             ptr_const_map: HashMap::new(),
             ptr_mut_map: HashMap::new(),
             containment_facts: Vec::new(),
+            containment_dirty,
+            containment_metrics: TypeContainmentMetrics::default(),
             struct_by_file_name: HashMap::new(),
             enum_by_file_name: HashMap::new(),
             symbol_paths: Arc::clone(&self.symbol_paths),
@@ -739,13 +762,25 @@ impl TypeInternPoolInner {
     fn finalize_containment_metadata(
         &mut self,
     ) -> Result<TypeContainmentWork, TypeContainmentCycle> {
+        self.containment_metrics.finalize_checks += 1;
         debug_assert_eq!(self.types.len(), self.containment_facts.len());
         let entry_count = self.entry_count();
+        // New complete entries derive their facts incrementally from already
+        // finalized children. If every entry is available, no containment edge
+        // changed and a repeated endpoint finalization is a true O(1) no-op.
+        // Incomplete shells and destructor mutation clear facts, forcing the
+        // canonical full pass below exactly when graph-wide propagation may be
+        // required.
+        if !self.containment_dirty {
+            return Ok(TypeContainmentWork::default());
+        }
         let edges = self.containment_edges();
         let work = TypeContainmentWork {
             nodes: edges.len(),
             edges: edges.iter().map(Vec::len).sum(),
         };
+        self.containment_metrics.nodes += work.nodes;
+        self.containment_metrics.edges += work.edges;
         let mut color = vec![0u8; edges.len()];
         let mut postorder = Vec::with_capacity(edges.len());
         let mut path = Vec::new();
@@ -834,10 +869,19 @@ impl TypeInternPoolInner {
         for (index, value) in facts.into_iter().enumerate() {
             self.set_facts(index, facts_available[index].then_some(value));
         }
+        self.containment_dirty = false;
         Ok(work)
     }
 
     fn facts_for_type(&self, ty: Type) -> Option<TypeContainmentFacts> {
+        if self.containment_dirty
+            && matches!(
+                ty.kind(),
+                TypeKind::Struct(_) | TypeKind::Enum(_) | TypeKind::Array(_)
+            )
+        {
+            return None;
+        }
         match ty.kind() {
             TypeKind::Struct(id) => self.facts_at(id.pool_index() as usize)?,
             TypeKind::Enum(id) => self.facts_at(id.pool_index() as usize)?,
@@ -848,6 +892,9 @@ impl TypeInternPoolInner {
     }
 
     fn incremental_facts(&self, entry: &TypeData) -> Option<TypeContainmentFacts> {
+        if self.containment_dirty {
+            return None;
+        }
         let mut facts = match entry {
             TypeData::Struct(data) => TypeContainmentFacts {
                 carries_linear: data.def.is_linear,
@@ -892,9 +939,7 @@ impl TypeInternPoolInner {
     }
 
     fn invalidate_containment_metadata(&mut self) {
-        for index in 0..self.entry_count() {
-            self.set_facts(index, None);
-        }
+        self.containment_dirty = true;
     }
 
     #[inline]
@@ -2608,6 +2653,14 @@ impl TypeInternPool {
             .finalize_containment_metadata()
     }
 
+    #[cfg(test)]
+    pub(crate) fn containment_metrics(&self) -> TypeContainmentMetrics {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .containment_metrics
+    }
+
     pub(crate) fn try_type_carries_linear(&self, ty: Type) -> Option<bool> {
         self.inner
             .read()
@@ -2813,25 +2866,6 @@ impl TypeInternPool {
     pub fn shared_len(&self) -> usize {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.base_len
-    }
-
-    /// Immutable side-table entries shared by refcount across body epochs.
-    pub(crate) fn shared_side_table_units(&self) -> usize {
-        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.symbol_paths.len()
-            + inner.struct_lang_items.len()
-            + inner.lang_item_structs.len()
-            + inner.repr_c_structs.len()
-    }
-
-    /// A fresh pool that reads this one as an immutable base and appends its own
-    /// entries above it (RUE-1135). Every canonical `Type` the base issued keeps
-    /// meaning exactly the same thing in the derived pool.
-    pub(crate) fn derive_overlay(&self) -> Self {
-        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        Self {
-            inner: RwLock::new(inner.derive_overlay()),
-        }
     }
 
     /// Rebase this pool in place while preserving the outer handle identity.
@@ -3598,6 +3632,123 @@ mod tests {
         assert_eq!(work.edges, COUNT - 1);
         assert!(pool.type_carries_linear(Type::new_struct(ids[0])));
         assert!(pool.type_needs_drop(Type::new_struct(ids[0])));
+        assert_eq!(
+            pool.finalize_containment_metadata().unwrap(),
+            TypeContainmentWork::default(),
+            "an unchanged containment graph must not be rescanned"
+        );
+        for _ in 0..128 {
+            assert_eq!(
+                pool.finalize_containment_metadata().unwrap(),
+                TypeContainmentWork::default()
+            );
+        }
+        assert_eq!(
+            pool.containment_metrics(),
+            TypeContainmentMetrics {
+                finalize_checks: 130,
+                nodes: COUNT,
+                edges: COUNT - 1,
+            },
+            "aggregate meters prove every clean check was O(1) and graph work ran once"
+        );
+    }
+
+    #[test]
+    fn provider_style_declare_complete_batches_one_linear_containment_join() {
+        const COUNT: usize = 4_000;
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let ids = (0..COUNT)
+            .map(|index| {
+                let name = format!("Imported{index}");
+                pool.declare_struct(
+                    declarations.get_or_intern(&name),
+                    struct_def(&name, Vec::new()),
+                )
+                .0
+            })
+            .collect::<Vec<_>>();
+
+        // Durable provider materialization declares recursive shells first,
+        // then completes them while unwinding. The first containment-dependent
+        // accessor joins the batch once; subsequent accessors take only the
+        // O(1) clean check.
+        for (index, &id) in ids.iter().enumerate().rev() {
+            let name = format!("Imported{index}");
+            let fields = ids
+                .get(index + 1)
+                .map(|&child| {
+                    vec![StructField {
+                        name: "child".into(),
+                        ty: Type::new_struct(child),
+                    }]
+                })
+                .unwrap_or_default();
+            pool.complete_declared_struct(id, struct_def(&name, fields));
+        }
+
+        let work = pool.finalize_containment_metadata().unwrap();
+        assert_eq!(work.nodes, COUNT);
+        assert_eq!(work.edges, COUNT - 1);
+        assert_eq!(
+            pool.finalize_containment_metadata().unwrap(),
+            TypeContainmentWork::default()
+        );
+        assert_eq!(
+            pool.containment_metrics(),
+            TypeContainmentMetrics {
+                finalize_checks: 2,
+                nodes: COUNT,
+                edges: COUNT - 1,
+            }
+        );
+    }
+
+    #[test]
+    fn provider_style_late_composites_interleaved_with_access_stay_constant_work() {
+        const COUNT: usize = 4_000;
+        let declarations = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let mut child = Type::I64;
+
+        // Late generated composites are complete at insertion time. Their facts
+        // derive from the already-finalized child, so an interleaved accessor
+        // performs one O(1) dirty check rather than rescanning the accumulated
+        // graph. This is the adversarial shape that would expose O(k²) work.
+        for index in 0..COUNT {
+            let name = format!("Late{index}");
+            let mut def = struct_def(
+                &name,
+                vec![StructField {
+                    name: "child".into(),
+                    ty: child,
+                }],
+            );
+            if index == 0 {
+                def.is_linear = true;
+                def.destructor = Some(format!("{name}.__drop"));
+            }
+            let (id, inserted) = pool.register_struct(declarations.get_or_intern(&name), def);
+            assert!(inserted);
+            assert_eq!(
+                pool.finalize_containment_metadata().unwrap(),
+                TypeContainmentWork::default()
+            );
+            child = Type::new_struct(id);
+            assert!(pool.type_carries_linear(child));
+            assert!(pool.type_needs_drop(child));
+        }
+
+        assert_eq!(
+            pool.containment_metrics(),
+            TypeContainmentMetrics {
+                finalize_checks: COUNT,
+                nodes: 0,
+                edges: 0,
+            },
+            "interleaved late-composite access must not rescan prior nodes"
+        );
     }
 
     #[test]
@@ -4402,52 +4553,6 @@ mod tests {
         assert_eq!(
             cloned.enum_symbol_name(right_enum),
             "Choice$right_2fshared_2erue"
-        );
-    }
-
-    #[test]
-    fn body_overlay_shares_type_side_tables_and_cow_writes_stay_local() {
-        let pool = TypeInternPool::new();
-        let interner = ThreadedRodeo::default();
-        pool.set_symbol_paths(HashMap::from([(FileId::DEFAULT, "main.rue".to_string())]));
-        let mk = |name: &str| StructDef {
-            name: name.to_string(),
-            fields: vec![],
-            is_copy: false,
-            is_linear: false,
-            destructor: None,
-            is_builtin: false,
-            is_pub: true,
-            file_id: FileId::DEFAULT,
-        };
-        let (strbuf, _) = pool.register_struct(interner.get_or_intern("StrBuf"), mk("StrBuf"));
-        let (local, _) = pool.register_struct(interner.get_or_intern("Local"), mk("Local"));
-        pool.set_struct_lang_item(strbuf, LangItem::StrBuf);
-        pool.set_struct_repr_c(strbuf);
-
-        let derived = pool.derive_overlay();
-        {
-            let base = pool.inner.read().unwrap_or_else(PoisonError::into_inner);
-            let body = derived.inner.read().unwrap_or_else(PoisonError::into_inner);
-            assert!(Arc::ptr_eq(&base.symbol_paths, &body.symbol_paths));
-            assert!(Arc::ptr_eq(
-                &base.struct_lang_items,
-                &body.struct_lang_items
-            ));
-            assert!(Arc::ptr_eq(
-                &base.lang_item_structs,
-                &body.lang_item_structs
-            ));
-            assert!(Arc::ptr_eq(&base.repr_c_structs, &body.repr_c_structs));
-        }
-        assert_eq!(derived.struct_lang_item(strbuf), Some(LangItem::StrBuf));
-        assert!(derived.is_struct_repr_c(strbuf));
-
-        derived.set_struct_repr_c(local);
-        assert!(derived.is_struct_repr_c(local));
-        assert!(
-            !pool.is_struct_repr_c(local),
-            "a body-local COW write must not mutate the declaration base"
         );
     }
 

@@ -28,7 +28,12 @@ description = "A method declaring its own `comptime T: type` inside a `-> type` 
 name = "unsupported_method_own_comptime_type_errors_at_method"
 description = "RUE-284: `fn cast_via(self, comptime U: type) -> U` → clear at-method error naming `cast_via`, not E1200 at the `let CI`."
 compile_fail = true
-error_contains = ["E1200", "cast_via", "its own `comptime` type parameter"]
+error_contains = [
+  "E1200",
+  "cast_via",
+  "its own `comptime` type parameter",
+  "main.rue:2:20",
+]
 files = [{ path = "main.rue", source = """
 fn Container(comptime T: type) -> type {
     struct { v: T, fn cast_via(self, comptime U: type) -> U { self.v } }
@@ -42,7 +47,12 @@ fn main() -> i32 { let CI = Container(i32); 0 }
 name = "method_own_comptime_type_used_as_param_type_errors_at_method"
 description = "RUE-284 facet (d): `comptime U: type` used as `x: U` also errors at the method."
 compile_fail = true
-error_contains = ["E1200", "add", "its own `comptime` type parameter"]
+error_contains = [
+  "E1200",
+  "add",
+  "its own `comptime` type parameter",
+  "main.rue:2:20",
+]
 files = [{ path = "main.rue", source = """
 fn Container(comptime T: type) -> type {
     struct { v: T, fn add(self, comptime U: type, x: U) -> T { self.v } }

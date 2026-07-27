@@ -96,6 +96,58 @@ pub struct MethodInfo {
     pub span: Span,
 }
 
+/// Signature-only callable metadata consumed at a call site. Imported
+/// callables deliberately have no producer-local RIR handles or spans.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FunctionCallInfo {
+    pub params: ParamRange,
+    pub return_type: Type,
+    pub return_type_sym: Spur,
+    pub is_generic: bool,
+    pub is_pub: bool,
+    pub is_unchecked: bool,
+    pub is_extern: bool,
+    pub file_id: FileId,
+}
+
+impl FunctionCallInfo {
+    pub(crate) fn from_body(info: FunctionInfo) -> Self {
+        Self {
+            params: info.params,
+            return_type: info.return_type,
+            return_type_sym: info.return_type_sym,
+            is_generic: info.is_generic,
+            is_pub: info.is_pub,
+            is_unchecked: info.is_unchecked,
+            is_extern: info.is_extern,
+            file_id: info.file_id,
+        }
+    }
+}
+
+/// Signature-only method metadata consumed for dispatch. The producer's method
+/// body and declaration span remain exclusively in [`MethodInfo`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MethodCallInfo {
+    pub struct_type: Type,
+    pub has_self: bool,
+    pub self_mode: rue_rir::RirParamMode,
+    pub params: ParamRange,
+    pub return_type: Type,
+}
+
+impl MethodCallInfo {
+    pub(crate) fn from_body(info: MethodInfo) -> Self {
+        Self {
+            struct_type: info.struct_type,
+            has_self: info.has_self,
+            self_mode: info.self_mode,
+            params: info.params,
+            return_type: info.return_type,
+        }
+    }
+}
+
 /// Method signature for anonymous struct structural equality comparison.
 ///
 /// This captures only the parts of a method that affect structural equality:

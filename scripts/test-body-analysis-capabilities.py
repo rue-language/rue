@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused tests for the RUE-1091 body-analysis capability inventory."""
+"""Focused tests for the provider-native body-analysis capability guard."""
 
 from __future__ import annotations
 
@@ -19,124 +19,80 @@ SPEC.loader.exec_module(inventory)
 
 
 class CapabilityInventoryTests(unittest.TestCase):
-    def classify(self, files: dict[str, str]) -> list[object]:
+    def classify(
+        self,
+        files: dict[tuple[str, str], str],
+        *,
+        buck_filegroup_layout: bool = False,
+    ) -> list[object]:
         with tempfile.TemporaryDirectory() as directory:
-            source_root = Path(directory) / "materialized"
-            for relative, source in files.items():
-                path = source_root / relative
+            roots = {}
+            for (crate, relative), source in files.items():
+                root = Path(directory) / crate
+                roots[crate] = root
+                path = root / "src" / relative if buck_filegroup_layout else root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(source)
-            return inventory.classify([("rue-air", source_root)])
+            return inventory.classify(sorted(roots.items()))
 
-    def test_epoch_impl_whitelist_and_unaccounted_are_distinct(self) -> None:
+    def complete_sources(self, provider_host: str = "") -> dict[tuple[str, str], str]:
+        return {
+            ("rue-air", "sema/provider.rs"): "pub trait BodyFactProvider {}\n",
+            ("rue-air", "sema/provider_body_host.rs"): provider_host,
+            ("rue-compiler", "body_query.rs"): "pub struct BodyTransaction;\n",
+        }
+
+    def test_provider_contract_is_clean(self) -> None:
         hits = self.classify(
-            {
-                "sema/body_endpoint.rs": (
-                    "struct EpochFacts<'a> { sema: &'a Sema }\n"
-                    "impl Facts for EpochFacts<'_> {\n"
-                    "  fn read(&self) { self.sema.functions.len(); }\n"
-                    "}\n"
-                    "fn escaped(sema: &Sema) { sema.methods.len(); }\n"
-                ),
-                "sema/one_body.rs": (
-                    "fn body(sema: &Sema) { sema.interner.get(\"name\"); }\n"
-                ),
-            }
+            self.complete_sources(
+                "struct ProviderBodyHost<P> { provider: P }\n"
+                "fn analyze<P>(host: &ProviderBodyHost<P>) { host.provider; }\n"
+            )
         )
-        self.assertEqual(
-            [hit.category for hit in hits],
-            ["allowed", "unaccounted", "whitelist"],
-        )
-        self.assertEqual(len(inventory.errors_for(hits)), 1)
+        self.assertEqual(hits, [])
 
-    def test_today_mode_allows_epoch_impls_but_flip_mode_rejects_them(self) -> None:
+    def test_provider_contract_is_clean_in_buck_filegroup_layout(self) -> None:
         hits = self.classify(
-            {
-                "sema/call_resolution.rs": (
-                    "struct EpochFacts<'a> { sema: &'a Sema }\n"
-                    "impl Facts for EpochFacts<'_> {\n"
-                    "  fn read(&self) { self.sema.functions.len(); }\n"
-                    "}\n"
-                )
-            }
+            self.complete_sources(
+                "struct ProviderBodyHost<P> { provider: P }\n"
+                "fn analyze<P>(host: &ProviderBodyHost<P>) { host.provider; }\n"
+            ),
+            buck_filegroup_layout=True,
         )
-        self.assertEqual(inventory.errors_for(hits, provider_only=False), [])
-        self.assertEqual(len(inventory.errors_for(hits, provider_only=True)), 1)
+        self.assertEqual(hits, [])
 
-    def test_bare_self_epoch_read_in_sema_impl_is_visible_to_flip_mode(self) -> None:
+    def test_whole_program_type_is_rejected(self) -> None:
         hits = self.classify(
-            {
-                "sema/typeck.rs": (
-                    "impl<'a, D> Sema<'a, D> {\n"
-                    "  fn leaked(&self) { self.functions.len(); }\n"
-                    "}\n"
-                )
-            }
+            self.complete_sources("fn analyze(sema: &BoundSema<'_>) {}\n")
         )
-        self.assertEqual([hit.category for hit in hits], ["allowed"])
-        self.assertIn("legacy Sema epoch authority", hits[0].attribution)
-        self.assertEqual(len(inventory.errors_for(hits, provider_only=True)), 1)
+        self.assertEqual(len(hits), 1)
+        self.assertIn("whole-program type `BoundSema`", hits[0].display())
 
-    def test_new_sema_field_requires_capability_classification(self) -> None:
-        source = (
-            "pub struct DeclarationNamespace {\n"
-            "  functions: HashMap<Name, Info>,\n"
-            "}\n"
-            "impl DeclarationNamespace {}\n"
-            "pub struct Sema<'a, D> {\n"
-            "  declarations: D,\n"
-            "  pub(crate) interner: &'a Interner,\n"
-            "  future_epoch_table: HashMap<Name, Info>,\n"
-            "}\n"
-            "impl<D> Deref for Sema<'_, D> {}\n"
-        )
-        self.assertEqual(
-            inventory.unclassified_sema_fields(source),
-            {"future_epoch_table"},
-        )
-
-    def test_generated_and_anonymous_identity_tables_are_inventoried(self) -> None:
+    def test_declaration_universe_table_is_rejected(self) -> None:
         hits = self.classify(
-            {
-                "sema/body_endpoint.rs": (
-                    "struct EpochFacts<'a> { sema: &'a Sema }\n"
-                    "impl Facts for EpochFacts<'_> {\n"
-                    "  fn read(&self) {\n"
-                    "    self.sema.generated_structs.get(&name);\n"
-                    "    self.sema.generated_enums.get(&name);\n"
-                    "    self.sema.anon_struct_identities.get(&key);\n"
-                    "    self.sema.anon_enum_identities.get(&key);\n"
-                    "  }\n"
-                    "}\n"
-                )
-            }
+            self.complete_sources("fn analyze(host: &Host) { host.functions.len(); }\n")
         )
-        self.assertEqual([hit.category for hit in hits], ["allowed"] * 4)
-
-    def test_bare_self_epoch_read_inside_epoch_impl_is_not_skipped(self) -> None:
-        hits = self.classify(
-            {
-                "sema/body_endpoint.rs": (
-                    "struct EpochFacts { functions: Functions }\n"
-                    "impl Facts for EpochFacts {\n"
-                    "  fn read(&self) { self.functions.len(); }\n"
-                    "}\n"
-                )
-            }
-        )
-        self.assertEqual([hit.category for hit in hits], ["allowed"])
-        self.assertEqual(hits[0].attribution, "epoch-backed facts impl")
+        self.assertEqual(len(hits), 1)
+        self.assertIn("declaration-universe table `functions`", hits[0].display())
 
     def test_comments_and_strings_do_not_create_capabilities(self) -> None:
         hits = self.classify(
-            {
-                "sema/one_body.rs": (
-                    "// sema.functions.len()\n"
-                    "const NOTE: &str = \"sema.methods\";\n"
-                )
-            }
+            self.complete_sources(
+                "// BoundSema and host.functions are forbidden\n"
+                'const NOTE: &str = "CanonicalMergedProgram";\n'
+            )
         )
         self.assertEqual(hits, [])
+
+    def test_missing_required_source_fails_closed(self) -> None:
+        hits = self.classify(
+            {
+                ("rue-air", "sema/provider.rs"): "pub trait BodyFactProvider {}\n",
+                ("rue-compiler", "body_query.rs"): "pub struct BodyTransaction;\n",
+            }
+        )
+        self.assertEqual(len(hits), 1)
+        self.assertIn("missing required provider source", hits[0].display())
 
 
 if __name__ == "__main__":

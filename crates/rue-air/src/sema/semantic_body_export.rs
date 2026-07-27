@@ -97,39 +97,6 @@ impl BodySema<'_> {
     ) -> Result<SemanticBodyExport, F> {
         export_body(self, owner, body_span, analyzed, strings, warnings, None)
     }
-
-    pub(in crate::sema) fn export_anonymous_body_with_specializations(
-        &self,
-        identity: crate::FunctionInstanceKey<
-            crate::SemanticDefinitionToken,
-            crate::SemanticModuleToken,
-        >,
-        body_span: Span,
-        analyzed: &AnalyzedFunction,
-        strings: &[String],
-        warnings: &[CompileWarning],
-        specialized_calls: &HashMap<
-            Spur,
-            SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
-        >,
-    ) -> Result<crate::SemanticAnonymousBodyExport, F> {
-        // Anonymous bodies have no compiler-issued named owner token. The
-        // shared value exporter does not inspect this placeholder; only its
-        // ordinary wrapper publishes the owner field.
-        let exported = export_body(
-            self,
-            crate::BodyOwnerToken::new(0, 0),
-            body_span,
-            analyzed,
-            strings,
-            warnings,
-            Some(specialized_calls),
-        )?;
-        Ok(crate::SemanticAnonymousBodyExport {
-            identity,
-            body: exported.body,
-        })
-    }
 }
 
 /// Representation-neutral capabilities consumed by the one canonical AIR to
@@ -138,7 +105,7 @@ impl BodySema<'_> {
 /// The exporter owns validation, anchor conversion, instruction/reference
 /// rewriting, and warning publication. A host supplies only identity/type
 /// projection and symbol spelling from its request-local authority.
-pub(super) trait SemanticBodyExportHost {
+pub(crate) trait SemanticBodyExportHost {
     fn export_body_type(
         &self,
         ty: Type,
@@ -158,7 +125,7 @@ pub(super) trait SemanticBodyExportHost {
     fn resolve_publication_symbol(&self, symbol: &Spur) -> &str;
 }
 
-pub(super) fn export_body<H: SemanticBodyExportHost>(
+pub(crate) fn export_body<H: SemanticBodyExportHost>(
     host: &H,
     owner: BodyOwnerToken,
     body_span: Span,

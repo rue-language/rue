@@ -289,6 +289,22 @@ pub struct DurableAnonymousMethodSignature {
     pub self_mode: DurableParameterMode,
     pub parameters: Arc<[(DurableAnonymousMethodType, DurableParameterMode, bool)]>,
     pub result: DurableAnonymousMethodType,
+    /// Exact producer-owned syntax for this member body. Declaration-only
+    /// projections may omit it, but a body transaction must refuse to analyze
+    /// the member unless the producer's `body-produced-anonymous` projection
+    /// supplied this fragment.
+    pub body: Option<DurableAnonymousMemberBodySyntax>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DurableAnonymousMemberBodySyntax {
+    /// Exact byte offsets relative to the producer's retained body or constant
+    /// initializer. They are presentation locators, not anonymous identity.
+    pub declaration_start: u32,
+    pub body_start: u32,
+    pub body_end: u32,
+    pub signature: crate::declaration_candidate::RawDeclarationSignatureSyntax,
+    pub body: crate::declaration_candidate::RawDeclarationBodySyntax,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -352,6 +368,7 @@ pub enum DurableDeclarationPayload {
         parameters: Arc<[DurableSemanticParameter]>,
         result: DurableType,
         has_self: bool,
+        self_mode: DurableParameterMode,
         is_unchecked: bool,
     },
     Struct {
@@ -804,6 +821,13 @@ pub(crate) fn project_durable_anonymous_nominals(
                                     DurableAnonymousMethodType::SelfType => {
                                         rue_air::SemanticAnonymousMethodType::SelfType
                                     }
+                                    DurableAnonymousMethodType::Concrete(
+                                        DurableType::AnonymousNominal(candidate),
+                                    ) if candidate.with_canonical_producer().as_ref()
+                                        == nominal.identity.with_canonical_producer().as_ref() =>
+                                    {
+                                        rue_air::SemanticAnonymousMethodType::SelfType
+                                    }
                                     DurableAnonymousMethodType::Concrete(ty) => {
                                         rue_air::SemanticAnonymousMethodType::Concrete(
                                             project_type(ty, definitions, &module_files)?,
@@ -885,6 +909,7 @@ pub(crate) fn project_durable_anonymous_nominals(
 /// each `(payload, option_enum)` type pair for the demand registry. Projection
 /// runs against the same bound definition set as the ordinary anonymous
 /// nominals, so the trusted `Option` producer/module identities resolve exactly.
+#[cfg(test)]
 pub(crate) fn project_durable_option_registry(
     merged: &CanonicalMergedProgram,
     definitions: &BoundDefinitionSet,
@@ -927,6 +952,7 @@ fn project_payload(
             parameters,
             result,
             has_self,
+            self_mode,
             is_unchecked,
         } => SemanticDeclarationPayload::Callable {
             parameters: parameters
@@ -947,6 +973,11 @@ fn project_payload(
                 .into(),
             result: project_type(result, definitions, module_files)?,
             has_self: *has_self,
+            self_mode: match self_mode {
+                DurableParameterMode::Value => SemanticParameterMode::Value,
+                DurableParameterMode::Borrow => SemanticParameterMode::Borrow,
+                DurableParameterMode::Inout => SemanticParameterMode::Inout,
+            },
             is_unchecked: *is_unchecked,
         },
         DurableDeclarationPayload::Struct {
@@ -1228,6 +1259,7 @@ pub(crate) fn convert_declaration_semantics(
                 parameters,
                 result,
                 has_self,
+                self_mode,
                 is_unchecked,
             } => DurableDeclarationPayload::Callable {
                 parameters: parameters
@@ -1248,6 +1280,11 @@ pub(crate) fn convert_declaration_semantics(
                     .into(),
                 result: ty(result, merged, definitions)?,
                 has_self: *has_self,
+                self_mode: match self_mode {
+                    SemanticParameterMode::Value => DurableParameterMode::Value,
+                    SemanticParameterMode::Borrow => DurableParameterMode::Borrow,
+                    SemanticParameterMode::Inout => DurableParameterMode::Inout,
+                },
                 is_unchecked: *is_unchecked,
             },
             SemanticDeclarationPayload::Struct {
@@ -1490,6 +1527,7 @@ mod tests {
                     ]),
                     result: DurableType::Unit,
                     has_self: false,
+                    self_mode: DurableParameterMode::Value,
                     is_unchecked: false,
                 },
             },
@@ -1620,12 +1658,14 @@ mod tests {
             parameters: Arc::from([parameter(DurableType::Bool), parameter(DurableType::I32)]),
             result: DurableType::Unit,
             has_self: false,
+            self_mode: DurableParameterMode::Value,
             is_unchecked: false,
         };
         let b = DurableDeclarationPayload::Callable {
             parameters: Arc::from([parameter(DurableType::I32), parameter(DurableType::Bool)]),
             result: DurableType::Unit,
             has_self: false,
+            self_mode: DurableParameterMode::Value,
             is_unchecked: false,
         };
         assert_ne!(a, b);
@@ -1664,6 +1704,7 @@ mod tests {
                 parameters: Arc::from([]),
                 result: DurableType::Unit,
                 has_self: false,
+                self_mode: DurableParameterMode::Value,
                 is_unchecked: false,
             },
         }
@@ -1691,6 +1732,7 @@ mod tests {
                 ]),
                 result: DurableType::GenericParameter(0),
                 has_self: false,
+                self_mode: DurableParameterMode::Value,
                 is_unchecked: false,
             },
         };

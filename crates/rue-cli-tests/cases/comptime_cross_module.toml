@@ -164,17 +164,16 @@ fn main() -> i32 {
 ]
 exit_code = 7
 
-# --- RUE-511: privacy — a non-pub imported constructor is NOT usable across
-# directories (the visibility guard must reject it, not silently leak). ---
+# --- RUE-511: privacy — direct resolution of a non-pub imported constructor
+# across directories reports the canonical privacy diagnostic. ---
 [[case]]
 name = "cross_module_ctor_private_rejected"
-description = "A non-pub constructor imported from another DIRECTORY is rejected in a cross-module comptime reference (RUE-511)."
+description = "A non-pub constructor imported from another directory is rejected with the canonical privacy diagnostic before wrapper reduction (RUE-511)."
 compile_fail = true
 args = ["main.rue", "-o", "prog"]
-# The visibility guard makes the private constructor non-evaluable, so the
-# instantiation cannot reduce to a type — reported as the reduction's E1200
-# rather than silently leaking the private type across directories.
-error_contains = ["E1200"]
+# Privacy takes precedence at the exact transitive constructor use; the outer
+# type constructor must not obscure it with a generic reduction failure.
+error_contains = ["E0706", "private"]
 files = [
   { path = "sub/b.rue", source = """
 fn Mk(comptime T: type) -> type {

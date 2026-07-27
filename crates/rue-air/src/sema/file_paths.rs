@@ -80,6 +80,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     /// Get the source file path for a span.
     ///
     /// Looks up the file path using the span's file_id.
+    #[allow(dead_code)]
     pub(crate) fn get_source_path(&self, span: rue_span::Span) -> Option<&str> {
         self.file_paths.get(&span.file_id).map(|s| s.as_str())
     }

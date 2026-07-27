@@ -111,7 +111,7 @@ pub(crate) fn anonymous_producer_root(
 /// Deterministic export/presentation ordering of two producer-nominal keys.
 ///
 /// This is a *presentation* order only — it decides how anonymous exports are
-/// listed and sorted (see the `one_body.rs` sort), never type identity.
+/// listed and sorted (see the `provider_body_host.rs` sort), never type identity.
 /// Identity is the producer-nominal `AnonymousNominalKey` itself (ADR-0066);
 /// two keys that order equal here are still distinct types unless they are the
 /// same key. Since RUE-1112 deleted the last min-selection consumer

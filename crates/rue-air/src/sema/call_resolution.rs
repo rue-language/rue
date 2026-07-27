@@ -1,31 +1,15 @@
-//! Call / method / operator / module-member resolution for exact-one-body
-//! analysis.
+//! Call, method, operator, and module-member resolution for body analysis.
 //!
-//! Family 1C of the RUE-1091 analyzer rewire (slice r1b). The free-function,
-//! method, operator-overload, and module-member reads that `analysis.rs`,
-//! `calls.rs`, `ownership.rs`, and `builtin_ops.rs` perform while resolving a
-//! call, method, or operator to its callee no longer touch the semantic epoch
-//! tables directly. They flow through [`CallResolutionFacts`] — the
-//! value/call-world analog of [`crate::SemanticTypeSyntaxProvider`] and a
-//! sibling of `body_endpoint`'s [`super::body_endpoint::BodyEndpointProvider`]
-//! (family 1A) — so the selection *logic* is provider-generic and a later slice
-//! can supply the same facts from a body-fact provider + overlay instead of the
-//! epoch `Sema`.
-//!
-//! [`EpochFacts`] is the generic production adapter: it delegates each point
-//! query to a [`CallResolutionFactSource`] supplied by its host. `Sema` supplies
-//! the current declaration-epoch source, preserving the existing reads while
-//! keeping the adapter independent of an analyzer representation. Every
-//! operation is `&self` and returns owned or `Copy` data, so a caller inside an
-//! `&mut Sema` stack constructs a short-lived [`EpochFacts`] per resolution
-//! without retaining a borrow across the surrounding mutations.
+//! Selection policy lives in provider-generic functions over
+//! [`CallResolutionFacts`]. The query-backed body host supplies the facts; the
+//! declaration analyzer implements the same vocabulary for declaration work.
 //!
 //! Where the analyzer selects a winner across *several* candidate reads — the
 //! reachability classifier's free-function-then-named-method order, and the
 //! static call-reference resolver's const-alias-then-local order — that
 //! selection lives in the provider-generic free functions below
 //! ([`classify_static_call`], [`resolve_static_call_reference`]) rather than in
-//! the impl, so both `EpochFacts` and a future body-fact impl replay the exact
+//! the impl, so every fact host replays the exact
 //! same candidate order, short-circuits, and first-match-wins tie-breaks
 //! (RUE-1091 risk R1). Winner-picking that a single epoch accessor already
 //! performs internally (`method_info`'s anonymous-then-named fallback, the
@@ -44,7 +28,7 @@ use super::body_identity::{
     BodyRirView, DurableCallableSource, DurableNominalSource, FunctionIdentityHandle,
     MethodIdentityHandle, ProviderIdentityContext,
 };
-use super::info::{ConstInfo, FunctionInfo, MethodInfo};
+use super::info::{ConstInfo, FunctionCallInfo, FunctionInfo, MethodCallInfo, MethodInfo};
 use super::provider::BodyFactProvider;
 use super::{DeclarationPhase, Sema};
 use crate::types::{ModuleDef, ModuleId, StructId};
@@ -56,7 +40,7 @@ use crate::types::{ModuleDef, ModuleId, StructId};
 pub(crate) trait CallResolutionFacts {
     /// The signature/binding info for an internal free-function symbol.
     /// Mirrors `Sema::function_info` (`functions.get`).
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo>;
+    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
 
     /// Whether an internal free-function symbol is declared. Mirrors
     /// `functions.contains_key`.
@@ -85,18 +69,20 @@ pub(crate) trait CallResolutionFacts {
 
     /// The method/associated-function info for `(struct, name)`, preferring the
     /// anonymous table then the named table. Mirrors `Sema::method_info`.
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
+    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
 
     /// The *named* method/associated-function info for `(struct, name)`,
     /// consulting only the named table. Mirrors a direct `methods.get`, so it
     /// deliberately does not fall back to the anonymous table the way
     /// [`Self::method_info`] does.
-    fn named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
 
     /// The unique named `(struct, method, info)` a callable symbol resolves to,
     /// or `None` when the symbol is absent or ambiguous. Mirrors
     /// `Sema::named_method_by_callable_symbol`.
-    fn named_method_by_callable_symbol(&self, name: Spur) -> Option<(StructId, Spur, MethodInfo)>;
+    fn named_method_by_callable_symbol(
+        &self,
+        name: Spur,
+    ) -> Option<(StructId, Spur, MethodCallInfo)>;
 
     /// The named-method RIR declaration for the durable-available
     /// `(owner_file, owner_type_name, method_name)` preimage. Mirrors
@@ -115,19 +101,18 @@ pub(crate) trait CallResolutionFacts {
 
 /// Raw immutable call-resolution reads supplied by a body-analysis host.
 pub(super) trait CallResolutionFactSource {
-    fn call_function_info(&self, name: Spur) -> Option<FunctionInfo>;
+    fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
     fn call_function_contains(&self, name: Spur) -> bool;
     fn call_source_function_name(&self, name: Spur) -> Spur;
     fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
     fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo>;
     fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
-    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
-    fn call_named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo>;
+    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
     fn call_named_method_by_callable_symbol(
         &self,
         name: Spur,
-    ) -> Option<(StructId, Spur, MethodInfo)>;
+    ) -> Option<(StructId, Spur, MethodCallInfo)>;
     fn call_named_method_declaration(
         &self,
         file: FileId,
@@ -140,8 +125,10 @@ pub(super) trait CallResolutionFactSource {
 /// Direct epoch reads for the current host. The generic adapter below owns the
 /// read-only abstraction; this impl is only the production source of facts.
 impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
-    fn call_function_info(&self, name: Spur) -> Option<FunctionInfo> {
-        self.function_info(name).copied()
+    fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
+        self.function_info(name)
+            .copied()
+            .map(FunctionCallInfo::from_body)
     }
 
     fn call_function_contains(&self, name: Spur) -> bool {
@@ -153,41 +140,33 @@ impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
     }
 
     fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
-        self.record_body_module_item_lookup(file, name);
         self.resolve_function_name_local(name, file)
     }
 
     fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
-        self.record_body_module_item_lookup(file, name);
         self.resolve_const_info_in_file(name, file).cloned()
     }
 
     fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.record_body_module_item_lookup(file, name);
         self.value_const(&(file, name)).cloned()
     }
 
     fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.record_body_module_item_lookup(file, name);
         self.module_binding(&(file, name)).cloned()
     }
 
-    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.record_body_member_lookup(struct_id, name);
-        self.method_info((struct_id, name)).copied()
-    }
-
-    fn call_named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.record_body_member_lookup(struct_id, name);
-        self.methods.get(&(struct_id, name)).copied()
+    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
+        self.method_info((struct_id, name))
+            .copied()
+            .map(MethodCallInfo::from_body)
     }
 
     fn call_named_method_by_callable_symbol(
         &self,
         name: Spur,
-    ) -> Option<(StructId, Spur, MethodInfo)> {
+    ) -> Option<(StructId, Spur, MethodCallInfo)> {
         self.named_method_by_callable_symbol(name)
-            .map(|(struct_id, method, info)| (struct_id, method, *info))
+            .map(|(struct_id, method, info)| (struct_id, method, MethodCallInfo::from_body(*info)))
     }
 
     fn call_named_method_declaration(
@@ -196,11 +175,9 @@ impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
         owner_type_name: Spur,
         method_name: Spur,
     ) -> Option<InstRef> {
-        self.record_body_module_item_lookup(owner_file, owner_type_name);
         let struct_id = self
             .structs_by_file_name
             .get(&(owner_file, owner_type_name))?;
-        self.record_body_member_lookup(*struct_id, method_name);
         self.named_method_declarations
             .get(&(*struct_id, method_name))
             .copied()
@@ -223,7 +200,7 @@ impl<'host, H: super::fact_mode::BodyAnalysisReadHost> EpochFacts<'host, H> {
 }
 
 impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFacts<'_, H> {
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
         self.host.call_function_info(name)
     }
     fn function_contains(&self, name: Spur) -> bool {
@@ -244,13 +221,13 @@ impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFac
     fn module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
         self.host.call_module_binding(file, name)
     }
-    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+    fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.host.call_method_info(struct_id, name)
     }
-    fn named_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        self.host.call_named_method_info(struct_id, name)
-    }
-    fn named_method_by_callable_symbol(&self, name: Spur) -> Option<(StructId, Spur, MethodInfo)> {
+    fn named_method_by_callable_symbol(
+        &self,
+        name: Spur,
+    ) -> Option<(StructId, Spur, MethodCallInfo)> {
         self.host.call_named_method_by_callable_symbol(name)
     }
     fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
@@ -317,53 +294,17 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 }
 
 // ---------------------------------------------------------------------------
-// `ProviderCallFacts` — the call-resolution ProviderFacts (RUE-1091 slice r4b-1).
+// `ProviderCallFacts` — call-resolution facts.
 //
-// The first provider-driven realization of the family-1C call/method/operator
-// facts: where [`EpochFacts`] answers each op from the semantic epoch's
-// `Sema` tables, this driver answers them from the exact body-fact provider
+// This driver answers call, method, and operator facts from the exact body-fact provider
 // boundary ([`BodyFactProvider`], realized in production by rue-compiler's
-// `CompilerBodyFactProvider`) plus the body-scoped identity pool (slices
-// 2a/2b/2c). It is the value/call analog of r2's `ProviderTypeFacts`: the fact
-// SOURCE differs, the assembled answers (`FunctionInfo`/`MethodInfo`/…) are the
-// already-published identity types a differential compares against the epoch.
+// `CompilerBodyFactProvider`) plus the body-scoped identity pool.
 //
-// RUE-1091 flip-era surface: `pub` because rFinal's whole-body differential and
-// the step-4 flip both drive the provider path from rue-compiler, where the
-// pool's durable source is built from concrete nucleus signatures (an opaque
-// `BodyFactProvider` associated type rue-air cannot destructure). The sole
-// pre-flip caller is the rue-compiler differential; the flip promotes it to the
-// production analyzer. Every method here is a thin composition — pool consult
-// (P), provider point query (C/B), or RIR-index handle fill — with no resolution
+// This surface is public because rue-compiler supplies the concrete durable
+// signature source behind the opaque provider boundary. Every method here is a
+// thin pool consult, provider point query, or RIR-index handle fill, with no resolution
 // LOGIC of its own (selection stays in [`classify_static_call`] /
 // [`resolve_static_call_reference`], the provider-generic free functions above).
-//
-// Feasibility (r4a design-checkpoint table): P = answered-by-pool, C =
-// composed-from-existing-ops, B = boundary-op.
-//   - function_info / method_info / named_method_info                 → P
-//   - named_method_declaration                                        → P (BodyRirIndex)
-//   - named_method_by_callable_symbol                                 → B (callable_symbol_method)
-//   - function_contains / resolve_function_name_local                 → C (lookup)
-// Disposition (updated by slice r4b-3, which owned this backlog):
-//   - method_info / named_method_info → LANDED (r4b-3). The receiver preimage
-//     `(owner_file, owner_type_name)` threads through the durable method key: the
-//     inherent `method_info` composes the pool's durable method subset (receiver
-//     through 2a) with the RIR handle the RIR index locates for the preimage. The
-//     rue-compiler differential recovers the receiver by joining the method key's
-//     `owner()` back to the owner nominal's durable key.
-//   - value_const / module_binding / resolve_const_info_in_file → LANDED
-//     (flip-prep): exact `ConstInfo` values materialized through the shared
-//     endpoint/pool registry install into this driver's body-local overlay.
-//   - module_def → LANDED (flip-prep): `ProviderModuleRegistry` mints the
-//     body-local compact id from the durable module handle and stores its
-//     current request file/path/import-path facts; this driver exposes the
-//     owned definition through `module_def`.
-//   - named_method_declaration → LANDED (flip-prep). Both seams now take the
-//     provider-natural `(owner_file, owner_type_name, method_name)` preimage;
-//     the epoch adapter alone translates it through `structs_by_file_name` to
-//     the epoch map's `(StructId, method_name)` key.
-//   - source_function_name under specialization → r5 (the specialization name
-//     map); identity otherwise.
 // ---------------------------------------------------------------------------
 
 /// The call-resolution ProviderFacts driver: answers the family-1C facts from a
@@ -389,9 +330,11 @@ pub struct ProviderCallFacts<'a, P, S, K, M> {
 impl<'a, P, S, K, M> ProviderCallFacts<'a, P, S, K, M>
 where
     P: BodyFactProvider,
-    S: DurableNominalSource<K, M> + DurableCallableSource<K, M>,
+    S: DurableNominalSource<K, M>
+        + super::DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>,
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
+    M: Clone + Eq + Hash,
 {
     /// Construct the driver over one request-local RIR bundle and identity
     /// context. The bundle's declaration index is shared rather than rebuilt.
@@ -513,18 +456,15 @@ where
             .register(module, file, file_path, import_path, durable_id)
     }
 
-    /// The registered provider-era module definition for a compact id.
+    /// The registered module definition for a compact id.
     pub fn module_def(&self, module: ModuleId) -> Option<ModuleDef> {
         self.identity.modules().get(module)
     }
 
-    /// (P) Assemble a [`FunctionInfo`] for a durable free-function key, composing
-    /// the pool's durable-signature subset (2b, whose nominal parameter types
-    /// resolve through 2a) with the request/RIR handle located by the RIR index
-    /// (2c). `source_name`/`file` locate the declaration in the shared `Rir`.
-    /// The r4a-2c span contract holds by construction: the handle sources
-    /// `span`/`file_id` from the located `FnDecl` inst, the same inst production
-    /// sources them from — a differential asserts, never assumes, the equality.
+    /// Assemble a [`FunctionInfo`] for a durable free-function key by combining
+    /// the pool's durable signature with the request-local RIR handle.
+    /// `source_name`/`file` locate the declaration in the shared `Rir`, which is
+    /// also the sole source of its span and file id.
     pub fn function_info(&self, key: &K, source_name: &str, file: FileId) -> Option<FunctionInfo> {
         let source_sym = self.rir.rir_interner().get(source_name)?;
         let declaration = self.rir.rir_index().first_free_function(source_sym, file)?;
@@ -532,9 +472,9 @@ where
         self.identity.pool_mut()?.resolve_function(key, handle).ok()
     }
 
-    /// (P) Assemble a [`MethodInfo`] for a durable method key, composing the
-    /// pool's durable method subset (2b, receiver through 2a) with the RIR
-    /// handle the RIR index locates for `(owner_file, owner_type_name, method)`.
+    /// Assemble a [`MethodInfo`] for a durable method key by combining the
+    /// pool's durable signature with the RIR handle for
+    /// `(owner_file, owner_type_name, method)`.
     pub fn method_info(
         &self,
         key: &K,
@@ -571,6 +511,15 @@ where
         self.resolve_and_register_named_method(key, owner_file, owner_type_name, method)
     }
 
+    /// Materialize only the durable callable portion of a method for a
+    /// body-local call site. The returned record carries the request's local
+    /// handles solely to satisfy the shared `MethodInfo` representation; call
+    /// resolution consumes its receiver and signature fields and never treats
+    /// those handles as the callee body.
+    pub(in crate::sema) fn method_signature_info(&self, key: &K) -> Option<MethodCallInfo> {
+        self.identity.pool_mut()?.resolve_method_call(key).ok()
+    }
+
     fn resolve_and_register_named_method(
         &self,
         key: &K,
@@ -600,15 +549,9 @@ where
             .register_anonymous_method(file, owner, method, info)
     }
 
-    /// (P) The named-method RIR declaration for `(owner_file, owner_type_name,
-    /// method)` — the durable-available preimage of the epoch's `(StructId,
-    /// method)` key, answered by [`BodyRirIndex`]. Equal to the epoch's
-    /// `named_method_declarations.get` under the `struct_by_file_name`
-    /// bijection.
-    ///
-    /// This driver keys the op by the preimage directly (provider-natural), the
-    /// r4a-2c "prefer rethreading" resolution. It never mints or consults a pool
-    /// `StructId`; the production seam now carries this same preimage.
+    /// Return the named-method RIR declaration for
+    /// `(owner_file, owner_type_name, method)`. The direct source preimage
+    /// avoids minting or consulting a pool `StructId`.
     pub fn named_method_declaration(
         &self,
         owner_file: FileId,
@@ -622,13 +565,12 @@ where
             .named_method_declaration(owner_file, owner_sym, method_sym)
     }
 
-    /// (B) Reverse a rendered callable symbol to its `(receiver, method)` via the
-    /// r4a-1 boundary op. Answers `None` for a bare (unqualified, `$`-less)
+    /// Reverse a rendered callable symbol to its `(receiver, method)` through
+    /// the provider boundary. Answers `None` for a bare (unqualified, `$`-less)
     /// symbol — a builtin / language-item / anonymous owner whose defining module
     /// the boundary cannot recover — exactly as the epoch's callable index
     /// answers `Some` for such a symbol. That intentional epoch=`Some` /
-    /// provider=`None` divergence is the r6-tied bare-owner known-divergence the
-    /// differential pins.
+    /// provider=`None` divergence is explicit in parity tests.
     pub fn callable_symbol_receiver(
         &self,
         symbol: &str,
@@ -688,10 +630,7 @@ where
     fn method_handle(&self, declaration: InstRef) -> Option<MethodIdentityHandle> {
         let inst = self.rir.rir().get(declaration);
         let InstData::FnDecl {
-            body,
-            self_mode,
-            self_is_mut,
-            ..
+            body, self_is_mut, ..
         } = &inst.data
         else {
             return None;
@@ -699,7 +638,6 @@ where
         Some(MethodIdentityHandle {
             body: *body,
             span: inst.span,
-            self_mode: *self_mode,
             self_is_mut: *self_is_mut,
         })
     }

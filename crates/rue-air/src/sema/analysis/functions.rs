@@ -426,7 +426,7 @@ impl<'a> BodySema<'a> {
             crate::AnonymousMemberKind::AssociatedFunction
         };
         let producer = self
-            .one_body_requested_producer
+            .body_analysis_requested_producer
             .as_ref()
             .filter(|requested| {
                 matches!(
@@ -515,7 +515,7 @@ impl<'a> BodySema<'a> {
                 )
             })?;
         let producer = self
-            .one_body_requested_producer
+            .body_analysis_requested_producer
             .as_ref()
             .filter(|requested| {
                 matches!(

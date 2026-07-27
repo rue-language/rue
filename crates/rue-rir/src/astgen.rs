@@ -66,6 +66,11 @@ pub struct AstGen<'a> {
     anonymous_anchors:
         HashMap<rue_span::Span, (crate::AnonymousTypeSiteKind, crate::RirStructuralAnchor)>,
     authoritative_anonymous_anchors: bool,
+    /// Nesting depth of semantic producer roots. A transported authoritative
+    /// table belongs to the outer exact declaration only; method bodies nested
+    /// inside an anonymous type are independent producers and obtain their
+    /// anchors from the shared frontend walk when their root is entered.
+    producer_root_depth: usize,
     normalize_symbol: Box<dyn Fn(Spur) -> Spur + 'a>,
 }
 
@@ -84,6 +89,7 @@ impl<'a> AstGen<'a> {
             structural_path: Vec::new(),
             anonymous_anchors: HashMap::new(),
             authoritative_anonymous_anchors: false,
+            producer_root_depth: 0,
             normalize_symbol: Box::new(normalize_symbol),
         }
     }
@@ -204,13 +210,17 @@ impl<'a> AstGen<'a> {
     /// globally unique, so the accumulated map needs no per-root reset.
     fn with_producer_root<T>(&mut self, root: &Expr, action: impl FnOnce(&mut Self) -> T) -> T {
         let outer_path = std::mem::take(&mut self.structural_path);
-        if !self.authoritative_anonymous_anchors {
+        let has_transported_root =
+            self.authoritative_anonymous_anchors && self.producer_root_depth == 0;
+        if !has_transported_root {
             for site in crate::anonymous_type_sites(root) {
                 self.anonymous_anchors
                     .insert(site.span, (site.kind, site.anchor));
             }
         }
+        self.producer_root_depth += 1;
         let result = action(self);
+        self.producer_root_depth -= 1;
         self.structural_path = outer_path;
         result
     }

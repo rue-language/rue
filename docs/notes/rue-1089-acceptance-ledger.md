@@ -1,5 +1,9 @@
 # RUE-1089 producer-nominal acceptance ledger
 
+> Archived pre-cutover acceptance record. Current source and tests are
+> authoritative; paths and “Today” status descriptions below refer to the
+> historical implementation.
+
 Executable acceptance corpus for the producer-nominal anonymous-type identity
 cut (ADR-0066 / RUE-1089), encoding reviewer (codex)'s acceptance list.
 

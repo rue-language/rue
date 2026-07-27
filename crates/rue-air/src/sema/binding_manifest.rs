@@ -11,7 +11,7 @@ use rue_rir::{InstData, InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
 use super::RirDeclarationIndexWork;
-use super::{BodySemanticBase, ConstValue, Sema, SemaOutput};
+use super::{ConstValue, Sema, SemaOutput};
 use crate::types::{
     ArrayLen, PtrMutability, Type, TypeKind, parse_array_type_syntax, parse_pointer_type_syntax,
 };
@@ -151,6 +151,7 @@ pub enum SemanticDeclarationPayload {
         parameters: Arc<[SemanticExportParameter]>,
         result: SemanticExportType,
         has_self: bool,
+        self_mode: SemanticParameterMode,
         is_unchecked: bool,
     },
     Struct {
@@ -316,10 +317,6 @@ pub(super) struct PendingNominalPayload {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeclarationInstallFailure {
-    /// An identity endpoint installation was attempted after the declaration
-    /// base was sealed; refreshing only the live epoch would leave derivation
-    /// data stale.
-    AlreadySealed,
     /// Stable endpoint validation failed before installation.
     EndpointResolution(crate::SemanticStableResolutionFailure),
     DuplicatePayload,
@@ -400,33 +397,8 @@ impl SemanticBindingManifest {
 ///
 pub struct BoundSema<'a> {
     pub(super) sema: super::BodySema<'a>,
-    /// Installed exactly once at the declaration/body boundary. It contains
-    /// immutable data only; a derived body receives a new analyzer assembled
-    /// from it and fresh local overlays.
-    pub(super) body_base: Option<Arc<BodySemanticBase<'a>>>,
-    pub(super) body_state: Option<super::BodyAnalysisState<'a>>,
     manifest: OnceLock<SemanticBindingManifest>,
     binding_work: DeclarationBindingWork,
-}
-
-impl<'a> BoundSema<'a> {
-    pub(super) fn derive_from_body_base(&self, base: Arc<BodySemanticBase<'a>>) -> Self {
-        Self {
-            sema: super::BodySema::derive_from_body_semantic_base(&base),
-            body_base: Some(base.clone()),
-            body_state: Some(super::BodyAnalysisState::from_body_semantic_base(
-                base.clone(),
-            )),
-            manifest: self.manifest.clone(),
-            binding_work: self.binding_work,
-        }
-    }
-
-    fn take_body_state(&mut self) -> super::BodyAnalysisState<'a> {
-        self.body_state
-            .take()
-            .expect("body analysis requires an installed body-analysis state")
-    }
 }
 
 /// A semantic request whose module-keyed declaration namespace and nominal shells
@@ -1316,6 +1288,7 @@ impl<'a> DeclarationShells<'a> {
                         parameters,
                         result,
                         has_self,
+                        self_mode: payload_self_mode,
                         is_unchecked,
                     },
                     DeclarationPayloadSource::Callable { body },
@@ -1358,6 +1331,14 @@ impl<'a> DeclarationShells<'a> {
                     else {
                         return Err(DeclarationInstallFailure::KindMismatch);
                     };
+                    let payload_self_mode = match payload_self_mode {
+                        SemanticParameterMode::Value => RirParamMode::Normal,
+                        SemanticParameterMode::Borrow => RirParamMode::Borrow,
+                        SemanticParameterMode::Inout => RirParamMode::Inout,
+                    };
+                    if payload_self_mode != *self_mode {
+                        return Err(DeclarationInstallFailure::CallableShapeMismatch);
+                    }
                     let is_c_export = *is_c_export;
                     let type_name = self.sema.interner.get_or_intern("type");
                     let rir_parameters = self.sema.rir.params(params);
@@ -2120,130 +2101,6 @@ impl<'a> BoundSema<'a> {
         Ok(self)
     }
 
-    /// Analyze exactly one callable body. Ordinary callees are reported as
-    /// stable references and are never analyzed by this transaction.
-    pub fn analyze_one_body(
-        mut self,
-        request: super::OneBodyRequest,
-        interruption: Option<super::OneBodyInterruption>,
-    ) -> super::OneBodyTransactionOutcome {
-        let state = self.take_body_state();
-        super::one_body::analyze_one_body(self.sema, state, request, interruption)
-    }
-
-    /// Resolve a stable compiler-owned function instance into this fresh
-    /// semantic epoch, then analyze exactly that body.
-    pub fn analyze_one_body_instance<K, M>(
-        mut self,
-        instance: &crate::FunctionInstanceKey<K, M>,
-        definition: impl Fn(
-            &K,
-        ) -> Result<
-            crate::SemanticDefinitionToken,
-            crate::SemanticStableResolutionFailure,
-        >,
-        module: impl Fn(
-            &M,
-        )
-            -> Result<crate::SemanticModuleToken, crate::SemanticStableResolutionFailure>,
-        interruption: Option<super::OneBodyInterruption>,
-    ) -> super::OneBodyTransactionOutcome
-    where
-        K: Clone,
-        M: Clone,
-    {
-        let state = self.take_body_state();
-        super::one_body::analyze_one_body_instance(
-            self.sema,
-            state,
-            instance,
-            definition,
-            module,
-            interruption,
-        )
-    }
-
-    /// Analyze one callable body while publishing every exact declaration
-    /// candidate-set lookup through `collector`.
-    ///
-    /// The collector is installed only after declaration installation has
-    /// completed, so it records body-resolution demand rather than the
-    /// whole-epoch preparation prefix.
-    pub fn analyze_one_body_instance_recording_lookups<K, M>(
-        mut self,
-        instance: &crate::FunctionInstanceKey<K, M>,
-        definition: impl Fn(
-            &K,
-        ) -> Result<
-            crate::SemanticDefinitionToken,
-            crate::SemanticStableResolutionFailure,
-        >,
-        module: impl Fn(
-            &M,
-        )
-            -> Result<crate::SemanticModuleToken, crate::SemanticStableResolutionFailure>,
-        interruption: Option<super::OneBodyInterruption>,
-        collector: super::BodyLookupCollector,
-    ) -> super::OneBodyTransactionOutcome
-    where
-        K: Clone,
-        M: Clone,
-    {
-        self.sema.body_lookup_collector = Some(collector.clone());
-        let mut state = self.take_body_state();
-        state.install_body_lookup_collector(collector);
-        super::one_body::analyze_one_body_instance(
-            self.sema,
-            state,
-            instance,
-            definition,
-            module,
-            interruption,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn analyze_one_body_for_test(
-        self,
-        request: super::OneBodyRequest,
-        interruption: Option<super::OneBodyInterruption>,
-    ) -> super::OneBodyTransactionOutcome {
-        self.analyze_one_body(request, interruption)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn remove_stable_definition_for_test(
-        mut self,
-        token: crate::SemanticDefinitionToken,
-    ) -> Self {
-        std::sync::Arc::make_mut(&mut self.sema.stable_definition_tokens)
-            .retain(|_, candidate| *candidate != token);
-        std::sync::Arc::make_mut(&mut self.sema.stable_definition_endpoints).remove(&token);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reissue_stable_definition_for_test(
-        mut self,
-        token: crate::SemanticDefinitionToken,
-        issuer: u64,
-    ) -> Self {
-        let replacement = crate::SemanticDefinitionToken::new(issuer, token.slot());
-        for candidate in
-            std::sync::Arc::make_mut(&mut self.sema.stable_definition_tokens).values_mut()
-        {
-            if *candidate == token {
-                *candidate = replacement;
-            }
-        }
-        let endpoints = std::sync::Arc::make_mut(&mut self.sema.stable_definition_endpoints);
-        if let Some(mut endpoint) = endpoints.remove(&token) {
-            endpoint.token = replacement;
-            endpoints.insert(replacement, endpoint);
-        }
-        self
-    }
-
     /// Install stable declaration dependency observations captured by the
     /// semantic query nucleus. These events describe the declaration payloads
     /// already installed in this epoch; AIR must not rediscover them by
@@ -2284,9 +2141,6 @@ impl<'a> BoundSema<'a> {
         definitions: &[crate::SemanticDefinitionEndpoint],
         modules: &[crate::SemanticModuleEndpoint],
     ) -> Result<Self, DeclarationInstallFailure> {
-        if self.body_base.is_some() {
-            return Err(DeclarationInstallFailure::AlreadySealed);
-        }
         let expected_definitions = self
             .binding_manifest()
             .bindings()
@@ -2308,9 +2162,6 @@ impl<'a> BoundSema<'a> {
             &expected_definitions,
             &expected_modules,
         )?;
-        self.body_state = Some(super::BodyAnalysisState::from_body_semantic_base(Arc::new(
-            self.sema.body_semantic_base(),
-        )));
         Ok(self)
     }
 
@@ -2429,9 +2280,6 @@ impl<'a> BoundSema<'a> {
         mut self,
         endpoints: &[super::BodyOwnerEndpoint],
     ) -> Result<Self, DeclarationInstallFailure> {
-        if self.body_base.is_some() {
-            return Err(DeclarationInstallFailure::AlreadySealed);
-        }
         let issuer = endpoints.first().map(|e| e.token.issuer());
         let mut installed = HashMap::with_capacity(endpoints.len());
         let mut tokens = HashSet::with_capacity(endpoints.len());
@@ -2490,9 +2338,6 @@ impl<'a> BoundSema<'a> {
             return Err(DeclarationInstallFailure::IdentityMismatch);
         }
         self.sema.body_owner_tokens = std::sync::Arc::new(installed);
-        self.body_state = Some(super::BodyAnalysisState::from_body_semantic_base(Arc::new(
-            self.sema.body_semantic_base(),
-        )));
         Ok(self)
     }
     pub fn binding_work(&self) -> DeclarationBindingWork {
@@ -2510,20 +2355,18 @@ impl<'a> BoundSema<'a> {
         &self.sema
     }
 
-    /// RUE-1091 slice r4b-1 flip-era surface: the epoch's answer for a free
-    /// function's identity, exposed so the rue-compiler differential can compare
-    /// the provider-driven `ProviderCallFacts` assembly against the epoch it must
-    /// match. Trivial delegation to the frozen `BodySema`; the sole pre-flip
-    /// caller is that differential (the flip promotes this comparison to rFinal).
+    /// Return the frozen semantic answer for a free function's identity.
+    /// Provider-boundary parity tests compare this canonical answer with the
+    /// independently assembled provider result.
     pub fn function_info(&self, name: lasso::Spur) -> Option<super::info::FunctionInfo> {
         self.sema.function_info(name).copied()
     }
 
-    /// RUE-1091 slice r4b-1 flip-era surface: the epoch's callable-symbol
-    /// reversal, exposed for the same differential. Delegates to the epoch's
+    /// Return the canonical callable-symbol reversal for parity checks.
+    /// Delegates to the epoch's
     /// `named_callable_methods_by_symbol` index. The epoch answers BARE
     /// (language-item / builtin) owner symbols here — the class the provider path
-    /// refuses (the r6-tied divergence the differential pins).
+    /// refuses, which the parity check records explicitly.
     pub fn named_method_by_callable_symbol(
         &self,
         symbol: lasso::Spur,
@@ -2533,8 +2376,8 @@ impl<'a> BoundSema<'a> {
             .map(|(struct_id, method, info)| (struct_id, method, *info))
     }
 
-    /// RUE-1091 slice r4b-1 flip-era surface: the rendered symbol keys of the
-    /// epoch's named-method callable index, so the differential can locate the
+    /// Return rendered symbol keys from the canonical named-method callable
+    /// index, so parity checks can locate the
     /// bare (file-qualification-exempt) key a language-item owner produces and
     /// witness the epoch answering it.
     pub fn named_callable_symbol_keys(&self) -> Vec<String> {
@@ -2545,10 +2388,9 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
-    /// RUE-1091 slice r4b-2 flip-era surface: the epoch's resolved nominal
-    /// [`Type`] for a `(file, name)` nominal, exposed so the rue-compiler
-    /// differential compares the provider-driven `ProviderEndpointFacts` pool
-    /// resolution against the LIVE endpoint answer (not a durable re-terminal).
+    /// Return the canonical resolved nominal [`Type`] for `(file, name)`.
+    /// Provider-boundary parity checks compare it with the independently
+    /// assembled `ProviderEndpointFacts` result.
     /// Trivial delegation to the frozen `BodySema`'s endpoint facts — the exact
     /// `struct_by_file_name` / `enum_by_file_name` lookup the `Named`-nominal arm
     /// of [`super::body_endpoint::resolve_instance_type`] performs, wrapped into
@@ -2568,10 +2410,9 @@ impl<'a> BoundSema<'a> {
             })
     }
 
-    /// RUE-1091 flip-prep surface: resolve the module whose stable endpoint
-    /// names `file` through the LIVE epoch endpoint + module-registry path. This
-    /// is the independent side of the provider module-overlay differential; the
-    /// returned compact id is epoch-relative, so the differential compares the
+    /// Resolve the module whose stable endpoint names `file` through the
+    /// canonical endpoint and module-registry path. The returned compact id is
+    /// epoch-relative, so parity checks compare the
     /// module endpoint/file relationship rather than raw indices.
     pub fn epoch_module_type(&self, file: FileId) -> Option<crate::types::Type> {
         use super::body_endpoint::resolve_instance_type;
@@ -2607,7 +2448,7 @@ impl<'a> BoundSema<'a> {
         ))
     }
 
-    /// RUE-1091 slice r6a flip-era surface: the epoch's resolved generated
+    /// RUE-1091 slice r6a provider surface: the epoch's resolved generated
     /// slice-struct [`Type`] for a generated-struct name, exposed so the
     /// rue-compiler differential compares the provider-driven
     /// `ProviderEndpointFacts` slice minting against the LIVE epoch's generated
@@ -2625,7 +2466,7 @@ impl<'a> BoundSema<'a> {
             .map(crate::types::Type::new_struct)
     }
 
-    /// RUE-1091 slice r6b flip-era surface: every anonymous nominal [`Type`] the
+    /// RUE-1091 slice r6b provider surface: every anonymous nominal [`Type`] the
     /// epoch minted during declaration binding, exposed so the rue-compiler
     /// differential compares the provider-driven pool
     /// [`super::body_identity::BodyIdentityPool::find_or_create_anon`] against the
@@ -2650,11 +2491,11 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
-    /// RUE-1091 slice r6c flip-era surface: the anonymous nominal [`Type`]s of
+    /// RUE-1091 slice r6c provider surface: the anonymous nominal [`Type`]s of
     /// the identities recorded in the epoch's `well_known_option_identities` —
     /// the well-known `Option` enums the registry install
     /// ([`Self::install_well_known_option_types`]) materialized and marked for
-    /// the export-as-produced ruling. `analyze_one_body` subtracts exactly this
+    /// the export-as-produced ruling. `analyze_body_analysis` subtracts exactly this
     /// set from its initial anonymous baseline, so the single export funnel
     /// (`semantic_body_export.rs` via `produced_anonymous_nominals`) publishes
     /// these identities as PRODUCED anonymous nominals of the analyzed body,
@@ -2681,7 +2522,7 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
-    /// RUE-1091 slice r6c flip-era surface: the epoch's per-body well-known
+    /// RUE-1091 slice r6c provider surface: the epoch's per-body well-known
     /// `Option` demand registry — each `(payload, option)` [`Type`] pair the
     /// install recorded into `well_known_option_by_payload`, the map
     /// fallible-intrinsic resolution (`resolve_option_result_type`) consults.
@@ -2698,9 +2539,8 @@ impl<'a> BoundSema<'a> {
             .collect()
     }
 
-    /// RUE-1091 flip-prep surface: the LIVE epoch's value-constant info for the
-    /// exact storage key `(declaring_file, source_name)`. The compiler
-    /// differential compares this independent declaration-binding result with
+    /// Return canonical value-constant info for the exact storage key
+    /// `(declaring_file, source_name)`. Parity checks compare this result with
     /// the body pool's durable-record + RIR-handle assembly.
     pub fn epoch_const_info(
         &self,
@@ -2712,9 +2552,7 @@ impl<'a> BoundSema<'a> {
             .cloned()
     }
 
-    /// The module-binding twin used to pin the const pool's current STOP: the
-    /// epoch has an exact module-valued `ConstInfo`, while the pool refuses it
-    /// until a durable module key can mint a body-local module-registry id.
+    /// Return canonical module-binding info for the exact storage key.
     pub fn epoch_module_binding_info(
         &self,
         declaring_file: FileId,
@@ -2725,10 +2563,9 @@ impl<'a> BoundSema<'a> {
             .cloned()
     }
 
-    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's `MethodInfo` for a
-    /// `(file, type_name, method)` named method, exposed so the rue-compiler
-    /// differential compares the provider-driven `ProviderCallFacts` method
-    /// assembly against the LIVE epoch answer (not a durable re-terminal). The
+    /// Return canonical `MethodInfo` for a `(file, type_name, method)` named
+    /// method. Provider-boundary parity checks compare this with the
+    /// independently assembled `ProviderCallFacts` result. The
     /// receiver preimage `(file, type_name)` is resolved to the epoch's
     /// pool-minted `StructId` through the endpoint facts — the exact
     /// `struct_by_file_name` → `method_info((struct_id, method))` path the epoch
@@ -2746,13 +2583,12 @@ impl<'a> BoundSema<'a> {
         facts.method_info(struct_id, method)
     }
 
-    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// Return the canonical
     /// [`select_module_type_member`](super::aggregate_resolution::select_module_type_member)
     /// winner for `(file, name)`, projected to the shared
     /// [`ProviderModuleMember`](crate::ProviderModuleMember) so the differential
-    /// compares the provider-driven `ProviderAggregateFacts` selection against the
-    /// LIVE epoch's — proving the r1c struct→enum→const short-circuit is replayed
-    /// byte-for-byte. Runs the same provider-generic free function the analyzer
+    /// lets parity checks compare `ProviderAggregateFacts` selection against
+    /// the canonical struct→enum→const short-circuit. Runs the same free function the analyzer
     /// runs, driven over the epoch `AggregateFacts`.
     pub fn epoch_module_type_member(
         &self,
@@ -2773,7 +2609,7 @@ impl<'a> BoundSema<'a> {
         }
     }
 
-    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// Return the canonical
     /// [`select_qualified_type`](super::aggregate_resolution::select_qualified_type)
     /// winner (enum→struct order) for `(file, name)`.
     pub fn epoch_qualified_type(&self, file: FileId, name: Spur) -> crate::ProviderQualifiedType {
@@ -2790,7 +2626,7 @@ impl<'a> BoundSema<'a> {
         }
     }
 
-    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// Return the canonical
     /// [`select_struct_literal_head`](super::aggregate_resolution::select_struct_literal_head)
     /// winner for an unqualified head `(file, name)` (no local type).
     pub fn epoch_struct_literal_head(&self, file: FileId, name: Spur) -> crate::ProviderStructHead {
@@ -2805,10 +2641,10 @@ impl<'a> BoundSema<'a> {
         }
     }
 
-    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's
+    /// Return the canonical
     /// [`is_accessible`](super::aggregate_resolution::is_accessible) visibility
-    /// decision for `(accessing_file, defining_file, is_public)`, so the
-    /// differential proves the provider driver's registered-path visibility domain
+    /// decision for `(accessing_file, defining_file, is_public)`, so parity
+    /// checks prove the provider driver's registered-path visibility domain
     /// matches the epoch's `get_file_path`-derived one.
     pub fn epoch_is_accessible(
         &self,
@@ -2821,18 +2657,16 @@ impl<'a> BoundSema<'a> {
         is_accessible(&facts, accessing_file, defining_file, is_public)
     }
 
-    /// RUE-1091 slice r4b-3 flip-era surface: the epoch's physical file path for
-    /// `file`, so the differential registers the same path into the provider
+    /// Return the canonical physical file path for `file`, so parity checks
+    /// register the same path into the provider
     /// driver's request-local path overlay that `is_accessible` consults.
     pub fn epoch_file_path(&self, file: FileId) -> Option<String> {
         self.sema.get_file_path(file).map(str::to_owned)
     }
 
-    /// RUE-1091 slice r4b-2 flip-era surface: read the epoch's populated
-    /// [`TypeInternPool`](crate::intern_pool::TypeInternPool) under a closure, so
-    /// the differential renders an [`Self::epoch_nominal_type`] result with the
-    /// same index-independent logic it renders the provider-pool side with. The
-    /// sole pre-flip caller is that differential.
+    /// Read the populated [`TypeInternPool`](crate::intern_pool::TypeInternPool)
+    /// under a closure so provider-boundary parity checks use the same
+    /// index-independent rendering on both sides.
     pub fn with_type_pool<R>(
         &self,
         read: impl FnOnce(&crate::intern_pool::TypeInternPool) -> R,
@@ -3596,6 +3430,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         parameters,
                         result,
                         has_self: false,
+                        self_mode: SemanticParameterMode::Value,
                         is_unchecked: info.is_unchecked,
                     }
                 }
@@ -3636,6 +3471,11 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                         parameters,
                         result,
                         has_self: info.has_self,
+                        self_mode: match info.self_mode {
+                            RirParamMode::Borrow => SemanticParameterMode::Borrow,
+                            RirParamMode::Inout => SemanticParameterMode::Inout,
+                            _ => SemanticParameterMode::Value,
+                        },
                         is_unchecked: false,
                     }
                 }
@@ -3914,14 +3754,9 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // an immutable namespace with final destructor symbols.
         self.requalify_colliding_destructor_symbols();
         let sema = self.freeze_declarations();
-        let body_epoch = Arc::new(sema.body_semantic_base());
         BoundSema {
             binding_work,
             sema,
-            body_base: None,
-            body_state: Some(super::BodyAnalysisState::from_body_semantic_base(
-                body_epoch,
-            )),
             manifest: OnceLock::new(),
         }
     }

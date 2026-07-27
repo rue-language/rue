@@ -63,8 +63,26 @@ impl ModuleRirOutput {
         self.work
     }
 
-    pub(crate) fn into_body_rir_bundle(self) -> rue_air::BodyRirBundle {
-        rue_air::BodyRirBundle::new(self.rir, self.symbols.into_interner())
+    pub(crate) fn into_remapped_body_rir_bundle(
+        self,
+        file_id: FileId,
+        source_length: u32,
+        remap_span: impl FnMut(rue_span::Span) -> rue_span::Span,
+    ) -> Result<rue_air::BodyRirBundle, String> {
+        let mut editor = RirEditor::new();
+        editor
+            .append_remapped_with_spans(&self.rir, std::convert::identity, remap_span)
+            .map_err(|error| error.to_string())?;
+        let source_lengths = [(file_id, source_length)];
+        let validation = RirValidationContext {
+            symbol_count: self.symbols.interner().len(),
+            source_lengths: &source_lengths,
+        };
+        let rir = ValidatedRir::finish(editor, &validation).map_err(|error| error.to_string())?;
+        Ok(rue_air::BodyRirBundle::new(
+            rir,
+            self.symbols.into_interner(),
+        ))
     }
 }
 

@@ -1142,20 +1142,55 @@ where
                 F::Never => Type::NEVER,
                 F::ComptimeType => Type::COMPTIME_TYPE,
                 F::BuiltinNominal { name, kind } => {
-                    let local = self
-                        .builtins
-                        .get(&(name.clone(), kind))
-                        .copied()
-                        .ok_or_else(|| {
-                            if self.builtins.keys().any(|(known, _)| known == name) {
-                                SemanticImportFailure::BuiltinNominalKindMismatch
-                            } else {
-                                SemanticImportFailure::UnknownBuiltinNominal
-                            }
-                        })?;
-                    match local {
-                        LocalNominal::Struct(id) => Type::new_struct(id),
-                        LocalNominal::Enum(id) => Type::new_enum(id),
+                    if let Some(_capacity) = name
+                        .strip_prefix("Str(")
+                        .and_then(|name| name.strip_suffix(')'))
+                        .and_then(|capacity| capacity.parse::<u64>().ok())
+                    {
+                        if kind != SemanticImportNominalKind::Struct {
+                            return Err(SemanticImportFailure::BuiltinNominalKindMismatch);
+                        }
+                        let symbol = self.interner.get_or_intern(name.as_ref());
+                        let pointer = type_pool.intern_ptr_const_from_type(Type::U8);
+                        let (id, _) = type_pool.register_struct(
+                            symbol,
+                            StructDef {
+                                name: name.to_string(),
+                                fields: vec![
+                                    StructField {
+                                        name: "ptr".to_owned(),
+                                        ty: Type::new_ptr_const(pointer),
+                                    },
+                                    StructField {
+                                        name: "len".to_owned(),
+                                        ty: Type::U64,
+                                    },
+                                ],
+                                is_copy: true,
+                                is_linear: false,
+                                destructor: None,
+                                is_builtin: true,
+                                is_pub: true,
+                                file_id: FileId::DEFAULT,
+                            },
+                        );
+                        Type::new_struct(id)
+                    } else {
+                        let local = self
+                            .builtins
+                            .get(&(name.clone(), kind))
+                            .copied()
+                            .ok_or_else(|| {
+                                if self.builtins.keys().any(|(known, _)| known == name) {
+                                    SemanticImportFailure::BuiltinNominalKindMismatch
+                                } else {
+                                    SemanticImportFailure::UnknownBuiltinNominal
+                                }
+                            })?;
+                        match local {
+                            LocalNominal::Struct(id) => Type::new_struct(id),
+                            LocalNominal::Enum(id) => Type::new_enum(id),
+                        }
                     }
                 }
                 F::Nominal(key) => match self.nominals.get(key) {

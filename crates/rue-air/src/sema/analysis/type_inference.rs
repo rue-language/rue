@@ -89,7 +89,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         dependencies: &[crate::inference::InferenceBodyDependency],
         expr_types: &HashMap<InstRef, InferType>,
     ) -> bool {
-        if !self.one_body_error_recovery() {
+        if !self.body_analysis_error_recovery() {
             return false;
         }
 
@@ -495,7 +495,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             {
                 let inference_dependency_incomplete = self
                     .record_inference_body_dependencies(&inference_body_dependencies, &expr_types);
-                self.set_one_body_inference_failure_incomplete(inference_dependency_incomplete);
+                self.set_body_analysis_inference_failure_incomplete(
+                    inference_dependency_incomplete,
+                );
             }
             // Map each UnifyResult variant to the appropriate ErrorKind
             let error_kind = match &err.kind {
@@ -549,7 +551,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         {
-            self.set_one_body_inference_failure_incomplete(false);
+            self.set_body_analysis_inference_failure_incomplete(false);
         }
 
         // Default any unconstrained integer literals to i32

@@ -46,6 +46,27 @@ pub fn b_foo() -> i32 { 20 }
 ]
 stdout = "10\n20\n"
 
+# Repeated expression-position imports of one canonical module are one lookup
+# binding, not an ambiguity between source sites.
+[[case]]
+name = "repeated_inline_import_sites_share_one_binding"
+files = [
+    { path = "main.rue", source = """
+fn main() -> i32 {
+    let mut value = 1;
+    value = @import("helper.rue").mix(value, 2);
+    value = @import("./helper.rue").mix(value, 3);
+    value = @import("helper.rue").mix(value, 4);
+    value = @import("./helper.rue").mix(value, 5);
+    value
+}
+""" },
+    { path = "helper.rue", source = """
+pub fn mix(left: i32, right: i32) -> i32 { left + right }
+""" },
+]
+exit_code = 15
+
 # Face B: one importer resolves `foo` to a FILE module (sub/foo.rue), another
 # resolves `foo` to a DIRECTORY-module facade (facdir/foo/_foo.rue). These are
 # two unrelated imports, each unambiguous in its own directory — no E0708.

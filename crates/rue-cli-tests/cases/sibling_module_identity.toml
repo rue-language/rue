@@ -13,6 +13,44 @@ name = "Sibling-module function identity"
 description = "Module-qualified function identity: same-name functions/generics/methods in sibling modules resolve per module (RUE-426/RUE-441/RUE-442)."
 
 [[case]]
+name = "foreign_dependent_signature_does_not_fabricate_root_binding"
+description = "Resolving a foreign dependent signature retains its declaration module without overwriting a same-spelled user root binding"
+args = ["main.rue", "-o", "prog"]
+stdout = ""
+exit_code = 42
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+const dep = @import("dep.rue");
+const __rue_sig_1_dep = @import("evil.rue");
+
+fn main() -> i32 {
+    let item = dep.S { value: 42 };
+    let result = lib.take(item);
+    let other = __rue_sig_1_dep.E { value: result };
+    other.value
+}
+""" },
+    { path = "dep.rue", source = """
+pub struct S {
+    value: i32,
+}
+""" },
+    { path = "evil.rue", source = """
+pub struct E {
+    value: i32,
+}
+""" },
+    { path = "lib.rue", source = """
+const dep = @import("dep.rue");
+
+pub fn take(value: dep.S) -> i32 {
+    value.value
+}
+""" },
+]
+
+[[case]]
 name = "sibling_same_name_different_signatures"
 description = "Same fn name with DIFFERENT signatures in sibling modules: each call resolves its own module's signature (a flat inference table would mix them up)"
 args = ["main.rue", "-o", "prog"]

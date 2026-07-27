@@ -36,7 +36,10 @@ use rue_rir::RirParamMode;
 use rue_span::Span;
 
 use crate::inst::{Air, AirInstData};
-use crate::sema::{AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext};
+use crate::sema::{
+    AnalyzedFunction, ConstValue, FunctionInfo, InferenceContext, OrdinaryBodyAnalysisHost,
+    OrdinaryBodyEngine, SemanticBodyExportHost,
+};
 use crate::types::{StructId, Type};
 
 /// A key for a specialized function:
@@ -611,16 +614,54 @@ fn rewrite_call_generic(
     }
 }
 
-/// Select and rewrite the concrete generic calls in one completed body without
-/// expanding any selected specialization body.
-///
-/// This is the extraction seam for the test-only one-body transaction work in
-/// RUE-1084.  The production fixed-point driver deliberately continues to own
-/// its existing expansion policy until the compiler query cutover.  Keeping
-/// selection here ensures the transaction does not guess specialization edges
-/// by rescanning RIR syntax.
-pub(crate) fn select_one_body_specializations(
-    sema: &crate::sema::BodySema<'_>,
+fn host_stable_identity<H>(
+    key: &SpecializationKey,
+    host: &H,
+) -> Result<
+    crate::SemanticSpecializationIdentity<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >,
+    crate::SemanticBodyExportFailure,
+>
+where
+    H: OrdinaryBodyAnalysisHost + SemanticBodyExportHost,
+{
+    let base = host.function_identity(key.base_name)?;
+    let type_arguments = key
+        .type_args
+        .iter()
+        .map(|value| host.export_body_type(*value))
+        .collect::<Result<Vec<_>, _>>()?;
+    let value_arguments = key
+        .value_args
+        .iter()
+        .map(|value| {
+            Ok(match value {
+                ConstValue::Integer(value) => crate::SemanticImportConstValue::Integer(*value),
+                ConstValue::Bool(value) => crate::SemanticImportConstValue::Bool(*value),
+                ConstValue::Type(value) => {
+                    crate::SemanticImportConstValue::Type(host.export_body_type(*value)?)
+                }
+                ConstValue::Function(value) => {
+                    crate::SemanticImportConstValue::Function(host.function_identity(*value)?)
+                }
+                ConstValue::Unit => crate::SemanticImportConstValue::Unit,
+                ConstValue::String(content) => crate::SemanticImportConstValue::String(
+                    std::sync::Arc::from(host.resolve_publication_symbol(content)),
+                ),
+            })
+        })
+        .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+    Ok(crate::SemanticSpecializationIdentity {
+        base,
+        type_arguments: type_arguments.into(),
+        value_arguments: value_arguments.into(),
+    })
+}
+
+pub(crate) fn select_provider_body_specializations<H>(
+    host: &mut H,
     mut function: AnalyzedFunction,
 ) -> CompileResult<(
     AnalyzedFunction,
@@ -632,13 +673,16 @@ pub(crate) fn select_one_body_specializations(
         >,
     )>,
     Vec<crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
-)> {
+)>
+where
+    H: OrdinaryBodyAnalysisHost + SemanticBodyExportHost,
+{
     let mut specializations = HashMap::new();
     let mut pending = Vec::new();
     let mut work = crate::BodyAnalysisWork::default();
     if collect_specializations(
         &function.air,
-        sema.interner,
+        host.body_interner(),
         &mut specializations,
         &mut pending,
         &mut work,
@@ -646,37 +690,68 @@ pub(crate) fn select_one_body_specializations(
         let mut editor = function.air.into_editor();
         rewrite_call_generic(&mut editor, &specializations, &mut work);
         function.air = editor.finish(crate::AirValidationContext::SemanticWithSymbols(
-            &sema.type_pool,
-            sema.interner,
+            host.body_type_pool(),
+            host.body_interner(),
         ))?;
     }
     let mut selected = pending
         .iter()
         .map(|key| {
-            Ok((
-                specializations[key].mangled_name,
-                Specializer::stable_identity(key, sema).map_err(|failure| {
-                    CompileError::new(
-                        ErrorKind::InternalError(format!(
-                            "failed to select a canonical specialization reference: {failure:?}"
-                        )),
-                        specializations[key].call_site_span,
-                    )
-                })?,
-                sema.canonical_specialization_instance(
-                    key.base_name,
-                    &key.type_args,
-                    &key.value_args,
+            let info = &specializations[key];
+            let identity = host_stable_identity(key, host).map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to select a canonical specialization identity: {failure:?}"
+                    )),
+                    info.call_site_span,
                 )
-                .map_err(|failure| {
+            })?;
+            let base = crate::FunctionInstanceKey::Definition(
+                host.function_identity(key.base_name).map_err(|failure| {
                     CompileError::new(
                         ErrorKind::InternalError(format!(
-                            "failed to select a canonical specialization instance: {failure:?}"
+                            "failed to select a canonical specialization base: {failure:?}"
                         )),
-                        specializations[key].call_site_span,
+                        info.call_site_span,
                     )
                 })?,
-            ))
+            );
+            let arguments = crate::CanonicalArguments {
+                types: key
+                    .type_args
+                    .iter()
+                    .map(|ty| host.canonical_type_instance(*ty))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|failure| {
+                        CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "failed to select canonical type arguments: {failure:?}"
+                            )),
+                            info.call_site_span,
+                        )
+                    })?
+                    .into(),
+                values: key
+                    .value_args
+                    .iter()
+                    .copied()
+                    .map(|value| host.canonical_argument_value(value))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|failure| {
+                        CompileError::new(
+                            ErrorKind::InternalError(format!(
+                                "failed to select canonical value arguments: {failure:?}"
+                            )),
+                            info.call_site_span,
+                        )
+                    })?
+                    .into(),
+            };
+            let instance = crate::FunctionInstanceKey::Specialization {
+                base: Box::new(base),
+                arguments,
+            };
+            Ok((info.mangled_name, identity, instance))
         })
         .collect::<CompileResult<Vec<_>>>()?;
     selected.sort_by(|left, right| left.1.cmp(&right.1));
@@ -693,7 +768,6 @@ pub(crate) fn select_one_body_specializations(
 }
 
 pub(crate) struct OneSpecializedBody {
-    pub(crate) key: SpecializationKey,
     pub(crate) function: AnalyzedFunction,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) local_strings: Vec<String>,
@@ -707,50 +781,220 @@ pub(crate) struct OneSpecializedBody {
     >,
 }
 
-/// Analyze exactly one concrete specialization.  No call-site scan or
-/// specialization fixed point is performed here; the caller supplies the
-/// already-selected local key and receives references for later scheduling.
-pub(crate) fn analyze_one_specialization(
-    sema: &mut crate::sema::BodySema<'_>,
+/// Run the substitution-aware ordinary expression engine for one provider
+/// specialization without consulting or mutating a declaration epoch.
+pub(crate) fn analyze_one_specialization_with_host<H>(
+    host: &mut H,
     infer_ctx: &InferenceContext,
     key: SpecializationKey,
-) -> CompileResult<OneSpecializedBody> {
-    let base_info = sema.function_info(key.base_name).cloned().ok_or_else(|| {
+) -> CompileResult<OneSpecializedBody>
+where
+    H: OrdinaryBodyAnalysisHost + SemanticBodyExportHost,
+{
+    let base_info = host.function_body_info(key.base_name).ok_or_else(|| {
         CompileError::without_span(ErrorKind::UndefinedFunction(
-            sema.interner.resolve(&key.base_name).to_owned(),
+            host.body_interner().resolve(&key.base_name).to_owned(),
         ))
     })?;
-    let specialized_name = sema.interner.get_or_intern(&mangle_specialized_name(
-        sema.interner.resolve(&key.base_name),
-        &key.type_args,
-        &key.value_args,
-    ));
-    let identity = Specializer::stable_identity(&key, sema).map_err(|failure| {
+    let base_name = host.body_interner().resolve(&key.base_name).to_owned();
+    let specialized_name_text =
+        mangle_specialized_name(&base_name, &key.type_args, &key.value_args);
+    let base_call_info = crate::sema::FunctionCallInfo::from_body(base_info);
+    let param_comptime_type = host.comptime_type_param_flags(&base_call_info);
+    let base_params = host
+        .body_param_data(base_info.params)
+        .iter()
+        .map(|(name, ty, mode, is_comptime)| (*name, *ty, *mode, *is_comptime))
+        .collect::<Vec<_>>();
+
+    let mut type_subst = HashMap::new();
+    let mut value_subst = HashMap::new();
+    let mut type_arg_idx = 0;
+    let mut value_arg_idx = 0;
+    for (param_index, (name, _, _, is_comptime)) in base_params.iter().enumerate() {
+        if !*is_comptime {
+            continue;
+        }
+        if param_comptime_type[param_index] {
+            let ty = key.type_args.get(type_arg_idx).copied().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "specialization is missing type argument {type_arg_idx} for '{}'",
+                        host.body_interner().resolve(name)
+                    )),
+                    base_info.span,
+                )
+            })?;
+            type_subst.insert(*name, ty);
+            type_arg_idx += 1;
+        } else {
+            let value = key.value_args.get(value_arg_idx).copied().ok_or_else(|| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "specialization is missing value argument {value_arg_idx} for '{}'",
+                        host.body_interner().resolve(name)
+                    )),
+                    base_info.span,
+                )
+            })?;
+            value_subst.insert(*name, value);
+            value_arg_idx += 1;
+        }
+    }
+    if type_arg_idx != key.type_args.len() || value_arg_idx != key.value_args.len() {
+        return Err(CompileError::new(
+            ErrorKind::InternalError(format!(
+                "specialization argument streams do not match declaration: consumed \
+                 {type_arg_idx} type/{value_arg_idx} value, received {}/{}",
+                key.type_args.len(),
+                key.value_args.len()
+            )),
+            base_info.span,
+        ));
+    }
+
+    let canonical_arguments = crate::CanonicalArguments {
+        types: key
+            .type_args
+            .iter()
+            .map(|ty| host.canonical_type_instance(*ty))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue provider specialization arguments: {failure:?}"
+                    )),
+                    base_info.span,
+                )
+            })?
+            .into(),
+        values: key
+            .value_args
+            .iter()
+            .copied()
+            .map(|value| host.canonical_argument_value(value))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue provider specialization arguments: {failure:?}"
+                    )),
+                    base_info.span,
+                )
+            })?
+            .into(),
+    };
+    let identity = OrdinaryBodyEngine::new(host)
+        .canonical_specialization_instance(key.base_name, &key.type_args, &key.value_args)
+        .map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "failed to issue provider specialization identity: {failure:?}"
+                )),
+                base_info.span,
+            )
+        })?;
+    // The requested callable remains an exact specialization identity even
+    // when its argument streams are empty. Anonymous producer identity has a
+    // narrower canonical form: an empty specialization is the base function.
+    // Normalize at the producer boundary so the body, its produced facts, and
+    // final composition all name the same anonymous nominal.
+    let producer = (
+        crate::StableProducerId::Function(Box::new(
+            identity.with_collapsed_empty_specializations().into_owned(),
+        )),
+        canonical_arguments,
+    );
+    let previous = host.replace_active_anonymous_producer(Some(producer));
+    let analysis = {
+        let mut engine = OrdinaryBodyEngine::new(host);
+        let return_type = engine.resolve_substituted_return_type(
+            &base_call_info,
+            &type_subst,
+            &value_subst,
+            base_info.span,
+        )?;
+        let mut specialized_params = Vec::with_capacity(base_params.len());
+        for (param_index, (name, ty, mode, is_comptime)) in base_params.into_iter().enumerate() {
+            if param_comptime_type[param_index] {
+                continue;
+            }
+            let concrete_ty = engine.resolve_substituted_param_type(
+                &base_call_info,
+                param_index,
+                ty,
+                &type_subst,
+                &value_subst,
+                base_info.span,
+            )?;
+            specialized_params.push((name, concrete_ty, mode, is_comptime));
+        }
+        engine.analyze_specialized_function(
+            infer_ctx,
+            return_type,
+            &specialized_params,
+            base_info.body,
+            &type_subst,
+            &value_subst,
+        )
+    };
+    host.replace_active_anonymous_producer(previous);
+    let (
+        air,
+        num_locals,
+        num_param_slots,
+        param_modes,
+        warnings,
+        local_strings,
+        local_atoms,
+        referenced_functions,
+        referenced_methods,
+    ) = analysis?;
+    let stable_identity = host_stable_identity(&key, host).map_err(|failure| {
         CompileError::new(
             ErrorKind::InternalError(format!(
-                "failed to issue one-body specialization identity: {failure:?}"
+                "failed to export provider specialization identity: {failure:?}"
             )),
             base_info.span,
         )
     })?;
-    let body = create_specialized_function(
-        sema,
-        infer_ctx,
-        &key,
-        specialized_name,
-        &base_info,
-        sema.interner,
-    )?;
+    let mut dependencies = referenced_functions
+        .iter()
+        .filter_map(|symbol| host.function_identity(*symbol).ok())
+        .collect::<Vec<_>>();
+    dependencies.sort();
+    dependencies.dedup();
+    let dependency_boundary_complete =
+        referenced_methods.is_empty() && dependencies.len() == referenced_functions.len();
     Ok(OneSpecializedBody {
-        key,
-        function: body.function,
-        warnings: body.warnings,
-        local_strings: body.local_strings,
-        referenced_functions: body.referenced_functions,
-        referenced_methods: body.referenced_methods,
-        dependencies: body.dependencies,
-        dependency_boundary_complete: body.dependency_boundary_complete,
-        identity,
+        function: AnalyzedFunction {
+            identity,
+            callable_kind: crate::AnalyzedCallableKind::Ordinary,
+            ordinary_owner: None,
+            name: specialized_name_text,
+            implicit_drop_source: Some(
+                crate::sema::ImplicitDropDependencySourceEvent::Specialization {
+                    identity: stable_identity.clone(),
+                },
+            ),
+            air: crate::ValidatedAir::from_semantic_air_with_symbols(
+                air,
+                host.body_type_pool(),
+                host.body_interner(),
+            )?,
+            local_atoms,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            allow_unreachable_code: base_info.allow_unreachable_code,
+        },
+        warnings,
+        local_strings,
+        referenced_functions,
+        referenced_methods,
+        dependencies,
+        dependency_boundary_complete,
+        identity: stable_identity,
     })
 }
 
@@ -973,14 +1217,14 @@ fn create_specialized_function(
                 base_info.span,
             )
         })?;
-    // A one-body specialization request already carries its exact durable
+    // A body-analysis specialization request already carries its exact durable
     // identity. Reconstructing that identity from materialized structural
     // types can select a different-but-equal anonymous representative and
     // therefore change nested argument anchors. Keep the request identity for
     // this top-level body; ordinary whole-program specialization has no such
     // request and continues to derive its canonical producer normally.
     if let Some(crate::StableProducerId::Function(requested)) =
-        sema.one_body_requested_producer.as_ref()
+        sema.body_analysis_requested_producer.as_ref()
     {
         let requested_arguments = match requested.as_ref() {
             crate::FunctionInstanceKey::Specialization { base, arguments }

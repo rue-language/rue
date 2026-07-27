@@ -35,15 +35,12 @@
 
 mod artifact_views;
 mod backend;
-mod body_overlay;
 mod body_query;
 mod bound_definitions;
 mod canonical_lower;
 mod canonical_merge;
 mod canonical_semantic;
-mod declaration_base_meter;
 mod declaration_candidate;
-mod declaration_recipe;
 mod definition_snapshot;
 mod dependency_envelope;
 mod diagnostic;
@@ -58,7 +55,6 @@ mod linking;
 mod parsed_modules;
 mod queries;
 mod query_graph;
-mod recipe_cache;
 mod revisioned_query_database;
 mod semantic_identity;
 mod semantic_query_nucleus;
@@ -217,10 +213,12 @@ pub(crate) use durable_body::{
     DurableAirInstData, DurableBodyAnchor, DurableOrdinaryBody, DurableOrdinaryBodyPayload,
     DurableProjection, DurableSpecializedBodyPayload, convert_semantic_specialized_body_exports,
 };
+#[cfg(test)]
+pub(crate) use durable_semantics::DurableDeclarationPayload;
 pub(crate) use durable_semantics::{
     DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticSchemaVersion,
 };
-pub(crate) use durable_semantics::{DurableConstValue, DurableDeclarationPayload, DurableType};
+pub(crate) use durable_semantics::{DurableConstValue, DurableType};
 #[cfg(test)]
 pub(crate) use durable_semantics::{
     DurableParameterMode, DurableSemanticParameter, DurableSemanticProjectionFailure,
