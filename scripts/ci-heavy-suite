@@ -31,17 +31,27 @@ trap cleanup EXIT
 # execution_contracts.toml remain the honest gates. Re-tighten when the
 # per-case budgets come back down.
 test_args=("$target")
+timings=""
 case "$target" in
     //:cli-tests)
         test_args+=(-- --timeout 1800)
         ;;
     //:cli-tests-shard-*)
-        test_args+=(-- --timeout 1200)
+        if [[ -n "${RUNNER_TEMP:-}" ]]; then
+            timings="$RUNNER_TEMP/rue-cli-case-timings.jsonl"
+        else
+            timings="$(mktemp "${TMPDIR:-/tmp}/rue-cli-case-timings.XXXXXX")"
+        fi
+        test_args+=(-- --timeout 1200 --env "RUE_CLI_CASE_TIMINGS=$timings")
         ;;
 esac
 
 ./buck2 test "${test_args[@]}" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
+if [[ -n "$timings" && -s "$timings" ]]; then
+    timing_cases="$(grep -c '"event":"rue_cli_case_timing"' "$timings")"
+    echo "cli-tests: measured $timing_cases cases in $timings"
+fi
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
 fi
@@ -49,4 +59,11 @@ fi
 if ! grep -qE "(Pass|Fail|Skip|Timeout|Fatal|Omit|Flaky): root${target} " "$log"; then
     echo "error: explicit CI shard produced no result for $target" >&2
     exit 1
+fi
+
+if [[ -n "$timings" && ! -s "$timings" ]]; then
+    # A remotely cached Buck test result does not replay the test process's
+    # out-of-sandbox metrics file. That is a legitimate zero-execution run,
+    # not a corpus omission; the explicit Buck result above remains required.
+    echo "cli-tests: measured 0 cases (cached result or unavailable timings)"
 fi

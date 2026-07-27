@@ -28,6 +28,7 @@ commands=0
 cached=0
 remote=0
 local_actions=0
+cli_cases="—"
 while IFS= read -r line; do
     if [[ "$line" =~ Commands:[[:space:]]+([0-9]+)[[:space:]]+\(cached:[[:space:]]+([0-9]+),[[:space:]]+remote:[[:space:]]+([0-9]+),[[:space:]]+local:[[:space:]]+([0-9]+)\) ]]; then
         ((invocations += 1))
@@ -35,6 +36,9 @@ while IFS= read -r line; do
         ((cached += BASH_REMATCH[2]))
         ((remote += BASH_REMATCH[3]))
         ((local_actions += BASH_REMATCH[4]))
+    fi
+    if [[ "$line" =~ cli-tests:[[:space:]]+measured[[:space:]]+([0-9]+)[[:space:]]+cases ]]; then
+        cli_cases="${BASH_REMATCH[1]}"
     fi
 done <"$log"
 
@@ -53,9 +57,9 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
         echo "### CI timing: $safe_label"
         echo
-        echo "| Result | Wall time | Buck invocations | Commands | Cached | Remote | Local |"
-        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: |"
-        echo "| $result | ${elapsed}s | $invocations | $commands | $cached | $remote | $local_actions |"
+        echo "| Result | Wall time | CLI cases | Buck invocations | Commands | Cached | Remote | Local |"
+        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        echo "| $result | ${elapsed}s | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions |"
         echo
     } >>"$GITHUB_STEP_SUMMARY"
 fi

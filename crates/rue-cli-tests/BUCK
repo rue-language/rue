@@ -11,9 +11,16 @@ rue_binary(
         "//crates/rue-test-runner:rue-test-runner",
         "//third-party:libtest2-mimic",
         "//third-party:serde",
+        "//third-party:serde_json",
         "//third-party:tempfile",
         "//third-party:toml",
     ],
+)
+
+export_file(
+    name = "shard-weights",
+    src = "shard-weights.json",
+    visibility = ["PUBLIC"],
 )
 
 # The CLI integration test cases, as an input of the //:cli-tests suite (so a
