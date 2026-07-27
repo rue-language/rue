@@ -861,7 +861,7 @@ exit 90
 EOF
   chmod +x "$sb/buck2"
 
-  local all="//:cli-tests //:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  local all="//:cli-tests //:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
 
   # (1) Full corpus present + buck2 green -> test.sh reports success.
   local rc=0 out
@@ -871,7 +871,7 @@ EOF
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
-  local partial="//:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  local partial="//:cli-tests-caldera //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
   rc=0
   out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$partial" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a silently omitted corpus harness fails the run" \
@@ -891,7 +891,7 @@ EOF
   # (4) Required CI may explicitly defer known live heavy targets to separate
   # jobs. The owning invocation must skip and stop auditing exactly those
   # targets while retaining every other corpus assertion.
-  local owned="//:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests"
+  local owned="//:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:tutorial-snippet-tests //:frontend-diff-test"
   : >"$sb/calls.log"; rc=0
   out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
       RUE_CI_DEFER_HEAVY_SUITES='//:cli-tests //:cli-tests-caldera //:spec-tests' \
