@@ -165,6 +165,13 @@ rue_sh_test(
     },
 )
 
+# RUE-1118: RUE_REAL_STD_PATH was missing here. Cases marked `real_std` compile
+# against the standard library, and rue-test-runner resolves it through that
+# variable with a cwd-relative fallback ("std", "../std", ...). Under the old
+# sh_test, which ran from the project root, the fallback silently found the real
+# std/ and the suite passed against an input Buck did not know about — the exact
+# false-hit hazard this file's header warns about. Declaring it makes std/ a
+# tracked input of the UI corpus.
 cached_corpus_suite(
     name = "ui-tests",
     labels = ["rue_heavy_suite"],
@@ -172,10 +179,12 @@ cached_corpus_suite(
     args = ["--quiet"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_REAL_STD_PATH": "$(location :std)/std",
         "RUE_UI_CASES": "$(location //crates/rue-ui-tests:cases)/cases",
     },
     absolutize = [
         "RUE_BINARY",
+        "RUE_REAL_STD_PATH",
         "RUE_UI_CASES",
     ],
 )
