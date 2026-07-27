@@ -44,7 +44,8 @@ use super::{DurableNominalSource, ProviderBodyAnalysisState};
 use crate::intern_pool::TypeInternPool;
 
 use super::anon_structs::{
-    IssuedAnonymousNominalKey, IssuedCanonicalArguments, IssuedStableProducerId,
+    IssuedAnonymousNominalKey, IssuedCanonicalArguments, IssuedFunctionInstanceKey,
+    IssuedStableProducerId, IssuedTypeInstanceKey,
 };
 use super::{
     AnalyzedBodyOwnerEvent, AnonMethodSig, BodyAnalysisWork, ConstValue,
@@ -223,6 +224,12 @@ pub(crate) enum HostCapability {
     /// needs the adapter that maps the operation's owned fact onto the shape
     /// the engine expects.
     ProviderFact,
+    /// Answered by [`ProviderExportHost`], the export view over the overlay,
+    /// the type pool, and exact keyed identity lookups. A category of its own
+    /// because one answer draws on all three — and because the epoch answers
+    /// the same questions from declaration-universe-sized token and endpoint
+    /// tables, which is the cost this category exists to not pay.
+    ProviderExport,
     /// The real remaining work: no provider operation answers this yet, or the
     /// answer must change shape at the flip. Each row names what it needs.
     NeedsProviderWiring(&'static str),
@@ -360,51 +367,24 @@ pub(crate) const HOST_CAPABILITY_LEDGER: &[HostCapabilityRow] = &[
              `TypeSyntaxHost`, so this is binding that host to the provider rather than to `Sema`",
         ),
     ),
-    // The five export rows below are one job, not five. `SemanticBodyExportHost`
-    // already abstracts the publication path over exactly these facts, so the
-    // work is a second implementation of that trait rather than new machinery.
-    // Tracing the epoch's implementation shows no reverse identity map is
-    // needed: a compact id carries its own `(file, name)` through the type pool,
-    // so the stable token is a FORWARD keyed lookup the fact provider already
-    // answers, and the only genuinely reverse fact — token to endpoint, for
-    // symbol rendering — is memoized body-locally at the consult that produced
-    // the token (`consulted_definition_endpoints`). Every export fact is
-    // therefore already body-local, derivable from the type pool, or recorded
-    // at lookup time.
-    row(
-        "canonical_type_instance",
-        HostCapability::NeedsProviderWiring(
-            "compact type -> stable instance key; anonymous and builtin arms are already \
-             body-local and type-pool reads, and the named arm is a forward \
-             `(file, name, kind)` lookup through the fact boundary",
-        ),
-    ),
-    row(
-        "canonical_argument_value",
-        HostCapability::NeedsProviderWiring(
-            "compact const value -> stable argument value; rides the same arms as \
-             `canonical_type_instance`",
-        ),
-    ),
-    row(
-        "function_identity",
-        HostCapability::NeedsProviderWiring(
-            "rendered symbol -> stable definition token; `callable_symbol_method` answers the \
-             method arm and the free-function arm is the same forward lookup",
-        ),
-    ),
+    // --- The export direction, answered by `ProviderExportHost`. ---
+    // These five were one job, not five: no reverse identity map was needed. A
+    // compact id carries its own `(file, name)` through the type pool, so the
+    // stable token is a FORWARD keyed lookup the fact boundary answers, and the
+    // only genuinely reverse fact — token to endpoint, for symbol rendering —
+    // is memoized body-locally at the consult that produced the token
+    // (`consulted_definition_endpoints`). Every export fact is therefore
+    // body-local, derivable from the type pool, or recorded at lookup time.
+    row("canonical_type_instance", HostCapability::ProviderExport),
+    row("canonical_argument_value", HostCapability::ProviderExport),
+    row("function_identity", HostCapability::ProviderExport),
     row(
         "stable_definition_symbol_component",
-        HostCapability::NeedsProviderWiring(
-            "render from the endpoint recorded at consult time, not from the epoch's \
-             universe-sized `stable_definition_endpoints` table",
-        ),
+        HostCapability::ProviderExport,
     ),
     row(
         "stable_module_symbol_component",
-        HostCapability::NeedsProviderWiring(
-            "module half of the same rendering, from `consulted_module_endpoints`",
-        ),
+        HostCapability::ProviderExport,
     ),
 ];
 
@@ -579,6 +559,53 @@ impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
             &self.facts,
             &self.interner,
         )
+    }
+}
+
+/// The export rows of [`HOST_CAPABILITY_LEDGER`], in the shapes
+/// `OrdinaryBodyAnalysisHost` declares them.
+///
+/// They are the receiver's answers, not the export view's, because the ledger
+/// is a claim about the *host contract*: stating that a contract method is
+/// answered means the receiver answers it. Each one is the export view over
+/// this body's own three parts, so none reaches a declaration-wide table.
+impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
+    pub(crate) fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<IssuedTypeInstanceKey, crate::SemanticBodyExportFailure> {
+        self.export_host().canonical_type_instance(ty)
+    }
+
+    pub(crate) fn canonical_argument_value(
+        &self,
+        value: ConstValue,
+    ) -> Result<
+        crate::CanonicalArgumentValue<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.export_host().canonical_argument_value(value)
+    }
+
+    pub(crate) fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        self.export_host().function_identity(symbol)
+    }
+
+    pub(crate) fn stable_definition_symbol_component(
+        &self,
+        token: &crate::SemanticDefinitionToken,
+    ) -> String {
+        self.export_host().stable_definition_symbol_component(token)
+    }
+
+    pub(crate) fn stable_module_symbol_component(
+        &self,
+        token: &crate::SemanticModuleToken,
+    ) -> String {
+        self.export_host().stable_module_symbol_component(token)
     }
 }
 
@@ -871,7 +898,7 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
     }
 
     /// The stable definition token behind a rendered callable symbol.
-    fn function_identity(
+    pub(crate) fn function_identity(
         &self,
         symbol: Spur,
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
@@ -905,6 +932,88 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
                 crate::StableDefinitionKind::AssociatedFunction
             },
         )
+    }
+
+    /// The stable argument value for a compact comptime constant.
+    ///
+    /// It rides the arms [`Self::canonical_type_instance`] and
+    /// [`Self::function_identity`] already answer, so nothing here reaches past
+    /// the overlay, the type pool, and the identity boundary. Note the function
+    /// arm takes the *definition* form, not
+    /// [`Self::body_function_identity`]: an argument names the callable that
+    /// was passed, and the epoch spells it the same way.
+    pub(crate) fn canonical_argument_value(
+        &self,
+        value: ConstValue,
+    ) -> Result<
+        crate::CanonicalArgumentValue<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        use crate::CanonicalArgumentValue as V;
+        Ok(match value {
+            ConstValue::Integer(value) => V::Integer(value),
+            ConstValue::Bool(value) => V::Bool(value),
+            ConstValue::Type(value) => V::Type(Box::new(self.canonical_type_instance(value)?)),
+            ConstValue::Function(value) => V::Function(Box::new(
+                IssuedFunctionInstanceKey::Definition(self.function_identity(value)?),
+            )),
+            ConstValue::Unit => V::Unit,
+            ConstValue::String(value) => {
+                V::String(std::sync::Arc::from(self.interner.resolve(&value)))
+            }
+        })
+    }
+
+    /// The request-independent logical module path of one consulted file.
+    ///
+    /// The pool's path table is written at the mint that assigned a module its
+    /// body-local file id, so it holds exactly the modules this body consulted.
+    /// The epoch answers the same question from `symbol_paths`, sized by every
+    /// file in the program — this is the whole difference between the two
+    /// renderings.
+    ///
+    /// Every file reaching here came from a nominal the pool minted, and
+    /// minting registers the path, so an absent path is a broken pool rather
+    /// than a reachable input. The epoch fails closed on the same invariant.
+    fn logical_module_component(&self, file: u32) -> String {
+        self.type_pool
+            .symbol_path(FileId::new(file))
+            .expect("every consulted endpoint's file has a canonical logical module path")
+    }
+
+    /// The request-independent content of one definition token.
+    ///
+    /// Rendered from the endpoint recorded at the consult that produced the
+    /// token, never from a reverse table: a body can only render an identity it
+    /// resolved. The uninstalled-token spelling matches the epoch's byte for
+    /// byte, because it feeds anonymous-identity digests that must agree across
+    /// the flip.
+    pub(crate) fn stable_definition_symbol_component(
+        &self,
+        token: &crate::SemanticDefinitionToken,
+    ) -> String {
+        match self.local.consulted_definition_endpoint(token) {
+            Some(endpoint) => crate::stable_digest::stable_definition_component(
+                &self.logical_module_component(endpoint.file),
+                &endpoint.name,
+                endpoint.owner.as_deref(),
+                endpoint.kind as u8,
+            ),
+            None => format!("d\u{1}{}\u{1}{}", token.issuer(), token.slot()),
+        }
+    }
+
+    /// The module half of the same rendering.
+    pub(crate) fn stable_module_symbol_component(
+        &self,
+        token: &crate::SemanticModuleToken,
+    ) -> String {
+        match self.local.consulted_module_endpoint(token) {
+            Some(endpoint) => crate::stable_digest::stable_module_component(
+                &self.logical_module_component(endpoint.file),
+            ),
+            None => format!("m\u{1}{}\u{1}{}", token.issuer(), token.slot()),
+        }
     }
 
     /// The stable instance a rendered callable symbol names.
@@ -1389,6 +1498,118 @@ mod tests {
         );
     }
 
+    /// Rendering a stable symbol component uses the endpoint recorded at the
+    /// consult and the module path the type pool wrote when it minted that
+    /// file, and encodes them with the digest encoder the epoch shares. Both
+    /// halves matter: the same encoder keeps anonymous-identity digests equal
+    /// across the flip, and the body-local path table is what makes the
+    /// rendering `O(consulted)` instead of `O(files)`.
+    #[test]
+    fn a_consulted_token_renders_from_its_recorded_endpoint() {
+        let mut local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let facts = RecordingFacts::default();
+
+        pool.set_symbol_paths(HashMap::from([(
+            FileId::new(3),
+            "app/widget.rue".to_owned(),
+        )]));
+        let token = crate::SemanticDefinitionToken::new(1, 7);
+        local.record_consulted_definition_endpoint(crate::SemanticDefinitionEndpoint {
+            token,
+            file: 3,
+            name: "render".into(),
+            kind: crate::StableDefinitionKind::Method,
+            owner: Some("Widget".into()),
+        });
+
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
+        assert_eq!(
+            host.stable_definition_symbol_component(&token),
+            crate::stable_digest::stable_definition_component(
+                "app/widget.rue",
+                "render",
+                Some("Widget"),
+                crate::StableDefinitionKind::Method as u8,
+            ),
+            "a consulted token renders through the shared digest encoder"
+        );
+    }
+
+    /// A token this body never consulted renders as the epoch spells an
+    /// uninstalled one, byte for byte. This spelling feeds anonymous-identity
+    /// digests, so diverging here would fork identity between the two receivers
+    /// rather than merely losing a name.
+    #[test]
+    fn an_unconsulted_token_renders_as_the_epoch_spells_it() {
+        let local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let facts = RecordingFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
+
+        let definition = crate::SemanticDefinitionToken::new(2, 9);
+        let module = crate::SemanticModuleToken::new(2, 4);
+        assert_eq!(
+            host.stable_definition_symbol_component(&definition),
+            "d\u{1}2\u{1}9"
+        );
+        assert_eq!(
+            host.stable_module_symbol_component(&module),
+            "m\u{1}2\u{1}4"
+        );
+    }
+
+    /// The argument arms that carry no identity resolve without reaching the
+    /// fact boundary at all; only the type and function arms consult it, and
+    /// they do so through the same lookups the type and callable directions
+    /// already use.
+    #[test]
+    fn plain_argument_values_cost_no_boundary_consults() {
+        let local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let facts = RecordingFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
+
+        let text = interner.get_or_intern("hello");
+        for (value, expected) in [
+            (
+                ConstValue::Integer(7),
+                crate::CanonicalArgumentValue::Integer(7),
+            ),
+            (
+                ConstValue::Bool(true),
+                crate::CanonicalArgumentValue::Bool(true),
+            ),
+            (ConstValue::Unit, crate::CanonicalArgumentValue::Unit),
+            (
+                ConstValue::String(text),
+                crate::CanonicalArgumentValue::String(std::sync::Arc::from("hello")),
+            ),
+        ] {
+            assert_eq!(
+                host.canonical_argument_value(value)
+                    .expect("an identity-free argument value exports"),
+                expected
+            );
+        }
+        assert!(
+            facts.definition_consults.borrow().is_empty(),
+            "an identity-free argument consulted the boundary: {:?}",
+            facts.definition_consults.borrow()
+        );
+
+        assert!(
+            matches!(
+                host.canonical_argument_value(ConstValue::Function(text)),
+                Err(crate::SemanticBodyExportFailure::UnmappedFunction)
+            ),
+            "the function arm resolves through callable identity, and fails closed"
+        );
+    }
+
     /// A durable universe with no nominals in it. The receiver tests exercise
     /// the parts that must work before any nominal is consulted, so the source
     /// answering `None` is the honest input, not a placeholder.
@@ -1513,7 +1734,7 @@ mod tests {
         }
         assert_eq!(
             outstanding.len(),
-            7,
+            2,
             "the outstanding host capabilities are {:?}; update this count in the same change \
              that wires one, so the worklist cannot shrink silently",
             outstanding.iter().map(|row| row.method).collect::<Vec<_>>()

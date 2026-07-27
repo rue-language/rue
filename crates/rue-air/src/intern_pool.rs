@@ -1729,6 +1729,21 @@ impl TypeInternPool {
         }
     }
 
+    /// The relocation-stable logical identity of one defining source file.
+    ///
+    /// Keyed and exact: a caller that has a file in hand asks for that file,
+    /// never for the table. The provider-backed body receiver renders stable
+    /// symbol components through this, and its table holds only the modules
+    /// that body consulted.
+    pub(crate) fn symbol_path(&self, file: FileId) -> Option<String> {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .symbol_paths
+            .get(&file)
+            .cloned()
+    }
+
     /// Set relocation-stable source identities for type-derived symbols.
     pub(crate) fn set_symbol_paths(&self, symbol_paths: HashMap<FileId, String>) {
         self.inner
