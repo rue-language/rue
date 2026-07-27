@@ -156,6 +156,56 @@ question of how expensive a real change's remaining local actions were. Both
 signals matter: a central Rust or ThinLTO change can have a high numerical hit
 rate while a few invalidated actions remain on the critical path.
 
+**Those counters cannot see test time, and reading them as if they can is the
+trap this section exists to prevent.** Buck's `Commands: N (cached: C, remote: R,
+local: L)` line counts *actions*. A `buck2 test` invocation also performs a test
+execution, which is not an action: it is handed to the test executor, it never
+appears in that line, and OSS buck2 ships no test-result cache. Measured in one
+`merge_group` run, a corpus whose test took `0.0s` and a corpus whose test took
+`11:18` both reported `Commands: 465`. A job can therefore print
+`Cache hits: 100%` while re-running an eleven-minute suite, which reads as
+"everything was cached" and is not.
+
+## Corpus suites are build actions (RUE-1118)
+
+Because test executions cannot be cached, a plain `sh_test` corpus re-ran on
+every merge even when the merge commit's tree was byte-identical to the tree the
+PR run had just validated. Three CI runs of one such tree — two `pull_request`,
+one `merge_group` — converged to 465/465 cached build actions while every corpus
+re-executed in full, at 91–97% of the merge queue's critical path.
+
+`cached_corpus_suite` (`corpus.bzl`) therefore splits each heavy corpus in two:
+
+- a **genrule** that runs the harness through `scripts/corpus-action` and writes
+  a stamp on success. This is an ordinary action, so the PR run uploads it and
+  the `merge_group` run reads it back like any compile;
+- a thin **`sh_test`** that asserts the stamp. It keeps the suite's name, labels,
+  and `Pass: root//:NAME (time)` result line, so `scripts/ci-heavy-suite` and
+  test.sh's RUE-924 corpus-omission audit keep working unchanged.
+
+Two consequences are worth knowing before changing a corpus target:
+
+1. **The declared input contract is now load-bearing.** Under a plain `sh_test`
+   an undeclared input was merely untracked — the suite re-ran regardless. Here
+   an undeclared input is a false pass: change a file the action does not name
+   and the corpus reports success against the previous tree's result. Every path
+   a harness reads at runtime must reach it through `env`, and hence through
+   `$(location ...)`.
+2. **Paths must be absolute.** `$(location ...)` expands to an absolute path in
+   an `sh_test`, which runs from the project root, but to a path relative to the
+   action's working directory in a genrule. The harnesses spawn the compiler with
+   each case's temp directory as cwd, and `find_dir` falls back to relative
+   defaults, so a relative value can resolve to a real but wrong directory and
+   quietly test nothing. `corpus-action` resolves everything named in the suite's
+   `absolutize` list immediately before the harness runs; it cannot be done in
+   BUCK because a genrule cmd has no shell command substitution — `$(...)` is
+   Buck's own macro syntax.
+
+`//:reproducible-programs` and `//:oracle-diff-generated-smoke` remain plain
+`sh_test`s: their harnesses are shell scripts that read repository paths
+directly rather than through declared env inputs, so establishing that contract
+has to come first. Both are off the merge queue's critical path.
+
 RUE-320 also adds a merge-group-only remote-execution canary. It disables action
 cache reads, selects the no-fallback `//platforms:remote_execution` executor, and
 requires Buck to report remotely executed actions. This is deliberately

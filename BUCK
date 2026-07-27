@@ -1,8 +1,8 @@
 # Repo-root test-suite targets (RUE-144 / RUE-132).
 #
-# Each sh_test ties a test-harness binary to the rue compiler and the on-disk
-# inputs the suite actually reads (cases/, std/, docs/), so Buck owns the binary
-# handoff and caches each suite against its real inputs:
+# Each suite ties a test-harness binary to the rue compiler and the on-disk
+# inputs it actually reads (cases/, std/, docs/), so Buck owns the binary
+# handoff and keys each suite on its real inputs:
 #
 #   buck2 test //...        # runs unit tests + spec/UI/CLI suites + repo gates
 #
@@ -10,17 +10,41 @@
 # under std/ re-runs the CLI and spec suites (std/ MUST be a declared input here
 # or either suite could get false cache hits on standard-library changes).
 #
+# RUE-1118: the heavy corpora run through `cached_corpus_suite` rather than a
+# bare sh_test. buck2 re-executes every test invocation — test executions are
+# not actions and never reach the action cache — so a plain sh_test re-ran the
+# whole corpus on each merge even when the merge commit's tree was byte-identical
+# to the tree the PR run had just validated. The macro moves the harness into a
+# cacheable build action and leaves a thin sh_test asserting its stamp, so the
+# suite keeps its name, labels, and result line. See corpus.bzl for the input
+# contract this makes load-bearing.
+#
 # Mechanics: the harness binaries already locate everything via env vars
-# (rue-test-runner's find_rue_binary / find_dir), `$(exe_target ...)` /
-# `$(location ...)` expand to absolute paths, and sh_test runs from the
-# project root — so the harness binary itself can be the `test` command and
-# no wrapper script is needed. A filegroup's output directory is named after
-# the rule and contains its srcs at package-relative paths, hence the
-# `$(location ...)/cases` shape.
+# (rue-test-runner's find_rue_binary / find_dir), and a filegroup's output
+# directory is named after the rule and contains its srcs at package-relative
+# paths, hence the `$(location ...)/cases` shape. In an sh_test those macros
+# expand to absolute paths and the test runs from the project root; in a
+# genrule they are relative to the action's working directory, which is why
+# cached_corpus_suite routes them through scripts/corpus-action.
 #
 # These suites live at the repo root rather than in the harness crates' BUCK
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
+
+load(":corpus.bzl", "cached_corpus_suite")
+
+# The two halves of a cached corpus suite: the action wrapper that runs a
+# harness and writes its stamp, and the thin check that asserts the stamp.
+sh_binary(
+    name = "corpus-action",
+    main = "scripts/corpus-action",
+)
+
+sh_binary(
+    name = "corpus-stamp-check",
+    main = "scripts/corpus-stamp-check",
+    visibility = ["PUBLIC"],
+)
 
 # The formatting gate lives in fmt.sh, not here. A `fmt-check` sh_test used to
 # sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`. A
@@ -164,16 +188,21 @@ filegroup(
     ]),
 )
 
-sh_test(
+cached_corpus_suite(
     name = "spec-tests",
     labels = ["rue_heavy_suite"],
-    test = "//crates/rue-spec:rue-spec",
+    harness = "//crates/rue-spec:rue-spec",
     args = ["--quiet"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_REAL_STD_PATH": "$(location :std)/std",
         "RUE_SPEC_CASES": "$(location //crates/rue-spec:cases)/cases",
     },
+    absolutize = [
+        "RUE_BINARY",
+        "RUE_REAL_STD_PATH",
+        "RUE_SPEC_CASES",
+    ],
 )
 
 sh_test(
@@ -186,15 +215,19 @@ sh_test(
     },
 )
 
-sh_test(
+cached_corpus_suite(
     name = "ui-tests",
     labels = ["rue_heavy_suite"],
-    test = "//crates/rue-ui-tests:rue-ui-tests",
+    harness = "//crates/rue-ui-tests:rue-ui-tests",
     args = ["--quiet"],
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_UI_CASES": "$(location //crates/rue-ui-tests:cases)/cases",
     },
+    absolutize = [
+        "RUE_BINARY",
+        "RUE_UI_CASES",
+    ],
 )
 
 # Shared verbatim by //:cli-tests and its shards so a slice runs exactly the
@@ -223,15 +256,37 @@ _CLI_TEST_ENV = {
     "RUE_STD_DIR": "$(location :std)/std",
 }
 
+# Every _CLI_TEST_ENV entry is a path the harness hands to a compiler spawned
+# with a case's temp directory as cwd, so all of them must be absolute (see
+# corpus.bzl). The harness's find_dir fallbacks would otherwise resolve against
+# the action's working directory and silently miss the real corpus.
+_CLI_TEST_ABSOLUTIZE = [
+    "RUE_BINARY",
+    "RUE_CLI_CASES",
+    "RUE_EXAMPLES_DIR",
+    "RUE_REPO_DIR",
+    "RUE_STD_DIR",
+]
+
+# RUE-1083 recalibrated several per-case heavyweight compile budgets upward, so
+# the serialized aggregate can exceed a short outer bound. These replace the
+# test executor's timeout, which scripts/ci-heavy-suite used to pass and a build
+# action does not get; the per-case contracts in execution_contracts.toml remain
+# the honest gates. Re-tighten when the per-case budgets come back down.
+_CLI_TESTS_TIMEOUT_SECONDS = 1800
+_CLI_SHARD_TIMEOUT_SECONDS = 1200
+
 # The full CLI corpus in one invocation: the canonical target that a local
 # `./test.sh` full run executes and that the RUE-924 corpus-omission audit
 # tracks (REQUIRED_CORPUS_HARNESSES in test.sh).
-sh_test(
+cached_corpus_suite(
     name = "cli-tests",
     labels = ["rue_heavy_suite"],
-    test = "//crates/rue-cli-tests:rue-cli-tests",
+    harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = _CLI_TEST_ARGS,
     env = _CLI_TEST_ENV,
+    absolutize = _CLI_TEST_ABSOLUTIZE,
+    timeout_seconds = _CLI_TESTS_TIMEOUT_SECONDS,
 )
 
 # Required release coverage is deliberately bounded: compile the real driver
@@ -239,11 +294,12 @@ sh_test(
 # differential-opt corpus through that release-built compiler. The scheduled
 # full-release workflow owns exhaustive //... coverage off the PR critical
 # path (RUE-1129).
-sh_test(
+cached_corpus_suite(
     name = "release-smoke",
-    test = "//crates/rue-cli-tests:rue-cli-tests",
+    harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet", "differential_opt"],
     env = _CLI_TEST_ENV,
+    absolutize = _CLI_TEST_ABSOLUTIZE,
 )
 
 # RUE-1116: parallel CI shards of the CLI corpus. Same harness and declared
@@ -261,14 +317,16 @@ sh_test(
 CLI_TEST_SHARD_COUNT = 4
 
 [
-    sh_test(
+    cached_corpus_suite(
         name = "cli-tests-shard-{}".format(_shard),
         labels = ["rue_heavy_suite", "rue_cli_shard"],
-        test = "//crates/rue-cli-tests:rue-cli-tests",
+        harness = "//crates/rue-cli-tests:rue-cli-tests",
         args = _CLI_TEST_ARGS,
         env = dict(_CLI_TEST_ENV.items() + [
             ("RUE_CLI_TEST_SHARD", "{}/{}".format(_shard, CLI_TEST_SHARD_COUNT)),
         ]),
+        absolutize = _CLI_TEST_ABSOLUTIZE,
+        timeout_seconds = _CLI_SHARD_TIMEOUT_SECONDS,
     )
     for _shard in range(CLI_TEST_SHARD_COUNT)
 ]
@@ -284,20 +342,27 @@ CLI_TEST_SHARD_COUNT = 4
 # UTC). This exact target stays a transparent success stub until the
 # remaining per-body incremental work brings the stress compile back into a
 # reasonable budget. Every other example family runs real cases above.
-sh_test(
+cached_corpus_suite(
     name = "cli-tests-caldera",
     labels = ["rue_heavy_suite"],
-    test = "//crates/rue-cli-tests:rue-cli-tests",
+    harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet", "caldera"],
     env = dict(_CLI_TEST_ENV.items() + [
         ("RUE_CALDERA_SUCCESS_STUB", "RUE-1083"),
     ]),
+    absolutize = _CLI_TEST_ABSOLUTIZE,
 )
 
 # RUE-1083: `examples/` is a declared input because this suite now also checks a
 # real maintained program (rill) for byte-stable output, not just the
 # purpose-built fixture. An edit under examples/ must therefore re-run it.
 sh_test(
+    # RUE-1118: still a plain sh_test, so it re-runs on every invocation. Its
+    # harness is a shell script rather than a target, and unlike the corpus
+    # harnesses it reads repository paths directly rather than through declared
+    # env inputs — the input contract cached_corpus_suite depends on has to be
+    # established before caching this one would be sound rather than a false
+    # pass. It is also off the merge queue's critical path.
     name = "reproducible-programs",
     labels = ["rue_heavy_suite"],
     test = "scripts/test-reproducible-output.sh",
@@ -315,6 +380,8 @@ sh_test(
 # reference oracle and native codegen. It lives at the root so full/no-argument
 # `test.sh` and CI include it while `quick-test.sh` remains unit-only.
 sh_test(
+    # RUE-1118: still a plain sh_test, for the same reason as
+    # //:reproducible-programs above.
     name = "oracle-diff-generated-smoke",
     labels = ["rue_heavy_suite"],
     test = "scripts/oracle-diff-generated-smoke.sh",
@@ -601,6 +668,25 @@ sh_test(
     test = "scripts/test-wrapper-scripts.sh",
     env = {
         "RUE_WRAPPER_ROOT": "$(location :wrapper-script-inputs)",
+    },
+)
+
+# RUE-1118: corpus-action decides whether a corpus suite's result is written to
+# the action cache, so its stamp-only-on-success and absolutization contracts
+# are pinned independently of any corpus actually running.
+filegroup(
+    name = "corpus-script-inputs",
+    srcs = [
+        "scripts/corpus-action",
+        "scripts/corpus-stamp-check",
+    ],
+)
+
+sh_test(
+    name = "corpus-action-tests",
+    test = "scripts/test-corpus-action.sh",
+    env = {
+        "RUE_CORPUS_SCRIPTS_ROOT": "$(location :corpus-script-inputs)",
     },
 )
 

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Assert that a corpus action produced its stamp (RUE-1118).
+#
+# The expensive corpus run is a cacheable build action; this is the thin test
+# that carries the suite's name, labels, and Pass/Fail result line. Buck builds
+# the action first, so reaching this script at all means the harness passed —
+# either in this run or in an earlier one whose result the action cache served.
+# A failing harness writes no stamp, so the suite fails as a build failure and
+# nothing is cached.
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+    echo "usage: scripts/corpus-stamp-check STAMP" >&2
+    exit 2
+fi
+
+stamp="$1"
+
+if [[ ! -f "$stamp" ]]; then
+    echo "error: corpus stamp does not exist: $stamp" >&2
+    exit 1
+fi
+
+if [[ ! -s "$stamp" ]]; then
+    echo "error: corpus stamp is empty: $stamp" >&2
+    exit 1
+fi

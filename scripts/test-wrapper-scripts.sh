@@ -767,20 +767,16 @@ EOF
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
-  : >"$sb/calls.log"
-  rc=0
-  (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: monolithic CLI corpus receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
-
-  : >"$sb/calls.log"
-  rc=0
-  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: CLI shard receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-shard-1 -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
-
-  local other_target
-  for other_target in \
+  # RUE-1118: ci-heavy-suite no longer carries per-target executor timeouts. The
+  # corpus runs as a cacheable build action and the test executor only asserts
+  # its stamp, so the outer bound belongs on the action — it is each suite's
+  # timeout_seconds in BUCK. A stray `--timeout` here would bound the wrong
+  # thing (a sub-second stamp check) and read as if the corpus were still
+  # bounded, so pin that every target is invoked identically and bare.
+  local heavy_target
+  for heavy_target in \
+    //:cli-tests \
+    //:cli-tests-shard-1 \
     //:cli-tests-caldera \
     //:spec-tests \
     //:ui-tests \
@@ -789,9 +785,9 @@ EOF
     //:tutorial-snippet-tests; do
     : >"$sb/calls.log"
     rc=0
-    (cd "$sb" && FAKE_LABELED_TARGET="$other_target" FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite "$other_target") >/dev/null 2>&1 || rc=$?
-    check "ci-heavy-suite: $other_target retains the default executor timeout" \
-      "$([ "$rc" -eq 0 ] && grep -Fxq "test $other_target" "$sb/calls.log" && echo 0 || echo 1)"
+    (cd "$sb" && FAKE_LABELED_TARGET="$heavy_target" FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite "$heavy_target") >/dev/null 2>&1 || rc=$?
+    check "ci-heavy-suite: $heavy_target is invoked without an executor timeout" \
+      "$([ "$rc" -eq 0 ] && grep -Fxq "test $heavy_target" "$sb/calls.log" && echo 0 || echo 1)"
   done
 
   rc=0
