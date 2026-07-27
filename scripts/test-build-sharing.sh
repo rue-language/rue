@@ -312,12 +312,18 @@ EOF
         "$(grep -Fxq 'test //... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute --exclude rue_test_tier_stress' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: premerge CLI corpus receives the derived executor timeout" \
-        "$(grep -Fxq 'test //:cli-tests -- --timeout 3600' "$sb/calls" && echo 0 || echo 1)"
+    # RUE-1118: every converted corpus is now invoked bare. The corpus runs as a
+    # cacheable build action and the test executor only asserts its stamp, so an
+    # executor timeout here would bound a sub-second check while reading as if
+    # the corpus were still bounded; the real outer bound is each suite's
+    # timeout_seconds in BUCK. //:cli-tests-slow is not converted, so it keeps
+    # the RUE-1159 declarative timeout and is the only target that carries one.
     check "suite: slow CLI corpus receives the declarative executor timeout" \
         "$(grep -Fxq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: every other heavy target uses the default executor timeout" \
-        "$([ "$(grep -Ec '^test //:(spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs|frontend-diff-test)$' "$sb/calls")" -eq 5 ] && echo 0 || echo 1)"
+    check "suite: no converted corpus receives an executor timeout" \
+        "$([ "$(grep -Ec -- '^test //:(cli-tests|spec-tests|ui-tests|cli-tests-shard-[0-9]+) -- --timeout' "$sb/calls")" -eq 0 ] && echo 0 || echo 1)"
+    check "suite: every other heavy target is invoked bare, exactly once" \
+        "$([ "$(grep -Ec '^test //:(cli-tests|spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs|frontend-diff-test)$' "$sb/calls")" -eq 6 ] && echo 0 || echo 1)"
     # RUE-1117: the codegen differentials are heavy suites in their owning
     # crate package, so a local full run executes them one at a time too.
     check "suite: crate-package heavy suites are executed individually" \
