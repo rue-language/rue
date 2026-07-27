@@ -19,7 +19,12 @@
 //!   whose typed operations answer exactly the questions a body asks and whose
 //!   implementation records the corresponding query edge per call.
 //!
-//! Everything a body needs is one of those four or a configuration constant.
+//! Everything a body needs is one of those four or a configuration constant —
+//! [`ProviderBodyConfiguration`], which carries only the target and the preview
+//! feature set. The other two configuration-shaped answers are derived at
+//! construction from authorities the receiver already owns rather than supplied
+//! beside them: the well-known symbol table is interned from its own interner,
+//! and the three builtin enum identities are read out of its own type pool.
 //! [`HOST_CAPABILITY_LEDGER`] states which, for every method on the host
 //! contract, and [`host_capability_ledger_covers_the_contract`] pins that claim
 //! against the real trait source so it cannot go stale as the contract moves.
@@ -37,8 +42,9 @@ use std::hash::Hash;
 use std::rc::Rc;
 
 use lasso::{Spur, ThreadedRodeo};
-use rue_error::CompileError;
+use rue_error::{CompileError, PreviewFeatures};
 use rue_span::FileId;
+use rue_target::Target;
 
 use super::provider::BodyFactProvider;
 use super::semantic_body_export::SemanticBodyExportHost;
@@ -52,7 +58,7 @@ use super::anon_structs::{
 use super::{
     AnalyzedBodyOwnerEvent, AnonMethodSig, BodyAnalysisWork, ConstValue,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, DeferredOwnershipGate,
-    MethodInfo, StructId, Type,
+    KnownSymbols, MethodInfo, StructId, Type,
 };
 use crate::types::EnumId;
 
@@ -521,12 +527,44 @@ pub(crate) struct ProviderBodyHost<K, M, S, P> {
     local: ProviderBodyLocalState,
     state: ProviderBodyAnalysisState<K, M, S>,
     facts: P,
+    config: ProviderBodyConfiguration,
     /// Handles cloned once from `state`, so an engine-facing borrow is a field
     /// read rather than a refcount bump per call. Containment sealing rebases
     /// the pool's locked inner value in place, so a handle taken at
     /// construction stays current for the life of the body.
     type_pool: Rc<TypeInternPool>,
     interner: Rc<ThreadedRodeo>,
+    /// Derived once at construction from the two authorities above rather than
+    /// supplied: see [`ProviderBodyConfiguration`] for why neither is a query
+    /// key.
+    known: KnownSymbols,
+    builtin_arch_id: Option<EnumId>,
+    builtin_os_id: Option<EnumId>,
+    builtin_data_model_id: Option<EnumId>,
+}
+
+/// The configuration one body evaluation is keyed on.
+///
+/// The `Configuration` rows of [`HOST_CAPABILITY_LEDGER`] name three sources:
+/// the target, the preview feature set, and the well-known symbol table. Only
+/// the first two are genuine query keys. The other two configuration-shaped
+/// answers are derived from authorities the receiver already owns, which is the
+/// same rule the export rows follow:
+///
+/// - `known_symbols` is interned from the receiver's own interner, so it cannot
+///   name a symbol from another body's universe.
+/// - `builtin_arch_id` / `builtin_os_id` / `builtin_data_model_id` are read out
+///   of the receiver's own type pool, which pre-registers
+///   `rue_builtins::BUILTIN_ENUMS` at [`FileId::DEFAULT`] exactly as a fresh
+///   import epoch does. The epoch caches the same three ids while registering
+///   those enums; reading them back by keyed `(file, name)` lookup is the same
+///   fact without the declaration-wide registration pass.
+///
+/// Neither derived answer is sized by the declaration universe.
+#[derive(Debug, Clone)]
+pub(crate) struct ProviderBodyConfiguration {
+    pub(crate) target: Target,
+    pub(crate) preview_features: PreviewFeatures,
 }
 
 impl<K, M, S, P> ProviderBodyHost<K, M, S, P>
@@ -543,18 +581,98 @@ where
     /// beside it, so the RIR and the state cannot be built over two different
     /// interners. Every other construction path checks that invariant with an
     /// assertion; here it holds by construction.
-    pub(crate) fn new(rir: BodyRirBundle, source: S, facts: P) -> Self {
+    pub(crate) fn new(
+        rir: BodyRirBundle,
+        source: S,
+        facts: P,
+        config: ProviderBodyConfiguration,
+    ) -> Self {
         let state = rir.provider_body_state(source);
         let type_pool = state.type_pool();
         let interner = state.interner();
+        let known = KnownSymbols::new(&interner);
+        let builtin_enum = |name: &str| {
+            let symbol = interner.get(name)?;
+            match type_pool
+                .get_enum_by_file_name(FileId::DEFAULT, symbol)?
+                .kind()
+            {
+                crate::types::TypeKind::Enum(id) => Some(id),
+                _ => None,
+            }
+        };
+        let builtin_arch_id = builtin_enum("Arch");
+        let builtin_os_id = builtin_enum("Os");
+        let builtin_data_model_id = builtin_enum("DataModel");
         Self {
             rir,
             local: ProviderBodyLocalState::new(),
             state,
             facts,
+            config,
             type_pool,
             interner,
+            known,
+            builtin_arch_id,
+            builtin_os_id,
+            builtin_data_model_id,
         }
+    }
+}
+
+/// The configuration rows of [`HOST_CAPABILITY_LEDGER`], in the shapes
+/// `OrdinaryBodyAnalysisHost` declares them.
+///
+/// Landed as inherent methods for the same reason the export rows were: the
+/// ledger is a claim about the host contract, so stating that a row is answered
+/// means the receiver answers it in the contract's own shape. Binding the trait
+/// itself waits on the rows that still need the engine's other halves.
+impl<K, M, S, P> ProviderBodyHost<K, M, S, P> {
+    pub(crate) fn known_symbols(&self) -> &KnownSymbols {
+        &self.known
+    }
+
+    pub(crate) fn target(&self) -> Target {
+        self.config.target
+    }
+
+    pub(crate) fn builtin_arch_id(&self) -> Option<EnumId> {
+        self.builtin_arch_id
+    }
+
+    pub(crate) fn builtin_os_id(&self) -> Option<EnumId> {
+        self.builtin_os_id
+    }
+
+    pub(crate) fn builtin_data_model_id(&self) -> Option<EnumId> {
+        self.builtin_data_model_id
+    }
+
+    /// Byte-identical to the epoch's gate: same error kind, same help text.
+    /// A body that spells a preview-gated construct must fail the same way
+    /// whichever receiver analyzed it, so this is the epoch's wording rather
+    /// than a re-derivation of it.
+    pub(crate) fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        span: rue_span::Span,
+    ) -> rue_error::CompileResult<()> {
+        if self.config.preview_features.contains(&feature) {
+            return Ok(());
+        }
+        Err(rue_error::CompileError::new(
+            rue_error::ErrorKind::PreviewFeatureRequired {
+                feature,
+                what: what.to_string(),
+            },
+            span,
+        )
+        .with_help(format!(
+            "use `--preview {}` to enable this feature ({})",
+            feature.name(),
+            feature.adr()
+        )))
     }
 }
 
@@ -1749,6 +1867,10 @@ mod tests {
             BodyRirBundle::new(rir, lasso::ThreadedRodeo::new()),
             NoDurableNominals,
             RecordingFacts::default(),
+            ProviderBodyConfiguration {
+                target: Target::default(),
+                preview_features: PreviewFeatures::new(),
+            },
         )
     }
 
@@ -1775,6 +1897,77 @@ mod tests {
                 .is_none(),
             "a fresh receiver starts with an empty overlay"
         );
+    }
+
+    /// The three builtin enum identities are readable from the receiver's own
+    /// type pool.
+    ///
+    /// The epoch caches these while registering the builtin enums across the
+    /// declaration universe. The receiver never runs that pass: its pool
+    /// pre-registers `rue_builtins::BUILTIN_ENUMS` at `FileId::DEFAULT`, so the
+    /// same three ids come back from a keyed `(file, name)` lookup. If that
+    /// lookup ever stopped answering, the rows would silently become `None` and
+    /// `@arch` / `@os` / `@dataModel` would resolve differently on the two
+    /// receivers — so the test asserts they are present, not merely equal to
+    /// each other.
+    #[test]
+    fn builtin_enum_identities_come_from_the_receivers_own_pool() {
+        let host = test_host();
+        for (name, id) in [
+            ("Arch", host.builtin_arch_id()),
+            ("Os", host.builtin_os_id()),
+            ("DataModel", host.builtin_data_model_id()),
+        ] {
+            let id = id.unwrap_or_else(|| {
+                panic!("`{name}` is pre-registered in the receiver's pool, so its id must resolve")
+            });
+            assert_eq!(
+                host.type_pool().enum_def(id).name,
+                name,
+                "the keyed lookup for `{name}` must not answer with another enum's identity"
+            );
+        }
+        assert_ne!(
+            host.builtin_arch_id(),
+            host.builtin_os_id(),
+            "distinct builtin enums must not collapse to one identity"
+        );
+    }
+
+    /// The preview gate is the epoch's, not a re-derivation of it.
+    #[test]
+    fn require_preview_refuses_a_disabled_feature_and_admits_an_enabled_one() {
+        let host = test_host();
+        let feature = rue_error::PreviewFeature::Slices;
+        let error = host
+            .require_preview(feature, "the slice type `[T]`", rue_span::Span::default())
+            .expect_err("a receiver with no preview features must refuse the gate");
+        assert!(matches!(
+            error.kind,
+            rue_error::ErrorKind::PreviewFeatureRequired { .. }
+        ));
+
+        let mut preview_features = PreviewFeatures::new();
+        preview_features.insert(feature);
+        let editor = rue_rir::RirEditor::new();
+        let validation = rue_rir::RirValidationContext {
+            symbol_count: 0,
+            source_lengths: &[],
+        };
+        let rir = rue_rir::ValidatedRir::finish(editor, &validation)
+            .expect("an empty body RIR validates");
+        let enabled: TestHost = ProviderBodyHost::new(
+            BodyRirBundle::new(rir, lasso::ThreadedRodeo::new()),
+            NoDurableNominals,
+            RecordingFacts::default(),
+            ProviderBodyConfiguration {
+                target: Target::default(),
+                preview_features,
+            },
+        );
+        enabled
+            .require_preview(feature, "the slice type `[T]`", rue_span::Span::default())
+            .expect("an enabled feature passes the gate");
     }
 
     /// The receiver's RIR and its identity state are one authority.
