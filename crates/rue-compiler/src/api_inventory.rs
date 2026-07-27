@@ -9,21 +9,15 @@
 const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("artifact_views", include_str!("artifact_views.rs")),
     ("backend", include_str!("backend.rs")),
-    ("body_overlay", include_str!("body_overlay.rs")),
     ("body_query", include_str!("body_query.rs")),
     ("bound_definitions", include_str!("bound_definitions.rs")),
     ("canonical_lower", include_str!("canonical_lower.rs")),
     ("canonical_merge", include_str!("canonical_merge.rs")),
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
     (
-        "declaration_base_meter",
-        include_str!("declaration_base_meter.rs"),
-    ),
-    (
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),
     ),
-    ("declaration_recipe", include_str!("declaration_recipe.rs")),
     (
         "definition_snapshot",
         include_str!("definition_snapshot.rs"),
@@ -47,7 +41,6 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("queries", include_str!("queries.rs")),
     ("query_graph", include_str!("query_graph.rs")),
-    ("recipe_cache", include_str!("recipe_cache.rs")),
     (
         "revisioned_query_database",
         include_str!("revisioned_query_database.rs"),
@@ -129,8 +122,8 @@ fn body_transaction_has_no_complete_declaration_candidate_map() {
     let runtime = include_str!("revisioned_query_database.rs");
     let method = source_between_exact_boundaries(
         runtime,
-        "    pub(crate) fn body_transaction(",
-        "\n    pub(crate) fn canonical_body_projection(",
+        "struct BodyTransactionEvaluator {",
+        "\nimpl RevisionedQueryDatabase {",
     );
     assert!(
         !method.contains("declaration_candidates"),
@@ -174,8 +167,8 @@ fn well_known_option_resolution_stays_per_body_exact_and_fail_closed() {
     let runtime = include_str!("revisioned_query_database.rs");
     let method = source_between_exact_boundaries(
         runtime,
-        "    pub(crate) fn body_transaction(",
-        "\n    pub(crate) fn canonical_body_projection(",
+        "struct BodyTransactionEvaluator {",
+        "\nimpl RevisionedQueryDatabase {",
     );
     for required in [
         "&self.body_toolchain_demands",
@@ -1217,7 +1210,7 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
         );
     }
 
-    let transaction = item(body, "enum BodyTransaction");
+    let transaction = item(body, "enum BodyTransaction {");
     assert!(transaction.contains("Success"));
     assert!(transaction.contains("DeterministicFailure"));
     assert!(!transaction.contains("Canceled"));
@@ -1236,14 +1229,15 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
     }
     let semantic_entry = item(include_str!("session.rs"), "struct SemanticCacheEntry");
     assert!(!semantic_entry.contains("successful_body_cache"));
-    let body_adapter = item(
-        include_str!("canonical_semantic.rs"),
-        "pub(crate) fn analyze_body_query",
+    let body_transaction = source_between_exact_boundaries(
+        runtime,
+        "struct BodyTransactionEvaluator {",
+        "\nimpl RevisionedQueryDatabase {",
     );
-    assert!(!body_adapter.contains(".resolve_declarations_for_test()"));
-    assert!(body_adapter.contains("shared_base.get_or_derive"));
-    assert!(body_adapter.contains("analyze_body_in_epoch"));
-    assert!(!body_adapter.contains("install_declaration_semantics_with_anonymous"));
+    assert!(body_transaction.contains("analyze_provider_ordinary_body"));
+    assert!(!body_transaction.contains("analyze_body_query"));
+    assert!(!body_transaction.contains("SharedDeclarationBase"));
+    assert!(!body_transaction.contains("BoundBodyEpoch"));
 }
 
 #[test]
@@ -1548,14 +1542,11 @@ fn unstable_views_do_not_alias_query_engine_records() {
     assert_eq!(
         reexports,
         [
-            "pubusecrate::declaration_base_meter::DeclarationBaseMetrics;",
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
-            "pubusecrate::recipe_cache::RecipeCacheMetrics;",
             "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
         ],
-        "unstable may reexport only reviewed presentation, source-assembly, Phase-2 demand, \
-         recipe-cache metering, and declaration-base metering (RUE-1135) helpers"
+        "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
     );
 
     let facade = include_str!("lib.rs");
@@ -1875,7 +1866,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
                 | "semantic_query_nucleus"
         ) {
             assert!(
-                !source.contains("RawDeclarationSignature"),
+                !code_identifiers(source).contains(&"RawDeclarationSignature"),
                 "compiler production module {name} escaped the raw-signature authority allowlist"
             );
         }
@@ -1888,7 +1879,7 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
                 | "semantic_query_nucleus"
         ) {
             assert!(
-                !source.contains("RawDeclarationBody"),
+                !code_identifiers(source).contains(&"RawDeclarationBody"),
                 "compiler production module {name} escaped the raw-body authority allowlist"
             );
         }

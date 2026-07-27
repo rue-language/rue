@@ -913,10 +913,15 @@ mod tests {
         assert_eq!(work.lowered.source_text_clones, 0);
         assert_eq!(work.semantic.binding.bind_invocations, 1);
         assert_eq!(work.semantic.manifest.build_invocations, 1);
-        assert_eq!(work.semantic.declaration_reuse.semantic_epochs_started, 1);
+        assert_eq!(
+            work.semantic.declaration_reuse.declaration_prefixes_built,
+            1
+        );
         assert_eq!(work.semantic.declaration_reuse.declaration_indexes_built, 1);
         assert_eq!(
-            work.semantic.declaration_reuse.shell_predeclaration_epochs,
+            work.semantic
+                .declaration_reuse
+                .declaration_prefix_population_runs,
             1
         );
         assert_eq!(work.semantic.cfg.cfg_builds_attempted, 2);

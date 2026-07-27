@@ -39,11 +39,12 @@
 //!
 //! - **durable (2b):** parameters (name/type/mode/comptime), return type,
 //!   `is_generic` (derived: any comptime param), `is_pub`, `is_unchecked`,
-//!   `has_self`, and a method's `struct_type` (the 2a-resolved receiver);
+//!   `has_self`, `self_mode`, and a method's `struct_type` (the 2a-resolved
+//!   receiver);
 //! - **request/RIR (handle):** `body`/`declaration` (RIR `InstRef`s), `span`,
 //!   `return_type_sym` (pre-resolution RIR symbol), `is_extern`, `is_c_export`
 //!   (an epoch RIR read, not a durable-shell fact), the three `@allow` flags
-//!   (RIR directives), `file_id`, and a method's `self_mode`/`self_is_mut`.
+//!   (RIR directives), `file_id`, and a method's `self_is_mut`.
 //!
 //! Deliberately still out of the pool:
 //!
@@ -89,8 +90,9 @@ use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider_module_registry::ProviderModuleRegistry;
 use crate::types::{EnumDef, EnumId, LangItem, StructDef, StructField, StructId, Type};
 use crate::{
-    AnonymousNominalKey, ParamArena, ParamRange, SemanticImportConstValue,
-    SemanticImportNominalKind, SemanticImportType, SemanticParameterMode, TypeInternPool,
+    AnonymousNominalKey, FunctionInstanceKey, ParamArena, ParamRange, SemanticImportConstValue,
+    SemanticImportNominalKind, SemanticImportType, SemanticParameterMode, StableProducerId,
+    TypeInternPool,
 };
 
 /// The durable body of a named nominal: its field / variant vocabulary plus the
@@ -140,18 +142,18 @@ pub struct DurableNominal<K, M> {
 }
 
 /// The durable nominal vocabulary the pool consults to mint a named nominal.
-/// Implemented by the r4b provider side (over r2's stable-keyed metadata) and by
-/// the 2a unit tests.
-///
-/// RUE-1091 flip-era surface: `pub` so the rue-compiler-side provider adapter
-/// (the `#[cfg(test)]` differential today, production at the flip) can supply
-/// durable metadata to the body-scoped identity pool the provider-driven
-/// analyzer mints from. The trait body carries no logic; every consult is the
-/// implementation's own point query.
+/// Rue-compiler implements this boundary from stable-keyed semantic metadata.
+/// The trait carries no resolution logic; each consult is an exact point query.
 pub trait DurableNominalSource<K, M> {
     /// The durable metadata for a nominal key, or `None` if the key names no
     /// nominal in the durable universe.
     fn nominal(&self, key: &K) -> Option<DurableNominal<K, M>>;
+
+    /// Request-local file identity for the named declaration, when the caller
+    /// is analyzing against a concrete source snapshot.
+    fn nominal_file_id(&self, _key: &K) -> Option<FileId> {
+        None
+    }
 }
 
 /// The durable body of an anonymous nominal: its field / variant vocabulary. The
@@ -182,6 +184,25 @@ pub enum DurableAnonymousShape<K, M> {
         /// Variants in declaration order: source name and durable payload types.
         variants: Vec<(Arc<str>, Vec<SemanticImportType<K, M>>)>,
     },
+}
+
+/// Provider-owned signature metadata for a member of an anonymous struct.
+///
+/// The executable body remains owned by the producer's exact body projection;
+/// this value is only the callable overlay needed while analyzing a consumer.
+#[derive(Debug, Clone)]
+pub struct DurableAnonymousMethod<K, M> {
+    pub name: Arc<str>,
+    pub has_self: bool,
+    pub self_mode: RirParamMode,
+    pub parameters: Vec<(DurableAnonymousMethodType<K, M>, RirParamMode, bool)>,
+    pub result: DurableAnonymousMethodType<K, M>,
+}
+
+#[derive(Debug, Clone)]
+pub enum DurableAnonymousMethodType<K, M> {
+    SelfType,
+    Concrete(SemanticImportType<K, M>),
 }
 
 /// The durable anonymous vocabulary the pool consults to mint an anonymous
@@ -220,8 +241,36 @@ pub trait DurableAnonymousSource<K, M> {
     /// canonical-producer form of the key (see the trait docs).
     fn anonymous_shape(
         &self,
-        key: &AnonymousNominalKey<K, M>,
+        _key: &AnonymousNominalKey<K, M>,
     ) -> Option<DurableAnonymousShape<K, M>>;
+
+    /// Callable signatures declared by an anonymous struct. Implementations
+    /// that only provide shape identity may leave this empty.
+    fn anonymous_methods(
+        &self,
+        _key: &AnonymousNominalKey<K, M>,
+    ) -> Vec<DurableAnonymousMethod<K, M>> {
+        Vec::new()
+    }
+
+    /// Type-valued lexical captures carried by an anonymous producer. Member
+    /// bodies use these exact facts to restore the producer's generic
+    /// environment without consulting an analyzer-owned epoch.
+    fn anonymous_type_captures(
+        &self,
+        _key: &AnonymousNominalKey<K, M>,
+    ) -> Vec<(Arc<str>, SemanticImportType<K, M>)> {
+        Vec::new()
+    }
+
+    /// Non-type comptime lexical captures carried by an anonymous producer.
+    /// Implementations that only provide shape identity may leave this empty.
+    fn anonymous_value_captures(
+        &self,
+        _key: &AnonymousNominalKey<K, M>,
+    ) -> Vec<(Arc<str>, SemanticImportConstValue<K, M>)> {
+        Vec::new()
+    }
 
     /// Relocate a durable definition key to the exact stable-symbol content the
     /// epoch's `stable_definition_symbol_component` emits for its installed
@@ -299,6 +348,9 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// re-error rather than exposing the incomplete shell (see `mint_named`).
     poisoned: HashMap<K, IdentityMintError>,
     anon_nominals: HashMap<AnonymousNominalKey<K, M>, Type>,
+    /// Anonymous keys whose mint failed after their recursive shell was
+    /// published internally. The incomplete shell remains unreachable.
+    anonymous_poisoned: HashMap<AnonymousNominalKey<K, M>, IdentityMintError>,
     /// Fail-closed anonymous-digest ownership registry, the pool analog of the
     /// epoch's `anonymous_digest_owners` (RUE-1089, Theme 4b). Records the exact
     /// producer key that owns each presentation digest so a SECOND distinct key
@@ -326,19 +378,19 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// Maps an expected payload [`Type`] to the trusted standard-library
     /// `Option` enum minted for that payload, populated narrowly by
     /// [`Self::install_well_known_option_types`] before body analysis — never
-    /// from the body's own composition/import universe. The flip-era consumer
+    /// from the body's own composition/import universe. The provider consumer
     /// is fallible-intrinsic resolution (`resolve_option_result_type`).
     well_known_option_by_payload: HashMap<Type, Type>,
     /// Anonymous enum identities (canonical producer form) minted by the
     /// well-known `Option` registry install for this body — the pool analog of
     /// `Sema::well_known_option_identities`, which is THE export-as-produced
-    /// ruling: the export funnel (`one_body.rs` /
+    /// ruling: the export funnel (`provider_body_host.rs` /
     /// `produced_anonymous_nominals`) subtracts these identities from the
     /// initial anonymous baseline so the installing body EXPORTS them as
     /// produced anonymous nominals — exactly as a body materializing
     /// `Option(payload)` through the ordinary annotation/comptime path would —
     /// never leaking them as pre-existing imports with no producer. The
-    /// flip-era baseline computation consults
+    /// provider baseline computation consults
     /// [`Self::is_well_known_option_identity`] to apply the same subtraction.
     /// A `BTreeSet`, matching the epoch set's deterministic order.
     well_known_option_identities: std::collections::BTreeSet<AnonymousNominalKey<K, M>>,
@@ -356,7 +408,7 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     /// [`Self::well_known_option_for_payload`]) answers as if nothing was
     /// installed — no observable partial success either way.
     well_known_poisoned: Option<IdentityMintError>,
-    // ---- RUE-1091 flip-prep: const identity family -------------------------
+    // ---- Const identity family ---------------------------------------------
     /// Minted declaration-level const payloads, deduplicated by durable key.
     /// The request-local declaration span is supplied separately by the RIR
     /// handle and therefore is not cached here.
@@ -714,7 +766,7 @@ where
 /// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
 /// cached by callable key. Every field here is recoverable from the durable
 /// signature facts alone; the request/RIR-carried remainder (`body`,
-/// `declaration`, `span`, `return_type_sym`, `is_extern`, `is_c_export`, the
+/// `declaration`, `span`, `return_type_sym`, `is_c_export`, the
 /// `@allow` flags, `file_id`) is supplied by a [`FunctionIdentityHandle`] — the
 /// 2c / request-local seam.
 #[derive(Clone, Copy)]
@@ -724,18 +776,48 @@ struct CallableSignature {
     is_generic: bool,
     is_pub: bool,
     is_unchecked: bool,
+    is_extern: bool,
 }
 
 /// The durable-signature-derived subset of a [`MethodInfo`], minted once and
-/// cached by callable key. `struct_type`, `has_self`, `params`, and
-/// `return_type` are durable; `self_mode`, `self_is_mut`, `body`, and `span`
-/// are request/RIR-carried and arrive on a [`MethodIdentityHandle`].
+/// cached by callable key. `struct_type`, `has_self`, `self_mode`, `params`,
+/// and `return_type` are durable; `self_is_mut`, `body`, and `span` are
+/// request/RIR-carried and arrive on a [`MethodIdentityHandle`].
 #[derive(Clone, Copy)]
 struct MethodSignature {
     receiver: Type,
     has_self: bool,
+    self_mode: RirParamMode,
     params: ParamRange,
     return_type: Type,
+}
+
+fn anonymous_nominal_keys_canonically_equal<K: Eq, M: Eq>(
+    left: &AnonymousNominalKey<K, M>,
+    right: &AnonymousNominalKey<K, M>,
+) -> bool {
+    fn collapsed<K, M>(mut function: &FunctionInstanceKey<K, M>) -> &FunctionInstanceKey<K, M> {
+        while let FunctionInstanceKey::Specialization { base, arguments } = function
+            && arguments.types.is_empty()
+            && arguments.values.is_empty()
+        {
+            function = base;
+        }
+        function
+    }
+
+    left.kind == right.kind
+        && left.anchor == right.anchor
+        && left.arguments == right.arguments
+        && match (&left.producer, &right.producer) {
+            (StableProducerId::Definition(left), StableProducerId::Definition(right)) => {
+                left == right
+            }
+            (StableProducerId::Function(left), StableProducerId::Function(right)) => {
+                collapsed(left) == collapsed(right)
+            }
+            _ => false,
+        }
 }
 
 impl<K, M, S> BodyIdentityPool<K, M, S>
@@ -808,6 +890,7 @@ where
             enum_ids: HashMap::new(),
             poisoned: HashMap::new(),
             anon_nominals: HashMap::new(),
+            anonymous_poisoned: HashMap::new(),
             anonymous_digest_owners: HashMap::new(),
             builtins,
             module_files: HashMap::new(),
@@ -961,15 +1044,26 @@ where
             S::Never => Type::NEVER,
             S::ComptimeType => Type::COMPTIME_TYPE,
             S::BuiltinNominal { name, kind } => {
-                match self.builtins.get(&(name.clone(), *kind)).copied() {
-                    Some(PoolNominal::Struct(id)) => Type::new_struct(id),
-                    Some(PoolNominal::Enum(id)) => Type::new_enum(id),
-                    None => {
-                        return Err(if self.builtins.keys().any(|(known, _)| known == name) {
-                            IdentityMintError::BuiltinNominalKindMismatch
-                        } else {
-                            IdentityMintError::UnknownBuiltinNominal
-                        });
+                if let Some(capacity) = name
+                    .strip_prefix("Str(")
+                    .and_then(|name| name.strip_suffix(')'))
+                    .and_then(|capacity| capacity.parse::<u64>().ok())
+                {
+                    if *kind != SemanticImportNominalKind::Struct {
+                        return Err(IdentityMintError::BuiltinNominalKindMismatch);
+                    }
+                    self.get_or_create_str_fixed(capacity)
+                } else {
+                    match self.builtins.get(&(name.clone(), *kind)).copied() {
+                        Some(PoolNominal::Struct(id)) => Type::new_struct(id),
+                        Some(PoolNominal::Enum(id)) => Type::new_enum(id),
+                        None => {
+                            return Err(if self.builtins.keys().any(|(known, _)| known == name) {
+                                IdentityMintError::BuiltinNominalKindMismatch
+                            } else {
+                                IdentityMintError::UnknownBuiltinNominal
+                            });
+                        }
                     }
                 }
             }
@@ -978,6 +1072,11 @@ where
                 .anon_nominals
                 .get(key)
                 .copied()
+                .or_else(|| {
+                    self.anon_nominals.iter().find_map(|(candidate, ty)| {
+                        anonymous_nominal_keys_canonically_equal(candidate, key).then_some(*ty)
+                    })
+                })
                 .ok_or(IdentityMintError::MissingAnonymous)?,
             S::Array { element, len } => {
                 let element = self.resolve(element)?;
@@ -1033,6 +1132,194 @@ where
                 return Err(IdentityMintError::Deferred("generic parameter"));
             }
         })
+    }
+
+    /// Resolve a durable type returned by an exact provider query, minting any
+    /// anonymous nominals in the type before the ordinary recursive resolver
+    /// consumes them.
+    pub(in crate::sema) fn resolve_provider_type(
+        &mut self,
+        value: &SemanticImportType<K, M>,
+    ) -> Result<Type, IdentityMintError>
+    where
+        M: Clone,
+        S: DurableAnonymousSource<K, M>,
+    {
+        match value {
+            SemanticImportType::AnonymousNominal(key) => self.find_or_create_anon(key),
+            SemanticImportType::Nominal(key) => self.mint_named_provider(key),
+            SemanticImportType::Array { element, len } => {
+                let element = self.resolve_provider_type(element)?;
+                self.type_pool
+                    .try_intern_array(element, *len)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::PtrConst(pointee) => {
+                let pointee = self.resolve_provider_type(pointee)?;
+                self.type_pool
+                    .try_intern_ptr_const(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::PtrMut(pointee) => {
+                let pointee = self.resolve_provider_type(pointee)?;
+                self.type_pool
+                    .try_intern_ptr_mut(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            _ => self.resolve(value),
+        }
+    }
+
+    fn mint_named_provider(&mut self, key: &K) -> Result<Type, IdentityMintError>
+    where
+        M: Clone,
+        S: DurableAnonymousSource<K, M>,
+    {
+        if let Some(err) = self.poisoned.get(key) {
+            return Err(err.clone());
+        }
+        if let Some(&id) = self.struct_ids.get(key) {
+            return Ok(Type::new_struct(id));
+        }
+        if let Some(&id) = self.enum_ids.get(key) {
+            return Ok(Type::new_enum(id));
+        }
+        let DurableNominal {
+            name,
+            module_path,
+            is_public,
+            is_builtin,
+            lang_item,
+            is_repr_c,
+            has_destructor,
+            body,
+        } = self
+            .source
+            .nominal(key)
+            .ok_or(IdentityMintError::MissingNominal)?;
+        let file_id = if let Some(file_id) = self.source.nominal_file_id(key) {
+            if self
+                .module_files
+                .iter()
+                .any(|(path, file)| *file == file_id && path != &module_path)
+            {
+                return Err(IdentityMintError::InvalidStructuralType);
+            }
+            self.module_files.insert(module_path.clone(), file_id);
+            self.type_pool.set_symbol_paths(
+                self.module_files
+                    .iter()
+                    .map(|(path, id)| (*id, path.to_string()))
+                    .collect(),
+            );
+            file_id
+        } else {
+            self.file_for_module(&module_path)
+        };
+        let symbol = self.interner.get_or_intern(name.as_ref());
+        let name = name.to_string();
+        match body {
+            DurableNominalBody::Struct {
+                fields,
+                is_copy,
+                is_linear,
+            } => {
+                let (id, _) = self.type_pool.declare_struct(
+                    symbol,
+                    StructDef {
+                        name: name.clone(),
+                        fields: Vec::new(),
+                        is_copy: is_copy && !has_destructor,
+                        is_linear,
+                        destructor: None,
+                        is_builtin,
+                        is_pub: is_public,
+                        file_id,
+                    },
+                );
+                self.struct_ids.insert(key.clone(), id);
+                if let Some(lang_item) = lang_item {
+                    self.type_pool.set_struct_lang_item(id, lang_item);
+                }
+                if is_repr_c {
+                    self.type_pool.set_struct_repr_c(id);
+                }
+                let mut resolved = Vec::with_capacity(fields.len());
+                for (field_name, field_ty) in &fields {
+                    let ty = match self.resolve_provider_type(field_ty) {
+                        Ok(ty) => ty,
+                        Err(err) => {
+                            self.poisoned.insert(key.clone(), err.clone());
+                            return Err(err);
+                        }
+                    };
+                    resolved.push(StructField {
+                        name: field_name.to_string(),
+                        ty,
+                    });
+                }
+                self.type_pool.complete_declared_struct(
+                    id,
+                    StructDef {
+                        name,
+                        fields: resolved,
+                        is_copy: is_copy && !has_destructor,
+                        is_linear,
+                        destructor: None,
+                        is_builtin,
+                        is_pub: is_public,
+                        file_id,
+                    },
+                );
+                if has_destructor {
+                    let destructor = format!("{}.__drop", self.type_pool.struct_symbol_name(id));
+                    self.type_pool.set_struct_destructor(id, destructor);
+                }
+                Ok(Type::new_struct(id))
+            }
+            DurableNominalBody::Enum { variants } => {
+                let variant_names = variants
+                    .iter()
+                    .map(|(name, _)| name.to_string())
+                    .collect::<Vec<_>>();
+                let (id, _) = self.type_pool.declare_enum(
+                    symbol,
+                    EnumDef {
+                        name: name.clone(),
+                        variants: variant_names.clone(),
+                        variant_payloads: Vec::new(),
+                        is_pub: is_public,
+                        file_id,
+                    },
+                );
+                self.enum_ids.insert(key.clone(), id);
+                let mut variant_payloads = Vec::with_capacity(variants.len());
+                for (_, payload) in &variants {
+                    let mut resolved = Vec::with_capacity(payload.len());
+                    for ty in payload {
+                        match self.resolve_provider_type(ty) {
+                            Ok(ty) => resolved.push(ty),
+                            Err(err) => {
+                                self.poisoned.insert(key.clone(), err.clone());
+                                return Err(err);
+                            }
+                        }
+                    }
+                    variant_payloads.push(resolved);
+                }
+                self.type_pool.complete_declared_enum(
+                    id,
+                    EnumDef {
+                        name,
+                        variants: variant_names,
+                        variant_payloads,
+                        is_pub: is_public,
+                        file_id,
+                    },
+                );
+                Ok(Type::new_enum(id))
+            }
+        }
     }
 
     /// Mint or dedup a named nominal.
@@ -1235,7 +1522,7 @@ where
     /// body-export carries that collapsed form (the warm==cold digest
     /// invariant). The pool enforces the same invariant HERE, by collapsing the
     /// incoming key ([`AnonymousNominalKey::with_canonical_producer`]) before
-    /// dedup, digest, and shape consult — so a flip-era caller handing the
+    /// dedup, digest, and shape consult — so a provider caller handing the
     /// non-collapsed form (e.g. the declaration-signature projection's
     /// `Specialization { base, args: [] }` wrapper) dedups onto, and spells the
     /// same digest as, the collapsed form rather than silently minting a
@@ -1248,6 +1535,9 @@ where
         // consult, registration) sees the canonical producer form.
         let key = key.with_canonical_producer();
         let key = key.as_ref();
+        if let Some(error) = self.anonymous_poisoned.get(key) {
+            return Err(error.clone());
+        }
         // Producer-nominal dedup: a key already minted resolves by lookup, so a
         // repeat consult re-mints nothing (the epoch's `anon_*_identities.get`).
         if let Some(&ty) = self.anon_nominals.get(key) {
@@ -1267,15 +1557,24 @@ where
         let digest = self.anonymous_identity_digest(key);
         self.guard_anonymous_digest_collision(digest, key)?;
 
-        let ty = match shape {
+        let minted = match shape {
             DurableAnonymousShape::Struct {
                 fields,
                 struct_method_names,
-            } => self.mint_anon_struct(digest, &fields, &struct_method_names)?,
-            DurableAnonymousShape::Enum { variants } => self.mint_anon_enum(digest, &variants)?,
+            } => self.mint_anon_struct(key, digest, &fields, &struct_method_names),
+            DurableAnonymousShape::Enum { variants } => self.mint_anon_enum(key, digest, &variants),
         };
-        self.anon_nominals.insert(key.clone(), ty);
-        Ok(ty)
+        match minted {
+            Ok(ty) => {
+                self.anon_nominals.insert(key.clone(), ty);
+                Ok(ty)
+            }
+            Err(error) => {
+                self.anon_nominals.remove(key);
+                self.anonymous_poisoned.insert(key.clone(), error.clone());
+                Err(error)
+            }
+        }
     }
 
     /// Install the per-body well-known `Option(payload)` registry (RUE-1112)
@@ -1299,13 +1598,13 @@ where
     /// Every installed identity is recorded (canonical producer form) in the
     /// pool's well-known identity set. That set is the pool-side carrier of the
     /// epoch's `well_known_option_identities` ruling: the export funnel
-    /// (`semantic_body_export.rs` via `one_body.rs`'s baseline subtraction)
+    /// (`semantic_body_export.rs` via `provider_body_host.rs`'s baseline subtraction)
     /// treats these identities as PRODUCED anonymous nominals of the analyzed
     /// body — the body that binds a fallible intrinsic's `Option` is the body
     /// that produces it — never as pre-existing imports with no producer. The
-    /// flip-era baseline computation consults
+    /// provider baseline computation consults
     /// [`Self::is_well_known_option_identity`] to apply the same subtraction
-    /// the epoch applies at `one_body_initial_anonymous_identities` capture.
+    /// the epoch applies at `body_analysis_initial_anonymous_identities` capture.
     ///
     /// # Failure semantics
     ///
@@ -1488,6 +1787,31 @@ where
         self.well_known_option_by_payload.get(&payload).copied()
     }
 
+    pub(in crate::sema) fn durable_anonymous_identity(
+        &self,
+        ty: Type,
+    ) -> Option<AnonymousNominalKey<K, M>> {
+        self.anon_nominals
+            .iter()
+            .find_map(|(identity, minted)| (*minted == ty).then(|| identity.clone()))
+    }
+
+    pub(in crate::sema) fn durable_named_identity(&self, ty: Type) -> Option<K> {
+        if let Some(id) = ty.as_struct() {
+            return self
+                .struct_ids
+                .iter()
+                .find_map(|(identity, minted)| (*minted == id).then(|| identity.clone()));
+        }
+        if let Some(id) = ty.as_enum() {
+            return self
+                .enum_ids
+                .iter()
+                .find_map(|(identity, minted)| (*minted == id).then(|| identity.clone()));
+        }
+        None
+    }
+
     /// The stable presentation digest of an anonymous producer identity: relocate
     /// every embedded definition / module key to its request-independent stable
     /// content through the [`DurableAnonymousSource`] adapter, then hash through
@@ -1531,6 +1855,7 @@ where
     /// mirrored.
     fn mint_anon_struct(
         &mut self,
+        key: &AnonymousNominalKey<K, M>,
         digest: u128,
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         method_names: &[Arc<str>],
@@ -1558,10 +1883,12 @@ where
                 file_id: FileId::DEFAULT,
             },
         );
+        let ty = Type::new_struct(id);
+        self.anon_nominals.insert(key.clone(), ty);
 
         let mut resolved = Vec::with_capacity(fields.len());
         for (field_name, field_ty) in fields {
-            let ty = self.resolve(field_ty)?;
+            let ty = self.resolve_anonymous_shape_type(field_ty)?;
             resolved.push(StructField {
                 name: field_name.to_string(),
                 ty,
@@ -1584,7 +1911,7 @@ where
                 file_id: FileId::DEFAULT,
             },
         );
-        Ok(Type::new_struct(id))
+        Ok(ty)
     }
 
     /// Mint the producer-nominal anonymous enum. Byte-mirror of the epoch's
@@ -1593,6 +1920,7 @@ where
     /// spells them with, and the name never decides identity.
     fn mint_anon_enum(
         &mut self,
+        _key: &AnonymousNominalKey<K, M>,
         digest: u128,
         variants: &[(Arc<str>, Vec<SemanticImportType<K, M>>)],
     ) -> Result<Type, IdentityMintError> {
@@ -1602,7 +1930,7 @@ where
         for (_, payload) in variants {
             let mut resolved = Vec::with_capacity(payload.len());
             for ty in payload {
-                resolved.push(self.resolve(ty)?);
+                resolved.push(self.resolve_anonymous_shape_type(ty)?);
             }
             variant_payloads.push(resolved);
         }
@@ -1640,6 +1968,125 @@ where
         );
         Ok(Type::new_enum(id))
     }
+
+    fn resolve_anonymous_shape_type(
+        &mut self,
+        value: &SemanticImportType<K, M>,
+    ) -> Result<Type, IdentityMintError> {
+        match value {
+            SemanticImportType::AnonymousNominal(key) => self.find_or_create_anon(key),
+            SemanticImportType::Array { element, len } => {
+                let element = self.resolve_anonymous_shape_type(element)?;
+                self.type_pool
+                    .try_intern_array(element, *len)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::PtrConst(pointee) => {
+                let pointee = self.resolve_anonymous_shape_type(pointee)?;
+                self.type_pool
+                    .try_intern_ptr_const(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::PtrMut(pointee) => {
+                let pointee = self.resolve_anonymous_shape_type(pointee)?;
+                self.type_pool
+                    .try_intern_ptr_mut(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            _ => self.resolve_provider_type(value),
+        }
+    }
+}
+
+pub(in crate::sema) fn semantic_import_type_mentions_generic_parameter<K, M>(
+    value: &SemanticImportType<K, M>,
+) -> bool {
+    fn arguments<K, M>(value: &crate::CanonicalArguments<K, M>) -> bool {
+        value.types.iter().any(type_instance)
+            || value.values.iter().any(|value| match value {
+                crate::CanonicalArgumentValue::Type(value) => type_instance(value),
+                crate::CanonicalArgumentValue::Function(value) => function_instance(value),
+                crate::CanonicalArgumentValue::Integer(_)
+                | crate::CanonicalArgumentValue::Bool(_)
+                | crate::CanonicalArgumentValue::Unit
+                | crate::CanonicalArgumentValue::String(_) => false,
+            })
+    }
+
+    fn anonymous<K, M>(value: &crate::AnonymousNominalKey<K, M>) -> bool {
+        let producer = match &value.producer {
+            crate::StableProducerId::Definition(_) => false,
+            crate::StableProducerId::Function(value) => function_instance(value),
+        };
+        producer || arguments(&value.arguments)
+    }
+
+    fn function_instance<K, M>(value: &crate::FunctionInstanceKey<K, M>) -> bool {
+        match value {
+            crate::FunctionInstanceKey::Definition(_) => false,
+            crate::FunctionInstanceKey::Specialization {
+                base,
+                arguments: args,
+            } => function_instance(base) || arguments(args),
+            crate::FunctionInstanceKey::AnonymousMember { owner, .. }
+            | crate::FunctionInstanceKey::DropGlue(owner) => type_instance(owner),
+        }
+    }
+
+    fn type_instance<K, M>(value: &crate::TypeInstanceKey<K, M>) -> bool {
+        match value {
+            crate::TypeInstanceKey::GenericParameter(_) => true,
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(value)) => {
+                anonymous(value)
+            }
+            crate::TypeInstanceKey::Array { element, .. }
+            | crate::TypeInstanceKey::Slice { element, .. }
+            | crate::TypeInstanceKey::PtrConst(element)
+            | crate::TypeInstanceKey::PtrMut(element) => type_instance(element),
+            crate::TypeInstanceKey::I8
+            | crate::TypeInstanceKey::I16
+            | crate::TypeInstanceKey::I32
+            | crate::TypeInstanceKey::I64
+            | crate::TypeInstanceKey::U8
+            | crate::TypeInstanceKey::U16
+            | crate::TypeInstanceKey::U32
+            | crate::TypeInstanceKey::U64
+            | crate::TypeInstanceKey::Bool
+            | crate::TypeInstanceKey::Unit
+            | crate::TypeInstanceKey::Never
+            | crate::TypeInstanceKey::ComptimeType
+            | crate::TypeInstanceKey::BuiltinNominal { .. }
+            | crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Builtin { .. })
+            | crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(_))
+            | crate::TypeInstanceKey::Module(_) => false,
+        }
+    }
+
+    match value {
+        SemanticImportType::GenericParameter(_) => true,
+        SemanticImportType::AnonymousNominal(value) => anonymous(value),
+        SemanticImportType::Array { element, .. }
+        | SemanticImportType::PtrConst(element)
+        | SemanticImportType::PtrMut(element)
+        | SemanticImportType::Slice { element, .. } => {
+            semantic_import_type_mentions_generic_parameter(element)
+        }
+        SemanticImportType::I8
+        | SemanticImportType::I16
+        | SemanticImportType::I32
+        | SemanticImportType::I64
+        | SemanticImportType::U8
+        | SemanticImportType::U16
+        | SemanticImportType::U32
+        | SemanticImportType::U64
+        | SemanticImportType::Bool
+        | SemanticImportType::Unit
+        | SemanticImportType::Never
+        | SemanticImportType::ComptimeType
+        | SemanticImportType::BuiltinNominal { .. }
+        | SemanticImportType::Nominal(_)
+        | SemanticImportType::Module(_) => false,
+    }
 }
 
 /// One durable parameter of a callable signature: the r5a durable parameter
@@ -1666,6 +2113,7 @@ pub struct DurableFunction<K, M> {
     pub result: SemanticImportType<K, M>,
     pub is_public: bool,
     pub is_unchecked: bool,
+    pub is_extern: bool,
 }
 
 /// The durable signature of a method. The `receiver` is a durable type (the
@@ -1678,11 +2126,11 @@ pub struct DurableMethod<K, M> {
     pub parameters: Vec<DurableSignatureParameter<K, M>>,
     pub result: SemanticImportType<K, M>,
     pub has_self: bool,
+    pub self_mode: SemanticParameterMode,
 }
 
 /// The durable callable vocabulary the pool consults to mint callable
-/// identities. Implemented by the r4b provider side (over r2's stable-keyed
-/// metadata) and by the 2b unit tests. Keys are namespace-disjoint from nominal
+/// identities. Keys are namespace-disjoint from nominal
 /// keys in the durable universe (`StableDefinitionKey` encodes namespace+kind),
 /// so a key names at most one of a nominal, a function, or a method.
 pub trait DurableCallableSource<K, M> {
@@ -1692,6 +2140,23 @@ pub trait DurableCallableSource<K, M> {
     /// The durable signature for a method key, or `None` if the key names no
     /// method in the durable universe.
     fn method(&self, key: &K) -> Option<DurableMethod<K, M>>;
+
+    /// Exact parameter/result type syntax for this callable, when it is
+    /// retained as a separately observed query fact. Body specialization needs
+    /// this alongside the durable semantic placeholders.
+    fn callable_type_syntax(&self, _key: &K) -> Option<(Vec<Arc<str>>, Arc<str>)> {
+        None
+    }
+
+    /// Whether dependent callable types are being materialized for an
+    /// executable body-analysis host. Such a host retains the exact durable
+    /// syntax separately and uses `COMPTIME_TYPE` only as the local placeholder
+    /// that specialization resolves before execution. Identity-only consumers
+    /// keep the default refusal so a generic parameter can never be mistaken
+    /// for an independently materialized type.
+    fn uses_deferred_body_type_placeholders(&self) -> bool {
+        false
+    }
 }
 
 /// The request/RIR-carried facts a caller supplies to assemble a
@@ -1720,22 +2185,20 @@ pub(in crate::sema) struct FunctionIdentityHandle {
 }
 
 /// The request/RIR-carried facts a caller supplies to assemble a [`MethodInfo`].
-/// `self_mode` / `self_is_mut` are RIR `FnDecl` facts the durable `Callable`
-/// payload omits (it carries only `has_self`); `self_is_mut` is additionally
-/// body-local (call sites ignore it). `body` and `span` are request-carried.
+/// `self_is_mut` is body-local (call sites ignore it); `body` and `span` are
+/// request-carried. Receiver mode belongs to the durable signature.
 #[derive(Debug, Clone, Copy)]
 pub(in crate::sema) struct MethodIdentityHandle {
     pub body: InstRef,
     pub span: Span,
-    pub self_mode: RirParamMode,
     pub self_is_mut: bool,
 }
 
 impl<K, M, S> BodyIdentityPool<K, M, S>
 where
     K: Clone + Eq + Hash,
-    M: Eq + Hash,
-    S: DurableNominalSource<K, M> + DurableCallableSource<K, M>,
+    M: Clone + Eq + Hash,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M> + DurableCallableSource<K, M>,
 {
     /// Assemble a [`FunctionInfo`] for a durable function key, combining the
     /// minted signature-derived subset with the caller-provided request/RIR
@@ -1765,6 +2228,25 @@ where
         })
     }
 
+    pub(in crate::sema) fn resolve_function_call(
+        &mut self,
+        key: &K,
+        return_type_sym: Spur,
+        file_id: FileId,
+    ) -> Result<super::info::FunctionCallInfo, IdentityMintError> {
+        let signature = self.function_signature(key)?;
+        Ok(super::info::FunctionCallInfo {
+            params: signature.params,
+            return_type: signature.return_type,
+            return_type_sym,
+            is_generic: signature.is_generic,
+            is_pub: signature.is_pub,
+            is_unchecked: signature.is_unchecked,
+            is_extern: signature.is_extern,
+            file_id,
+        })
+    }
+
     /// Assemble a [`MethodInfo`] for a durable method key, combining the minted
     /// signature-derived subset with the caller-provided request/RIR facts.
     pub(in crate::sema) fn resolve_method(
@@ -1776,12 +2258,26 @@ where
         Ok(MethodInfo {
             struct_type: signature.receiver,
             has_self: signature.has_self,
-            self_mode: handle.self_mode,
+            self_mode: signature.self_mode,
             self_is_mut: handle.self_is_mut,
             params: signature.params,
             return_type: signature.return_type,
             body: handle.body,
             span: handle.span,
+        })
+    }
+
+    pub(in crate::sema) fn resolve_method_call(
+        &mut self,
+        key: &K,
+    ) -> Result<super::info::MethodCallInfo, IdentityMintError> {
+        let signature = self.method_signature(key)?;
+        Ok(super::info::MethodCallInfo {
+            struct_type: signature.receiver,
+            has_self: signature.has_self,
+            self_mode: signature.self_mode,
+            params: signature.params,
+            return_type: signature.return_type,
         })
     }
 
@@ -1799,6 +2295,7 @@ where
             result,
             is_public,
             is_unchecked,
+            is_extern,
         } = self
             .source
             .function(key)
@@ -1818,6 +2315,7 @@ where
             is_generic,
             is_pub: is_public,
             is_unchecked,
+            is_extern,
         };
         self.function_sigs.insert(key.clone(), signature);
         Ok(signature)
@@ -1837,6 +2335,7 @@ where
             parameters,
             result,
             has_self,
+            self_mode,
         } = self
             .source
             .method(key)
@@ -1849,6 +2348,11 @@ where
         let signature = MethodSignature {
             receiver,
             has_self,
+            self_mode: match self_mode {
+                SemanticParameterMode::Value => RirParamMode::Normal,
+                SemanticParameterMode::Borrow => RirParamMode::Borrow,
+                SemanticParameterMode::Inout => RirParamMode::Inout,
+            },
             params,
             return_type,
         };
@@ -1863,7 +2367,37 @@ where
         key: &K,
         value: &SemanticImportType<K, M>,
     ) -> Result<Type, IdentityMintError> {
-        self.resolve(value).inspect_err(|err| {
+        if self.source.uses_deferred_body_type_placeholders()
+            && semantic_import_type_mentions_generic_parameter(value)
+        {
+            return Ok(Type::COMPTIME_TYPE);
+        }
+        let resolved = match value {
+            SemanticImportType::Array { element, len } => {
+                let element = self.resolve_callable_type(key, element)?;
+                self.type_pool
+                    .try_intern_array(element, *len)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::PtrConst(pointee) => {
+                let pointee = self.resolve_callable_type(key, pointee)?;
+                self.type_pool
+                    .try_intern_ptr_const(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::PtrMut(pointee) => {
+                let pointee = self.resolve_callable_type(key, pointee)?;
+                self.type_pool
+                    .try_intern_ptr_mut(pointee)
+                    .map_err(|_| IdentityMintError::InvalidStructuralType)
+            }
+            SemanticImportType::AnonymousNominal(identity) => {
+                let canonical = identity.with_canonical_producer();
+                self.find_or_create_anon(canonical.as_ref())
+            }
+            _ => self.resolve_provider_type(value),
+        };
+        resolved.inspect_err(|err| {
             self.callable_poisoned.insert(key.clone(), (*err).clone());
         })
     }
@@ -1898,11 +2432,7 @@ where
     }
 }
 
-// ----- RUE-1091 flip-prep: const identity family ----------------------------
-//
-// Kept as one delimited section because r6c is expected to touch the anonymous /
-// well-known portion of this file. The only edits outside this section are the
-// pool's cache fields/initialization and the adjacent BodyRirIndex point map.
+// ----- Const identity family ------------------------------------------------
 
 /// Declaration-level durable facts for one value constant.
 ///
@@ -2037,12 +2567,10 @@ where
     }
 }
 
-/// The body-scoped RIR answer surface for the endpoint seam (slice r4a-2c): the
-/// provider-side equivalent of the three endpoint ops `one_body.rs` consumes
-/// through [`super::body_endpoint::EpochFacts`] — `first_free_function`,
+/// The body-scoped RIR answer surface for the three endpoint ops
+/// `provider_body_host.rs` consumes — `first_free_function`,
 /// `named_method_declaration`, and `destructor`. It additionally owns the
-/// pool-side flip-prep const declaration handle; there is no epoch const op or
-/// pre-flip analyzer consumer.
+/// pool-side const declaration handle.
 ///
 /// # The shared-`Rir` input, not durable state
 ///
@@ -2150,6 +2678,15 @@ impl BodyRirBundle {
         self.rir.len()
     }
 
+    pub fn source_file_id(&self) -> Option<FileId> {
+        let mut files = self
+            .rir
+            .iter()
+            .map(|(_, instruction)| instruction.span.file_id);
+        let file = files.next()?;
+        files.all(|candidate| candidate == file).then_some(file)
+    }
+
     pub fn anonymous_type_anchors(&self) -> Vec<rue_rir::RirStructuralAnchor> {
         self.rir
             .iter()
@@ -2172,7 +2709,7 @@ impl BodyRirBundle {
     }
 }
 
-/// A shared read view over one body-local RIR authority. Production callers
+/// A shared read view over body analysis-local RIR authority. Production callers
 /// obtain it from [`BodyRirBundle::view`]; compatibility/test callers may build
 /// the same view around an already validated RIR and its matching interner.
 #[derive(Debug, Clone)]
@@ -2737,6 +3274,38 @@ mod tests {
         )
     }
 
+    #[test]
+    fn provider_resolution_materializes_recursive_named_anonymous_graph() {
+        let anonymous = anon_key(AnonymousNominalKind::Struct, 9, 0);
+        let mut pool = anon_pool(
+            [(
+                0,
+                named(
+                    "Json",
+                    "std/json.rue",
+                    true,
+                    enum_body(vec![(
+                        "Array",
+                        vec![DType::AnonymousNominal(anonymous.clone())],
+                    )]),
+                ),
+            )],
+            [(
+                anonymous,
+                DurableAnonymousShape::Struct {
+                    fields: vec![(Arc::from("element"), DType::Nominal(0))],
+                    struct_method_names: Vec::new(),
+                },
+            )],
+            [],
+        );
+
+        let json = pool
+            .resolve_provider_type(&DType::Nominal(0))
+            .expect("provider facts close the recursive nominal graph");
+        assert!(json.as_enum().is_some());
+    }
+
     /// An anonymous producer key rooting at definition `producer` with anchor
     /// occurrence `anchor_seg`.
     fn anon_key(kind: AnonymousNominalKind, producer: Key, anchor_seg: u32) -> AnonKey {
@@ -2775,6 +3344,7 @@ mod tests {
             result,
             is_public,
             is_unchecked,
+            is_extern: false,
         }
     }
 
@@ -2783,12 +3353,14 @@ mod tests {
         parameters: Vec<DurableSignatureParameter<Key, Module>>,
         result: DType,
         has_self: bool,
+        self_mode: SemanticParameterMode,
     ) -> DurableMethod<Key, Module> {
         DurableMethod {
             receiver,
             parameters,
             result,
             has_self,
+            self_mode,
         }
     }
 
@@ -2815,7 +3387,6 @@ mod tests {
         MethodIdentityHandle {
             body: InstRef::from_raw(201),
             span: Span::with_file(FileId::new(3), 1, 4),
-            self_mode: RirParamMode::Borrow,
             self_is_mut: true,
         }
     }
@@ -3143,8 +3714,8 @@ mod tests {
 
     #[test]
     fn containment_freeze_hook_gates_drop_and_linearity_reads() {
-        // The rFinal seam hook (r4a-2a rider): drop/linearity reads answer
-        // `None` until the pool-side freeze runs, then answer the containment
+        // Drop/linearity reads answer `None` until the pool-side freeze runs,
+        // then answer the containment
         // join over the pool's own registrations. Destructor metadata stays out
         // of the pool's minting scope, so the join sees `destructor: None`.
         let mut pool = pool([(
@@ -3886,7 +4457,7 @@ mod tests {
         );
 
         // The export-as-produced ruling: the identity is recorded as
-        // well-known, so the flip-era baseline subtraction exports it as a
+        // well-known, so the provider baseline subtraction exports it as a
         // produced anonymous nominal instead of leaking it as an import.
         assert!(pool.is_well_known_option_identity(&key));
         assert_eq!(pool.well_known_option_identity_count(), 1);
@@ -4528,6 +5099,7 @@ mod tests {
                     )],
                     DType::Bool,
                     true,
+                    SemanticParameterMode::Borrow,
                 ),
             )],
         );
@@ -4554,7 +5126,8 @@ mod tests {
             [false],
         );
 
-        // Durable-derived: receiver, has_self, return type, params.
+        // Durable-derived: receiver, has_self, receiver mode, return type,
+        // params.
         assert_eq!(
             render(pool.type_pool(), info.struct_type),
             render(&twin, Type::new_struct(twin_id))
@@ -4566,6 +5139,7 @@ mod tests {
             "receiver symbol name parity"
         );
         assert!(info.has_self);
+        assert_eq!(info.self_mode, RirParamMode::Borrow);
         assert_eq!(
             render(pool.type_pool(), info.return_type),
             render(&twin, Type::BOOL)
@@ -4582,7 +5156,6 @@ mod tests {
         // Request/RIR passthrough.
         assert_eq!(info.body, handle.body);
         assert_eq!(info.span, handle.span);
-        assert_eq!(info.self_mode, handle.self_mode);
         assert_eq!(info.self_is_mut, handle.self_is_mut);
     }
 
@@ -4756,7 +5329,7 @@ mod tests {
         );
     }
 
-    // ----- Const identity family (RUE-1091 flip-prep) ------------------------
+    // ----- Const identity family --------------------------------------------
 
     fn durable_const(
         is_public: bool,
@@ -4991,15 +5564,12 @@ mod tests {
     }
 
     /// Fill a [`MethodIdentityHandle`] from a method declaration the RIR index
-    /// located: `self_mode` / `self_is_mut` are RIR `FnDecl` facts, `body` and
-    /// `span` request-carried.
+    /// located: `self_is_mut` is a body-local RIR `FnDecl` fact; `body` and
+    /// `span` are request-carried.
     fn method_handle_from_rir(sema: &BodySema<'_>, declaration: InstRef) -> MethodIdentityHandle {
         let inst = sema.rir.get(declaration);
         let InstData::FnDecl {
-            body,
-            self_mode,
-            self_is_mut,
-            ..
+            body, self_is_mut, ..
         } = &inst.data
         else {
             panic!("method declaration must be a FnDecl");
@@ -5007,115 +5577,8 @@ mod tests {
         MethodIdentityHandle {
             body: *body,
             span: inst.span,
-            self_mode: *self_mode,
             self_is_mut: *self_is_mut,
         }
-    }
-
-    #[test]
-    fn body_rir_index_first_free_function_matches_epoch() {
-        let file = FileId::new(7);
-        let source = r#"
-            struct Named {
-                value: i32,
-                fn collide() -> i32 { 10 }
-            }
-            fn collide() -> i32 { 40 }
-            fn helper() -> i32 { 1 }
-            fn main() -> i32 { collide() }
-        "#;
-        let (rir, interner) = lower_rir(source, file);
-        let index = BodyRirIndex::new(&rir);
-        let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let facts = bound.body_sema().endpoint_facts();
-
-        for name in ["collide", "helper", "main", "nonexistent"] {
-            let sym = interner.get(name);
-            let pool_ans = sym.and_then(|s| index.first_free_function(s, file));
-            let epoch_ans = sym.and_then(|s| facts.first_free_function(s, file));
-            assert_eq!(pool_ans, epoch_ans, "first_free_function parity for {name}");
-        }
-
-        // The free `collide` resolves; the same-named associated function is not
-        // a free candidate (it is a named method).
-        let collide = interner.get("collide").unwrap();
-        assert!(index.first_free_function(collide, file).is_some());
-        // A wrong file fails closed on both sides.
-        assert_eq!(index.first_free_function(collide, FileId::new(99)), None);
-        assert_eq!(facts.first_free_function(collide, FileId::new(99)), None);
-    }
-
-    #[test]
-    fn body_rir_index_destructor_matches_epoch() {
-        let file = FileId::new(5);
-        let source = r#"
-            struct Foo { x: i32 }
-            drop fn Foo(self) {}
-            struct Bar { y: i32 }
-        "#;
-        let (rir, interner) = lower_rir(source, file);
-        let index = BodyRirIndex::new(&rir);
-        let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let facts = bound.body_sema().endpoint_facts();
-
-        let foo = interner.get("Foo").unwrap();
-        let pool_foo = index.destructor(file.index(), foo);
-        let epoch_foo = facts.destructor(file.index(), foo);
-        assert_eq!(pool_foo, epoch_foo, "destructor record parity for Foo");
-        assert!(pool_foo.is_some(), "Foo has a destructor");
-
-        // Bar has no destructor; both sides fail closed.
-        let bar = interner.get("Bar").unwrap();
-        assert_eq!(index.destructor(file.index(), bar), None);
-        assert_eq!(facts.destructor(file.index(), bar), None);
-    }
-
-    #[test]
-    fn body_rir_index_named_method_declaration_matches_epoch() {
-        let file = FileId::new(3);
-        let source = r#"
-            struct Widget {
-                id: u32,
-                fn bump(self, delta: i32) -> u32 { self.id }
-                fn reset() -> u32 { 0 }
-            }
-            struct Gadget {
-                n: i32,
-                fn bump(self) -> i32 { self.n }
-            }
-        "#;
-        let (rir, interner) = lower_rir(source, file);
-        let index = BodyRirIndex::new(&rir);
-        let bound = bind(&rir, &interner, "pkg/main.rue", file);
-        let facts = bound.body_sema().endpoint_facts();
-
-        for (type_name, method) in [
-            ("Widget", "bump"),
-            ("Widget", "reset"),
-            ("Gadget", "bump"),
-            ("Widget", "nonexistent"),
-        ] {
-            let owner = interner.get(type_name).unwrap();
-            let method_sym = interner.get(method);
-            // Both seams now take the durable-available
-            // (file, type_name, method_name) preimage.
-            let epoch_ans = method_sym.and_then(|m| facts.named_method_declaration(file, owner, m));
-            let pool_ans = method_sym.and_then(|m| index.named_method_declaration(file, owner, m));
-            assert_eq!(
-                pool_ans, epoch_ans,
-                "named_method parity for {type_name}.{method}"
-            );
-        }
-
-        // Widget.bump and Gadget.bump share a method name but are distinct
-        // declarations — the owner file+name disambiguates without a StructId.
-        let widget = interner.get("Widget").unwrap();
-        let gadget = interner.get("Gadget").unwrap();
-        let bump = interner.get("bump").unwrap();
-        let widget_bump = index.named_method_declaration(file, widget, bump);
-        let gadget_bump = index.named_method_declaration(file, gadget, bump);
-        assert!(widget_bump.is_some() && gadget_bump.is_some());
-        assert_ne!(widget_bump, gadget_bump, "same-named methods stay distinct");
     }
 
     #[test]
@@ -5286,11 +5749,6 @@ mod tests {
 
         // 2c: the RIR index locates the method declaration; fill the handle.
         let declaration = index.named_method_declaration(file, widget, bump).unwrap();
-        assert_eq!(
-            Some(declaration),
-            facts.named_method_declaration(file, widget, bump),
-            "index locates the epoch's method declaration"
-        );
         let handle = method_handle_from_rir(bs, declaration);
 
         // 2b + 2a: mint the durable method subset (receiver resolves through 2a).
@@ -5317,6 +5775,11 @@ mod tests {
                     )],
                     DType::U32,
                     true,
+                    match prod.self_mode {
+                        RirParamMode::Normal => SemanticParameterMode::Value,
+                        RirParamMode::Borrow => SemanticParameterMode::Borrow,
+                        RirParamMode::Inout => SemanticParameterMode::Inout,
+                    },
                 ),
             )],
         );
@@ -5325,10 +5788,10 @@ mod tests {
         // 2c passthrough.
         assert_eq!(info.body, prod.body);
         assert_eq!(info.span, prod.span);
-        assert_eq!(info.self_mode, prod.self_mode);
         assert_eq!(info.self_is_mut, prod.self_is_mut);
 
         // 2b / 2a durable-derived: receiver, has_self, return type, params.
+        assert_eq!(info.self_mode, prod.self_mode);
         assert_eq!(info.has_self, prod.has_self);
         assert!(info.has_self);
         assert_eq!(

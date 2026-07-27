@@ -54,7 +54,7 @@ impl Hasher for StableFnv1a128 {
 /// This is the single assembly of the definition-component format both
 /// relocation paths feed into [`stable_anonymous_identity_digest`]: the
 /// semantic epoch's `stable_definition_symbol_component` (`anon_structs.rs`,
-/// installed-endpoint arm) and the flip-era durable adapter that formats the
+/// installed-endpoint arm) and the provider durable adapter that formats the
 /// same four parts from a durable definition key. Every byte here is
 /// digest-critical — two paths spelling the same producer must hash the same
 /// content. The epoch's session-local `d\u{1}…` fallback is a separate,

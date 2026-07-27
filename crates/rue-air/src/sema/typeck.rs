@@ -1733,7 +1733,6 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
             }
             (TypeRootAuthority::GlobalSpeculative, _) => return Ok(None),
         };
-        self.record_body_module_item_lookup(file, name);
         let Some(binding) = self.resolve_module_binding_in_file(file, name)? else {
             return Ok(None);
         };
@@ -1786,9 +1785,6 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
             (TypeRootAuthority::GlobalSpeculative, None) => (None, true),
             (TypeRootAuthority::GlobalSpeculative, Some(_)) => return Ok(None),
         };
-        if let Some(file) = file {
-            self.record_body_module_item_lookup(file, name);
-        }
         let fact =
             |this: &Self, value: Type, site: FileId, is_public: bool| crate::SemanticTypeFact {
                 value,
@@ -1979,7 +1975,7 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
         value_arguments: &HashMap<Spur, ConstValue>,
         span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        self.reduce_type_ctor_body(head.key, type_arguments, value_arguments)
+        self.reduce_type_ctor_body(head.key, type_arguments, value_arguments, span)
             .map_err(|error| Self::label_ctor_instantiation_site(error, span))
     }
 

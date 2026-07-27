@@ -28,7 +28,11 @@ pub(crate) trait AggregateFacts {
     fn builtin_enum(&self, name: Spur) -> Option<EnumId>;
     fn module(&self, module: ModuleId) -> AggregateModuleFact;
     fn file_path(&self, file: FileId) -> Option<&str>;
+    #[allow(dead_code)]
     fn source_path(&self, span: rue_span::Span) -> Option<&str>;
+    fn visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
+        crate::SemanticVisibilityDomain::from_file_path(self.file_path(file))
+    }
 }
 
 /// Raw immutable aggregate-resolution reads supplied by a body-analysis host.
@@ -41,16 +45,22 @@ pub(super) trait AggregateFactSource {
     fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId>;
     fn aggregate_module(&self, module: ModuleId) -> AggregateModuleFact;
     fn aggregate_file_path(&self, file: FileId) -> Option<&str>;
+    #[allow(dead_code)]
     fn aggregate_source_path(&self, span: rue_span::Span) -> Option<&str>;
+    fn aggregate_visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
+        crate::SemanticVisibilityDomain::from_file_path(self.aggregate_file_path(file))
+    }
 }
 
 pub(crate) struct AggregateModuleFact {
     pub(crate) file: FileId,
+    #[allow(dead_code)]
     file_path: String,
     import_path: String,
 }
 
 impl AggregateModuleFact {
+    #[allow(dead_code)]
     pub(crate) fn file_path(&self) -> &str {
         &self.file_path
     }
@@ -64,22 +74,18 @@ impl AggregateModuleFact {
 /// read-only abstraction; this impl is only the production source of facts.
 impl<D: DeclarationPhase> AggregateFactSource for Sema<'_, D> {
     fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.record_body_module_item_lookup(file, name);
         self.value_const(&(file, name)).cloned()
     }
 
     fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
-        self.record_body_module_item_lookup(file, name);
         self.module_binding(&(file, name)).cloned()
     }
 
     fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
-        self.record_body_module_item_lookup(file, name);
         self.structs_by_file_name.get(&(file, name)).copied()
     }
 
     fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        self.record_body_module_item_lookup(file, name);
         self.enums_by_file_name.get(&(file, name)).copied()
     }
 
@@ -147,6 +153,9 @@ impl<H: super::fact_mode::BodyAnalysisReadHost> AggregateFacts for EpochFacts<'_
     }
     fn source_path(&self, span: rue_span::Span) -> Option<&str> {
         self.host.aggregate_source_path(span)
+    }
+    fn visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
+        self.host.aggregate_visibility_domain(file)
     }
 }
 
@@ -331,60 +340,32 @@ pub(crate) fn is_accessible<P: AggregateFacts>(
     defining_file: FileId,
     is_public: bool,
 ) -> bool {
-    let accessing =
-        crate::SemanticVisibilityDomain::from_file_path(facts.file_path(accessing_file));
-    let defining = crate::SemanticVisibilityDomain::from_file_path(facts.file_path(defining_file));
+    let accessing = facts.visibility_domain(accessing_file);
+    let defining = facts.visibility_domain(defining_file);
     defining.is_visible_from(&accessing, is_public)
 }
 
 // ---------------------------------------------------------------------------
-// `ProviderAggregateFacts` — the aggregate / field / variant ProviderFacts
-// (RUE-1091 slice r4b-3).
+// `ProviderAggregateFacts` — the aggregate / field / variant ProviderFacts.
 //
-// The provider-driven realization of the family-1D [`AggregateFacts`] seam: where
-// [`EpochFacts`] answers each aggregate op from the semantic epoch's `Sema`
-// tables, this driver answers them from the body-scoped identity pool (slice
-// 2a — minting nominal `StructId`/`EnumId` identities from the durable metadata a
-// [`DurableNominalSource`] supplies) plus a small caller-populated overlay (the
-// `(file, name) → durable key` reverse and the request-local file paths). It is
-// the aggregate sibling of r4b-1's [`super::call_resolution::ProviderCallFacts`]
-// and r4b-2's [`super::body_endpoint::ProviderEndpointFacts`].
+// This driver answers aggregate facts from the body-scoped identity pool plus
+// a request-local overlay for `(file, name) → durable key` and file paths.
 //
 // The selection ORDER is not this driver's concern: it lives in the
 // provider-generic free functions above ([`select_module_type_member`]'s
 // struct→enum→const short-circuit, [`select_qualified_type`]'s enum→struct,
 // [`select_struct_literal_head`]'s bound→const→struct→builtin) which this driver
-// merely supplies facts to, so `EpochFacts` and this driver replay the exact same
-// r1c candidate order and short-circuits (RUE-1091 risk R1). The driver's
+// merely supplies facts to, so every consumer replays the same candidate order
+// and short-circuits. The driver's
 // inherent `select_*` wrappers run those free functions over itself and hand back
-// the winner as a pool [`Type`] a differential renders index-independently.
+// the winner as a pool [`Type`].
 //
-// RUE-1091 flip-era surface: `pub` because rFinal's whole-body differential and
-// the step-4 flip drive the provider path from rue-compiler, where the pool's
-// durable source is built from concrete nucleus signatures (an opaque
-// `BodyFactProvider` associated type rue-air cannot destructure). The sole
-// pre-flip caller is the rue-compiler differential; the flip promotes it to the
-// production analyzer. No aggregate deliverable op consults the live
+// This surface is public because rue-compiler supplies the concrete durable
+// signature source behind the opaque provider boundary. No aggregate op consults the live
 // `BodyFactProvider` boundary — struct/enum-by-file-name, the builtins, and
 // `is_accessible` are all answered by the pool + the caller-populated overlay —
 // so this driver holds no provider handle and records no provider edge by
-// construction (stronger than the sibling drivers' empty-edge assertion).
-//
-// Feasibility (r4a design-checkpoint table): P = answered-by-pool, O =
-// overlay-held request-local fact.
-//   - struct_in_file / enum_in_file (via the `(file, name)` overlay reverse) → P
-//   - builtin_struct / builtin_enum                                         → P
-//   - file_path (is_accessible)                                             → O
-//   - value_const / module_binding / resolve_const_info_in_file → LANDED
-//     (flip-prep): exact `ConstInfo` values materialized through the shared
-//     endpoint/pool registry install into this driver's body-local overlay.
-//   - module (module_def) → LANDED (flip-prep): `ProviderModuleRegistry` mints
-//     the body-local compact id from the durable module handle and stores the
-//     current request file/path/import-path facts. The module spines
-//     ([`resolve_aggregate_module_ref`] / [`resolve_visibility_module_ref`])
-//     consume the installed module binding and registry answer.
-//   - source_path → the flip: consumed only by inline `aggregates.rs` diagnostic
-//     paths, never by the provider-generic selection logic this driver drives.
+// construction.
 // ---------------------------------------------------------------------------
 
 /// The winner [`select_module_type_member`] selects, projected to a pool
@@ -458,7 +439,7 @@ where
     }
 
     /// Construct the driver over the shared identity context used by every
-    /// provider fact family for one body.
+    /// provider fact family for body analysis.
     pub fn with_identity(identity: ProviderIdentityContext<K, M, S>) -> Self {
         Self::with_overlay_identity(identity.fail_closed())
     }
@@ -484,14 +465,8 @@ where
     /// `enums_by_file_name` insert. The name is interned into the pool's own
     /// interner so a later `select_*`/`struct_in_file` consult reverses the same
     /// `(file, pool-name)` key.
-    ///
-    /// FLIP OBLIGATION (recorded by the r4b-3 review): this driver's
-    /// "zero provider edges by construction" property is complete only if the
-    /// flip-era caller fills these entries from the durable declaration set
-    /// (whose keys already carry module/kind/name — no boundary consult), OR
-    /// consults the lookup boundary upstream with edges recorded there. The
-    /// flip slice must state which and assert the resulting edge story; an
-    /// unspecified fill source is not an option.
+    /// Callers populate this from durable declaration keys or from an upstream
+    /// lookup whose provider edge has already been recorded.
     pub fn register_named_nominal(&mut self, key: K, file: FileId, name: &str) {
         let symbol = self.identity.pool().intern_name(name);
         self.by_file_name.insert((file.index(), symbol), key);

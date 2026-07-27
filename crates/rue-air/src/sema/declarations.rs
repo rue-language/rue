@@ -2829,7 +2829,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         }
 
         match self
-            .reduce_type_ctor_body(function_key, &callee_types, &callee_values)
+            .reduce_type_ctor_body(function_key, &callee_types, &callee_values, span)
             .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
         {
             Some(ConstValue::Type(ty)) => Ok(ConstInit::Value(ConstValue::Type(ty))),

@@ -8,8 +8,16 @@
 
 use super::super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use super::*;
+use crate::sema::NamedConstDependencyTargetEvent;
 use crate::sema::call_resolution::CallResolutionFacts;
-use crate::sema::{FunctionInfo, NamedConstDependencyTargetEvent};
+use crate::sema::info::FunctionCallInfo;
+
+fn module_display_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_stem()
+        .and_then(std::ffi::OsStr::to_str)
+        .unwrap_or(path)
+}
 
 /// Validate membership and visibility for a module-member function call.
 ///
@@ -35,7 +43,7 @@ fn check_module_member_access(
     if !via_reexport && module_file_id != Some(member_file_id) {
         return Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
-                module_name: module_name.to_string(),
+                module_name: module_display_name(module_name).to_string(),
                 member_name: fn_name_str.to_string(),
             },
             span,
@@ -315,7 +323,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         &mut self,
         air: &mut Air,
         name: Spur,
-        fn_info: FunctionInfo,
+        fn_info: FunctionCallInfo,
         args_range: &rue_rir::RirCallArgsRange,
         span: Span,
         ctx: &mut AnalysisContext,
@@ -365,9 +373,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .with_help("wrap the call in a `checked { ... }` block"));
         }
 
-        // Track this function as referenced (for lazy analysis)
-        ctx.referenced_functions.insert(name);
-
         // Copy the exact parameter point before any lazy fact can append.
         let param_data = self.body_param_data(fn_info.params);
         let param_types = param_data.types().to_vec();
@@ -409,7 +414,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     continue;
                 }
                 let value = self.evaluate_const_in_fn(args.get(i).unwrap().value, ctx)?;
-                if param_comptime_type[i] {
+                let is_comptime_type = param_comptime_type
+                    .get(i)
+                    .copied()
+                    .unwrap_or(matches!(value, Some(ConstValue::Type(_))));
+                if is_comptime_type {
                     match value {
                         Some(ConstValue::Type(ty)) => {
                             type_subst.insert(param_names[i], ty);
@@ -456,7 +465,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // rather than being swallowed into a downstream link error, so use
             // the propagating reduction entry point.
             if let Some(ConstValue::Type(ty)) = self
-                .reduce_type_ctor_body(name, &type_subst, &value_subst)
+                .reduce_type_ctor_body(name, &type_subst, &value_subst, span)
                 .map_err(|e| Self::label_ctor_instantiation_site(e, span))?
             {
                 // Success! Return a TypeConst instruction instead of a runtime call
@@ -470,6 +479,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // If we can't evaluate at compile time, fall through to runtime call
             // (which will fail at link time, but gives a better error experience)
         }
+
+        // Only runtime calls contribute a lazy body edge. A successfully
+        // reduced `-> type` producer is consumed above as a TypeConst and its
+        // provider-owned result, not its executable body, is the dependency.
+        ctx.referenced_functions.insert(name);
 
         // Check that comptime parameters receive compile-time constant values
         let has_comptime_params = param_comptime.iter().any(|&c| c);
@@ -537,9 +551,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if *is_comptime {
                     // The source declaration distinguishes a type parameter
                     // from a value parameter whose semantic type is deferred.
-                    if param_comptime_type[i] {
+                    let argument = air.get(air_arg.value);
+                    let is_comptime_type = param_comptime_type
+                        .get(i)
+                        .copied()
+                        .unwrap_or(matches!(argument.data, AirInstData::TypeConst(_)));
+                    if is_comptime_type {
                         // This is a TYPE parameter - expect a TypeConst instruction
-                        let inst = air.get(air_arg.value);
+                        let inst = argument;
                         if let AirInstData::TypeConst(ty) = &inst.data {
                             type_args.push(*ty);
                             // Record the substitution: param_name -> concrete_type
@@ -615,7 +634,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 air_args.iter().zip(param_comptime.iter()).enumerate()
             {
                 let declared = param_types[i];
-                if is_comptime && param_comptime_type[i] {
+                let argument_is_type =
+                    matches!(air.get(air_arg.value).data, AirInstData::TypeConst(_));
+                if is_comptime
+                    && param_comptime_type
+                        .get(i)
+                        .copied()
+                        .unwrap_or(argument_is_type)
+                {
                     // The comptime type argument itself - already validated above.
                     continue;
                 }
@@ -625,6 +651,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     declared,
                     &type_subst,
                     &value_subst,
+                    span,
                 )?;
                 let found = air.get(air_arg.value).ty;
                 if !self.types_compatible(found, expected) && !expected.is_error() {
@@ -643,7 +670,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // (`-> [T; 3]`, RUE-172), and the literal `type` return (which
             // resolves back to COMPTIME_TYPE and is comptime-evaluated below).
             let return_type =
-                self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst)?;
+                self.resolve_substituted_return_type(&fn_info, &type_subst, &value_subst, span)?;
 
             if self.body_dependency_observer().is_some()
                 && let Ok(identity) =
@@ -665,7 +692,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let mut value_subst: std::collections::HashMap<Spur, ConstValue> =
                     std::collections::HashMap::new();
                 for (i, is_comptime) in param_comptime.iter().enumerate() {
-                    if *is_comptime && !param_comptime_type[i] {
+                    let argument_is_type = air_args.get(i).is_some_and(|argument| {
+                        matches!(air.get(argument.value).data, AirInstData::TypeConst(_))
+                    });
+                    if *is_comptime
+                        && !param_comptime_type
+                            .get(i)
+                            .copied()
+                            .unwrap_or(argument_is_type)
+                    {
                         // This is a comptime VALUE parameter - extract its const value
                         // (evaluated in the calling function's context)
                         if let Some(const_val) =
@@ -676,7 +711,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                 }
                 if let Some(ConstValue::Type(ty)) =
-                    self.reduce_type_ctor_body(name, &type_subst, &value_subst)?
+                    self.reduce_type_ctor_body(name, &type_subst, &value_subst, span)?
                 {
                     // Success! Return a TypeConst instruction instead of a runtime call
                     let air_ref = air.add_inst(AirInst {
@@ -939,7 +974,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 span,
             )?;
-
         // Track this method as referenced (for lazy analysis). Anonymous
         // struct methods are often registered while reducing a comptime type
         // constructor; without this edge the lazy pipeline can emit a call to
@@ -1201,7 +1235,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let function_key = function_key.ok_or_else(|| {
             CompileError::new(
                 ErrorKind::UnknownModuleMember {
-                    module_name: module_def.import_path.clone(),
+                    module_name: module_display_name(&module_def.import_path).to_string(),
                     member_name: fn_name_str.clone(),
                 },
                 span,
@@ -1212,7 +1246,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .function_info(function_key)
             .ok_or_compile_error(
                 ErrorKind::UnknownModuleMember {
-                    module_name: module_def.import_path.clone(),
+                    module_name: module_display_name(&module_def.import_path).to_string(),
                     member_name: fn_name_str.clone(),
                 },
                 span,
@@ -1379,7 +1413,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 span,
             )?;
-
         // Track this associated function/method as referenced (for lazy analysis)
         ctx.referenced_methods.insert(method_key);
 

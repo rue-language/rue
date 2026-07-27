@@ -206,6 +206,41 @@ fn compose_queried_bodies_inner(
     )
 }
 
+fn materialize_argument_value(
+    sema: &BodySema<'_>,
+    value: &crate::CanonicalArgumentValue<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >,
+) -> Result<super::ConstValue, crate::SemanticBodyExportFailure> {
+    use crate::CanonicalArgumentValue as V;
+    let facts = sema.endpoint_facts();
+    Ok(match value {
+        V::Integer(value) => super::ConstValue::Integer(*value),
+        V::Bool(value) => super::ConstValue::Bool(*value),
+        V::Type(value) => {
+            super::ConstValue::Type(super::body_endpoint::resolve_instance_type(&facts, value)?)
+        }
+        V::Function(value) => {
+            let crate::FunctionInstanceKey::Definition(token) = value.as_ref() else {
+                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+            };
+            let symbol = super::body_endpoint::resolve_free_function_symbol(&facts, *token)
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            super::ConstValue::Function(symbol)
+        }
+        V::Unit => super::ConstValue::Unit,
+        V::String(value) => super::ConstValue::String(sema.interner.get_or_intern(value.as_ref())),
+    })
+}
+
+fn materialize_instance_type(
+    sema: &BodySema<'_>,
+    value: &crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+) -> Result<Type, crate::SemanticBodyExportFailure> {
+    super::body_endpoint::resolve_instance_type(&sema.endpoint_facts(), value)
+}
+
 fn canonical_composed_identity(
     sema: &BodySema<'_>,
     identity: &crate::FunctionInstanceKey<
@@ -218,7 +253,7 @@ fn canonical_composed_identity(
     let crate::FunctionInstanceKey::AnonymousMember { owner, member } = identity else {
         return Ok(identity.clone());
     };
-    let owner = super::one_body::materialize_instance_type(sema, owner).map_err(|_| {
+    let owner = materialize_instance_type(sema, owner).map_err(|_| {
         CompileError::without_span(ErrorKind::InvalidCompilerInput(
             "queried anonymous callable owner has no current composition endpoint".into(),
         ))
@@ -332,7 +367,7 @@ fn composed_callable_metadata(
             Ok((name, kind, source))
         }
         F::AnonymousMember { owner: ty, member } => {
-            let ty = super::one_body::materialize_instance_type(sema, ty).map_err(|_| missing())?;
+            let ty = materialize_instance_type(sema, ty).map_err(|_| missing())?;
             let struct_id = ty.as_struct().ok_or_else(missing)?;
             let method = sema
                 .interner
@@ -363,13 +398,13 @@ fn composed_callable_metadata(
             let types = arguments
                 .types
                 .iter()
-                .map(|ty| super::one_body::materialize_instance_type(sema, ty))
+                .map(|ty| materialize_instance_type(sema, ty))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| missing())?;
             let values = arguments
                 .values
                 .iter()
-                .map(|value| super::one_body::materialize_argument_value(sema, value))
+                .map(|value| materialize_argument_value(sema, value))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|_| missing())?;
             let identity = specialization_identity.ok_or_else(missing)?;
@@ -867,8 +902,9 @@ pub(crate) fn import_staged_body(
     }
 
     // Intrinsic and declaration-derived callable symbols are required to
-    // pre-exist. This keeps importer mutation inside the scratch type pool
-    // until the entire body validates.
+    // pre-exist. Runtime-call helpers are ABI symbols rather than declarations;
+    // the durable body carries their exact RuntimeCallKind and imports the
+    // corresponding helper symbol below.
     if body.instructions.iter().any(|inst| matches!(&inst.data,
         crate::SemanticBodyInstData::Intrinsic { name, .. } if sema.interner.get(name.as_ref()).is_none())) {
         return Err(BF::Semantic(F::MissingFunction));
@@ -929,11 +965,7 @@ pub(crate) fn import_staged_body(
                 value_arguments,
             ))
         },
-        |name| {
-            sema.interner
-                .get(name)
-                .expect("intrinsic symbols prevalidated")
-        },
+        |name| sema.interner.get_or_intern(name),
     )?;
     sema.type_pool = scratch;
     Ok(imported)
@@ -1415,8 +1447,9 @@ fn named_method_dependency_events(
     referenced_methods: &HashSet<(StructId, Spur)>,
 ) -> CompileResult<Vec<super::NamedMethodDependencyEvent>> {
     let caller_info = sema
-        .call_facts()
-        .named_method_info(caller_struct, caller_method)
+        .methods
+        .get(&(caller_struct, caller_method))
+        .copied()
         .ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InvalidCompilerInput(
@@ -1429,7 +1462,7 @@ fn named_method_dependency_events(
     let caller_method_name = sema.interner.resolve(&caller_method).to_string();
     let mut events = Vec::new();
     for callee in referenced_functions {
-        let info = sema.call_facts().function_info(*callee).ok_or_else(|| {
+        let info = sema.function_info(*callee).copied().ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InvalidCompilerInput(
                     "named method references a free function absent from semantic declarations"
@@ -1467,8 +1500,9 @@ fn named_method_dependency_events(
             continue;
         }
         let info = sema
-            .call_facts()
-            .named_method_info(*callee_struct, *callee_method)
+            .methods
+            .get(&(*callee_struct, *callee_method))
+            .copied()
             .ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InvalidCompilerInput(
@@ -1512,7 +1546,7 @@ fn named_destructor_dependency_events(
     let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.clone();
     let mut events = Vec::new();
     for callee in referenced_functions {
-        let info = sema.call_facts().function_info(*callee).ok_or_else(|| {
+        let info = sema.function_info(*callee).copied().ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InvalidCompilerInput(
                     "named destructor references an absent free function".into(),
@@ -1544,8 +1578,9 @@ fn named_destructor_dependency_events(
             continue;
         }
         let info = sema
-            .call_facts()
-            .named_method_info(*callee_struct, *callee_method)
+            .methods
+            .get(&(*callee_struct, *callee_method))
+            .copied()
             .ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InvalidCompilerInput(
@@ -1838,7 +1873,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 analyzed_functions.insert(fn_name);
 
                 // Look up the function info
-                let fn_info = match sema.call_facts().function_info(fn_name) {
+                let fn_info = match sema.function_info(fn_name).copied() {
                     Some(info) => info,
                     None => continue, // Should not happen, but be defensive
                 };
@@ -2125,7 +2160,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 name: sema.interner.resolve(&source_name).to_string(),
                             });
                         for callee in &referenced_fns {
-                            let callee_info = sema.call_facts().function_info(*callee);
+                            let callee_info = sema.function_info(*callee).copied();
                             if let Some(callee_info) = callee_info {
                                 let callee_name = sema
                                     .interner
@@ -2181,7 +2216,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 analyzed_methods.insert((struct_id, method_name));
 
                 // Look up the method info
-                let method_info = match sema.call_facts().method_info(struct_id, method_name) {
+                let method_info = match sema.method_info((struct_id, method_name)).copied() {
                     Some(info) => info,
                     None => continue,
                 };
@@ -3125,7 +3160,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
 /// (`place: Some(_)`) are not rejected here: they don't re-enter the
 /// destructor (the drop-glue double drop of such a field is a separate,
 /// pre-existing issue).
-fn reject_self_move_in_destructor(air: &Air, full_name: &str) -> CompileResult<()> {
+pub(crate) fn reject_self_move_in_destructor(air: &Air, full_name: &str) -> CompileResult<()> {
     for (_, inst) in air.iter() {
         if let AirInstData::MarkMoved {
             slot: 0,

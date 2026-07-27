@@ -386,3 +386,33 @@ fn invalid_fixture(message: &str) -> CompileErrors {
         message.to_owned(),
     )))
 }
+/// Test-only sink for proving that provider type facts materialize each nominal
+/// at most once. Production body analysis consumes the durable facts directly.
+#[derive(Default)]
+pub(crate) struct ProviderMaterialization {
+    nominals:
+        std::collections::HashMap<crate::StableDefinitionKey, crate::DurableDeclarationPayload>,
+}
+
+impl ProviderMaterialization {
+    pub(crate) fn materialize_nominal(
+        &mut self,
+        key: &crate::StableDefinitionKey,
+        payload: &crate::DurableDeclarationPayload,
+    ) {
+        self.nominals
+            .entry(key.clone())
+            .or_insert_with(|| payload.clone());
+    }
+
+    pub(crate) fn materialized_nominal(
+        &self,
+        key: &crate::StableDefinitionKey,
+    ) -> Option<&crate::DurableDeclarationPayload> {
+        self.nominals.get(key)
+    }
+
+    pub(crate) fn materialized_nominal_count(&self) -> usize {
+        self.nominals.len()
+    }
+}

@@ -1,0 +1,4993 @@
+//! Concrete body-local host for query-backed ordinary body evaluation.
+//!
+//! This receiver owns only body analysis's RIR and compact semantic state. Durable
+//! declaration facts are materialized through the provider facades as they are
+//! consulted; no declaration epoch or whole-program `Sema` is reachable here.
+
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use lasso::{Spur, ThreadedRodeo};
+use rue_error::{CompileError, CompileResult, PreviewFeatures};
+use rue_rir::{InstData, InstRef, Rir, RirParam, RirParamMode};
+use rue_span::{FileId, Span};
+use rue_target::Target;
+
+use super::aggregate_resolution::{
+    AggregateFactSource, AggregateFacts as AggregateFactsTrait, EpochFacts as AggregateFacts,
+};
+use super::body_endpoint::{
+    BodyEndpointFactSource, BodyEndpointProvider, EpochFacts as EndpointFacts,
+};
+use super::call_resolution::{CallResolutionFactSource, EpochFacts as CallFacts};
+use super::fact_mode::{
+    ArrayLengthRequest, BodyAnalysisHost, DeferredTypeRequest, ModulePrefixRequest,
+    TypeSyntaxRequest,
+};
+use super::inference_ctx::{InferenceFactSource, InferenceGeneratedNominalOverlays};
+use super::info::{FunctionCallInfo, MethodCallInfo};
+use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
+use super::semantic_body_export::SemanticBodyExportHost;
+use super::{
+    AnalyzedFunction, BodyAnalysisWork, BodyFactProvider, ConstInfo, ConstValue,
+    DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, FunctionInfo,
+    HostInferenceFacts, InferenceContext, KnownSymbols, MethodInfo, ProviderAggregateFacts,
+    ProviderBodyAnalysisState, ProviderCallFacts, ProviderEndpointFacts,
+};
+use crate::inference::{FunctionSig, MethodSig};
+use crate::intern_pool::TypeInternPool;
+use crate::types::{ArrayTypeId, EnumId, ModuleDef, ModuleId, StructId, Type, TypeKind};
+use crate::{
+    ArrayLen, BodyRirBundle, CanonicalArgumentValue, DurableAnonymousSource, DurableCallableSource,
+    DurableConstSource, DurableNominalSource, FunctionInstanceKey, ParamRange, ParamRangeData,
+    SemanticDefinitionToken, SemanticModuleToken, TypeInstanceKey,
+};
+
+/// Stable, request-independent description of an anonymous nominal created by
+/// one successful provider body transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticProducedAnonymousNominal {
+    pub identity: crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    pub shape: SemanticProducedAnonymousNominalShape,
+    pub type_captures: Arc<
+        [(
+            Arc<str>,
+            TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        )],
+    >,
+    pub value_captures: Arc<
+        [(
+            Arc<str>,
+            crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+        )],
+    >,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticProducedAnonymousNominalShape {
+    Struct {
+        fields: Arc<
+            [(
+                Arc<str>,
+                TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+            )],
+        >,
+        methods: Arc<[SemanticProducedAnonymousMethodSignature]>,
+    },
+    Enum {
+        variants: Arc<
+            [(
+                Arc<str>,
+                Arc<[TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>]>,
+            )],
+        >,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticProducedAnonymousMethodSignature {
+    pub name: Arc<str>,
+    pub has_self: bool,
+    pub self_mode: crate::SemanticParameterMode,
+    pub parameters: Arc<
+        [(
+            SemanticProducedAnonymousMethodType,
+            crate::SemanticParameterMode,
+            bool,
+        )],
+    >,
+    pub result: SemanticProducedAnonymousMethodType,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticProducedAnonymousMethodType {
+    SelfType,
+    Concrete(TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>),
+}
+
+/// Minimal canonical result of one provider-backed ordinary free body. The
+/// compiler relocates the issuer-local token vocabulary before publication.
+pub struct ProviderOrdinaryBody<K, M> {
+    pub owner: crate::BodyOwnerToken,
+    pub export: crate::SemanticBodyExport,
+    pub function: AnalyzedFunction,
+    pub warnings: Vec<rue_error::CompileWarning>,
+    pub strings: Vec<String>,
+    pub referenced_functions: HashSet<Spur>,
+    pub referenced_methods: HashSet<(StructId, Spur)>,
+    pub referenced_definitions: Vec<K>,
+    pub referenced_values: Vec<K>,
+    pub referenced_specializations:
+        Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
+    pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
+    pub type_pool: Rc<TypeInternPool>,
+    pub interner: Rc<ThreadedRodeo>,
+    pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
+    pub module_tokens: Vec<(SemanticModuleToken, M)>,
+}
+
+/// Canonical result of one provider-backed specialization transaction.
+pub struct ProviderSpecializedBody<K, M> {
+    pub export: crate::SemanticSpecializedBodyExport,
+    pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
+    pub referenced_definitions: Vec<K>,
+    pub referenced_values: Vec<K>,
+    pub referenced_specializations:
+        Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
+    pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
+    pub module_tokens: Vec<(SemanticModuleToken, M)>,
+}
+
+/// Canonical result of one provider-backed anonymous member body.
+pub struct ProviderAnonymousBody<K, M> {
+    pub export: crate::SemanticAnonymousBodyExport,
+    pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
+    pub referenced_definitions: Vec<K>,
+    pub referenced_values: Vec<K>,
+    pub referenced_specializations:
+        Vec<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
+    pub definition_tokens: Vec<(SemanticDefinitionToken, K)>,
+    pub module_tokens: Vec<(SemanticModuleToken, M)>,
+}
+
+#[derive(Clone, Default)]
+pub struct ProviderWellKnownOptionFacts<K, M> {
+    pub nominals: Vec<crate::AnonymousNominalKey<K, M>>,
+    pub option_by_payload: Vec<(
+        crate::SemanticImportType<K, M>,
+        crate::SemanticImportType<K, M>,
+    )>,
+}
+
+#[derive(Clone)]
+pub struct DurableBodyModuleBinding<K, M> {
+    pub definition: K,
+    pub target: M,
+    pub is_public: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DurableBodySourceLocator {
+    pub file_id: FileId,
+    pub physical_path: Arc<str>,
+    pub source_length: u32,
+}
+
+#[derive(Clone)]
+pub struct DurableReducedComptimeCall<K, M> {
+    pub result: crate::SemanticComptimeCallResult<
+        crate::SemanticImportType<K, M>,
+        crate::SemanticImportConstValue<K, M>,
+    >,
+}
+
+pub struct DurableComptimeDiagnostic {
+    pub kind: rue_error::ErrorKind,
+    /// Exact producer-owned source anchor, when the semantic query identified
+    /// one. Consumers use their call-site span only as a fallback.
+    pub span: Option<Span>,
+}
+
+pub enum DurableComptimeCallOutcome<K, M> {
+    Reduced(DurableReducedComptimeCall<K, M>),
+    NotReduced,
+    Diagnostic(DurableComptimeDiagnostic),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DurableTryProducer {
+    Option,
+    Result,
+}
+
+pub trait DurableBodyLookupSource<K, M>: Clone {
+    fn free_function(&self, current: &K, name: &str) -> Option<K>;
+    fn value_const(&self, current: &K, name: &str) -> Option<K>;
+    fn nominal(&self, current: &K, name: &str) -> Option<(K, crate::StableDefinitionKind)>;
+    fn named_member(&self, current: &K, owner: &str, name: &str, has_self: bool) -> Option<K>;
+    fn root_module_binding(
+        &self,
+        current: &K,
+        name: &str,
+    ) -> Option<DurableBodyModuleBinding<K, M>>;
+    fn module_binding(&self, module: &M, name: &str) -> Option<DurableBodyModuleBinding<K, M>>;
+    fn qualified_free_function(&self, module: &M, name: &str) -> Option<K>;
+    fn qualified_value_const(&self, module: &M, name: &str) -> Option<K>;
+    fn qualified_nominal(&self, module: &M, name: &str)
+    -> Option<(K, crate::StableDefinitionKind)>;
+    fn module_path(&self, module: &M) -> String;
+    fn definition_source(&self, _definition: &K) -> Option<DurableBodySourceLocator> {
+        None
+    }
+    fn module_source(&self, _module: &M) -> Option<DurableBodySourceLocator> {
+        None
+    }
+    fn source_path(&self, _file: FileId) -> Option<Arc<str>> {
+        None
+    }
+    fn out_of_scope_integer_const_paths(&self, _current: &K, _name: &str) -> Vec<Arc<str>> {
+        Vec::new()
+    }
+    fn foreign_function_module(&self, _current: &K, _function: &K) -> Option<M> {
+        None
+    }
+    fn foreign_definition_module(&self, current: &K, definition: &K) -> Option<M> {
+        self.foreign_function_module(current, definition)
+    }
+    fn definition_kind(&self, _definition: &K) -> Option<crate::StableDefinitionKind> {
+        None
+    }
+    fn definition_owner_name(&self, _definition: &K) -> Option<String> {
+        None
+    }
+    fn canonical_import(&self, _current: &K, _specifier: &str) -> Option<M> {
+        None
+    }
+    fn trusted_try_producer(
+        &self,
+        _identity: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<DurableTryProducer> {
+        None
+    }
+    fn language_item_nominal(&self, _current: &K, _lang_item: crate::LangItem) -> Option<K> {
+        None
+    }
+    fn definition_name(&self, _definition: &K) -> Option<String> {
+        None
+    }
+    fn reduce_comptime_call(
+        &self,
+        _definition: &K,
+        _type_arguments: &[(Arc<str>, crate::SemanticImportType<K, M>)],
+        _value_arguments: &[(Arc<str>, crate::SemanticImportConstValue<K, M>)],
+    ) -> DurableComptimeCallOutcome<K, M> {
+        DurableComptimeCallOutcome::NotReduced
+    }
+}
+
+impl<P, S, K, M> super::semantic_body_export::SemanticBodyExportHost
+    for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn export_body_type(
+        &self,
+        ty: Type,
+    ) -> Result<
+        crate::SemanticImportType<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        use crate::SemanticImportType as T;
+        Ok(match ty.kind() {
+            TypeKind::I8 => T::I8,
+            TypeKind::I16 => T::I16,
+            TypeKind::I32 => T::I32,
+            TypeKind::I64 => T::I64,
+            TypeKind::U8 => T::U8,
+            TypeKind::U16 => T::U16,
+            TypeKind::U32 => T::U32,
+            TypeKind::U64 => T::U64,
+            TypeKind::Bool => T::Bool,
+            TypeKind::Unit => T::Unit,
+            TypeKind::Never => T::Never,
+            TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                T::Array {
+                    element: Box::new(self.export_body_type(element)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => T::PtrConst(Box::new(
+                self.export_body_type(self.type_pool.ptr_const_def(id))?,
+            )),
+            TypeKind::PtrMut(id) => T::PtrMut(Box::new(
+                self.export_body_type(self.type_pool.ptr_mut_def(id))?,
+            )),
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
+                    T::AnonymousNominal(identity)
+                } else if def.is_builtin || def.name == "str" {
+                    T::BuiltinNominal {
+                        name: Arc::from(def.name.as_str()),
+                        kind: crate::SemanticImportNominalKind::Struct,
+                    }
+                } else {
+                    let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
+                    T::Nominal(token)
+                }
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
+                    T::AnonymousNominal(identity)
+                } else if rue_builtins::BUILTIN_ENUMS
+                    .iter()
+                    .any(|builtin| builtin.name == def.name)
+                {
+                    T::BuiltinNominal {
+                        name: Arc::from(def.name.as_str()),
+                        kind: crate::SemanticImportNominalKind::Enum,
+                    }
+                } else {
+                    let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
+                    T::Nominal(token)
+                }
+            }
+            TypeKind::Module(id) => {
+                let (token, _) = self
+                    .module_tokens
+                    .borrow()
+                    .get(&id)
+                    .cloned()
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                T::Module(token)
+            }
+            TypeKind::Error => {
+                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+            }
+        })
+    }
+    fn body_struct_identity(
+        &self,
+        id: StructId,
+    ) -> Result<
+        crate::NominalInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        let ty = Type::new_struct(id);
+        if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
+            return Ok(crate::NominalInstanceKey::Anonymous(identity));
+        }
+        let def = self.type_pool.struct_def(id);
+        if def.is_builtin || def.name == "str" {
+            return Ok(crate::NominalInstanceKey::Builtin {
+                kind: crate::AnonymousNominalKind::Struct,
+                name: def.name.into(),
+            });
+        }
+        let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
+        Ok(crate::NominalInstanceKey::Named(token))
+    }
+    fn body_enum_identity(
+        &self,
+        id: EnumId,
+    ) -> Result<
+        crate::NominalInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        let ty = Type::new_enum(id);
+        let def = self.type_pool.enum_def(id);
+        if rue_builtins::BUILTIN_ENUMS
+            .iter()
+            .any(|builtin| builtin.name == def.name)
+        {
+            return Ok(crate::NominalInstanceKey::Builtin {
+                kind: crate::AnonymousNominalKind::Enum,
+                name: def.name.into(),
+            });
+        }
+        if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
+            return Ok(crate::NominalInstanceKey::Anonymous(identity));
+        }
+        let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
+        Ok(crate::NominalInstanceKey::Named(token))
+    }
+    fn body_function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        if symbol == self.function_symbol
+            && let Some(identity) = &self.current_anonymous_identity
+        {
+            return Ok(identity.clone());
+        }
+        if let Some(identity) = self.specialized_function_identities.borrow().get(&symbol) {
+            return Ok(identity.clone());
+        }
+        if let Some(identity) = self.anonymous_function_identities.borrow().get(&symbol) {
+            return Ok(identity.clone());
+        }
+        Ok(FunctionInstanceKey::Definition(
+            self.function_identity(symbol)?,
+        ))
+    }
+    fn resolve_publication_symbol(&self, symbol: &Spur) -> &str {
+        self.interner.resolve(symbol)
+    }
+}
+
+struct ProviderBodyHost<'a, P, S, K, M> {
+    endpoint: ProviderEndpointFacts<'a, P, S, K, M>,
+    calls: ProviderCallFacts<'a, P, S, K, M>,
+    aggregate: ProviderAggregateFacts<K, M, S>,
+    state: ProviderBodyAnalysisState<K, M, S>,
+    rir: super::BodyRirView<'a>,
+    interner: Rc<ThreadedRodeo>,
+    type_pool: Rc<TypeInternPool>,
+    known: KnownSymbols,
+    target: Target,
+    preview: PreviewFeatures,
+    owner: crate::BodyOwnerToken,
+    function_symbol: Spur,
+    owner_source_symbol: Spur,
+    owner_kind: crate::StableDefinitionKind,
+    owner_file: FileId,
+    owner_name: Option<Arc<str>>,
+    source: S,
+    key: K,
+    function_infos: RefCell<HashMap<Spur, FunctionCallInfo>>,
+    function_tokens: RefCell<HashMap<Spur, (SemanticDefinitionToken, K)>>,
+    anonymous_definition_tokens: RefCell<HashMap<K, SemanticDefinitionToken>>,
+    function_alias_keys: RefCell<HashMap<Spur, K>>,
+    specialized_function_identities:
+        RefCell<HashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+    observed_comptime_producers:
+        RefCell<HashSet<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+    anonymous_function_identities:
+        RefCell<HashMap<Spur, FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>>,
+    durable_comptime_type_flags: RefCell<HashMap<ParamRange, Vec<bool>>>,
+    durable_param_type_symbols: RefCell<HashMap<ParamRange, Vec<Spur>>>,
+    durable_signature_files: RefCell<HashMap<ParamRange, FileId>>,
+    named_method_infos: RefCell<HashMap<(StructId, Spur), MethodCallInfo>>,
+    const_infos: RefCell<HashMap<(FileId, Spur), ConstInfo>>,
+    observed_named_definitions: RefCell<HashSet<K>>,
+    nominal_tokens: RefCell<HashMap<Type, (SemanticDefinitionToken, K)>>,
+    modules_by_file: RefCell<HashMap<FileId, M>>,
+    module_tokens: RefCell<HashMap<ModuleId, (SemanticModuleToken, M)>>,
+    next_module_file: Cell<u32>,
+    generated_structs: HashMap<Spur, StructId>,
+    generated_enums: HashMap<Spur, EnumId>,
+    anonymous_methods: RefCell<HashMap<(StructId, Spur), MethodCallInfo>>,
+    anonymous_struct_ids: HashSet<StructId>,
+    anonymous_enum_ids: HashSet<EnumId>,
+    anon_struct_identities: HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId>,
+    anon_enum_identities: HashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId>,
+    anonymous_digest_owners: HashMap<u128, super::anon_structs::IssuedAnonymousNominalKey>,
+    canonical_anonymous_types: HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>,
+    consulted_anonymous_types:
+        RefCell<HashMap<Type, super::anon_structs::IssuedAnonymousNominalKey>>,
+    durable_anonymous_types: HashMap<Type, crate::AnonymousNominalKey<K, M>>,
+    anon_struct_method_sigs: HashMap<StructId, Vec<super::AnonMethodSig>>,
+    anon_struct_captured_values: HashMap<StructId, HashMap<Spur, ConstValue>>,
+    anon_struct_type_subst: HashMap<StructId, HashMap<Spur, Type>>,
+    active_anonymous_producer: Option<(
+        super::anon_structs::IssuedStableProducerId,
+        super::anon_structs::IssuedCanonicalArguments,
+    )>,
+    body_work: BodyAnalysisWork,
+    recovered_errors: Vec<CompileError>,
+    inference_failure_incomplete: bool,
+    comptime_depth: usize,
+    deferred_ownership: Vec<super::DeferredOwnershipGate>,
+    ctor_displays: HashMap<Type, String>,
+    current_anonymous_identity:
+        Option<FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>>,
+}
+
+impl<'a, P, S, K, M> ProviderBodyHost<'a, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn issued_anonymous_identity_for_type(
+        &self,
+        ty: Type,
+    ) -> Option<super::anon_structs::IssuedAnonymousNominalKey> {
+        if let Some(identity) = self
+            .canonical_anonymous_types
+            .get(&ty)
+            .cloned()
+            .or_else(|| self.consulted_anonymous_types.borrow().get(&ty).cloned())
+        {
+            return Some(identity);
+        }
+        let durable = self.endpoint.durable_anonymous_identity(ty)?;
+        self.register_anonymous_identity_tokens(&durable)?;
+        let issued = self.issue_consulted_anonymous_identity(&durable)?;
+        self.endpoint
+            .register_anonymous_nominal(issued.clone(), durable);
+        self.consulted_anonymous_types
+            .borrow_mut()
+            .insert(ty, issued.clone());
+        Some(issued)
+    }
+
+    fn new(
+        provider: &'a P,
+        source: S,
+        bundle: &'a BodyRirBundle,
+        key: K,
+        file: FileId,
+        name: &str,
+        owner_kind: crate::StableDefinitionKind,
+        owner_name: Option<&str>,
+        target: Target,
+        preview: PreviewFeatures,
+        well_known: &ProviderWellKnownOptionFacts<K, M>,
+    ) -> Option<Self> {
+        let state = bundle.provider_body_state(source.clone());
+        let rir = bundle.view();
+        let endpoint = ProviderEndpointFacts::with_state(provider, &state, rir.clone());
+        let calls = ProviderCallFacts::with_state(provider, &state, rir.clone());
+        let mut aggregate = ProviderAggregateFacts::with_state(&state);
+        if let Some(locator) = source.definition_source(&key) {
+            if locator.file_id != file {
+                return None;
+            }
+            aggregate.register_file_path(file, &locator.physical_path);
+        }
+        let function_token =
+            endpoint.register_body_owner(key.clone(), file, name, owner_kind, owner_name);
+        let function_symbol = state.identity_context().name_symbol(name);
+        let interner = state.interner();
+        let type_pool = state.type_pool();
+        let known = KnownSymbols::new(&interner);
+        endpoint
+            .install_well_known_option_types(&well_known.nominals, &well_known.option_by_payload)?;
+        endpoint.finalize_containment_metadata()?;
+        let mut host = Self {
+            endpoint,
+            calls,
+            aggregate,
+            state,
+            rir,
+            interner,
+            type_pool,
+            known,
+            target,
+            preview,
+            owner: crate::BodyOwnerToken::new(function_token.issuer(), function_token.slot()),
+            function_symbol,
+            owner_source_symbol: function_symbol,
+            owner_kind,
+            owner_file: file,
+            owner_name: owner_name.map(Arc::from),
+            source,
+            key: key.clone(),
+            function_infos: RefCell::new(HashMap::new()),
+            function_tokens: RefCell::new(HashMap::from([(
+                function_symbol,
+                (function_token, key),
+            )])),
+            anonymous_definition_tokens: RefCell::new(HashMap::new()),
+            function_alias_keys: RefCell::new(HashMap::new()),
+            specialized_function_identities: RefCell::new(HashMap::new()),
+            observed_comptime_producers: RefCell::new(HashSet::new()),
+            anonymous_function_identities: RefCell::new(HashMap::new()),
+            durable_comptime_type_flags: RefCell::new(HashMap::new()),
+            durable_param_type_symbols: RefCell::new(HashMap::new()),
+            durable_signature_files: RefCell::new(HashMap::new()),
+            named_method_infos: RefCell::new(HashMap::new()),
+            const_infos: RefCell::new(HashMap::new()),
+            observed_named_definitions: RefCell::new(HashSet::new()),
+            nominal_tokens: RefCell::new(HashMap::new()),
+            modules_by_file: RefCell::new(HashMap::new()),
+            module_tokens: RefCell::new(HashMap::new()),
+            next_module_file: Cell::new(u32::MAX),
+            generated_structs: HashMap::new(),
+            generated_enums: HashMap::new(),
+            anonymous_methods: RefCell::new(HashMap::new()),
+            anonymous_struct_ids: HashSet::new(),
+            anonymous_enum_ids: HashSet::new(),
+            anon_struct_identities: HashMap::new(),
+            anon_enum_identities: HashMap::new(),
+            anonymous_digest_owners: HashMap::new(),
+            canonical_anonymous_types: HashMap::new(),
+            consulted_anonymous_types: RefCell::new(HashMap::new()),
+            durable_anonymous_types: HashMap::new(),
+            anon_struct_method_sigs: HashMap::new(),
+            anon_struct_captured_values: HashMap::new(),
+            anon_struct_type_subst: HashMap::new(),
+            active_anonymous_producer: None,
+            body_work: BodyAnalysisWork::default(),
+            recovered_errors: Vec::new(),
+            inference_failure_incomplete: false,
+            comptime_depth: 0,
+            deferred_ownership: Vec::new(),
+            ctor_displays: HashMap::new(),
+            current_anonymous_identity: None,
+        };
+        for identity in &well_known.nominals {
+            host.install_canonical_anonymous_identity(identity)?;
+        }
+        Some(host)
+    }
+
+    fn durable_signature_type_syntax(
+        &self,
+        ty: &crate::SemanticImportType<K, M>,
+        parameters: &[crate::DurableSignatureParameter<K, M>],
+    ) -> Option<String> {
+        use crate::SemanticImportType as T;
+        Some(match ty {
+            T::I8 => "i8".to_owned(),
+            T::I16 => "i16".to_owned(),
+            T::I32 => "i32".to_owned(),
+            T::I64 => "i64".to_owned(),
+            T::U8 => "u8".to_owned(),
+            T::U16 => "u16".to_owned(),
+            T::U32 => "u32".to_owned(),
+            T::U64 => "u64".to_owned(),
+            T::Bool => "bool".to_owned(),
+            T::Unit => "()".to_owned(),
+            T::Never => "!".to_owned(),
+            T::ComptimeType => "type".to_owned(),
+            T::BuiltinNominal { name, .. } => name.to_string(),
+            T::Nominal(definition) => self.source.definition_name(definition)?,
+            T::AnonymousNominal(_) => return None,
+            T::Array { element, len } => format!(
+                "[{}; {len}]",
+                self.durable_signature_type_syntax(element, parameters)?
+            ),
+            T::PtrConst(pointee) => format!(
+                "*const {}",
+                self.durable_signature_type_syntax(pointee, parameters)?
+            ),
+            T::PtrMut(pointee) => format!(
+                "*mut {}",
+                self.durable_signature_type_syntax(pointee, parameters)?
+            ),
+            T::Slice { name, .. } => name.to_string(),
+            T::Module(module) => self.source.module_path(module),
+            T::GenericParameter(index) => parameters.get(*index as usize)?.name.to_string(),
+        })
+    }
+
+    fn durable_signature_type_symbol(
+        &self,
+        ty: &crate::SemanticImportType<K, M>,
+        parameters: &[crate::DurableSignatureParameter<K, M>],
+    ) -> Option<Spur> {
+        if let Some(syntax) = self.durable_signature_type_syntax(ty, parameters) {
+            return Some(self.interner.get_or_intern(&syntax));
+        }
+        let resolved = self
+            .state
+            .identity_context()
+            .pool_mut()?
+            .resolve_provider_type(ty)
+            .ok()?;
+        Some(
+            self.interner
+                .get_or_intern(&resolved.safe_name_with_pool(Some(&self.type_pool))),
+        )
+    }
+
+    fn install_durable_callable_metadata(
+        &self,
+        info: FunctionCallInfo,
+        function: &crate::DurableFunction<K, M>,
+        retain_rir_type_syntax: bool,
+        exact_type_syntax: Option<&(Vec<Arc<str>>, Arc<str>)>,
+        signature_file: FileId,
+    ) {
+        self.durable_comptime_type_flags.borrow_mut().insert(
+            info.params,
+            function
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    parameter.is_comptime
+                        && matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
+                })
+                .collect(),
+        );
+        if !retain_rir_type_syntax {
+            self.durable_signature_files
+                .borrow_mut()
+                .insert(info.params, signature_file);
+            let symbols = exact_type_syntax
+                .map(|syntax| {
+                    syntax
+                        .0
+                        .iter()
+                        .map(|ty| self.signature_type_symbol(ty))
+                        .collect()
+                })
+                .or_else(|| {
+                    function
+                        .parameters
+                        .iter()
+                        .map(|parameter| {
+                            self.durable_signature_type_syntax(&parameter.ty, &function.parameters)
+                                .map(|syntax| self.interner.get_or_intern(&syntax))
+                        })
+                        .collect::<Option<Vec<_>>>()
+                });
+            if let Some(symbols) = symbols {
+                self.durable_param_type_symbols
+                    .borrow_mut()
+                    .insert(info.params, symbols);
+            }
+        }
+    }
+
+    /// Retain the declaration's exact spelling. The owning file is carried
+    /// separately in `durable_signature_files`, so dependent syntax resolves
+    /// against the declaration module without fabricating a user-visible root
+    /// binding.
+    fn signature_type_symbol(&self, syntax: &str) -> Spur {
+        self.interner.get_or_intern(syntax)
+    }
+
+    fn current_callable_locator(&self) -> Option<(InstRef, InstRef, Span)> {
+        let name = self.interner.resolve(&self.owner_source_symbol);
+        let declaration = match self.owner_kind {
+            crate::StableDefinitionKind::Function => {
+                self.endpoint.first_free_function(name, self.owner_file)?
+            }
+            crate::StableDefinitionKind::Method
+            | crate::StableDefinitionKind::AssociatedFunction => self
+                .endpoint
+                .named_method_declaration(self.owner_file, self.owner_name.as_deref()?, name)?,
+            crate::StableDefinitionKind::Destructor => self
+                .endpoint
+                .destructor(self.owner_file, self.owner_name.as_deref()?)?,
+            _ => return None,
+        };
+        let instruction = self.rir.rir().get(declaration);
+        let body = match instruction.data {
+            InstData::FnDecl { body, .. } | InstData::DropFnDecl { body, .. } => body,
+            _ => return None,
+        };
+        Some((body, declaration, instruction.span))
+    }
+
+    fn is_accessible(
+        &self,
+        accessing_file: FileId,
+        defining_file: FileId,
+        is_public: bool,
+    ) -> bool {
+        let domain = |file| {
+            self.source.source_path(file).map_or_else(
+                || AggregateFactsTrait::visibility_domain(&self.aggregate, file),
+                |path| crate::SemanticVisibilityDomain::from_file_path(Some(&path)),
+            )
+        };
+        domain(defining_file).is_visible_from(&domain(accessing_file), is_public)
+    }
+
+    fn function_info_for_symbol(&self, symbol: Spur) -> Option<FunctionCallInfo> {
+        if let Some(info) = self.function_infos.borrow().get(&symbol).copied() {
+            return Some(info);
+        }
+        if symbol == self.function_symbol {
+            return self
+                .endpoint
+                .function_info(symbol)
+                .map(FunctionCallInfo::from_body);
+        }
+        let (key, file, name) =
+            if let Some(key) = self.function_alias_keys.borrow().get(&symbol).cloned() {
+                let file = match self.source.foreign_function_module(&self.key, &key) {
+                    Some(module) => self.register_module_target(module)?.1,
+                    None => self.owner_file,
+                };
+                let name = self.source.definition_name(&key)?;
+                (key, file, name)
+            } else {
+                let name = self.interner.resolve(&symbol);
+                (
+                    self.source.free_function(&self.key, name)?,
+                    self.owner_file,
+                    name.to_owned(),
+                )
+            };
+        let function = DurableCallableSource::function(&self.source, &key)?;
+        for parameter in &function.parameters {
+            if !super::body_identity::semantic_import_type_mentions_generic_parameter(&parameter.ty)
+            {
+                self.register_import_nominal_identities(&parameter.ty)
+                    .ok()?;
+            }
+        }
+        if !super::body_identity::semantic_import_type_mentions_generic_parameter(&function.result)
+        {
+            self.register_import_nominal_identities(&function.result)
+                .ok()?;
+        }
+        let exact_type_syntax = self.source.callable_type_syntax(&key);
+        let return_type_sym = if let Some(syntax) = &exact_type_syntax {
+            self.signature_type_symbol(&syntax.1)
+        } else {
+            self.durable_signature_type_symbol(&function.result, &function.parameters)?
+        };
+        let info = self
+            .state
+            .identity_context()
+            .pool_mut()?
+            .resolve_function_call(&key, return_type_sym, file)
+            .ok()?;
+        self.install_durable_callable_metadata(
+            info,
+            &function,
+            false,
+            exact_type_syntax.as_ref(),
+            file,
+        );
+        let token = self.endpoint.register_function(key.clone(), file, &name);
+        self.function_infos.borrow_mut().insert(symbol, info);
+        self.function_tokens
+            .borrow_mut()
+            .insert(symbol, (token, key));
+        Some(info)
+    }
+
+    fn issue_consulted_anonymous_identity(
+        &self,
+        durable: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<super::anon_structs::IssuedAnonymousNominalKey> {
+        durable
+            .try_map_identities(
+                &|definition| {
+                    self.anonymous_definition_tokens
+                        .borrow()
+                        .get(definition)
+                        .copied()
+                        .ok_or(())
+                },
+                &|module| {
+                    self.module_tokens
+                        .borrow()
+                        .values()
+                        .find_map(|(token, candidate)| (candidate == module).then_some(*token))
+                        .ok_or(())
+                },
+            )
+            .ok()
+    }
+
+    fn register_anonymous_identity_tokens(
+        &self,
+        durable: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<()> {
+        durable
+            .try_map_identities(
+                &|definition| {
+                    if self
+                        .anonymous_definition_tokens
+                        .borrow()
+                        .contains_key(definition)
+                    {
+                        return Ok::<(), ()>(());
+                    }
+                    let name = self.source.definition_name(definition).ok_or(())?;
+                    let kind = self.source.definition_kind(definition).ok_or(())?;
+                    let file = match self.source.foreign_definition_module(&self.key, definition) {
+                        Some(module) => self.register_module_target(module).ok_or(())?.1,
+                        None => self.owner_file,
+                    };
+                    let token = match kind {
+                        crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum => {
+                            self.endpoint.register_named_nominal(
+                                definition.clone(),
+                                file.index(),
+                                &name,
+                                kind,
+                            )
+                        }
+                        crate::StableDefinitionKind::Function => {
+                            self.endpoint
+                                .register_function(definition.clone(), file, &name)
+                        }
+                        crate::StableDefinitionKind::ValueConst
+                        | crate::StableDefinitionKind::ModuleBinding
+                        | crate::StableDefinitionKind::Destructor
+                        | crate::StableDefinitionKind::Method
+                        | crate::StableDefinitionKind::AssociatedFunction => {
+                            let owner = self.source.definition_owner_name(definition);
+                            self.endpoint.register_body_owner(
+                                definition.clone(),
+                                file,
+                                &name,
+                                kind,
+                                owner.as_deref(),
+                            )
+                        }
+                    };
+                    self.anonymous_definition_tokens
+                        .borrow_mut()
+                        .insert(definition.clone(), token);
+                    Ok::<(), ()>(())
+                },
+                &|module| {
+                    self.register_module_target(module.clone()).ok_or(())?;
+                    Ok::<(), ()>(())
+                },
+            )
+            .ok()
+            .map(|_| ())
+    }
+
+    fn install_canonical_anonymous_identity(
+        &mut self,
+        durable: &crate::AnonymousNominalKey<K, M>,
+    ) -> Option<Type> {
+        self.register_anonymous_identity_tokens(durable)?;
+        let issued = self.issue_consulted_anonymous_identity(durable)?;
+        self.endpoint
+            .register_anonymous_nominal(issued.clone(), durable.clone());
+        let ty = self.endpoint.mint_anonymous(durable)?;
+        self.canonical_anonymous_types.insert(ty, issued.clone());
+        self.durable_anonymous_types.insert(ty, durable.clone());
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                self.anon_struct_identities.insert(issued, id);
+                self.anonymous_struct_ids.insert(id);
+            }
+            TypeKind::Enum(id) => {
+                self.anon_enum_identities.insert(issued, id);
+                self.anonymous_enum_ids.insert(id);
+            }
+            _ => return None,
+        }
+        self.install_provider_anonymous_methods(durable, ty)?;
+        Some(ty)
+    }
+
+    fn function_for_file_symbol(&self, file: FileId, source_symbol: Spur) -> Option<Spur> {
+        if file == self.owner_file {
+            self.function_info_for_symbol(source_symbol)?;
+            return Some(source_symbol);
+        }
+        let module = self.modules_by_file.borrow().get(&file)?.clone();
+        let name = self.interner.resolve(&source_symbol);
+        let internal = self
+            .interner
+            .get_or_intern(&format!("{}${name}", self.source.module_path(&module)));
+        if self.function_infos.borrow().contains_key(&internal) {
+            return Some(internal);
+        }
+        let key = self.source.qualified_free_function(&module, name)?;
+        let function = DurableCallableSource::function(&self.source, &key)?;
+        for parameter in &function.parameters {
+            if !super::body_identity::semantic_import_type_mentions_generic_parameter(&parameter.ty)
+            {
+                self.register_import_nominal_identities(&parameter.ty)
+                    .ok()?;
+            }
+        }
+        if !super::body_identity::semantic_import_type_mentions_generic_parameter(&function.result)
+        {
+            self.register_import_nominal_identities(&function.result)
+                .ok()?;
+        }
+        let exact_type_syntax = self.source.callable_type_syntax(&key);
+        let return_type_sym = exact_type_syntax
+            .as_ref()
+            .map(|syntax| self.signature_type_symbol(&syntax.1))
+            .or_else(|| {
+                self.durable_signature_type_symbol(&function.result, &function.parameters)
+            })?;
+        let info = self
+            .state
+            .identity_context()
+            .pool_mut()?
+            .resolve_function_call(&key, return_type_sym, file)
+            .ok()?;
+        self.install_durable_callable_metadata(
+            info,
+            &function,
+            false,
+            exact_type_syntax.as_ref(),
+            file,
+        );
+        let token = self.endpoint.register_function(key.clone(), file, name);
+        self.function_infos.borrow_mut().insert(internal, info);
+        self.function_tokens
+            .borrow_mut()
+            .insert(internal, (token, key));
+        Some(internal)
+    }
+
+    fn register_module_target(&self, target: M) -> Option<(ModuleId, FileId)> {
+        if let Some((id, (_, _))) = self
+            .module_tokens
+            .borrow()
+            .iter()
+            .find(|(_, (_, module))| module == &target)
+        {
+            let id = *id;
+            let file = self.calls.module_def(id)?.file_id;
+            return Some((id, file));
+        }
+        let locator = self.source.module_source(&target);
+        let file = locator.as_ref().map_or_else(
+            || {
+                let mut candidate = self.next_module_file.get();
+                while candidate == self.owner_file.index()
+                    || self
+                        .modules_by_file
+                        .borrow()
+                        .contains_key(&FileId::new(candidate))
+                {
+                    candidate = candidate.checked_sub(1)?;
+                }
+                self.next_module_file.set(candidate.saturating_sub(1));
+                Some(FileId::new(candidate))
+            },
+            |locator| Some(locator.file_id),
+        )?;
+        let physical_path = locator
+            .map(|locator| locator.physical_path.to_string())
+            .unwrap_or_else(|| self.source.module_path(&target));
+        let logical_path = self.source.module_path(&target);
+        let token = self.endpoint.register_module(
+            target.clone(),
+            file,
+            &physical_path,
+            &logical_path,
+            &logical_path,
+        )?;
+        let id = self.calls.register_module(
+            target.clone(),
+            file,
+            &physical_path,
+            &logical_path,
+            &logical_path,
+        )?;
+        self.aggregate.register_module(
+            target.clone(),
+            file,
+            &physical_path,
+            &logical_path,
+            &logical_path,
+        )?;
+        self.modules_by_file
+            .borrow_mut()
+            .insert(file, target.clone());
+        self.module_tokens.borrow_mut().insert(id, (token, target));
+        Some((id, file))
+    }
+
+    fn module_binding_for_symbol(&self, file: FileId, symbol: Spur) -> Option<ConstInfo> {
+        let name = self.interner.resolve(&symbol);
+        if let Some(info) = self.calls.module_binding(file, name) {
+            return Some(info);
+        }
+        let binding = if file == self.owner_file {
+            self.source.root_module_binding(&self.key, name)?
+        } else {
+            let module = self.modules_by_file.borrow().get(&file)?.clone();
+            self.source.module_binding(&module, name)?
+        };
+        let (module, _) = self.register_module_target(binding.target)?;
+        let ty = Type::new_module(module);
+        let info = ConstInfo {
+            is_pub: binding.is_public,
+            ty,
+            value: ConstValue::Type(ty),
+            span: if file == self.owner_file {
+                self.current_callable_locator()?.2
+            } else {
+                Span::point_in_file(file, 0)
+            },
+        };
+        self.calls.register_module_binding(file, name, info.clone());
+        self.aggregate
+            .register_module_binding(file, name, info.clone());
+        Some(info)
+    }
+
+    fn function_token_for_symbol(&self, symbol: Spur) -> Option<(SemanticDefinitionToken, K)> {
+        if let Some(token) = self.function_tokens.borrow().get(&symbol).cloned() {
+            return Some(token);
+        }
+        self.function_info_for_symbol(symbol)?;
+        self.function_tokens.borrow().get(&symbol).cloned()
+    }
+
+    fn named_method_info_for_symbol(
+        &self,
+        struct_id: StructId,
+        symbol: Spur,
+    ) -> Option<MethodCallInfo> {
+        if let Some(info) = self
+            .named_method_infos
+            .borrow()
+            .get(&(struct_id, symbol))
+            .copied()
+        {
+            return Some(info);
+        }
+        let owner_type = Type::new_struct(struct_id);
+        let receiver_key = self
+            .nominal_tokens
+            .borrow()
+            .get(&owner_type)
+            .map(|(_, key)| key.clone())
+            .or_else(|| self.endpoint.durable_named_identity(owner_type))?;
+        let owner = self.source.definition_name(&receiver_key)?;
+        let name = self.interner.resolve(&symbol);
+        let self_key = self.source.named_member(&receiver_key, &owner, name, true);
+        let static_key = self.source.named_member(&receiver_key, &owner, name, false);
+        let (key, has_self) = match (self_key, static_key) {
+            (Some(key), None) => (key, true),
+            (None, Some(key)) => (key, false),
+            _ => return None,
+        };
+        let info = self.calls.method_signature_info(&key)?;
+        let callable_owner = self.type_pool.struct_symbol_name(struct_id);
+        let full_name = if has_self {
+            format!("{callable_owner}.{name}")
+        } else {
+            format!("{callable_owner}::{name}")
+        };
+        let full_symbol = self.interner.get_or_intern(&full_name);
+        let token = self.endpoint.register_body_owner(
+            key.clone(),
+            self.owner_file,
+            name,
+            if has_self {
+                crate::StableDefinitionKind::Method
+            } else {
+                crate::StableDefinitionKind::AssociatedFunction
+            },
+            Some(&owner),
+        );
+        self.function_tokens
+            .borrow_mut()
+            .insert(full_symbol, (token, key));
+        self.named_method_infos
+            .borrow_mut()
+            .insert((struct_id, symbol), info);
+        Some(info)
+    }
+
+    fn named_method_definition(&self, struct_id: StructId, symbol: Spur) -> Option<K> {
+        if self
+            .anonymous_methods
+            .borrow()
+            .contains_key(&(struct_id, symbol))
+        {
+            return None;
+        }
+        let info = self.named_method_info_for_symbol(struct_id, symbol)?;
+        let callable_owner = self.type_pool.struct_symbol_name(struct_id);
+        let full_name = if info.has_self {
+            format!("{callable_owner}.{}", self.interner.resolve(&symbol))
+        } else {
+            format!("{callable_owner}::{}", self.interner.resolve(&symbol))
+        };
+        let full_symbol = self.interner.get_or_intern(&full_name);
+        self.function_tokens
+            .borrow()
+            .get(&full_symbol)
+            .map(|(_, key)| key.clone())
+    }
+
+    fn method_info_for_symbol(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
+        if let Some(info) = self
+            .anonymous_methods
+            .borrow()
+            .get(&(struct_id, name))
+            .copied()
+        {
+            return Some(info);
+        }
+        if let Some(info) = self
+            .endpoint
+            .method_info(struct_id, name)
+            .map(MethodCallInfo::from_body)
+            .or_else(|| self.named_method_info_for_symbol(struct_id, name))
+        {
+            return Some(info);
+        }
+        let owner_type = Type::new_struct(struct_id);
+        let identity = self
+            .durable_anonymous_types
+            .get(&owner_type)
+            .cloned()
+            .or_else(|| self.endpoint.durable_anonymous_identity(owner_type))?;
+        self.register_anonymous_identity_tokens(&identity)?;
+        self.register_provider_anonymous_method_endpoints(&identity, owner_type)?;
+        self.anonymous_methods
+            .borrow()
+            .get(&(struct_id, name))
+            .copied()
+            .or_else(|| {
+                self.endpoint
+                    .method_info(struct_id, name)
+                    .map(MethodCallInfo::from_body)
+            })
+    }
+
+    fn const_info_for_symbol(&self, file: FileId, symbol: Spur) -> Option<ConstInfo> {
+        if let Some(info) = self.const_infos.borrow().get(&(file, symbol)).cloned() {
+            return Some(info);
+        }
+        let name = self.interner.resolve(&symbol);
+        let key = if file == self.owner_file {
+            self.source.value_const(&self.key, name)?
+        } else {
+            let module = self.modules_by_file.borrow().get(&file)?.clone();
+            self.source.qualified_value_const(&module, name)?
+        };
+        self.observed_named_definitions
+            .borrow_mut()
+            .insert(key.clone());
+        let constant = self.source.constant(&key)?;
+        let function = match &constant.value {
+            crate::SemanticImportConstValue::Function(function) => Some(function.clone()),
+            _ => None,
+        };
+        let span = if file == self.owner_file {
+            self.current_callable_locator()?.2
+        } else {
+            Span::point_in_file(file, 0)
+        };
+        self.register_import_nominal_identities(&constant.ty).ok()?;
+        if let crate::SemanticImportConstValue::Type(ty) = &constant.value {
+            self.register_import_nominal_identities(ty).ok()?;
+        }
+        let mut info = self
+            .state
+            .identity_context()
+            .pool_mut()?
+            .resolve_const(&key, super::body_identity::ConstIdentityHandle { span })
+            .ok()?;
+        if let (
+            crate::SemanticImportConstValue::Type(crate::SemanticImportType::AnonymousNominal(
+                identity,
+            )),
+            ConstValue::Type(resolved),
+        ) = (&constant.value, info.value)
+        {
+            self.register_provider_anonymous_method_endpoints(identity, resolved)?;
+        }
+        if let Some(function) = function {
+            let source_symbol = info.value.as_function()?;
+            let alias_symbol =
+                if let Some(module) = self.source.foreign_function_module(&self.key, &function) {
+                    self.interner.get_or_intern(&format!(
+                        "{}${}",
+                        self.source.module_path(&module),
+                        self.source.definition_name(&function)?
+                    ))
+                } else {
+                    source_symbol
+                };
+            info.value = ConstValue::Function(alias_symbol);
+            self.function_alias_keys
+                .borrow_mut()
+                .insert(alias_symbol, function);
+        }
+        self.const_infos
+            .borrow_mut()
+            .insert((file, symbol), info.clone());
+        Some(info)
+    }
+
+    fn nominal_type_for_symbol(&self, file: FileId, symbol: Spur) -> Option<Type> {
+        if let Some(id) = self.generated_structs.get(&symbol) {
+            return Some(Type::new_struct(*id));
+        }
+        if let Some(id) = self.generated_enums.get(&symbol) {
+            return Some(Type::new_enum(*id));
+        }
+        if let Some(id) = self.endpoint.builtin_or_generated_struct(symbol) {
+            return Some(Type::new_struct(id));
+        }
+        if let Some(id) = self.endpoint.builtin_enum(symbol) {
+            return Some(Type::new_enum(id));
+        }
+        let name = self.interner.resolve(&symbol);
+        let (key, kind) = if file == self.owner_file {
+            DurableBodyLookupSource::nominal(&self.source, &self.key, name)?
+        } else {
+            let module = self.modules_by_file.borrow().get(&file)?.clone();
+            self.source.qualified_nominal(&module, name)?
+        };
+        let token = self
+            .endpoint
+            .register_named_nominal(key.clone(), file.index(), name, kind);
+        let imported = crate::SemanticImportType::Nominal(key.clone());
+        self.register_import_nominal_identities(&imported).ok()?;
+        let ty = self
+            .state
+            .identity_context()
+            .pool_mut()?
+            .resolve_provider_type(&imported)
+            .ok()?;
+        match kind {
+            crate::StableDefinitionKind::Struct if ty.as_struct().is_some() => {}
+            crate::StableDefinitionKind::Enum if ty.as_enum().is_some() => {}
+            _ => return None,
+        }
+        self.nominal_tokens.borrow_mut().insert(ty, (token, key));
+        Some(ty)
+    }
+
+    fn ensure_named_nominal_identity(
+        &self,
+        ty: Type,
+        name: &str,
+    ) -> Result<(SemanticDefinitionToken, K), crate::SemanticBodyExportFailure> {
+        if let Some(identity) = self.nominal_tokens.borrow().get(&ty).cloned() {
+            return Ok(identity);
+        }
+        if let Some(key) = self.endpoint.durable_named_identity(ty) {
+            let nominal = DurableNominalSource::nominal(&self.source, &key)
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            let kind = match nominal.body {
+                crate::DurableNominalBody::Struct { .. } => crate::StableDefinitionKind::Struct,
+                crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
+            };
+            let token = self.endpoint.register_named_nominal(
+                key.clone(),
+                self.owner_file.index(),
+                nominal.name.as_ref(),
+                kind,
+            );
+            self.nominal_tokens
+                .borrow_mut()
+                .insert(ty, (token, key.clone()));
+            return Ok((token, key));
+        }
+        let Some((key, kind)) = DurableBodyLookupSource::nominal(&self.source, &self.key, name)
+        else {
+            return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+        };
+        let token =
+            self.endpoint
+                .register_named_nominal(key.clone(), self.owner_file.index(), name, kind);
+        self.nominal_tokens
+            .borrow_mut()
+            .insert(ty, (token, key.clone()));
+        Ok((token, key))
+    }
+
+    fn materialize_type_instance(
+        &mut self,
+        value: &TypeInstanceKey<K, M>,
+    ) -> Result<Type, crate::SemanticBodyExportFailure> {
+        use crate::NominalInstanceKey as N;
+        use crate::SemanticImportType as S;
+        use crate::TypeInstanceKey as T;
+        let import = match value {
+            T::I8 => S::I8,
+            T::I16 => S::I16,
+            T::I32 => S::I32,
+            T::I64 => S::I64,
+            T::U8 => S::U8,
+            T::U16 => S::U16,
+            T::U32 => S::U32,
+            T::U64 => S::U64,
+            T::Bool => S::Bool,
+            T::Unit => S::Unit,
+            T::Never => S::Never,
+            T::ComptimeType => S::ComptimeType,
+            T::BuiltinNominal { kind, name } => S::BuiltinNominal {
+                kind: match kind {
+                    crate::AnonymousNominalKind::Struct => crate::SemanticImportNominalKind::Struct,
+                    crate::AnonymousNominalKind::Enum => crate::SemanticImportNominalKind::Enum,
+                },
+                name: name.clone(),
+            },
+            T::Nominal(N::Builtin { kind, name }) => S::BuiltinNominal {
+                kind: match kind {
+                    crate::AnonymousNominalKind::Struct => crate::SemanticImportNominalKind::Struct,
+                    crate::AnonymousNominalKind::Enum => crate::SemanticImportNominalKind::Enum,
+                },
+                name: name.clone(),
+            },
+            T::Nominal(N::Named(key)) => S::Nominal(key.clone()),
+            T::Nominal(N::Anonymous(identity)) => {
+                let ty = self
+                    .install_canonical_anonymous_identity(identity)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                return Ok(ty);
+            }
+            T::Array { element, len } => S::Array {
+                element: Box::new(self.type_instance_import(element)?),
+                len: *len,
+            },
+            T::Slice { element, name } => S::Slice {
+                element: Box::new(self.type_instance_import(element)?),
+                name: name.clone(),
+            },
+            T::PtrConst(inner) => S::PtrConst(Box::new(self.type_instance_import(inner)?)),
+            T::PtrMut(inner) => S::PtrMut(Box::new(self.type_instance_import(inner)?)),
+            T::Module(module) => {
+                let (id, _) = self
+                    .register_module_target(module.clone())
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                return Ok(Type::new_module(id));
+            }
+            T::GenericParameter(_) => {
+                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+            }
+        };
+        self.install_anonymous_dependencies(&import, &mut HashSet::new())?;
+        let ty = self
+            .state
+            .identity_context()
+            .pool_mut()
+            .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
+            .resolve_provider_type(&import)
+            .map_err(|_| crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+        self.register_import_nominal_identities(&import)?;
+        if let T::Nominal(N::Named(key)) = value {
+            let nominal = DurableNominalSource::nominal(&self.source, key)
+                .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            let kind = match nominal.body {
+                crate::DurableNominalBody::Struct { .. } => crate::StableDefinitionKind::Struct,
+                crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
+            };
+            let token = self.endpoint.register_named_nominal(
+                key.clone(),
+                self.owner_file.index(),
+                nominal.name.as_ref(),
+                kind,
+            );
+            self.nominal_tokens
+                .borrow_mut()
+                .insert(ty, (token, key.clone()));
+        }
+        Ok(ty)
+    }
+
+    fn install_anonymous_dependencies(
+        &mut self,
+        value: &crate::SemanticImportType<K, M>,
+        visited_named: &mut HashSet<K>,
+    ) -> Result<(), crate::SemanticBodyExportFailure> {
+        use crate::SemanticImportType as T;
+        match value {
+            T::AnonymousNominal(identity) => {
+                self.install_canonical_anonymous_identity(identity)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            }
+            T::Nominal(key) if visited_named.insert(key.clone()) => {
+                let nominal = DurableNominalSource::nominal(&self.source, key)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                match nominal.body {
+                    crate::DurableNominalBody::Struct { fields, .. } => {
+                        for (_, field) in fields {
+                            self.install_anonymous_dependencies(&field, visited_named)?;
+                        }
+                    }
+                    crate::DurableNominalBody::Enum { variants } => {
+                        for (_, payload) in variants {
+                            for field in payload {
+                                self.install_anonymous_dependencies(&field, visited_named)?;
+                            }
+                        }
+                    }
+                }
+            }
+            T::Array { element, .. }
+            | T::Slice { element, .. }
+            | T::PtrConst(element)
+            | T::PtrMut(element) => {
+                self.install_anonymous_dependencies(element, visited_named)?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn register_import_nominal_identities(
+        &self,
+        value: &crate::SemanticImportType<K, M>,
+    ) -> Result<(), crate::SemanticBodyExportFailure> {
+        use crate::SemanticImportType as T;
+        match value {
+            T::Nominal(key) => {
+                let nominal = DurableNominalSource::nominal(&self.source, key)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                let kind = match &nominal.body {
+                    crate::DurableNominalBody::Struct { .. } => crate::StableDefinitionKind::Struct,
+                    crate::DurableNominalBody::Enum { .. } => crate::StableDefinitionKind::Enum,
+                };
+                let ty = self
+                    .state
+                    .identity_context()
+                    .pool_mut()
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?
+                    .resolve_provider_type(value)
+                    .map_err(|_| crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                let token = self.endpoint.register_named_nominal(
+                    key.clone(),
+                    self.owner_file.index(),
+                    nominal.name.as_ref(),
+                    kind,
+                );
+                let already_registered = self.nominal_tokens.borrow().contains_key(&ty);
+                self.nominal_tokens
+                    .borrow_mut()
+                    .insert(ty, (token, key.clone()));
+                if already_registered {
+                    return Ok(());
+                }
+                match &nominal.body {
+                    crate::DurableNominalBody::Struct { fields, .. } => {
+                        for (_, field) in fields {
+                            self.register_import_nominal_identities(field)?;
+                        }
+                    }
+                    crate::DurableNominalBody::Enum { variants } => {
+                        for (_, payload) in variants {
+                            for field in payload {
+                                self.register_import_nominal_identities(field)?;
+                            }
+                        }
+                    }
+                }
+            }
+            T::Array { element, .. }
+            | T::Slice { element, .. }
+            | T::PtrConst(element)
+            | T::PtrMut(element) => self.register_import_nominal_identities(element)?,
+            T::I8
+            | T::I16
+            | T::I32
+            | T::I64
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::Bool
+            | T::Unit
+            | T::Never
+            | T::ComptimeType
+            | T::BuiltinNominal { .. }
+            | T::Module(_)
+            | T::GenericParameter(_) => {}
+            T::AnonymousNominal(identity) => {
+                self.register_anonymous_identity_tokens(identity)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                let issued = self
+                    .issue_consulted_anonymous_identity(identity)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                self.endpoint
+                    .register_anonymous_nominal(issued.clone(), identity.clone());
+                let ty = self
+                    .endpoint
+                    .mint_anonymous(identity)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                self.consulted_anonymous_types
+                    .borrow_mut()
+                    .insert(ty, issued);
+                self.register_provider_anonymous_method_endpoints(identity, ty)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn type_instance_import(
+        &self,
+        value: &TypeInstanceKey<K, M>,
+    ) -> Result<crate::SemanticImportType<K, M>, crate::SemanticBodyExportFailure> {
+        use crate::NominalInstanceKey as N;
+        use crate::SemanticImportType as S;
+        use crate::TypeInstanceKey as T;
+        Ok(match value {
+            T::I8 => S::I8,
+            T::I16 => S::I16,
+            T::I32 => S::I32,
+            T::I64 => S::I64,
+            T::U8 => S::U8,
+            T::U16 => S::U16,
+            T::U32 => S::U32,
+            T::U64 => S::U64,
+            T::Bool => S::Bool,
+            T::Unit => S::Unit,
+            T::Never => S::Never,
+            T::ComptimeType => S::ComptimeType,
+            T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name }) => {
+                S::BuiltinNominal {
+                    kind: match kind {
+                        crate::AnonymousNominalKind::Struct => {
+                            crate::SemanticImportNominalKind::Struct
+                        }
+                        crate::AnonymousNominalKind::Enum => crate::SemanticImportNominalKind::Enum,
+                    },
+                    name: name.clone(),
+                }
+            }
+            T::Nominal(N::Named(key)) => S::Nominal(key.clone()),
+            T::Nominal(N::Anonymous(identity)) => S::AnonymousNominal(identity.clone()),
+            T::Array { element, len } => S::Array {
+                element: Box::new(self.type_instance_import(element)?),
+                len: *len,
+            },
+            T::Slice { element, name } => S::Slice {
+                element: Box::new(self.type_instance_import(element)?),
+                name: name.clone(),
+            },
+            T::PtrConst(inner) => S::PtrConst(Box::new(self.type_instance_import(inner)?)),
+            T::PtrMut(inner) => S::PtrMut(Box::new(self.type_instance_import(inner)?)),
+            T::Module(module) => S::Module(module.clone()),
+            T::GenericParameter(index) => S::GenericParameter(*index),
+        })
+    }
+
+    fn durable_type_from_concrete(&self, ty: Type) -> Option<crate::SemanticImportType<K, M>> {
+        use crate::SemanticImportType as T;
+        Some(match ty.kind() {
+            TypeKind::I8 => T::I8,
+            TypeKind::I16 => T::I16,
+            TypeKind::I32 => T::I32,
+            TypeKind::I64 => T::I64,
+            TypeKind::U8 => T::U8,
+            TypeKind::U16 => T::U16,
+            TypeKind::U32 => T::U32,
+            TypeKind::U64 => T::U64,
+            TypeKind::Bool => T::Bool,
+            TypeKind::Unit => T::Unit,
+            TypeKind::Never => T::Never,
+            TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                T::Array {
+                    element: Box::new(self.durable_type_from_concrete(element)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => T::PtrConst(Box::new(
+                self.durable_type_from_concrete(self.type_pool.ptr_const_def(id))?,
+            )),
+            TypeKind::PtrMut(id) => T::PtrMut(Box::new(
+                self.durable_type_from_concrete(self.type_pool.ptr_mut_def(id))?,
+            )),
+            TypeKind::Struct(_) | TypeKind::Enum(_) => {
+                if let Some(identity) = self.durable_anonymous_types.get(&ty).cloned() {
+                    T::AnonymousNominal(identity)
+                } else if let Some(identity) = self.endpoint.durable_anonymous_identity(ty) {
+                    T::AnonymousNominal(identity)
+                } else {
+                    let (_, definition) = self.nominal_tokens.borrow().get(&ty)?.clone();
+                    T::Nominal(definition)
+                }
+            }
+            TypeKind::Module(id) => {
+                let (_, module) = self.module_tokens.borrow().get(&id)?.clone();
+                T::Module(module)
+            }
+            TypeKind::Error => return None,
+        })
+    }
+
+    fn durable_value_from_concrete(
+        &self,
+        value: ConstValue,
+    ) -> Option<crate::SemanticImportConstValue<K, M>> {
+        use crate::SemanticImportConstValue as V;
+        Some(match value {
+            ConstValue::Integer(value) => V::Integer(value),
+            ConstValue::Bool(value) => V::Bool(value),
+            ConstValue::Type(ty) => V::Type(self.durable_type_from_concrete(ty)?),
+            ConstValue::Function(symbol) => {
+                let (_, definition) = self.function_token_for_symbol(symbol)?;
+                V::Function(definition)
+            }
+            ConstValue::Unit => V::Unit,
+            ConstValue::String(symbol) => V::String(Arc::from(self.interner.resolve(&symbol))),
+        })
+    }
+
+    fn materialize_durable_const_value(
+        &self,
+        value: &crate::SemanticImportConstValue<K, M>,
+    ) -> Option<ConstValue> {
+        use crate::SemanticImportConstValue as V;
+        Some(match value {
+            V::Integer(value) => ConstValue::Integer(*value),
+            V::Bool(value) => ConstValue::Bool(*value),
+            V::Type(ty) => {
+                self.register_import_nominal_identities(ty).ok()?;
+                ConstValue::Type(
+                    self.state
+                        .identity_context()
+                        .pool_mut()?
+                        .resolve_provider_type(ty)
+                        .ok()?,
+                )
+            }
+            V::Function(definition) => ConstValue::Function(
+                self.interner
+                    .get_or_intern(&self.source.definition_name(definition)?),
+            ),
+            V::Unit => ConstValue::Unit,
+            V::String(value) => ConstValue::String(self.interner.get_or_intern(value.as_ref())),
+        })
+    }
+
+    fn produced_anonymous_nominals(
+        &self,
+        initial: &HashSet<super::anon_structs::IssuedAnonymousNominalKey>,
+    ) -> Result<Arc<[crate::SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure>
+    {
+        fn mode(value: RirParamMode) -> crate::SemanticParameterMode {
+            match value {
+                RirParamMode::Normal => crate::SemanticParameterMode::Value,
+                RirParamMode::Borrow => crate::SemanticParameterMode::Borrow,
+                RirParamMode::Inout => crate::SemanticParameterMode::Inout,
+            }
+        }
+        fn method_type<P, S, K, M>(
+            host: &ProviderBodyHost<'_, P, S, K, M>,
+            ty: &super::AnonMethodType,
+            owner: &super::anon_structs::IssuedAnonymousNominalKey,
+        ) -> Result<crate::SemanticProducedAnonymousMethodType, crate::SemanticBodyExportFailure>
+        where
+            P: BodyFactProvider,
+            S: DurableNominalSource<K, M>
+                + DurableAnonymousSource<K, M>
+                + DurableCallableSource<K, M>
+                + DurableConstSource<K, M>
+                + DurableBodyLookupSource<K, M>,
+            K: Clone + Eq + Hash + Ord,
+            M: Clone + Eq + Hash + Ord,
+        {
+            fn concrete<P, S, K, M>(
+                host: &ProviderBodyHost<'_, P, S, K, M>,
+                ty: &super::AnonMethodType,
+                owner: &super::anon_structs::IssuedAnonymousNominalKey,
+            ) -> Result<
+                TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+                crate::SemanticBodyExportFailure,
+            >
+            where
+                P: BodyFactProvider,
+                S: DurableNominalSource<K, M>
+                    + DurableAnonymousSource<K, M>
+                    + DurableCallableSource<K, M>
+                    + DurableConstSource<K, M>
+                    + DurableBodyLookupSource<K, M>,
+                K: Clone + Eq + Hash + Ord,
+                M: Clone + Eq + Hash + Ord,
+            {
+                Ok(match ty {
+                    super::AnonMethodType::SelfType => TypeInstanceKey::Nominal(
+                        crate::NominalInstanceKey::Anonymous(owner.clone()),
+                    ),
+                    super::AnonMethodType::Concrete(ty) => host.canonical_type_instance(*ty)?,
+                    super::AnonMethodType::Array { element, len } => TypeInstanceKey::Array {
+                        element: Box::new(concrete(host, element, owner)?),
+                        len: *len,
+                    },
+                    super::AnonMethodType::PtrConst(pointee) => {
+                        TypeInstanceKey::PtrConst(Box::new(concrete(host, pointee, owner)?))
+                    }
+                    super::AnonMethodType::PtrMut(pointee) => {
+                        TypeInstanceKey::PtrMut(Box::new(concrete(host, pointee, owner)?))
+                    }
+                    super::AnonMethodType::Syntax(_) => {
+                        return Err(crate::SemanticBodyExportFailure::UnsupportedType);
+                    }
+                })
+            }
+            Ok(match ty {
+                super::AnonMethodType::SelfType => {
+                    crate::SemanticProducedAnonymousMethodType::SelfType
+                }
+                _ => {
+                    crate::SemanticProducedAnonymousMethodType::Concrete(concrete(host, ty, owner)?)
+                }
+            })
+        }
+
+        let mut identities = self
+            .canonical_anonymous_types
+            .iter()
+            .filter(|(_, identity)| !initial.contains(*identity))
+            .map(|(ty, identity)| (*ty, identity.clone()))
+            .collect::<Vec<_>>();
+        identities
+            .sort_by(|(_, left), (_, right)| super::anon_structs::anonymous_key_cmp(left, right));
+        identities
+            .into_iter()
+            .map(|(ty, identity)| {
+                let (shape, type_captures, value_captures) = match ty.kind() {
+                    TypeKind::Struct(struct_id) => {
+                        let definition = self.type_pool.struct_def(struct_id);
+                        let fields = definition
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                Ok((
+                                    Arc::from(field.name.as_str()),
+                                    self.canonical_type_instance(field.ty)?,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                        let methods = self
+                            .anon_struct_method_sigs
+                            .get(&struct_id)
+                            .into_iter()
+                            .flat_map(|methods| methods.iter())
+                            .map(|method| {
+                                Ok(crate::SemanticProducedAnonymousMethodSignature {
+                                    name: Arc::from(self.interner.resolve(&method.name)),
+                                    has_self: method.has_self,
+                                    self_mode: mode(method.self_mode),
+                                    parameters: method
+                                        .param_types
+                                        .iter()
+                                        .zip(&method.param_modes)
+                                        .zip(&method.param_comptime)
+                                        .map(|((ty, parameter_mode), comptime)| {
+                                            Ok((
+                                                method_type(self, ty, &identity)?,
+                                                mode(*parameter_mode),
+                                                *comptime,
+                                            ))
+                                        })
+                                        .collect::<Result<Vec<_>, _>>()?
+                                        .into(),
+                                    result: method_type(self, &method.return_type, &identity)?,
+                                })
+                            })
+                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                        let mut type_captures: Vec<(
+                            Arc<str>,
+                            TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+                        )> = self
+                            .anon_struct_type_subst
+                            .get(&struct_id)
+                            .into_iter()
+                            .flat_map(|captures| captures.iter())
+                            .map(|(name, ty)| {
+                                Ok((
+                                    Arc::from(self.interner.resolve(name)),
+                                    self.canonical_type_instance(*ty)?,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                        type_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                        let mut value_captures: Vec<(
+                            Arc<str>,
+                            CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+                        )> = self
+                            .anon_struct_captured_values
+                            .get(&struct_id)
+                            .into_iter()
+                            .flat_map(|captures| captures.iter())
+                            .map(|(name, value)| {
+                                Ok((
+                                    Arc::from(self.interner.resolve(name)),
+                                    self.canonical_argument_value(*value)?,
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                        value_captures.sort_by(|left, right| left.0.cmp(&right.0));
+                        (
+                            crate::SemanticProducedAnonymousNominalShape::Struct {
+                                fields: fields.into(),
+                                methods: methods.into(),
+                            },
+                            type_captures,
+                            value_captures,
+                        )
+                    }
+                    TypeKind::Enum(enum_id) => {
+                        let definition = self.type_pool.enum_def(enum_id);
+                        let variants = definition
+                            .variants
+                            .iter()
+                            .enumerate()
+                            .map(|(index, name)| {
+                                Ok((
+                                    Arc::from(name.as_str()),
+                                    definition
+                                        .variant_payload(index)
+                                        .iter()
+                                        .map(|ty| self.canonical_type_instance(*ty))
+                                        .collect::<Result<Vec<_>, _>>()?
+                                        .into(),
+                                ))
+                            })
+                            .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
+                        (
+                            crate::SemanticProducedAnonymousNominalShape::Enum {
+                                variants: variants.into(),
+                            },
+                            Vec::new(),
+                            Vec::new(),
+                        )
+                    }
+                    _ => return Err(crate::SemanticBodyExportFailure::UnsupportedType),
+                };
+                Ok(crate::SemanticProducedAnonymousNominal {
+                    identity,
+                    shape,
+                    type_captures: type_captures.into(),
+                    value_captures: value_captures.into(),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Arc::from)
+    }
+
+    fn install_provider_anonymous_methods(
+        &mut self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+        owner_type: Type,
+    ) -> Option<()> {
+        self.register_anonymous_identity_tokens(identity)?;
+        let issued_identity = self.issue_consulted_anonymous_identity(identity)?;
+        self.endpoint
+            .register_anonymous_nominal(issued_identity.clone(), identity.clone());
+        self.canonical_anonymous_types
+            .insert(owner_type, issued_identity.clone());
+        self.durable_anonymous_types
+            .insert(owner_type, identity.clone());
+        if let Some(enum_id) = owner_type.as_enum() {
+            self.anon_enum_identities.insert(issued_identity, enum_id);
+            return Some(());
+        }
+        let Some(struct_id) = owner_type.as_struct() else {
+            return Some(());
+        };
+        self.anon_struct_identities
+            .insert(issued_identity.clone(), struct_id);
+        let methods = self.source.anonymous_methods(identity);
+        if methods.is_empty() {
+            return Some(());
+        }
+        let owner_name = self.type_pool.struct_def(struct_id).name;
+        let mut infos = Vec::with_capacity(methods.len());
+        let mut signatures = Vec::with_capacity(methods.len());
+        for method in methods {
+            let resolve = |ty: &crate::DurableAnonymousMethodType<K, M>| {
+                Some(match ty {
+                    crate::DurableAnonymousMethodType::SelfType => owner_type,
+                    crate::DurableAnonymousMethodType::Concrete(ty) => self
+                        .state
+                        .identity_context()
+                        .pool_mut()?
+                        .resolve_provider_type(ty)
+                        .ok()?,
+                })
+            };
+            let parameter_types = method
+                .parameters
+                .iter()
+                .map(|(ty, _, _)| resolve(ty))
+                .collect::<Option<Vec<_>>>()?;
+            let return_type = resolve(&method.result)?;
+            let name = self.interner.get_or_intern(method.name.as_ref());
+            let callable_name = if method.has_self {
+                format!("{owner_name}.{}", method.name)
+            } else {
+                format!("{owner_name}::{}", method.name)
+            };
+            let callable = self.interner.get_or_intern(&callable_name);
+            let kind = if method.name.as_ref() == "__drop" {
+                crate::AnonymousMemberKind::Destructor
+            } else if method.has_self {
+                crate::AnonymousMemberKind::Method
+            } else {
+                crate::AnonymousMemberKind::AssociatedFunction
+            };
+            self.anonymous_function_identities.borrow_mut().insert(
+                callable,
+                FunctionInstanceKey::AnonymousMember {
+                    owner: Box::new(TypeInstanceKey::Nominal(
+                        crate::NominalInstanceKey::Anonymous(issued_identity.clone()),
+                    )),
+                    member: crate::AnonymousMemberKey {
+                        kind,
+                        name: method.name.clone(),
+                    },
+                },
+            );
+            // Comptime type expressions may be reduced once during inference
+            // and again during instruction analysis. The exact anonymous
+            // identity joins both reads, so its callable overlay is idempotent.
+            if self.endpoint.method_info(struct_id, name).is_some() {
+                continue;
+            }
+            let params = self.state.allocate_params(
+                (0..parameter_types.len())
+                    .map(|index| self.interner.get_or_intern(&format!("arg{index}"))),
+                parameter_types.iter().copied(),
+                method.parameters.iter().map(|(_, mode, _)| *mode),
+                method.parameters.iter().map(|(_, _, comptime)| *comptime),
+            );
+            // Consumer analysis needs only the signature. The producer-owned
+            // anonymous-member transaction later lowers and analyzes the exact
+            // body fragment; these locators are therefore deliberately opaque
+            // compatibility fields in MethodInfo and are never followed here.
+            infos.push((
+                (struct_id, name),
+                MethodCallInfo {
+                    struct_type: owner_type,
+                    has_self: method.has_self,
+                    self_mode: method.self_mode,
+                    params,
+                    return_type,
+                },
+            ));
+            signatures.push(super::AnonMethodSig {
+                name,
+                has_self: method.has_self,
+                self_mode: method.self_mode,
+                param_types: parameter_types
+                    .into_iter()
+                    .map(super::AnonMethodType::Concrete)
+                    .collect(),
+                param_modes: method.parameters.iter().map(|(_, mode, _)| *mode).collect(),
+                param_comptime: method
+                    .parameters
+                    .iter()
+                    .map(|(_, _, comptime)| *comptime)
+                    .collect(),
+                return_type: super::AnonMethodType::Concrete(return_type),
+            });
+        }
+        self.anonymous_methods.borrow_mut().extend(infos);
+        if !signatures.is_empty() {
+            self.anon_struct_method_sigs.insert(struct_id, signatures);
+        }
+        self.anonymous_struct_ids.insert(struct_id);
+        Some(())
+    }
+
+    fn register_provider_anonymous_method_endpoints(
+        &self,
+        identity: &crate::AnonymousNominalKey<K, M>,
+        owner_type: Type,
+    ) -> Option<()> {
+        let issued_identity = self.issue_consulted_anonymous_identity(identity)?;
+        self.endpoint
+            .register_anonymous_nominal(issued_identity.clone(), identity.clone());
+        let Some(struct_id) = owner_type.as_struct() else {
+            return Some(());
+        };
+        let methods = self.source.anonymous_methods(identity);
+        if methods.is_empty() {
+            return Some(());
+        }
+        let owner_name = self.type_pool.struct_def(struct_id).name;
+        for method in methods {
+            let name = self.interner.get_or_intern(method.name.as_ref());
+            let callable_name = if method.has_self {
+                format!("{owner_name}.{}", method.name)
+            } else {
+                format!("{owner_name}::{}", method.name)
+            };
+            let callable = self.interner.get_or_intern(&callable_name);
+            let kind = if method.name.as_ref() == "__drop" {
+                crate::AnonymousMemberKind::Destructor
+            } else if method.has_self {
+                crate::AnonymousMemberKind::Method
+            } else {
+                crate::AnonymousMemberKind::AssociatedFunction
+            };
+            self.anonymous_function_identities.borrow_mut().insert(
+                callable,
+                FunctionInstanceKey::AnonymousMember {
+                    owner: Box::new(TypeInstanceKey::Nominal(
+                        crate::NominalInstanceKey::Anonymous(issued_identity.clone()),
+                    )),
+                    member: crate::AnonymousMemberKey {
+                        kind,
+                        name: method.name.clone(),
+                    },
+                },
+            );
+            if self.endpoint.method_info(struct_id, name).is_some() {
+                continue;
+            }
+            self.anonymous_methods.borrow_mut().insert(
+                (struct_id, name),
+                MethodCallInfo {
+                    struct_type: owner_type,
+                    has_self: method.has_self,
+                    self_mode: method.self_mode,
+                    params: self.state.allocate_params(
+                        (0..method.parameters.len())
+                            .map(|index| self.interner.get_or_intern(&format!("arg{index}"))),
+                        method
+                            .parameters
+                            .iter()
+                            .map(|(ty, _, _)| match ty {
+                                crate::DurableAnonymousMethodType::SelfType => Some(owner_type),
+                                crate::DurableAnonymousMethodType::Concrete(ty) => self
+                                    .state
+                                    .identity_context()
+                                    .pool_mut()?
+                                    .resolve_provider_type(ty)
+                                    .ok(),
+                            })
+                            .collect::<Option<Vec<_>>>()?,
+                        method.parameters.iter().map(|(_, mode, _)| *mode),
+                        method.parameters.iter().map(|(_, _, comptime)| *comptime),
+                    ),
+                    return_type: match &method.result {
+                        crate::DurableAnonymousMethodType::SelfType => owner_type,
+                        crate::DurableAnonymousMethodType::Concrete(ty) => self
+                            .state
+                            .identity_context()
+                            .pool_mut()?
+                            .resolve_provider_type(ty)
+                            .ok()?,
+                    },
+                },
+            );
+        }
+        Some(())
+    }
+
+    fn materialize_argument_value(
+        &mut self,
+        value: &CanonicalArgumentValue<K, M>,
+    ) -> Result<ConstValue, crate::SemanticBodyExportFailure> {
+        Ok(match value {
+            CanonicalArgumentValue::Integer(value) => ConstValue::Integer(*value),
+            CanonicalArgumentValue::Bool(value) => ConstValue::Bool(*value),
+            CanonicalArgumentValue::Type(ty) => {
+                ConstValue::Type(self.materialize_type_instance(ty)?)
+            }
+            CanonicalArgumentValue::Unit => ConstValue::Unit,
+            CanonicalArgumentValue::String(value) => {
+                ConstValue::String(self.interner.get_or_intern(value.as_ref()))
+            }
+            CanonicalArgumentValue::Function(function) => {
+                let FunctionInstanceKey::Definition(definition) = function.as_ref() else {
+                    return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+                };
+                let name = self
+                    .source
+                    .definition_name(definition)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                let symbol = self.interner.get_or_intern(&name);
+                let token =
+                    self.endpoint
+                        .register_function(definition.clone(), self.owner_file, &name);
+                self.function_tokens
+                    .borrow_mut()
+                    .insert(symbol, (token, definition.clone()));
+                ConstValue::Function(symbol)
+            }
+        })
+    }
+}
+
+impl<P, S, K, M> BodyEndpointFactSource for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn endpoint_name_symbol(&self, name: &str) -> Option<Spur> {
+        self.endpoint.name_symbol(name)
+    }
+    fn endpoint_definition_endpoint(
+        &self,
+        token: SemanticDefinitionToken,
+    ) -> Option<crate::SemanticDefinitionEndpoint> {
+        self.endpoint.definition_endpoint(token)
+    }
+    fn endpoint_module_endpoint(
+        &self,
+        token: SemanticModuleToken,
+    ) -> Option<crate::SemanticModuleEndpoint> {
+        self.endpoint.module_endpoint(token)
+    }
+    fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+        self.function_for_file_symbol(file, name)
+    }
+    fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.nominal_type_for_symbol(file, name)?.as_struct()
+    }
+    fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.nominal_type_for_symbol(file, name)?.as_enum()
+    }
+    fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.endpoint.builtin_or_generated_struct(name)
+    }
+    fn endpoint_generated_struct(&self, name: Spur) -> Option<StructId> {
+        self.endpoint.generated_struct(name)
+    }
+    fn endpoint_builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        self.endpoint.builtin_enum(name)
+    }
+    fn endpoint_anon_struct(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<StructId> {
+        self.endpoint.anon_struct(identity)
+    }
+    fn endpoint_anon_enum(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<EnumId> {
+        self.endpoint.anon_enum(identity)
+    }
+    fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.endpoint.function_info(name)
+    }
+    fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
+        self.endpoint.method_info(struct_id, name)
+    }
+    fn endpoint_source_function_name(&self, name: Spur) -> Spur {
+        self.endpoint.source_function_name(name)
+    }
+    fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
+        self.endpoint.module_id_for_file(file)
+    }
+    fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
+        self.type_pool.try_intern_array(element, len).ok()
+    }
+    fn endpoint_intern_ptr_const(&self, pointee: Type) -> Option<Type> {
+        self.type_pool.try_intern_ptr_const(pointee).ok()
+    }
+    fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
+        self.type_pool.try_intern_ptr_mut(pointee).ok()
+    }
+}
+
+impl<P, S, K, M> CallResolutionFactSource for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn call_function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
+        self.function_info_for_symbol(name)
+    }
+    fn call_function_contains(&self, name: Spur) -> bool {
+        self.function_info_for_symbol(name).is_some()
+    }
+    fn call_source_function_name(&self, name: Spur) -> Spur {
+        self.endpoint.source_function_name(name)
+    }
+    fn call_resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.function_for_file_symbol(file, name)
+    }
+    fn call_resolve_const_info_in_file(&self, name: Spur, file: FileId) -> Option<ConstInfo> {
+        self.const_info_for_symbol(file, name)
+    }
+    fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.const_info_for_symbol(file, name)
+    }
+    fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.module_binding_for_symbol(file, name)
+    }
+    fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
+        self.method_info_for_symbol(struct_id, name)
+    }
+    fn call_named_method_by_callable_symbol(
+        &self,
+        _name: Spur,
+    ) -> Option<(StructId, Spur, MethodCallInfo)> {
+        None
+    }
+    fn call_named_method_declaration(
+        &self,
+        file: FileId,
+        ty: Spur,
+        method: Spur,
+    ) -> Option<InstRef> {
+        self.endpoint.named_method_declaration(
+            file,
+            self.interner.resolve(&ty),
+            self.interner.resolve(&method),
+        )
+    }
+    fn call_module_def(&self, module: ModuleId) -> ModuleDef {
+        self.calls
+            .module_def(module)
+            .expect("provider body module must be registered before use")
+    }
+}
+
+impl<P, S, K, M> AggregateFactSource for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn aggregate_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.const_info_for_symbol(file, name)
+    }
+    fn aggregate_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.module_binding_for_symbol(file, name)
+    }
+    fn aggregate_struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.nominal_type_for_symbol(file, name)?.as_struct()
+    }
+    fn aggregate_enum_in_file(&self, file: FileId, name: Spur) -> Option<EnumId> {
+        self.nominal_type_for_symbol(file, name)?.as_enum()
+    }
+    fn aggregate_builtin_struct(&self, name: Spur) -> Option<StructId> {
+        AggregateFactsTrait::builtin_struct(&self.aggregate, name)
+    }
+    fn aggregate_builtin_enum(&self, name: Spur) -> Option<EnumId> {
+        AggregateFactsTrait::builtin_enum(&self.aggregate, name)
+    }
+    fn aggregate_module(
+        &self,
+        module: ModuleId,
+    ) -> super::aggregate_resolution::AggregateModuleFact {
+        AggregateFactsTrait::module(&self.aggregate, module)
+    }
+    fn aggregate_file_path(&self, file: FileId) -> Option<&str> {
+        AggregateFactsTrait::file_path(&self.aggregate, file)
+    }
+    fn aggregate_source_path(&self, span: Span) -> Option<&str> {
+        AggregateFactsTrait::source_path(&self.aggregate, span)
+    }
+    fn aggregate_visibility_domain(&self, file: FileId) -> crate::SemanticVisibilityDomain {
+        self.source.source_path(file).map_or_else(
+            || AggregateFactsTrait::visibility_domain(&self.aggregate, file),
+            |path| crate::SemanticVisibilityDomain::from_file_path(Some(&path)),
+        )
+    }
+}
+
+fn provider_infer_type(pool: &TypeInternPool, ty: Type) -> crate::inference::InferType {
+    match ty.kind() {
+        TypeKind::Array(id) => {
+            let (element, length) = pool.array_def(id);
+            crate::inference::InferType::Array {
+                element: Box::new(provider_infer_type(pool, element)),
+                length,
+            }
+        }
+        _ => crate::inference::InferType::Concrete(ty),
+    }
+}
+
+impl<P, S, K, M> InferenceFactSource for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn inference_generated_nominal_overlays(&self) -> InferenceGeneratedNominalOverlays {
+        let mut builtin_struct_types = HashMap::new();
+        let mut struct_types_by_file = HashMap::new();
+        for (name, id) in &self.generated_structs {
+            let def = self.type_pool.struct_def(*id);
+            if def.is_builtin {
+                builtin_struct_types.insert(*name, Type::new_struct(*id));
+            }
+            struct_types_by_file.insert((def.file_id, *name), Type::new_struct(*id));
+        }
+        let mut enum_types_by_file = HashMap::new();
+        for (name, id) in &self.generated_enums {
+            let def = self.type_pool.enum_def(*id);
+            enum_types_by_file.insert((def.file_id, *name), Type::new_enum(*id));
+        }
+        InferenceGeneratedNominalOverlays {
+            builtin_struct_types,
+            struct_types_by_file,
+            enum_types_by_file,
+        }
+    }
+    fn uncached_function_sig(&self, name: Spur) -> Option<FunctionSig> {
+        let info = self.function_info_for_symbol(name)?;
+        let params = self.state.param_data(info.params);
+        let param_type_syms =
+            if let Some(symbols) = self.durable_param_type_symbols.borrow().get(&info.params) {
+                symbols.clone()
+            } else {
+                params
+                    .types()
+                    .iter()
+                    .map(|ty| {
+                        self.interner
+                            .get_or_intern(&ty.safe_name_with_pool(Some(&self.type_pool)))
+                    })
+                    .collect()
+            };
+        let param_comptime_type = self
+            .durable_comptime_type_flags
+            .borrow()
+            .get(&info.params)
+            .cloned()
+            .unwrap_or_else(|| {
+                params
+                    .types()
+                    .iter()
+                    .map(|ty| *ty == Type::COMPTIME_TYPE)
+                    .collect()
+            });
+        Some(FunctionSig {
+            param_types: params
+                .types()
+                .iter()
+                .map(|ty| provider_infer_type(&self.type_pool, *ty))
+                .collect(),
+            return_type: provider_infer_type(&self.type_pool, info.return_type),
+            is_generic: info.is_generic,
+            param_modes: params.modes().to_vec(),
+            param_comptime: params.comptime().to_vec(),
+            param_comptime_type,
+            param_names: params.names().to_vec(),
+            param_type_syms,
+            return_type_sym: info.return_type_sym,
+        })
+    }
+    fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<MethodSig> {
+        let info = self.method_info_for_symbol(key.0, key.1)?;
+        let params = self.state.param_data(info.params);
+        Some(MethodSig {
+            struct_type: info.struct_type,
+            has_self: info.has_self,
+            param_types: params
+                .types()
+                .iter()
+                .map(|ty| provider_infer_type(&self.type_pool, *ty))
+                .collect(),
+            param_modes: params.modes().to_vec(),
+            return_type: provider_infer_type(&self.type_pool, info.return_type),
+        })
+    }
+    fn inference_builtin_struct_type(&self, name: Spur) -> Option<Type> {
+        self.endpoint
+            .builtin_or_generated_struct(name)
+            .map(Type::new_struct)
+    }
+    fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.nominal_type_for_symbol(key.0, key.1)
+            .filter(|ty| ty.as_struct().is_some())
+    }
+    fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type> {
+        self.endpoint.builtin_enum(name).map(Type::new_enum)
+    }
+    fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.nominal_type_for_symbol(key.0, key.1)
+            .filter(|ty| ty.as_enum().is_some())
+    }
+    fn inference_const_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.call_value_const(key.0, key.1)
+            .map(|info| match info.value {
+                ConstValue::Type(_) => Type::COMPTIME_TYPE,
+                _ => info.ty,
+            })
+    }
+    fn inference_const_type_alias(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.call_value_const(key.0, key.1)
+            .and_then(|info| match info.value {
+                ConstValue::Type(ty) => Some(ty),
+                _ => None,
+            })
+    }
+    fn inference_const_value(&self, key: (FileId, Spur)) -> Option<i128> {
+        self.call_value_const(key.0, key.1)
+            .and_then(|info| info.value.as_int_value())
+    }
+    fn inference_const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.call_value_const(key.0, key.1)
+            .and_then(|info| info.value.as_function())
+    }
+    fn inference_module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.call_module_binding(key.0, key.1).map(|info| info.ty)
+    }
+    fn inference_module_file_id(&self, module: ModuleId) -> Option<FileId> {
+        self.calls.module_def(module).map(|def| def.file_id)
+    }
+    fn inference_function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.function_for_file_symbol(key.0, key.1)
+    }
+}
+
+impl<P, S, K, M> BodyAnalysisHost for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    type EndpointFacts<'b>
+        = EndpointFacts<'b, Self>
+    where
+        Self: 'b;
+    fn endpoint_facts(&self) -> Self::EndpointFacts<'_> {
+        EndpointFacts::new(self)
+    }
+
+    type CallFacts<'b>
+        = CallFacts<'b, Self>
+    where
+        Self: 'b;
+    fn call_facts(&self) -> Self::CallFacts<'_> {
+        CallFacts::new(self)
+    }
+
+    type AggregateFacts<'b>
+        = AggregateFacts<'b, Self>
+    where
+        Self: 'b;
+    fn aggregate_facts(&self) -> Self::AggregateFacts<'_> {
+        AggregateFacts::new(self)
+    }
+
+    type InferenceFacts<'b>
+        = HostInferenceFacts<'b, Self>
+    where
+        Self: 'b;
+    fn inference_facts<'b>(&'b self, ctx: &'b InferenceContext) -> Self::InferenceFacts<'b> {
+        HostInferenceFacts::new(ctx, self)
+    }
+
+    fn resolve_type_syntax(
+        &mut self,
+        request: TypeSyntaxRequest<'_>,
+    ) -> Result<
+        Type,
+        crate::SemanticTypeSyntaxError<std::convert::Infallible, CompileError, FileId, Spur>,
+    > {
+        fn recurse<P, S, K, M>(
+            host: &mut ProviderBodyHost<'_, P, S, K, M>,
+            syntax: &str,
+            root_file: FileId,
+            span: Span,
+            type_substitutions: Option<&HashMap<Spur, Type>>,
+            value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+        ) -> CompileResult<Type>
+        where
+            P: BodyFactProvider,
+            S: DurableNominalSource<K, M>
+                + DurableAnonymousSource<K, M>
+                + DurableCallableSource<K, M>
+                + DurableConstSource<K, M>
+                + DurableBodyLookupSource<K, M>,
+            K: Clone + Eq + Hash + Ord,
+            M: Clone + Eq + Hash + Ord,
+        {
+            if let Some(substitutions) = type_substitutions {
+                let symbol = host.interner.get_or_intern(syntax);
+                if let Some(ty) = substitutions.get(&symbol) {
+                    return Ok(*ty);
+                }
+            }
+            if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(syntax) {
+                return host.resolve_type_constructor_call(
+                    &callee,
+                    &arguments,
+                    syntax,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                );
+            }
+            if let Some((element, length)) = crate::types::parse_array_type_syntax(syntax) {
+                let element = recurse(
+                    host,
+                    &element,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                let length = host.resolve_array_length_in_file(
+                    &length,
+                    root_file,
+                    span,
+                    value_substitutions,
+                )?;
+                return host
+                    .type_pool
+                    .try_intern_array(element, length)
+                    .map_err(|failure| {
+                        CompileError::new(
+                            rue_error::ErrorKind::UnknownType(format!("{syntax}: {failure:?}")),
+                            span,
+                        )
+                    });
+            }
+            if let Some((pointee, mutability)) = crate::types::parse_pointer_type_syntax(syntax) {
+                let pointee = recurse(
+                    host,
+                    &pointee,
+                    root_file,
+                    span,
+                    type_substitutions,
+                    value_substitutions,
+                )?;
+                return match mutability {
+                    crate::types::PtrMutability::Const => {
+                        host.type_pool.try_intern_ptr_const(pointee)
+                    }
+                    crate::types::PtrMutability::Mut => host.type_pool.try_intern_ptr_mut(pointee),
+                }
+                .map_err(|failure| {
+                    CompileError::new(
+                        rue_error::ErrorKind::UnknownType(format!("{syntax}: {failure:?}")),
+                        span,
+                    )
+                });
+            }
+            host.resolve_type_name_in_file(syntax, root_file, span)
+        }
+        recurse(
+            self,
+            request.syntax,
+            request.root_file,
+            request.span,
+            request.type_substitutions,
+            request.value_substitutions,
+        )
+        .map_err(crate::SemanticResolutionError::ProviderFailure)
+    }
+    fn resolve_type_module_prefix(
+        &mut self,
+        request: ModulePrefixRequest<'_>,
+    ) -> CompileResult<(ModuleId, Option<FileId>, String)> {
+        let mut file = request.root_file;
+        let mut module = None;
+        for segment in request.segments {
+            let symbol = self.interner.get_or_intern(segment);
+            let Some(binding) = self.module_binding_for_symbol(file, symbol) else {
+                return Err(CompileError::new(
+                    rue_error::ErrorKind::UnknownType(request.segments.join(".")),
+                    request.span,
+                ));
+            };
+            let Some(id) = binding.ty.as_module() else {
+                return Err(CompileError::new(
+                    rue_error::ErrorKind::UnknownType(request.segments.join(".")),
+                    request.span,
+                ));
+            };
+            let def = self.calls.module_def(id).ok_or_else(|| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(request.segments.join(".")),
+                    request.span,
+                )
+            })?;
+            file = def.file_id;
+            module = Some((id, def.file_path));
+        }
+        let (module, path) = module.ok_or_else(|| {
+            CompileError::new(
+                rue_error::ErrorKind::UnknownType(request.segments.join(".")),
+                request.span,
+            )
+        })?;
+        Ok((module, Some(file), path))
+    }
+    fn resolve_array_length(&mut self, request: ArrayLengthRequest<'_>) -> CompileResult<u64> {
+        self.resolve_array_length_in_file(
+            request.length,
+            request.span.file_id,
+            request.span,
+            request.value_substitutions,
+        )
+    }
+    fn validate_deferred_type(
+        &mut self,
+        _request: DeferredTypeRequest<'_>,
+    ) -> CompileResult<Option<Type>> {
+        Ok(None)
+    }
+}
+
+impl<P, S, K, M> ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn resolve_array_length_in_file(
+        &mut self,
+        length: &ArrayLen,
+        root_file: FileId,
+        span: Span,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<u64> {
+        let invalid =
+            |reason| CompileError::new(rue_error::ErrorKind::InvalidArrayLength { reason }, span);
+        let ArrayLen::Named(name) = length else {
+            let ArrayLen::Literal(value) = length else {
+                unreachable!()
+            };
+            return Ok(*value);
+        };
+        if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(name) {
+            if !callee.contains('.')
+                && let Some(definition) = self.source.free_function(&self.key, &callee)
+                && let Some(signature) = DurableCallableSource::function(&self.source, &definition)
+                && (signature.parameters.len() != arguments.len()
+                    || signature
+                        .parameters
+                        .iter()
+                        .any(|parameter| !parameter.is_comptime))
+            {
+                return Err(invalid(format!(
+                    "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
+                )));
+            }
+            let reduced = self
+                .reduce_comptime_constructor_call(
+                    &callee,
+                    &arguments,
+                    name,
+                    root_file,
+                    span,
+                    None,
+                    value_substitutions,
+                )
+                .map_err(|error| match error.kind {
+                    rue_error::ErrorKind::ComptimeArgNotConst { .. } => invalid(format!(
+                        "array length call '{callee}(...)' is not a compile-time constant; its callee must be a value-returning function whose parameters are all `comptime`"
+                    )),
+                    _ => invalid(format!(
+                        "'{callee}' is not a function; array lengths must be an integer literal, a `const`, a `comptime` value parameter, or a call to a comptime function"
+                    )),
+                })?;
+            return match reduced.result {
+                crate::SemanticComptimeCallResult::Value(
+                    crate::SemanticImportConstValue::Integer(value),
+                ) if value >= 0 => u64::try_from(value).map_err(|_| {
+                    invalid(format!(
+                        "array length '{callee}(...)' ({value}) is too large"
+                    ))
+                }),
+                crate::SemanticComptimeCallResult::Value(
+                    crate::SemanticImportConstValue::Integer(value),
+                ) => Err(invalid(format!(
+                    "array length '{callee}(...)' is negative ({value})"
+                ))),
+                _ => Err(invalid(format!(
+                    "array length call '{callee}(...)' did not evaluate to a compile-time integer"
+                ))),
+            };
+        }
+        let symbol = self.interner.get_or_intern(name);
+        let value = value_substitutions
+            .and_then(|values| values.get(&symbol))
+            .copied()
+            .or_else(|| {
+                self.call_value_const(root_file, symbol)
+                    .map(|info| info.value)
+            });
+        match value {
+            Some(ConstValue::Integer(value)) if value >= 0 => u64::try_from(value)
+                .map_err(|_| invalid(format!("array length '{name}' ({value}) is too large"))),
+            Some(ConstValue::Integer(value)) => Err(invalid(format!(
+                "array length '{name}' is negative ({value})"
+            ))),
+            Some(_) => Err(invalid(format!("array length '{name}' is not an integer"))),
+            None => {
+                let mut paths = self
+                    .source
+                    .out_of_scope_integer_const_paths(&self.key, name);
+                paths.sort_unstable();
+                paths.dedup();
+                let hint = if paths.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        "; an integer constant of that name is declared in {} — import that module and bind a file-level `const` (for example `const {name}: i32 = <module>.{name};`) to use it as an array length here",
+                        paths
+                            .iter()
+                            .map(AsRef::as_ref)
+                            .collect::<Vec<&str>>()
+                            .join(", ")
+                    )
+                };
+                Err(invalid(format!(
+                    "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
+                )))
+            }
+        }
+    }
+
+    fn resolve_type_name(&mut self, name: &str, span: Span) -> CompileResult<Type> {
+        self.resolve_type_name_in_file(name, span.file_id, span)
+    }
+
+    fn resolve_type_name_in_file(
+        &mut self,
+        name: &str,
+        root_file: FileId,
+        span: Span,
+    ) -> CompileResult<Type> {
+        if let Some(capacity) = name
+            .strip_prefix("Str(")
+            .and_then(|name| name.strip_suffix(')'))
+            .and_then(|capacity| capacity.parse::<u64>().ok())
+        {
+            let id = self
+                .endpoint
+                .register_generated_fixed_string(capacity)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
+                })?;
+            self.generated_structs
+                .insert(self.interner.get_or_intern(name), id);
+            return Ok(Type::new_struct(id));
+        }
+        if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(name) {
+            return self.resolve_type_constructor_call(
+                &callee, &arguments, name, root_file, span, None, None,
+            );
+        }
+        if name.contains('.') {
+            let segments = name.split('.').collect::<Vec<_>>();
+            let Some((leaf, prefix)) = segments.split_last() else {
+                unreachable!()
+            };
+            if prefix.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
+                return Err(CompileError::new(
+                    rue_error::ErrorKind::UnknownType(name.to_owned()),
+                    span,
+                ));
+            }
+            let mut file = root_file;
+            for segment in prefix {
+                let symbol = self.interner.get_or_intern(segment);
+                let binding = self
+                    .module_binding_for_symbol(file, symbol)
+                    .ok_or_else(|| {
+                        CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
+                    })?;
+                let module = binding.ty.as_module().ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
+                })?;
+                file = self
+                    .calls
+                    .module_def(module)
+                    .ok_or_else(|| {
+                        CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
+                    })?
+                    .file_id;
+            }
+            let leaf = self.interner.get_or_intern(leaf);
+            if let Some(ty) = self.nominal_type_for_symbol(file, leaf) {
+                let (defining_file, is_public, item_kind) = if let Some(id) = ty.as_struct() {
+                    let definition = self.type_pool.struct_def(id);
+                    (definition.file_id, definition.is_pub, "struct")
+                } else if let Some(id) = ty.as_enum() {
+                    let definition = self.type_pool.enum_def(id);
+                    (definition.file_id, definition.is_pub, "enum")
+                } else {
+                    (file, true, "type")
+                };
+                if !self.is_accessible(root_file, defining_file, is_public) {
+                    return Err(CompileError::new(
+                        rue_error::ErrorKind::PrivateMemberAccess {
+                            item_kind: item_kind.to_owned(),
+                            name: self.interner.resolve(&leaf).to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                return Ok(ty);
+            }
+            if let Some(info) = self.const_info_for_symbol(file, leaf)
+                && let ConstValue::Type(ty) = info.value
+            {
+                if !self.is_accessible(root_file, info.span.file_id, info.is_pub) {
+                    return Err(CompileError::new(
+                        rue_error::ErrorKind::PrivateMemberAccess {
+                            item_kind: "const".to_owned(),
+                            name: self.interner.resolve(&leaf).to_owned(),
+                        },
+                        span,
+                    ));
+                }
+                return Ok(ty);
+            }
+            return Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(name.to_owned()),
+                span,
+            ));
+        }
+        if let Some((element, length)) = crate::types::parse_array_type_syntax(name) {
+            let element = self.resolve_type_name_in_file(&element, root_file, span)?;
+            let length = self.resolve_array_length_in_file(&length, root_file, span, None)?;
+            return self
+                .type_pool
+                .try_intern_array(element, length)
+                .map_err(|failure| {
+                    CompileError::new(
+                        rue_error::ErrorKind::UnknownType(format!("{name}: {failure:?}")),
+                        span,
+                    )
+                });
+        }
+        if let Some((pointee, mutability)) = crate::types::parse_pointer_type_syntax(name) {
+            let pointee = self.resolve_type_name_in_file(&pointee, root_file, span)?;
+            return match mutability {
+                crate::types::PtrMutability::Const => self.type_pool.try_intern_ptr_const(pointee),
+                crate::types::PtrMutability::Mut => self.type_pool.try_intern_ptr_mut(pointee),
+            }
+            .map_err(|failure| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(format!("{name}: {failure:?}")),
+                    span,
+                )
+            });
+        }
+        if let Some(element) = name
+            .strip_prefix('[')
+            .and_then(|name| name.strip_suffix(']'))
+            .filter(|element| !element.contains(';'))
+        {
+            self.require_preview(
+                rue_error::PreviewFeature::Slices,
+                "the slice type `[T]`",
+                span,
+            )?;
+            let element_type = self.resolve_type_name_in_file(element, root_file, span)?;
+            let durable_element =
+                self.durable_type_from_concrete(element_type)
+                    .ok_or_else(|| {
+                        CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
+                    })?;
+            let id = self
+                .endpoint
+                .register_generated_slice(&durable_element, name)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(name.to_owned()), span)
+                })?;
+            return Ok(Type::new_struct(id));
+        }
+        let ty = if name == "unit" {
+            Type::UNIT
+        } else if name == "never" {
+            Type::NEVER
+        } else if let Some(ty) = Type::from_primitive_name(name) {
+            ty
+        } else {
+            let symbol = self.state.identity_context().name_symbol(name);
+            if let Some(ty) = self.nominal_type_for_symbol(root_file, symbol) {
+                ty
+            } else if let Some(info) = self.const_info_for_symbol(root_file, symbol)
+                && let ConstValue::Type(ty) = info.value
+            {
+                ty
+            } else {
+                return Err(CompileError::new(
+                    rue_error::ErrorKind::UnknownType(name.to_owned()),
+                    span,
+                ));
+            }
+        };
+        Ok(ty)
+    }
+
+    fn resolve_type_constructor_call(
+        &mut self,
+        callee: &str,
+        arguments: &[String],
+        syntax: &str,
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
+        if callee == "Str" {
+            let [capacity] = arguments else {
+                return Err(CompileError::new(
+                    rue_error::ErrorKind::UnknownType(syntax.to_owned()),
+                    span,
+                ));
+            };
+            let length = capacity
+                .parse::<u64>()
+                .map(ArrayLen::Literal)
+                .unwrap_or_else(|_| ArrayLen::Named(capacity.clone()));
+            let capacity =
+                self.resolve_array_length_in_file(&length, root_file, span, value_substitutions)?;
+            let id = self
+                .endpoint
+                .register_generated_fixed_string(capacity)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?;
+            self.generated_structs
+                .insert(self.interner.get_or_intern(&format!("Str({capacity})")), id);
+            return Ok(Type::new_struct(id));
+        }
+        let reduced = self.reduce_comptime_constructor_call(
+            callee,
+            arguments,
+            syntax,
+            root_file,
+            span,
+            type_substitutions,
+            value_substitutions,
+        )?;
+        let crate::SemanticComptimeCallResult::Type(ty) = reduced.result else {
+            return Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(syntax.to_owned()),
+                span,
+            ));
+        };
+        self.register_import_nominal_identities(&ty).map_err(|_| {
+            CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+        })?;
+        let resolved = self
+            .state
+            .identity_context()
+            .pool_mut()
+            .and_then(|mut pool| pool.resolve_provider_type(&ty).ok())
+            .ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+            })?;
+        if let crate::SemanticImportType::AnonymousNominal(identity) = &ty {
+            self.install_provider_anonymous_methods(identity, resolved)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?;
+        }
+        Ok(resolved)
+    }
+
+    fn reduce_comptime_constructor_call(
+        &mut self,
+        callee: &str,
+        arguments: &[String],
+        syntax: &str,
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<crate::DurableReducedComptimeCall<K, M>> {
+        let mut segments = callee.split('.').collect::<Vec<_>>();
+        let Some(name) = segments.pop() else {
+            unreachable!()
+        };
+        let mut file = root_file;
+        for segment in segments {
+            let symbol = self.interner.get_or_intern(segment);
+            let binding = self
+                .module_binding_for_symbol(file, symbol)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?;
+            let module = binding.ty.as_module().ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+            })?;
+            file = self
+                .calls
+                .module_def(module)
+                .ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?
+                .file_id;
+        }
+        let source_name = self.interner.get_or_intern(name);
+        let symbol = self
+            .function_for_file_symbol(file, source_name)
+            .ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+            })?;
+        let (_, definition) = self.function_token_for_symbol(symbol).ok_or_else(|| {
+            CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+        })?;
+        let signature =
+            DurableCallableSource::function(&self.source, &definition).ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+            })?;
+        if let Some(locator) = self.source.definition_source(&definition)
+            && !self.is_accessible(root_file, locator.file_id, signature.is_public)
+        {
+            return Err(
+                CompileError::new(
+                    rue_error::ErrorKind::PrivateUnqualifiedAccess(Box::new(
+                        rue_error::PrivateUnqualifiedAccessData {
+                            item_kind: "function".to_owned(),
+                            name: name.to_owned(),
+                            defining_file: locator.physical_path.to_string(),
+                        },
+                    )),
+                    span,
+                )
+                .with_help(format!(
+                    "`{name}` is not marked `pub`; private items are only visible within their defining directory"
+                )),
+            );
+        }
+        if signature.parameters.len() != arguments.len()
+            || signature
+                .parameters
+                .iter()
+                .any(|parameter| !parameter.is_comptime)
+        {
+            return Err(CompileError::new(
+                rue_error::ErrorKind::UnknownType(syntax.to_owned()),
+                span,
+            ));
+        }
+
+        let mut type_arguments = Vec::new();
+        let mut value_arguments = Vec::new();
+        for (parameter, argument) in signature.parameters.iter().zip(arguments) {
+            if matches!(parameter.ty, crate::SemanticImportType::ComptimeType) {
+                let argument_symbol = self.interner.get_or_intern(argument);
+                let ty = if let Some(ty) =
+                    type_substitutions.and_then(|substitutions| substitutions.get(&argument_symbol))
+                {
+                    *ty
+                } else if let Some((callee, arguments)) =
+                    crate::types::parse_type_call_syntax(argument)
+                {
+                    self.resolve_type_constructor_call(
+                        &callee,
+                        &arguments,
+                        argument,
+                        root_file,
+                        span,
+                        type_substitutions,
+                        value_substitutions,
+                    )?
+                } else {
+                    self.resolve_type_name_in_file(argument, root_file, span)?
+                };
+                let value = self.durable_type_from_concrete(ty).ok_or_else(|| {
+                    CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+                })?;
+                type_arguments.push((parameter.name.clone(), value));
+                continue;
+            }
+            let concrete = if argument == "true" {
+                Some(ConstValue::Bool(true))
+            } else if argument == "false" {
+                Some(ConstValue::Bool(false))
+            } else if let Ok(value) = argument.parse::<i128>() {
+                Some(ConstValue::Integer(value))
+            } else if let Some((callee, arguments)) = crate::types::parse_type_call_syntax(argument)
+            {
+                match self
+                    .reduce_comptime_constructor_call(
+                        &callee,
+                        &arguments,
+                        argument,
+                        root_file,
+                        span,
+                        type_substitutions,
+                        value_substitutions,
+                    )?
+                    .result
+                {
+                    crate::SemanticComptimeCallResult::Value(value) => {
+                        self.materialize_durable_const_value(&value)
+                    }
+                    crate::SemanticComptimeCallResult::Type(_) => None,
+                }
+            } else {
+                let symbol = self.interner.get_or_intern(argument);
+                value_substitutions
+                    .and_then(|substitutions| substitutions.get(&symbol).cloned())
+                    .or_else(|| {
+                        self.const_info_for_symbol(root_file, symbol)
+                            .map(|info| info.value)
+                    })
+            }
+            .ok_or_else(|| {
+                CompileError::new(
+                    rue_error::ErrorKind::ComptimeArgNotConst {
+                        param_name: parameter.name.to_string(),
+                    },
+                    span,
+                )
+            })?;
+            let value = self.durable_value_from_concrete(concrete).ok_or_else(|| {
+                CompileError::new(rue_error::ErrorKind::UnknownType(syntax.to_owned()), span)
+            })?;
+            value_arguments.push((parameter.name.clone(), value));
+        }
+
+        let reduced =
+            match self
+                .source
+                .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
+            {
+                DurableComptimeCallOutcome::Reduced(reduced) => reduced,
+                DurableComptimeCallOutcome::NotReduced => {
+                    return Err(CompileError::new(
+                        rue_error::ErrorKind::UnknownType(syntax.to_owned()),
+                        span,
+                    ));
+                }
+                DurableComptimeCallOutcome::Diagnostic(diagnostic) => {
+                    return Err(CompileError::new(
+                        diagnostic.kind,
+                        diagnostic.span.unwrap_or(span),
+                    ));
+                }
+            };
+        Ok(reduced)
+    }
+}
+
+impl<P, S, K, M> OrdinaryBodyAnalysisHost for ProviderBodyHost<'_, P, S, K, M>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
+        self.state.param_data(range)
+    }
+    fn allocate_method_params(
+        &mut self,
+        names: impl IntoIterator<Item = Spur>,
+        types: impl IntoIterator<Item = Type>,
+        modes: impl IntoIterator<Item = RirParamMode>,
+        comptime: impl IntoIterator<Item = bool>,
+    ) -> ParamRange {
+        self.state.allocate_params(names, types, modes, comptime)
+    }
+    fn install_anonymous_method(&mut self, key: (StructId, Spur), info: MethodInfo) {
+        self.anonymous_methods
+            .borrow_mut()
+            .insert(key, MethodCallInfo::from_body(info));
+    }
+    fn known_symbols(&self) -> &KnownSymbols {
+        &self.known
+    }
+    fn strbuf_type(&self) -> Option<Type> {
+        if let Some(ty) = self.type_pool.lang_item_type(crate::LangItem::StrBuf) {
+            return Some(ty);
+        }
+        let key = self
+            .source
+            .language_item_nominal(&self.key, crate::LangItem::StrBuf)?;
+        self.register_import_nominal_identities(&crate::SemanticImportType::Nominal(key))
+            .ok()?;
+        self.type_pool.lang_item_type(crate::LangItem::StrBuf)
+    }
+    fn is_strbuf(&self, ty: Type) -> bool {
+        matches!(ty.kind(), TypeKind::Struct(id) if self.type_pool.is_strbuf(id))
+    }
+    fn types_equivalent(&self, left: Type, right: Type) -> bool {
+        left == right
+    }
+    fn generated_structs(&self) -> &HashMap<Spur, StructId> {
+        &self.generated_structs
+    }
+    fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool) {
+        self.inference_failure_incomplete = value;
+    }
+    fn body_interner(&self) -> &ThreadedRodeo {
+        &self.interner
+    }
+    fn body_type_pool(&self) -> &TypeInternPool {
+        // This accessor is the engine's containment-read boundary. The pool's
+        // dirty check is O(1), so ordinary reads pay no graph walk; a batch that
+        // declared or completed composite types pays one metered join before
+        // the first containment-dependent read.
+        self.type_pool
+            .finalize_containment_metadata()
+            .expect("provider type materialization must produce an acyclic containment graph");
+        &self.type_pool
+    }
+    fn struct_id_for_name(&self, name: Spur) -> Option<StructId> {
+        self.generated_structs.get(&name).copied().or_else(|| {
+            self.nominal_type_for_symbol(self.owner_file, name)
+                .and_then(|ty| ty.as_struct())
+        })
+    }
+    fn generated_structs_mut(&mut self) -> &mut HashMap<Spur, StructId> {
+        &mut self.generated_structs
+    }
+    fn generated_enums_mut(&mut self) -> &mut HashMap<Spur, EnumId> {
+        &mut self.generated_enums
+    }
+    fn anonymous_struct_id(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<StructId> {
+        self.anon_struct_identities
+            .get(identity)
+            .copied()
+            .or_else(|| {
+                self.consulted_anonymous_types
+                    .borrow()
+                    .iter()
+                    .find_map(|(ty, candidate)| {
+                        (candidate.with_canonical_producer().as_ref()
+                            == identity.with_canonical_producer().as_ref())
+                        .then(|| ty.as_struct())
+                        .flatten()
+                    })
+            })
+    }
+    fn anonymous_enum_id(
+        &self,
+        identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<EnumId> {
+        self.anon_enum_identities
+            .get(identity)
+            .copied()
+            .or_else(|| {
+                self.consulted_anonymous_types
+                    .borrow()
+                    .iter()
+                    .find_map(|(ty, candidate)| {
+                        (candidate.with_canonical_producer().as_ref()
+                            == identity.with_canonical_producer().as_ref())
+                        .then(|| ty.as_enum())
+                        .flatten()
+                    })
+            })
+    }
+    fn anonymous_struct_identities_mut(
+        &mut self,
+    ) -> &mut HashMap<super::anon_structs::IssuedAnonymousNominalKey, StructId> {
+        &mut self.anon_struct_identities
+    }
+    fn anonymous_enum_identities_mut(
+        &mut self,
+    ) -> &mut HashMap<super::anon_structs::IssuedAnonymousNominalKey, EnumId> {
+        &mut self.anon_enum_identities
+    }
+    fn anonymous_digest_owner(
+        &self,
+        digest: u128,
+    ) -> Option<&super::anon_structs::IssuedAnonymousNominalKey> {
+        self.anonymous_digest_owners.get(&digest)
+    }
+    fn install_anonymous_digest_owner(
+        &mut self,
+        digest: u128,
+        identity: super::anon_structs::IssuedAnonymousNominalKey,
+    ) {
+        self.anonymous_digest_owners.insert(digest, identity);
+    }
+    #[cfg(test)]
+    fn forced_anonymous_digest(
+        &self,
+        _identity: &super::anon_structs::IssuedAnonymousNominalKey,
+    ) -> Option<u128> {
+        None
+    }
+    fn install_canonical_anonymous_type(
+        &mut self,
+        ty: Type,
+        identity: super::anon_structs::IssuedAnonymousNominalKey,
+    ) {
+        self.canonical_anonymous_types.insert(ty, identity);
+    }
+    fn anonymous_struct_methods_mut(
+        &mut self,
+    ) -> &mut HashMap<StructId, Vec<super::AnonMethodSig>> {
+        &mut self.anon_struct_method_sigs
+    }
+    fn anonymous_struct_captures_mut(
+        &mut self,
+    ) -> &mut HashMap<StructId, HashMap<Spur, ConstValue>> {
+        &mut self.anon_struct_captured_values
+    }
+    fn anonymous_struct_ids_mut(&mut self) -> &mut HashSet<StructId> {
+        &mut self.anonymous_struct_ids
+    }
+    fn anonymous_enum_ids_mut(&mut self) -> &mut HashSet<EnumId> {
+        &mut self.anonymous_enum_ids
+    }
+    fn canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<super::anon_structs::IssuedTypeInstanceKey, crate::SemanticBodyExportFailure> {
+        let recurse = |ty| self.canonical_type_instance(ty);
+        Ok(match ty.kind() {
+            TypeKind::I8 => TypeInstanceKey::I8,
+            TypeKind::I16 => TypeInstanceKey::I16,
+            TypeKind::I32 => TypeInstanceKey::I32,
+            TypeKind::I64 => TypeInstanceKey::I64,
+            TypeKind::U8 => TypeInstanceKey::U8,
+            TypeKind::U16 => TypeInstanceKey::U16,
+            TypeKind::U32 => TypeInstanceKey::U32,
+            TypeKind::U64 => TypeInstanceKey::U64,
+            TypeKind::Bool => TypeInstanceKey::Bool,
+            TypeKind::Unit => TypeInstanceKey::Unit,
+            TypeKind::Never => TypeInstanceKey::Never,
+            TypeKind::ComptimeType => TypeInstanceKey::ComptimeType,
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                TypeInstanceKey::Array {
+                    element: Box::new(recurse(element)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => {
+                TypeInstanceKey::PtrConst(Box::new(recurse(self.type_pool.ptr_const_def(id))?))
+            }
+            TypeKind::PtrMut(id) => {
+                TypeInstanceKey::PtrMut(Box::new(recurse(self.type_pool.ptr_mut_def(id))?))
+            }
+            TypeKind::Struct(id) => match self.body_struct_identity(id)? {
+                crate::NominalInstanceKey::Builtin { kind, name } => {
+                    TypeInstanceKey::BuiltinNominal { kind, name }
+                }
+                identity => TypeInstanceKey::Nominal(identity),
+            },
+            TypeKind::Enum(id) => match self.body_enum_identity(id)? {
+                crate::NominalInstanceKey::Builtin { kind, name } => {
+                    TypeInstanceKey::BuiltinNominal { kind, name }
+                }
+                identity => TypeInstanceKey::Nominal(identity),
+            },
+            TypeKind::Module(id) => {
+                let (token, _) = self
+                    .module_tokens
+                    .borrow()
+                    .get(&id)
+                    .cloned()
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                TypeInstanceKey::Module(token)
+            }
+            TypeKind::Error => {
+                return Err(crate::SemanticBodyExportFailure::MissingStableIdentity);
+            }
+        })
+    }
+    fn canonical_argument_value(
+        &self,
+        value: ConstValue,
+    ) -> Result<
+        CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        Ok(match value {
+            ConstValue::Integer(value) => CanonicalArgumentValue::Integer(value),
+            ConstValue::Bool(value) => CanonicalArgumentValue::Bool(value),
+            ConstValue::Type(ty) => {
+                CanonicalArgumentValue::Type(Box::new(self.canonical_type_instance(ty)?))
+            }
+            ConstValue::Function(symbol) => CanonicalArgumentValue::Function(Box::new(
+                FunctionInstanceKey::Definition(self.function_identity(symbol)?),
+            )),
+            ConstValue::String(symbol) => {
+                CanonicalArgumentValue::String(self.interner.resolve(&symbol).into())
+            }
+            ConstValue::Unit => CanonicalArgumentValue::Unit,
+        })
+    }
+    fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        let token = self
+            .function_token_for_symbol(symbol)
+            .map(|(token, _)| token);
+        token.ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)
+    }
+    fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool> {
+        if let Some(flags) = self
+            .durable_comptime_type_flags
+            .borrow()
+            .get(&function.params)
+            .filter(|flags| flags.len() == function.params.len())
+        {
+            return flags.clone();
+        }
+        let same_body = |candidate: FunctionInfo| candidate.params == function.params;
+        let same_call = |candidate: FunctionCallInfo| candidate.params == function.params;
+        let symbol = if self
+            .endpoint
+            .function_info(self.function_symbol)
+            .is_some_and(same_body)
+        {
+            Some(self.function_symbol)
+        } else {
+            self.function_infos
+                .borrow()
+                .iter()
+                .find_map(|(symbol, info)| same_call(*info).then_some(*symbol))
+        };
+        if let Some(key) = symbol
+            .and_then(|symbol| self.function_tokens.borrow().get(&symbol).cloned())
+            .map(|(_, key)| key)
+            && let Some(durable) = DurableCallableSource::function(&self.source, &key)
+        {
+            let flags = durable
+                .parameters
+                .iter()
+                .map(|parameter| {
+                    parameter.is_comptime
+                        && matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
+                })
+                .collect::<Vec<_>>();
+            if flags.len() == function.params.len() {
+                return flags;
+            }
+        }
+        let flags = self
+            .state
+            .param_data(function.params)
+            .types()
+            .iter()
+            .map(|ty| *ty == Type::COMPTIME_TYPE)
+            .collect::<Vec<_>>();
+        assert_eq!(flags.len(), function.params.len());
+        flags
+    }
+    fn function_param_type_symbol(
+        &self,
+        function: &FunctionCallInfo,
+        param_index: usize,
+    ) -> Option<Spur> {
+        if let Some(symbol) = self
+            .durable_param_type_symbols
+            .borrow()
+            .get(&function.params)
+            .and_then(|symbols| symbols.get(param_index))
+            .copied()
+        {
+            return Some(symbol);
+        }
+        let local = self.endpoint.function_info(self.function_symbol)?;
+        if local.params != function.params {
+            return None;
+        }
+        let InstData::FnDecl { params, .. } = &self.rir.rir().get(local.declaration).data else {
+            return None;
+        };
+        self.rir
+            .rir()
+            .params(params)
+            .get(param_index)
+            .map(|param| param.ty)
+    }
+    fn function_signature_root_file(&self, function: &FunctionCallInfo) -> Option<FileId> {
+        self.durable_signature_files
+            .borrow()
+            .get(&function.params)
+            .copied()
+    }
+    fn reduce_external_comptime_call(
+        &mut self,
+        name: Spur,
+        callee_types: &HashMap<Spur, Type>,
+        callee_values: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<CompileResult<Option<ConstValue>>> {
+        let definition = if name == self.function_symbol {
+            self.key.clone()
+        } else {
+            let (_, definition) = self.function_token_for_symbol(name)?;
+            definition
+        };
+        let signature = DurableCallableSource::function(&self.source, &definition)?;
+        // Runtime-valued self calls are request-local and use the ordinary
+        // evaluator. A `-> type` self call, however, must ask the canonical
+        // comptime query: a same-key recursion is a typed query cycle that the
+        // required reduction below turns into an E1200 at this call site.
+        if name == self.function_symbol
+            && !matches!(signature.result, crate::SemanticImportType::ComptimeType)
+        {
+            return None;
+        }
+        let type_arguments = signature
+            .parameters
+            .iter()
+            .filter_map(|parameter| {
+                let symbol = self.interner.get(parameter.name.as_ref())?;
+                callee_types
+                    .get(&symbol)
+                    .copied()
+                    .map(|ty| (parameter.name.clone(), self.durable_type_from_concrete(ty)))
+            })
+            .map(|(name, value)| value.map(|value| (name, value)))
+            .collect::<Option<Vec<_>>>();
+        let value_arguments = signature
+            .parameters
+            .iter()
+            .filter_map(|parameter| {
+                let symbol = self.interner.get(parameter.name.as_ref())?;
+                callee_values.get(&symbol).cloned().map(|value| {
+                    (
+                        parameter.name.clone(),
+                        self.durable_value_from_concrete(value),
+                    )
+                })
+            })
+            .map(|(name, value)| value.map(|value| (name, value)))
+            .collect::<Option<Vec<_>>>();
+        let Some(type_arguments) = type_arguments else {
+            return Some(Ok(None));
+        };
+        let Some(value_arguments) = value_arguments else {
+            return Some(Ok(None));
+        };
+        let required_type_reduction =
+            matches!(signature.result, crate::SemanticImportType::ComptimeType);
+        let reduced =
+            match self
+                .source
+                .reduce_comptime_call(&definition, &type_arguments, &value_arguments)
+            {
+                DurableComptimeCallOutcome::Reduced(reduced) => reduced,
+                DurableComptimeCallOutcome::NotReduced => return Some(Ok(None)),
+                DurableComptimeCallOutcome::Diagnostic(diagnostic) if required_type_reduction => {
+                    return Some(Err(CompileError::new(
+                        diagnostic.kind,
+                        diagnostic.span.unwrap_or(span),
+                    )));
+                }
+                DurableComptimeCallOutcome::Diagnostic(_) => return Some(Ok(None)),
+            };
+        let producer = (|| {
+            Some(FunctionInstanceKey::Specialization {
+                base: Box::new(FunctionInstanceKey::Definition(
+                    self.function_tokens.borrow().get(&name)?.0,
+                )),
+                arguments: crate::CanonicalArguments {
+                    types: signature
+                        .parameters
+                        .iter()
+                        .filter(|parameter| {
+                            matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
+                        })
+                        .map(|parameter| {
+                            let symbol = self.interner.get(parameter.name.as_ref())?;
+                            self.canonical_type_instance(*callee_types.get(&symbol)?)
+                                .ok()
+                        })
+                        .collect::<Option<Vec<_>>>()?
+                        .into(),
+                    values: signature
+                        .parameters
+                        .iter()
+                        .filter(|parameter| {
+                            !matches!(parameter.ty, crate::SemanticImportType::ComptimeType)
+                        })
+                        .map(|parameter| {
+                            let symbol = self.interner.get(parameter.name.as_ref())?;
+                            self.canonical_argument_value(*callee_values.get(&symbol)?)
+                                .ok()
+                        })
+                        .collect::<Option<Vec<_>>>()?
+                        .into(),
+                },
+            })
+        })();
+        if let Some(producer) = producer {
+            self.observed_comptime_producers
+                .borrow_mut()
+                .insert(producer);
+        }
+        let value = match reduced.result {
+            crate::SemanticComptimeCallResult::Type(ty) => {
+                let _ = self.register_import_nominal_identities(&ty);
+                let resolved = self
+                    .state
+                    .identity_context()
+                    .pool_mut()
+                    .and_then(|mut pool| pool.resolve_provider_type(&ty).ok());
+                if let (crate::SemanticImportType::AnonymousNominal(identity), Some(resolved)) =
+                    (&ty, resolved)
+                {
+                    let _ = self.install_provider_anonymous_methods(identity, resolved);
+                }
+                resolved.map(ConstValue::Type)
+            }
+            crate::SemanticComptimeCallResult::Value(value) => {
+                self.materialize_durable_const_value(&value)
+            }
+        };
+        Some(Ok(value))
+    }
+    fn stable_definition_symbol_component(&self, token: &SemanticDefinitionToken) -> String {
+        format!("d{}-{}", token.issuer(), token.slot())
+    }
+    fn stable_module_symbol_component(&self, token: &SemanticModuleToken) -> String {
+        format!("m{}-{}", token.issuer(), token.slot())
+    }
+    fn resolve_body_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
+        let name = self.interner.resolve(&type_sym).to_owned();
+        self.resolve_type_name(&name, span)
+    }
+    fn replace_active_anonymous_producer(
+        &mut self,
+        producer: Option<(
+            super::anon_structs::IssuedStableProducerId,
+            super::anon_structs::IssuedCanonicalArguments,
+        )>,
+    ) -> Option<(
+        super::anon_structs::IssuedStableProducerId,
+        super::anon_structs::IssuedCanonicalArguments,
+    )> {
+        std::mem::replace(&mut self.active_anonymous_producer, producer)
+    }
+    fn body_rir_ref(&self) -> &Rir {
+        self.rir.rir()
+    }
+    fn active_anonymous_producer(
+        &self,
+    ) -> Option<&(
+        super::anon_structs::IssuedStableProducerId,
+        super::anon_structs::IssuedCanonicalArguments,
+    )> {
+        self.active_anonymous_producer.as_ref()
+    }
+    fn body_declaration_type_observer(
+        &self,
+    ) -> Option<&(
+        FileId,
+        String,
+        Option<String>,
+        DeclarationTypeDependencySourceKind,
+        DeclarationTypeDependencyKind,
+    )> {
+        None
+    }
+    fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork {
+        &mut self.body_work
+    }
+    fn record_resolved_declaration_type(&mut self, _ty: Type) {}
+    fn body_analysis_error_recovery(&self) -> bool {
+        false
+    }
+    fn body_analysis_first_recovered_error(&self) -> Option<CompileError> {
+        self.recovered_errors.first().cloned()
+    }
+    fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
+        &mut self.recovered_errors
+    }
+    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
+        self.function_info_for_symbol(name)
+    }
+    fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.endpoint.function_info(name)
+    }
+    fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
+        self.call_value_const(file, name)
+    }
+    fn source_function_name(&self, name: Spur) -> Spur {
+        self.endpoint.source_function_name(name)
+    }
+    fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.function_for_file_symbol(file, name)
+    }
+    fn module_def(&self, module: ModuleId) -> ModuleDef {
+        self.calls
+            .module_def(module)
+            .expect("provider body module must be registered before use")
+    }
+    fn struct_in_file(&self, file: FileId, name: Spur) -> Option<StructId> {
+        self.nominal_type_for_symbol(file, name)?.as_struct()
+    }
+    fn builtin_struct(&self, name: Spur) -> Option<StructId> {
+        self.endpoint.builtin_or_generated_struct(name)
+    }
+    fn target(&self) -> Target {
+        self.target
+    }
+    fn builtin_arch_id(&self) -> Option<EnumId> {
+        self.endpoint
+            .builtin_enum(self.interner.get_or_intern_static("Arch"))
+    }
+    fn builtin_os_id(&self) -> Option<EnumId> {
+        self.endpoint
+            .builtin_enum(self.interner.get_or_intern_static("Os"))
+    }
+    fn builtin_data_model_id(&self) -> Option<EnumId> {
+        self.endpoint
+            .builtin_enum(self.interner.get_or_intern_static("DataModel"))
+    }
+    fn destructor_span(&self, _struct_id: StructId) -> Option<Span> {
+        None
+    }
+    fn infectious_linear_reason(&self, struct_id: StructId) -> Option<(String, String)> {
+        let ty = Type::new_struct(struct_id);
+        let explicitly_linear = self
+            .endpoint
+            .durable_named_identity(ty)
+            .and_then(|key| DurableNominalSource::nominal(&self.source, &key))
+            .is_some_and(|nominal| {
+                matches!(
+                    nominal.body,
+                    crate::DurableNominalBody::Struct {
+                        is_linear: true,
+                        ..
+                    }
+                )
+            });
+        if explicitly_linear {
+            return None;
+        }
+        let definition = self.type_pool.struct_def(struct_id);
+        if !definition.is_linear {
+            return None;
+        }
+        definition
+            .fields
+            .iter()
+            .find(|field| self.type_pool.type_carries_linear(field.ty))
+            .map(|field| {
+                (
+                    field.name.clone(),
+                    field.ty.safe_name_with_pool(Some(&self.type_pool)),
+                )
+            })
+    }
+    fn well_known_option(&self, payload: Type) -> Option<Type> {
+        self.endpoint.well_known_option_for_payload(payload)
+    }
+    fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: HashMap<Spur, Type>) {
+        self.anon_struct_type_subst.insert(struct_id, subst);
+    }
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> HashMap<Spur, Type> {
+        self.anon_struct_type_subst
+            .get(&struct_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> HashMap<Spur, ConstValue> {
+        self.anon_struct_captured_values
+            .get(&struct_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn body_dependency_observer(&self) -> Option<super::AnalyzedBodyOwnerEvent> {
+        None
+    }
+    fn record_body_named_dependency(&mut self, _target: super::NamedConstDependencyTargetEvent) {}
+    fn record_body_callable_dependency(&mut self, _symbol: Spur) {}
+    fn record_specialization_dependency(
+        &mut self,
+        _identity: FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    ) {
+    }
+    fn intern_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId {
+        self.type_pool.intern_array_from_type(element, length)
+    }
+    fn require_preview(
+        &self,
+        feature: rue_error::PreviewFeature,
+        what: &str,
+        span: Span,
+    ) -> CompileResult<()> {
+        if self.preview.contains(&feature) {
+            Ok(())
+        } else {
+            Err(CompileError::new(
+                rue_error::ErrorKind::PreviewFeatureRequired {
+                    feature,
+                    what: what.to_owned(),
+                },
+                span,
+            )
+            .with_help(format!(
+                "use --preview {} to enable this feature ({})",
+                feature.name(),
+                feature.adr()
+            )))
+        }
+    }
+    fn declaration_binding_active(&self) -> bool {
+        false
+    }
+    fn known_linear_during_binding(&self, _ty: Type) -> Option<bool> {
+        None
+    }
+    fn known_drop_glue_during_binding(&self, _ty: Type) -> Option<bool> {
+        None
+    }
+    fn comptime_type_call_depth(&self) -> usize {
+        self.comptime_depth
+    }
+    fn set_comptime_type_call_depth(&mut self, depth: usize) {
+        self.comptime_depth = depth;
+    }
+    fn has_ctor_type_display(&self, ty: Type) -> bool {
+        self.ctor_displays.contains_key(&ty)
+    }
+    fn record_body_ctor_type_display(&mut self, ty: Type, display: String) {
+        self.ctor_displays.insert(ty, display);
+    }
+    fn trusted_try_producer(&self, ty: Type) -> Option<super::anon_structs::TrustedTryProducer> {
+        match self
+            .endpoint
+            .durable_anonymous_identity(ty)
+            .and_then(|identity| self.source.trusted_try_producer(&identity))
+        {
+            Some(DurableTryProducer::Option) => {
+                Some(super::anon_structs::TrustedTryProducer::Option)
+            }
+            Some(DurableTryProducer::Result) => {
+                Some(super::anon_structs::TrustedTryProducer::Result)
+            }
+            None => None,
+        }
+    }
+    fn resolve_canonical_import(&self, import_path: &str, span: Span) -> CompileResult<ModuleId> {
+        let target = self
+            .source
+            .canonical_import(&self.key, import_path)
+            .ok_or_else(|| {
+                CompileError::new(
+                    rue_error::ErrorKind::UnknownType(import_path.to_owned()),
+                    span,
+                )
+            })?;
+        self.register_module_target(target)
+            .map(|(id, _)| id)
+            .ok_or_else(|| {
+                CompileError::new(
+                    rue_error::ErrorKind::InvalidCompilerInput(
+                        "canonical import target could not be registered".into(),
+                    ),
+                    span,
+                )
+            })
+    }
+    fn deferred_ownership_gates_mut(&mut self) -> &mut Vec<super::DeferredOwnershipGate> {
+        &mut self.deferred_ownership
+    }
+}
+
+/// Run the canonical ordinary expression engine over one exact local RIR.
+pub fn analyze_provider_ordinary_body<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    key: K,
+    name: &str,
+    owner_kind: crate::StableDefinitionKind,
+    owner_name: Option<&str>,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+) -> CompileResult<ProviderOrdinaryBody<K, M>>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let owner_file = bundle.source_file_id().ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider body RIR does not have one source file".into(),
+        ))
+    })?;
+    let mut host = ProviderBodyHost::new(
+        provider, source, bundle, key, owner_file, name, owner_kind, owner_name, target, preview,
+        well_known,
+    )
+    .ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider body host could not be constructed".into(),
+        ))
+    })?;
+    let initial_anonymous_identities = host
+        .canonical_anonymous_types
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let infer = InferenceContext::new(&host);
+    let (analyzed, body_span) = match owner_kind {
+        crate::StableDefinitionKind::Function => {
+            let info = host
+                .endpoint
+                .function_info(host.function_symbol)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                        name.to_owned(),
+                    ))
+                })?;
+            let declaration = host
+                .endpoint
+                .first_free_function(name, owner_file)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                        name.to_owned(),
+                    ))
+                })?;
+            let (params, return_type, body) = match &host.rir.rir().get(declaration).data {
+                InstData::FnDecl {
+                    params,
+                    return_type,
+                    body,
+                    ..
+                } => (params.clone(), *return_type, *body),
+                _ => unreachable!("registered provider function points at FnDecl"),
+            };
+            let body_span = host.rir.rir().get(body).span;
+            let params = host
+                .rir
+                .rir()
+                .params(&params)
+                .values()
+                .collect::<Vec<RirParam>>();
+            host.endpoint
+                .finalize_containment_metadata()
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "provider function containment metadata is unavailable".into(),
+                    ))
+                })?;
+            (
+                OrdinaryBodyEngine::new(&mut host).analyze_single_function(
+                    &infer,
+                    name,
+                    return_type,
+                    params.into_iter(),
+                    body,
+                    info.span,
+                    info.allow_unused_variable,
+                    info.allow_unreachable_code,
+                )?,
+                body_span,
+            )
+        }
+        crate::StableDefinitionKind::Method | crate::StableDefinitionKind::AssociatedFunction => {
+            let owner_name = owner_name.ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "provider member body has no owner".into(),
+                ))
+            })?;
+            let declaration = host
+                .endpoint
+                .named_method_declaration(owner_file, owner_name, name)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                        name.to_owned(),
+                    ))
+                })?;
+            let info = host
+                .calls
+                .method_info(&host.key, owner_file, owner_name, name)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                        name.to_owned(),
+                    ))
+                })?;
+            let (params, return_type, body, has_self, self_mode, self_is_mut) =
+                match &host.rir.rir().get(declaration).data {
+                    InstData::FnDecl {
+                        params,
+                        return_type,
+                        body,
+                        has_self,
+                        self_mode,
+                        self_is_mut,
+                        ..
+                    } => (
+                        params.clone(),
+                        *return_type,
+                        *body,
+                        *has_self,
+                        *self_mode,
+                        *self_is_mut,
+                    ),
+                    _ => unreachable!("registered provider member points at FnDecl"),
+                };
+            let body_span = host.rir.rir().get(body).span;
+            let params = host
+                .rir
+                .rir()
+                .params(&params)
+                .values()
+                .collect::<Vec<RirParam>>();
+            let full_name = {
+                let owner = host.type_pool.struct_symbol_name(
+                    info.struct_type
+                        .as_struct()
+                        .expect("named method receiver must be a struct"),
+                );
+                if has_self {
+                    format!("{owner}.{name}")
+                } else {
+                    format!("{owner}::{name}")
+                }
+            };
+            let full_symbol = host.interner.get_or_intern(&full_name);
+            let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
+            host.function_tokens
+                .borrow_mut()
+                .insert(full_symbol, owner_token);
+            host.endpoint
+                .finalize_containment_metadata()
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "provider method containment metadata is unavailable".into(),
+                    ))
+                })?;
+            (
+                OrdinaryBodyEngine::new(&mut host).analyze_named_method(
+                    &infer,
+                    &full_name,
+                    return_type,
+                    params.into_iter(),
+                    body,
+                    info.span,
+                    info.struct_type,
+                    has_self,
+                    self_mode,
+                    self_is_mut,
+                )?,
+                body_span,
+            )
+        }
+        crate::StableDefinitionKind::Destructor => {
+            let owner_name = owner_name.ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "provider destructor body has no owner".into(),
+                ))
+            })?;
+            let declaration = host
+                .endpoint
+                .destructor(owner_file, owner_name)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(format!(
+                        "{owner_name}.__drop"
+                    )))
+                })?;
+            let (body, declaration_span) = match &host.rir.rir().get(declaration).data {
+                InstData::DropFnDecl { body, .. } => (*body, host.rir.rir().get(declaration).span),
+                _ => unreachable!("registered provider destructor points at DropFnDecl"),
+            };
+            let body_span = host.rir.rir().get(body).span;
+            let owner_symbol = host.interner.get_or_intern(owner_name);
+            let owner_type = host
+                .nominal_type_for_symbol(owner_file, owner_symbol)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UnknownType(
+                        owner_name.to_owned(),
+                    ))
+                })?;
+            let full_name = format!(
+                "{}.__drop",
+                host.type_pool.struct_symbol_name(
+                    owner_type
+                        .as_struct()
+                        .expect("named destructor owner must be a struct")
+                )
+            );
+            let full_symbol = host.interner.get_or_intern(&full_name);
+            let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
+            host.function_tokens
+                .borrow_mut()
+                .insert(full_symbol, owner_token);
+            host.endpoint
+                .finalize_containment_metadata()
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "provider destructor containment metadata is unavailable".into(),
+                    ))
+                })?;
+            (
+                OrdinaryBodyEngine::new(&mut host).analyze_named_destructor(
+                    &infer,
+                    &full_name,
+                    body,
+                    declaration_span,
+                    owner_type,
+                )?,
+                body_span,
+            )
+        }
+        _ => {
+            return Err(CompileError::without_span(
+                rue_error::ErrorKind::InvalidCompilerInput(
+                    "provider body request does not own an executable body".into(),
+                ),
+            ));
+        }
+    };
+    let (mut function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
+    function.ordinary_owner = Some(host.owner);
+    let (function, selected_calls, mut referenced_specializations) =
+        crate::specialize::select_provider_body_specializations(&mut host, function)?;
+    referenced_specializations.extend(referenced_methods.iter().filter_map(|(owner, method)| {
+        let info = host.method_info_for_symbol(*owner, *method)?;
+        let callable = host.interner.get_or_intern(&if info.has_self {
+            format!(
+                "{}.{}",
+                host.type_pool.struct_symbol_name(*owner),
+                host.interner.resolve(method)
+            )
+        } else {
+            format!(
+                "{}::{}",
+                host.type_pool.struct_symbol_name(*owner),
+                host.interner.resolve(method)
+            )
+        });
+        host.anonymous_function_identities
+            .borrow()
+            .get(&callable)
+            .cloned()
+    }));
+    referenced_specializations.extend(host.observed_comptime_producers.borrow().iter().cloned());
+    host.specialized_function_identities.borrow_mut().extend(
+        selected_calls
+            .iter()
+            .zip(referenced_specializations.iter())
+            .map(|((symbol, _), instance)| (*symbol, instance.clone())),
+    );
+    let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let export = super::semantic_body_export::export_body(
+        &host,
+        host.owner,
+        body_span,
+        &function,
+        &strings,
+        &warnings,
+        Some(&selected_calls),
+    )
+    .map_err(|failure| {
+        CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+            "provider body export failed: {failure:?}"
+        )))
+    })?;
+    let mut referenced_definitions = referenced_functions
+        .iter()
+        .filter_map(|symbol| {
+            host.function_tokens
+                .borrow()
+                .get(symbol)
+                .map(|(_, key)| key.clone())
+        })
+        .collect::<HashSet<_>>();
+    referenced_definitions.extend(
+        referenced_methods
+            .iter()
+            .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
+    );
+    let referenced_definitions = referenced_definitions.into_iter().collect();
+    let referenced_values = host
+        .observed_named_definitions
+        .borrow()
+        .iter()
+        .cloned()
+        .collect();
+    let produced_anonymous_nominals = host
+        .produced_anonymous_nominals(&initial_anonymous_identities)
+        .map_err(|failure| {
+            CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                "provider ordinary produced-nominal export failed: {failure:?}"
+            )))
+        })?;
+    let definition_tokens = host
+        .function_tokens
+        .into_inner()
+        .into_values()
+        .chain(host.nominal_tokens.into_inner().into_values())
+        .chain(
+            host.anonymous_definition_tokens
+                .into_inner()
+                .into_iter()
+                .map(|(key, token)| (token, key)),
+        )
+        .collect();
+    let module_tokens = host.module_tokens.into_inner().into_values().collect();
+    Ok(ProviderOrdinaryBody {
+        owner: host.owner,
+        export,
+        function,
+        warnings,
+        strings,
+        referenced_functions,
+        referenced_methods,
+        referenced_definitions,
+        referenced_values,
+        referenced_specializations,
+        produced_anonymous_nominals,
+        type_pool: host.type_pool,
+        interner: host.interner,
+        definition_tokens,
+        module_tokens,
+    })
+}
+
+/// Run one exact anonymous-member request from the producer-owned member
+/// fragment. The supplied RIR bundle contains only a synthetic owner and this
+/// member; the durable anonymous key remains the sole owner authority.
+pub fn analyze_provider_anonymous_body<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    source_key: K,
+    owner: &TypeInstanceKey<K, M>,
+    member: &crate::AnonymousMemberKey,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+) -> CompileResult<ProviderAnonymousBody<K, M>>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    const SYNTHETIC_OWNER: &str = "AnonymousBodyOwner";
+    let owner_file = bundle.source_file_id().ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider anonymous body RIR does not have one source file".into(),
+        ))
+    })?;
+    let mut host = ProviderBodyHost::new(
+        provider,
+        source,
+        bundle,
+        source_key,
+        owner_file,
+        member.name.as_ref(),
+        match member.kind {
+            crate::AnonymousMemberKind::Method => crate::StableDefinitionKind::Method,
+            crate::AnonymousMemberKind::AssociatedFunction => {
+                crate::StableDefinitionKind::AssociatedFunction
+            }
+            crate::AnonymousMemberKind::Destructor => crate::StableDefinitionKind::Destructor,
+        },
+        Some(SYNTHETIC_OWNER),
+        target,
+        preview,
+        well_known,
+    )
+    .ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider anonymous body host could not be constructed".into(),
+        ))
+    })?;
+    let TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(durable_owner)) = owner
+    else {
+        return Err(CompileError::without_span(
+            rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member owner is not an anonymous nominal".into(),
+            ),
+        ));
+    };
+    host.register_anonymous_identity_tokens(durable_owner)
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member owner identities are unavailable".into(),
+            ))
+        })?;
+    let issued_owner = host
+        .issue_consulted_anonymous_identity(durable_owner)
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member owner cannot be issued from its producer input".into(),
+            ))
+        })?;
+    host.endpoint
+        .register_anonymous_nominal(issued_owner.clone(), durable_owner.clone());
+    let owner_type = host
+        .state
+        .identity_context()
+        .pool_mut()
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member owner identity pool is unavailable".into(),
+            ))
+        })?
+        .resolve_provider_type(&crate::SemanticImportType::AnonymousNominal(
+            durable_owner.clone(),
+        ))
+        .map_err(|failure| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                "anonymous member owner shape is unavailable: {failure:?}"
+            )))
+        })?;
+    host.endpoint
+        .finalize_containment_metadata()
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member owner containment metadata is unavailable".into(),
+            ))
+        })?;
+    let struct_id = owner_type.as_struct().ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "anonymous member owner is not a struct".into(),
+        ))
+    })?;
+    host.canonical_anonymous_types
+        .insert(owner_type, issued_owner.clone());
+    host.anon_struct_identities
+        .insert(issued_owner.clone(), struct_id);
+    host.anonymous_struct_ids.insert(struct_id);
+    let type_captures = host.source.anonymous_type_captures(durable_owner);
+    let mut type_subst = HashMap::with_capacity(type_captures.len());
+    for (name, durable_type) in type_captures {
+        let ty = host
+            .state
+            .identity_context()
+            .pool_mut()
+            .and_then(|mut pool| pool.resolve_provider_type(&durable_type).ok())
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member type capture cannot be materialized".into(),
+                ))
+            })?;
+        let symbol = host
+            .interner
+            .get_or_intern(&ty.safe_name_with_pool(Some(&host.type_pool)));
+        if let Some(id) = ty.as_struct() {
+            host.generated_structs.insert(symbol, id);
+        } else if let Some(id) = ty.as_enum() {
+            host.generated_enums.insert(symbol, id);
+        }
+        if host.endpoint.durable_anonymous_identity(ty).is_some() {
+            host.issued_anonymous_identity_for_type(ty).ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member type capture identity cannot be issued".into(),
+                ))
+            })?;
+        } else if host.endpoint.durable_named_identity(ty).is_some() {
+            host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
+                .map_err(|_| {
+                    CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                        "anonymous member type capture identity cannot be registered".into(),
+                    ))
+                })?;
+        }
+        type_subst.insert(host.interner.get_or_intern(name.as_ref()), ty);
+    }
+    if !type_subst.is_empty() {
+        host.anon_struct_type_subst.insert(struct_id, type_subst);
+    }
+    let value_captures = host.source.anonymous_value_captures(durable_owner);
+    let mut captured_values = HashMap::with_capacity(value_captures.len());
+    for (name, durable_value) in value_captures {
+        let value = host
+            .materialize_durable_const_value(&durable_value)
+            .ok_or_else(|| {
+                CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                    "anonymous member value capture cannot be materialized".into(),
+                ))
+            })?;
+        captured_values.insert(host.interner.get_or_intern(name.as_ref()), value);
+    }
+    if !captured_values.is_empty() {
+        host.anon_struct_captured_values
+            .insert(struct_id, captured_values);
+    }
+    let initial_anonymous_identities = host
+        .canonical_anonymous_types
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
+
+    let declaration = host
+        .endpoint
+        .named_method_declaration(owner_file, SYNTHETIC_OWNER, member.name.as_ref())
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                member.name.to_string(),
+            ))
+        })?;
+    let (params, body, has_self, self_mode, self_is_mut, span) =
+        match &host.rir.rir().get(declaration).data {
+            InstData::FnDecl {
+                params,
+                body,
+                has_self,
+                self_mode,
+                self_is_mut,
+                ..
+            } => (
+                params.clone(),
+                *body,
+                *has_self,
+                *self_mode,
+                *self_is_mut,
+                host.rir.rir().get(declaration).span,
+            ),
+            _ => {
+                return Err(CompileError::without_span(
+                    rue_error::ErrorKind::InvalidCompilerInput(
+                        "anonymous member fragment did not lower to a method".into(),
+                    ),
+                ));
+            }
+        };
+    let expected_kind = if member.name.as_ref() == "__drop" {
+        crate::AnonymousMemberKind::Destructor
+    } else if has_self {
+        crate::AnonymousMemberKind::Method
+    } else {
+        crate::AnonymousMemberKind::AssociatedFunction
+    };
+    if expected_kind != member.kind {
+        return Err(CompileError::without_span(
+            rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member kind disagrees with its producer fragment".into(),
+            ),
+        ));
+    }
+    let issued_identity = FunctionInstanceKey::AnonymousMember {
+        owner: Box::new(TypeInstanceKey::Nominal(
+            crate::NominalInstanceKey::Anonymous(issued_owner),
+        )),
+        member: member.clone(),
+    };
+    host.current_anonymous_identity = Some(issued_identity.clone());
+    host.register_provider_anonymous_method_endpoints(durable_owner, owner_type)
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member sibling endpoints are unavailable".into(),
+            ))
+        })?;
+    let full_name = {
+        let owner = host.type_pool.struct_symbol_name(struct_id);
+        if has_self {
+            format!("{owner}.{}", member.name)
+        } else {
+            format!("{owner}::{}", member.name)
+        }
+    };
+    let full_symbol = host.interner.get_or_intern(&full_name);
+    host.function_symbol = full_symbol;
+    let owner_token = host
+        .function_tokens
+        .borrow()
+        .values()
+        .next()
+        .cloned()
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member has no producer token".into(),
+            ))
+        })?;
+    host.function_tokens
+        .borrow_mut()
+        .insert(full_symbol, owner_token);
+
+    let mut params = host
+        .rir
+        .rir()
+        .params(&params)
+        .values()
+        .collect::<Vec<RirParam>>();
+    let projected = host
+        .source
+        .anonymous_methods(durable_owner)
+        .into_iter()
+        .find(|candidate| candidate.name == member.name)
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member signature is unavailable from its producer".into(),
+            ))
+        })?;
+    if projected.has_self != has_self
+        || projected.self_mode != self_mode
+        || projected.parameters.len() != params.len()
+        || !projected
+            .parameters
+            .iter()
+            .zip(&params)
+            .all(|((_, mode, comptime), parameter)| {
+                *mode == parameter.mode && *comptime == parameter.is_comptime
+            })
+    {
+        return Err(CompileError::without_span(
+            rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member signature disagrees with its producer fragment".into(),
+            ),
+        ));
+    }
+    let materialize = |host: &mut ProviderBodyHost<'_, P, S, K, M>,
+                       ty: &crate::DurableAnonymousMethodType<K, M>| {
+        let ty = match ty {
+            crate::DurableAnonymousMethodType::SelfType => owner_type,
+            crate::DurableAnonymousMethodType::Concrete(ty) => host
+                .state
+                .identity_context()
+                .pool_mut()?
+                .resolve_provider_type(ty)
+                .ok()?,
+        };
+        let symbol = host
+            .interner
+            .get_or_intern(&ty.safe_name_with_pool(Some(&host.type_pool)));
+        if let Some(id) = ty.as_struct() {
+            host.generated_structs.insert(symbol, id);
+        } else if let Some(id) = ty.as_enum() {
+            host.generated_enums.insert(symbol, id);
+        }
+        if host.endpoint.durable_anonymous_identity(ty).is_some() {
+            host.issued_anonymous_identity_for_type(ty)?;
+        } else if host.endpoint.durable_named_identity(ty).is_some() {
+            host.ensure_named_nominal_identity(ty, host.interner.resolve(&symbol))
+                .ok()?;
+        }
+        Some(symbol)
+    };
+    for (parameter, (projected_type, _, _)) in params.iter_mut().zip(&projected.parameters) {
+        parameter.ty = materialize(&mut host, projected_type).ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "anonymous member parameter type cannot be materialized".into(),
+            ))
+        })?;
+    }
+    let return_type = materialize(&mut host, &projected.result).ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "anonymous member result type cannot be materialized".into(),
+        ))
+    })?;
+    let infer = InferenceContext::new(&host);
+    let analyzed = if member.kind == crate::AnonymousMemberKind::Destructor {
+        OrdinaryBodyEngine::new(&mut host).analyze_anonymous_destructor(
+            &infer,
+            issued_identity.clone(),
+            &full_name,
+            return_type,
+            params.into_iter(),
+            body,
+            span,
+            owner_type,
+            self_mode,
+            self_is_mut,
+        )?
+    } else {
+        OrdinaryBodyEngine::new(&mut host).analyze_method_with_identity(
+            &infer,
+            issued_identity.clone(),
+            &full_name,
+            return_type,
+            params.into_iter(),
+            body,
+            span,
+            owner_type,
+            has_self,
+            self_mode,
+            self_is_mut,
+        )?
+    };
+    let (function, warnings, strings, referenced_functions, referenced_methods) = analyzed;
+    let (function, selected_calls, mut referenced_specializations) =
+        crate::specialize::select_provider_body_specializations(&mut host, function)?;
+    referenced_specializations.extend(referenced_methods.iter().filter_map(|(owner, method)| {
+        let info = host.method_info_for_symbol(*owner, *method)?;
+        let callable = host.interner.get_or_intern(&if info.has_self {
+            format!(
+                "{}.{}",
+                host.type_pool.struct_symbol_name(*owner),
+                host.interner.resolve(method)
+            )
+        } else {
+            format!(
+                "{}::{}",
+                host.type_pool.struct_symbol_name(*owner),
+                host.interner.resolve(method)
+            )
+        });
+        host.anonymous_function_identities
+            .borrow()
+            .get(&callable)
+            .cloned()
+    }));
+    referenced_specializations.extend(host.observed_comptime_producers.borrow().iter().cloned());
+    host.specialized_function_identities.borrow_mut().extend(
+        selected_calls
+            .iter()
+            .zip(referenced_specializations.iter())
+            .map(|((symbol, _), instance)| (*symbol, instance.clone())),
+    );
+    let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let body_span = host.rir.rir().get(body).span;
+    let export = super::semantic_body_export::export_body(
+        &host,
+        crate::BodyOwnerToken::new(0, 0),
+        body_span,
+        &function,
+        &strings,
+        &warnings,
+        Some(&selected_calls),
+    )
+    .map(|export| crate::SemanticAnonymousBodyExport {
+        identity: issued_identity,
+        body: export.body,
+    })
+    .map_err(|failure| {
+        CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+            "provider anonymous body export failed: {failure:?}"
+        )))
+    })?;
+    let produced_anonymous_nominals = host
+        .produced_anonymous_nominals(&initial_anonymous_identities)
+        .map_err(|failure| {
+            CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                "provider anonymous produced-nominal export failed: {failure:?}"
+            )))
+        })?;
+    let mut referenced_definitions = referenced_functions
+        .iter()
+        .filter_map(|symbol| {
+            host.function_tokens
+                .borrow()
+                .get(symbol)
+                .map(|(_, key)| key.clone())
+        })
+        .collect::<HashSet<_>>();
+    referenced_definitions.extend(
+        referenced_methods
+            .iter()
+            .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
+    );
+    let referenced_definitions = referenced_definitions.into_iter().collect();
+    let referenced_values = host
+        .observed_named_definitions
+        .borrow()
+        .iter()
+        .cloned()
+        .collect();
+    let definition_tokens = host
+        .function_tokens
+        .into_inner()
+        .into_values()
+        .chain(host.nominal_tokens.into_inner().into_values())
+        .chain(
+            host.anonymous_definition_tokens
+                .into_inner()
+                .into_iter()
+                .map(|(key, token)| (token, key)),
+        )
+        .collect();
+    let module_tokens = host.module_tokens.into_inner().into_values().collect();
+    Ok(ProviderAnonymousBody {
+        export,
+        produced_anonymous_nominals,
+        referenced_definitions,
+        referenced_values,
+        referenced_specializations,
+        definition_tokens,
+        module_tokens,
+    })
+}
+
+/// Run one exact specialization request through the provider-backed body host.
+pub fn analyze_provider_specialized_body<P, S, K, M>(
+    provider: &P,
+    source: S,
+    bundle: &BodyRirBundle,
+    base: K,
+    name: &str,
+    arguments: &crate::CanonicalArguments<K, M>,
+    target: Target,
+    preview: PreviewFeatures,
+    well_known: &ProviderWellKnownOptionFacts<K, M>,
+) -> CompileResult<ProviderSpecializedBody<K, M>>
+where
+    P: BodyFactProvider,
+    S: DurableNominalSource<K, M>
+        + DurableAnonymousSource<K, M>
+        + DurableCallableSource<K, M>
+        + DurableConstSource<K, M>
+        + DurableBodyLookupSource<K, M>,
+    K: Clone + Eq + Hash + Ord,
+    M: Clone + Eq + Hash + Ord,
+{
+    let owner_file = bundle.source_file_id().ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider specialized body RIR does not have one source file".into(),
+        ))
+    })?;
+    let mut host = ProviderBodyHost::new(
+        provider,
+        source,
+        bundle,
+        base,
+        owner_file,
+        name,
+        crate::StableDefinitionKind::Function,
+        None,
+        target,
+        preview,
+        well_known,
+    )
+    .ok_or_else(|| {
+        CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+            "provider specialization host could not be constructed".into(),
+        ))
+    })?;
+    let initial_anonymous_identities = host
+        .canonical_anonymous_types
+        .values()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let type_args = arguments
+        .types
+        .iter()
+        .map(|ty| host.materialize_type_instance(ty))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|failure| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                "provider specialization type argument is unavailable: {failure:?}"
+            )))
+        })?;
+    let value_args = arguments
+        .values
+        .iter()
+        .map(|value| host.materialize_argument_value(value))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|failure| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(format!(
+                "provider specialization value argument is unavailable: {failure:?}"
+            )))
+        })?;
+    let key = crate::specialize::SpecializationKey {
+        base_name: host.function_symbol,
+        type_args,
+        value_args,
+    };
+    host.endpoint
+        .finalize_containment_metadata()
+        .ok_or_else(|| {
+            CompileError::without_span(rue_error::ErrorKind::InvalidCompilerInput(
+                "provider specialization containment metadata is unavailable".into(),
+            ))
+        })?;
+    let infer = InferenceContext::new(&host);
+    let specialized =
+        crate::specialize::analyze_one_specialization_with_host(&mut host, &infer, key)?;
+    let body_span = host
+        .rir
+        .rir()
+        .get(
+            host.endpoint
+                .function_info(host.function_symbol)
+                .ok_or_else(|| {
+                    CompileError::without_span(rue_error::ErrorKind::UndefinedFunction(
+                        name.to_owned(),
+                    ))
+                })?
+                .body,
+        )
+        .span;
+    let (function, selected_calls, referenced_specializations) =
+        crate::specialize::select_provider_body_specializations(&mut host, specialized.function)?;
+    host.specialized_function_identities.borrow_mut().extend(
+        selected_calls
+            .iter()
+            .zip(referenced_specializations.iter())
+            .map(|((symbol, _), instance)| (*symbol, instance.clone())),
+    );
+    let selected_calls = selected_calls.into_iter().collect::<HashMap<_, _>>();
+    let body = super::semantic_body_export::export_body(
+        &host,
+        host.owner,
+        body_span,
+        &function,
+        &specialized.local_strings,
+        &specialized.warnings,
+        Some(&selected_calls),
+    )
+    .map_err(|failure| {
+        CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+            "provider specialization export failed: {failure:?}"
+        )))
+    })?
+    .body;
+    let mut referenced_definitions = specialized
+        .referenced_functions
+        .iter()
+        .filter_map(|symbol| {
+            host.function_tokens
+                .borrow()
+                .get(symbol)
+                .map(|(_, key)| key.clone())
+        })
+        .collect::<HashSet<_>>();
+    referenced_definitions.extend(
+        specialized
+            .referenced_methods
+            .iter()
+            .filter_map(|(owner, method)| host.named_method_definition(*owner, *method)),
+    );
+    let referenced_definitions = referenced_definitions.into_iter().collect();
+    let referenced_values = host
+        .observed_named_definitions
+        .borrow()
+        .iter()
+        .cloned()
+        .collect();
+    let export = crate::SemanticSpecializedBodyExport {
+        identity: specialized.identity,
+        body,
+        dependencies: specialized.dependencies.into(),
+        dependency_boundary_complete: specialized.dependency_boundary_complete,
+    };
+    let produced_anonymous_nominals = host
+        .produced_anonymous_nominals(&initial_anonymous_identities)
+        .map_err(|failure| {
+            CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
+                "provider specialization produced-nominal export failed: {failure:?}"
+            )))
+        })?;
+    let definition_tokens = host
+        .function_tokens
+        .into_inner()
+        .into_values()
+        .chain(host.nominal_tokens.into_inner().into_values())
+        .chain(
+            host.anonymous_definition_tokens
+                .into_inner()
+                .into_iter()
+                .map(|(key, token)| (token, key)),
+        )
+        .collect();
+    let module_tokens = host.module_tokens.into_inner().into_values().collect();
+    Ok(ProviderSpecializedBody {
+        export,
+        produced_anonymous_nominals,
+        referenced_definitions,
+        referenced_values,
+        referenced_specializations,
+        definition_tokens,
+        module_tokens,
+    })
+}

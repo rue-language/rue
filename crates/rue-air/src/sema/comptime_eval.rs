@@ -114,7 +114,7 @@ pub(super) fn validate_comptime_value_for_type_impl(
     }
     Ok(())
 }
-use super::{DeferredOwnershipGate, DeferredOwnershipGateKind, FunctionInfo};
+use super::{DeferredOwnershipGate, DeferredOwnershipGateKind};
 use crate::specialize::MAX_SPECIALIZATION_ROUNDS;
 use crate::types::{ArrayLen, StructField, Type, TypeKind};
 
@@ -1317,7 +1317,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // (`WrapA(WrapA(i32))`), and chains thereof (RUE-251).
             InstData::Call { name, args } => {
                 let name = *name;
-                self.eval_comptime_type_call(name, args, env, false)
+                self.eval_comptime_type_call(name, args, env, false, span)
                     .map_err(|e| Self::label_ctor_instantiation_site(e, span))
             }
 
@@ -1528,7 +1528,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         )?;
         // Reduce through the shared path; arguments are evaluated in the current
         // environment so `T` (an enclosing comptime parameter) still resolves.
-        self.eval_comptime_type_call(function_key, args, env, true)
+        self.eval_comptime_type_call(function_key, args, env, true, span)
             .map_err(|e| Self::label_ctor_instantiation_site(e, span))
     }
 
@@ -1853,6 +1853,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         args: &rue_rir::RirCallArgsRange,
         env: &mut ComptimeEnv,
         name_is_resolved_key: bool,
+        span: Span,
     ) -> CompileResult<Option<ConstValue>> {
         // During declaration binding, the callee may simply not be collected yet:
         // constant initializers and struct-field / enum-payload types can
@@ -1928,7 +1929,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let Some(v) = self.eval_const_expr(arg.value, env)? else {
                 return Ok(None);
             };
-            match (param_comptime_type[i], v) {
+            // Provider-backed callable facts can materialize a callee without
+            // retaining its source RIR parameter symbols. The evaluated value
+            // is still authoritative for a missing flag: only a `type`-typed
+            // comptime parameter can accept `ConstValue::Type`.
+            let is_comptime_type = param_comptime_type
+                .get(i)
+                .copied()
+                .unwrap_or(matches!(v, ConstValue::Type(_)));
+            match (is_comptime_type, v) {
                 (true, ConstValue::Type(t)) => {
                     callee_types.insert(param_names[i], t);
                 }
@@ -1943,7 +1952,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         // The callee body sees only its own parameters. Reduce it with the
         // freshly-built substitution maps.
-        self.reduce_type_ctor_body(name_key, &callee_types, &callee_values)
+        self.reduce_type_ctor_body(name_key, &callee_types, &callee_values, span)
     }
 
     pub(crate) fn validate_comptime_value_for_type(
@@ -1972,9 +1981,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     fn validate_comptime_call_substitutions(
         &mut self,
         function_name: Spur,
-        function: &FunctionInfo,
+        function: &crate::sema::info::FunctionCallInfo,
         callee_types: &HashMap<Spur, Type>,
         callee_values: &HashMap<Spur, ConstValue>,
+        span: Span,
     ) -> CompileResult<()> {
         let params = function.params;
         let param_data = self.body_param_data(params);
@@ -2001,7 +2011,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     callee_types.len(),
                     callee_values.len(),
                 )),
-                function.span,
+                span,
             ));
         }
 
@@ -2022,7 +2032,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             self.body_interner().resolve(name),
                             self.body_interner().resolve(&function_name)
                         )),
-                        function.span,
+                        span,
                     ));
                 }
                 continue;
@@ -2034,7 +2044,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         self.body_interner().resolve(name),
                         self.body_interner().resolve(&function_name)
                     )),
-                    function.span,
+                    span,
                 )
             })?;
             let expected = self.resolve_substituted_param_type(
@@ -2043,15 +2053,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 *declared,
                 callee_types,
                 callee_values,
+                span,
             )?;
 
-            self.validate_comptime_value_for_type(
-                function_name,
-                *name,
-                value,
-                expected,
-                function.span,
-            )?;
+            self.validate_comptime_value_for_type(function_name, *name, value, expected, span)?;
         }
         Ok(())
     }
@@ -2066,14 +2071,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         name: Spur,
         callee_types: &HashMap<Spur, Type>,
         callee_values: &HashMap<Spur, ConstValue>,
+        span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        let Some(fn_info) = self.function_info(name) else {
+        if let Some(result) =
+            self.reduce_external_comptime_call(name, callee_types, callee_values, span)
+        {
+            return result;
+        }
+        let Some(fn_body_info) = self.function_body_info(name) else {
             return Ok(None);
         };
-        self.validate_comptime_call_substitutions(name, &fn_info, callee_types, callee_values)?;
-        let fn_body = fn_info.body;
-        let fn_span = fn_info.span;
-        let fn_file = fn_info.file_id;
+        let fn_info = crate::sema::info::FunctionCallInfo::from_body(fn_body_info);
+        self.validate_comptime_call_substitutions(
+            name,
+            &fn_info,
+            callee_types,
+            callee_values,
+            fn_body_info.span,
+        )?;
+        let fn_body = fn_body_info.body;
+        let fn_span = fn_body_info.span;
+        let fn_file = fn_body_info.file_id;
         let canonical_identity = self
             .canonical_function_producer(name, callee_types, callee_values)
             .map_err(|failure| {

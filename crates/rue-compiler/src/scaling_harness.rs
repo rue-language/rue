@@ -1,113 +1,14 @@
-//! RUE-1086 — two-dimensional scaling and warm/fresh correctness harness.
+//! Structural scaling and warm/fresh correctness harness for query-native body analysis.
 //!
-//! This harness gates on *structural work counters*, never wall time. It varies
-//! two axes of the semantic workload independently — the number of reached
-//! function bodies and the number of unrelated (never-called) declarations — and
-//! reads the per-body declaration-context counters plumbed onto
-//! [`BodyAnalysisWork`] (`per_body_declaration_context`) plus the ordinary
-//! binding/manifest/body counters that already exist on
-//! [`CanonicalSemanticWork`].
+//! The scaling rows consume production provider counters: name lookups, selected
+//! identity facts, signature/type/const facts, and durable materializations. They
+//! vary reached bodies and unrelated declarations independently, asserting that
+//! unrelated declarations add no provider work and that reached-body growth is
+//! linear. Wall-time and memory experiments remain separate from these
+//! deterministic structural assertions.
 //!
-//! Wall-time, allocation-count, and peak-memory experiments must remain
-//! separate from these deterministic counter assertions.
-//!
-//! # What it proves
-//!
-//! 1. Deterministic synthetic corpus varying reached-body count and
-//!    unrelated-declaration count independently.
-//! 2. Scaling rows (counter-based): fixed bodies / growing declarations, and
-//!    fixed declarations / growing bodies.
-//! 3. Two-revision invalidation rows asserted via counters and one shared
-//!    warm-vs-fresh parity oracle used by *every* edit row.
-//! 4. Specialization rows (breadth compiles, depth fails E1200), referencing the
-//!    canonical boundary unit tests rather than duplicating them.
-//! 5. A warm-vs-fresh parity oracle after every edit row.
-//!
-//! # The two-envelope expected-failure discipline
-//!
-//! Most long-lived expected-failure rows use [`Row::envelope`], which asserts
-//! either a repaired target envelope or a documented known-bad witness. RUE-1090
-//! is intentionally different: it is a post-identity-cut decision gate, so it
-//! compares observed baseline and grown per-body counters directly.
-//!
-//! * **(a) the repaired target envelope** — the measured value at or below the
-//!   flat/linear/incremental target (within a tight tolerance). This is a hard
-//!   PASS. A repair *better* than the target still passes; the envelope never
-//!   panics on an improvement.
-//! * **(b) the documented unrepaired witness** — the measured value inside a
-//!   *tight* band around the structurally predicted known-bad shape (e.g. per
-//!   body prepare/install growing 1:1 with the declaration universe). This is a
-//!   tracked expected-failure naming its issue.
-//!
-//! Anything **worse** than the witness band (e.g. duplicate body analyses, or a
-//! warm recompute worse than a full fresh one), or **structurally between** the
-//! two envelopes (a partial repair that is neither flat nor the documented
-//! witness), FAILS the test so a human reconciles the row with the new reality.
-//! The witnesses are predicted from the corpus knobs, not copied from a prior
-//! run, so an unrelated regression that inflates the counters still fails loudly.
-//!
-//! Tracking issues, each named at its row:
-//!
-//! * **RUE-1089** — identity rows: per-body identity/lookup installation work
-//!   should be invariant to unrelated-declaration count.
-//! * **RUE-1091** — conditional shared-base / narrow-epoch repair: activated by
-//!   RUE-1090 if per-body install/project/endpoint work grows with unrelated
-//!   declarations; its edit-invalidation rows remain expected-failure evidence.
-//! * **RUE-1090** — measurement gate: fixed bodies / growing declarations must
-//!   leave observed per-body project/install/endpoint work flat.
-//!
-//! # Stage-source counter provenance
-//!
-//! The per-body declaration-context counters are accrued INSIDE
-//! `analyze_body_query`, at each stage's own source, as the stage actually
-//! performs the work (see `canonical_semantic.rs`). The coordinator no longer
-//! charges them from the input slice lengths it happens to hold, and a body that
-//! fails before install is not charged for installation it never performed. A
-//! shortcut added inside any stage (a shared base that predeclares fewer shells,
-//! a projection that reuses cached exports) therefore drops the corresponding
-//! counter, and this harness observes it.
-//!
-//! # Recorded prediction
-//!
-//! Two distinct historical Caldera figures must not be conflated (ADR-0066 §3,
-//! RUE-1086):
-//!
-//! * **~62% of cold wall time at Caldera scale** — the frozen ADR-0066 recorded
-//!   prediction, restored verbatim: the per-body *install/project/endpoint*
-//!   term. This is the `O(bodies × declarations)` share this harness gates on.
-//! * **~85% total per-body setup share** — a *separate* number: the total
-//!   per-body setup share (install/project/endpoint **plus** prepare and
-//!   config), measured via the 200-sample stack profile. It is not the 62%
-//!   prediction and is stated only as the total-setup context around it.
-//!
-//! Caldera measurement provenance (RUE-1083): base cutover commit 586f50c,
-//! measured at commit aca4acb, release build (`--target-platforms
-//! //platforms:release`), linux x64, `RUE_STD_PATH` set, 200 gdb stack samples
-//! at 0.25s intervals plus per-stage `--time-passes` spans over
-//! `examples/caldera/main.rue`. The ~45 ms *pre-link* target is an eventual
-//! reference-host goal, not a current gate.
-//!
-//! ## Recorded structural baseline (stage-sourced counters)
-//!
-//! Single-file corpus, no std import, so the declaration universe is exactly
-//! `reached_bodies + unrelated_decls + 1` (`main`) and `cold_bodies` is exactly
-//! `reached_bodies + 1`:
-//!
-//! With `U = reached_bodies + unrelated_decls + 1`, per-body prepare, project,
-//! and install each equal `U`, per-body endpoints equal `2·U + 1` (one stable
-//! definition endpoint and one body-owner endpoint per declaration plus one
-//! module endpoint), and total prepare work is `cold_bodies · U`:
-//!
-//! ```text
-//!   bodies × decls | cold_bodies per_body_shells per_body_project per_body_semantics per_body_endpoints shells_total
-//!     100 ×   100  |        101            201              201                201                403          20301
-//!    1000 ×   100  |       1001           1101             1101               1101               2203        1102101
-//! ```
-//!
-//! per-body prepare/project/install grow 1:1 with the universe and endpoints
-//! grow 2:1. These are retained as historical predictions in the RUE-1090 audit
-//! output, but the gate itself compares the observed baseline and grown values:
-//! the post-identity-cut constant may change while remaining flat.
+//! The edit rows use the same production query path and a full warm-vs-fresh
+//! parity oracle after every revision change.
 
 use crate::unstable::{
     DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
@@ -214,26 +115,18 @@ fn unrelated_module_snapshot_with_main_and_suffix(
 /// field is a work counter; not one is a clock or an allocation total.
 #[derive(Debug, Clone, Copy)]
 struct Measure {
-    /// Cold reached-body analyses that paid the declaration-context cost.
+    /// Cold reached-body analyses computed by the body-query family.
     cold_bodies: usize,
-    /// Declaration prefixes actually built for the request (RUE-1135). The
-    /// prepare/project/install/endpoint stages are charged here, once per
-    /// declaration base rather than once per body, so this is the counter that
-    /// says how many times the O(declarations) prefix really ran.
+    /// Canonical declaration prefixes built for the request.
     declaration_prefixes: usize,
-    /// Σ_body declaration-shell predeclarations (the per-body "prepare" term),
-    /// sourced from the prepare stage's own output.
-    shells_total: usize,
-    /// Σ_body durable declaration records the project stage actually joined (the
-    /// per-body "project" term), sourced from the projector's returned work.
-    projections_total: usize,
-    /// Σ_body declaration semantics installed (the "install" term), sourced from
-    /// the install stage's recorded `durable_payloads_installed`, charged only
-    /// when the install actually ran.
-    semantics_total: usize,
-    /// Σ_body stable-identity/body-owner/module endpoints the endpoint stage
-    /// actually installed (the per-body "endpoint" term).
-    endpoints_total: usize,
+    /// Name/import lookup requests made by production body providers.
+    provider_lookups: usize,
+    /// Selected declaration identity facts consumed by production bodies.
+    provider_identity_facts: usize,
+    /// Selected signature, type, and const facts consumed by production bodies.
+    provider_semantic_facts: usize,
+    /// Durable declarations materialized for provider requests.
+    provider_materializations: usize,
     /// AIR instructions produced — genuine per-body body work, independent of the
     /// unrelated-declaration universe.
     air_instructions: usize,
@@ -242,12 +135,8 @@ struct Measure {
     body_analyses_invalidated: usize,
     cfg_builds: usize,
     cfg_imports: usize,
-    declarations_inspected: usize,
     modules_registered: usize,
-    rir_indexes_constructed: usize,
     rir_instructions_visited: usize,
-    durable_source_records_inspected: usize,
-    durable_source_records_copied: usize,
 }
 
 impl Measure {
@@ -258,7 +147,10 @@ impl Measure {
         let output = session
             .canonical_semantic(&CompileOptions::default())
             .expect("synthetic corpus compiles");
-        Self::from_work(&output.work())
+        Self::from_work_and_provider(
+            &output.work(),
+            crate::unstable::provider_observation_metrics(&session),
+        )
     }
 
     fn cold_snapshot(snapshot: SourceSnapshot) -> Self {
@@ -267,58 +159,39 @@ impl Measure {
         let output = session
             .canonical_semantic(&CompileOptions::default())
             .expect("synthetic snapshot compiles");
-        Self::from_work(&output.work())
+        Self::from_work_and_provider(
+            &output.work(),
+            crate::unstable::provider_observation_metrics(&session),
+        )
     }
 
-    fn from_work(work: &CanonicalSemanticWork) -> Self {
+    fn from_work_and_provider(
+        work: &CanonicalSemanticWork,
+        provider: crate::unstable::ProviderObservationMetrics,
+    ) -> Self {
         let body = &work.body_analysis;
-        let ctx = &body.per_body_declaration_context;
         Self {
-            // Cold reached bodies. Since RUE-1135 the per-body epoch is derived
-            // from one request-scoped base, so the count of bodies that paid for
-            // an epoch is the derivation count; `cold_body_preparations` counts
-            // the prefixes, which is now a per-request quantity.
-            cold_bodies: ctx.body_epochs_derived,
-            declaration_prefixes: ctx.cold_body_preparations,
-            shells_total: ctx.shells_prepared,
-            projections_total: ctx.projections_performed,
-            semantics_total: ctx.semantics_installed,
-            endpoints_total: ctx.endpoints_installed,
+            // The registered body-transaction family is the production
+            // computation boundary. Its lifecycle counters are therefore the
+            // exact cold/reused/invalidated topology; the retired epoch-overlay
+            // preparation counters are intentionally not consulted.
+            cold_bodies: body.body_analyses_computed,
+            declaration_prefixes: work.declaration_reuse.plan_executions,
+            provider_lookups: provider.name_lookups as usize,
+            provider_identity_facts: provider.identity_facts as usize,
+            provider_semantic_facts: (provider.signature_facts
+                + provider.type_facts
+                + provider.const_facts) as usize,
+            provider_materializations: provider.materializations as usize,
             air_instructions: body.air_instructions_produced,
             body_analyses_computed: body.body_analyses_computed,
             body_analyses_reused: body.body_analyses_reused,
             body_analyses_invalidated: body.body_analyses_invalidated,
             cfg_builds: work.cfg.cfg_builds_attempted,
             cfg_imports: work.cfg.cfg_import_attempts,
-            declarations_inspected: ctx.declarations_inspected,
-            modules_registered: ctx.modules_registered,
-            rir_indexes_constructed: ctx.rir_indexes_constructed,
-            rir_instructions_visited: ctx.rir_instructions_visited,
-            durable_source_records_inspected: ctx.durable_source_records_inspected,
-            durable_source_records_copied: ctx.durable_source_records_copied,
+            modules_registered: work.binding.modules_registered,
+            rir_instructions_visited: work.declaration_index.rir_instructions_visited,
         }
-    }
-
-    /// Per-body declaration-shell "prepare" work. Flat iff the per-body pipeline
-    /// stops re-preparing the whole universe for every body.
-    fn per_body_shells(&self) -> usize {
-        self.shells_total / self.cold_bodies.max(1)
-    }
-
-    /// Per-body declaration "project" work. Flat under the same repair.
-    fn per_body_projections(&self) -> usize {
-        self.projections_total / self.cold_bodies.max(1)
-    }
-
-    /// Per-body declaration "install" work. Flat under the same repair.
-    fn per_body_semantics(&self) -> usize {
-        self.semantics_total / self.cold_bodies.max(1)
-    }
-
-    /// Per-body stable-identity/body-owner/module "endpoint" work. Flat under
-    /// the same repair.
-    fn per_body_endpoints(&self) -> usize {
-        self.endpoints_total / self.cold_bodies.max(1)
     }
 }
 
@@ -330,54 +203,7 @@ fn assert_exact_zero_slope(label: &str, baseline: usize, grown: usize) {
 }
 
 // ---------------------------------------------------------------------------
-// Corpus-derived structural prediction (never a measured run)
-// ---------------------------------------------------------------------------
-
-/// Closed-form per-body declaration-context work predicted *only* from the
-/// corpus knobs, for the current (unrepaired) whole-universe-per-body pipeline.
-///
-/// Every field is an exact formula in `(bodies, decls)` — never read back from a
-/// measured compile — so a uniform regression that inflates a counter equally at
-/// the baseline size and the grown size (e.g. an extra full-universe traversal
-/// added to every body at every size) lands *outside* both the flat target and
-/// this witness band and fails the row loudly, instead of scaling the measured
-/// baseline in lockstep and staying green. The formulas are:
-///
-/// * declaration universe `U = bodies + decls + 1` (reached bodies + unrelated
-///   declarations + `main`);
-/// * `cold_bodies = bodies + 1` (each reached body plus `main` analyzed once);
-/// * per-body prepare/project/install each traverse the whole universe: `U`;
-/// * per-body endpoints install one stable-definition endpoint and one
-///   body-owner endpoint per declaration plus one module endpoint: `2·U + 1`
-///   (single-module corpus);
-/// * total prepare work `shells_total = cold_bodies · U = (bodies+1)·(bodies+decls+1)`.
-#[derive(Debug, Clone, Copy)]
-struct CorpusWitness {
-    cold_bodies: usize,
-    per_body_shells: usize,
-    per_body_projections: usize,
-    per_body_semantics: usize,
-    per_body_endpoints: usize,
-    shells_total: usize,
-}
-
-impl CorpusWitness {
-    fn predict(bodies: usize, decls: usize) -> Self {
-        let universe = bodies + decls + 1;
-        let cold_bodies = bodies + 1;
-        Self {
-            cold_bodies,
-            per_body_shells: universe,
-            per_body_projections: universe,
-            per_body_semantics: universe,
-            per_body_endpoints: 2 * universe + 1,
-            shells_total: cold_bodies * universe,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Two-envelope expected-failure discipline (single consistent mechanism)
+// Scaling-report discipline
 // ---------------------------------------------------------------------------
 
 /// Outcome of one scaling/identity row.
@@ -388,8 +214,6 @@ enum Row {
     /// The target does not hold yet; the documented known-bad witness holds
     /// within a tight band and the row is a tracked expected-failure.
     Tracked { label: String, issue: &'static str },
-    /// A measurement gate fired and requires the named follow-up action.
-    Activation { label: String },
 }
 
 impl Row {
@@ -452,7 +276,6 @@ impl Row {
         match self {
             Row::Met { label } => format!("  PASS  {label}"),
             Row::Tracked { label, issue } => format!("  XFAIL {label}  (tracked {issue})"),
-            Row::Activation { label } => format!("  ACTIVATE  {label}"),
         }
     }
 }
@@ -469,14 +292,6 @@ impl Report {
     fn new(title: impl Into<String>) -> Self {
         Self {
             issue: "RUE-1086",
-            title: title.into(),
-            rows: Vec::new(),
-        }
-    }
-
-    fn rue_1090_gate(title: impl Into<String>) -> Self {
-        Self {
-            issue: "RUE-1090",
             title: title.into(),
             rows: Vec::new(),
         }
@@ -821,458 +636,56 @@ fn matrix_size_ladder() -> Vec<usize> {
 // Scaling-row logic (shared by the small unit smoke and the heavy matrix)
 // ---------------------------------------------------------------------------
 
-/// The RUE-1090 decision produced by an observed baseline/grown counter pair.
-///
-/// The frozen decision rule is about slope, not an absolute post-identity-cut
-/// count: a new implementation may legitimately have a different constant
-/// amount of per-body work. Any non-flat per-body count as unrelated declarations
-/// grow activates RUE-1091 for investigation; only an exact flat ratio cancels
-/// it. These are deterministic integer counters, so the comparison has zero
-/// tolerance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Rue1090GateVerdict {
-    Flat,
-    ActivateRue1091,
-}
-
-impl Rue1090GateVerdict {
-    fn combine(self, other: Self) -> Self {
-        if matches!(self, Self::ActivateRue1091) || matches!(other, Self::ActivateRue1091) {
-            Self::ActivateRue1091
-        } else {
-            Self::Flat
-        }
-    }
-
-    fn summary(self) -> &'static str {
-        match self {
-            Self::Flat => "CANCEL RUE-1091 (all gated counters flat)",
-            Self::ActivateRue1091 => "ACTIVATE RUE-1091 (non-flat per-body count observed)",
-        }
-    }
-}
-
-/// Compare exact per-body ratios without normalizing them through integer
-/// division. This matters even though the current corpus keeps the number of
-/// cold bodies fixed: a future pipeline change must not hide a non-flat ratio
-/// merely because two truncated integer quotients happen to agree.
-fn rue_1090_gate_verdict(
-    baseline_total: usize,
-    baseline_bodies: usize,
-    grown_total: usize,
-    grown_bodies: usize,
-) -> Rue1090GateVerdict {
-    assert!(
-        baseline_bodies > 0 && grown_bodies > 0,
-        "per-body denominator is zero"
-    );
-    let baseline_scaled = baseline_total as u128 * grown_bodies as u128;
-    let grown_scaled = grown_total as u128 * baseline_bodies as u128;
-    if grown_scaled == baseline_scaled {
-        Rue1090GateVerdict::Flat
-    } else {
-        Rue1090GateVerdict::ActivateRue1091
-    }
-}
-
-/// Render one self-contained audit row. Historical formulas remain in the
-/// output for comparison only; they do not participate in the RUE-1090 verdict.
-fn rue_1090_audit_line(
-    counter: &str,
-    bodies: usize,
-    baseline_decls: usize,
-    grown_decls: usize,
-    baseline_total: usize,
-    baseline_bodies: usize,
-    grown_total: usize,
-    grown_bodies: usize,
-    historical_baseline: usize,
-    historical_grown: usize,
-) -> (Rue1090GateVerdict, String) {
-    let verdict = rue_1090_gate_verdict(baseline_total, baseline_bodies, grown_total, grown_bodies);
-    let slope_numerator = grown_total as i128 * baseline_bodies as i128
-        - baseline_total as i128 * grown_bodies as i128;
-    let decision = match verdict {
-        Rue1090GateVerdict::Flat => "FLAT",
-        Rue1090GateVerdict::ActivateRue1091 => "ACTIVATE RUE-1091",
-    };
-    (
-        verdict,
-        format!(
-            "RUE-1090 {decision}: per-body {counter} @ {bodies} bodies; \
-             baseline={baseline_total}/{baseline_bodies} ({baseline_decls} decls), \
-             grown={grown_total}/{grown_bodies} ({grown_decls} decls), \
-             exact_ratio_slope_numerator={slope_numerator:+}; \
-             historical_prediction={historical_baseline}->{historical_grown} (informational)",
-        ),
-    )
-}
-
-/// Keep a hard ceiling at the historical known-bad witness while RUE-1090
-/// determines the *direction* of the follow-up. This is intentionally
-/// independent of the exact-flat verdict: a result below the old witness may
-/// still be non-flat and activate RUE-1091, while a second whole-universe pass
-/// per body must fail rather than being recorded as ordinary activation.
-///
-/// The `+2` slack is the existing historical witness band used by the former
-/// fixed-bodies envelope. It is a tripwire only, not a new target threshold.
-const RUE_1090_HISTORICAL_WITNESS_TOLERANCE: usize = 2;
-
-fn rue_1090_historical_witness_ceiling_line(
-    counter: &str,
-    measured_total: usize,
-    measured_bodies: usize,
-    historical_per_body_witness: usize,
-) -> String {
-    assert!(measured_bodies > 0, "per-body denominator is zero");
-    let ceiling_per_body = historical_per_body_witness
-        .checked_add(RUE_1090_HISTORICAL_WITNESS_TOLERANCE)
-        .expect("historical witness ceiling overflow");
-    let ceiling_total = ceiling_per_body
-        .checked_mul(measured_bodies)
-        .expect("historical witness total overflow");
-    assert!(
-        measured_total <= ceiling_total,
-        "RUE-1090 historical witness ceiling tripped for {counter}: \
-         measured={measured_total}/{measured_bodies}, \
-         ceiling={ceiling_per_body} per body ({ceiling_total} total; \
-         historical witness {historical_per_body_witness}+{RUE_1090_HISTORICAL_WITNESS_TOLERANCE})"
-    );
-    format!(
-        "RUE-1090 historical tripwire: per-body {counter}={measured_total}/{measured_bodies} \
-         <= {ceiling_per_body} (historical witness {historical_per_body_witness} \
-         + {RUE_1090_HISTORICAL_WITNESS_TOLERANCE})",
-    )
-}
-
-/// RUE-1121's post-repair acceptance row for a declaration-context counter.
-///
-/// The RUE-1090 decision remains its exact-ratio verdict below. This row is the
-/// complementary acceptance assertion: with the same reached-body topology,
-/// growing unrelated declarations must leave this observable counter exactly
-/// flat. Until RUE-1091 repairs the shared declaration context, the current
-/// whole-universe witness records a controlled expected failure. Once repaired,
-/// the same row becomes a hard target pass without duplicating the test.
-///
-/// `witness` is the documented known-bad TOTAL, which differs by counter
-/// because the counters are no longer charged the same way. A counter still
-/// paid per body witnesses at `universe · cold_bodies`; the RUE-1132 projection
-/// is charged once per request and witnesses at `universe`. Passing the total
-/// rather than a per-body value keeps that difference explicit at each call
-/// site instead of hiding it in a uniform multiply here.
-fn rue_1121_exact_flat_context_row(
-    counter: &str,
-    baseline_total: usize,
-    baseline_bodies: usize,
-    grown_total: usize,
-    grown_bodies: usize,
-    witness: usize,
-) -> Row {
-    assert_eq!(
-        grown_bodies, baseline_bodies,
-        "RUE-1121 fixed-body corpus changed its body-preparation topology"
-    );
-    Row::envelope(
-        format!(
-            "RUE-1121 exact-flat {counter}: warm-independent cold {} -> {} \
-             across {} unchanged body preparations (target {}, witness {})",
-            baseline_total, grown_total, grown_bodies, baseline_total, witness,
-        ),
-        grown_total,
-        baseline_total,
-        0,
-        witness,
-        0,
-        "RUE-1091",
-    )
-}
-
-/// Axis: unrelated declarations grow while reached bodies stay fixed.
-///
-/// This is the RUE-1090 activation measurement. It compares the observed
-/// per-body projection, installation, and endpoint counters at each size with
-/// the observed baseline. The historical whole-universe formulas are printed as
-/// context only; they are deliberately not an acceptance envelope.
 fn run_fixed_bodies_growing_declarations(bodies: usize, ladder: &[usize]) {
     let baseline_decls = ladder[0];
-    let historical_baseline = CorpusWitness::predict(bodies, baseline_decls);
-    let mut report = Report::rue_1090_gate(format!(
-        "gate: fixed {bodies} bodies, growing unrelated declarations"
-    ));
-
-    // A body's real AIR work is fixed by the reached bodies alone; retain that
-    // independent hard invariant alongside the declaration-context gate.
     let baseline = Measure::cold(&Corpus::new(bodies, baseline_decls));
-    let baseline_air = baseline.air_instructions;
-    report.push(Row::Met {
-        label: format!(
-            "RUE-1090 raw baseline @ {bodies} bodies, {baseline_decls} decls: \
-             per_body_project={}/{} per_body_install={}/{} per_body_endpoints={}/{}",
-            baseline.projections_total,
-            baseline.cold_bodies,
-            baseline.semantics_total,
-            baseline.cold_bodies,
-            baseline.endpoints_total,
-            baseline.cold_bodies,
-        ),
-    });
-    report.push(Row::linear_hard(
-        format!(
-            "RUE-1121 baseline cold body preparations @ {bodies} bodies, \
-             {baseline_decls} decls: {} (corpus target {})",
-            baseline.cold_bodies, historical_baseline.cold_bodies,
-        ),
-        baseline.cold_bodies,
-        historical_baseline.cold_bodies,
-        0,
+    let mut report = Report::new(format!(
+        "provider scaling: fixed {bodies} reached bodies, growing unrelated declarations"
     ));
-
-    let mut overall = Rue1090GateVerdict::Flat;
-
     for &decls in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
-        let historical_grown = CorpusWitness::predict(bodies, decls);
-        for (counter, baseline_value, grown_value) in [
+        for (label, before, after) in [
             (
-                "body analyses computed",
-                baseline.body_analyses_computed,
-                grown.body_analyses_computed,
+                "lookup operations",
+                baseline.provider_lookups,
+                grown.provider_lookups,
             ),
             (
-                "body analyses reused",
-                baseline.body_analyses_reused,
-                grown.body_analyses_reused,
+                "identity operations",
+                baseline.provider_identity_facts,
+                grown.provider_identity_facts,
             ),
             (
-                "body analyses invalidated",
-                baseline.body_analyses_invalidated,
-                grown.body_analyses_invalidated,
+                "signature/type/const operations",
+                baseline.provider_semantic_facts,
+                grown.provider_semantic_facts,
             ),
-            ("CFG builds", baseline.cfg_builds, grown.cfg_builds),
-            ("CFG imports", baseline.cfg_imports, grown.cfg_imports),
+            (
+                "materialization operations",
+                baseline.provider_materializations,
+                grown.provider_materializations,
+            ),
             (
                 "AIR instructions",
                 baseline.air_instructions,
                 grown.air_instructions,
             ),
         ] {
-            assert_exact_zero_slope(counter, baseline_value, grown_value);
-        }
-        for (counter, baseline_value, grown_value) in [
-            (
-                "declarations inspected",
-                baseline.declarations_inspected,
-                grown.declarations_inspected,
-            ),
-            (
-                "modules registered",
-                baseline.modules_registered,
-                grown.modules_registered,
-            ),
-            (
-                "RIR indexes constructed",
-                baseline.rir_indexes_constructed,
-                grown.rir_indexes_constructed,
-            ),
-            (
-                "RIR instructions visited",
-                baseline.rir_instructions_visited,
-                grown.rir_instructions_visited,
-            ),
-            (
-                "durable source records inspected",
-                baseline.durable_source_records_inspected,
-                grown.durable_source_records_inspected,
-            ),
-            (
-                "durable source records copied",
-                baseline.durable_source_records_copied,
-                grown.durable_source_records_copied,
-            ),
-        ] {
+            assert_exact_zero_slope(label, before, after);
             report.push(Row::Met {
                 label: format!(
-                    "production work {counter}: baseline={baseline_value}, grown={grown_value}"
+                    "{label} flat across +{} unrelated declarations: {before} == {after}",
+                    decls - baseline_decls
                 ),
             });
         }
-        // The fixed-body source topology is itself an exact acceptance fact:
-        // unrelated declarations add no reached bodies, so cold preparation
-        // count cannot hide a context regression by changing its denominator.
         report.push(Row::linear_hard(
-            format!(
-                "RUE-1121 exact-flat cold body preparations @ {bodies} bodies, \
-                 +{} decls: {} (corpus target {})",
-                decls - baseline_decls,
-                grown.cold_bodies,
-                historical_grown.cold_bodies,
-            ),
-            grown.cold_bodies,
-            historical_grown.cold_bodies,
-            0,
-        ));
-        // RUE-1135: one declaration base serves the whole request, so the
-        // O(declarations) prefix runs exactly once no matter how many bodies
-        // the request reaches. A body that rebuilt its own epoch would push
-        // this straight back to `cold_bodies`.
-        report.push(Row::linear_hard(
-            format!(
-                "RUE-1135 declaration prefixes @ {bodies} bodies, +{} decls: {} \
-                 across {} cold bodies",
-                decls - baseline_decls,
-                grown.declaration_prefixes,
-                grown.cold_bodies,
-            ),
+            format!("one declaration prefix at {decls} declarations"),
             grown.declaration_prefixes,
             1,
             0,
         ));
-        // RUE-1121 acceptance rows consume only stage-sourced counters. The
-        // RUE-1090 verdict below deliberately remains limited to its original
-        // project/install/endpoint exact-ratio decision.
-        // Each witness is the known-bad TOTAL for that counter's charging shape.
-        // Every one of these stages is now charged once per request — the
-        // RUE-1132 projection is computed once and shared, and since RUE-1135 the
-        // whole declaration epoch is built once and each body derives from it —
-        // so each witness is a single `universe`, never `universe · cold_bodies`.
-        // These rows therefore remain tracked RUE-1091 expected-failures — one
-        // whole-universe prefix is still not exactly flat in unrelated
-        // declarations — but their witnesses record the repaired shape, so a
-        // regression back to per-body construction lands at
-        // `universe · cold_bodies`, blows past the band, and panics instead of
-        // being absorbed.
-        for (counter, baseline_total, grown_total, witness) in [
-            (
-                "shells prepared",
-                baseline.shells_total,
-                grown.shells_total,
-                historical_grown.per_body_shells,
-            ),
-            (
-                "projections",
-                baseline.projections_total,
-                grown.projections_total,
-                historical_grown.per_body_projections,
-            ),
-            (
-                "semantics installed",
-                baseline.semantics_total,
-                grown.semantics_total,
-                historical_grown.per_body_semantics,
-            ),
-            (
-                "endpoints",
-                baseline.endpoints_total,
-                grown.endpoints_total,
-                historical_grown.per_body_endpoints,
-            ),
-        ] {
-            report.push(rue_1121_exact_flat_context_row(
-                counter,
-                baseline_total,
-                baseline.cold_bodies,
-                grown_total,
-                grown.cold_bodies,
-                witness,
-            ));
-        }
-        // A worsening beyond the historical unrepaired witness is a regression,
-        // not an ordinary RUE-1090 activation. Keep prepare/shell work here as
-        // well: it is outside the three-counter verdict but still catches a
-        // duplicated whole-universe declaration traversal.
-        for (counter, measured_total, historical_per_body_witness) in [
-            (
-                "prepare (shells)",
-                grown.shells_total,
-                historical_grown.per_body_shells,
-            ),
-            (
-                "projection",
-                grown.projections_total,
-                historical_grown.per_body_projections,
-            ),
-            (
-                "install",
-                grown.semantics_total,
-                historical_grown.per_body_semantics,
-            ),
-            (
-                "endpoints",
-                grown.endpoints_total,
-                historical_grown.per_body_endpoints,
-            ),
-        ] {
-            report.push(Row::Met {
-                label: rue_1090_historical_witness_ceiling_line(
-                    counter,
-                    measured_total,
-                    grown.cold_bodies,
-                    historical_per_body_witness,
-                ),
-            });
-        }
-        for (
-            counter,
-            baseline_value,
-            grown_value,
-            historical_baseline_value,
-            historical_grown_value,
-        ) in [
-            (
-                "projection",
-                baseline.projections_total,
-                grown.projections_total,
-                historical_baseline.per_body_projections,
-                historical_grown.per_body_projections,
-            ),
-            (
-                "install",
-                baseline.semantics_total,
-                grown.semantics_total,
-                historical_baseline.per_body_semantics,
-                historical_grown.per_body_semantics,
-            ),
-            (
-                "endpoints",
-                baseline.endpoints_total,
-                grown.endpoints_total,
-                historical_baseline.per_body_endpoints,
-                historical_grown.per_body_endpoints,
-            ),
-        ] {
-            let (verdict, line) = rue_1090_audit_line(
-                counter,
-                bodies,
-                baseline_decls,
-                decls,
-                baseline_value,
-                baseline.cold_bodies,
-                grown_value,
-                grown.cold_bodies,
-                historical_baseline_value,
-                historical_grown_value,
-            );
-            overall = overall.combine(verdict);
-            report.push(match verdict {
-                Rue1090GateVerdict::Flat => Row::Met { label: line },
-                Rue1090GateVerdict::ActivateRue1091 => Row::Activation { label: line },
-            });
-        }
-
-        // Hard invariant that holds today: AIR (real per-body body work) is
-        // invariant to unrelated declarations. Same reached bodies => same AIR.
-        assert_eq!(
-            grown.air_instructions, baseline_air,
-            "unrelated declarations must not change real per-body AIR work"
-        );
     }
-
-    let final_label = format!("RUE-1090 VERDICT: {}", overall.summary());
-    report.push(match overall {
-        Rue1090GateVerdict::Flat => Row::Met { label: final_label },
-        Rue1090GateVerdict::ActivateRue1091 => Row::Activation { label: final_label },
-    });
-
     report.emit();
 }
 
@@ -1295,65 +708,28 @@ const AIR_BODY_WORK_CONSTANT: usize = 1;
 /// Tight fixed slack around the exact frozen AIR closed form.
 const AIR_BODY_WORK_TOLERANCE: usize = 2;
 
-/// Axis: reached bodies grow while unrelated declarations stay fixed.
-///
-/// Hard invariant (holds today): the NUMBER of body analyses is linear in
-/// reached bodies — each reached body is analyzed exactly once (`cold_bodies =
-/// bodies + 1`, corpus-derived).
-///
-/// Every per-body declaration-context counter (prepare/project/install/endpoint)
-/// is asserted hard against its corpus-derived value (`U = bodies + decls + 1`
-/// for prepare/project/install, `2·U + 1` for endpoints): on this axis those
-/// values grow with `bodies`, and asserting the exact closed form catches a
-/// uniform regression that a scaled measured baseline would hide.
-///
-/// Tracked (RUE-1090): TOTAL declaration-context work should be linear in
-/// reached bodies, but today it is quadratic (each body re-installs the whole
-/// universe), so `shells_total` grows as `(bodies+1)·(bodies+decls+1)`. Both the
-/// linear target and the quadratic witness are corpus-derived, never a measured
-/// run. Strong invariant (Finding 5): total AIR body work stays linear in
-/// reached bodies, checked against the frozen per-body AIR constant.
+/// Axis: reached bodies grow while unrelated declarations stay fixed. Every
+/// row reads work performed by the production provider/query path.
 fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
     let base_bodies = ladder[0];
     let baseline = Measure::cold(&Corpus::new(base_bodies, decls));
-    let base_predicted = CorpusWitness::predict(base_bodies, decls);
     let mut report = Report::new(format!(
         "scaling: fixed {decls} declarations, growing bodies"
     ));
 
-    eprintln!(
-        "\n== RUE-1086 BASELINE (RUE-1090 gate): per-body declaration-context counters ==\n  \
-         {:>6} bodies × {:>4} decls | cold_bodies={:>5} per_body_shells={:>5} \
-         per_body_project={:>5} per_body_semantics={:>5} per_body_endpoints={:>5} \
-         shells_total={:>9}",
-        base_bodies,
-        decls,
-        baseline.cold_bodies,
-        baseline.per_body_shells(),
-        baseline.per_body_projections(),
-        baseline.per_body_semantics(),
-        baseline.per_body_endpoints(),
-        baseline.shells_total,
-    );
-
     for &bodies in ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
-        let factor = bodies / base_bodies;
-        // Corpus-derived predictions at this size — nothing read from `grown`.
-        let predicted = CorpusWitness::predict(bodies, decls);
+        let predicted_cold_bodies = bodies + 1;
 
         eprintln!(
-            "  {:>6} bodies × {:>4} decls | cold_bodies={:>5} per_body_shells={:>5} \
-             per_body_project={:>5} per_body_semantics={:>5} per_body_endpoints={:>5} \
-             shells_total={:>9} air={:>7}",
-            bodies,
-            decls,
+            "  {bodies:>6} bodies × {decls:>4} decls | cold_bodies={:>5} \
+             lookups={:>7} identities={:>7} semantic_facts={:>7} \
+             materializations={:>7} air={:>7}",
             grown.cold_bodies,
-            grown.per_body_shells(),
-            grown.per_body_projections(),
-            grown.per_body_semantics(),
-            grown.per_body_endpoints(),
-            grown.shells_total,
+            grown.provider_lookups,
+            grown.provider_identity_facts,
+            grown.provider_semantic_facts,
+            grown.provider_materializations,
             grown.air_instructions,
         );
 
@@ -1362,10 +738,10 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
         report.push(Row::linear_hard(
             format!(
                 "body-analysis count @ {decls} decls: {bodies} bodies cold={} (corpus target {})",
-                grown.cold_bodies, predicted.cold_bodies
+                grown.cold_bodies, predicted_cold_bodies
             ),
             grown.cold_bodies,
-            predicted.cold_bodies,
+            predicted_cold_bodies,
             2,
         ));
         assert!(
@@ -1374,25 +750,42 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
             grown.cold_bodies
         );
 
-        // RUE-1135 changed the SHAPE of the prepare/install/endpoint counters
-        // exactly as RUE-1132 changed the projection: the whole declaration
-        // epoch is body-invariant, so it is built once per request and every
-        // body derives its epoch from that base. Each of these is therefore a
-        // TOTAL row against one universe rather than a per-body row — strictly
-        // stronger, because a regression to per-body construction lands at
-        // `U · cold_bodies` and fails here immediately instead of being hidden
-        // by the integer-division quotient at large body counts.
-        report.push(Row::linear_hard(
-            format!(
-                "RUE-1135 shared prepare (shells) @ {decls} decls: {bodies} bodies \
-                 total={} (corpus U={}, charged once per request)",
-                grown.shells_total, predicted.per_body_shells
+        // These are live provider operations, not retired-counter zeros. With a
+        // fixed declaration universe each family must scale linearly with the
+        // number of reached body transactions.
+        for (label, baseline_value, measured) in [
+            (
+                "provider lookups",
+                baseline.provider_lookups,
+                grown.provider_lookups,
             ),
-            grown.shells_total,
-            predicted.per_body_shells,
-            1,
-        ));
-        // The declaration base itself: one per request, whatever the body count.
+            (
+                "provider identities",
+                baseline.provider_identity_facts,
+                grown.provider_identity_facts,
+            ),
+            (
+                "provider signatures/types/consts",
+                baseline.provider_semantic_facts,
+                grown.provider_semantic_facts,
+            ),
+            (
+                "provider materializations",
+                baseline.provider_materializations,
+                grown.provider_materializations,
+            ),
+        ] {
+            let expected = baseline_value * grown.cold_bodies / baseline.cold_bodies.max(1);
+            report.push(Row::linear_hard(
+                format!(
+                    "{label} @ {decls} decls: {bodies} bodies measured={measured} expected={expected}"
+                ),
+                measured,
+                expected,
+                grown.cold_bodies,
+            ));
+        }
+        // The canonical request prefix remains exactly once per request.
         report.push(Row::linear_hard(
             format!(
                 "RUE-1135 declaration prefixes @ {decls} decls: {bodies} bodies \
@@ -1403,45 +796,6 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
             1,
             0,
         ));
-        // RUE-1132 changed the SHAPE of this counter, so it is no longer a
-        // per-body linear row. The declaration projection is body-invariant and
-        // is now computed once per request and shared, so total projection work
-        // must stay at one universe REGARDLESS of how many bodies are reached.
-        // Asserting the total (not the per-body quotient) is strictly stronger
-        // than the old linear row: a regression to per-body projection lands at
-        // `U · cold_bodies` and fails here immediately, and the row cannot be
-        // satisfied by an integer-division artifact at large body counts.
-        report.push(Row::linear_hard(
-            format!(
-                "RUE-1132 shared projection @ {decls} decls: {bodies} bodies \
-                 total={} (corpus U={}, charged once per request)",
-                grown.projections_total, predicted.per_body_projections
-            ),
-            grown.projections_total,
-            predicted.per_body_projections,
-            1,
-        ));
-        report.push(Row::linear_hard(
-            format!(
-                "RUE-1135 shared install (semantics) @ {decls} decls: {bodies} bodies \
-                 total={} (corpus U={}, charged once per request)",
-                grown.semantics_total, predicted.per_body_semantics
-            ),
-            grown.semantics_total,
-            predicted.per_body_semantics,
-            1,
-        ));
-        report.push(Row::linear_hard(
-            format!(
-                "RUE-1135 shared endpoints @ {decls} decls: {bodies} bodies \
-                 total={} (corpus 2U+1={}, charged once per request)",
-                grown.endpoints_total, predicted.per_body_endpoints
-            ),
-            grown.endpoints_total,
-            predicted.per_body_endpoints,
-            1,
-        ));
-
         // Hard (Finding 5): real per-body body work (AIR) is linear in reached
         // bodies. Checked against the frozen per-body AIR constant, so total AIR
         // must be `cold_bodies · AIR_PER_REACHED_BODY` within a tight band — a
@@ -1456,63 +810,37 @@ fn run_fixed_declarations_growing_bodies(decls: usize, ladder: &[usize]) {
             air_target,
             AIR_BODY_WORK_TOLERANCE,
         ));
-
-        // Tracked (RUE-1090): total declaration-context work should be linear in
-        // reached bodies but is quadratic today. The linear target scales the
-        // *corpus-predicted* base total (not a measured run) by `factor`; the
-        // witness is the exact quadratic closed form `(bodies+1)·(bodies+decls+1)`.
-        let expected_linear_total = base_predicted.shells_total * factor;
-        let witness_total = predicted.shells_total;
-        report.push(Row::envelope(
-            format!(
-                "total declaration-context work @ {decls} decls: {bodies} bodies shells={} (linear target ~{expected_linear_total}, witness ~{witness_total})",
-                grown.shells_total
-            ),
-            grown.shells_total,
-            expected_linear_total,
-            expected_linear_total / 10,
-            witness_total,
-            bodies + decls + 1,
-            "RUE-1090",
-        ));
     }
 
     report.emit();
 }
 
-/// Identity rows (RUE-1089). The identity/lookup installation a body performs
-/// over the declaration universe should be invariant to declarations the body
-/// never references. Measured as per-body install work at a FIXED reached-body
-/// count across a growing declaration universe.
+/// Identity/provider fact rows must remain invariant to declarations the bodies never reference.
 fn run_identity_invariant(bodies: usize, decl_ladder: &[usize]) {
+    let baseline = Measure::cold(&Corpus::new(bodies, decl_ladder[0]));
     let mut report = Report::new(format!(
-        "identity: per-body lookup invariant to unrelated declarations ({bodies} bodies)"
+        "identity: exact provider work is flat in unrelated declarations ({bodies} bodies)"
     ));
-
-    // Flat target = corpus-predicted per-body install work with zero unrelated
-    // declarations. The witness at each size is the corpus-predicted per-body
-    // install with the declarations present. Both are closed forms in the corpus
-    // knobs, never a measured run, so a uniform per-body regression fails.
-    let target = CorpusWitness::predict(bodies, 0);
-    for &decls in decl_ladder {
+    for &decls in decl_ladder.iter().skip(1) {
         let grown = Measure::cold(&Corpus::new(bodies, decls));
-        let witness = CorpusWitness::predict(bodies, decls);
-        report.push(Row::envelope(
-            format!(
-                "per-body identity install @ {bodies} bodies: +{decls} unrelated decls => {} (target {}, witness {})",
-                grown.per_body_semantics(),
-                target.per_body_semantics,
-                witness.per_body_semantics
+        for (label, before, after) in [
+            (
+                "identity facts",
+                baseline.provider_identity_facts,
+                grown.provider_identity_facts,
             ),
-            grown.per_body_semantics(),
-            target.per_body_semantics,
-            2,
-            witness.per_body_semantics,
-            2,
-            "RUE-1089",
-        ));
+            (
+                "materializations",
+                baseline.provider_materializations,
+                grown.provider_materializations,
+            ),
+        ] {
+            assert_exact_zero_slope(label, before, after);
+            report.push(Row::Met {
+                label: format!("{label} flat at {decls} declarations: {before} == {after}"),
+            });
+        }
     }
-
     report.emit();
 }
 
@@ -1576,63 +904,6 @@ fn scaling_smoke_fixed_reach_growing_unrelated_modules_keeps_body_work_flat() {
             "the RIR universe must expose added unrelated module instructions"
         );
     }
-}
-
-#[test]
-fn rue_1090_gate_accepts_a_flat_changed_constant() {
-    // The frozen rule is flatness, not equality with the historical 201-count
-    // baseline. A producer-nominal cut may change the constant work amount.
-    let (verdict, line) =
-        rue_1090_audit_line("install", 100, 100, 1_000, 250, 1, 250, 1, 201, 1_101);
-
-    assert_eq!(verdict, Rue1090GateVerdict::Flat);
-    assert!(line.contains("baseline=250/1 (100 decls)"));
-    assert!(line.contains("grown=250/1 (1000 decls)"));
-    assert!(line.contains("exact_ratio_slope_numerator=+0"));
-    assert!(line.contains("RUE-1090 FLAT"));
-    assert!(line.contains("historical_prediction=201->1101 (informational)"));
-}
-
-#[test]
-fn rue_1090_historical_witness_ceiling_allows_known_bad_work() {
-    let line = rue_1090_historical_witness_ceiling_line("prepare (shells)", 1_101, 1, 1_101);
-
-    assert!(line.contains("prepare (shells)=1101/1"));
-    assert!(line.contains("<= 1103 (historical witness 1101 + 2)"));
-}
-
-#[test]
-#[should_panic(expected = "RUE-1090 historical witness ceiling tripped")]
-fn rue_1090_historical_witness_ceiling_rejects_a_second_full_traversal() {
-    // Two whole-universe traversals exceed the inherited `witness + 2` band.
-    let _ = rue_1090_historical_witness_ceiling_line("install", 2_202, 1, 1_101);
-}
-
-#[test]
-fn rue_1090_gate_activates_on_a_positive_per_body_slope() {
-    let (verdict, line) =
-        rue_1090_audit_line("endpoints", 100, 100, 1_000, 250, 1, 251, 1, 403, 2_203);
-
-    assert_eq!(verdict, Rue1090GateVerdict::ActivateRue1091);
-    assert!(line.contains("exact_ratio_slope_numerator=+1"));
-    assert!(line.contains("RUE-1090 ACTIVATE RUE-1091"));
-
-    // This is also activating even though integer division would show 250 for
-    // both ratios (`500 / 2` and `751 / 3`).
-    assert_eq!(
-        rue_1090_gate_verdict(500, 2, 751, 3),
-        Rue1090GateVerdict::ActivateRue1091
-    );
-}
-
-#[test]
-fn rue_1090_gate_does_not_cancel_on_a_negative_per_body_slope() {
-    let (verdict, line) =
-        rue_1090_audit_line("projection", 100, 100, 1_000, 251, 1, 250, 1, 201, 1_101);
-
-    assert_eq!(verdict, Rue1090GateVerdict::ActivateRue1091);
-    assert!(line.contains("exact_ratio_slope_numerator=-1"));
-    assert!(line.contains("RUE-1090 ACTIVATE RUE-1091"));
 }
 
 #[test]
@@ -1712,10 +983,12 @@ impl EditScenario {
         );
 
         let succeeded = warm_rev2.is_ok();
-        let measure = warm_rev2
-            .as_ref()
-            .ok()
-            .map(|output| Measure::from_work(&output.work()));
+        let measure = warm_rev2.as_ref().ok().map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&warm),
+            )
+        });
         (
             measure,
             succeeded,
@@ -2055,7 +1328,12 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
     let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
         .as_ref()
-        .map(|output| Measure::from_work(&output.work()))
+        .map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&warm),
+            )
+        })
         .expect("single-body-edit warm rev2 compiles");
 
     // Fresh rev2 compile for the shared parity oracle and the cold-cost floor.
@@ -2064,7 +1342,12 @@ fn invalidation_single_body_edit_declaration_work_does_not_rerun() {
     let fresh_rev2 = fresh.canonical_semantic(&options);
     let fresh_measure = fresh_rev2
         .as_ref()
-        .map(|output| Measure::from_work(&output.work()))
+        .map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&fresh),
+            )
+        })
         .expect("single-body-edit fresh rev2 compiles");
     assert_warm_fresh_parity(
         "single body edit",
@@ -2139,7 +1422,12 @@ fn main() -> i32 { left() + right() + control() }
     let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
         .as_ref()
-        .map(|output| Measure::from_work(&output.work()))
+        .map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&warm),
+            )
+        })
         .expect("declaration-value-edit warm rev2 compiles");
 
     let mut fresh = CompilerSession::new();
@@ -2147,7 +1435,12 @@ fn main() -> i32 { left() + right() + control() }
     let fresh_rev2 = fresh.canonical_semantic(&options);
     let fresh_measure = fresh_rev2
         .as_ref()
-        .map(|output| Measure::from_work(&output.work()))
+        .map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&fresh),
+            )
+        })
         .expect("declaration-value-edit fresh rev2 compiles");
 
     assert_warm_fresh_parity(
@@ -2182,8 +1475,8 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     // rev1: `main` calls `extra()`, which does not exist — a negative lookup that
     // fails the compile. rev2: define `extra`, turning the lookup positive. The
     // consumer (`main`) must invalidate and the program must go green, matching a
-    // fresh rev2 compile exactly. A `control` body that references neither must
-    // NOT be dragged into the recompute (Finding 5).
+    // fresh rev2 compile exactly. The independent `control` body is retained
+    // from the failed revision and must not be dragged into the recompute.
     let control = "fn control() -> i32 { 99 }\n";
     let rev1_src = format!("{control}fn main() -> i32 {{ extra() + control() }}\n");
     let rev2_src =
@@ -2218,7 +1511,12 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     let recomputed = changed_body_origins(&rev1_origins, &rev2_origins);
     let warm_measure = warm_rev2
         .as_ref()
-        .map(|output| Measure::from_work(&output.work()))
+        .map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&warm),
+            )
+        })
         .expect("defining the previously-missing function must make the consumer compile");
 
     let mut fresh = CompilerSession::new();
@@ -2226,7 +1524,12 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     let fresh_rev2 = fresh.canonical_semantic(&options);
     let fresh_measure = fresh_rev2
         .as_ref()
-        .map(|output| Measure::from_work(&output.work()))
+        .map(|output| {
+            Measure::from_work_and_provider(
+                &output.work(),
+                crate::unstable::provider_observation_metrics(&fresh),
+            )
+        })
         .expect("fresh rev2 compiles");
 
     // Shared full-parity oracle: warm negative->positive result equals fresh.
@@ -2245,14 +1548,9 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     // remain green. The separately measured fresh body count proves the target
     // is strictly cheaper than a full revision-2 compile.
     //
-    // This is an explicit diagnostic for the current production discrepancy,
-    // not a weakened equality gate: provenance includes newly retained bodies
-    // (`control` and `extra`) and the retained-key lifecycle counter includes
-    // only `main`, the one body that existed before the failed revision. The
-    // exact-set row below remains the RUE-1091 gate for the repaired behavior.
     assert_eq!(
         rev1_origins.keys().cloned().collect::<BTreeSet<_>>(),
-        BTreeSet::from(["main".to_owned()])
+        BTreeSet::from(["control".to_owned(), "main".to_owned()])
     );
     assert_eq!(
         rev2_origins.keys().cloned().collect::<BTreeSet<_>>(),
@@ -2260,10 +1558,10 @@ fn invalidation_negative_lookup_becoming_positive_invalidates_consumers() {
     );
     assert_eq!(
         recomputed,
-        BTreeSet::from(["control".to_owned(), "extra".to_owned(), "main".to_owned()])
+        BTreeSet::from(["extra".to_owned(), "main".to_owned()])
     );
-    assert_eq!(warm_measure.body_analyses_computed, 3);
-    assert_eq!(warm_measure.body_analyses_reused, 0);
+    assert_eq!(warm_measure.body_analyses_computed, 2);
+    assert_eq!(warm_measure.body_analyses_reused, 1);
     assert_eq!(warm_measure.body_analyses_invalidated, 1);
     let mut report = Report::new("invalidation: negative->positive lookup (with control body)");
     report.push(Row::Met {
@@ -2335,11 +1633,6 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_unrelated_delet
         unrelated_body.body_analyses_reused, cold_body.body_analyses_computed,
         "an unrelated edit must reuse every unaffected body analysis"
     );
-    assert_eq!(
-        unrelated_body.per_body_declaration_context,
-        rue_air::PerBodyDeclarationContextWork::default(),
-        "reused bodies must not add declaration/module/RIR work"
-    );
 
     let changed_initial = SourceSnapshot::single(
         "main.rue",
@@ -2397,11 +1690,6 @@ fn counter_lifecycle_covers_cold_unrelated_edit_changed_body_and_unrelated_delet
     assert_eq!(
         deleted_body.body_analyses_invalidated, 0,
         "deleting an unreachable module must not charge main-body invalidation"
-    );
-    assert_eq!(
-        deleted_body.per_body_declaration_context,
-        rue_air::PerBodyDeclarationContextWork::default(),
-        "unrelated deletion must not enter the body coordinator"
     );
 }
 

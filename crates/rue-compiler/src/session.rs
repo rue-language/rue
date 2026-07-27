@@ -1364,33 +1364,6 @@ pub struct CompilerSession {
     definition_shard_baseline: Option<crate::DefinitionSnapshot>,
     metrics: CompilerSessionMetrics,
     diagnostics: DiagnosticAttemptStore,
-    /// Recipe-cache metering (RUE-1091, ADR-0066 §4). The recipe cache is a
-    /// physical optimization exercised only by the test-only overlay path; no
-    /// production path constructs it, so on the production path every counter
-    /// here reads zero. Exposed through the unstable surface, mirroring parse_*.
-    recipe_cache_meter: Arc<crate::recipe_cache::RecipeCacheCounters>,
-    /// Overlay-materialization metering (RUE-1091 slice 3d, ADR-0066 §4). A
-    /// task-owned `BodySemanticOverlay` is minted only by the test-only overlay
-    /// path; no production path constructs one, so every counter here reads zero
-    /// on the production path. Exposed through the unstable surface, mirroring the
-    /// recipe-cache meter.
-    overlay_materialization_meter: Arc<crate::body_overlay::OverlayMaterializationCounters>,
-    /// Whether each rooted attempt also analyzes every body inside an
-    /// independently built epoch and compares the two published transactions
-    /// (RUE-1135). `false` on every ordinary compile: this is the base's parity
-    /// oracle, not a second production path, and it roughly doubles semantic
-    /// work when on.
-    shared_declaration_base_differential: bool,
-    /// Cumulative declaration-base accounting (RUE-1135). Unlike the probe meter
-    /// this is charged by every compile: the base is the production path, and
-    /// these counters are what account for the drop in the per-body
-    /// prepare/project/install/endpoint counters.
-    declaration_base_meter: Arc<crate::declaration_base_meter::DeclarationBaseMeter>,
-    /// The test-only shared recipe cache. Constructed on first acquisition so
-    /// container creation is metered once and later acquisitions are metered as
-    /// reuse. Never populated on the production path.
-    #[cfg(test)]
-    recipe_cache_slot: std::sync::Mutex<Option<Arc<crate::recipe_cache::RecipeCache>>>,
     /// Explicit durable baseline for the next semantic attempt (RUE-1143).
     ///
     /// `None` on every ordinary compile, in which case a semantic attempt reuses
@@ -1418,6 +1391,7 @@ struct DurableBaselineOverride {
     durable_declaration_cache: Option<DurableDeclarationCache>,
 }
 
+#[cfg(test)]
 fn stable_type_definition_root(
     value: &crate::TypeInstanceKey,
 ) -> Option<&crate::StableDefinitionKey> {
@@ -1432,6 +1406,7 @@ fn stable_type_definition_root(
     }
 }
 
+#[cfg(test)]
 fn stable_function_definition_root(
     value: &crate::FunctionInstanceKey,
 ) -> Option<&crate::StableDefinitionKey> {
@@ -1443,6 +1418,7 @@ fn stable_function_definition_root(
     }
 }
 
+#[cfg(test)]
 fn stable_producer_definition_root(
     producer: &crate::StableProducerId,
 ) -> Option<&crate::StableDefinitionKey> {
@@ -2945,18 +2921,6 @@ impl CompilerSession {
         Self::default()
     }
 
-    /// Turn the RUE-1135 declaration-base parity oracle on or off for subsequent
-    /// semantic requests. Validation only; see [`crate::canonical_semantic`].
-    pub(crate) fn enable_shared_declaration_base_differential(&mut self, enabled: bool) {
-        self.shared_declaration_base_differential = enabled;
-    }
-
-    /// An owned snapshot of the declaration-base meter.
-    pub(crate) fn declaration_base_metrics(
-        &self,
-    ) -> crate::declaration_base_meter::DeclarationBaseMetrics {
-        self.declaration_base_meter.snapshot()
-    }
     fn resume_canceled_query(
         &mut self,
         guard: &mut QueryComputationGuard,
@@ -3219,37 +3183,8 @@ impl CompilerSession {
         self.parse_invalidation_entries_compared
     }
 
-    /// A snapshot of the recipe-cache metering (RUE-1091, ADR-0066 §4). Zero on
-    /// the production path — the recipe cache is constructed only by the
-    /// test-only overlay path via [`Self::acquire_recipe_cache_for_test`].
-    pub(crate) fn recipe_cache_metrics(&self) -> crate::recipe_cache::RecipeCacheMetrics {
-        self.recipe_cache_meter.snapshot()
-    }
-
-    /// A snapshot of the overlay-materialization metering (RUE-1091 slice 3d,
-    /// ADR-0066 §4). Zero on the production path — a `BodySemanticOverlay` is
-    /// minted only by the test-only overlay path via [`Self::overlay_for_test`].
-    pub(crate) fn overlay_materialization_metrics(
-        &self,
-    ) -> crate::unstable::OverlayMaterializationMetrics {
-        self.overlay_materialization_meter.snapshot()
-    }
-
-    /// Mint a task-owned body-local overlay whose materialization events accrue to
-    /// this session's shared overlay meter, for the test-only overlay path. No
-    /// production path calls this, so the overlay-materialization counters stay
-    /// zero on the production path.
-    #[cfg(test)]
-    pub(crate) fn overlay_for_test(&self) -> crate::body_overlay::BodySemanticOverlay {
-        crate::body_overlay::BodySemanticOverlay::with_counters(
-            self.overlay_materialization_meter.clone(),
-        )
-    }
-
-    /// A snapshot of the provider-op observation counters (RUE-1091,
-    /// ADR-0066 §4). Zero on the production path — the exact body-fact provider
-    /// is a test-only differential adapter until the step-4 flip routes
-    /// production body analysis through it.
+    /// A snapshot of the production provider-op observation counters
+    /// (ADR-0066 §4).
     pub(crate) fn provider_observation_metrics(
         &self,
     ) -> crate::unstable::ProviderObservationMetrics {
@@ -3261,27 +3196,6 @@ impl CompilerSession {
     /// terminals in the session's `PublishedRootLookupLease`.
     pub(crate) fn lookup_pressure_metrics(&self) -> crate::unstable::LookupPressureMetrics {
         self.queries.revisioned.lookup_pressure_metrics()
-    }
-
-    /// Acquire the session's shared recipe cache for the test-only overlay path,
-    /// constructing it on first use (metered as one container created) and
-    /// reusing it afterward (metered as reuse). No production path calls this, so
-    /// the recipe-cache counters stay zero on the production path.
-    #[cfg(test)]
-    pub(crate) fn acquire_recipe_cache_for_test(&self) -> Arc<crate::recipe_cache::RecipeCache> {
-        let mut slot = self
-            .recipe_cache_slot
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(cache) = slot.as_ref() {
-            cache.note_container_reused();
-            return cache.clone();
-        }
-        let cache = Arc::new(crate::recipe_cache::RecipeCache::new(
-            self.recipe_cache_meter.clone(),
-        ));
-        *slot = Some(cache.clone());
-        cache
     }
 
     /// The currently selected parse terminal, for identity assertions.
@@ -5052,9 +4966,7 @@ impl CompilerSession {
             .saturating_add(demanded_modules.len() as u64);
         drop(key_span);
         let (modular_result, modular_work) = {
-            let _span =
-                tracing::info_span!("parse_program", phase = "source_discovery_and_parsing")
-                    .entered();
+            let _span = tracing::info_span!("parse_program").entered();
             self.queries.revisioned.parse_program(
                 revision,
                 snapshot.source_revision().root(),
@@ -6590,10 +6502,8 @@ impl CompilerSession {
                 cancellation.clone(),
             )
         };
-        let mut body_query_shells = None;
         let mut prepared = match query_shells {
             Ok(query_shells) => {
-                body_query_shells = Some(query_shells.clone());
                 let _span = tracing::info_span!("declaration_shell_prepare").entered();
                 prepare_query_declaration_shells(&merged, &rir, options, &imports, &query_shells)
             }
@@ -6609,11 +6519,7 @@ impl CompilerSession {
         };
         drop(declaration_shells_span);
         let declaration_semantics = {
-            let _span = tracing::info_span!(
-                "declaration_semantics_projection",
-                phase = "semantic_analysis"
-            )
-            .entered();
+            let _span = tracing::info_span!("declaration_semantics_projection").entered();
             self.queries.revisioned.projected_declaration_semantics(
                 runtime_revision,
                 merged.ast(),
@@ -6710,13 +6616,8 @@ impl CompilerSession {
         let mut durable_specialized_body_candidates = Vec::new();
         let mut durable_anonymous_body_candidates = Vec::new();
         let mut queried_body_work = rue_air::BodyAnalysisWork::default();
-        let declaration_base_mode = if self.shared_declaration_base_differential {
-            crate::canonical_semantic::SharedDeclarationBaseMode::Differential
-        } else {
-            crate::canonical_semantic::SharedDeclarationBaseMode::Shared
-        };
-        let declaration_base_meter = Arc::clone(&self.declaration_base_meter);
         let mut body_produced_anonymous = BTreeMap::new();
+        let mut body_consulted_anonymous = BTreeMap::new();
         let mut body_query_errors = BTreeMap::new();
         let mut body_query_reference_cache = BTreeMap::new();
         // RUE-1027 production boundary: derive the reached callable frontier
@@ -6724,94 +6625,7 @@ impl CompilerSession {
         // call recursion is worklist state, never a query dependency cycle.
         // RUE-1028 replaces this deterministic coordinator with database-owned
         // reachability and parallel frontier scheduling.
-        if let (Some(query_shells), Ok(prepared_definitions)) =
-            (body_query_shells.as_ref(), prepared.as_ref())
-        {
-            let mut declaration_candidates = BTreeMap::new();
-            for shell in query_shells.iter() {
-                let Some(definition) = prepared_definitions
-                    .definitions()
-                    .definitions()
-                    .iter()
-                    .find(|record| {
-                        let key = record.stable_key();
-                        let kind_matches = key.kind() == shell.identity.kind
-                            || matches!(
-                                (key.kind(), shell.identity.kind),
-                                (
-                                    crate::StableDefinitionKind::ValueConst,
-                                    crate::StableDefinitionKind::ModuleBinding
-                                ) | (
-                                    crate::StableDefinitionKind::ModuleBinding,
-                                    crate::StableDefinitionKind::ValueConst
-                                )
-                            );
-                        key.module().as_str() == shell.identity.module_path.as_ref()
-                            && kind_matches
-                            && key.name() == shell.identity.name.as_ref()
-                            && key.owner().map(|owner| owner.name())
-                                == shell.identity.owner.as_deref()
-                    })
-                    .map(|record| record.stable_key().clone())
-                else {
-                    continue;
-                };
-                use crate::StableDefinitionKind as K;
-                use crate::declaration_candidate::DeclarationCandidateCategory as C;
-                let category = match definition.kind() {
-                    K::Function if shell.is_extern => C::ExternFunction,
-                    K::Function => C::Function,
-                    K::Struct => C::Struct,
-                    K::Enum => C::Enum,
-                    K::ValueConst | K::ModuleBinding => C::ConstCandidate,
-                    K::Destructor => C::Destructor,
-                    K::Method => C::Method,
-                    K::AssociatedFunction => C::AssociatedFunction,
-                };
-                let owner = definition.owner().map(|owner| {
-                    crate::declaration_candidate::DeclarationCandidateOwner {
-                        category: match owner.kind() {
-                            K::Struct => C::Struct,
-                            K::Enum => C::Enum,
-                            _ => unreachable!("callable owners are nominal types"),
-                        },
-                        name: Arc::from(owner.name()),
-                    }
-                });
-                declaration_candidates.insert(
-                    definition.clone(),
-                    crate::declaration_candidate::DeclarationCandidateKey {
-                        module: definition.module().clone(),
-                        category,
-                        name: Arc::from(definition.name()),
-                        owner,
-                        duplicate_discriminator: 0,
-                    },
-                );
-            }
-            for declaration in query_declarations
-                .as_deref()
-                .expect("body traversal follows a successful declaration projection")
-            {
-                if matches!(
-                    declaration.key.kind(),
-                    crate::StableDefinitionKind::ValueConst
-                        | crate::StableDefinitionKind::ModuleBinding
-                ) {
-                    declaration_candidates
-                        .entry(declaration.key.clone())
-                        .or_insert_with(|| {
-                            crate::declaration_candidate::DeclarationCandidateKey {
-                                module: declaration.key.module().clone(),
-                                category: crate::declaration_candidate::DeclarationCandidateCategory::ConstCandidate,
-                                name: Arc::from(declaration.key.name()),
-                                owner: None,
-                                duplicate_discriminator: 0,
-                            }
-                        });
-                }
-            }
-            let declaration_candidates = Arc::new(declaration_candidates);
+        if let Ok(prepared_definitions) = prepared.as_ref() {
             let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
                 target: options.target,
                 preview_features: StablePreviewFeatures::new(&options.preview_features),
@@ -6855,1106 +6669,322 @@ impl CompilerSession {
                 }
             }
             let roots = pending;
-            let callable_has_source_body = |callable: &crate::FunctionInstanceKey| {
-                let mut current = callable;
-                loop {
-                    match current {
-                        crate::FunctionInstanceKey::Definition(definition) => {
-                            let has_runtime_result = query_declarations
-                                .as_deref()
-                                .is_some_and(|declarations| {
-                                    declarations.iter().any(|declaration| {
-                                        declaration.key == *definition
-                                            && (matches!(
-                                                &declaration.payload,
-                                                crate::durable_semantics::DurableDeclarationPayload::Callable {
-                                                    result,
-                                                    ..
-                                                } if !matches!(result, crate::durable_semantics::DurableType::ComptimeType)
-                                            ) || matches!(
-                                                &declaration.payload,
-                                                crate::durable_semantics::DurableDeclarationPayload::Destructor
-                                            ))
-                                    })
-                                });
-                            return has_runtime_result
-                                && declaration_candidates.get(definition).is_some_and(|candidate| {
-                                    candidate.category
-                                        != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
-                                });
+            let closure_request = match self.queries.revisioned.body_closure(
+                runtime_revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: merged
+                        .ast()
+                        .modules()
+                        .iter()
+                        .map(|module| module.module_id().clone())
+                        .collect::<Vec<_>>()
+                        .into(),
+                    roots: roots.iter().cloned().collect::<Vec<_>>().into(),
+                    configuration: configuration.clone(),
+                },
+                cancellation.clone(),
+            ) {
+                Ok(request) => request,
+                Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
+            };
+            let closure_terminal = &closure_request.terminal;
+            let rue_query::QueryOutcome::Success(closure_output) = closure_terminal.outcome()
+            else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            if let Some(park) = &closure_output.parked_toolchain {
+                return Err(SemanticRequestControl::Parked(Box::new(park.clone())));
+            }
+            body_query_errors.extend(closure_output.scheduling_errors.iter().cloned());
+            if let Some(fatal) = &closure_output.fatal {
+                let (instance, errors) = match fatal {
+                    crate::body_query::BodyClosureFatal::DeclarationFailed {
+                        declaration,
+                        failure,
+                    } => (
+                        roots.iter().next().cloned(),
+                        semantic_nucleus_failure_diagnostics(
+                            merged.ast(),
+                            declaration.as_ref(),
+                            failure,
+                        ),
+                    ),
+                    crate::body_query::BodyClosureFatal::BodyAvailability { instance, detail } => (
+                        Some(instance.clone()),
+                        crate::CompileErrors::from(crate::CompileError::without_span(
+                            rue_error::ErrorKind::InternalError(format!(
+                                "body availability was incomplete for {instance:?}: {detail}"
+                            )),
+                        )),
+                    ),
+                    crate::body_query::BodyClosureFatal::ProducerFailed { instance, failure } => (
+                        Some(instance.clone()),
+                        semantic_nucleus_failure_diagnostics(merged.ast(), None, failure),
+                    ),
+                    crate::body_query::BodyClosureFatal::WellKnownOptionResolution {
+                        instance,
+                        failure,
+                    } => (
+                        Some(instance.clone()),
+                        well_known_option_resolution_diagnostics(merged.ast(), failure),
+                    ),
+                };
+                if let Some(instance) = instance {
+                    body_query_errors.insert(instance, errors);
+                } else {
+                    return Err(SemanticRequestControl::Compile(errors));
+                }
+            }
+            body_query_reference_cache.clear();
+            for closure_body in closure_output.bodies.iter() {
+                let instance = &closure_body.key.instance;
+                let key = &closure_body.key;
+                let rue_query::QueryOutcome::Success(analysis) = closure_body.bundle.outcome()
+                else {
+                    unreachable!("BodyAnalysisBundle publishes typed values")
+                };
+                let computed = matches!(
+                    closure_request.execution_for(key),
+                    rue_query::RequestExecution::Computed
+                );
+                let had_retained_body = closure_request.was_retained(key);
+                if computed {
+                    queried_body_work.body_analyses_computed += 1;
+                } else {
+                    queried_body_work.body_analyses_reused += 1;
+                }
+                let transaction = &analysis.transaction;
+                if computed {
+                    let specialized =
+                        matches!(instance, crate::FunctionInstanceKey::Specialization { .. });
+                    queried_body_work.bodies_attempted += 1;
+                    if had_retained_body {
+                        queried_body_work.body_analyses_invalidated += 1;
+                    }
+                    if specialized {
+                        queried_body_work.specialized_bodies_attempted += 1;
+                    }
+                    match transaction {
+                        crate::body_query::BodyTransaction::Success { body, .. } => {
+                            queried_body_work.bodies_succeeded += 1;
+                            let body = match body.as_ref() {
+                                crate::body_query::CanonicalBody::Ordinary { body, .. }
+                                | crate::body_query::CanonicalBody::Anonymous { body, .. }
+                                | crate::body_query::CanonicalBody::Specialization {
+                                    body, ..
+                                } => body,
+                            };
+                            queried_body_work.air_instructions_produced += body.instructions.len();
+                            queried_body_work.local_strings_produced += body.strings.len();
+                            if specialized {
+                                queried_body_work.specialized_bodies_succeeded += 1;
+                                queried_body_work.specialized_body_exports_attempted += 1;
+                                queried_body_work.specialized_body_exports_succeeded += 1;
+                                queried_body_work.specialized_body_export_instructions_emitted +=
+                                    body.instructions.len();
+                                queried_body_work.specialized_body_export_places_emitted +=
+                                    body.places.len();
+                                queried_body_work.specialized_body_export_strings_emitted +=
+                                    body.strings.len();
+                            } else {
+                                queried_body_work.ordinary_body_exports_attempted += 1;
+                                queried_body_work.ordinary_body_exports_succeeded += 1;
+                                queried_body_work.ordinary_body_export_instructions_emitted +=
+                                    body.instructions.len();
+                                queried_body_work.ordinary_body_export_places_emitted +=
+                                    body.places.len();
+                                queried_body_work.ordinary_body_export_strings_emitted +=
+                                    body.strings.len();
+                            }
                         }
-                        crate::FunctionInstanceKey::Specialization { base, .. } => {
-                            current = base;
+                        crate::body_query::BodyTransaction::DeterministicFailure { .. } => {
+                            queried_body_work.bodies_failed += 1;
+                            if specialized {
+                                queried_body_work.specialized_bodies_failed += 1;
+                            }
                         }
-                        crate::FunctionInstanceKey::AnonymousMember { .. } => return true,
-                        crate::FunctionInstanceKey::DropGlue(_) => return false,
+                        crate::body_query::BodyTransaction::Control(_) => {
+                            unreachable!("body closure unwraps transaction control")
+                        }
                     }
                 }
-            };
-            let callable_has_query_body = |callable: &crate::FunctionInstanceKey| {
-                if let crate::FunctionInstanceKey::Specialization { base, .. } = callable {
-                    let mut base = base.as_ref();
-                    while let crate::FunctionInstanceKey::Specialization { base: next, .. } = base {
-                        base = next;
-                    }
-                    if let crate::FunctionInstanceKey::Definition(definition) = base {
-                        return declaration_candidates.get(definition).is_some_and(|candidate| {
-                            candidate.category
-                                != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
-                        });
-                    }
+                body_query_reference_cache
+                    .insert(instance.clone(), transaction.references().clone());
+                if let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } =
+                    transaction
+                {
+                    body_query_errors.insert(instance.clone(), errors.clone());
+                    continue;
                 }
-                callable_has_source_body(callable)
-            };
-            let callable_has_any_body = |callable: &crate::FunctionInstanceKey| match callable {
-                crate::FunctionInstanceKey::Definition(definition) => {
-                    let concrete_definition = query_declarations.as_deref().is_some_and(
-                            |declarations| {
-                                declarations.iter().any(|declaration| {
-                                    declaration.key == *definition
-                                        && match &declaration.payload {
-                                            crate::durable_semantics::DurableDeclarationPayload::Callable {
-                                                parameters,
-                                                ..
-                                            } => parameters
-                                                .iter()
-                                                .all(|parameter| !parameter.is_comptime),
-                                            crate::durable_semantics::DurableDeclarationPayload::Destructor => true,
-                                            _ => false,
-                                        }
-                                })
+                let crate::body_query::BodyTransaction::Success {
+                    body,
+                    consulted_anonymous_nominals,
+                    ..
+                } = transaction
+                else {
+                    unreachable!("body closure contains no control transactions")
+                };
+                body_consulted_anonymous.extend(
+                    consulted_anonymous_nominals
+                        .0
+                        .iter()
+                        .cloned()
+                        .map(|nominal| (nominal.identity.clone(), nominal)),
+                );
+                if let Some(crate::body_query::ProducedAnonymous::Produced(produced)) =
+                    analysis.produced_anonymous.as_ref()
+                {
+                    body_produced_anonymous.extend(
+                        produced
+                            .0
+                            .iter()
+                            .cloned()
+                            .map(|nominal| (nominal.identity.clone(), nominal)),
+                    );
+                }
+                match body.as_ref() {
+                    crate::body_query::CanonicalBody::Ordinary { owner, body } => {
+                        let Some(record) =
+                            prepared_definitions.definitions().definition_by_key(owner)
+                        else {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(
+                                    crate::CompileError::without_span(
+                                        rue_error::ErrorKind::InternalError(format!(
+                                            "reached body {instance:?} published an ordinary body whose owner has no issued definition record"
+                                        )),
+                                    ),
+                                ),
+                            );
+                            continue;
+                        };
+                        let Some(body_span) = record.body_span() else {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(
+                                    crate::CompileError::without_span(
+                                        rue_error::ErrorKind::InternalError(format!(
+                                            "reached body {instance:?} published an ordinary body whose owner definition record carries no body span"
+                                        )),
+                                    ),
+                                ),
+                            );
+                            continue;
+                        };
+                        durable_body_candidates.push(
+                            crate::canonical_semantic::PreparedDurableBodyCandidate {
+                                owner: owner.clone(),
+                                body_span,
+                                body: body.clone(),
                             },
                         );
-                    concrete_definition
-                            && declaration_candidates.get(definition).is_some_and(|candidate| {
-                                candidate.category
-                                    != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
-                            })
-                }
-                crate::FunctionInstanceKey::Specialization { base, .. } => {
-                    let mut base = base.as_ref();
-                    while let crate::FunctionInstanceKey::Specialization { base: next, .. } = base {
-                        base = next;
                     }
-                    matches!(base, crate::FunctionInstanceKey::Definition(definition) if declaration_candidates.get(definition).is_some_and(|candidate| {
-                        candidate.category
-                            != crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
-                    }))
-                }
-                crate::FunctionInstanceKey::AnonymousMember { .. } => true,
-                crate::FunctionInstanceKey::DropGlue(_) => false,
-            };
-            // One coordinator span covers the whole body-traversal closure,
-            // including every `continue 'closure` restart, so `--time-passes`
-            // attributes the aggregate reach-and-analyze cost that RUE-1083
-            // traced to the previously unspanned semantic-query path. The
-            // per-body pipeline stages nest beneath it as timed leaves.
-            let _body_queries_span =
-                tracing::info_span!("body_queries", phase = "semantic_analysis").entered();
-            // Producer-nominal identity is exact and stable (RUE-1089): a reached
-            // anonymous member owns its precise producer identity, so no reached
-            // body can change an anonymous representative and force a re-traversal.
-            // The body closure is therefore a single pass, not a restart loop.
-            {
-                body_query_reference_cache.clear();
-                let mut pending = roots.clone();
-                let mut priority_pending = Vec::new();
-                let mut deferred_dependency_chain = BTreeSet::new();
-                let mut visited = std::collections::BTreeSet::new();
-                let mut queried_ordinary = Vec::new();
-                let mut queried_specialized = Vec::new();
-                let mut queried_anonymous = Vec::new();
-                // Chain-depth budget for cross-body specialization runaway.
-                //
-                // Invariant: `instance_depth[S]` is the length of the shortest
-                // chain of *specialization* instantiation edges on any traversal
-                // path from a root to `S`. Root bodies (`main`, destructors,
-                // C-exports, owned-destructor closures) are depth 0. Traversing a
-                // body at depth `d` publishes each referenced callable at depth
-                // `d + 1` when that callable is itself a specialization, or at
-                // depth `d` otherwise (ordinary/anonymous bodies pass the count
-                // through without consuming it). This reproduces the old
-                // whole-program expansion-wave semantics
-                // (`MAX_SPECIALIZATION_ROUNDS` waves), where one wave of newly
-                // discovered specializations advanced the counter once and
-                // ordinary sema worklists did not: the depth of a specialization
-                // equals the wave in which it would first have been produced.
-                // Breadth (arbitrarily many specializations at shallow depth) is
-                // therefore free; only genuine nested instantiation chains
-                // (`f<T>` -> `f<Wrap<T>>` -> `f<Wrap<Wrap<T>>>` -> ...) accrue
-                // depth and eventually exceed the budget.
-                //
-                // The map is built once for this single body pass. Producer-
-                // nominal identity is exact (RUE-1089), so there is no
-                // representative-change restart that would require recomputing or
-                // carrying it across iterations.
-                let mut instance_depth: BTreeMap<crate::FunctionInstanceKey, usize> =
-                    roots.iter().map(|root| (root.clone(), 0usize)).collect();
-                let record_depth =
-                    |instance_depth: &mut BTreeMap<crate::FunctionInstanceKey, usize>,
-                     key: &crate::FunctionInstanceKey,
-                     depth: usize| {
-                        instance_depth
-                            .entry(key.clone())
-                            .and_modify(|existing| *existing = (*existing).min(depth))
-                            .or_insert(depth);
-                    };
-                let child_depth = |parent_depth: usize, child: &crate::FunctionInstanceKey| {
-                    if matches!(child, crate::FunctionInstanceKey::Specialization { .. }) {
-                        parent_depth + 1
-                    } else {
-                        parent_depth
-                    }
-                };
-                body_produced_anonymous.clear();
-                body_query_errors.clear();
-                // RUE-1112: the satisfied trusted-module catalogue for this
-                // revision — the trusted standard-library logical paths already
-                // present in the canonical program. The rooted attempt checks
-                // each reached body's projected toolchain-module demand against
-                // this set and parks the absent ones before running the body.
-                let present_trusted_modules: std::collections::BTreeSet<Arc<str>> = merged
-                    .ast()
-                    .modules()
-                    .iter()
-                    .map(|module| module.module_id())
-                    .filter(|module| module.is_trusted_standard_library())
-                    .map(|module| Arc::<str>::from(module.as_str()))
-                    .collect();
-                // Set when a reached body demands a trusted toolchain module
-                // absent from `present_trusted_modules`. The park is recorded here
-                // (the rooted attempt), carried out of band, and surfaced to the
-                // host driver after the worklist; the demanding body's transaction
-                // never runs on an unsatisfied prerequisite.
-                let mut parked_toolchain: Option<crate::ParkedToolchainModules> = None;
-                // RUE-1132: the durable declaration projection is body-invariant,
-                // so this rooted attempt projects once and every reached body
-                // reuses the shared exports. The memo is created here and dropped
-                // with the attempt, so it can never outlive its revision.
-                let shared_projection =
-                    crate::canonical_semantic::SharedDeclarationProjection::new();
-                // RUE-1135: the whole bound declaration epoch is body-invariant
-                // for a request, so this rooted attempt builds it once and
-                // derives each reached body's epoch from it. Created here and
-                // dropped with the attempt, so a failed or canceled request
-                // cannot leave a base behind for the next one.
-                let shared_base = crate::canonical_semantic::SharedDeclarationBase::new(
-                    declaration_base_mode,
-                    Arc::clone(&declaration_base_meter),
-                );
-                while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
-                    // Worklist scheduling — depth bookkeeping, producer-deferral
-                    // detection, and visit marking — runs for every popped
-                    // instance, including the ones that defer without ever
-                    // reaching a query. It is timed here so the coordinator's own
-                    // cost is separable from the per-body queries (RUE-786).
-                    let schedule_span = tracing::info_span!("body_schedule").entered();
-                    let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
-                    // Producer-nominal identity is exact: a reached anonymous
-                    // member is already its own canonical producer identity, so
-                    // the popped key is carried through unchanged.
-                    record_depth(&mut instance_depth, &instance, popped_depth);
-                    let current_depth = instance_depth
-                        .get(&instance)
-                        .copied()
-                        .unwrap_or(popped_depth);
-                    let deferred_producers =
-                        crate::revisioned_query_database::collect_instance_anonymous_nominals(
-                            &instance,
-                        )
-                        .into_iter()
-                        .filter_map(|identity| match identity.producer {
-                            crate::StableProducerId::Function(producer)
-                                if callable_has_any_body(&producer)
-                                    && !visited.contains(producer.as_ref()) =>
-                            {
-                                Some(*producer)
-                            }
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>();
-                    if !deferred_producers.is_empty() {
-                        if deferred_producers
-                            .iter()
-                            .any(|producer| deferred_dependency_chain.contains(producer))
-                        {
+                    crate::body_query::CanonicalBody::Anonymous {
+                        identity,
+                        body_anchor,
+                        body,
+                    } => {
+                        let crate::FunctionInstanceKey::AnonymousMember { owner, member: _ } =
+                            identity
+                        else {
                             body_query_errors.insert(
                                 instance.clone(),
-                                crate::CompileErrors::from(crate::CompileError::without_span(
-                                    rue_error::ErrorKind::InternalError(format!(
-                                        "anonymous producer dependency cycle while scheduling {instance:?}"
-                                    )),
-                                )),
-                            );
-                            break;
-                        }
-                        deferred_dependency_chain.insert(instance.clone());
-                        // `pending` is an ordered set, so reinserting a
-                        // lexically earlier consumer there can starve its
-                        // later-sorting producer forever. The priority stack
-                        // keeps this consumer below every exact producer and
-                        // therefore retries it only after those bodies have
-                        // published terminals.
-                        for producer in deferred_producers.iter() {
-                            record_depth(
-                                &mut instance_depth,
-                                producer,
-                                child_depth(current_depth, producer),
-                            );
-                        }
-                        priority_pending.push(instance);
-                        priority_pending.extend(deferred_producers);
-                        queried_body_work.deferred_producer_retries += 1;
-                        continue;
-                    }
-                    deferred_dependency_chain.remove(&instance);
-                    if !visited.insert(instance.clone()) {
-                        continue;
-                    }
-                    if matches!(instance, crate::FunctionInstanceKey::Specialization { .. })
-                        && current_depth > rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
-                    {
-                        // A reached callable may never be omitted from the
-                        // published closure. In the one-body query model the
-                        // coordinator, rather than one persistent specializer,
-                        // observes the transitive runaway and therefore owns
-                        // the ordinary comptime-depth diagnostic. We fail only
-                        // when this instance's *nesting depth* (its shortest
-                        // specialization instantiation chain from a root)
-                        // exceeds the budget, matching the per-body comptime
-                        // evaluator's `> MAX_SPECIALIZATION_ROUNDS` check and
-                        // permitting arbitrarily many shallow specializations.
-                        let name = stable_function_definition_root(&instance)
-                            .map(crate::StableDefinitionKey::name)
-                            .unwrap_or("<anonymous>");
-                        body_query_errors.insert(
-                            instance.clone(),
-                            crate::CompileErrors::from(crate::CompileError::without_span(
-                                rue_error::ErrorKind::ComptimeEvaluationFailed {
-                                    reason: format!(
-                                        "specialization of '{name}' exceeded the maximum nesting depth ({}); is a comptime-recursive function missing a compile-time-known base case, or a generic function recursively instantiating itself with new types?",
-                                        rue_air::specialize::MAX_SPECIALIZATION_ROUNDS
-                                    ),
-                                },
-                            )),
-                        );
-                        break;
-                    }
-                    let key = crate::body_query::BodyQueryKey {
-                        instance: instance.clone(),
-                        configuration: configuration.clone(),
-                    };
-                    drop(schedule_span);
-                    // RUE-1112: query THIS reached body's trusted-toolchain
-                    // demand projection (the registered `body-toolchain-demands`
-                    // node over its exact raw body) FIRST, and check the demanded
-                    // modules against the satisfied catalogue. If any demanded
-                    // module is absent from the current revision, record the park
-                    // out of band and stop WITHOUT entering the body transaction:
-                    // only a satisfied prerequisite permits the transaction to run.
-                    // The projection is pure and I/O-free, so this never itself
-                    // reads the filesystem; the host driver acquires the absent
-                    // modules and retries on a successor.
-                    let toolchain_demands = {
-                        let _span = tracing::info_span!("body_toolchain_demands").entered();
-                        self.queries.revisioned.body_toolchain_demands(
-                            runtime_revision,
-                            key.clone(),
-                            cancellation.clone(),
-                        )
-                    };
-                    match toolchain_demands {
-                        Ok(terminal) => {
-                            let rue_query::QueryOutcome::Success(demand) = terminal.outcome()
-                            else {
-                                unreachable!("BodyToolchainDemands publishes typed values")
-                            };
-                            let mut batch_modules: std::collections::BTreeSet<
-                                crate::TrustedToolchainModuleDemand,
-                            > = demand
-                                .modules()
-                                .iter()
-                                .filter(|module| {
-                                    !present_trusted_modules.contains(module.logical_path())
-                                })
-                                .cloned()
-                                .collect();
-                            if !batch_modules.is_empty() {
-                                // RUE-1112 C2: batch EVERY already-reached body's
-                                // unsatisfied trusted-module demand into ONE park, so
-                                // a single successor acquisition satisfies all of
-                                // them (a parse body needing Option and a read_line
-                                // body needing StrBuf never produce two successors).
-                                // Project the remaining already-reached pending
-                                // bodies WITHOUT entering any transaction, in stable
-                                // order, and union absent modules + requester
-                                // anchors. Bodies not yet discoverable are naturally
-                                // outside this batch — a later park round (the
-                                // driver's retry loop) handles them.
-                                let mut batch_requesters: std::collections::BTreeSet<
-                                    crate::StableDefinitionKey,
-                                > = demand.requester().cloned().into_iter().collect();
-                                let mut remaining: std::collections::BTreeSet<
-                                    crate::FunctionInstanceKey,
-                                > = pending.iter().cloned().collect();
-                                remaining.extend(priority_pending.iter().cloned());
-                                for pending_instance in remaining {
-                                    if visited.contains(&pending_instance) {
-                                        continue;
-                                    }
-                                    let pending_key = crate::body_query::BodyQueryKey {
-                                        instance: pending_instance,
-                                        configuration: configuration.clone(),
-                                    };
-                                    match self.queries.revisioned.body_toolchain_demands(
-                                        runtime_revision,
-                                        pending_key,
-                                        cancellation.clone(),
-                                    ) {
-                                        Ok(pending_terminal) => {
-                                            let rue_query::QueryOutcome::Success(pending_demand) =
-                                                pending_terminal.outcome()
-                                            else {
-                                                unreachable!(
-                                                    "BodyToolchainDemands publishes typed values"
-                                                )
-                                            };
-                                            let mut any_absent = false;
-                                            for module in pending_demand.modules() {
-                                                if !present_trusted_modules
-                                                    .contains(module.logical_path())
-                                                {
-                                                    batch_modules.insert(module.clone());
-                                                    any_absent = true;
-                                                }
-                                            }
-                                            if any_absent
-                                                && let Some(anchor) = pending_demand.requester()
-                                            {
-                                                batch_requesters.insert(anchor.clone());
-                                            }
-                                        }
-                                        // A pending body whose projection cannot yet
-                                        // publish is left for a later park round.
-                                        Err(rue_query::QueryAbort::Canceled)
-                                            if !cancellation.is_canceled() => {}
-                                        Err(abort) => {
-                                            return Err(SemanticRequestControl::Abort(abort));
-                                        }
-                                    }
-                                }
-                                parked_toolchain = Some(crate::ParkedToolchainModules::new(
-                                    batch_modules,
-                                    batch_requesters,
-                                ));
-                                break;
-                            }
-                        }
-                        Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(crate::CompileError::without_span(
-                                    rue_error::ErrorKind::InternalError(format!(
-                                        "reached body toolchain-demand projection {instance:?} did not publish a terminal"
-                                    )),
-                                )),
-                            );
-                            break;
-                        }
-                        Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
-                    }
-                    let producer_body_terminal_required = match &instance {
-                        crate::FunctionInstanceKey::AnonymousMember { owner, .. } => {
-                            if let crate::TypeInstanceKey::Nominal(
-                                crate::NominalInstanceKey::Anonymous(identity),
-                            ) = owner.as_ref()
-                                && let crate::StableProducerId::Function(producer) =
-                                    &identity.producer
-                            {
-                                callable_has_any_body(producer)
-                                    && (matches!(
-                                        producer.as_ref(),
-                                        crate::FunctionInstanceKey::Specialization { .. }
-                                    ) || !query_anonymous_nominals
-                                        .iter()
-                                        .any(|nominal| nominal.identity == *identity))
-                            } else {
-                                false
-                            }
-                        }
-                        _ => false,
-                    };
-                    let attempted_before = queried_body_work.bodies_attempted;
-                    let had_retained_body = self.queries.revisioned.has_retained_body_key(&key);
-                    // The body transaction is the per-body query node the
-                    // traversal spends most of its time in; the `body_*`
-                    // pipeline stages nest inside its analysis closure, so
-                    // without this span the reuse-and-dispatch cost around them
-                    // fell into `body_queries`' residual (RUE-786).
-                    let transaction_span = tracing::info_span!("body_transaction").entered();
-                    let transaction = self.queries.revisioned.body_transaction(
-                        runtime_revision,
-                        key.clone(),
-                        producer_body_terminal_required,
-                        cancellation.clone(),
-                        |selected_anonymous, well_known| {
-                            queried_body_work.bodies_attempted += 1;
-                            queried_body_work.body_analyses_computed += 1;
-                            if had_retained_body {
-                                queried_body_work.body_analyses_invalidated += 1;
-                            }
-                            // Every cold reached-body analysis re-prepares,
-                            // re-projects, and re-installs the entire declaration
-                            // universe inside `analyze_body_query` before it
-                            // touches this single body. The per-body
-                            // declaration-context counters are accrued INSIDE that
-                            // call, at each stage's own source, as the stage
-                            // actually performs the work — never from these input
-                            // slice lengths, which would charge a body for
-                            // installation it may never reach. A local stage-work
-                            // struct captures exactly what ran (partial on a
-                            // stage failure) and is folded into the running total
-                            // afterwards. Warm reuse never enters this closure, so
-                            // reused bodies add nothing here.
-                            let mut stage_context =
-                                rue_air::PerBodyDeclarationContextWork::default();
-                            let specialized = matches!(
-                                &key.instance,
-                                crate::FunctionInstanceKey::Specialization { .. }
-                            );
-                            if specialized {
-                                queried_body_work.specialized_bodies_attempted += 1;
-                            }
-                            // Merging this body's selected anonymous nominals
-                            // over the whole-program set is per-body work
-                            // proportional to that set, so it is timed apart
-                            // from the analysis it feeds (RUE-786).
-                            let anonymous_span =
-                                tracing::info_span!("body_anonymous_scope").entered();
-                            let mut body_anonymous = query_anonymous_nominals
-                                .iter()
-                                .cloned()
-                                .map(|nominal| (nominal.identity.clone(), nominal))
-                                .collect::<BTreeMap<_, _>>();
-                            body_anonymous.extend(
-                                selected_anonymous
-                                    .iter()
-                                    .cloned()
-                                    .map(|nominal| (nominal.identity.clone(), nominal)),
-                            );
-                            let body_anonymous = body_anonymous.into_values().collect::<Vec<_>>();
-                            drop(anonymous_span);
-                            let query_declarations = query_declarations.as_deref().expect(
-                                "body traversal follows a successful declaration projection",
-                            );
-                            let analysis_span = tracing::info_span!("body_analysis").entered();
-                            let transaction = crate::canonical_semantic::analyze_body_query(
-                                &merged,
-                                &rir,
-                                options,
-                                &imports,
-                                query_shells,
-                                query_declarations,
-                                &body_anonymous,
-                                &well_known,
-                                &key,
-                                cancellation,
-                                &shared_projection,
-                                &shared_base,
-                                &mut stage_context,
-                            );
-                            drop(analysis_span);
-                            // Fold the stage-sourced per-body declaration-context
-                            // work (whatever actually ran) into the running total.
-                            let context = &mut queried_body_work.per_body_declaration_context;
-                            context.cold_body_preparations += stage_context.cold_body_preparations;
-                            context.declarations_inspected += stage_context.declarations_inspected;
-                            context.modules_registered += stage_context.modules_registered;
-                            context.rir_indexes_constructed +=
-                                stage_context.rir_indexes_constructed;
-                            context.rir_instructions_visited +=
-                                stage_context.rir_instructions_visited;
-                            context.shells_prepared += stage_context.shells_prepared;
-                            context.semantics_installed += stage_context.semantics_installed;
-                            context.projections_performed += stage_context.projections_performed;
-                            context.durable_source_records_inspected +=
-                                stage_context.durable_source_records_inspected;
-                            context.durable_source_records_copied +=
-                                stage_context.durable_source_records_copied;
-                            context.endpoints_installed += stage_context.endpoints_installed;
-                            context.declaration_bases_built +=
-                                stage_context.declaration_bases_built;
-                            context.body_epochs_derived += stage_context.body_epochs_derived;
-                            context.declaration_units_shared +=
-                                stage_context.declaration_units_shared;
-                            context.body_local_units_copied +=
-                                stage_context.body_local_units_copied;
-                            match &transaction {
-                                Ok(crate::body_query::BodyTransaction::Success {
-                                    body, ..
-                                }) => {
-                                    queried_body_work.bodies_succeeded += 1;
-                                    let body = match body.as_ref() {
-                                        crate::body_query::CanonicalBody::Ordinary {
-                                            body, ..
-                                        }
-                                        | crate::body_query::CanonicalBody::Anonymous {
-                                            body,
-                                            ..
-                                        }
-                                        | crate::body_query::CanonicalBody::Specialization {
-                                            body,
-                                            ..
-                                        } => body,
-                                    };
-                                    queried_body_work.air_instructions_produced +=
-                                        body.instructions.len();
-                                    queried_body_work.local_strings_produced += body.strings.len();
-                                    if specialized {
-                                        queried_body_work.specialized_bodies_succeeded += 1;
-                                        queried_body_work.specialized_body_exports_attempted += 1;
-                                        queried_body_work.specialized_body_exports_succeeded += 1;
-                                        queried_body_work
-                                            .specialized_body_export_instructions_emitted +=
-                                            body.instructions.len();
-                                        queried_body_work.specialized_body_export_places_emitted +=
-                                            body.places.len();
-                                        queried_body_work
-                                            .specialized_body_export_strings_emitted +=
-                                            body.strings.len();
-                                    } else {
-                                        queried_body_work.ordinary_body_exports_attempted += 1;
-                                        queried_body_work.ordinary_body_exports_succeeded += 1;
-                                        queried_body_work
-                                            .ordinary_body_export_instructions_emitted +=
-                                            body.instructions.len();
-                                        queried_body_work.ordinary_body_export_places_emitted +=
-                                            body.places.len();
-                                        queried_body_work.ordinary_body_export_strings_emitted +=
-                                            body.strings.len();
-                                    }
-                                }
-                                Ok(crate::body_query::BodyTransaction::DeterministicFailure {
-                                    ..
-                                }) => {
-                                    queried_body_work.bodies_failed += 1;
-                                    if specialized {
-                                        queried_body_work.specialized_bodies_failed += 1;
-                                    }
-                                }
-                                Err(_) => {}
-                            }
-                            transaction
-                        },
-                    );
-                    drop(transaction_span);
-                    let transaction = match transaction {
-                        Ok(terminal) => terminal,
-                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::ProducerFailed(
-                            failure,
-                        )) => {
-                            // A depended-on anonymous producer committed an
-                            // anchor-transport internal error (RUE-1089). It is a
-                            // corrupt-input invariant violation, not a retryable
-                            // deferral: record it as this body's fatal error and
-                            // stop — never rescheduled, never rescued by RIR
-                            // recomputation.
-                            body_query_errors.insert(
-                                instance.clone(),
-                                semantic_nucleus_failure_diagnostics(merged.ast(), None, &failure),
-                            );
-                            break;
-                        }
-                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::WellKnownOptionResolution(
-                            failure,
-                        )) => {
-                            use crate::revisioned_query_database::WellKnownOptionResolutionFailure;
-                            let errors = match failure {
-                                WellKnownOptionResolutionFailure::Incomplete {
-                                    payload,
-                                    prerequisite,
-                                    detail,
-                                } => crate::CompileErrors::from(
+                                crate::CompileErrors::from(
                                     crate::CompileError::without_span(
                                         rue_error::ErrorKind::InternalError(format!(
-                                            "exact trusted Option({payload:?}) prerequisite \
-                                             resolution was incomplete{}: {detail}",
-                                            prerequisite.as_ref().map_or_else(
-                                                String::new,
-                                                |key| format!(" at {key:?}")
-                                            )
+                                            "reached body {instance:?} published an anonymous body whose identity is not an anonymous member"
                                         )),
                                     ),
                                 ),
-                                WellKnownOptionResolutionFailure::Semantic {
-                                    payload,
-                                    failure,
-                                } => {
-                                    let mut errors = semantic_nucleus_failure_diagnostics(
-                                        merged.ast(),
-                                        None,
-                                        &failure,
-                                    );
-                                    if errors.is_empty() {
-                                        errors = crate::CompileErrors::from(
-                                            crate::CompileError::without_span(
-                                                rue_error::ErrorKind::InternalError(format!(
-                                                    "trusted Option({payload:?}) resolution failed without diagnostics: {failure:?}"
-                                                )),
-                                            ),
-                                        );
-                                    }
-                                    errors
-                                }
-                                WellKnownOptionResolutionFailure::WrongProjection {
-                                    payload,
-                                    detail,
-                                } => crate::CompileErrors::from(
+                            );
+                            continue;
+                        };
+                        let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
+                            _,
+                        )) = owner.as_ref()
+                        else {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(
                                     crate::CompileError::without_span(
                                         rue_error::ErrorKind::InternalError(format!(
-                                            "trusted Option({payload:?}) resolution returned the wrong semantic projection: {detail}"
+                                            "reached body {instance:?} published an anonymous body whose owner is not an anonymous nominal type"
                                         )),
                                     ),
                                 ),
-                            };
-                            body_query_errors.insert(instance.clone(), errors);
-                            break;
-                        }
-                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::DeferredAnonymousProducers(
-                            producers,
-                        )) => {
-                            let mut scheduled = false;
-                            priority_pending.push(instance.clone());
-                            for producer in producers.iter() {
-                                if !visited.contains(producer) {
-                                    record_depth(
-                                        &mut instance_depth,
-                                        producer,
-                                        child_depth(current_depth, producer),
-                                    );
-                                    priority_pending.push(producer.clone());
-                                    scheduled = true;
-                                }
-                            }
-                            if scheduled {
-                                visited.remove(&instance);
-                                queried_body_work.deferred_producer_retries += 1;
-                                continue;
-                            }
-                            priority_pending.pop();
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(crate::CompileError::without_span(
-                                    rue_error::ErrorKind::InternalError(format!(
-                                        "reached body query {instance:?} could not observe an already-reached anonymous producer"
-                                    )),
-                                )),
                             );
-                            break;
-                        }
-                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                            rue_query::QueryAbort::Canceled,
-                        )) if !cancellation.is_canceled() => {
-                            body_query_errors.insert(
-                                instance.clone(),
-                                crate::CompileErrors::from(crate::CompileError::without_span(
-                                    rue_error::ErrorKind::InternalError(format!(
-                                        "reached body query {instance:?} did not publish a terminal"
-                                    )),
-                                )),
-                            );
-                            break;
-                        }
-                        Err(crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                            abort,
-                        )) => return Err(SemanticRequestControl::Abort(abort)),
-                    };
-                    if queried_body_work.bodies_attempted == attempted_before {
-                        // The body transaction returned a retained terminal
-                        // without entering the production analysis closure.
-                        // Count this at the query boundary so durable AIR
-                        // imports and query-terminal reuse remain distinct.
-                        queried_body_work.body_analyses_reused += 1;
-                    }
-                    let rue_query::QueryOutcome::Success(transaction) = transaction.outcome()
-                    else {
-                        unreachable!("BodyTransaction publishes typed values")
-                    };
-                    // Recording this body's outcome — its reference set, its
-                    // diagnostics, and the anonymous producers it published —
-                    // is the coordinator's other per-body cost. The anonymous
-                    // projection nests inside as its own leaf (RUE-786).
-                    let _record_span = tracing::info_span!("body_record").entered();
-                    {
-                        let _span = tracing::info_span!("body_cache_references").entered();
-                        body_query_reference_cache
-                            .insert(instance.clone(), transaction.references().clone());
-                    }
-                    if let crate::body_query::BodyTransaction::DeterministicFailure {
-                        errors, ..
-                    } = &transaction
-                    {
-                        body_query_errors.insert(instance.clone(), errors.clone());
-                    }
-                    if matches!(
-                        transaction,
-                        crate::body_query::BodyTransaction::Success { .. }
-                    ) {
-                        let projection = {
-                            let _span = tracing::info_span!("body_anonymous_projection").entered();
-                            self.queries.revisioned.body_produced_anonymous_projection(
-                                runtime_revision,
-                                key.clone(),
-                                cancellation.clone(),
-                            )
+                            continue;
                         };
-                        let produced = match projection {
-                            Ok(produced) => produced,
-                            Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
-                                body_query_errors.insert(
-                                    instance.clone(),
-                                    crate::CompileErrors::from(crate::CompileError::without_span(
+                        let Some(source) = analysis.source_locator.as_ref() else {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(
+                                    crate::CompileError::without_span(
                                         rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} anonymous-projection did not publish a terminal"
+                                            "reached body {instance:?} published an anonymous body without a current source locator"
                                         )),
-                                    )),
-                                );
-                                break;
-                            }
-                            Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
-                        };
-                        let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
-                            unreachable!("BodyProducedAnonymous publishes typed values")
-                        };
-                        let produced = match produced {
-                            crate::body_query::ProducedAnonymous::Produced(produced) => produced,
-                            crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
-                                // A committed anchor-transport internal error
-                                // (RUE-1089) is fatal for this body; never rescued.
-                                body_query_errors.insert(
-                                    instance.clone(),
-                                    semantic_nucleus_failure_diagnostics(
-                                        merged.ast(),
-                                        None,
-                                        failure,
                                     ),
-                                );
-                                break;
-                            }
+                                ),
+                            );
+                            continue;
                         };
-                        // Accumulate this body's produced anonymous nominals into
-                        // the request-wide set consumed after the closure. Each
-                        // carries its exact producer identity; there is no
-                        // representative to recompute and no restart to seed.
-                        body_produced_anonymous.extend(
-                            produced
-                                .0
-                                .iter()
-                                .cloned()
-                                .map(|nominal| (nominal.identity.clone(), nominal)),
+                        let body_span = rue_span::Span::with_file(
+                            source.file_id,
+                            source
+                                .body_start
+                                .saturating_add(body_anchor.start)
+                                .min(source.body_end),
+                            source
+                                .body_start
+                                .saturating_add(body_anchor.end)
+                                .min(source.body_end),
                         );
-                        for nominal in produced.0.iter() {
-                            if let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
-                                methods,
-                                ..
-                            } = &nominal.shape
-                                && methods.iter().any(|method| {
-                                    method.has_self && method.name.as_ref() == "__drop"
-                                })
-                            {
-                                let drop_glue = crate::FunctionInstanceKey::AnonymousMember {
-                                    owner: Box::new(crate::TypeInstanceKey::Nominal(
-                                        crate::NominalInstanceKey::Anonymous(
-                                            nominal.identity.clone(),
-                                        ),
-                                    )),
-                                    member: crate::AnonymousMemberKey {
-                                        kind: crate::AnonymousMemberKind::Destructor,
-                                        name: Arc::from("__drop"),
-                                    },
-                                };
-                                record_depth(
-                                    &mut instance_depth,
-                                    &drop_glue,
-                                    child_depth(current_depth, &drop_glue),
-                                );
-                                pending.insert(drop_glue);
-                            }
-                        }
+                        durable_anonymous_body_candidates.push(
+                            crate::canonical_semantic::PreparedDurableAnonymousBodyCandidate {
+                                identity: identity.clone(),
+                                body_span,
+                                body: body.clone(),
+                            },
+                        );
                     }
-                    let enqueue_span = tracing::info_span!("body_enqueue_references").entered();
-                    let references = transaction.references();
-                    for reference in references.0.iter() {
-                        if let crate::body_query::BodyReference::Callable(callable) = reference
-                            && matches!(
-                                callable,
-                                crate::FunctionInstanceKey::Definition(_)
-                                    | crate::FunctionInstanceKey::Specialization { .. }
-                                    | crate::FunctionInstanceKey::AnonymousMember { .. }
-                            )
-                            && callable_has_any_body(callable)
-                        {
-                            // Publish each referenced callable at this body's
-                            // depth, +1 when the callable is itself a
-                            // specialization. This is the sole edge through
-                            // which `Specialization` instances enter the
-                            // worklist, so it governs the chain-depth budget.
-                            record_depth(
-                                &mut instance_depth,
-                                callable,
-                                child_depth(current_depth, callable),
-                            );
-                            pending.insert(callable.clone());
-                        }
-                        if let crate::body_query::BodyReference::Type(ty) = reference {
-                            enqueue_owned_destructor_closure(
-                                ty,
-                                prepared_definitions.definitions(),
-                                query_declarations.as_deref().expect(
-                                    "body traversal follows a successful declaration projection",
-                                ),
-                                &body_produced_anonymous,
-                                &query_anonymous_nominals,
-                                &mut pending,
-                            );
-                        }
-                    }
-                    drop(enqueue_span);
-                    if matches!(
-                        transaction,
-                        crate::body_query::BodyTransaction::Success { .. }
-                    ) && callable_has_query_body(&instance)
-                    {
-                        let _projection_span =
-                            tracing::info_span!("body_canonical_projection").entered();
-                        let body = match self.queries.revisioned.canonical_body_projection(
-                            runtime_revision,
-                            key.clone(),
-                            cancellation.clone(),
-                        ) {
-                            Ok(body) => body,
-                            Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
-                                body_query_errors.insert(
-                                    instance.clone(),
-                                    crate::CompileErrors::from(crate::CompileError::without_span(
+                    crate::body_query::CanonicalBody::Specialization { identity, body, .. } => {
+                        let Some(record) = prepared_definitions
+                            .definitions()
+                            .definition_by_key(&identity.base)
+                        else {
+                            body_query_errors.insert(
+                                instance.clone(),
+                                crate::CompileErrors::from(
+                                    crate::CompileError::without_span(
                                         rue_error::ErrorKind::InternalError(format!(
-                                            "reached body {instance:?} canonical-body projection did not publish a terminal"
+                                            "reached body {instance:?} published a specialization body whose base has no issued definition record"
                                         )),
-                                    )),
-                                );
-                                break;
-                            }
-                            Err(abort) => return Err(SemanticRequestControl::Abort(abort)),
-                        };
-                        let rue_query::QueryOutcome::Success(body) = body.outcome() else {
-                            unreachable!("CanonicalBody publishes typed values")
-                        };
-                        match body {
-                            crate::body_query::CanonicalBody::Ordinary { owner, body } => {
-                                let Some(record) =
-                                    prepared_definitions.definitions().definition_by_key(owner)
-                                else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an ordinary body whose owner has no issued definition record"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                let Some(body_span) = record.body_span() else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an ordinary body whose owner definition record carries no body span"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                queried_ordinary.push(
-                                    crate::canonical_semantic::PreparedDurableBodyCandidate {
-                                        owner: owner.clone(),
-                                        body_span,
-                                        body: body.clone(),
-                                    },
-                                );
-                            }
-                            crate::body_query::CanonicalBody::Anonymous { identity, body } => {
-                                let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
-                                    identity
-                                else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an anonymous body whose identity is not an anonymous member"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                let crate::TypeInstanceKey::Nominal(
-                                    crate::NominalInstanceKey::Anonymous(owner_identity),
-                                ) = owner.as_ref()
-                                else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an anonymous body whose owner is not an anonymous nominal type"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                let source_key = match &owner_identity.producer {
-                                    crate::StableProducerId::Function(function) => {
-                                        crate::revisioned_query_database::function_definition_key(
-                                            function,
-                                        )
-                                    }
-                                    crate::StableProducerId::Definition(definition) => {
-                                        Some(definition)
-                                    }
-                                };
-                                let Some(source_key) = source_key else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an anonymous body whose producing function has no definition key"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                let Some(source) = prepared_definitions
-                                    .definitions()
-                                    .definition_by_key(source_key)
-                                else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an anonymous body whose source definition has no issued definition record"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                let source_span = source.declaration_span();
-                                let occurrence = owner_identity.anchor.segments().last();
-                                let body_span = rir.rir().iter().find_map(|(_, instruction)| {
-                                    let rue_rir::InstData::AnonStructType {
-                                        methods, anchor, ..
-                                    } = &instruction.data
-                                    else {
-                                        return None;
-                                    };
-                                    if anchor.segments().last() != occurrence
-                                        || instruction.span.file_id != source_span.file_id
-                                        || instruction.span.start < source_span.start
-                                        || instruction.span.end > source_span.end
-                                    {
-                                        return None;
-                                    }
-                                    rir.rir().anon_struct_methods(methods).iter().find_map(
-                                        |method_ref| {
-                                            let method_instruction = rir.rir().get(*method_ref);
-                                            let rue_rir::InstData::FnDecl { name, .. } =
-                                                &method_instruction.data
-                                            else {
-                                                return None;
-                                            };
-                                            (rir.semantic_symbols().interner().resolve(name)
-                                                == member.name.as_ref())
-                                            .then_some(method_instruction.span)
-                                        },
-                                    )
-                                });
-                                let Some(body_span) = body_span else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published an anonymous body whose method span was not found in the owning RIR anon-struct"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                queried_anonymous.push(
-                                crate::canonical_semantic::PreparedDurableAnonymousBodyCandidate {
-                                    identity: identity.clone(),
-                                    body_span,
-                                    body: body.clone(),
-                                },
+                                    ),
+                                ),
                             );
-                            }
-                            crate::body_query::CanonicalBody::Specialization {
-                                identity,
-                                body,
-                                ..
-                            } => {
-                                let Some(record) = prepared_definitions
-                                    .definitions()
-                                    .definition_by_key(&identity.base)
-                                else {
-                                    body_query_errors.insert(
-                                        instance.clone(),
-                                        crate::CompileErrors::from(crate::CompileError::without_span(
-                                            rue_error::ErrorKind::InternalError(format!(
-                                                "reached body {instance:?} published a specialization body whose base has no issued definition record"
-                                            )),
-                                        )),
-                                    );
-                                    break;
-                                };
-                                queried_specialized.push(
-                                crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
-                                    instance: instance.clone(),
-                                    identity: identity.clone(),
-                                    body_span: record.declaration_span(),
-                                    body: body.clone(),
-                                },
-                            );
-                            }
-                        }
+                            continue;
+                        };
+                        durable_specialized_body_candidates.push(
+                            crate::canonical_semantic::PreparedDurableSpecializedBodyCandidate {
+                                instance: instance.clone(),
+                                identity: identity.clone(),
+                                body_span: record.declaration_span(),
+                                body: body.clone(),
+                            },
+                        );
                     }
                 }
-                // RUE-1112: a reached body demanded an absent trusted
-                // toolchain module. Surface the park to the rooted attempt's
-                // caller WITHOUT publishing a semantic terminal, so the host
-                // driver can acquire the modules and retry on a successor. This
-                // return precedes candidate assembly because the worklist broke
-                // early with an unsatisfied prerequisite.
-                if let Some(park) = parked_toolchain {
-                    return Err(SemanticRequestControl::Parked(Box::new(park)));
-                }
-                durable_body_candidates = queried_ordinary;
-                durable_specialized_body_candidates = queried_specialized;
-                durable_anonymous_body_candidates = queried_anonymous;
-                // Completion snapshots for the published closure. `visited` is
-                // the distinct reached-body set; `instance_depth` holds every
-                // recorded specialization chain depth.
-                queried_body_work.closure_bodies_visited = visited.len();
-                queried_body_work.max_specialization_depth =
-                    instance_depth.values().copied().max().unwrap_or(0);
-                // One wide completion event per successful semantic request,
-                // not per body.
-                tracing::info!(
-                    bodies_attempted = queried_body_work.bodies_attempted,
-                    bodies_visited = queried_body_work.closure_bodies_visited,
-                    closure_restarts = queried_body_work.closure_restarts,
-                    deferred_producer_retries = queried_body_work.deferred_producer_retries,
-                    max_specialization_depth = queried_body_work.max_specialization_depth,
-                    "body closure complete"
-                );
             }
+            queried_body_work.closure_bodies_visited = closure_output.bodies.len();
+            tracing::info!(
+                bodies_attempted = queried_body_work.bodies_attempted,
+                bodies_visited = queried_body_work.closure_bodies_visited,
+                closure_restarts = queried_body_work.closure_restarts,
+                deferred_producer_retries = queried_body_work.deferred_producer_retries,
+                max_specialization_depth = queried_body_work.max_specialization_depth,
+                "body closure complete"
+            );
         }
         let query_anonymous_nominals = {
             let mut all = query_anonymous_nominals
@@ -7962,6 +6992,7 @@ impl CompilerSession {
                 .cloned()
                 .map(|nominal| (nominal.identity.clone(), nominal))
                 .collect::<BTreeMap<_, _>>();
+            all.extend(body_consulted_anonymous);
             all.extend(body_produced_anonymous);
             Arc::from(all.into_values().collect::<Vec<_>>())
         };
@@ -9789,6 +8820,25 @@ fn semantic_nucleus_failure_diagnostics(
     {
         return CompileErrors::from(CompileError::new(kind.clone(), span));
     }
+    if let (Some(declaration), F::DiagnosticAtProducerRange { kind, start, end }) =
+        (declaration, failure)
+        && let Some(producer) = program
+            .modules()
+            .iter()
+            .find(|module| module.module_id() == &declaration.module)
+            .and_then(|module| module.definitions().producer_fragment_span(declaration))
+        && let (Some(start), Some(end)) = (
+            producer.start.checked_add(*start),
+            producer.start.checked_add(*end),
+        )
+        && start <= end
+        && end <= producer.end
+    {
+        return CompileErrors::from(CompileError::new(
+            kind.clone(),
+            rue_span::Span::with_file(producer.file_id, start, end),
+        ));
+    }
     if let F::OwnershipGate { kind, gate } = failure {
         let primary_span = declaration.and_then(|key| {
             program
@@ -9876,6 +8926,7 @@ fn semantic_nucleus_failure_diagnostics(
         F::Diagnostic(kind) => (kind.clone(), None),
         F::DiagnosticAtParameter { kind, .. } => (kind.clone(), None),
         F::DiagnosticAtDeclaration { kind, .. } => (kind.clone(), None),
+        F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None),
         F::OwnershipGate { kind, .. } => (kind.clone(), None),
         F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone())),
         F::Cycle(nodes) => (
@@ -9929,6 +8980,43 @@ fn semantic_nucleus_failure_diagnostics(
         Some(help) => error.with_help(help.to_string()),
         None => error,
     })
+}
+
+fn well_known_option_resolution_diagnostics(
+    program: &crate::canonical_merge::CanonicalMergedAst,
+    failure: &crate::revisioned_query_database::WellKnownOptionResolutionFailure,
+) -> CompileErrors {
+    use crate::revisioned_query_database::WellKnownOptionResolutionFailure as F;
+    match failure {
+        F::Incomplete {
+            payload,
+            prerequisite,
+            detail,
+        } => CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+            format!(
+                "exact trusted Option({payload:?}) prerequisite resolution was incomplete{}: {detail}",
+                prerequisite
+                    .as_ref()
+                    .map_or_else(String::new, |key| format!(" at {key:?}"))
+            ),
+        ))),
+        F::Semantic { payload, failure } => {
+            let mut errors = semantic_nucleus_failure_diagnostics(program, None, failure);
+            if errors.is_empty() {
+                errors = CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+                    format!(
+                        "trusted Option({payload:?}) resolution failed without diagnostics: {failure:?}"
+                    ),
+                )));
+            }
+            errors
+        }
+        F::WrongProjection { payload, detail } => CompileErrors::from(CompileError::without_span(
+            ErrorKind::InternalError(format!(
+                "trusted Option({payload:?}) resolution returned the wrong semantic projection: {detail}"
+            )),
+        )),
+    }
 }
 
 pub(crate) fn stable_definition_input_fingerprint(
@@ -10545,9 +9633,6 @@ impl CompilerSession {
 
 #[cfg(test)]
 mod tests {
-    #[path = "rfinal_harness.rs"]
-    mod rfinal_harness;
-
     use std::{
         collections::{HashMap, HashSet},
         sync::Arc,
@@ -11708,10 +10793,7 @@ mod tests {
     }
 
     #[test]
-    fn recipe_cache_counters_read_zero_on_the_production_path() {
-        // RUE-1091 slice 2c: the recipe cache is inert to production. A full
-        // production semantic analysis constructs no cache, so every recipe-cache
-        // counter exposed through the unstable surface stays at its zero default.
+    fn provider_observation_counters_record_exact_production_work() {
         let source = snapshot(
             &[(
                 1,
@@ -11726,110 +10808,33 @@ mod tests {
         session
             .canonical_semantic(&CompileOptions::default())
             .expect("the program analyzes");
+        let metrics = crate::unstable::provider_observation_metrics(&session);
+        assert_eq!(metrics.name_lookups, 3);
+        assert_eq!(metrics.import_lookups, 0);
+        assert_eq!(metrics.method_candidates, 0);
+        assert_eq!(metrics.operator_candidates, 0);
+        assert_eq!(metrics.declaration_facts, 25);
+        assert!(metrics.identity_facts > 0, "{metrics:?}");
+        assert!(metrics.signature_facts > 0, "{metrics:?}");
+        assert!(metrics.materializations > 0, "{metrics:?}");
         assert_eq!(
-            session.recipe_cache_metrics(),
-            crate::recipe_cache::RecipeCacheMetrics::default(),
-            "the production semantic path must never touch a recipe-cache counter"
+            metrics.declaration_facts,
+            metrics.identity_facts
+                + metrics.signature_facts
+                + metrics.type_facts
+                + metrics.const_facts,
+            "the declaration aggregate must be exactly partitioned by real fact families"
         );
-        // RUE-1091 slice 3d: the overlay-materialization counters are inert to
-        // production for the same reason — production constructs no overlay.
-        assert_eq!(
-            crate::unstable::overlay_materialization_metrics(&session),
-            crate::unstable::OverlayMaterializationMetrics::default(),
-            "the production semantic path must never mint an overlay unit"
-        );
-    }
-
-    #[test]
-    fn overlay_materialization_meter_is_live_through_the_session_surface() {
-        // RUE-1091 slice 3d: the unstable overlay-materialization surface is not
-        // an always-zero field. The session's test-only overlay path mints
-        // overlays against the session meter, and materializing a fact charges a
-        // body-local unit — both observable through the unstable snapshot. This is
-        // the mechanical non-zero counterpart to the zero-on-production assertion.
-        let session = CompilerSession::new();
-        assert_eq!(
-            crate::unstable::overlay_materialization_metrics(&session),
-            crate::unstable::OverlayMaterializationMetrics::default(),
-            "a fresh session has minted no overlay"
-        );
-
-        let mut first = session.overlay_for_test();
-        let _second = session.overlay_for_test();
-        let key = crate::StableDefinitionKey::for_test(
-            crate::ModuleId::from_logical_path("pkg/main.rue").unwrap(),
-            crate::StableDefinitionNamespace::Value,
-            crate::StableDefinitionKind::Function,
-            "apply",
-            None,
-        );
-        let recipe = crate::declaration_recipe::DeclarationRecipe::Definition(Box::new(
-            crate::declaration_recipe::DefinitionRecipe::from_durable(
-                &crate::durable_semantics::DurableDeclarationSemantic {
-                    key,
-                    is_public: true,
-                    payload: crate::durable_semantics::DurableDeclarationPayload::Callable {
-                        parameters: Arc::from([]),
-                        result: crate::durable_semantics::DurableType::Unit,
-                        has_self: false,
-                        is_unchecked: false,
-                    },
-                },
-                &[],
-            ),
-        ));
-        first.import_recipe(&recipe);
-
-        let metrics = crate::unstable::overlay_materialization_metrics(&session);
-        assert_eq!(
-            metrics.overlays_created, 2,
-            "two overlays minted via session"
-        );
-        assert_eq!(
-            metrics.definition_units_created, 1,
-            "one body-local definition unit was materialized"
-        );
-    }
-
-    #[test]
-    fn provider_observation_counters_read_zero_on_the_production_path() {
-        // RUE-1091 slice 3b: the exact body-fact provider is a test-only
-        // differential adapter, inert to production. A full production semantic
-        // analysis constructs no provider, so every provider-op counter exposed
-        // through the unstable surface stays at its zero default.
-        let source = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "fn helper(x: i32) -> i32 { x + 1 } fn main() -> i32 { helper(2) }",
-            )],
-            1,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        session
-            .canonical_semantic(&CompileOptions::default())
-            .expect("the program analyzes");
-        assert_eq!(
-            crate::unstable::provider_observation_metrics(&session),
-            crate::unstable::ProviderObservationMetrics::default(),
-            "the production semantic path must never touch a provider-op counter"
-        );
-        // The RUE-1090 recipe-cache inertness holds simultaneously: activating
-        // the provider machinery did not perturb the production path.
-        assert_eq!(
-            session.recipe_cache_metrics(),
-            crate::recipe_cache::RecipeCacheMetrics::default(),
-            "the provider slice must leave the RUE-1090 production counters unchanged"
-        );
+        assert_eq!(metrics.anonymous_facts, 0);
+        assert_eq!(metrics.producer_facts, 0);
+        assert_eq!(metrics.toolchain_facts, 4);
     }
 
     #[test]
     fn published_lookup_root_lease_retains_production_body_lookups() {
-        // Production one-body analysis publishes its exact lookup-name terminals
-        // into the session lease. This remains independent of the test-only fact
-        // provider and recipe cache.
+        // Production body analysis publishes its exact lookup-name terminals
+        // into the session lease. The lease owns retention independently from
+        // the request-scoped provider that observed those terminals.
         let source = snapshot(
             &[(
                 1,
@@ -11849,6 +10854,8 @@ mod tests {
         assert!(metrics.published_roots > 0, "{metrics:?}");
         assert!(metrics.leased_terminals > 0, "{metrics:?}");
         assert!(metrics.retained_logical_keys > 0, "{metrics:?}");
+        assert!(metrics.retained_family_nodes > 0, "{metrics:?}");
+        assert!(metrics.retained_family_terminals > 0, "{metrics:?}");
         assert_eq!(
             metrics.protected_growth, 0,
             "no lease supersession grew a family"
@@ -11858,40 +10865,65 @@ mod tests {
             "no lease supersession evicted a terminal"
         );
         assert_eq!(metrics.rederivations_after_eviction, 0);
+        // Exact lookup collection runs through the same provider-backed body
+        // transaction as production analysis.
         assert!(
-            session.queries.revisioned.lookup_promotion_entries() > 0,
-            "production bodies must promote their observed lookup terminals"
-        );
-        // Exact lookup collection does not route production analysis through the
-        // differential provider or recipe cache.
-        assert_eq!(
-            crate::unstable::provider_observation_metrics(&session),
-            crate::unstable::ProviderObservationMetrics::default(),
-            "the lease slice must leave the provider counters at zero"
-        );
-        assert_eq!(
-            session.recipe_cache_metrics(),
-            crate::recipe_cache::RecipeCacheMetrics::default(),
-            "the lease slice must leave the RUE-1090 production counters unchanged"
+            crate::unstable::provider_observation_metrics(&session).name_lookups > 0,
+            "production lookup terminals must be observed by the provider"
         );
     }
 
     #[test]
-    fn recipe_cache_container_is_created_once_and_reused_through_the_session() {
-        // The session vends one shared recipe cache: the first acquisition is
-        // metered as one container created, and every later acquisition as reuse.
-        let session = CompilerSession::new();
-        assert_eq!(
-            session.recipe_cache_metrics(),
-            crate::recipe_cache::RecipeCacheMetrics::default()
+    fn successful_closure_retires_unreachable_and_deleted_body_lookup_roots() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+            )],
+            1,
         );
-        let first = session.acquire_recipe_cache_for_test();
-        let second = session.acquire_recipe_cache_for_test();
-        assert!(Arc::ptr_eq(&first, &second), "one shared container");
-        let metrics = session.recipe_cache_metrics();
-        assert_eq!(metrics.containers_created, 1);
-        assert_eq!(metrics.containers_reused, 1);
-        assert_eq!(metrics.entries_built, 0);
+        let unreachable = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } fn main() -> i32 { 0 }",
+            )],
+            1,
+        );
+        let deleted = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("initial closure analyzes");
+        let initial = crate::unstable::lookup_pressure_metrics(&session);
+        assert_eq!(initial.published_roots, 2, "{initial:?}");
+
+        session.update(&unreachable).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("unreachable successor analyzes");
+        let after_unreachable = crate::unstable::lookup_pressure_metrics(&session);
+        assert_eq!(
+            after_unreachable.published_roots, 1,
+            "helper root must retire when it leaves the reached closure: {after_unreachable:?}"
+        );
+
+        session.update(&deleted).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .expect("deleted successor analyzes");
+        let after_deleted = crate::unstable::lookup_pressure_metrics(&session);
+        assert_eq!(
+            after_deleted.published_roots, 1,
+            "deleting an already-unreachable body cannot resurrect its root: {after_deleted:?}"
+        );
     }
 
     #[test]
@@ -11921,6 +10953,32 @@ mod tests {
             );
             assert_eq!(error.span(), Some(expected));
         }
+    }
+
+    #[test]
+    fn anonymous_comptime_producer_failure_is_a_deterministic_diagnostic() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn empty() -> type {\n    struct { }\n}\nfn main() -> i32 {\n    let E = empty();\n    0\n}",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+
+        let first = session
+            .canonical_semantic(&CompileOptions::default())
+            .expect_err("empty anonymous struct is rejected");
+        let second = session
+            .canonical_semantic(&CompileOptions::default())
+            .expect_err("the retained producer failure remains deterministic");
+
+        assert_eq!(first, second);
+        assert_eq!(first.len(), 1, "unexpected diagnostics: {first:?}");
+        let diagnostic = first.first().unwrap();
+        assert!(
+            matches!(&diagnostic.kind, ErrorKind::EmptyStruct),
+            "producer failure must remain a source diagnostic, not request cancellation: {diagnostic:?}"
+        );
     }
 
     #[test]
@@ -12422,13 +11480,22 @@ mod tests {
 
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.bind_invocations, 1);
-        assert_eq!(reused.work().declaration_reuse.semantic_epochs_started, 1);
-        assert_eq!(reused.work().declaration_reuse.declaration_indexes_built, 1);
         assert_eq!(
-            reused.work().declaration_reuse.shell_predeclaration_epochs,
+            reused.work().declaration_reuse.declaration_prefixes_built,
             1
         );
-        assert_eq!(reused.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(reused.work().declaration_reuse.declaration_indexes_built, 1);
+        assert_eq!(
+            reused
+                .work()
+                .declaration_reuse
+                .declaration_prefix_population_runs,
+            1
+        );
+        assert_eq!(
+            reused.work().declaration_reuse.declaration_prefix_fallbacks,
+            0
+        );
         assert_eq!(reused.work().binding.durable_payloads_installed, 128);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 128);
         assert_eq!(
@@ -12465,11 +11532,6 @@ mod tests {
             warm_body_work.body_analyses_invalidated,
             fresh_body_work.body_analyses_invalidated + 1,
             "warm has one intentional invalidation delta for its retained predecessor"
-        );
-        assert_eq!(
-            warm_body_work.per_body_declaration_context,
-            fresh_body_work.per_body_declaration_context,
-            "all declaration/module/RIR body-context work must match"
         );
         assert_eq!(
             warm_body_work.bodies_attempted, fresh_body_work.bodies_attempted,
@@ -12653,7 +11715,13 @@ mod tests {
         assert_eq!(fallback.work().binding.durable_install_invocations, 1);
         assert!(fallback.work().binding.durable_payloads_installed > 0);
         assert_eq!(fallback.work().declaration_reuse.fallbacks, 0);
-        assert_eq!(fallback.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(
+            fallback
+                .work()
+                .declaration_reuse
+                .declaration_prefix_fallbacks,
+            0
+        );
 
         let mut fresh = CompilerSession::new();
         publish_with_test_imports(&mut fresh, &edited);
@@ -13155,7 +12223,10 @@ mod tests {
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.durable_payloads_installed, 2);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
-        assert_eq!(reused.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(
+            reused.work().declaration_reuse.declaration_prefix_fallbacks,
+            0
+        );
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
@@ -13191,7 +12262,10 @@ mod tests {
         assert_eq!(reused.work().binding.declaration_resolution_invocations, 0);
         assert_eq!(reused.work().binding.durable_payloads_installed, 2);
         assert_eq!(reused.work().declaration_reuse.durable_records_reused, 2);
-        assert_eq!(reused.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(
+            reused.work().declaration_reuse.declaration_prefix_fallbacks,
+            0
+        );
 
         let mut fresh = CompilerSession::new();
         fresh.update(&relocated_edit).into_result().unwrap();
@@ -13228,8 +12302,14 @@ mod tests {
         assert_eq!(actual.work().declaration_reuse.install_invocations, 1);
         assert_eq!(actual.work().declaration_reuse.durable_records_reused, 2);
         assert_eq!(actual.work().declaration_reuse.fallbacks, 0);
-        assert_eq!(actual.work().declaration_reuse.fallback_epochs_started, 0);
-        assert_eq!(actual.work().declaration_reuse.semantic_epochs_started, 1);
+        assert_eq!(
+            actual.work().declaration_reuse.declaration_prefix_fallbacks,
+            0
+        );
+        assert_eq!(
+            actual.work().declaration_reuse.declaration_prefixes_built,
+            1
+        );
 
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
@@ -13266,7 +12346,13 @@ mod tests {
         assert_eq!(ordinary.work().binding.durable_install_invocations, 1);
         assert_eq!(ordinary.work().binding.durable_payloads_installed, 3);
         assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 3);
-        assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(
+            ordinary
+                .work()
+                .declaration_reuse
+                .declaration_prefix_fallbacks,
+            0
+        );
         let mut fresh = CompilerSession::new();
         fresh.update(&edited).into_result().unwrap();
         let expected = fresh.canonical_semantic(&options).unwrap();
@@ -13323,7 +12409,13 @@ mod tests {
         assert_eq!(ordinary.work().binding.durable_install_invocations, 1);
         assert_eq!(ordinary.work().binding.durable_payloads_installed, 2);
         assert_eq!(ordinary.work().declaration_reuse.durable_records_reused, 2);
-        assert_eq!(ordinary.work().declaration_reuse.fallback_epochs_started, 0);
+        assert_eq!(
+            ordinary
+                .work()
+                .declaration_reuse
+                .declaration_prefix_fallbacks,
+            0
+        );
         // Type producers are query inputs, not runtime function bodies. The
         // reached executable set is `main` plus the anonymous `get` method.
         assert_eq!(ordinary.functions().len(), 2);
@@ -14353,6 +13445,142 @@ mod tests {
     }
 
     #[test]
+    fn retained_body_failure_reprojects_spans_after_leading_trivia_edit() {
+        let first_text = "fn main() -> i32 { missing_name }";
+        let shifted_text = "// newly inserted leading trivia\n\nfn main() -> i32 { missing_name }";
+        let first = snapshot(&[(1, "/p/main.rue", "main.rue", first_text)], 1);
+        let shifted = snapshot(&[(1, "/p/main.rue", "main.rue", shifted_text)], 1);
+        let valid = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 0 }")],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+
+        session.update(&valid).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let key = body_query_key(&mut session, &options, "main");
+        session.update(&first).into_result().unwrap();
+        let first_errors = session.canonical_semantic(&options).unwrap_err();
+        let (first_stamp, _, _) = retained_body_transaction(&session, &key);
+        assert_eq!(
+            first_errors
+                .first()
+                .and_then(|error| error.span())
+                .unwrap()
+                .start,
+            u32::try_from(first_text.find("missing_name").unwrap()).unwrap(),
+        );
+
+        session.update(&shifted).into_result().unwrap();
+        let shifted_errors = session.canonical_semantic(&options).unwrap_err();
+        let (shifted_stamp, _, _) = retained_body_transaction(&session, &key);
+        assert_eq!(
+            shifted_stamp, first_stamp,
+            "a locator-only edit must reuse the semantic body transaction",
+        );
+        let shifted_span = shifted_errors
+            .first()
+            .and_then(|error| error.span())
+            .unwrap();
+        assert_eq!(
+            shifted_span.start,
+            u32::try_from(shifted_text.find("missing_name").unwrap()).unwrap(),
+        );
+        assert_eq!(shifted_span.file_id, crate::FileId::new(1));
+    }
+
+    #[test]
+    fn anonymous_member_diagnostic_uses_its_exact_producer_location() {
+        let text = "fn Box(comptime T: type) -> type { struct { value: T, fn bad(self) -> i32 { missing_name } } } fn main() -> i32 { let B = Box(i32); let value = B { value: 1 }; value.bad() }";
+        let shifted_text = format!("// leading trivia relocates the producer\n\n{text}");
+        let valid_text = text.replace("missing_name", "0");
+        let source = snapshot(&[(1, "/p/main.rue", "main.rue", text)], 1);
+        let shifted = snapshot(&[(1, "/p/main.rue", "main.rue", shifted_text.as_str())], 1);
+        let valid = snapshot(&[(1, "/p/main.rue", "main.rue", valid_text.as_str())], 1);
+        let mut session = CompilerSession::new();
+        session.update(&valid).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
+        session.update(&source).into_result().unwrap();
+        session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
+        session.update(&shifted).into_result().unwrap();
+        let errors = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
+        let body_work = session
+            .work()
+            .semantic_records
+            .last()
+            .unwrap()
+            .work
+            .body_analysis;
+        assert_eq!(
+            body_work.body_analyses_computed, 0,
+            "leading trivia must not recompute the anonymous member transaction",
+        );
+        assert!(
+            body_work.body_analyses_reused >= 2,
+            "the producer and anonymous member transactions are both reused",
+        );
+        let error = errors
+            .iter()
+            .find(|error| {
+                error.span().is_some_and(|span| {
+                    span.start as usize == shifted_text.find("missing_name").unwrap()
+                })
+            })
+            .unwrap_or_else(|| panic!("no diagnostic at the anonymous member: {errors:?}"));
+        let span = error.span().unwrap();
+        assert_eq!(span.file_id, crate::FileId::new(1));
+        assert_eq!(
+            &shifted_text[span.start as usize..span.end as usize],
+            "missing_name"
+        );
+    }
+
+    #[test]
+    fn const_produced_anonymous_member_is_scheduled_and_relocates_diagnostics() {
+        let invalid_text = "const B: type = struct { value: i32, fn bad(self) -> i32 { missing_name } }; fn main() -> i32 { let value = B { value: 1 }; value.bad() }";
+        let valid_text = invalid_text.replace("missing_name", "0");
+        let shifted_text = format!("// relocate the const producer\n\n{invalid_text}");
+        let valid = snapshot(&[(1, "/p/main.rue", "main.rue", valid_text.as_str())], 1);
+        let invalid = snapshot(&[(1, "/p/main.rue", "main.rue", invalid_text)], 1);
+        let shifted = snapshot(&[(1, "/p/main.rue", "main.rue", shifted_text.as_str())], 1);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+
+        session.update(&valid).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        session.update(&invalid).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap_err();
+        session.update(&shifted).into_result().unwrap();
+        let errors = session.canonical_semantic(&options).unwrap_err();
+        let span = errors
+            .iter()
+            .filter_map(|error| error.span())
+            .find(|span| span.start as usize == shifted_text.find("missing_name").unwrap())
+            .unwrap_or_else(|| panic!("no diagnostic at const-produced member: {errors:?}"));
+        assert_eq!(span.file_id, crate::FileId::new(1));
+        assert_eq!(
+            &shifted_text[span.start as usize..span.end as usize],
+            "missing_name",
+        );
+        let body_work = session
+            .work()
+            .semantic_records
+            .last()
+            .unwrap()
+            .work
+            .body_analysis;
+        assert_eq!(body_work.body_analyses_computed, 0);
+        assert!(body_work.body_analyses_reused >= 2);
+    }
+
+    #[test]
     fn specialization_failure_work_is_retained() {
         let invalid = snapshot(
             &[(
@@ -14639,15 +13867,14 @@ mod tests {
         // A deterministic per-body stage failure must reach the caller as a real
         // compiler diagnostic rather than a disguised abort that panics the
         // uncanceled session.
-        let errors =
-            crate::canonical_semantic::with_test_body_query_stage_failure_injection(|| {
-                session
-                    .canonical_semantic(&CompileOptions::default())
-                    .unwrap_err()
-            });
+        let errors = crate::revisioned_query_database::with_test_body_transaction_failure(|| {
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap_err()
+        });
         let rendered = errors.to_string();
         assert!(
-            rendered.contains("injected_body_query_stage"),
+            rendered.contains("injected_body_transaction_failure"),
             "expected the failing stage name in diagnostics, got: {rendered}"
         );
         assert!(
@@ -18070,13 +17297,7 @@ fn main() -> i32 { selected.value() }"#;
         let transaction = session
             .queries
             .revisioned
-            .body_transaction(
-                revision,
-                key.clone(),
-                false,
-                cancellation.clone(),
-                |_, _| panic!("semantic request must have materialized this body terminal"),
-            )
+            .body_transaction(revision, key.clone(), cancellation.clone())
             .unwrap();
         let body = session
             .queries
@@ -18117,13 +17338,7 @@ fn main() -> i32 { selected.value() }"#;
         let terminal = session
             .queries
             .revisioned
-            .body_transaction(
-                revision,
-                key.clone(),
-                false,
-                rue_query::CancellationToken::new(),
-                |_, _| panic!("semantic request must have materialized this body terminal"),
-            )
+            .body_transaction(revision, key.clone(), rue_query::CancellationToken::new())
             .unwrap();
         let rue_query::QueryOutcome::Success(transaction) = terminal.outcome() else {
             unreachable!("BodyTransaction publishes typed values")
@@ -18143,13 +17358,7 @@ fn main() -> i32 { selected.value() }"#;
         session
             .queries
             .revisioned
-            .body_transaction(
-                revision,
-                key.clone(),
-                false,
-                rue_query::CancellationToken::new(),
-                |_, _| panic!("semantic request must have materialized this body terminal"),
-            )
+            .body_transaction(revision, key.clone(), rue_query::CancellationToken::new())
             .unwrap()
             .dependencies()
             .iter()
@@ -18226,19 +17435,13 @@ fn main() -> i32 {
             "the failed attempt must retain the trusted declaration diagnostic: {errors}"
         );
         assert!(
-            !warm.queries.revisioned.any_body_transaction_terminal(),
-            "the malformed attempt must not publish a body transaction"
+            warm.queries.revisioned.any_body_transaction_terminal(),
+            "typed body-control classification must be published atomically"
         );
         assert!(
             !warm.queries.revisioned.any_body_reference_terminal(),
             "the malformed attempt must not publish a body-reference projection"
         );
-        assert_eq!(
-            warm.queries.revisioned.lookup_promotion_entries(),
-            0,
-            "the malformed attempt must not promote a body lookup root"
-        );
-
         publish_with_test_imports(&mut warm, &repaired);
         let warm_repaired = warm
             .canonical_semantic(&options)
@@ -18522,7 +17725,14 @@ fn main() -> i32 {
         session.update(&first).into_result().unwrap();
         let cold = session.canonical_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
-        let make = body_query_key(&mut session, &options, "Make");
+        let make_definition = body_query_key(&mut session, &options, "Make");
+        let make = crate::body_query::BodyQueryKey {
+            instance: crate::FunctionInstanceKey::Specialization {
+                base: Box::new(make_definition.instance),
+                arguments: crate::CanonicalArguments::default(),
+            },
+            configuration: main.configuration.clone(),
+        };
         let size = cold
             .functions()
             .iter()
@@ -18923,6 +18133,123 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn ordinary_body_transaction_runs_from_exact_input_and_provider_facts() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 40 } fn main() -> i32 { helper() + 2 }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let options = CompileOptions::default();
+        session.canonical_semantic(&options).unwrap();
+
+        let key = body_query_key(&mut session, &options, "main");
+        let transaction = retained_body_transaction(&session, &key).2;
+        let crate::body_query::BodyTransaction::Success {
+            body, references, ..
+        } = transaction
+        else {
+            panic!("provider-backed ordinary body must publish success");
+        };
+        assert!(matches!(
+            body.as_ref(),
+            crate::body_query::CanonicalBody::Ordinary { owner, .. }
+                if owner.name() == "main"
+        ));
+        assert!(references.0.iter().any(|reference| matches!(
+            reference,
+            crate::body_query::BodyReference::Callable(
+                crate::FunctionInstanceKey::Definition(definition)
+            ) if definition.name() == "helper"
+        )));
+        let dependencies = retained_body_dependency_nodes(&session, &key);
+        assert!(
+            dependencies
+                .iter()
+                .any(|dependency| dependency.contains("compiler.body-input")),
+            "{dependencies:?}"
+        );
+    }
+
+    #[test]
+    fn failed_body_transaction_retains_every_positive_provider_reference() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "struct S { fn value(self) -> i32 { 1 } }\n\
+             const C: i32 = 2;\n\
+             fn helper() -> i32 { 3 }\n\
+             fn main() -> i32 {\n\
+                 let s = S {};\n\
+                 let resolved = helper() + s.value() + C;\n\
+                 resolved + missing\n\
+             }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        assert!(session.canonical_semantic(&options).is_err());
+        let key = crate::body_query::BodyQueryKey {
+            instance: crate::FunctionInstanceKey::Definition(
+                crate::StableDefinitionKey::from_stable_parts(
+                    crate::ModuleId::from_logical_path("main.rue").unwrap(),
+                    crate::StableDefinitionNamespace::Value,
+                    crate::StableDefinitionKind::Function,
+                    Arc::from("main"),
+                    None,
+                ),
+            ),
+            configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                target: options.target,
+                preview_features: StablePreviewFeatures::new(&options.preview_features),
+            },
+        };
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .expect("failed semantic request retains its revision");
+        let terminal = session
+            .queries
+            .revisioned
+            .body_transaction(revision, key, rue_query::CancellationToken::new())
+            .expect("deterministic body error publishes a typed terminal");
+        let rue_query::QueryOutcome::Success(
+            crate::body_query::BodyTransaction::DeterministicFailure { references, .. },
+        ) = terminal.outcome()
+        else {
+            panic!(
+                "expected deterministic body failure: {:?}",
+                terminal.outcome()
+            );
+        };
+        assert!(references.0.iter().any(|reference| matches!(
+            reference,
+            crate::body_query::BodyReference::Callable(
+                crate::FunctionInstanceKey::Definition(definition)
+            ) if definition.name() == "helper"
+        )));
+        assert!(references.0.iter().any(|reference| matches!(
+            reference,
+            crate::body_query::BodyReference::Callable(
+                crate::FunctionInstanceKey::Definition(definition)
+            ) if definition.name() == "value"
+        )));
+        assert!(references.0.iter().any(|reference| matches!(
+            reference,
+            crate::body_query::BodyReference::Definition(definition)
+                if definition.name() == "C"
+        )));
+        assert!(references.0.iter().any(|reference| matches!(
+            reference,
+            crate::body_query::BodyReference::Type(crate::TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Named(definition)
+            )) if definition.name() == "S"
+        )));
+    }
+
+    #[test]
     fn body_callable_dependencies_select_exact_shell_candidate_sets() {
         let source = SourceSnapshot::single(
             "main.rue",
@@ -18945,33 +18272,32 @@ fn main() -> i32 {
 
         for name in ["helper", "foreign"] {
             assert!(
-                dependencies.iter().any(|node| {
-                    node.contains("compiler.stable-declaration-classification")
-                        && node.contains(name)
-                }),
-                "body transaction must observe the fixed candidate-set classifier for {name}: \
+                dependencies
+                    .iter()
+                    .any(|node| { node.contains("compiler.lookup-name") && node.contains(name) }),
+                "body transaction must observe the exact provider lookup for {name}: \
                  transaction={main_transaction:?}; dependencies={dependencies:?}"
             );
         }
         for (category, name) in [("Function", "helper"), ("ExternFunction", "foreign")] {
             assert!(
                 dependencies.iter().any(|node| {
-                    node.contains("compiler.declaration-shell")
+                    node.contains("compiler.raw-declaration-signature")
                         && node.contains(&format!(":{category}:"))
                         && node.contains(name)
                 }),
-                "body transaction must observe the exactly selected shell for {name}: \
+                "body transaction must observe the exactly selected signature for {name}: \
                  transaction={main_transaction:?}; dependencies={dependencies:?}"
             );
         }
         for (category, name) in [("ExternFunction", "helper"), ("Function", "foreign")] {
             assert!(
                 dependencies.iter().all(|node| {
-                    !(node.contains("compiler.declaration-shell")
+                    !(node.contains("compiler.raw-declaration-signature")
                         && node.contains(&format!(":{category}:"))
                         && node.contains(name))
                 }),
-                "the unselected opposite-category shell must stay behind the classifier for \
+                "the unselected opposite-category signature must stay behind the lookup for \
                  {name}: dependencies={dependencies:?}"
             );
         }
@@ -19020,29 +18346,18 @@ fn main() -> i32 {
             .revisioned
             .current_semantic_revision()
             .expect("failed semantic attempt publishes its revision");
-        let recomputed = std::cell::Cell::new(false);
         let result = session.queries.revisioned.body_transaction(
             revision,
             main.clone(),
-            false,
             rue_query::CancellationToken::new(),
-            |_, _| {
-                recomputed.set(true);
-                Ok(main_transaction.clone())
-            },
         );
+        let terminal = result.expect("ambiguous callable publishes a typed body failure");
         assert!(matches!(
-            result,
-            Err(
-                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                    rue_query::QueryAbort::Canceled
-                )
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
             )
         ));
-        assert!(
-            recomputed.get(),
-            "the opposite-category shell edge must invalidate the retained body"
-        );
 
         let mut fresh = CompilerSession::new();
         fresh.update(&ambiguous).into_result().unwrap();
@@ -19052,29 +18367,18 @@ fn main() -> i32 {
             .revisioned
             .current_semantic_revision()
             .expect("fresh failed semantic attempt publishes its revision");
-        let fresh_computed = std::cell::Cell::new(false);
         let fresh_result = fresh.queries.revisioned.body_transaction(
             fresh_revision,
             main,
-            false,
             rue_query::CancellationToken::new(),
-            |_, _| {
-                fresh_computed.set(true);
-                Ok(main_transaction.clone())
-            },
         );
+        let terminal = fresh_result.expect("fresh ambiguity publishes a typed body failure");
         assert!(matches!(
-            fresh_result,
-            Err(
-                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                    rue_query::QueryAbort::Canceled
-                )
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
             )
         ));
-        assert!(
-            fresh_computed.get(),
-            "a fresh body task must enter computation before the dual-category classifier cancels"
-        );
     }
 
     #[test]
@@ -19097,13 +18401,11 @@ fn main() -> i32 {
         session.update(&valid).into_result().unwrap();
         session.canonical_semantic(&options).unwrap();
         let main = body_query_key(&mut session, &options, "main");
-        let prior = retained_body_transaction(&session, &main).2;
         let dependencies = retained_body_dependency_nodes(&session, &main);
         assert!(
-            dependencies.iter().any(|node| {
-                node.contains("compiler.stable-declaration-classification")
-                    && node.contains("helper")
-            }),
+            dependencies
+                .iter()
+                .any(|node| { node.contains("compiler.lookup-name") && node.contains("helper") }),
             "{dependencies:?}"
         );
 
@@ -19114,29 +18416,18 @@ fn main() -> i32 {
             .revisioned
             .current_semantic_revision()
             .expect("failed semantic attempt publishes its revision");
-        let recomputed = std::cell::Cell::new(false);
         let result = session.queries.revisioned.body_transaction(
             revision,
             main.clone(),
-            false,
             rue_query::CancellationToken::new(),
-            |_, _| {
-                recomputed.set(true);
-                Ok(prior.clone())
-            },
         );
+        let terminal = result.expect("warm duplicate publishes a typed body failure");
         assert!(matches!(
-            result,
-            Err(
-                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                    rue_query::QueryAbort::Canceled
-                )
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
             )
         ));
-        assert!(
-            recomputed.get(),
-            "duplicate multiplicity must invalidate the retained classifier/body edge"
-        );
 
         let mut fresh = CompilerSession::new();
         fresh.update(&duplicate).into_result().unwrap();
@@ -19146,29 +18437,18 @@ fn main() -> i32 {
             .revisioned
             .current_semantic_revision()
             .expect("fresh failed semantic attempt publishes its revision");
-        let fresh_computed = std::cell::Cell::new(false);
         let fresh_result = fresh.queries.revisioned.body_transaction(
             fresh_revision,
             main,
-            false,
             rue_query::CancellationToken::new(),
-            |_, _| {
-                fresh_computed.set(true);
-                Ok(prior.clone())
-            },
         );
+        let terminal = fresh_result.expect("fresh duplicate publishes a typed body failure");
         assert!(matches!(
-            fresh_result,
-            Err(
-                crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                    rue_query::QueryAbort::Canceled
-                )
+            terminal.outcome(),
+            rue_query::QueryOutcome::Success(
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
             )
         ));
-        assert!(
-            fresh_computed.get(),
-            "a fresh body task must enter computation before duplicate multiplicity cancels"
-        );
     }
 
     #[test]
@@ -19181,31 +18461,9 @@ fn main() -> i32 {
         session.update(&source).into_result().unwrap();
         session.canonical_semantic(&options).unwrap();
         let dead = body_query_key(&mut session, &options, "dead");
-        let revision = session
-            .queries
-            .revisioned
-            .current_semantic_revision()
-            .unwrap();
-        let compute_called = std::cell::Cell::new(false);
-        let result = session.queries.revisioned.body_transaction(
-            revision,
-            dead,
-            false,
-            rue_query::CancellationToken::new(),
-            |_, _| {
-                compute_called.set(true);
-                Err(rue_query::QueryAbort::Canceled)
-            },
-        );
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::revisioned_query_database::BodyTransactionRequestFailure::Query(
-                rue_query::QueryAbort::Canceled
-            )
-        ));
         assert!(
-            compute_called.get(),
-            "an existing terminal would bypass the supplied computation"
+            !session.queries.revisioned.has_retained_body_key(&dead),
+            "an unreachable body must not have a retained transaction"
         );
     }
 }

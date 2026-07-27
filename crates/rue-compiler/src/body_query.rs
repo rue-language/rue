@@ -4,12 +4,51 @@ use std::sync::Arc;
 
 use rue_query::QueryKey;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BodySourceLocator {
+    pub(crate) file_id: rue_span::FileId,
+    pub(crate) physical_path: Arc<str>,
+    pub(crate) source_length: u32,
+    pub(crate) declaration_start: u32,
+    pub(crate) declaration_end: u32,
+    pub(crate) body_start: u32,
+    pub(crate) body_end: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BodyRelativeRange {
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+pub(crate) fn body_source_locator_equal(
+    left: &Option<BodySourceLocator>,
+    right: &Option<BodySourceLocator>,
+) -> bool {
+    left == right
+}
+
+pub(crate) fn body_source_basis_equal(
+    left: &Option<BodySourceLocator>,
+    right: &Option<BodySourceLocator>,
+) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => {
+            left.file_id == right.file_id && left.physical_path == right.physical_path
+        }
+        (None, None) => true,
+        _ => false,
+    }
+}
+
 /// Exact owned syntax requested by the registered body-input evaluator. The
-/// stable owner is the only identity carried with the syntax; parser and RIR
-/// handles are deliberately confined to the evaluator-local lowering helper.
+/// stable owner and its request-local source locator are the only identities
+/// carried with the syntax; parser and RIR handles remain confined to the
+/// evaluator-local lowering helper.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OwnedBodyInput {
     pub(crate) owner: crate::StableDefinitionKey,
+    pub(crate) source: BodySourceLocator,
     pub(crate) signature: crate::declaration_candidate::RawDeclarationSignatureSyntax,
     pub(crate) body: crate::declaration_candidate::RawDeclarationBodySyntax,
 }
@@ -21,7 +60,6 @@ pub(crate) enum BodyInputIncomplete {
     Generic,
     Extern,
     MissingPrerequisite(Arc<str>),
-    Lowering(Arc<str>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,7 +69,17 @@ pub(crate) enum BodyInputValue {
 }
 
 pub(crate) fn body_input_equal(left: &BodyInputValue, right: &BodyInputValue) -> bool {
-    left == right
+    match (left, right) {
+        (BodyInputValue::Available(left), BodyInputValue::Available(right)) => {
+            left.owner == right.owner
+                && left.source.file_id == right.source.file_id
+                && left.source.physical_path == right.source.physical_path
+                && left.signature == right.signature
+                && left.body == right.body
+        }
+        (BodyInputValue::Incomplete(left), BodyInputValue::Incomplete(right)) => left == right,
+        _ => false,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -54,6 +102,7 @@ pub(crate) enum CanonicalBody {
     },
     Anonymous {
         identity: crate::FunctionInstanceKey,
+        body_anchor: BodyRelativeRange,
         body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
     },
     Specialization {
@@ -68,7 +117,9 @@ pub(crate) enum CanonicalBody {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum BodyReference {
     Callable(crate::FunctionInstanceKey),
+    #[allow(dead_code)]
     Definition(crate::StableDefinitionKey),
+    #[allow(dead_code)]
     Type(crate::TypeInstanceKey),
 }
 
@@ -88,51 +139,72 @@ pub(crate) struct WellKnownOptionResolution {
     pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
 }
 
-impl WellKnownOptionResolution {
-    pub(crate) fn is_empty(&self) -> bool {
-        self.option_by_payload.is_empty()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BodyReferences(pub(crate) Arc<[BodyReference]>);
+
+/// Descriptor-only record of the exact lookup terminals consulted while
+/// analyzing one body. Pin ownership is deliberately absent: the registered
+/// evaluator hands pins directly into the session publication lease before its
+/// request-scoped lease can end. Keeping only identities here lets retained
+/// `BodyTransaction` memo terminals remain ordinary semantic values instead of
+/// silently co-owning lookup retention.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct BodyLookupObservations {
+    pub(crate) terminals: Arc<[(crate::revisioned_query_database::LookupObservationKey, u64)]>,
+}
+
+/// Query-local control outcomes that are not semantic body terminals.
+///
+/// These values travel through the registered query result itself so the
+/// request boundary cannot race a revision/key side table when distinguishing
+/// an ordinary cancellation from a domain-specific deferral.
+#[derive(Debug, Clone)]
+pub(crate) enum BodyTransactionControl {
+    DeferredAnonymousProducers(Arc<[crate::FunctionInstanceKey]>),
+    ProducerFailed(Box<crate::semantic_query_nucleus::SemanticNucleusFailure>),
+    WellKnownOptionResolution(WellKnownOptionResolutionFailure),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct BodyReferences(pub(crate) Arc<[BodyReference]>);
+pub(crate) enum WellKnownOptionResolutionFailure {
+    Incomplete {
+        payload: crate::well_known_option::FalliblePayload,
+        prerequisite: Option<crate::StableDefinitionKey>,
+        detail: Arc<str>,
+    },
+    Semantic {
+        payload: crate::well_known_option::FalliblePayload,
+        failure: Box<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+    },
+    WrongProjection {
+        payload: crate::well_known_option::FalliblePayload,
+        detail: Arc<str>,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BodyProducedAnonymousNominals(
     pub(crate) Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
 );
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum BodyLookupKey {
-    Name {
-        module: crate::ModuleId,
-        namespace: BodyLookupNamespace,
-        name: Arc<str>,
-    },
-    Member {
-        module: crate::ModuleId,
-        owner_name: Arc<str>,
-        member_name: Arc<str>,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum BodyLookupNamespace {
-    ModuleItem,
-    Destructor,
-}
+/// Exact anonymous facts supplied to a provider-backed body by its registered
+/// prerequisites. They are not produced by the body, but final import-only
+/// composition must materialize them alongside declaration-level facts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BodyConsultedAnonymousNominals(
+    pub(crate) Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+);
 
 /// The `body-produced-anonymous` family's terminal value.
 ///
 /// A producer either publishes the anonymous nominals it owns (`Produced`) or
-/// its comptime evaluation committed an internal-error (E9000-class) failure —
-/// notably an anonymous-anchor TRANSPORT invariant violation (RUE-1089). Such a
-/// committed internal error is a corrupt-input fact about an existing raw
-/// fragment terminal, NOT a "not yet available" condition, so it must never be
-/// downgraded to a retryable `Canceled` abort: doing so let a consuming body
-/// silently fall back to recomputing the identity from RIR, masking the defect.
-/// It is carried here so every consumer fails closed on it. Genuine
-/// unavailability still surfaces as a `Canceled` abort, never as this value.
+/// its comptime evaluation commits a deterministic semantic failure. The latter
+/// includes ordinary source diagnostics as well as internal anchor-transport
+/// invariant failures (RUE-1089). Both are stable facts about the producer and
+/// must remain typed query values; downgrading either to retryable `Canceled`
+/// would turn a source error into an uncanceled request abort or let a consumer
+/// silently rescue a corrupt identity. Genuine unavailability still surfaces
+/// as a query abort, never as this value.
 #[derive(Debug, Clone)]
 pub(crate) enum ProducedAnonymous {
     Produced(BodyProducedAnonymousNominals),
@@ -158,13 +230,141 @@ pub(crate) enum BodyTransaction {
         body: Box<CanonicalBody>,
         references: BodyReferences,
         produced_anonymous_nominals: BodyProducedAnonymousNominals,
-        lookup_observations: Arc<[BodyLookupKey]>,
+        consulted_anonymous_nominals: BodyConsultedAnonymousNominals,
+        lookup_observations: BodyLookupObservations,
     },
     DeterministicFailure {
         errors: crate::CompileErrors,
+        diagnostic_basis: Option<BodySourceLocator>,
         references: BodyReferences,
-        lookup_observations: Arc<[BodyLookupKey]>,
+        lookup_observations: BodyLookupObservations,
     },
+    Control(BodyTransactionControl),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BodyAnalysisBundle {
+    pub(crate) transaction: BodyTransaction,
+    pub(crate) produced_anonymous: Option<ProducedAnonymous>,
+    pub(crate) source_locator: Option<BodySourceLocator>,
+}
+
+pub(crate) fn analysis_bundle_equal(left: &BodyAnalysisBundle, right: &BodyAnalysisBundle) -> bool {
+    let transaction_equal = match (&left.transaction, &right.transaction) {
+        (
+            BodyTransaction::DeterministicFailure {
+                errors: left_errors,
+                references: left_references,
+                ..
+            },
+            BodyTransaction::DeterministicFailure {
+                errors: right_errors,
+                references: right_references,
+                ..
+            },
+        ) => left_errors == right_errors && left_references == right_references,
+        (left, right) => transaction_equal(left, right),
+    };
+    transaction_equal
+        && left.source_locator == right.source_locator
+        && match (&left.produced_anonymous, &right.produced_anonymous) {
+            (Some(left), Some(right)) => produced_anonymous_equal(left, right),
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BodyClosureQueryKey {
+    pub(crate) modules: Arc<[crate::ModuleId]>,
+    pub(crate) roots: Arc<[crate::FunctionInstanceKey]>,
+    pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+}
+
+impl rue_query::QueryKey for BodyClosureQueryKey {
+    fn stable_identity(&self) -> String {
+        format!(
+            "modules={:?};roots={:?};target={:?};preview={:?}",
+            self.modules,
+            self.roots,
+            self.configuration.target,
+            self.configuration.preview_features,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BodyClosurePublicationKey {
+    pub(crate) closure: BodyClosureQueryKey,
+    pub(crate) epoch: u64,
+}
+
+impl rue_query::QueryKey for BodyClosurePublicationKey {
+    fn stable_identity(&self) -> String {
+        format!("{};epoch={}", self.closure.stable_identity(), self.epoch)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BodyClosureBody {
+    pub(crate) key: BodyQueryKey,
+    pub(crate) bundle: Arc<rue_query::QueryTerminal<BodyAnalysisBundle>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BodyClosureFatal {
+    DeclarationFailed {
+        declaration: Option<crate::declaration_candidate::DeclarationCandidateKey>,
+        failure: Box<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+    },
+    BodyAvailability {
+        instance: crate::FunctionInstanceKey,
+        detail: Arc<str>,
+    },
+    ProducerFailed {
+        instance: crate::FunctionInstanceKey,
+        failure: Box<crate::semantic_query_nucleus::SemanticNucleusFailure>,
+    },
+    WellKnownOptionResolution {
+        instance: crate::FunctionInstanceKey,
+        failure: crate::revisioned_query_database::WellKnownOptionResolutionFailure,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BodyClosureOutput {
+    pub(crate) bodies: Arc<[BodyClosureBody]>,
+    pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
+    pub(crate) fatal: Option<BodyClosureFatal>,
+    pub(crate) parked_toolchain: Option<crate::ParkedToolchainModules>,
+}
+
+pub(crate) fn body_closure_output_equal(
+    left: &BodyClosureOutput,
+    right: &BodyClosureOutput,
+) -> bool {
+    left.bodies.len() == right.bodies.len()
+        && left
+            .bodies
+            .iter()
+            .zip(right.bodies.iter())
+            .all(|(left, right)| {
+                left.key == right.key
+                    && match (left.bundle.outcome(), right.bundle.outcome()) {
+                        (
+                            rue_query::QueryOutcome::Success(left),
+                            rue_query::QueryOutcome::Success(right),
+                        ) => analysis_bundle_equal(left, right),
+                        (
+                            rue_query::QueryOutcome::Failure(left),
+                            rue_query::QueryOutcome::Failure(right),
+                        ) => left == right,
+                        _ => false,
+                    }
+            })
+        && left.scheduling_errors == right.scheduling_errors
+        && left.fatal == right.fatal
+        && left.parked_toolchain == right.parked_toolchain
 }
 
 impl BodyTransaction {
@@ -173,10 +373,13 @@ impl BodyTransaction {
             Self::Success { references, .. } | Self::DeterministicFailure { references, .. } => {
                 references
             }
+            Self::Control(_) => {
+                unreachable!("control outcomes are unwrapped at the request boundary")
+            }
         }
     }
 
-    pub(crate) fn lookup_observations(&self) -> &[BodyLookupKey] {
+    pub(crate) fn lookup_observations(&self) -> Option<&BodyLookupObservations> {
         match self {
             Self::Success {
                 lookup_observations,
@@ -185,21 +388,39 @@ impl BodyTransaction {
             | Self::DeterministicFailure {
                 lookup_observations,
                 ..
-            } => lookup_observations,
+            } => Some(lookup_observations),
+            Self::Control(_) => None,
         }
     }
 
-    pub(crate) fn install_lookup_observations(&mut self, observations: Arc<[BodyLookupKey]>) {
-        match self {
+    pub(crate) fn attach_provider_observations(
+        mut self,
+        lookup_observations: BodyLookupObservations,
+        selected_references: impl IntoIterator<Item = BodyReference>,
+    ) -> Self {
+        match &mut self {
             Self::Success {
-                lookup_observations,
+                references,
+                lookup_observations: stored,
                 ..
             }
             | Self::DeterministicFailure {
-                lookup_observations,
+                references,
+                lookup_observations: stored,
                 ..
-            } => *lookup_observations = observations,
+            } => {
+                let mut merged = references
+                    .0
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                merged.extend(selected_references);
+                references.0 = merged.into_iter().collect::<Vec<_>>().into();
+                *stored = lookup_observations;
+            }
+            Self::Control(_) => {}
         }
+        self
     }
 }
 
@@ -210,18 +431,21 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
                 body: left_body,
                 references: left_references,
                 produced_anonymous_nominals: left_produced,
+                consulted_anonymous_nominals: left_consulted,
                 ..
             },
             BodyTransaction::Success {
                 body: right_body,
                 references: right_references,
                 produced_anonymous_nominals: right_produced,
+                consulted_anonymous_nominals: right_consulted,
                 ..
             },
         ) => {
             left_body == right_body
                 && left_references == right_references
                 && left_produced == right_produced
+                && left_consulted == right_consulted
         }
         (
             BodyTransaction::DeterministicFailure {
@@ -234,10 +458,19 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
                 references: right_references,
                 ..
             },
-        ) => {
-            left_errors.to_string() == right_errors.to_string()
-                && left_references == right_references
-        }
+        ) => left_errors == right_errors && left_references == right_references,
+        (
+            BodyTransaction::Control(BodyTransactionControl::DeferredAnonymousProducers(left)),
+            BodyTransaction::Control(BodyTransactionControl::DeferredAnonymousProducers(right)),
+        ) => left == right,
+        (
+            BodyTransaction::Control(BodyTransactionControl::ProducerFailed(left)),
+            BodyTransaction::Control(BodyTransactionControl::ProducerFailed(right)),
+        ) => left == right,
+        (
+            BodyTransaction::Control(BodyTransactionControl::WellKnownOptionResolution(left)),
+            BodyTransaction::Control(BodyTransactionControl::WellKnownOptionResolution(right)),
+        ) => left == right,
         _ => false,
     }
 }

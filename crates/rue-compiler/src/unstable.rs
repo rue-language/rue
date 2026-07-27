@@ -11,7 +11,6 @@ use std::sync::Arc;
 
 use crate::canonical_semantic::CanonicalSemanticFailurePhase as SemanticFailurePhase;
 
-pub use crate::declaration_base_meter::DeclarationBaseMetrics;
 pub use crate::diagnostic::{
     ColorChoice, DiagnosticFormatter, JsonDiagnostic, JsonDiagnosticFormatter, JsonSpan,
     JsonSuggestion, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
@@ -205,24 +204,10 @@ pub fn parse_invalidation_entries_compared(session: &crate::CompilerSession) -> 
     session.parse_invalidation_entries_compared()
 }
 
-pub use crate::recipe_cache::RecipeCacheMetrics;
-
-/// A snapshot of the recipe-cache metering (RUE-1091, ADR-0066 §4): recipe
-/// entries built, reused, and evicted; equal-stamp rebuilds forced by terminal
-/// eviction/rederivation (retention-induced thrash, reported separately); and
-/// cache containers created and reused. The recipe cache is a physical
-/// optimization exercised only by the test-only overlay path; no production path
-/// constructs it, so on the production path every field here reads zero.
-pub fn recipe_cache_metrics(session: &crate::CompilerSession) -> RecipeCacheMetrics {
-    session.recipe_cache_metrics()
-}
-
 /// An owned snapshot of the provider-op observation counters (RUE-1091,
 /// ADR-0066 §4): how many facts of each §4 family the exact body-fact provider
-/// observed. Owned plain data, not a query-engine record: the provider is a
-/// test-only differential adapter that cross-checks each returned fact against
-/// the production epoch, so every field reads zero on a production compile until
-/// the step-4 flip routes production body analysis through the provider.
+/// observed. Owned plain data, not a query-engine record. These are live
+/// production counters from the registered provider-native body evaluator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ProviderObservationMetrics {
     /// Name-lookup observations (unqualified, qualified, and language-item).
@@ -235,6 +220,16 @@ pub struct ProviderObservationMetrics {
     pub operator_candidates: u64,
     /// Declaration identity/signature/const/well-formedness observations.
     pub declaration_facts: u64,
+    /// Exact declaration-identity provider reads.
+    pub identity_facts: u64,
+    /// Exact callable/nominal signature provider reads.
+    pub signature_facts: u64,
+    /// Exact nominal well-formedness/type provider reads.
+    pub type_facts: u64,
+    /// Exact constant and comptime-reduction provider reads.
+    pub const_facts: u64,
+    /// Durable facts materialized into a body-local overlay.
+    pub materializations: u64,
     /// Anonymous-nominal fact observations.
     pub anonymous_facts: u64,
     /// Producer-body fact observations.
@@ -244,82 +239,20 @@ pub struct ProviderObservationMetrics {
 }
 
 /// A snapshot of the provider-op observation counters. See
-/// [`ProviderObservationMetrics`]; zero on the production path.
+/// [`ProviderObservationMetrics`].
 pub fn provider_observation_metrics(
     session: &crate::CompilerSession,
 ) -> ProviderObservationMetrics {
     session.provider_observation_metrics()
 }
 
-/// An owned snapshot of the overlay-materialization counters (RUE-1091 slice 3d,
-/// ADR-0066 §4 "Structural accounting"): overlays created, body-local
-/// type/parameter/endpoint units created, and clone-from-template probes. Owned
-/// plain data, not a query-engine record: a `BodySemanticOverlay` is minted only
-/// by the test-only overlay path, so every field reads zero on a production
-/// compile until the step-4 flip routes production body analysis through the
-/// overlay.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct OverlayMaterializationMetrics {
-    /// Task-owned body-local overlays created (one per analyzed body).
-    pub overlays_created: u64,
-    /// Body-local definition units minted (a fresh issuer-scoped definition slot).
-    pub definition_units_created: u64,
-    /// Body-local module units minted (a fresh issuer-scoped module slot).
-    pub module_units_created: u64,
-    /// Body-local endpoint units minted (a fresh endpoint-only definition slot).
-    pub endpoint_units_created: u64,
-    /// Units copied out of a cached recipe template into an overlay-local unit.
-    pub clone_from_template_units: u64,
-}
-
-/// A snapshot of the overlay-materialization counters. See
-/// [`OverlayMaterializationMetrics`]; zero on the production path.
-pub fn overlay_materialization_metrics(
-    session: &crate::CompilerSession,
-) -> OverlayMaterializationMetrics {
-    session.overlay_materialization_metrics()
-}
-
-/// Turn the RUE-1135 declaration-base parity oracle on or off.
-///
-/// With it on, every reached body is analyzed twice — once inside a freshly
-/// built, independently derived declaration epoch and once inside an epoch
-/// derived from the request's shared base — and the two published
-/// `BodyTransaction`s are compared, including the rendered diagnostic stream and
-/// its order. The base-derived arm is the one that publishes, so the oracle
-/// observes production rather than replacing it.
-///
-/// This is validation, not a second production path: it roughly doubles
-/// semantic work and exists so that "sharing the base is equivalent to building
-/// one per body" is checked body-for-body rather than asserted. Ordinary
-/// compiles leave it off.
-pub fn enable_shared_declaration_base_differential(
-    session: &mut crate::CompilerSession,
-    enabled: bool,
-) {
-    session.enable_shared_declaration_base_differential(enabled);
-}
-
-/// A snapshot of the RUE-1135 declaration-base meter: bases built, bodies served
-/// from one, units shared versus copied, and differential parity results. Unlike
-/// the clone probe this is charged by every compile — the base is the production
-/// path. See [`DeclarationBaseMetrics`].
-pub fn declaration_base_metrics(session: &crate::CompilerSession) -> DeclarationBaseMetrics {
-    session.declaration_base_metrics()
-}
 /// A snapshot of the lookup-family pressure metrics (RUE-1091, ADR-0066 §4): the
 /// session-held `PublishedRootLookupLease`'s retained working set and its
 /// grow-with-pressure, eviction, and rederivation-after-eviction accounting.
 ///
-/// The lease-scoped fields (`published_roots`, `leased_terminals`,
-/// `retained_logical_keys`) and the lease-attributed counters (`protected_growth`,
-/// `evictions`, `rederivations_after_eviction`) read zero on a production compile:
-/// production body analysis observes no lookup terminals, so a rooted publication
-/// promotes an empty set and no root is ever installed. The step-4 flip routes
-/// body analysis through the exact provider and makes them live. The
+/// The lease-scoped fields are live production measurements. The
 /// `retained_family_*` fields report the lookup families' current runtime
-/// retention and are informational — they are nonzero on production, since
-/// module-index projection builds `compiler.lookup-name` terminals.
+/// retention and are informational.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LookupPressureMetrics {
     /// Distinct published roots currently held by the session lease.
@@ -342,8 +275,7 @@ pub struct LookupPressureMetrics {
     /// pin, a request-scoped observation lease, or a retained revision — so any
     /// excess is a set held above the floor by protection of some kind rather
     /// than an eviction of a name merely because a large program consults more
-    /// than the floor. Zero on production: nothing pins a lookup terminal above
-    /// the floor without the lease.
+    /// than the floor.
     pub protected_growth: u64,
     /// Lookup terminals evicted while a superseded root batch-released — the
     /// runtime eviction delta captured across the prior root's release.
@@ -357,8 +289,8 @@ pub struct LookupPressureMetrics {
     pub rederivations_after_eviction: u64,
 }
 
-/// A snapshot of the lookup-family pressure metrics. See
-/// [`LookupPressureMetrics`]; the lease-scoped fields are zero on production.
+/// A snapshot of the live lookup-family pressure metrics. See
+/// [`LookupPressureMetrics`].
 pub fn lookup_pressure_metrics(session: &crate::CompilerSession) -> LookupPressureMetrics {
     session.lookup_pressure_metrics()
 }
@@ -1143,12 +1075,6 @@ pub struct SemanticBodyMetrics {
     pub analyses_computed: usize,
     pub analyses_reused: usize,
     pub analyses_invalidated: usize,
-    pub declarations_inspected: usize,
-    pub modules_registered: usize,
-    pub rir_indexes_constructed: usize,
-    pub rir_instructions_visited: usize,
-    pub durable_source_records_inspected: usize,
-    pub durable_source_records_copied: usize,
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticMetrics {
@@ -1175,30 +1101,6 @@ impl SemanticMetrics {
                 analyses_computed: work.body_analysis.body_analyses_computed,
                 analyses_reused: work.body_analysis.body_analyses_reused,
                 analyses_invalidated: work.body_analysis.body_analyses_invalidated,
-                declarations_inspected: work
-                    .body_analysis
-                    .per_body_declaration_context
-                    .declarations_inspected,
-                modules_registered: work
-                    .body_analysis
-                    .per_body_declaration_context
-                    .modules_registered,
-                rir_indexes_constructed: work
-                    .body_analysis
-                    .per_body_declaration_context
-                    .rir_indexes_constructed,
-                rir_instructions_visited: work
-                    .body_analysis
-                    .per_body_declaration_context
-                    .rir_instructions_visited,
-                durable_source_records_inspected: work
-                    .body_analysis
-                    .per_body_declaration_context
-                    .durable_source_records_inspected,
-                durable_source_records_copied: work
-                    .body_analysis
-                    .per_body_declaration_context
-                    .durable_source_records_copied,
             },
             cfg: SemanticCfgMetrics {
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
@@ -1358,19 +1260,6 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
         "body_analyses_reused": records.iter().map(|record| record.work.body_analysis.body_analyses_reused).sum::<usize>(),
         "body_analyses_invalidated": records.iter().map(|record| record.work.body_analysis.body_analyses_invalidated).sum::<usize>(),
         "bodies_attempted": records.iter().map(|record| record.work.body_analysis.bodies_attempted).sum::<usize>(),
-        "per_body_declaration_context": {
-            "cold_body_preparations": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.cold_body_preparations).sum::<usize>(),
-            "declarations_inspected": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.declarations_inspected).sum::<usize>(),
-            "modules_registered": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.modules_registered).sum::<usize>(),
-            "rir_indexes_constructed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.rir_indexes_constructed).sum::<usize>(),
-            "rir_instructions_visited": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.rir_instructions_visited).sum::<usize>(),
-            "shells_prepared": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.shells_prepared).sum::<usize>(),
-            "semantics_installed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.semantics_installed).sum::<usize>(),
-            "projections_performed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.projections_performed).sum::<usize>(),
-            "durable_source_records_inspected": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.durable_source_records_inspected).sum::<usize>(),
-            "durable_source_records_copied": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.durable_source_records_copied).sum::<usize>(),
-            "endpoints_installed": records.iter().map(|record| record.work.body_analysis.per_body_declaration_context.endpoints_installed).sum::<usize>(),
-        },
         "bodies_succeeded": records.iter().map(|record| record.work.body_analysis.bodies_succeeded).sum::<usize>(),
         "bodies_failed": records.iter().map(|record| record.work.body_analysis.bodies_failed).sum::<usize>(),
         "air_instructions_produced": records.iter().map(|record| record.work.body_analysis.air_instructions_produced).sum::<usize>(),
@@ -1470,17 +1359,17 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
             "ordinary_declaration_resolutions_skipped": records.iter().map(|record| record.work.declaration_reuse.ordinary_declaration_resolutions_skipped).sum::<usize>(),
             "install_invocations": records.iter().map(|record| record.work.declaration_reuse.install_invocations).sum::<usize>(),
             "fallbacks": records.iter().map(|record| record.work.declaration_reuse.fallbacks).sum::<usize>(),
-            "semantic_epochs_started": records.iter().map(|record| record.work.declaration_reuse.semantic_epochs_started).sum::<usize>(),
+            "declaration_prefixes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_prefixes_built).sum::<usize>(),
             "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
-            "shell_predeclaration_epochs": records.iter().map(|record| record.work.declaration_reuse.shell_predeclaration_epochs).sum::<usize>(),
+            "declaration_prefix_population_runs": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_population_runs).sum::<usize>(),
             "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
-            "fallback_epochs_started": records.iter().map(|record| record.work.declaration_reuse.fallback_epochs_started).sum::<usize>(),
+            "declaration_prefix_fallbacks": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_fallbacks).sum::<usize>(),
         },
-        "semantic_epochs_started": records.iter().map(|record| record.work.declaration_reuse.semantic_epochs_started).sum::<usize>(),
+        "declaration_prefixes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_prefixes_built).sum::<usize>(),
         "declaration_indexes_built": records.iter().map(|record| record.work.declaration_reuse.declaration_indexes_built).sum::<usize>(),
-        "shell_predeclaration_epochs": records.iter().map(|record| record.work.declaration_reuse.shell_predeclaration_epochs).sum::<usize>(),
+        "declaration_prefix_population_runs": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_population_runs).sum::<usize>(),
         "durable_cache_population_exports": records.iter().map(|record| record.work.declaration_reuse.durable_cache_population_exports).sum::<usize>(),
-        "fallback_epochs_started": records.iter().map(|record| record.work.declaration_reuse.fallback_epochs_started).sum::<usize>(),
+        "declaration_prefix_fallbacks": records.iter().map(|record| record.work.declaration_reuse.declaration_prefix_fallbacks).sum::<usize>(),
     })
 }
 

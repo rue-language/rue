@@ -33,6 +33,7 @@ pub(crate) enum ParsedSemanticSignature {
         parameters: Arc<[ParsedSemanticParameter]>,
         result: Arc<str>,
         has_self: bool,
+        self_mode: crate::declaration_candidate::DeclarationParameterMode,
         is_unchecked: bool,
         is_extern: bool,
         is_c_export: bool,
@@ -149,6 +150,7 @@ pub(crate) fn parse_semantic_signature(
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
                     has_self,
+                    self_mode,
                     is_unchecked,
                     is_extern,
                     is_c_export|
@@ -160,6 +162,7 @@ pub(crate) fn parse_semantic_signature(
                 .transpose()?
                 .unwrap_or_else(|| unit.clone()),
             has_self,
+            self_mode,
             is_unchecked,
             is_extern,
             is_c_export,
@@ -170,6 +173,7 @@ pub(crate) fn parse_semantic_signature(
             &function.params,
             function.return_type.as_ref(),
             false,
+            crate::declaration_candidate::DeclarationParameterMode::Value,
             function.is_unchecked,
             false,
             function.export_abi.is_some(),
@@ -183,6 +187,7 @@ pub(crate) fn parse_semantic_signature(
                 &function.params,
                 function.return_type.as_ref(),
                 false,
+                crate::declaration_candidate::DeclarationParameterMode::Value,
                 false,
                 true,
                 false,
@@ -197,6 +202,10 @@ pub(crate) fn parse_semantic_signature(
                 &method.params,
                 method.return_type.as_ref(),
                 method.receiver.is_some(),
+                method.receiver.as_ref().map_or(
+                    crate::declaration_candidate::DeclarationParameterMode::Value,
+                    |receiver| parameter_mode(receiver.mode).0,
+                ),
                 false,
                 false,
                 false,
@@ -276,6 +285,7 @@ pub(crate) struct TransportedAnonymousSite {
 
 pub(crate) struct ParsedSemanticConst {
     pub(crate) source: String,
+    pub(crate) fragment_start: u32,
     pub(crate) declaration: rue_parser::ast::ConstDecl,
     pub(crate) interner: crate::ThreadedRodeo,
     pub(crate) import_sites: Vec<crate::ImportDirective>,
@@ -284,6 +294,7 @@ pub(crate) struct ParsedSemanticConst {
 
 pub(crate) struct ParsedSemanticBody {
     pub(crate) source: String,
+    pub(crate) fragment_start: u32,
     pub(crate) expression: rue_parser::ast::Expr,
     pub(crate) interner: crate::ThreadedRodeo,
     pub(crate) import_sites: Vec<crate::ImportDirective>,
@@ -443,6 +454,8 @@ pub(crate) fn parse_semantic_body(
     let anonymous_sites = transport_anonymous_sites(&syntax.anonymous_sites, prefix_len, &source);
     Ok(ParsedSemanticBody {
         source,
+        fragment_start: u32::try_from(prefix_len)
+            .map_err(|_| Arc::from("semantic body prefix exceeds span capacity"))?,
         expression: function.body.clone(),
         interner: parsed.interner,
         import_sites,
@@ -484,6 +497,8 @@ pub(crate) fn parse_semantic_const(
     let anonymous_sites = transport_anonymous_sites(&syntax.anonymous_sites, prefix_len, &source);
     Ok(ParsedSemanticConst {
         source,
+        fragment_start: u32::try_from(prefix_len)
+            .map_err(|_| Arc::from("semantic const prefix exceeds span capacity"))?,
         declaration: declaration.clone(),
         interner: parsed.interner,
         import_sites,
@@ -535,9 +550,17 @@ pub(crate) struct DeferredOwnershipApplication {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct DeferredOwnershipGateSource {
+    pub(crate) declaration: DeclarationCandidateKey,
+    pub(crate) start: u32,
+    pub(crate) end: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct DeferredOwnershipGate {
     pub(crate) kind: DeferredOwnershipGateKind,
     pub(crate) ty: DurableType,
+    pub(crate) source: Arc<DeferredOwnershipGateSource>,
     pub(crate) application: Option<DeferredOwnershipApplication>,
 }
 
@@ -614,6 +637,13 @@ pub(crate) enum SemanticNucleusFailure {
     DiagnosticAtDeclaration {
         kind: rue_error::ErrorKind,
         declaration: DeclarationCandidateKey,
+    },
+    /// A diagnostic anchored within the producer fragment. Offsets are
+    /// fragment-relative so the stable failure carries no revision-local span.
+    DiagnosticAtProducerRange {
+        kind: rue_error::ErrorKind,
+        start: u32,
+        end: u32,
     },
     OwnershipGate {
         kind: rue_error::ErrorKind,
@@ -706,6 +736,7 @@ pub(crate) enum DeclarationSignatureProjection {
         parameters: Arc<[DurableSemanticParameter]>,
         result: DurableType,
         has_self: bool,
+        self_mode: crate::durable_semantics::DurableParameterMode,
         is_unchecked: bool,
         is_extern: bool,
         is_c_export: bool,
@@ -754,6 +785,7 @@ impl DeclarationSemanticValue {
                 parameters,
                 result,
                 has_self,
+                self_mode,
                 is_unchecked,
                 is_extern: _,
                 is_c_export: _,
@@ -761,6 +793,7 @@ impl DeclarationSemanticValue {
                 parameters,
                 result,
                 has_self,
+                self_mode,
                 is_unchecked,
             },
             DeclarationSignatureProjection::Struct {

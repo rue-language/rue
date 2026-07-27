@@ -617,23 +617,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileResult<AnalysisResult> {
         let member_name_str = self.body_interner().resolve(&member_name).to_string();
 
-        // Get the module definition and resolve its file to a canonical
-        // FileId, so equivalent path spellings (`helper.rue` vs
-        // `./helper.rue`) refer to the same module (spec 10.2:4, RUE-240).
-        // `module_file_path` is then that file's stored path, used for the
-        // directory-based visibility checks below.
-        let (module_fact, module_file_path) = {
-            let facts = self.aggregate_facts();
-            let module = facts.module(module_id);
-            let module_file_path = facts
-                .file_path(module.file)
-                .map(str::to_string)
-                .unwrap_or_else(|| module.file_path().to_string());
-            (module, module_file_path)
-        };
-
-        // Get the accessing file's directory for visibility check
-        let accessing_file_path = self.aggregate_facts().source_path(span).map(str::to_string);
+        // Resolve the module to its canonical request-local file identity, so
+        // equivalent path spellings select the same visibility domain.
+        let module_fact = self.aggregate_facts().module(module_id);
         let member = {
             let facts = self.aggregate_facts();
             select_module_type_member(&facts, module_fact.file, member_name)
@@ -647,26 +633,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let struct_def = self.body_type_pool().struct_def(struct_id);
 
             // Check visibility: pub structs are visible to all, private only to same directory
-            if !struct_def.is_pub {
-                // Check if accessing from same directory
-                let same_dir = match &accessing_file_path {
-                    Some(accessing) => {
-                        let accessing_dir = std::path::Path::new(accessing).parent();
-                        let module_dir = std::path::Path::new(&module_file_path).parent();
-                        accessing_dir == module_dir
-                    }
-                    None => true, // Be permissive if we can't determine the path
-                };
-
-                if !same_dir {
-                    return Err(CompileError::new(
-                        ErrorKind::PrivateMemberAccess {
-                            item_kind: "struct".to_string(),
-                            name: member_name_str,
-                        },
-                        span,
-                    ));
-                }
+            if !self.is_accessible(span.file_id, struct_def.file_id, struct_def.is_pub) {
+                return Err(CompileError::new(
+                    ErrorKind::PrivateMemberAccess {
+                        item_kind: "struct".to_string(),
+                        name: member_name_str,
+                    },
+                    span,
+                ));
             }
 
             // Return a TypeConst instruction with the struct type
@@ -685,26 +659,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let enum_def = self.body_type_pool().enum_def(enum_id);
 
             // Check visibility: pub enums are visible to all, private only to same directory
-            if !enum_def.is_pub {
-                // Check if accessing from same directory
-                let same_dir = match &accessing_file_path {
-                    Some(accessing) => {
-                        let accessing_dir = std::path::Path::new(accessing).parent();
-                        let module_dir = std::path::Path::new(&module_file_path).parent();
-                        accessing_dir == module_dir
-                    }
-                    None => true, // Be permissive if we can't determine the path
-                };
-
-                if !same_dir {
-                    return Err(CompileError::new(
-                        ErrorKind::PrivateMemberAccess {
-                            item_kind: "enum".to_string(),
-                            name: member_name_str,
-                        },
-                        span,
-                    ));
-                }
+            if !self.is_accessible(span.file_id, enum_def.file_id, enum_def.is_pub) {
+                return Err(CompileError::new(
+                    ErrorKind::PrivateMemberAccess {
+                        item_kind: "enum".to_string(),
+                        name: member_name_str,
+                    },
+                    span,
+                ));
             }
 
             // Return a TypeConst instruction with the enum type
@@ -725,24 +687,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // tagged module-binding variant keyed by the facade's FileId (RUE-113);
         // value consts are found by defining file and member name.
         if let ModuleTypeMember::Const(const_info) = member {
-            if !const_info.is_pub {
-                let same_dir = match &accessing_file_path {
-                    Some(accessing) => {
-                        let accessing_dir = std::path::Path::new(accessing).parent();
-                        let module_dir = std::path::Path::new(&module_file_path).parent();
-                        accessing_dir == module_dir
-                    }
-                    None => true, // Be permissive if we can't determine the path
-                };
-                if !same_dir {
-                    return Err(CompileError::new(
-                        ErrorKind::PrivateMemberAccess {
-                            item_kind: "const".to_string(),
-                            name: member_name_str,
-                        },
-                        span,
-                    ));
-                }
+            if !self.is_accessible(span.file_id, module_fact.file, const_info.is_pub) {
+                return Err(CompileError::new(
+                    ErrorKind::PrivateMemberAccess {
+                        item_kind: "const".to_string(),
+                        name: member_name_str,
+                    },
+                    span,
+                ));
             }
 
             self.record_body_named_dependency(if const_info.ty.is_module() {
@@ -794,7 +746,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Member not found in the module
         Err(CompileError::new(
             ErrorKind::UnknownModuleMember {
-                module_name: module_fact.import_path().to_string(),
+                module_name: std::path::Path::new(module_fact.import_path())
+                    .file_stem()
+                    .and_then(std::ffi::OsStr::to_str)
+                    .unwrap_or_else(|| module_fact.import_path())
+                    .to_string(),
                 member_name: member_name_str,
             },
             span,

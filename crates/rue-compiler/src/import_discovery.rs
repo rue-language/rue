@@ -484,9 +484,17 @@ impl ImportObservation {
 #[derive(Debug, Default)]
 pub struct ImportObservationLedger {
     /// Frozen shared segments, oldest first; mutually disjoint by request.
-    frozen: Vec<Arc<BTreeMap<ImportDiscoveryRequest, ImportObservation>>>,
+    frozen: Vec<Arc<ImportObservationSegment>>,
     /// Entries recorded since this value was cloned from its parent.
-    head: BTreeMap<ImportDiscoveryRequest, ImportObservation>,
+    head: ImportObservationSegment,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ImportObservationSegment {
+    observations: BTreeMap<ImportDiscoveryRequest, ImportObservation>,
+    /// Derived exact index used only for demand-scoped validation. Equality,
+    /// hashing, and iteration remain defined by `observations`.
+    occurrence_counts: BTreeMap<ImportOccurrenceKey, usize>,
 }
 
 /// Segment chains longer than this are compacted on clone so lookup depth stays
@@ -509,22 +517,53 @@ impl ImportObservationLedger {
                 "one discovery request received conflicting observations",
             ));
         }
-        self.head.insert(request, observation);
+        *self
+            .head
+            .occurrence_counts
+            .entry(request.occurrence().clone())
+            .or_default() += 1;
+        self.head.observations.insert(request, observation);
         Ok(())
     }
     pub fn get(&self, request: &ImportDiscoveryRequest) -> Option<&ImportObservation> {
-        if let Some(observation) = self.head.get(request) {
+        if let Some(observation) = self.head.observations.get(request) {
             return Some(observation);
         }
         self.frozen
             .iter()
             .rev()
-            .find_map(|segment| segment.get(request))
+            .find_map(|segment| segment.observations.get(request))
+    }
+
+    /// Number of observations recorded for one exact parser-owned occurrence.
+    ///
+    /// The segment chain is bounded, so this is independent of the number of
+    /// observations accumulated by the import revision.
+    fn observation_count_for_occurrence(&self, occurrence: &ImportOccurrenceKey) -> usize {
+        self.frozen
+            .iter()
+            .map(|segment| {
+                segment
+                    .occurrence_counts
+                    .get(occurrence)
+                    .copied()
+                    .unwrap_or(0)
+            })
+            .sum::<usize>()
+            + self
+                .head
+                .occurrence_counts
+                .get(occurrence)
+                .copied()
+                .unwrap_or(0)
     }
     pub fn iter(&self) -> LedgerIter<'_> {
-        let mut cursors: Vec<std::collections::btree_map::Iter<'_, _, _>> =
-            self.frozen.iter().map(|segment| segment.iter()).collect();
-        cursors.push(self.head.iter());
+        let mut cursors: Vec<std::collections::btree_map::Iter<'_, _, _>> = self
+            .frozen
+            .iter()
+            .map(|segment| segment.observations.iter())
+            .collect();
+        cursors.push(self.head.observations.iter());
         LedgerIter {
             remaining: self.len(),
             heads: cursors.iter_mut().map(Iterator::next).collect(),
@@ -534,22 +573,24 @@ impl ImportObservationLedger {
     pub fn len(&self) -> usize {
         self.frozen
             .iter()
-            .map(|segment| segment.len())
+            .map(|segment| segment.observations.len())
             .sum::<usize>()
-            + self.head.len()
+            + self.head.observations.len()
     }
     pub fn is_empty(&self) -> bool {
-        self.head.is_empty() && self.frozen.iter().all(|segment| segment.is_empty())
+        self.head.observations.is_empty()
+            && self
+                .frozen
+                .iter()
+                .all(|segment| segment.observations.is_empty())
     }
 
     /// The exact observations recorded into THIS value since it was cloned from
     /// its parent — the current step's delta, in canonical request order
     /// (RUE-1112). The successor publication consumes this recorded delta
     /// directly rather than re-deriving it by diffing complete ledgers.
-    pub(crate) fn recorded_delta(
-        &self,
-    ) -> impl ExactSizeIterator<Item = &ImportObservation> + Clone {
-        self.head.values()
+    pub(crate) fn recorded_delta(&self) -> LedgerSegmentValues<'_> {
+        self.head.observations.values()
     }
 }
 
@@ -559,23 +600,27 @@ impl Clone for ImportObservationLedger {
         // empty recorded delta; only the head (the parent's own delta) is
         // copied, never the frozen predecessor segments.
         let mut frozen = self.frozen.clone();
-        if !self.head.is_empty() {
+        if !self.head.observations.is_empty() {
             frozen.push(Arc::new(self.head.clone()));
         }
         if frozen.len() >= LEDGER_COMPACTION_DEPTH {
-            // Compact a long chain into one segment; the merged map is the same
-            // logical value.
-            let mut merged = BTreeMap::new();
+            // Compact a long chain into one segment; the logical value and the
+            // exact occurrence counts are unchanged.
+            let mut merged = ImportObservationSegment::default();
             for segment in &frozen {
-                for (request, observation) in segment.iter() {
-                    merged.insert(request.clone(), observation.clone());
+                merged.observations.extend(segment.observations.clone());
+                for (occurrence, count) in &segment.occurrence_counts {
+                    *merged
+                        .occurrence_counts
+                        .entry(occurrence.clone())
+                        .or_default() += count;
                 }
             }
             frozen = vec![Arc::new(merged)];
         }
         Self {
             frozen,
-            head: BTreeMap::new(),
+            head: ImportObservationSegment::default(),
         }
     }
 }
@@ -606,6 +651,9 @@ pub struct LedgerIter<'a> {
     heads: Vec<Option<(&'a ImportDiscoveryRequest, &'a ImportObservation)>>,
     remaining: usize,
 }
+
+type LedgerSegmentValues<'a> =
+    std::collections::btree_map::Values<'a, ImportDiscoveryRequest, ImportObservation>;
 
 impl<'a> Iterator for LedgerIter<'a> {
     type Item = &'a ImportObservation;
@@ -1290,10 +1338,11 @@ pub(crate) fn validate_exact_import_occurrence(
         .iter()
         .flat_map(|group| group.iter())
         .collect::<BTreeSet<_>>();
-    if ledger.iter().any(|observation| {
-        observation.request().occurrence() == first.occurrence()
-            && !requests.contains(observation.request())
-    }) {
+    let canonical_present = requests
+        .iter()
+        .filter(|request| ledger.get(request).is_some())
+        .count();
+    if ledger.observation_count_for_occurrence(first.occurrence()) != canonical_present {
         return Err(invalid_input(
             "observation ledger contains a non-canonical request for the exact occurrence",
         ));
@@ -2270,6 +2319,174 @@ mod tests {
                 content_fingerprint: source_fingerprint(source.source),
             })
             .collect()
+    }
+
+    fn indexed_test_request(occurrence_index: u32, position: u32) -> ImportDiscoveryRequest {
+        let importer =
+            ModuleId::from_logical_path(format!("module-{occurrence_index}.rue")).unwrap();
+        let occurrence = ImportOccurrenceKey {
+            importer,
+            source_offset: occurrence_index.saturating_mul(10),
+            source_end: occurrence_index.saturating_mul(10).saturating_add(5),
+            specifier: format!("dep-{occurrence_index}").into(),
+        };
+        ImportDiscoveryRequest {
+            context: context(900),
+            occurrence,
+            exact_specifier: format!("dep-{occurrence_index}").into(),
+            normalized_specifier: format!("dep-{occurrence_index}").into(),
+            importer_anchor: format!("/project/module-{occurrence_index}.rue").into(),
+            root_anchor: "/project".into(),
+            group: 0,
+            position,
+            requested_path: format!("/project/dep-{occurrence_index}-{position}.rue").into(),
+            role: ImportCandidateRole::ExactFile,
+        }
+    }
+
+    #[test]
+    fn occurrence_index_preserves_flat_and_segmented_ledger_identity() {
+        use std::hash::{Hash, Hasher};
+
+        let observations = (0..64)
+            .flat_map(|occurrence| {
+                (0..4).map(move |position| {
+                    ImportObservation::absent(indexed_test_request(occurrence, position))
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut flat = ImportObservationLedger::default();
+        let mut segmented = ImportObservationLedger::default();
+        for (index, observation) in observations.iter().cloned().enumerate() {
+            flat.record(observation.clone()).unwrap();
+            segmented.record(observation).unwrap();
+            if index % 11 == 10 {
+                segmented = segmented.clone();
+            }
+        }
+
+        assert_eq!(flat, segmented);
+        let mut canonical = observations;
+        canonical.sort_by(|left, right| left.request().cmp(right.request()));
+        assert_eq!(
+            flat.iter().cloned().collect::<Vec<_>>(),
+            canonical,
+            "the occurrence index preserves canonical request order"
+        );
+        let hash = |ledger: &ImportObservationLedger| {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            ledger.hash(&mut hasher);
+            hasher.finish()
+        };
+        assert_eq!(hash(&flat), hash(&segmented));
+    }
+
+    #[test]
+    fn exact_occurrence_validation_uses_only_its_indexed_bucket() {
+        let target = indexed_test_request(7, 0);
+        let groups = vec![Arc::<[ImportDiscoveryRequest]>::from([target.clone()])];
+        let mut ledger = ImportObservationLedger::default();
+        for occurrence in 0..512 {
+            for position in 0..4 {
+                ledger
+                    .record(ImportObservation::absent(indexed_test_request(
+                        occurrence, position,
+                    )))
+                    .unwrap();
+            }
+            if occurrence % 31 == 30 {
+                ledger = ledger.clone();
+            }
+        }
+
+        assert_eq!(ledger.len(), 2048);
+        assert_eq!(
+            ledger.observation_count_for_occurrence(target.occurrence()),
+            4,
+            "exact validation sees one occurrence bucket, not the whole ledger"
+        );
+        assert!(
+            validate_exact_import_occurrence(&groups, &ledger).is_err(),
+            "the three non-canonical requests in the exact bucket still invalidate it"
+        );
+
+        let isolated = indexed_test_request(999, 0);
+        let isolated_groups = vec![Arc::<[ImportDiscoveryRequest]>::from([isolated.clone()])];
+        assert!(
+            validate_exact_import_occurrence(&isolated_groups, &ledger).is_ok(),
+            "a missing canonical observation is not itself a malformed ledger"
+        );
+        ledger
+            .record(ImportObservation::absent(isolated.clone()))
+            .unwrap();
+        assert!(
+            validate_exact_import_occurrence(&isolated_groups, &ledger).is_ok(),
+            "unrelated occurrence buckets do not affect exact validation"
+        );
+
+        let mut foreign = isolated.clone();
+        foreign.requested_path = "/project/non-canonical.rue".into();
+        ledger.record(ImportObservation::absent(foreign)).unwrap();
+        assert!(
+            validate_exact_import_occurrence(&isolated_groups, &ledger).is_err(),
+            "a non-canonical request for the exact occurrence still invalidates it"
+        );
+    }
+
+    #[test]
+    fn occurrence_count_validation_matches_the_full_scan_oracle() {
+        let canonical = (0..3)
+            .map(|position| indexed_test_request(17, position))
+            .collect::<Vec<_>>();
+        let groups = vec![
+            Arc::<[ImportDiscoveryRequest]>::from([canonical[0].clone(), canonical[1].clone()]),
+            Arc::<[ImportDiscoveryRequest]>::from([canonical[1].clone(), canonical[2].clone()]),
+        ];
+        let old_oracle = |ledger: &ImportObservationLedger| {
+            let requests = groups
+                .iter()
+                .flat_map(|group| group.iter())
+                .collect::<BTreeSet<_>>();
+            !ledger.iter().any(|observation| {
+                observation.request().occurrence() == canonical[0].occurrence()
+                    && !requests.contains(observation.request())
+            })
+        };
+
+        for case in 0u32..128 {
+            let mut ledger = ImportObservationLedger::default();
+            for (index, request) in canonical.iter().enumerate() {
+                if case & (1 << index) != 0 {
+                    ledger
+                        .record(ImportObservation::absent(request.clone()))
+                        .unwrap();
+                }
+            }
+            for unrelated in 0..24 {
+                if case.rotate_left(unrelated) & 1 != 0 {
+                    ledger
+                        .record(ImportObservation::absent(indexed_test_request(
+                            100 + unrelated,
+                            case % 3,
+                        )))
+                        .unwrap();
+                }
+                if unrelated % 5 == 4 {
+                    ledger = ledger.clone();
+                }
+            }
+            if case & (1 << 6) != 0 {
+                let mut extra = canonical[0].clone();
+                extra.requested_path = format!("/project/extra-{case}.rue").into();
+                ledger.record(ImportObservation::absent(extra)).unwrap();
+            }
+
+            assert_eq!(
+                validate_exact_import_occurrence(&groups, &ledger).is_ok(),
+                old_oracle(&ledger),
+                "indexed validation diverged from the full-scan oracle in case {case}"
+            );
+        }
     }
 
     #[test]

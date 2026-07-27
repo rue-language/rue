@@ -1516,6 +1516,9 @@ impl QueryRuntime {
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
             nested_attempts: Mutex::new(Vec::new()),
+            nested_attempt_filters: Mutex::new(Vec::new()),
+            validation_endorsements: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(Vec::new()),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
         });
@@ -1843,7 +1846,20 @@ where
             task.record_nested(request_id, || self.identity.clone(), &result);
             active.remove(&self.incarnation);
             return match result {
-                TaskQueryResult::Terminal { terminal, .. } => Ok(Some(terminal.stamp)),
+                TaskQueryResult::Terminal {
+                    terminal,
+                    execution,
+                    ..
+                } => {
+                    // A validation-only computation or join returns an exact
+                    // stamp but does not transfer its candidate pin into the
+                    // task's proof cone. Taint every enclosing certificate;
+                    // a later ordinary Reused validation can capture it.
+                    if execution != RequestExecution::Reused {
+                        task.taint_validation_proofs();
+                    }
+                    Ok(Some(terminal.stamp))
+                }
                 // A dependency that cannot be produced under this revision
                 // because one of its inputs is gone does not abort the
                 // dependent: it makes the dependent's retained terminal
@@ -1869,6 +1885,10 @@ where
                 TaskQueryResult::Aborted { abort, .. } => Err(abort),
             };
         }
+        // An externally supplied evaluator cannot participate in a reusable
+        // registered-only proof: the runtime cannot re-demand and pin its
+        // complete dependency cone from family-owned authority.
+        task.taint_validation_proofs();
         let candidates = lock(&self.state)
             .attempts
             .iter()
@@ -2288,11 +2308,23 @@ where
             }
             for (attempt_id, handoffs, pin) in candidates {
                 let terminal = pin.terminal().clone();
-                match self.core.valid_for_revision(&terminal, &task) {
-                    Ok(true) => {
+                let endorsement_enabled =
+                    self.inner.evaluator.is_some() && task.validation_endorsements_active();
+                let endorsement_hit = endorsement_enabled && task.validation_endorsed(&terminal);
+                let validation = if endorsement_hit {
+                    Ok((true, true))
+                } else {
+                    self.core.valid_for_revision(&terminal, &task)
+                };
+                match validation {
+                    Ok((true, registered_only)) => {
                         if observe_result && !task.observe_handoff(handoffs) {
                             self.detach_terminal_attempt(node, attempt_id);
                             continue;
+                        }
+                        let endorse = endorsement_enabled && !endorsement_hit && registered_only;
+                        if endorse {
+                            task.endorse_validation(&terminal);
                         }
                         self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
                         if observe_result {
@@ -2300,6 +2332,8 @@ where
                             // request-scoped lease set, so protection is continuous
                             // from discovery through the lifetime of the request.
                             task.observe(&terminal);
+                        }
+                        if observe_result || endorse {
                             self.lease_observed_pin(&task, pin);
                         }
                         // A stale candidate's pin (or an unobserved validation
@@ -2310,7 +2344,7 @@ where
                             work: Vec::new(),
                         };
                     }
-                    Ok(false) => {}
+                    Ok((false, _)) => {}
                     Err(abort) => {
                         return TaskQueryResult::Aborted {
                             abort,
@@ -3039,7 +3073,7 @@ where
                 state: AttemptState::Terminal {
                     terminal: adopted.clone(),
                     waiters: 0,
-                    handoffs: Arc::new(AttemptHandoffLifecycle::committed()),
+                    handoffs: AttemptHandoffLifecycle::shared_committed(),
                 },
             });
             // Pin UNDER the node lock, before the endorsement is enqueued or
@@ -3340,6 +3374,34 @@ impl QueryContext {
         self.task.register_attempt_handoff(Box::new(handoff));
     }
 
+    /// Restricts operational nested-attempt ledger materialization for this
+    /// scope and every nested query it evaluates.
+    ///
+    /// Query execution and semantic bookkeeping are unchanged: dependency
+    /// observations, validation, request leases, cancellation, work,
+    /// handoffs, memoization, and terminal publication all still run exactly
+    /// as they do without this scope. Only [`QueryRequestAttempt::nested_attempts`]
+    /// is filtered. Nested scopes intersect with their parent selection, so an
+    /// inner evaluator cannot restore rows its caller chose not to retain.
+    ///
+    /// The returned guard restores the preceding selection when dropped,
+    /// including during unwinding.
+    pub fn retain_nested_attempts_for(&self, families: &[&str]) -> NestedAttemptFilterGuard {
+        self.task.push_nested_attempt_filter(families)
+    }
+
+    /// Enables task-local reuse of full registered-only validation proofs.
+    ///
+    /// A proof is endorsed only after recursively validating the exact
+    /// terminal and every dependency without crossing an unregistered node.
+    /// Every terminal in that registered cone remains pinned by the task.
+    /// Cache hits still follow the ordinary request path for cancellation,
+    /// direct dependency observation, handoffs, work, and request-ledger
+    /// classification; only repeated recursive validation is skipped.
+    pub fn endorse_registered_validations(&self) -> ValidationEndorsementGuard {
+        self.task.push_validation_endorsement_scope()
+    }
+
     /// Requests a dependency in the same task and pinned revision.
     pub fn query<K, V, F>(
         &self,
@@ -3431,6 +3493,17 @@ struct Task {
     owns_permit: AtomicBool,
     stack: Mutex<Vec<TaskFrame>>,
     nested_attempts: Mutex<Vec<NestedQueryAttempt>>,
+    /// Active operational-ledger selections. The top entry is already
+    /// intersected with every parent scope, so one binary search decides
+    /// whether a nested request row is materialized.
+    nested_attempt_filters: Mutex<Vec<Arc<[Arc<str>]>>>,
+    /// Lexical task-local registered-validation endorsements. An exact
+    /// terminal identity is inserted into every active scope only after a
+    /// complete registered-only validation traversal.
+    validation_endorsements: Mutex<Vec<BTreeSet<(u64, u64, Revision)>>>,
+    /// Active recursive validation certificates. Encountering an unregistered
+    /// node taints every enclosing traversal.
+    validation_proofs: Mutex<Vec<Arc<AtomicBool>>>,
     /// Request-scoped retention leases. This task, which owns one rooted request
     /// and all of its nested observations (nested queries share the task), holds
     /// one pin per distinct terminal it has observed. The pins release together
@@ -3443,6 +3516,69 @@ struct Task {
     /// including nested queries. Only successful top-level completion claims
     /// and commits this aggregate; abort and unwind leave it `Pending`.
     observed_handoffs: Mutex<Vec<Arc<AttemptHandoffLifecycle>>>,
+}
+
+/// Unwind-safe scope for operational nested-attempt ledger filtering.
+#[must_use = "dropping the guard immediately restores unfiltered nested-attempt recording"]
+pub struct NestedAttemptFilterGuard {
+    task: Arc<Task>,
+    selection: Arc<[Arc<str>]>,
+    not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+/// Unwind-safe lexical scope for task-local registered validation proofs.
+#[must_use = "dropping the guard immediately clears this scope's validation endorsements"]
+pub struct ValidationEndorsementGuard {
+    task: Arc<Task>,
+    scope: usize,
+    not_send_or_sync: PhantomData<Rc<()>>,
+}
+
+impl Drop for ValidationEndorsementGuard {
+    fn drop(&mut self) {
+        let mut scopes = lock(&self.task.validation_endorsements);
+        assert_eq!(
+            scopes.len(),
+            self.scope + 1,
+            "validation endorsement guards drop in lexical order"
+        );
+        scopes.pop();
+    }
+}
+
+struct ValidationProofGuard {
+    task: Arc<Task>,
+    registered_only: Arc<AtomicBool>,
+}
+
+impl ValidationProofGuard {
+    fn registered_only(&self) -> bool {
+        self.registered_only.load(Ordering::Acquire)
+    }
+}
+
+impl Drop for ValidationProofGuard {
+    fn drop(&mut self) {
+        let popped = lock(&self.task.validation_proofs)
+            .pop()
+            .expect("validation proof guard owns one traversal");
+        assert!(
+            Arc::ptr_eq(&popped, &self.registered_only),
+            "validation proof guards drop in lexical order"
+        );
+    }
+}
+
+impl Drop for NestedAttemptFilterGuard {
+    fn drop(&mut self) {
+        let popped = lock(&self.task.nested_attempt_filters)
+            .pop()
+            .expect("nested-attempt filter guard owns one active scope");
+        assert!(
+            Arc::ptr_eq(&popped, &self.selection),
+            "nested-attempt filter guards drop in lexical order"
+        );
+    }
 }
 
 /// Terminals leased for the lifetime of one rooted request (its task).
@@ -3716,6 +3852,14 @@ struct AttemptHandoffs {
 
 impl AttemptHandoffs {
     fn into_lifecycle(mut self) -> Arc<AttemptHandoffLifecycle> {
+        if self.pending.is_empty()
+            && self
+                .observed
+                .iter()
+                .all(|lifecycle| lifecycle.is_committed())
+        {
+            return AttemptHandoffLifecycle::shared_committed();
+        }
         Arc::new(AttemptHandoffLifecycle::new(
             std::mem::take(&mut self.pending),
             std::mem::take(&mut self.observed),
@@ -3823,13 +3967,28 @@ impl AttemptHandoffLifecycle {
         }
     }
 
-    fn available(&self) -> bool {
-        !matches!(*lock(&self.state), AttemptHandoffState::Aborted)
+    fn shared_committed() -> Arc<Self> {
+        Self::shared_committed_ref().clone()
+    }
+
+    fn shared_committed_ref() -> &'static Arc<Self> {
+        static COMMITTED: std::sync::OnceLock<Arc<AttemptHandoffLifecycle>> =
+            std::sync::OnceLock::new();
+        COMMITTED.get_or_init(|| Arc::new(AttemptHandoffLifecycle::committed()))
+    }
+
+    fn is_committed(&self) -> bool {
+        matches!(*lock(&self.state), AttemptHandoffState::Committed)
     }
 
     fn collect_observed(lifecycle: &Arc<Self>, observed: &mut Vec<Arc<Self>>) -> bool {
-        if !lifecycle.available() {
-            return false;
+        {
+            let state = lock(&lifecycle.state);
+            match &*state {
+                AttemptHandoffState::Committed => return true,
+                AttemptHandoffState::Aborted => return false,
+                AttemptHandoffState::Pending(_) | AttemptHandoffState::Committing { .. } => {}
+            }
         }
         for dependency in lifecycle.observed.iter() {
             if !Self::collect_observed(dependency, observed) {
@@ -3964,6 +4123,82 @@ impl Task {
         self.core.next_task.fetch_add(1, Ordering::Relaxed)
     }
 
+    fn push_nested_attempt_filter(self: &Arc<Self>, families: &[&str]) -> NestedAttemptFilterGuard {
+        let mut selection = families
+            .iter()
+            .copied()
+            .map(Arc::<str>::from)
+            .collect::<Vec<_>>();
+        selection.sort();
+        selection.dedup();
+        let mut filters = lock(&self.nested_attempt_filters);
+        if let Some(parent) = filters.last() {
+            selection.retain(|family| parent.binary_search(family).is_ok());
+        }
+        let selection: Arc<[Arc<str>]> = selection.into();
+        filters.push(selection.clone());
+        NestedAttemptFilterGuard {
+            task: self.clone(),
+            selection,
+            not_send_or_sync: PhantomData,
+        }
+    }
+
+    fn records_nested_attempt(&self, family: &str) -> bool {
+        lock(&self.nested_attempt_filters)
+            .last()
+            .is_none_or(|selection| {
+                selection
+                    .binary_search_by(|candidate| candidate.as_ref().cmp(family))
+                    .is_ok()
+            })
+    }
+
+    fn push_validation_endorsement_scope(self: &Arc<Self>) -> ValidationEndorsementGuard {
+        let mut scopes = lock(&self.validation_endorsements);
+        let scope = scopes.len();
+        scopes.push(BTreeSet::new());
+        ValidationEndorsementGuard {
+            task: self.clone(),
+            scope,
+            not_send_or_sync: PhantomData,
+        }
+    }
+
+    fn validation_endorsements_active(&self) -> bool {
+        !lock(&self.validation_endorsements).is_empty()
+    }
+
+    fn validation_endorsed<V>(&self, terminal: &QueryTerminal<V>) -> bool {
+        let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
+        lock(&self.validation_endorsements)
+            .iter()
+            .rev()
+            .any(|scope| scope.contains(&identity))
+    }
+
+    fn endorse_validation<V>(&self, terminal: &QueryTerminal<V>) {
+        let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
+        for scope in lock(&self.validation_endorsements).iter_mut() {
+            scope.insert(identity);
+        }
+    }
+
+    fn begin_validation(self: &Arc<Self>) -> ValidationProofGuard {
+        let registered_only = Arc::new(AtomicBool::new(true));
+        lock(&self.validation_proofs).push(registered_only.clone());
+        ValidationProofGuard {
+            task: self.clone(),
+            registered_only,
+        }
+    }
+
+    fn taint_validation_proofs(&self) {
+        for proof in lock(&self.validation_proofs).iter() {
+            proof.store(false, Ordering::Release);
+        }
+    }
+
     /// Records a nested request's lifecycle. The display identity is materialized
     /// lazily: the hot memo-hit/compute path reuses the terminal's already-built
     /// `NodeIdentity`, so no `stable_identity()` is formatted per request. Only
@@ -3974,6 +4209,41 @@ impl Task {
         fallback_node: impl FnOnce() -> NodeIdentity,
         result: &TaskQueryResult<V>,
     ) {
+        let family = match result {
+            TaskQueryResult::Terminal { terminal, .. } => terminal.node.family(),
+            TaskQueryResult::Aborted { .. } => {
+                let node = fallback_node();
+                if !self.records_nested_attempt(node.family()) {
+                    return;
+                }
+                let attempt = match result {
+                    TaskQueryResult::Aborted {
+                        abort,
+                        dependencies,
+                        inputs,
+                        work,
+                    } => NestedQueryAttempt {
+                        id,
+                        node,
+                        node_incarnation: None,
+                        origin_request: id,
+                        execution: RequestExecution::Aborted,
+                        terminal_revision: None,
+                        terminal_stamp: None,
+                        abort: Some(abort.clone()),
+                        dependencies: dependencies.clone().into(),
+                        inputs: inputs.clone().into(),
+                        work: work.clone().into(),
+                    },
+                    TaskQueryResult::Terminal { .. } => unreachable!(),
+                };
+                lock(&self.nested_attempts).push(attempt);
+                return;
+            }
+        };
+        if !self.records_nested_attempt(family) {
+            return;
+        }
         let attempt = match result {
             TaskQueryResult::Terminal {
                 terminal,
@@ -3992,24 +4262,7 @@ impl Task {
                 inputs: terminal.inputs.clone(),
                 work: work.clone().into(),
             },
-            TaskQueryResult::Aborted {
-                abort,
-                dependencies,
-                inputs,
-                work,
-            } => NestedQueryAttempt {
-                id,
-                node: fallback_node(),
-                node_incarnation: None,
-                origin_request: id,
-                execution: RequestExecution::Aborted,
-                terminal_revision: None,
-                terminal_stamp: None,
-                abort: Some(abort.clone()),
-                dependencies: dependencies.clone().into(),
-                inputs: inputs.clone().into(),
-                work: work.clone().into(),
-            },
+            TaskQueryResult::Aborted { .. } => unreachable!(),
         };
         lock(&self.nested_attempts).push(attempt);
     }
@@ -4032,6 +4285,11 @@ impl Task {
     }
 
     fn observe_handoff(&self, handoff: Arc<AttemptHandoffLifecycle>) -> bool {
+        if Arc::ptr_eq(&handoff, AttemptHandoffLifecycle::shared_committed_ref())
+            || handoff.is_committed()
+        {
+            return true;
+        }
         let mut stack = lock(&self.stack);
         if let Some(frame) = stack.last_mut() {
             let mut closure = Vec::new();
@@ -4296,8 +4554,11 @@ impl RuntimeCore {
         &self,
         terminal: &QueryTerminal<V>,
         task: &Arc<Task>,
-    ) -> Result<bool, QueryAbort> {
-        self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new())
+    ) -> Result<(bool, bool), QueryAbort> {
+        let proof = task.begin_validation();
+        let valid = self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new())?;
+        let registered_only = proof.registered_only();
+        Ok((valid, registered_only))
     }
 
     fn valid_for_revision_inner<V>(
@@ -6095,6 +6356,219 @@ mod tests {
     }
 
     #[test]
+    fn empty_committed_handoff_chains_share_one_terminal_lifecycle() {
+        let shared = AttemptHandoffs {
+            pending: Vec::new(),
+            observed: Vec::new(),
+        }
+        .into_lifecycle();
+        assert!(shared.is_committed());
+        assert!(shared.observed.is_empty());
+
+        let mut current = shared.clone();
+        for _ in 0..10_000 {
+            current = AttemptHandoffs {
+                pending: Vec::new(),
+                observed: vec![current],
+            }
+            .into_lifecycle();
+            assert!(
+                Arc::ptr_eq(&current, &shared),
+                "an empty committed chain must not retain a lifecycle DAG"
+            );
+        }
+
+        let committed_child = Arc::new(AttemptHandoffLifecycle::committed());
+        let child = Arc::downgrade(&committed_child);
+        let collapsed = AttemptHandoffs {
+            pending: Vec::new(),
+            observed: vec![committed_child],
+        }
+        .into_lifecycle();
+        assert!(Arc::ptr_eq(&collapsed, &shared));
+        assert!(
+            child.upgrade().is_none(),
+            "collapsing a committed child must release its Arc"
+        );
+    }
+
+    #[test]
+    fn committed_handoff_aggregates_collect_without_traversing_their_dag() {
+        let runtime = QueryRuntime::new(1);
+        let cancellation = CancellationToken::new();
+        let owner = TaskId(40);
+        let mut level = vec![Arc::new(AttemptHandoffLifecycle::new(
+            Vec::new(),
+            Vec::new(),
+        ))];
+
+        for _ in 0..12 {
+            level = (0..2)
+                .map(|_| Arc::new(AttemptHandoffLifecycle::new(Vec::new(), level.clone())))
+                .collect();
+        }
+        let root = Arc::new(AttemptHandoffLifecycle::new(Vec::new(), level));
+        let AttemptHandoffCommit::Claimed(handoffs) =
+            root.begin_commit(owner, &cancellation, &runtime.core)
+        else {
+            panic!("the raw aggregate starts pending")
+        };
+        assert!(handoffs.is_empty());
+        root.finish_commit(owner);
+
+        let mut observed = Vec::new();
+        assert!(AttemptHandoffLifecycle::collect_observed(
+            &root,
+            &mut observed
+        ));
+        assert!(
+            observed.is_empty(),
+            "a committed aggregate is already terminal and contributes no pending DAG"
+        );
+
+        let task = Task {
+            id: TaskId(43),
+            core: runtime.core.clone(),
+            revision: revision(1),
+            cancellation: CancellationToken::new(),
+            owns_permit: AtomicBool::new(false),
+            stack: Mutex::new(Vec::new()),
+            nested_attempts: Mutex::new(Vec::new()),
+            nested_attempt_filters: Mutex::new(Vec::new()),
+            validation_endorsements: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(Vec::new()),
+            leases: Mutex::new(TaskLeases::default()),
+            observed_handoffs: Mutex::new(Vec::new()),
+        };
+        task.push(ExactNodeIdentity {
+            display: NodeIdentity {
+                family: Arc::from("handoff-test"),
+                key: Arc::from("root"),
+            },
+            incarnation: 1,
+        });
+        assert!(task.observe_handoff(AttemptHandoffLifecycle::shared_committed()));
+        assert!(task.observe_handoff(Arc::new(AttemptHandoffLifecycle::committed())));
+        assert!(
+            lock(&task.stack)[0].observed_handoffs.is_empty(),
+            "a computing frame must not retain either form of committed lifecycle"
+        );
+        lock(&task.stack).clear();
+        assert!(task.observe_handoff(AttemptHandoffLifecycle::shared_committed()));
+        assert!(
+            lock(&task.observed_handoffs).is_empty(),
+            "a root must not retain the shared committed lifecycle"
+        );
+    }
+
+    #[test]
+    fn handoff_canonicalization_preserves_callbacks_and_commit_abort_behavior() {
+        let runtime = QueryRuntime::new(1);
+        let cancellation = CancellationToken::new();
+        let events = Arc::new(Mutex::new(Vec::new()));
+
+        let committing = AttemptHandoffs {
+            pending: vec![Box::new(RecordingHandoff::new(events.clone()))],
+            observed: Vec::new(),
+        }
+        .into_lifecycle();
+        assert!(!committing.is_committed());
+        let owner = TaskId(41);
+        let AttemptHandoffCommit::Claimed(mut handoffs) =
+            committing.begin_commit(owner, &cancellation, &runtime.core)
+        else {
+            panic!("a local callback must remain claimable")
+        };
+        assert_eq!(handoffs.len(), 1);
+        handoffs[0].commit();
+        committing.finish_commit(owner);
+        assert_eq!(*lock(&events), ["commit"]);
+
+        let aborting = AttemptHandoffs {
+            pending: vec![Box::new(RecordingHandoff::new(events.clone()))],
+            observed: vec![committing],
+        }
+        .into_lifecycle();
+        assert!(!aborting.is_committed());
+        aborting.abort();
+        assert_eq!(*lock(&events), ["commit", "abort"]);
+    }
+
+    #[test]
+    fn handoff_canonicalization_preserves_nonterminal_and_aborted_children() {
+        let runtime = QueryRuntime::new(1);
+        let cancellation = CancellationToken::new();
+        let pending = Arc::new(AttemptHandoffLifecycle::new(Vec::new(), Vec::new()));
+        let pending_parent = AttemptHandoffs {
+            pending: Vec::new(),
+            observed: vec![pending.clone()],
+        }
+        .into_lifecycle();
+        assert!(!pending_parent.is_committed());
+        assert_eq!(pending_parent.observed.len(), 1);
+        assert!(Arc::ptr_eq(&pending_parent.observed[0], &pending));
+
+        let owner = TaskId(42);
+        let AttemptHandoffCommit::Claimed(handoffs) =
+            pending.begin_commit(owner, &cancellation, &runtime.core)
+        else {
+            panic!("a pending child must remain claimable")
+        };
+        let committing_parent = AttemptHandoffs {
+            pending: Vec::new(),
+            observed: vec![pending.clone()],
+        }
+        .into_lifecycle();
+        assert!(!committing_parent.is_committed());
+        assert!(Arc::ptr_eq(&committing_parent.observed[0], &pending));
+        pending.rollback_commit(owner, handoffs);
+
+        pending.abort();
+        let aborted_parent = AttemptHandoffs {
+            pending: Vec::new(),
+            observed: vec![pending.clone()],
+        }
+        .into_lifecycle();
+        assert!(!aborted_parent.is_committed());
+        let mut observed = Vec::new();
+        assert!(!AttemptHandoffLifecycle::collect_observed(
+            &aborted_parent,
+            &mut observed
+        ));
+    }
+
+    #[test]
+    fn shared_committed_handoff_lifecycle_is_concurrent_and_idempotent() {
+        let shared = AttemptHandoffLifecycle::shared_committed();
+        let threads = (0..8)
+            .map(|index| {
+                let shared = shared.clone();
+                thread::spawn(move || {
+                    let runtime = QueryRuntime::new(1);
+                    let cancellation = CancellationToken::new();
+                    for _ in 0..1_000 {
+                        let lifecycle = AttemptHandoffs {
+                            pending: Vec::new(),
+                            observed: vec![shared.clone()],
+                        }
+                        .into_lifecycle();
+                        assert!(Arc::ptr_eq(&lifecycle, &shared));
+                        assert!(matches!(
+                            lifecycle.begin_commit(TaskId(index + 1), &cancellation, &runtime.core),
+                            AttemptHandoffCommit::Committed
+                        ));
+                        lifecycle.abort();
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert!(shared.is_committed());
+    }
+
+    #[test]
     fn panicking_commit_uses_transactional_rollback_before_retry() {
         // Rue's unit runner marks any unwind as a failed test, even when the
         // runtime catches it. Exercise the exact rollback helper directly and
@@ -6226,6 +6700,9 @@ mod tests {
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
             nested_attempts: Mutex::new(Vec::new()),
+            nested_attempt_filters: Mutex::new(Vec::new()),
+            validation_endorsements: Mutex::new(Vec::new()),
+            validation_proofs: Mutex::new(Vec::new()),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
         });
@@ -7841,6 +8318,718 @@ mod tests {
         assert_eq!(
             second.nested_attempts()[0].origin_request_id(),
             first.nested_attempts()[0].id()
+        );
+    }
+
+    #[test]
+    fn nested_attempt_filter_is_nestable_unwind_safe_and_preserves_request_ids() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let selected = runtime
+            .family::<Key, u64>("nested-filter-selected", 8)
+            .unwrap();
+        let suppressed = runtime
+            .family::<Key, u64>("nested-filter-suppressed", 8)
+            .unwrap();
+        let root = runtime.family::<Key, u64>("nested-filter-root", 8).unwrap();
+
+        let selected_for_root = selected.clone();
+        let suppressed_for_root = suppressed.clone();
+        let attempt = runtime.request(
+            &root,
+            revision(1),
+            Key("root"),
+            CancellationToken::new(),
+            move |context| {
+                let _outer = context.retain_nested_attempts_for(&["nested-filter-selected"]);
+                context.query(&selected_for_root, Key("cold"), |_| {
+                    Ok(QueryOutput::success(1))
+                })?;
+                context.query(&suppressed_for_root, Key("cold"), |_| {
+                    Ok(QueryOutput::success(2))
+                })?;
+                {
+                    let _inner = context.retain_nested_attempts_for(&[
+                        "nested-filter-selected",
+                        "nested-filter-suppressed",
+                    ]);
+                    context.query(&selected_for_root, Key("cold"), |_| {
+                        panic!("the selected terminal is retained")
+                    })?;
+                    context.query(&suppressed_for_root, Key("cold"), |_| {
+                        panic!("the suppressed terminal is retained")
+                    })?;
+                }
+                #[cfg(panic = "unwind")]
+                {
+                    let unwind = catch_unwind(AssertUnwindSafe(|| {
+                        let _inner =
+                            context.retain_nested_attempts_for(&["nested-filter-suppressed"]);
+                        panic!("exercise filter restoration")
+                    }));
+                    assert!(unwind.is_err());
+                }
+                #[cfg(panic = "abort")]
+                {
+                    // Rue's production/test profile aborts on panic, so the
+                    // executable restoration check uses ordinary RAII here.
+                    // The unwind profile above exercises the same Drop path
+                    // during catch_unwind.
+                    let _inner = context.retain_nested_attempts_for(&["nested-filter-suppressed"]);
+                }
+                context.query(&selected_for_root, Key("cold"), |_| {
+                    panic!("the outer selection survives inner unwinding")
+                })?;
+                let ignored_abort = context.query(&suppressed_for_root, Key("abort"), |_| {
+                    Err(QueryAbort::Canceled)
+                });
+                assert!(matches!(ignored_abort, Err(QueryAbort::Canceled)));
+                context.query(&selected_for_root, Key("abort"), |_| {
+                    Err(QueryAbort::Canceled)
+                })?;
+                unreachable!("the selected abort propagates")
+            },
+        );
+
+        assert_eq!(attempt.execution(), RequestExecution::Aborted);
+        assert_eq!(attempt.abort(), Some(&QueryAbort::Canceled));
+        assert_eq!(attempt.nested_attempts().len(), 4);
+        assert!(
+            attempt
+                .nested_attempts()
+                .iter()
+                .all(|nested| nested.node().family() == "nested-filter-selected")
+        );
+        assert_eq!(
+            attempt
+                .nested_attempts()
+                .iter()
+                .map(NestedQueryAttempt::execution)
+                .collect::<Vec<_>>(),
+            [
+                RequestExecution::Computed,
+                RequestExecution::Reused,
+                RequestExecution::Reused,
+                RequestExecution::Aborted,
+            ]
+        );
+        assert!(
+            attempt
+                .nested_attempts()
+                .windows(2)
+                .any(|pair| pair[1].id() > pair[0].id() + 1),
+            "suppressed rows still consume request identities"
+        );
+    }
+
+    #[test]
+    fn nested_attempt_filter_preserves_green_red_cancel_work_leases_and_handoffs() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct Run {
+            executions: Vec<RequestExecution>,
+            values: Vec<Option<u64>>,
+            dependencies: Vec<usize>,
+            inputs: Vec<usize>,
+            work: Vec<Vec<(Arc<str>, u64)>>,
+            commits: usize,
+            aborts: usize,
+        }
+
+        fn run(filtered: bool) -> Run {
+            let runtime = QueryRuntime::new(1);
+            let input = InputIdentity::new("source", "nested-filter-parity");
+            let first = Revision::new(40, 1);
+            let green = Revision::new(41, 1);
+            let red = Revision::new(42, 1);
+            runtime
+                .publish_revision(first, [(input.clone(), 7)])
+                .unwrap();
+            runtime
+                .publish_revision(green, [(input.clone(), 7)])
+                .unwrap();
+            runtime.publish_revision(red, [(input.clone(), 8)]).unwrap();
+            let noise = runtime
+                .family_with_evaluator::<Key, u64, _>("nested-filter-parity-noise", 1, |_, _, _| {
+                    Ok(QueryOutput::success(10))
+                })
+                .unwrap();
+            let commits = Arc::new(AtomicUsize::new(0));
+            let aborts = Arc::new(AtomicUsize::new(0));
+            let input_for_child = input.clone();
+            let noise_for_child = noise.clone();
+            let commits_for_child = commits.clone();
+            let aborts_for_child = aborts.clone();
+            let child = runtime
+                .family_with_evaluator::<Key, u64, _>(
+                    "nested-filter-parity-child",
+                    1,
+                    move |context, _, key| {
+                        let noise = context.query_registered(&noise_for_child, Key("noise"))?;
+                        let QueryOutcome::Success(noise) = noise.outcome() else {
+                            unreachable!()
+                        };
+                        let stamp = context.input(input_for_child.clone())?;
+                        context.record_work(WorkItem::new("child-work", 1));
+                        context.register_attempt_handoff(CountingHandoff {
+                            commits: commits_for_child.clone(),
+                            aborts: aborts_for_child.clone(),
+                        });
+                        Ok(QueryOutput::success(stamp + noise + key.0.len() as u64))
+                    },
+                )
+                .unwrap();
+            let root = runtime
+                .family::<Key, u64>("nested-filter-parity-root", 8)
+                .unwrap();
+
+            let request =
+                |revision, root_key, child_key, cancellation: CancellationToken, cancel| {
+                    let child = child.clone();
+                    let cancellation_for_body = cancellation.clone();
+                    runtime.request(&root, revision, root_key, cancellation, move |context| {
+                        let _filter = filtered.then(|| {
+                            context.retain_nested_attempts_for(&["nested-filter-parity-child"])
+                        });
+                        let child = context.query_registered(&child, child_key)?;
+                        let QueryOutcome::Success(value) = child.outcome() else {
+                            unreachable!()
+                        };
+                        if cancel {
+                            cancellation_for_body.cancel();
+                        }
+                        Ok(QueryOutput::success(*value))
+                    })
+                };
+
+            let cold = request(
+                first,
+                Key("cold-root"),
+                Key("value"),
+                CancellationToken::new(),
+                false,
+            );
+            let warm = request(
+                green,
+                Key("green-root"),
+                Key("value"),
+                CancellationToken::new(),
+                false,
+            );
+            let changed = request(
+                red,
+                Key("red-root"),
+                Key("value"),
+                CancellationToken::new(),
+                false,
+            );
+            let canceled = request(
+                red,
+                Key("cancel-root"),
+                Key("cancel"),
+                CancellationToken::new(),
+                true,
+            );
+            let recovered = request(
+                red,
+                Key("recover-root"),
+                Key("cancel"),
+                CancellationToken::new(),
+                false,
+            );
+            let attempts = [&cold, &warm, &changed, &canceled, &recovered];
+            if filtered {
+                assert!(attempts.iter().all(|attempt| {
+                    attempt
+                        .nested_attempts()
+                        .iter()
+                        .all(|nested| nested.node().family() == "nested-filter-parity-child")
+                }));
+            } else {
+                assert!(attempts.iter().any(|attempt| {
+                    attempt
+                        .nested_attempts()
+                        .iter()
+                        .any(|nested| nested.node().family() == "nested-filter-parity-noise")
+                }));
+            }
+
+            Run {
+                executions: attempts.iter().map(|attempt| attempt.execution()).collect(),
+                values: attempts
+                    .iter()
+                    .map(|attempt| {
+                        attempt.terminal().and_then(|terminal| {
+                            let QueryOutcome::Success(value) = terminal.outcome() else {
+                                return None;
+                            };
+                            Some(*value)
+                        })
+                    })
+                    .collect(),
+                dependencies: attempts
+                    .iter()
+                    .map(|attempt| attempt.dependencies().len())
+                    .collect(),
+                inputs: attempts
+                    .iter()
+                    .map(|attempt| attempt.inputs().len())
+                    .collect(),
+                work: attempts
+                    .iter()
+                    .map(|attempt| attempt.work().to_vec())
+                    .collect(),
+                commits: commits.load(Ordering::SeqCst),
+                aborts: aborts.load(Ordering::SeqCst),
+            }
+        }
+
+        let ordinary = run(false);
+        let filtered = run(true);
+        assert_eq!(filtered, ordinary);
+        assert_eq!(
+            filtered.executions,
+            [
+                RequestExecution::Computed,
+                RequestExecution::Computed,
+                RequestExecution::Computed,
+                RequestExecution::Aborted,
+                RequestExecution::Computed,
+            ]
+        );
+        assert_eq!(filtered.commits, 3);
+        assert_eq!(filtered.aborts, 0);
+        assert_eq!(filtered.inputs, [0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn registered_validation_endorsement_pins_exact_cone_and_is_lexically_scoped() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "validation-endorsement");
+        let first = Revision::new(50, 1);
+        let second = Revision::new(51, 1);
+        runtime
+            .publish_revision(first, [(input.clone(), 7)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 7)])
+            .unwrap();
+
+        let input_for_c = input.clone();
+        let c = runtime
+            .family_with_evaluator::<Key, u64, _>("endorsement-c", 1, move |context, _, key| {
+                context.input(input_for_c.clone())?;
+                context.record_work(WorkItem::new("c-work", 1));
+                Ok(QueryOutput::success(key.0.len() as u64))
+            })
+            .unwrap();
+        let c_for_b = c.clone();
+        let b = runtime
+            .family_with_evaluator::<Key, u64, _>("endorsement-b", 1, move |context, _, key| {
+                let c = context.query_registered(&c_for_b, key.clone())?;
+                let QueryOutcome::Success(value) = c.outcome() else {
+                    unreachable!()
+                };
+                Ok(QueryOutput::success(*value + 1))
+            })
+            .unwrap();
+        let b_for_a = b.clone();
+        let a = runtime
+            .family_with_evaluator::<Key, u64, _>("endorsement-a", 1, move |context, _, key| {
+                let b = context.query_registered(&b_for_a, key.clone())?;
+                let QueryOutcome::Success(value) = b.outcome() else {
+                    unreachable!()
+                };
+                Ok(QueryOutput::success(*value + 1))
+            })
+            .unwrap();
+        runtime
+            .request_registered(&a, first, Key("target"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let root = runtime.family::<Key, u64>("endorsement-root", 4).unwrap();
+        let a_for_root = a.clone();
+        let attempt = runtime.request(
+            &root,
+            second,
+            Key("root"),
+            CancellationToken::new(),
+            move |context| {
+                {
+                    let _endorsements = context.endorse_registered_validations();
+                    context.query_registered(&a_for_root, Key("target"))?;
+                    context.query_registered(&a_for_root, Key("noise"))?;
+                    assert!(
+                        a_for_root.contains_retained_key(&Key("target")),
+                        "the endorsed target survives retention-one churn"
+                    );
+                    context.query_registered(&a_for_root, Key("target"))?;
+                }
+                // The proof is lexical even though its safety pins may remain
+                // in the task lease set until the rooted request ends.
+                context.query_registered(&a_for_root, Key("target"))?;
+                Ok(QueryOutput::success(1))
+            },
+        );
+        assert_eq!(attempt.execution(), RequestExecution::Computed);
+        assert!(
+            attempt
+                .dependencies()
+                .iter()
+                .all(|dependency| { dependency.node.family() == "endorsement-a" })
+        );
+        let target_counts = |family: &str| {
+            attempt
+                .nested_attempts()
+                .iter()
+                .filter(|nested| {
+                    nested.node().family() == family && nested.node().key() == "target"
+                })
+                .count()
+        };
+        assert_eq!(target_counts("endorsement-a"), 3);
+        assert_eq!(
+            target_counts("endorsement-b"),
+            2,
+            "the in-scope second A request uses its exact endorsement"
+        );
+        assert_eq!(
+            target_counts("endorsement-c"),
+            2,
+            "dropping the scope forces the later A request to validate C again"
+        );
+        assert!(
+            attempt
+                .nested_attempts()
+                .iter()
+                .filter(|nested| {
+                    nested.node().family() == "endorsement-a" && nested.node().key() == "target"
+                })
+                .all(|nested| {
+                    nested.execution() == RequestExecution::Reused && nested.work().is_empty()
+                })
+        );
+        drop(attempt);
+        assert!(a.retention().terminals <= a.retention().terminal_limit);
+        assert!(b.retention().terminals <= b.retention().terminal_limit);
+        assert!(c.retention().terminals <= c.retention().terminal_limit);
+    }
+
+    #[test]
+    fn registered_validation_endorsement_rejects_unregistered_cones_and_cancellation() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+        let external = runtime
+            .family::<Key, u64>("endorsement-external", 4)
+            .unwrap();
+        let external_for_registered = external.clone();
+        let registered = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "endorsement-tainted",
+                4,
+                move |context, _, key| {
+                    let external = context.query(&external_for_registered, key.clone(), |_| {
+                        Ok(QueryOutput::success(3))
+                    })?;
+                    let QueryOutcome::Success(value) = external.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(
+                &registered,
+                revision(1),
+                Key("target"),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .unwrap();
+
+        let root = runtime
+            .family::<Key, u64>("endorsement-tainted-root", 4)
+            .unwrap();
+        let registered_for_root = registered.clone();
+        let cancellation = CancellationToken::new();
+        let cancellation_for_root = cancellation.clone();
+        let attempt = runtime.request(
+            &root,
+            revision(2),
+            Key("root"),
+            cancellation,
+            move |context| {
+                let _endorsements = context.endorse_registered_validations();
+                let first = context.query_registered(&registered_for_root, Key("target"))?;
+                assert!(
+                    !context.task.validation_endorsed(&first),
+                    "an unregistered dependency taints the enclosing proof"
+                );
+                let second = context.query_registered(&registered_for_root, Key("target"))?;
+                assert!(
+                    !context.task.validation_endorsed(&second),
+                    "the tainted proof is never cached"
+                );
+                cancellation_for_root.cancel();
+                assert!(matches!(
+                    context.query_registered(&registered_for_root, Key("target")),
+                    Err(QueryAbort::Canceled)
+                ));
+                Ok(QueryOutput::success(1))
+            },
+        );
+        assert_eq!(attempt.execution(), RequestExecution::Aborted);
+        assert_eq!(attempt.abort(), Some(&QueryAbort::Canceled));
+    }
+
+    #[test]
+    fn validation_only_computation_taints_registered_endorsement() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "endorsement-compute");
+        let first = Revision::new(60, 1);
+        let second = Revision::new(61, 1);
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 2)])
+            .unwrap();
+        let child_runs = Arc::new(AtomicUsize::new(0));
+        let child_runs_for_evaluator = child_runs.clone();
+        let input_for_child = input.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "endorsement-computed-child",
+                1,
+                move |context, _, _| {
+                    child_runs_for_evaluator.fetch_add(1, Ordering::SeqCst);
+                    context.input(input_for_child.clone())?;
+                    // Equal semantic output gives the successor the same green
+                    // stamp even though validation had to compute it.
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let child_for_parent = child.clone();
+        let parent = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "endorsement-computed-parent",
+                4,
+                move |context, _, _| {
+                    context.query_registered(&child_for_parent, Key("child"))?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(&parent, first, Key("parent"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let root = runtime
+            .family::<Key, u64>("endorsement-computed-root", 4)
+            .unwrap();
+        let parent_for_root = parent.clone();
+        runtime
+            .request(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _endorsements = context.endorse_registered_validations();
+                    let parent = context.query_registered(&parent_for_root, Key("parent"))?;
+                    assert!(
+                        !context.task.validation_endorsed(&parent),
+                        "a validation-only computed child cannot certify its parent"
+                    );
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .into_result()
+            .unwrap();
+        assert_eq!(child_runs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn validation_only_join_taints_registered_endorsement() {
+        let runtime = QueryRuntime::new(2);
+        let input = InputIdentity::new("source", "endorsement-join");
+        let first = Revision::new(70, 1);
+        let second = Revision::new(71, 1);
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 2)])
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_for_child = barrier.clone();
+        let input_for_child = input.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "endorsement-joined-child",
+                2,
+                move |context, _, _| {
+                    let stamp = context.input(input_for_child.clone())?;
+                    if stamp == 2 {
+                        barrier_for_child.wait();
+                        barrier_for_child.wait();
+                    }
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let child_for_parent = child.clone();
+        let parent = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "endorsement-joined-parent",
+                4,
+                move |context, _, _| {
+                    context.query_registered(&child_for_parent, Key("child"))?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(&parent, first, Key("parent"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let owner_runtime = runtime.clone();
+        let owner_child = child.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_child,
+                second,
+                Key("child"),
+                CancellationToken::new(),
+            )
+        });
+        barrier.wait();
+
+        let waiter_runtime = runtime.clone();
+        let waiter_parent = parent.clone();
+        let waiter = thread::spawn(move || {
+            let root = waiter_runtime
+                .family::<Key, u64>("endorsement-joined-root", 4)
+                .unwrap();
+            waiter_runtime.request(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _endorsements = context.endorse_registered_validations();
+                    let parent = context.query_registered(&waiter_parent, Key("parent"))?;
+                    assert!(
+                        !context.task.validation_endorsed(&parent),
+                        "a validation-only joined child cannot certify its parent"
+                    );
+                    Ok(QueryOutput::success(0))
+                },
+            )
+        });
+        runtime.wait_for_metrics(|metrics| metrics.joins >= 1);
+        barrier.wait();
+        assert_eq!(
+            owner.join().unwrap().execution(),
+            RequestExecution::Computed
+        );
+        assert_eq!(
+            waiter.join().unwrap().execution(),
+            RequestExecution::Computed
+        );
+    }
+
+    #[test]
+    fn endorsement_hits_preserve_handoff_commit_and_abort_lifecycle() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let commits = Arc::new(AtomicUsize::new(0));
+        let aborts = Arc::new(AtomicUsize::new(0));
+        let commits_for_child = commits.clone();
+        let aborts_for_child = aborts.clone();
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "endorsement-handoff-child",
+                1,
+                move |context, _, _| {
+                    context.register_attempt_handoff(CountingHandoff {
+                        commits: commits_for_child.clone(),
+                        aborts: aborts_for_child.clone(),
+                    });
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let seed = runtime
+            .family::<Key, u64>("endorsement-handoff-seed", 4)
+            .unwrap();
+
+        let seed_pending = |key: Key| {
+            let child = child.clone();
+            let attempt = runtime.request(
+                &seed,
+                revision(1),
+                key.clone(),
+                CancellationToken::new(),
+                move |context| {
+                    context.query_registered(&child, key)?;
+                    Err(QueryAbort::Canceled)
+                },
+            );
+            assert_eq!(attempt.execution(), RequestExecution::Aborted);
+        };
+        seed_pending(Key("commit"));
+        assert_eq!(commits.load(Ordering::SeqCst), 0);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        let child_for_commit = child.clone();
+        let committed = runtime.request(
+            &seed,
+            revision(1),
+            Key("commit-root"),
+            CancellationToken::new(),
+            move |context| {
+                let _endorsements = context.endorse_registered_validations();
+                context.query_registered(&child_for_commit, Key("commit"))?;
+                context.query_registered(&child_for_commit, Key("commit"))?;
+                Ok(QueryOutput::success(1))
+            },
+        );
+        assert_eq!(committed.execution(), RequestExecution::Computed);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+
+        seed_pending(Key("abort"));
+        let child_for_abort = child.clone();
+        let aborted = runtime.request(
+            &seed,
+            revision(1),
+            Key("abort-root"),
+            CancellationToken::new(),
+            move |context| {
+                let _endorsements = context.endorse_registered_validations();
+                context.query_registered(&child_for_abort, Key("abort"))?;
+                context.query_registered(&child_for_abort, Key("abort"))?;
+                Err(QueryAbort::Canceled)
+            },
+        );
+        assert_eq!(aborted.execution(), RequestExecution::Aborted);
+        assert_eq!(commits.load(Ordering::SeqCst), 1);
+        assert_eq!(aborts.load(Ordering::SeqCst), 0);
+        drop(aborted);
+
+        let churn =
+            runtime.request_registered(&child, revision(1), Key("churn"), CancellationToken::new());
+        assert_eq!(churn.execution(), RequestExecution::Computed);
+        assert_eq!(commits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            aborts.load(Ordering::SeqCst),
+            1,
+            "eviction aborts the still-pending endorsement-hit lifecycle"
         );
     }
 

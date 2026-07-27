@@ -1,4 +1,9 @@
-# RUE-1091 provider-driven analyzer rewire — plan (ANALYSIS ONLY)
+# RUE-1091 provider-driven analyzer rewire — archived implementation plan
+
+> Historical record only. The provider-native cutover is complete; current
+> source and architecture guards are authoritative. File names and line
+> references below intentionally describe the pre-cutover tree and must not be
+> used as current implementation guidance.
 
 Branch `claude/rue-1083-investigation-gi72gu`, head `1359057c` (B2 counters atop trunk
 `3253bf0a`). Scope: rewire rue-air body analysis (`analyze_one_body_instance` call graph) to

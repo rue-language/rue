@@ -219,6 +219,19 @@ impl ParsedDefinitionIndex {
         Ok(candidate.fact.clone())
     }
 
+    pub(crate) fn producer_fragment_span(&self, key: &DeclarationCandidateKey) -> Option<Span> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        if candidate.fact.key != *key {
+            return None;
+        }
+        candidate.raw_body_span.or_else(|| {
+            candidate
+                .raw_const_syntax_spans
+                .map(|spans| spans.initializer)
+        })
+    }
+
     /// Select the parser-owned raw syntax for exactly one constant key.
     ///
     /// The declaration table is constructed once with the module. This lookup
@@ -335,6 +348,13 @@ impl ParsedDefinitionIndex {
         self.raw_declaration_body_terminal_materializations
             .fetch_add(1, Ordering::Relaxed);
         Some(syntax)
+    }
+
+    fn body_source_spans(&self, key: &DeclarationCandidateKey) -> Option<(Span, Span)> {
+        let index = self.declaration_by_key.get(key).copied()?;
+        let candidate = self.declarations.get(index)?;
+        (candidate.fact.key == *key)
+            .then_some((candidate.declaration_span, candidate.raw_body_span?))
     }
 
     #[cfg(test)]
@@ -595,6 +615,10 @@ impl ParsedModule {
     ) -> Option<RawDeclarationBodySyntax> {
         self.definitions
             .materialize_raw_declaration_body(key, self.source_text())
+    }
+
+    pub(crate) fn body_source_spans(&self, key: &DeclarationCandidateKey) -> Option<(Span, Span)> {
+        self.definitions.body_source_spans(key)
     }
 
     #[cfg(test)]

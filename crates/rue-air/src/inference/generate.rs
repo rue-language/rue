@@ -22,7 +22,7 @@ use rue_span::{FileId, Span};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// Exact callable selections made while the test-only one-body transaction is
+/// Exact callable selections made while the test-only body-analysis transaction is
 /// generating constraints.  These observations are consumed only when HM
 /// unification fails before AIR analysis can publish its normal dependencies.
 #[derive(Debug, Clone)]

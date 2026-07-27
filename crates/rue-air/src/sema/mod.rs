@@ -1,5 +1,5 @@
-// `Sema`, `BoundSema`, and `DeclarationShells` are public legacy wrappers;
-// one-body fact dispatch is hosted by the analyzer itself.
+// `Sema`, `BoundSema`, and `DeclarationShells` own declaration semantics;
+// executable body analysis is provider-hosted.
 #![allow(private_bounds)]
 
 //! Semantic analysis - RIR to AIR conversion.
@@ -28,7 +28,6 @@
 //!
 //! The main entry points are:
 //! - [`Sema::new`] - Create a new semantic analyzer
-//! - [`BoundSema::analyze_one_body_instance`] - Analyze one exact query-owned body
 //! - [`BoundSema::compose_queried_bodies`] - Import queried bodies into final output
 
 mod aggregate_resolution;
@@ -44,7 +43,6 @@ mod call_resolution;
 mod comptime_eval;
 mod context;
 mod control_flow;
-mod declaration_base;
 mod declaration_index;
 mod declarations;
 mod fact_mode;
@@ -53,10 +51,10 @@ mod inference_ctx;
 mod info;
 mod known_symbols;
 mod metadata;
-mod one_body;
 mod ordinary_engine;
 mod output;
 pub mod provider;
+mod provider_body_host;
 mod provider_module_registry;
 mod semantic_body_export;
 mod typeck;
@@ -74,40 +72,36 @@ pub use binding_manifest::{
     SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
 };
 pub use context::ConstValue;
-pub use declaration_base::EpochDerivationUnits;
 pub use declaration_index::RirDeclarationIndexWork;
 pub(crate) use fact_mode::BodyAnalysisHost;
 pub(crate) use inference_ctx::HostInferenceFacts;
 pub use inference_ctx::InferenceContext;
 use info::ConstResolution;
+pub(crate) use info::FunctionCallInfo;
 pub use info::{AnonMethodSig, AnonMethodType, ConstInfo, FunctionInfo, MethodInfo};
 pub use known_symbols::KnownSymbols;
 pub use metadata::SemaMetadata;
-pub use one_body::{
-    OneBodyCanonicalArtifact, OneBodyDependency, OneBodyInterruption, OneBodyNonTerminalReason,
-    OneBodyRequest, OneBodyTransactionOutcome, SemanticProducedAnonymousMethodSignature,
-    SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
-    SemanticProducedAnonymousNominalShape,
-};
+pub(crate) use ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 pub use output::{
     AnalyzedBodyOwnerEvent, AnalyzedCallableKind, AnalyzedFunction, BodyAnalysisFailure,
-    BodyAnalysisWork, BodyLookupCollector, BodyLookupObservation, BodyNamedDependencyEvent,
-    BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken, BuiltinTypeCallHead,
-    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
-    DeclarationTypeDependencyEvent, DeclarationTypeDependencyKind,
-    DeclarationTypeDependencySourceKind, DeclarationTypeDependencyTargetKind,
-    ImplicitDropDependencySourceEvent, ImplicitNamedDestructorDependencyEvent,
-    NamedConstDependencyEvent, NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent,
-    NamedMethodDependencyEvent, NamedMethodDependencyTargetEvent,
-    OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, PerBodyDeclarationContextWork, SemaOutput,
-    SourceParamAbi, SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
+    BodyAnalysisWork, BodyNamedDependencyEvent, BodyOwnerEndpoint, BodyOwnerKind, BodyOwnerToken,
+    BuiltinTypeCallHead, DeclarationBuiltinTypeCallHeadDependencyEvent,
+    DeclarationTypeCallHeadDependencyEvent, DeclarationTypeDependencyEvent,
+    DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
+    DeclarationTypeDependencyTargetKind, ImplicitDropDependencySourceEvent,
+    ImplicitNamedDestructorDependencyEvent, NamedConstDependencyEvent,
+    NamedConstDependencyTargetEvent, NamedDestructorDependencyEvent, NamedMethodDependencyEvent,
+    NamedMethodDependencyTargetEvent, OrdinaryFreeFunctionDependencyEvent, ParamSlotModes,
+    SemaOutput, SourceParamAbi, SpecializedFreeFunctionDependencyEvent,
+    SpecializedFreeFunctionOrigin,
 };
 pub use provider::{
     BodyFactProvider, DropCopyMetadata, ImportResolution, MemberCandidate, MemberKind,
     NameCandidate, NameResolution, NominalWellFormedness, OperatorMemberCandidate, OperatorName,
     ProviderDefinitionKind, ProviderNamespace,
 };
-// RUE-1091 slice r4b-1 flip-era surface: the durable source vocabulary the
+pub(crate) use semantic_body_export::SemanticBodyExportHost;
+// RUE-1091 slice r4b-1 provider surface: the durable source vocabulary the
 // rue-compiler provider adapter supplies to the body identity pool, and the
 // call-resolution ProviderFacts driver that composes pool + provider answers.
 pub use aggregate_resolution::{
@@ -115,12 +109,22 @@ pub use aggregate_resolution::{
 };
 pub use body_endpoint::ProviderEndpointFacts;
 pub use body_identity::{
-    BodyRirBundle, BodyRirView, DurableAnonymousShape, DurableAnonymousSource,
-    DurableCallableSource, DurableConst, DurableConstSource, DurableFunction, DurableMethod,
-    DurableNominal, DurableNominalBody, DurableNominalSource, DurableSignatureParameter,
-    ProviderBodyAnalysisState, ProviderIdentityContext,
+    BodyRirBundle, BodyRirView, DurableAnonymousMethod, DurableAnonymousMethodType,
+    DurableAnonymousShape, DurableAnonymousSource, DurableCallableSource, DurableConst,
+    DurableConstSource, DurableFunction, DurableMethod, DurableNominal, DurableNominalBody,
+    DurableNominalSource, DurableSignatureParameter, ProviderBodyAnalysisState,
+    ProviderIdentityContext,
 };
 pub use call_resolution::ProviderCallFacts;
+pub use provider_body_host::{
+    DurableBodyLookupSource, DurableBodyModuleBinding, DurableBodySourceLocator,
+    DurableComptimeCallOutcome, DurableComptimeDiagnostic, DurableReducedComptimeCall,
+    DurableTryProducer, ProviderAnonymousBody, ProviderOrdinaryBody, ProviderSpecializedBody,
+    ProviderWellKnownOptionFacts, SemanticProducedAnonymousMethodSignature,
+    SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
+    SemanticProducedAnonymousNominalShape, analyze_provider_anonymous_body,
+    analyze_provider_ordinary_body, analyze_provider_specialized_body,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -313,92 +317,6 @@ pub(crate) struct DeferredOwnershipGate {
     span: Span,
 }
 
-/// Frozen declaration/read state installed once for all body epochs of a
-/// request. It deliberately contains data, never an analyzer facade: body
-/// epochs are constructed from this base plus their own mutable overlay.
-pub(super) struct BodySemanticBase<'a> {
-    declarations: SourceDeclarations,
-    rir: &'a Rir,
-    interner: &'a ThreadedRodeo,
-    declaration_index: Arc<declaration_index::RirDeclarationIndex>,
-    bound_const_candidates: Option<Arc<declaration_index::BoundConstCandidateIndex>>,
-    synthetic_declaration_discovery: bool,
-    named_callable_methods_by_symbol: Arc<HashMap<String, Vec<(StructId, Spur)>>>,
-    stable_definition_tokens: Arc<
-        HashMap<
-            (u32, String, Option<String>, crate::StableDefinitionKind),
-            crate::SemanticDefinitionToken,
-        >,
-    >,
-    stable_definition_endpoints:
-        Arc<HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>>,
-    const_candidate_tokens: Arc<HashMap<(u32, String), EpochLocalConstCandidateToken>>,
-    const_candidate_endpoints:
-        Arc<HashMap<EpochLocalConstCandidateToken, EpochLocalConstCandidateEndpoint>>,
-    stable_module_tokens: Arc<HashMap<FileId, crate::SemanticModuleToken>>,
-    stable_module_endpoints:
-        Arc<HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>>,
-    body_owner_tokens: Arc<HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>>,
-    preview_features: PreviewFeatures,
-    target: Target,
-    builtin_arch_id: Option<EnumId>,
-    builtin_os_id: Option<EnumId>,
-    builtin_data_model_id: Option<EnumId>,
-    known: KnownSymbols,
-    type_pool: TypeInternPool,
-    module_registry: Arc<crate::module_registry::ModuleRegistry>,
-    canonical_imports: Option<Arc<crate::canonical_imports::CanonicalImportContext>>,
-    file_paths: Arc<HashMap<FileId, String>>,
-    symbol_paths: Arc<HashMap<FileId, String>>,
-    trusted_standard_library_files: Arc<HashSet<FileId>>,
-    root_file_id: Option<FileId>,
-    param_arena: ParamArena,
-    local_seed: BodyLocalSeed,
-}
-
-/// Request-local identity state for receiver families that have crossed the
-/// frozen body-epoch boundary. It owns an immutable epoch handle, never an
-/// analyzer, plus a request-local lookup collector overlay.
-pub(super) struct BodyAnalysisState<'a> {
-    epoch: Arc<BodySemanticBase<'a>>,
-    body_lookup_collector: Option<BodyLookupCollector>,
-}
-
-impl<'a> BodyAnalysisState<'a> {
-    pub(super) fn from_body_semantic_base(epoch: Arc<BodySemanticBase<'a>>) -> Self {
-        Self {
-            epoch,
-            body_lookup_collector: None,
-        }
-    }
-
-    pub(super) fn install_body_lookup_collector(&mut self, collector: BodyLookupCollector) {
-        self.body_lookup_collector = Some(collector);
-    }
-
-    pub(super) fn endpoint_facts(&self) -> body_endpoint::EpochFacts<'_, Self> {
-        body_endpoint::EpochFacts::new(self)
-    }
-
-    /// Resolve the exact stable owner identity used by body publication.
-    pub(super) fn body_owner_token(
-        &self,
-        file: FileId,
-        name: &str,
-        owner: Option<&str>,
-        kind: BodyOwnerKind,
-    ) -> BodyOwnerToken {
-        resolve_body_owner_token(
-            &self.epoch.body_owner_tokens,
-            file,
-            name,
-            owner,
-            kind,
-            self.epoch.synthetic_declaration_discovery,
-        )
-    }
-}
-
 fn resolve_body_owner_token(
     tokens: &HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>,
     file: FileId,
@@ -425,34 +343,6 @@ fn resolve_body_owner_token(
             tokens.keys().collect::<Vec<_>>()
         )
     })
-}
-
-/// The declaration-time portion of a body-local overlay. Derivation copies
-/// only this anonymous/generated state; all ordinary declaration maps live in
-/// [`BodySemanticBase`].
-struct BodyLocalSeed {
-    anonymous_methods: HashMap<(StructId, Spur), MethodInfo>,
-    anonymous_callable_methods_by_symbol: HashMap<String, Vec<(StructId, Spur)>>,
-    generated_structs: HashMap<Spur, StructId>,
-    generated_enums: HashMap<Spur, EnumId>,
-    anon_struct_identities: HashMap<anon_structs::IssuedAnonymousNominalKey, StructId>,
-    anon_enum_identities: HashMap<anon_structs::IssuedAnonymousNominalKey, EnumId>,
-    anonymous_digest_owners: HashMap<u128, anon_structs::IssuedAnonymousNominalKey>,
-    #[cfg(test)]
-    forced_anonymous_digests: HashMap<anon_structs::IssuedAnonymousNominalKey, u128>,
-    anonymous_struct_ids: HashSet<StructId>,
-    anonymous_enum_ids: HashSet<EnumId>,
-    canonical_anonymous_types: HashMap<Type, anon_structs::IssuedAnonymousNominalKey>,
-    anon_struct_method_sigs: HashMap<StructId, Vec<AnonMethodSig>>,
-    anon_struct_captured_values: HashMap<StructId, HashMap<Spur, ConstValue>>,
-    anon_struct_type_subst: HashMap<StructId, HashMap<Spur, Type>>,
-    destructor_spans: HashMap<StructId, Span>,
-    infectious_linear: HashMap<StructId, (String, String)>,
-    deferred_ownership_gates: Vec<DeferredOwnershipGate>,
-    ctor_type_displays: HashMap<Type, String>,
-    well_known_option_by_payload: HashMap<Type, Type>,
-    well_known_option_identities:
-        std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
 }
 
 /// Semantic analyzer that converts RIR to AIR.
@@ -559,17 +449,16 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
     pub(crate) body_owner_tokens:
         Arc<HashMap<(u32, String, Option<String>, BodyOwnerKind), BodyOwnerToken>>,
     pub(crate) body_named_dependencies: Vec<BodyNamedDependencyEvent>,
-    pub(crate) body_lookup_collector: Option<BodyLookupCollector>,
-    pub(crate) one_body_error_recovery: bool,
-    pub(crate) one_body_recovered_errors: Vec<rue_error::CompileError>,
-    pub(crate) one_body_inference_failure_incomplete: bool,
-    /// Anonymous identities already installed when an exact-one-body attempt
+    pub(crate) body_analysis_error_recovery: bool,
+    pub(crate) body_analysis_recovered_errors: Vec<rue_error::CompileError>,
+    pub(crate) body_analysis_inference_failure_incomplete: bool,
+    /// Anonymous identities already installed when an exact-body-analysis attempt
     /// starts. Successful export subtracts this baseline so the transaction
     /// publishes every nominal materialized by the body, including nested
     /// comptime producers, but never republishes imported owners.
-    pub(crate) one_body_initial_anonymous_identities:
+    pub(crate) body_analysis_initial_anonymous_identities:
         std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
-    pub(crate) one_body_requested_producer:
+    pub(crate) body_analysis_requested_producer:
         Option<crate::StableProducerId<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
     pub(crate) body_callable_dependencies: Vec<(AnalyzedBodyOwnerEvent, Spur)>,
     pub(crate) body_specialization_dependencies: Vec<(
@@ -714,162 +603,6 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
         std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
 }
 
-impl<'a> BodySema<'a> {
-    /// Freeze the immutable declaration/read universe used by every body
-    /// derived from this request. The base is data-only; construction of a
-    /// body epoch remains the sole responsibility of this production analyzer.
-    pub(super) fn body_semantic_base(&self) -> BodySemanticBase<'a> {
-        BodySemanticBase {
-            declarations: self.declarations.clone(),
-            rir: self.rir,
-            interner: self.interner,
-            declaration_index: self.declaration_index.clone(),
-            bound_const_candidates: self.bound_const_candidates.clone(),
-            synthetic_declaration_discovery: self.synthetic_declaration_discovery,
-            named_callable_methods_by_symbol: self.named_callable_methods_by_symbol.clone(),
-            stable_definition_tokens: self.stable_definition_tokens.clone(),
-            stable_definition_endpoints: self.stable_definition_endpoints.clone(),
-            const_candidate_tokens: self.const_candidate_tokens.clone(),
-            const_candidate_endpoints: self.const_candidate_endpoints.clone(),
-            stable_module_tokens: self.stable_module_tokens.clone(),
-            stable_module_endpoints: self.stable_module_endpoints.clone(),
-            body_owner_tokens: self.body_owner_tokens.clone(),
-            preview_features: self.preview_features.clone(),
-            target: self.target.clone(),
-            builtin_arch_id: self.builtin_arch_id,
-            builtin_os_id: self.builtin_os_id,
-            builtin_data_model_id: self.builtin_data_model_id,
-            known: self.known.clone(),
-            type_pool: self.type_pool.derive_overlay(),
-            module_registry: self.module_registry.clone(),
-            canonical_imports: self.canonical_imports.clone(),
-            file_paths: self.file_paths.clone(),
-            symbol_paths: self.symbol_paths.clone(),
-            trusted_standard_library_files: self.trusted_standard_library_files.clone(),
-            root_file_id: self.root_file_id,
-            param_arena: self.param_arena.derive_overlay(),
-            local_seed: BodyLocalSeed {
-                anonymous_methods: self.anonymous_methods.clone(),
-                anonymous_callable_methods_by_symbol: self
-                    .anonymous_callable_methods_by_symbol
-                    .clone(),
-                generated_structs: self.generated_structs.clone(),
-                generated_enums: self.generated_enums.clone(),
-                anon_struct_identities: self.anon_struct_identities.clone(),
-                anon_enum_identities: self.anon_enum_identities.clone(),
-                anonymous_digest_owners: self.anonymous_digest_owners.clone(),
-                #[cfg(test)]
-                forced_anonymous_digests: self.forced_anonymous_digests.clone(),
-                anonymous_struct_ids: self.anonymous_struct_ids.clone(),
-                anonymous_enum_ids: self.anonymous_enum_ids.clone(),
-                canonical_anonymous_types: self.canonical_anonymous_types.clone(),
-                anon_struct_method_sigs: self.anon_struct_method_sigs.clone(),
-                anon_struct_captured_values: self.anon_struct_captured_values.clone(),
-                anon_struct_type_subst: self.anon_struct_type_subst.clone(),
-                destructor_spans: self.destructor_spans.clone(),
-                infectious_linear: self.infectious_linear.clone(),
-                deferred_ownership_gates: self.deferred_ownership_gates.clone(),
-                ctor_type_displays: self.ctor_type_displays.clone(),
-                well_known_option_by_payload: self.well_known_option_by_payload.clone(),
-                well_known_option_identities: self.well_known_option_identities.clone(),
-            },
-        }
-    }
-
-    /// Build one independent ordinary body epoch from immutable base data and
-    /// freshly owned body-local state. This intentionally does not clone a
-    /// `Sema` or delegate construction through one.
-    pub(super) fn derive_from_body_semantic_base(base: &BodySemanticBase<'a>) -> Self {
-        let local = &base.local_seed;
-        Self {
-            declarations: base.declarations.clone(),
-            rir: base.rir,
-            interner: base.interner,
-            declaration_index: base.declaration_index.clone(),
-            bound_const_candidates: base.bound_const_candidates.clone(),
-            synthetic_declaration_discovery: base.synthetic_declaration_discovery,
-            anonymous_methods: local.anonymous_methods.clone(),
-            named_callable_methods_by_symbol: base.named_callable_methods_by_symbol.clone(),
-            anonymous_callable_methods_by_symbol: local
-                .anonymous_callable_methods_by_symbol
-                .clone(),
-            generated_structs: local.generated_structs.clone(),
-            generated_enums: local.generated_enums.clone(),
-            anon_struct_identities: local.anon_struct_identities.clone(),
-            anon_enum_identities: local.anon_enum_identities.clone(),
-            anonymous_digest_owners: local.anonymous_digest_owners.clone(),
-            #[cfg(test)]
-            forced_anonymous_digests: local.forced_anonymous_digests.clone(),
-            anonymous_struct_ids: local.anonymous_struct_ids.clone(),
-            anonymous_enum_ids: local.anonymous_enum_ids.clone(),
-            canonical_anonymous_types: local.canonical_anonymous_types.clone(),
-            active_anonymous_producer: None,
-            body_analysis_work: BodyAnalysisWork::default(),
-            analyzed_body_owners: Vec::new(),
-            ordinary_body_exports: Vec::new(),
-            specialized_body_exports: Vec::new(),
-            reusable_ordinary_bodies: HashMap::new(),
-            reusable_specialized_bodies: Vec::new(),
-            stable_definition_tokens: base.stable_definition_tokens.clone(),
-            stable_definition_endpoints: base.stable_definition_endpoints.clone(),
-            const_candidate_tokens: base.const_candidate_tokens.clone(),
-            const_candidate_endpoints: base.const_candidate_endpoints.clone(),
-            stable_module_tokens: base.stable_module_tokens.clone(),
-            stable_module_endpoints: base.stable_module_endpoints.clone(),
-            body_dependency_observer: None,
-            body_owner_tokens: base.body_owner_tokens.clone(),
-            body_named_dependencies: Vec::new(),
-            body_lookup_collector: None,
-            one_body_error_recovery: false,
-            one_body_recovered_errors: Vec::new(),
-            one_body_inference_failure_incomplete: false,
-            one_body_initial_anonymous_identities: std::collections::BTreeSet::new(),
-            one_body_requested_producer: None,
-            body_callable_dependencies: Vec::new(),
-            body_specialization_dependencies: Vec::new(),
-            ordinary_free_function_dependencies: Vec::new(),
-            specialized_free_function_origins: Vec::new(),
-            specialized_free_function_dependencies: Vec::new(),
-            named_method_dependencies: Vec::new(),
-            non_generic_named_method_dependencies_complete: false,
-            named_destructor_dependencies: Vec::new(),
-            declaration_type_dependencies: Vec::new(),
-            declaration_type_call_head_dependencies: Vec::new(),
-            declaration_builtin_type_call_head_dependencies: Vec::new(),
-            named_const_dependencies: Vec::new(),
-            named_const_dependency_source: None,
-            declaration_type_observer: None,
-            const_resolution_in_progress: Vec::new(),
-            declaration_binding_active: false,
-            preview_features: base.preview_features.clone(),
-            target: base.target.clone(),
-            builtin_arch_id: base.builtin_arch_id,
-            builtin_os_id: base.builtin_os_id,
-            builtin_data_model_id: base.builtin_data_model_id,
-            known: base.known.clone(),
-            type_pool: base.type_pool.derive_overlay(),
-            module_registry: base.module_registry.clone(),
-            canonical_imports: base.canonical_imports.clone(),
-            file_paths: base.file_paths.clone(),
-            symbol_paths: base.symbol_paths.clone(),
-            trusted_standard_library_files: base.trusted_standard_library_files.clone(),
-            root_file_id: base.root_file_id,
-            param_arena: base.param_arena.derive_overlay(),
-            anon_struct_method_sigs: local.anon_struct_method_sigs.clone(),
-            anon_struct_captured_values: local.anon_struct_captured_values.clone(),
-            anon_struct_type_subst: local.anon_struct_type_subst.clone(),
-            destructor_spans: local.destructor_spans.clone(),
-            infectious_linear: local.infectious_linear.clone(),
-            deferred_ownership_gates: local.deferred_ownership_gates.clone(),
-            comptime_type_call_depth: 0,
-            fn_signatures_in_flight: HashSet::new(),
-            ctor_type_displays: local.ctor_type_displays.clone(),
-            well_known_option_by_payload: local.well_known_option_by_payload.clone(),
-            well_known_option_identities: local.well_known_option_identities.clone(),
-        }
-    }
-}
-
 impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
     type Target = DeclarationNamespace;
 
@@ -920,12 +653,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
-            body_lookup_collector,
-            one_body_error_recovery,
-            one_body_recovered_errors,
-            one_body_inference_failure_incomplete,
-            one_body_initial_anonymous_identities,
-            one_body_requested_producer,
+            body_analysis_error_recovery,
+            body_analysis_recovered_errors,
+            body_analysis_inference_failure_incomplete,
+            body_analysis_initial_anonymous_identities,
+            body_analysis_requested_producer,
             body_callable_dependencies,
             body_specialization_dependencies,
             ordinary_free_function_dependencies,
@@ -1004,12 +736,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_dependency_observer,
             body_owner_tokens,
             body_named_dependencies,
-            body_lookup_collector,
-            one_body_error_recovery,
-            one_body_recovered_errors,
-            one_body_inference_failure_incomplete,
-            one_body_initial_anonymous_identities,
-            one_body_requested_producer,
+            body_analysis_error_recovery,
+            body_analysis_recovered_errors,
+            body_analysis_inference_failure_incomplete,
+            body_analysis_initial_anonymous_identities,
+            body_analysis_requested_producer,
             body_callable_dependencies,
             body_specialization_dependencies,
             ordinary_free_function_dependencies,
@@ -1237,7 +968,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         // while still exporting semantics derived from its value (for
         // example, the length in an anonymous array field). Preserve that
         // exact provenance on the active body as well as on an active
-        // declaration so one-body query validation observes the producer.
+        // declaration so body-analysis query validation observes the producer.
         self.record_body_named_dependency(target.clone());
         let Some((file, name)) = self.named_const_dependency_source.clone() else {
             return;
@@ -1258,36 +989,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.body_named_dependencies
             .push(BodyNamedDependencyEvent { source, target });
         self.body_analysis_work.named_const_dependency_events += 1;
-    }
-
-    pub(crate) fn record_body_module_item_lookup(&self, file: FileId, name: Spur) {
-        let Some(collector) = &self.body_lookup_collector else {
-            return;
-        };
-        collector.record(BodyLookupObservation::ModuleItem {
-            file: file.index(),
-            name: std::sync::Arc::from(self.interner.resolve(&name)),
-        });
-    }
-
-    pub(crate) fn record_body_member_lookup(&self, owner: StructId, member: Spur) {
-        let Some(collector) = &self.body_lookup_collector else {
-            return;
-        };
-        if self.anonymous_struct_ids.contains(&owner) {
-            return;
-        }
-        let Some(definition) = self.type_pool.try_struct_def(owner) else {
-            return;
-        };
-        if definition.is_builtin {
-            return;
-        }
-        collector.record(BodyLookupObservation::Member {
-            owner_file: definition.file_id.index(),
-            owner_name: std::sync::Arc::from(definition.name),
-            member_name: std::sync::Arc::from(self.interner.resolve(&member)),
-        });
     }
 
     pub(crate) fn record_body_callable_dependency(&mut self, symbol: Spur) {
@@ -1550,12 +1251,11 @@ impl<'a> Sema<'a, MutableDeclarations> {
             body_dependency_observer: None,
             body_owner_tokens: Arc::default(),
             body_named_dependencies: Vec::new(),
-            body_lookup_collector: None,
-            one_body_error_recovery: false,
-            one_body_recovered_errors: Vec::new(),
-            one_body_inference_failure_incomplete: false,
-            one_body_initial_anonymous_identities: std::collections::BTreeSet::new(),
-            one_body_requested_producer: None,
+            body_analysis_error_recovery: false,
+            body_analysis_recovered_errors: Vec::new(),
+            body_analysis_inference_failure_incomplete: false,
+            body_analysis_initial_anonymous_identities: std::collections::BTreeSet::new(),
+            body_analysis_requested_producer: None,
             body_callable_dependencies: Vec::new(),
             body_specialization_dependencies: Vec::new(),
             ordinary_free_function_dependencies: Vec::new(),

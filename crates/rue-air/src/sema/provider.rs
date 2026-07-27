@@ -460,12 +460,12 @@ pub trait BodyFactProvider {
     /// never guesses a winner. Winner-picking stays inside this point query.
     fn callable_symbol_method(&self, symbol: &str) -> Option<(Self::ReceiverType, Arc<str>)>;
 
-    /// Exact producer-body facts for one body instance.
+    /// Exact producer-body facts for body analysis instance.
     fn producer_body_facts(
         &self,
         instance: &Self::BodyInstanceRef,
     ) -> Option<Self::ProducerBodyFacts>;
 
-    /// Exact trusted-toolchain facts already required by one body instance.
+    /// Exact trusted-toolchain facts already required by body analysis instance.
     fn trusted_toolchain_facts(&self, instance: &Self::BodyInstanceRef) -> Self::ToolchainFacts;
 }

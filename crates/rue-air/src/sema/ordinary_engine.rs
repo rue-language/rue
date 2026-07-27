@@ -23,6 +23,7 @@ use super::anon_structs::{
 use super::call_resolution::CallResolutionFacts;
 use super::context::{AnalysisContext, ParamInfo};
 use super::fact_mode::BodyAnalysisHost;
+use super::info::{FunctionCallInfo, MethodCallInfo};
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
     DeclarationPhase, DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
@@ -74,7 +75,7 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
     fn is_strbuf(&self, ty: Type) -> bool;
     fn types_equivalent(&self, left: Type, right: Type) -> bool;
     fn generated_structs(&self) -> &HashMap<Spur, StructId>;
-    fn set_one_body_inference_failure_incomplete(&mut self, value: bool);
+    fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool);
 
     fn body_interner(&self) -> &ThreadedRodeo;
     fn body_type_pool(&self) -> &TypeInternPool;
@@ -136,7 +137,31 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
         &self,
         symbol: Spur,
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
-    fn comptime_type_param_flags(&self, function: &FunctionInfo) -> Vec<bool>;
+    fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool>;
+    fn function_param_type_symbol(
+        &self,
+        function: &FunctionCallInfo,
+        param_index: usize,
+    ) -> Option<Spur>;
+    /// File whose declaration namespace owns the callable's retained type
+    /// syntax. Provider-backed foreign callables override this; request-local
+    /// callables use the body's span file.
+    fn function_signature_root_file(&self, _function: &FunctionCallInfo) -> Option<FileId> {
+        None
+    }
+    /// Reduce a comptime call whose body is not owned by this request. `None`
+    /// means the callable is request-local and the ordinary evaluator should
+    /// read its body; `Some` is the provider's exact reduction result and must
+    /// never fall back to a request-local RIR handle.
+    fn reduce_external_comptime_call(
+        &mut self,
+        _name: Spur,
+        _callee_types: &HashMap<Spur, Type>,
+        _callee_values: &HashMap<Spur, ConstValue>,
+        _span: Span,
+    ) -> Option<CompileResult<Option<ConstValue>>> {
+        None
+    }
     fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String;
     fn stable_module_symbol_component(&self, token: &crate::SemanticModuleToken) -> String;
     fn resolve_body_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type>;
@@ -159,13 +184,14 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
     )>;
     fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork;
     fn record_resolved_declaration_type(&mut self, ty: Type);
-    fn one_body_error_recovery(&self) -> bool;
-    fn one_body_first_recovered_error(&self) -> Option<CompileError>;
-    fn one_body_recovered_errors_mut(&mut self) -> &mut Vec<CompileError>;
+    fn body_analysis_error_recovery(&self) -> bool;
+    fn body_analysis_first_recovered_error(&self) -> Option<CompileError>;
+    fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError>;
 
     // Exact declaration/call data used by the ordinary expression engine.
     // These are host facts or request-local ledgers, not analyzer callbacks.
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo>;
+    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo>;
+    fn function_body_info(&self, name: Spur) -> Option<FunctionInfo>;
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn source_function_name(&self, name: Spur) -> Spur;
     fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur>;
@@ -180,6 +206,8 @@ pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
     fn infectious_linear_reason(&self, struct_id: StructId) -> Option<(String, String)>;
     fn well_known_option(&self, payload: Type) -> Option<Type>;
     fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: HashMap<Spur, Type>);
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> HashMap<Spur, Type>;
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> HashMap<Spur, ConstValue>;
 
     fn body_dependency_observer(&self) -> Option<AnalyzedBodyOwnerEvent>;
     fn record_body_named_dependency(&mut self, target: super::NamedConstDependencyTargetEvent);
@@ -252,8 +280,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     ) -> Option<&(IssuedStableProducerId, IssuedCanonicalArguments)> {
         self.storage.active_anonymous_producer()
     }
-    pub(crate) fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+    pub(crate) fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
         self.storage.function_info(name)
+    }
+    pub(crate) fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
+        self.storage.function_body_info(name)
     }
     pub(crate) fn value_const(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
         self.storage.value_const(key.0, key.1)
@@ -330,8 +361,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     ) {
         self.storage.record_specialization_dependency(identity)
     }
-    pub(crate) fn one_body_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
-        self.storage.one_body_recovered_errors_mut()
+    pub(crate) fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
+        self.storage.body_analysis_recovered_errors_mut()
     }
     pub(crate) fn get_or_create_array_type(&mut self, element: Type, length: u64) -> ArrayTypeId {
         self.storage.intern_array_type(element, length)
@@ -359,15 +390,26 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn format_type_name(&self, ty: Type) -> String {
         ty.safe_name_with_pool(Some(self.body_type_pool()))
     }
-    pub(crate) fn comptime_type_param_flags(&self, function: &FunctionInfo) -> Vec<bool> {
-        let Some(type_sym) = self.body_interner().get("type") else {
-            return vec![false; function.params.len()];
-        };
-        self.body_rir_ref()
-            .params(function.rir_params(self.body_rir_ref()))
-            .iter()
-            .map(|param| param.is_comptime && param.ty == type_sym)
-            .collect()
+    pub(crate) fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool> {
+        self.storage.comptime_type_param_flags(function)
+    }
+    pub(crate) fn function_param_type_symbol(
+        &self,
+        function: &FunctionCallInfo,
+        param_index: usize,
+    ) -> Option<Spur> {
+        self.storage
+            .function_param_type_symbol(function, param_index)
+    }
+    pub(crate) fn reduce_external_comptime_call(
+        &mut self,
+        name: Spur,
+        callee_types: &HashMap<Spur, Type>,
+        callee_values: &HashMap<Spur, ConstValue>,
+        span: Span,
+    ) -> Option<CompileResult<Option<ConstValue>>> {
+        self.storage
+            .reduce_external_comptime_call(name, callee_types, callee_values, span)
     }
     pub(crate) fn resolve_type(&mut self, type_sym: Spur, span: Span) -> CompileResult<Type> {
         self.resolve_type_with_substitutions(type_sym, span, None, None)
@@ -623,12 +665,29 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
     ) -> CompileResult<Type> {
+        self.resolve_type_with_substitutions_in_file(
+            type_sym,
+            span.file_id,
+            span,
+            type_substitutions,
+            value_substitutions,
+        )
+    }
+
+    fn resolve_type_with_substitutions_in_file(
+        &mut self,
+        type_sym: Spur,
+        root_file: FileId,
+        span: Span,
+        type_substitutions: Option<&HashMap<Spur, Type>>,
+        value_substitutions: Option<&HashMap<Spur, ConstValue>>,
+    ) -> CompileResult<Type> {
         let syntax = self.body_interner().resolve(&type_sym).to_owned();
         self.storage
             .resolve_type_syntax(super::fact_mode::TypeSyntaxRequest {
                 syntax: &syntax,
-                root_file: span.file_id,
-                root_authority: super::typeck::TypeRootAuthority::KnownFile(span.file_id),
+                root_file,
+                root_authority: super::typeck::TypeRootAuthority::KnownFile(root_file),
                 span,
                 type_substitutions,
                 value_substitutions,
@@ -726,46 +785,56 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     }
     pub(crate) fn resolve_substituted_param_type(
         &mut self,
-        function: &FunctionInfo,
+        function: &FunctionCallInfo,
         param_index: usize,
         declared: Type,
         type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
     ) -> CompileResult<Type> {
         if declared != Type::COMPTIME_TYPE {
             return Ok(declared);
         }
-        let param = self
-            .body_rir_ref()
-            .params(function.rir_params(self.body_rir_ref()))
-            .get(param_index)
+        let type_symbol = self
+            .function_param_type_symbol(function, param_index)
             .ok_or_else(|| {
                 CompileError::new(
                     ErrorKind::InternalError(
                         "generic parameter index is missing from its RIR declaration".to_owned(),
                     ),
-                    function.span,
+                    span,
                 )
             })?;
-        self.resolve_type_with_substitutions(
-            param.ty,
-            function.span,
+        let root_file = self
+            .storage
+            .function_signature_root_file(function)
+            .unwrap_or(span.file_id);
+        self.resolve_type_with_substitutions_in_file(
+            type_symbol,
+            root_file,
+            span,
             Some(type_subst),
             Some(value_subst),
         )
     }
     pub(crate) fn resolve_substituted_return_type(
         &mut self,
-        function: &FunctionInfo,
+        function: &FunctionCallInfo,
         type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
+        span: Span,
     ) -> CompileResult<Type> {
         if function.return_type != Type::COMPTIME_TYPE {
             return Ok(function.return_type);
         }
-        self.resolve_type_with_substitutions(
+        let root_file = self
+            .storage
+            .function_signature_root_file(function)
+            .unwrap_or(span.file_id);
+        self.resolve_type_with_substitutions_in_file(
             function.return_type_sym,
-            function.span,
+            root_file,
+            span,
             Some(type_subst),
             Some(value_subst),
         )
@@ -1094,12 +1163,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn body_analysis_work_mut(&mut self) -> &mut BodyAnalysisWork {
         self.storage.body_analysis_work_mut()
     }
-    pub(crate) fn set_one_body_inference_failure_incomplete(&mut self, value: bool) {
+    pub(crate) fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool) {
         self.storage
-            .set_one_body_inference_failure_incomplete(value)
+            .set_body_analysis_inference_failure_incomplete(value)
     }
-    pub(crate) fn one_body_error_recovery(&self) -> bool {
-        self.storage.one_body_error_recovery()
+    pub(crate) fn body_analysis_error_recovery(&self) -> bool {
+        self.storage.body_analysis_error_recovery()
     }
     pub(crate) fn is_strbuf(&self, ty: Type) -> bool {
         self.storage.is_strbuf(ty)
@@ -1162,7 +1231,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn call_facts(&self) -> H::CallFacts<'_> {
         self.storage.call_facts()
     }
-    pub(crate) fn method_info(&self, key: (StructId, Spur)) -> Option<MethodInfo> {
+    pub(crate) fn method_info(&self, key: (StructId, Spur)) -> Option<MethodCallInfo> {
         self.call_facts().method_info(key.0, key.1)
     }
     pub(crate) fn has_method(&self, key: (StructId, Spur)) -> bool {
@@ -1219,7 +1288,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn types_compatible(&self, found: Type, expected: Type) -> bool {
         found.is_never() || found.is_error() || self.types_equivalent(found, expected)
     }
-    pub(crate) fn function_returns_type(&self, function: &super::FunctionInfo) -> bool {
+    pub(crate) fn function_returns_type(&self, function: &FunctionCallInfo) -> bool {
         self.body_interner().get("type") == Some(function.return_type_sym)
     }
     pub(crate) fn is_non_internable_element(ty: Type) -> bool {
@@ -1430,6 +1499,338 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         ))
     }
 
+    pub(crate) fn analyze_named_method<P>(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        full_name: &str,
+        return_type: Spur,
+        params: P,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        has_self: bool,
+        self_mode: RirParamMode,
+        self_is_mut: bool,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )>
+    where
+        P: ExactSizeIterator<Item = RirParam> + Clone,
+    {
+        let symbol = self.storage.body_interner().get_or_intern(full_name);
+        let identity = crate::FunctionInstanceKey::Definition(
+            self.storage.function_identity(symbol).map_err(|failure| {
+                CompileError::new(
+                    ErrorKind::InternalError(format!(
+                        "failed to issue canonical producer for method '{full_name}': {failure:?}"
+                    )),
+                    span,
+                )
+            })?,
+        );
+        self.analyze_method_with_identity(
+            infer_ctx,
+            identity,
+            full_name,
+            return_type,
+            params,
+            body,
+            span,
+            struct_type,
+            has_self,
+            self_mode,
+            self_is_mut,
+        )
+    }
+
+    pub(crate) fn analyze_method_with_identity<P>(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        identity: crate::FunctionInstanceKey<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+        full_name: &str,
+        return_type: Spur,
+        params: P,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        has_self: bool,
+        self_mode: RirParamMode,
+        self_is_mut: bool,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )>
+    where
+        P: ExactSizeIterator<Item = RirParam> + Clone,
+    {
+        self.analyze_method_with_identity_kind(
+            infer_ctx,
+            identity,
+            full_name,
+            return_type,
+            params,
+            body,
+            span,
+            struct_type,
+            has_self,
+            self_mode,
+            self_is_mut,
+            false,
+        )
+    }
+
+    fn analyze_method_with_identity_kind<P>(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        identity: crate::FunctionInstanceKey<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+        full_name: &str,
+        return_type: Spur,
+        params: P,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        has_self: bool,
+        self_mode: RirParamMode,
+        self_is_mut: bool,
+        is_destructor: bool,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )>
+    where
+        P: ExactSizeIterator<Item = RirParam> + Clone,
+    {
+        let return_type = if self.storage.body_interner().resolve(&return_type) == "Self" {
+            struct_type
+        } else {
+            self.storage.resolve_body_type(return_type, span)?
+        };
+        let self_name = self.storage.body_interner().get_or_intern("self");
+        let self_type_name = self.storage.body_interner().get_or_intern("Self");
+        let mut resolved_params = Vec::new();
+        if has_self {
+            resolved_params.push((self_name, struct_type, self_mode, false));
+        }
+        for parameter in params {
+            let ty = if parameter.ty == self_type_name {
+                struct_type
+            } else {
+                self.storage.resolve_body_type(parameter.ty, span)?
+            };
+            reject_runtime_type_value(ty, parameter.is_comptime, span)?;
+            resolved_params.push((parameter.name, ty, parameter.mode, parameter.is_comptime));
+        }
+        let producer = (
+            crate::StableProducerId::Function(Box::new(identity.clone())),
+            crate::CanonicalArguments::default(),
+        );
+        let previous = self
+            .storage
+            .replace_active_anonymous_producer(Some(producer));
+        let struct_id = struct_type
+            .as_struct()
+            .expect("method receiver must be a struct");
+        let mut type_subst = self.storage.anon_struct_type_subst(struct_id);
+        type_subst.insert(self_type_name, struct_type);
+        let captured_values = self.storage.anon_struct_captured_values(struct_id);
+        let analysis = self.analyze_function_internal(
+            infer_ctx,
+            return_type,
+            &resolved_params,
+            body,
+            Some(&type_subst),
+            Some(&captured_values),
+            is_destructor,
+            false,
+            self_is_mut,
+        );
+        self.storage.replace_active_anonymous_producer(previous);
+        let (
+            mut air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            strings,
+            local_atoms,
+            referenced_functions,
+            referenced_methods,
+        ) = analysis?;
+        if is_destructor {
+            super::analysis::reject_self_move_in_destructor(&air, full_name)?;
+            air.clear_param_drops();
+        }
+        Ok((
+            AnalyzedFunction {
+                identity,
+                callable_kind: if is_destructor {
+                    crate::AnalyzedCallableKind::Destructor
+                } else {
+                    crate::AnalyzedCallableKind::Ordinary
+                },
+                ordinary_owner: None,
+                name: full_name.to_owned(),
+                implicit_drop_source: is_destructor
+                    .then_some(super::ImplicitDropDependencySourceEvent::Anonymous),
+                air: crate::ValidatedAir::from_semantic_air_with_symbols(
+                    air,
+                    self.storage.body_type_pool(),
+                    self.storage.body_interner(),
+                )?,
+                local_atoms,
+                num_locals,
+                num_param_slots,
+                param_modes,
+                allow_unreachable_code: false,
+            },
+            warnings,
+            strings,
+            referenced_functions,
+            referenced_methods,
+        ))
+    }
+
+    pub(crate) fn analyze_anonymous_destructor<P>(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        identity: crate::FunctionInstanceKey<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
+        full_name: &str,
+        return_type: Spur,
+        params: P,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+        self_mode: RirParamMode,
+        self_is_mut: bool,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )>
+    where
+        P: ExactSizeIterator<Item = RirParam> + Clone,
+    {
+        self.analyze_method_with_identity_kind(
+            infer_ctx,
+            identity,
+            full_name,
+            return_type,
+            params,
+            body,
+            span,
+            struct_type,
+            true,
+            self_mode,
+            self_is_mut,
+            true,
+        )
+    }
+
+    pub(crate) fn analyze_named_destructor(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        full_name: &str,
+        body: InstRef,
+        span: Span,
+        struct_type: Type,
+    ) -> CompileResult<(
+        AnalyzedFunction,
+        Vec<CompileWarning>,
+        Vec<String>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )> {
+        let self_name = self.storage.body_interner().get_or_intern("self");
+        let params = [(self_name, struct_type, RirParamMode::Normal, false)];
+        let identity_token = self.storage.function_identity(
+            self.storage.body_interner().get_or_intern(full_name),
+        ).map_err(|failure| {
+            CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "failed to issue canonical producer for destructor '{full_name}': {failure:?}"
+                )),
+                span,
+            )
+        })?;
+        let identity = crate::FunctionInstanceKey::Definition(identity_token);
+        let producer = (
+            crate::StableProducerId::Function(Box::new(identity.clone())),
+            crate::CanonicalArguments::default(),
+        );
+        let previous = self
+            .storage
+            .replace_active_anonymous_producer(Some(producer));
+        let analysis = self.analyze_function_internal(
+            infer_ctx,
+            Type::UNIT,
+            &params,
+            body,
+            None,
+            None,
+            true,
+            false,
+            false,
+        );
+        self.storage.replace_active_anonymous_producer(previous);
+        let (
+            mut air,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            warnings,
+            strings,
+            local_atoms,
+            referenced_functions,
+            referenced_methods,
+        ) = analysis?;
+        super::analysis::reject_self_move_in_destructor(&air, full_name)?;
+        air.clear_param_drops();
+        Ok((
+            AnalyzedFunction {
+                identity,
+                callable_kind: crate::AnalyzedCallableKind::Destructor,
+                ordinary_owner: None,
+                name: full_name.to_owned(),
+                implicit_drop_source: None,
+                air: crate::ValidatedAir::from_semantic_air_with_symbols(
+                    air,
+                    self.storage.body_type_pool(),
+                    self.storage.body_interner(),
+                )?,
+                local_atoms,
+                num_locals,
+                num_param_slots,
+                param_modes,
+                allow_unreachable_code: false,
+            },
+            warnings,
+            strings,
+            referenced_functions,
+            referenced_methods,
+        ))
+    }
+
     /// Analyze one instruction through the canonical ordinary dispatcher and
     /// its ordinary expression helper families.
     pub(crate) fn analyze_function(
@@ -1459,6 +1860,38 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             None,
             false,
             allow_unused_variable,
+            false,
+        )
+    }
+
+    pub(crate) fn analyze_specialized_function(
+        &mut self,
+        infer_ctx: &InferenceContext,
+        return_type: Type,
+        params: &[(Spur, Type, RirParamMode, bool)],
+        body: InstRef,
+        type_subst: &HashMap<Spur, Type>,
+        value_subst: &HashMap<Spur, ConstValue>,
+    ) -> CompileResult<(
+        Air,
+        u32,
+        u32,
+        ParamSlotModes,
+        Vec<CompileWarning>,
+        Vec<String>,
+        Vec<crate::LocalAtomRecord<crate::SemanticDefinitionToken, crate::SemanticModuleToken>>,
+        HashSet<Spur>,
+        HashSet<(StructId, Spur)>,
+    )> {
+        self.analyze_function_internal(
+            infer_ctx,
+            return_type,
+            params,
+            body,
+            Some(type_subst),
+            Some(value_subst),
+            false,
+            false,
             false,
         )
     }
@@ -1780,12 +2213,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             }
         }
 
-        if self.storage.one_body_error_recovery()
-            && self.storage.one_body_first_recovered_error().is_some()
+        if self.storage.body_analysis_error_recovery()
+            && self.storage.body_analysis_first_recovered_error().is_some()
         {
             return Err(self
                 .storage
-                .one_body_first_recovered_error()
+                .body_analysis_first_recovered_error()
                 .expect("error was checked"));
         }
 
@@ -1837,8 +2270,8 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
     fn generated_structs(&self) -> &HashMap<Spur, StructId> {
         &self.generated_structs
     }
-    fn set_one_body_inference_failure_incomplete(&mut self, value: bool) {
-        self.one_body_inference_failure_incomplete = value;
+    fn set_body_analysis_inference_failure_incomplete(&mut self, value: bool) {
+        self.body_analysis_inference_failure_incomplete = value;
     }
 
     fn body_interner(&self) -> &ThreadedRodeo {
@@ -1846,6 +2279,12 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
     }
 
     fn body_type_pool(&self) -> &TypeInternPool {
+        // The body engine may install anonymous composites after declaration
+        // binding. Join their containment metadata at the first dependent read;
+        // clean accesses take only the pool's O(1) dirty check.
+        self.type_pool
+            .finalize_containment_metadata()
+            .expect("body type materialization must produce an acyclic containment graph");
         &self.type_pool
     }
 
@@ -1947,8 +2386,27 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
         super::Sema::<D>::function_identity(self, symbol)
     }
-    fn comptime_type_param_flags(&self, function: &FunctionInfo) -> Vec<bool> {
-        super::Sema::<D>::comptime_type_param_flags(self, function)
+    fn comptime_type_param_flags(&self, function: &FunctionCallInfo) -> Vec<bool> {
+        self.param_arena
+            .copy_range(function.params)
+            .types()
+            .iter()
+            .map(|ty| *ty == Type::COMPTIME_TYPE)
+            .collect()
+    }
+    fn function_param_type_symbol(
+        &self,
+        function: &FunctionCallInfo,
+        param_index: usize,
+    ) -> Option<Spur> {
+        let function = self
+            .functions
+            .values()
+            .find(|candidate| candidate.params == function.params)?;
+        self.rir
+            .params(function.rir_params(self.rir))
+            .get(param_index)
+            .map(|param| param.ty)
     }
     fn stable_definition_symbol_component(&self, token: &crate::SemanticDefinitionToken) -> String {
         super::Sema::<D>::stable_definition_symbol_component(self, token)
@@ -1995,17 +2453,22 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
     fn record_resolved_declaration_type(&mut self, ty: Type) {
         self.record_resolved_declaration_type(ty)
     }
-    fn one_body_error_recovery(&self) -> bool {
-        self.one_body_error_recovery
+    fn body_analysis_error_recovery(&self) -> bool {
+        self.body_analysis_error_recovery
     }
-    fn one_body_first_recovered_error(&self) -> Option<CompileError> {
-        self.one_body_recovered_errors.first().cloned()
+    fn body_analysis_first_recovered_error(&self) -> Option<CompileError> {
+        self.body_analysis_recovered_errors.first().cloned()
     }
-    fn one_body_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
-        &mut self.one_body_recovered_errors
+    fn body_analysis_recovered_errors_mut(&mut self) -> &mut Vec<CompileError> {
+        &mut self.body_analysis_recovered_errors
     }
 
-    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+    fn function_info(&self, name: Spur) -> Option<FunctionCallInfo> {
+        super::Sema::<D>::function_info(self, name)
+            .copied()
+            .map(FunctionCallInfo::from_body)
+    }
+    fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
         super::Sema::<D>::function_info(self, name).copied()
     }
     fn value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo> {
@@ -2049,6 +2512,18 @@ impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
     }
     fn set_anon_struct_type_subst(&mut self, struct_id: StructId, subst: HashMap<Spur, Type>) {
         self.anon_struct_type_subst.insert(struct_id, subst);
+    }
+    fn anon_struct_type_subst(&self, struct_id: StructId) -> HashMap<Spur, Type> {
+        self.anon_struct_type_subst
+            .get(&struct_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+    fn anon_struct_captured_values(&self, struct_id: StructId) -> HashMap<Spur, ConstValue> {
+        self.anon_struct_captured_values
+            .get(&struct_id)
+            .cloned()
+            .unwrap_or_default()
     }
     fn body_dependency_observer(&self) -> Option<AnalyzedBodyOwnerEvent> {
         self.body_dependency_observer.clone()
@@ -2134,8 +2609,9 @@ impl<'a, D: DeclarationPhase> super::Sema<'a, D> {
         name: Spur,
         callee_types: &HashMap<Spur, Type>,
         callee_values: &HashMap<Spur, ConstValue>,
+        span: Span,
     ) -> CompileResult<Option<ConstValue>> {
-        OrdinaryBodyEngine::new(self).reduce_type_ctor_body(name, callee_types, callee_values)
+        OrdinaryBodyEngine::new(self).reduce_type_ctor_body(name, callee_types, callee_values, span)
     }
     pub(crate) fn validate_deferred_ownership_gates(&mut self) -> CompileResult<()> {
         OrdinaryBodyEngine::new(self).validate_deferred_ownership_gates()

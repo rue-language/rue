@@ -1195,13 +1195,13 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "sema")
             .unwrap();
-        // The session parses the source module once, then lazily reparses the
-        // demanded body-free declaration terminal inside the semantic query.
-        // Neither is a root any more: RUE-786 timed the parse query's own
-        // phases around the first, and the shell projection that demands the
-        // second, so both nest beneath the request that asked for them.
-        assert_eq!(session_parse_file.invocations, 2);
-        assert_eq!(session_parse_file.root_invocations, 0);
+        // The session parses the source module once, then the registered
+        // declaration and body terminals each reparse their exact durable
+        // input. BodyInput is an owned-syntax boundary and no longer validates
+        // by performing a duplicate lowering. Query evaluation itself has no
+        // presentation span, so its one reparse remains a timing root.
+        assert_eq!(session_parse_file.invocations, 3);
+        assert_eq!(session_parse_file.root_invocations, 1);
         for expected in [
             ("parse_program", "parse_file"),
             ("declaration_nucleus", "parse_file"),
@@ -1211,28 +1211,18 @@ mod tests {
                 "the demanded reparse is timed beneath its request: {session_edges:?}"
             );
         }
-        // RUE-1027 constructs one declaration-shell epoch plus one isolated
-        // exact-body epoch for the reached `main` terminal. Both indexes stay
-        // leaves; RUE-786 gave each epoch's surrounding stage a span, so the
-        // shell epoch's index is timed beneath `declaration_shells` and the
-        // exact-body epoch's beneath `body_prepare_declarations`. Neither is
-        // nested beneath whole-program sema.
-        assert_eq!(rir_declaration_index.invocations, 2);
+        // The declaration-shell projection owns the one canonical declaration
+        // index. Registered body transactions consume durable query inputs and
+        // do not derive a second body-local declaration epoch.
+        assert_eq!(rir_declaration_index.invocations, 1);
         assert_eq!(rir_declaration_index.root_invocations, 0);
-        assert_eq!(rir_declaration_index.leaf_invocations, 2);
+        assert_eq!(rir_declaration_index.leaf_invocations, 1);
         assert!(
             session_edges.contains(&(
                 "declaration_shell_prepare".to_owned(),
                 "rir_declaration_index".to_owned()
             )),
             "the shell epoch's index is timed beneath its stage: {session_edges:?}"
-        );
-        assert!(
-            session_edges.contains(&(
-                "body_prepare_declarations".to_owned(),
-                "rir_declaration_index".to_owned()
-            )),
-            "the exact-body epoch's index is timed beneath its pipeline stage: {session_edges:?}"
         );
         assert_eq!(sema.invocations, 1);
         assert_eq!(sema.root_invocations, 1);
@@ -1321,9 +1311,9 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "rir_declaration_index")
             .unwrap();
-        assert_eq!(index.invocations, 2);
+        assert_eq!(index.invocations, 1);
         assert_eq!(index.root_invocations, 0);
-        assert_eq!(index.leaf_invocations, 2);
+        assert_eq!(index.leaf_invocations, 1);
         let sema = compile_timing
             .passes
             .iter()
@@ -1350,52 +1340,56 @@ mod tests {
             session.semantic(&CompileOptions::default()).unwrap();
         });
 
-        // Every reached body runs the per-body pipeline stages beneath the one
-        // coordinator span, so the timing table can split the semantic query
-        // path that RUE-1083 found unattributed. RUE-786 interposed the
-        // per-body query, analysis, and epoch-derivation spans between them;
-        // the stages must still descend from the same coordinator.
-        let edges = data.parent_edges();
-        for edge in [
-            ("body_queries", "body_transaction"),
-            ("body_transaction", "body_analysis"),
-            ("body_analysis", "body_derive_epoch"),
-            ("body_derive_epoch", "body_prepare_declarations"),
-            ("body_derive_epoch", "body_project_declarations"),
-            ("body_derive_epoch", "body_install_declarations"),
-            ("body_analysis", "body_analyze"),
-            ("body_analysis", "body_export"),
+        // Registered query evaluation is not represented as a presentation
+        // coordinator span. Its prerequisite fan-out therefore appears as a
+        // query-rooted timing leaf; the retired session worklist and body-local
+        // epoch pipeline must not reappear.
+        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        for retired in [
+            "body_queries",
+            "body_transaction",
+            "body_schedule",
+            "body_record",
+            "body_toolchain_demands",
+            "body_analysis",
+            "body_derive_epoch",
+            "body_prepare_declarations",
+            "body_project_declarations",
+            "body_install_declarations",
+            "body_analyze",
+            "body_export",
         ] {
             assert!(
-                edges.contains(&(edge.0.to_owned(), edge.1.to_owned())),
-                "missing {} -> {} edge: {edges:?}",
-                edge.0,
-                edge.1
+                !timing.passes.iter().any(|pass| pass.name == retired),
+                "retired body-local stage {retired} reappeared: {:?}",
+                timing.passes
             );
         }
-        // The coordinator's own per-body work is timed apart from the queries
-        // it drives, so neither can absorb the other's cost.
-        for stage in ["body_schedule", "body_record", "body_toolchain_demands"] {
-            assert!(
-                edges.contains(&("body_queries".to_owned(), stage.to_owned())),
-                "missing body_queries -> {stage} edge: {edges:?}"
-            );
-        }
-        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
-        let queries = timing
+        let prerequisites = timing
             .passes
             .iter()
-            .find(|pass| pass.name == "body_queries")
-            .unwrap();
-        assert_eq!(queries.invocations, 1);
-        let analyze = timing
-            .passes
-            .iter()
-            .find(|pass| pass.name == "body_analyze")
+            .find(|pass| pass.name == "body_query_prerequisites")
             .unwrap();
         assert!(
-            analyze.invocations >= 2,
-            "helper and main are both analyzed: {analyze:?}"
+            prerequisites.invocations >= 2,
+            "helper and main each run query prerequisites: {prerequisites:?}"
+        );
+        assert_eq!(
+            prerequisites.root_invocations, prerequisites.invocations,
+            "registered-query prerequisites are presentation roots"
+        );
+        assert_eq!(
+            prerequisites.leaf_invocations, prerequisites.invocations,
+            "registered-query prerequisites are presentation leaves"
+        );
+        let parse_file = timing
+            .passes
+            .iter()
+            .find(|pass| pass.name == "parse_file")
+            .unwrap();
+        assert!(
+            parse_file.root_invocations > 0 && parse_file.root_invocations < parse_file.invocations,
+            "body-input reparses are query-rooted while program and declaration reparses retain their parents: {parse_file:?}"
         );
     }
 

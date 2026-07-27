@@ -1,24 +1,11 @@
-//! Endpoint / definition-selection resolution for exact-one-body analysis.
+//! Endpoint and definition-selection facts for canonical body analysis.
 //!
-//! Family 1A of the RUE-1091 analyzer rewire (slice r1a). The endpoint,
-//! nominal, and module reads that `one_body.rs` performs while turning a
-//! canonical body request or reference into a concrete declaration, method,
-//! destructor, or materialized [`Type`] no longer touch the semantic epoch
-//! tables directly. They flow through [`BodyEndpointProvider`] — the
-//! value/definition-world analog of [`crate::SemanticTypeSyntaxProvider`] — so
-//! the selection *logic* is provider-generic and a later slice can supply the
-//! same facts from a body-fact provider + overlay instead of the epoch `Sema`.
-//!
-//! [`EpochFacts`] is the generic production adapter: it delegates each point
-//! query to a [`BodyEndpointFactSource`] supplied by its host. `Sema` supplies
-//! the current declaration-epoch source, preserving the existing reads while
-//! keeping the adapter independent of an analyzer representation. Every
-//! operation is `&self` and returns owned or `Copy` data, so a caller inside an
-//! `&mut Sema` stack constructs a short-lived [`EpochFacts`] per resolution
-//! without retaining a borrow across the surrounding mutations.
+//! Every point lookup flows through [`BodyEndpointProvider`]. Query-backed
+//! analysis uses [`ProviderEndpointFacts`]; the declaration analyzer implements
+//! the same fact vocabulary for its non-body responsibilities.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -28,15 +15,12 @@ use rue_span::FileId;
 
 use super::anon_structs::IssuedAnonymousNominalKey;
 use super::body_identity::{
-    BodyRirView, ConstIdentityHandle, DurableAnonymousSource, DurableConstSource,
-    DurableNominalSource, ProviderIdentityContext,
+    BodyRirView, ConstIdentityHandle, DurableAnonymousSource, DurableCallableSource,
+    DurableConstSource, DurableNominalSource, FunctionIdentityHandle, ProviderIdentityContext,
 };
-use super::declaration_index::RirDestructorDeclaration;
 use super::info::{ConstInfo, FunctionInfo, MethodInfo};
 use super::provider::BodyFactProvider;
-use super::{
-    BodyAnalysisState, BodyLookupCollector, BodyLookupObservation, DeclarationPhase, Sema,
-};
+use super::{DeclarationPhase, Sema};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{EnumId, ModuleId, StructId, Type};
 use crate::{
@@ -45,10 +29,8 @@ use crate::{
     StableDefinitionKind, TypeInstanceKey,
 };
 
-/// The exact endpoint/definition-selection fact boundary consumed by
-/// `one_body.rs`. Every operation answers one point query against the
-/// declaration universe and returns owned/`Copy` data — no borrowed epoch table
-/// or live `Sema` handle escapes.
+/// Exact endpoint and definition-selection facts consumed by body analysis.
+/// Every operation returns owned or `Copy` data.
 pub(crate) trait BodyEndpointProvider {
     /// Intern a source name to its symbol, or `None` if never interned. Mirrors
     /// `interner.get`.
@@ -88,12 +70,6 @@ pub(crate) trait BodyEndpointProvider {
     /// The enum id for an issued anonymous nominal identity.
     fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId>;
 
-    /// Whether a bare name is a built-in or compiler-generated struct.
-    fn is_builtin_or_generated_struct(&self, name: Spur) -> bool;
-
-    /// Whether a bare name is a built-in enum.
-    fn is_builtin_enum(&self, name: Spur) -> bool;
-
     /// The signature/binding info for an internal free-function symbol.
     fn function_info(&self, name: Spur) -> Option<FunctionInfo>;
 
@@ -103,21 +79,6 @@ pub(crate) trait BodyEndpointProvider {
     /// The source name a specialized/internal function name derives from.
     /// Mirrors `Sema::source_function_name` (identity when unmapped).
     fn source_function_name(&self, name: Spur) -> Spur;
-
-    /// The first free-function RIR declaration for `(source, file)`.
-    fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef>;
-
-    /// The named-method RIR declaration for the durable-available
-    /// `(owner_file, owner_type_name, method_name)` preimage.
-    fn named_method_declaration(
-        &self,
-        owner_file: FileId,
-        owner_type_name: Spur,
-        method_name: Spur,
-    ) -> Option<InstRef>;
-
-    /// The destructor declaration record for `(file, type_name)`.
-    fn destructor(&self, file: u32, type_name: Spur) -> Option<RirDestructorDeclaration>;
 
     /// The module id whose definition lives in `file`.
     fn module_id_for_file(&self, file: u32) -> Option<ModuleId>;
@@ -137,10 +98,6 @@ pub(crate) trait BodyEndpointProvider {
 /// the shared read view.
 pub(super) trait BodyEndpointFactSource {
     fn endpoint_read_view(&self) -> Option<BodyEndpointReadView<'_>> {
-        None
-    }
-
-    fn endpoint_lookup_collector(&self) -> Option<&BodyLookupCollector> {
         None
     }
 
@@ -165,22 +122,13 @@ pub(super) trait BodyEndpointFactSource {
         self.endpoint_view().module_endpoint(token)
     }
     fn endpoint_function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
-        let view = self.endpoint_view();
-        let result = view.function_by_file_name(file, name);
-        view.record_module_item_lookup(self.endpoint_lookup_collector(), file, name);
-        result
+        self.endpoint_view().function_by_file_name(file, name)
     }
     fn endpoint_struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
-        let view = self.endpoint_view();
-        let result = view.struct_by_file_name(file, name);
-        view.record_module_item_lookup(self.endpoint_lookup_collector(), file, name);
-        result
+        self.endpoint_view().struct_by_file_name(file, name)
     }
     fn endpoint_enum_by_file_name(&self, file: FileId, name: Spur) -> Option<EnumId> {
-        let view = self.endpoint_view();
-        let result = view.enum_by_file_name(file, name);
-        view.record_module_item_lookup(self.endpoint_lookup_collector(), file, name);
-        result
+        self.endpoint_view().enum_by_file_name(file, name)
     }
     fn endpoint_builtin_or_generated_struct(&self, name: Spur) -> Option<StructId> {
         self.endpoint_view().builtin_or_generated_struct(name)
@@ -197,45 +145,14 @@ pub(super) trait BodyEndpointFactSource {
     fn endpoint_anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
         self.endpoint_view().anon_enum(identity)
     }
-    fn endpoint_is_builtin_or_generated_struct(&self, name: Spur) -> bool {
-        self.endpoint_view().is_builtin_or_generated_struct(name)
-    }
-    fn endpoint_is_builtin_enum(&self, name: Spur) -> bool {
-        self.endpoint_view().is_builtin_enum(name)
-    }
     fn endpoint_function_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.endpoint_view().function_info(name)
     }
     fn endpoint_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
-        let view = self.endpoint_view();
-        view.record_member_lookup(self.endpoint_lookup_collector(), struct_id, name);
-        view.method_info(struct_id, name)
+        self.endpoint_view().method_info(struct_id, name)
     }
     fn endpoint_source_function_name(&self, name: Spur) -> Spur {
         self.endpoint_view().source_function_name(name)
-    }
-    fn endpoint_first_free_function(&self, source: Spur, file: FileId) -> Option<InstRef> {
-        let view = self.endpoint_view();
-        let result = view.first_free_function(source, file);
-        view.record_module_item_lookup(self.endpoint_lookup_collector(), file, source);
-        result
-    }
-    fn endpoint_named_method_declaration(
-        &self,
-        file: FileId,
-        ty: Spur,
-        method: Spur,
-    ) -> Option<InstRef> {
-        self.endpoint_view().named_method_declaration(
-            file,
-            ty,
-            method,
-            self.endpoint_lookup_collector(),
-        )
-    }
-    fn endpoint_destructor(&self, file: u32, ty: Spur) -> Option<RirDestructorDeclaration> {
-        self.endpoint_view()
-            .destructor(file, ty, self.endpoint_lookup_collector())
     }
     fn endpoint_module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         self.endpoint_view().module_id_for_file(file)
@@ -251,64 +168,20 @@ pub(super) trait BodyEndpointFactSource {
     }
 }
 
-/// Shared endpoint reads for both the transitional epoch receiver and the
-/// body-analysis state. Lookup observation is supplied separately, so this
-/// view contains no analyzer or mutable analysis state. Its type-pool access
-/// is limited to read-only struct inspection for lookup filtering; type
-/// interning remains a Sema-local overlay operation.
+/// Shared read view for declaration-owned endpoint facts.
 pub(super) struct BodyEndpointReadView<'a> {
     interner: &'a ThreadedRodeo,
     declarations: &'a super::DeclarationNamespace,
-    declaration_index: &'a super::declaration_index::RirDeclarationIndex,
     stable_definition_endpoints: &'a HashMap<SemanticDefinitionToken, SemanticDefinitionEndpoint>,
     stable_module_endpoints: &'a HashMap<SemanticModuleToken, SemanticModuleEndpoint>,
     anonymous_methods: &'a HashMap<(StructId, Spur), MethodInfo>,
-    anonymous_struct_ids: &'a HashSet<StructId>,
     generated_structs: &'a HashMap<Spur, StructId>,
     anon_struct_identities: &'a HashMap<IssuedAnonymousNominalKey, StructId>,
     anon_enum_identities: &'a HashMap<IssuedAnonymousNominalKey, EnumId>,
-    type_pool: &'a TypeInternPool,
     module_registry: &'a crate::module_registry::ModuleRegistry,
 }
 
 impl BodyEndpointReadView<'_> {
-    fn record_module_item_lookup(
-        &self,
-        collector: Option<&BodyLookupCollector>,
-        file: FileId,
-        name: Spur,
-    ) {
-        let Some(collector) = collector else {
-            return;
-        };
-        collector.record(BodyLookupObservation::ModuleItem {
-            file: file.index(),
-            name: Arc::from(self.interner.resolve(&name)),
-        });
-    }
-
-    fn record_member_lookup(
-        &self,
-        collector: Option<&BodyLookupCollector>,
-        owner: StructId,
-        member: Spur,
-    ) {
-        let Some(collector) = collector else {
-            return;
-        };
-        let Some(definition) = self.type_pool.try_struct_def(owner) else {
-            return;
-        };
-        if self.anonymous_struct_ids.contains(&owner) || definition.is_builtin {
-            return;
-        }
-        collector.record(BodyLookupObservation::Member {
-            owner_file: definition.file_id.index(),
-            owner_name: Arc::from(definition.name.as_str()),
-            member_name: Arc::from(self.interner.resolve(&member)),
-        });
-    }
-
     fn name_symbol(&self, name: &str) -> Option<Spur> {
         self.interner.get(name)
     }
@@ -369,14 +242,6 @@ impl BodyEndpointReadView<'_> {
         self.anon_enum_identities.get(identity).copied()
     }
 
-    fn is_builtin_or_generated_struct(&self, name: Spur) -> bool {
-        self.builtin_or_generated_struct(name).is_some()
-    }
-
-    fn is_builtin_enum(&self, name: Spur) -> bool {
-        self.builtin_enum(name).is_some()
-    }
-
     fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.declarations.functions.get(&name).copied()
     }
@@ -396,46 +261,6 @@ impl BodyEndpointReadView<'_> {
             .unwrap_or(name)
     }
 
-    fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
-        self.declaration_index
-            .first_free_function(source, Some(file_id))
-    }
-
-    fn named_method_declaration(
-        &self,
-        file: FileId,
-        ty: Spur,
-        method: Spur,
-        collector: Option<&BodyLookupCollector>,
-    ) -> Option<InstRef> {
-        self.record_module_item_lookup(collector, file, ty);
-        let struct_id = self.declarations.structs_by_file_name.get(&(file, ty))?;
-        self.record_member_lookup(collector, *struct_id, method);
-        self.declarations
-            .named_method_declarations
-            .get(&(*struct_id, method))
-            .copied()
-    }
-
-    fn destructor(
-        &self,
-        file: u32,
-        ty: Spur,
-        collector: Option<&BodyLookupCollector>,
-    ) -> Option<RirDestructorDeclaration> {
-        if let Some(collector) = collector {
-            collector.record(BodyLookupObservation::Destructor {
-                file,
-                type_name: Arc::from(self.interner.resolve(&ty)),
-            });
-        }
-        self.declaration_index
-            .destructors()
-            .iter()
-            .find(|record| record.span.file_id.index() == file && record.type_name == ty)
-            .copied()
-    }
-
     fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         (0..self.module_registry.len())
             .map(|index| ModuleId::new(index as u32))
@@ -448,21 +273,14 @@ impl<D: DeclarationPhase> BodyEndpointFactSource for Sema<'_, D> {
         Some(BodyEndpointReadView {
             interner: self.interner,
             declarations: &self.declarations,
-            declaration_index: &self.declaration_index,
             stable_definition_endpoints: &self.stable_definition_endpoints,
             stable_module_endpoints: &self.stable_module_endpoints,
             anonymous_methods: &self.anonymous_methods,
-            anonymous_struct_ids: &self.anonymous_struct_ids,
             generated_structs: &self.generated_structs,
             anon_struct_identities: &self.anon_struct_identities,
             anon_enum_identities: &self.anon_enum_identities,
-            type_pool: &self.type_pool,
             module_registry: &self.module_registry,
         })
-    }
-
-    fn endpoint_lookup_collector(&self) -> Option<&BodyLookupCollector> {
-        self.body_lookup_collector.as_ref()
     }
 
     fn endpoint_intern_array(&self, element: Type, len: u64) -> Option<Type> {
@@ -475,30 +293,6 @@ impl<D: DeclarationPhase> BodyEndpointFactSource for Sema<'_, D> {
 
     fn endpoint_intern_ptr_mut(&self, pointee: Type) -> Option<Type> {
         self.type_pool.try_intern_ptr_mut(pointee).ok()
-    }
-}
-
-impl BodyEndpointFactSource for BodyAnalysisState<'_> {
-    fn endpoint_read_view(&self) -> Option<BodyEndpointReadView<'_>> {
-        let epoch = &self.epoch;
-        Some(BodyEndpointReadView {
-            interner: epoch.interner,
-            declarations: &epoch.declarations.0,
-            declaration_index: &epoch.declaration_index,
-            stable_definition_endpoints: &epoch.stable_definition_endpoints,
-            stable_module_endpoints: &epoch.stable_module_endpoints,
-            anonymous_methods: &epoch.local_seed.anonymous_methods,
-            anonymous_struct_ids: &epoch.local_seed.anonymous_struct_ids,
-            generated_structs: &epoch.local_seed.generated_structs,
-            anon_struct_identities: &epoch.local_seed.anon_struct_identities,
-            anon_enum_identities: &epoch.local_seed.anon_enum_identities,
-            type_pool: &epoch.type_pool,
-            module_registry: &epoch.module_registry,
-        })
-    }
-
-    fn endpoint_lookup_collector(&self) -> Option<&BodyLookupCollector> {
-        self.body_lookup_collector.as_ref()
     }
 }
 
@@ -553,12 +347,6 @@ impl<H: BodyEndpointFactSource> BodyEndpointProvider for EpochFacts<'_, H> {
     fn anon_enum(&self, identity: &IssuedAnonymousNominalKey) -> Option<EnumId> {
         self.host.endpoint_anon_enum(identity)
     }
-    fn is_builtin_or_generated_struct(&self, name: Spur) -> bool {
-        self.host.endpoint_is_builtin_or_generated_struct(name)
-    }
-    fn is_builtin_enum(&self, name: Spur) -> bool {
-        self.host.endpoint_is_builtin_enum(name)
-    }
     fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.host.endpoint_function_info(name)
     }
@@ -567,16 +355,6 @@ impl<H: BodyEndpointFactSource> BodyEndpointProvider for EpochFacts<'_, H> {
     }
     fn source_function_name(&self, name: Spur) -> Spur {
         self.host.endpoint_source_function_name(name)
-    }
-    fn first_free_function(&self, source: Spur, file_id: FileId) -> Option<InstRef> {
-        self.host.endpoint_first_free_function(source, file_id)
-    }
-    fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
-        self.host
-            .endpoint_named_method_declaration(file, ty, method)
-    }
-    fn destructor(&self, file: u32, ty: Spur) -> Option<RirDestructorDeclaration> {
-        self.host.endpoint_destructor(file, ty)
     }
     fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {
         self.host.endpoint_module_id_for_file(file)
@@ -605,7 +383,7 @@ pub(in crate::sema) fn resolve_free_function_symbol<P: BodyEndpointProvider>(
 }
 
 /// Materialize a canonical type-instance key into a concrete [`Type`]. The
-/// provider-generic form of `one_body::materialize_instance_type`: an exact
+/// provider-generic form of `body_analysis::materialize_instance_type`: an exact
 /// transcription of the epoch code, with every table read routed through
 /// `facts` and every failure mapped to `MissingStableIdentity`.
 pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
@@ -697,17 +475,10 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 }
 
 // ---------------------------------------------------------------------------
-// `ProviderEndpointFacts` — the endpoint / definition-selection ProviderFacts
-// (RUE-1091 slice r4b-2).
+// `ProviderEndpointFacts` — endpoint / definition-selection facts.
 //
-// The first provider-driven realization of the family-1A `BodyEndpointProvider`
-// seam: where [`EpochFacts`] answers each endpoint op from the semantic epoch's
-// `Sema` tables, this driver answers them from the body-scoped identity pool
-// (slices 2a/2b/2c — minting nominal `StructId`/`Type` identities from the
-// durable metadata a [`DurableNominalSource`] supplies) plus the shared
-// whole-program `Rir` (the RIR-index handles), with the live body-fact provider
-// ([`BodyFactProvider`]) available for the candidate-set presence check. It is
-// the endpoint twin of r4b-1's [`super::call_resolution::ProviderCallFacts`].
+// This driver answers endpoint operations from the body-scoped identity pool,
+// the request's RIR index, and point queries through [`BodyFactProvider`].
 //
 // The core answer REUSES the provider-generic [`resolve_instance_type`] this
 // module already exposes, driven over the pool instead of the epoch: the driver
@@ -715,46 +486,11 @@ pub(in crate::sema) fn resolve_instance_type<P: BodyEndpointProvider>(
 // space, so `resolve_instance_type(self, key)` walks the exact same
 // `TypeInstanceKey` algebra production walks — only the fact SOURCE differs.
 // The pool mints internally-consistent ids (the pool keystone); a differential
-// compares the resolved type's index-independent render + metadata against the
-// LIVE epoch, never a pool-relative index.
+// compares pool values by index-independent render and metadata, never by raw
+// pool-relative index.
 //
-// RUE-1091 flip-era surface: `pub` because rFinal's whole-body differential and
-// the step-4 flip drive the provider path from rue-compiler, where the pool's
-// durable source is built from concrete nucleus signatures (an opaque
-// `BodyFactProvider` associated type rue-air cannot destructure). The sole
-// pre-flip caller is the rue-compiler differential; the flip promotes it to the
-// production analyzer.
-//
-// Feasibility (r4a design-checkpoint table): P = answered-by-pool, C =
-// composed-from-provider, R = RIR-index answer.
-//   - `resolve_instance_type` (every pool-supported `TypeInstanceKey` arm)  → P
-//   - `first_free_function` / `named_method_declaration` / `destructor`     → R
-//   - `nominal_contains_in_module`                                          → C
-// Deferred here, each with its unblocking slice named (reported, never silently
-// answered wrong):
-//   - `named_method_declaration` → LANDED (flip-prep): the production seam now
-//     takes the provider-natural `(owner_file, owner_type_name, method_name)`
-//     preimage already computed by its analyzer caller, so this driver answers
-//     it directly from the RIR index without minting a pool `StructId`.
-//   - `function_info` / `function_by_file_name` → r4b-1's `ProviderCallFacts`
-//     (the call family); `method_info` → r4b-3's `ProviderCallFacts::method_info`
-//     (receiver→pool identity now threaded through the durable method key). Both
-//     stay `None` on THIS endpoint driver — they belong to the call family.
-//   - `module_endpoint` / `module_id_for_file` (the `Module` arm) → O: answered
-//     by the body-local module overlay registered from the durable module
-//     identity + its current request file.
-//   - `anon_struct` / `anon_enum` (the anonymous arm) is ANSWERED as of r6b: a
-//     caller seeds the issued→durable seam with `register_anonymous_nominal`
-//     and the arms mint through the pool's `find_or_create_anon`; an unseeded
-//     issued key still fails closed. The well-known `Option` facts are ANSWERED
-//     as of r6c: `install_well_known_option_types` ports the trusted registry
-//     onto the same machinery, recording the export-as-produced ruling.
-//   - `generated_struct` (the `Slice` arm) is ANSWERED as of r6a: a caller seeds
-//     each generated slice with `register_generated_slice` and the arm resolves
-//     the minted fat-pointer struct. Builtin names beyond the pre-registered
-//     `BUILTIN_ENUMS` + `str` set (`Str(N)`) → r6b (generated-struct
-//     classification with the anonymous / generated family).
-//   - `source_function_name` under specialization → r5; identity otherwise.
+// This surface is public because rue-compiler supplies the concrete durable
+// signature source behind the opaque provider boundary.
 // ---------------------------------------------------------------------------
 
 /// The issuer stamped on every [`SemanticDefinitionToken`] this driver mints
@@ -773,6 +509,7 @@ struct EndpointEntry {
     file: u32,
     name: Arc<str>,
     kind: StableDefinitionKind,
+    owner: Option<Arc<str>>,
 }
 
 /// The driver's overlay token space: the provider-side analog of the epoch's
@@ -785,7 +522,10 @@ struct EndpointEntry {
 struct EndpointOverlay<K> {
     next_slot: u32,
     tokens: HashMap<SemanticDefinitionToken, EndpointEntry>,
+    definition_tokens: HashMap<K, SemanticDefinitionToken>,
     by_file_name: HashMap<(u32, Spur), K>,
+    functions_by_file_name: HashMap<(u32, Spur), (Spur, K)>,
+    function_keys: HashMap<Spur, K>,
     module_tokens: HashMap<SemanticModuleToken, SemanticModuleEndpoint>,
     /// Generated slice-struct identities minted on demand (RUE-1091 r6a): the
     /// provider-side analog of the epoch's `generated_structs` name→id map. A
@@ -802,7 +542,10 @@ impl<K> Default for EndpointOverlay<K> {
         Self {
             next_slot: 0,
             tokens: HashMap::new(),
+            definition_tokens: HashMap::new(),
             by_file_name: HashMap::new(),
+            functions_by_file_name: HashMap::new(),
+            function_keys: HashMap::new(),
             module_tokens: HashMap::new(),
             generated_slices: HashMap::new(),
         }
@@ -837,7 +580,7 @@ pub struct ProviderEndpointFacts<'a, P, S, K, M> {
 impl<'a, P, S, K, M> ProviderEndpointFacts<'a, P, S, K, M>
 where
     P: BodyFactProvider,
-    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M>,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M> + DurableCallableSource<K, M>,
     K: Clone + Eq + Hash,
     M: Clone + Eq + Hash,
 {
@@ -936,7 +679,7 @@ where
     /// anonymous machinery so its full materialization is byte-identical to
     /// the epoch install's, and each is recorded under the export-as-produced
     /// ruling: the installing body EXPORTS these identities as produced
-    /// anonymous nominals (the flip-era baseline subtraction consults
+    /// anonymous nominals (the provider baseline subtraction consults
     /// [`Self::is_well_known_option_identity`]), never leaking them as
     /// imports. `option_by_payload` records the demand map fallible-intrinsic
     /// resolution consults. Fail-closed: `None` on any refusal (non-enum
@@ -965,7 +708,7 @@ where
 
     /// Whether a durable identity (any producer spelling — entry
     /// canonicalization applies) is a well-known `Option` identity installed
-    /// on this driver's pool: the export-as-produced ruling the flip-era
+    /// on this driver's pool: the export-as-produced ruling the provider
     /// baseline subtraction consults (RUE-1091 r6c).
     pub fn is_well_known_option_identity(&self, durable: &crate::AnonymousNominalKey<K, M>) -> bool
     where
@@ -989,6 +732,14 @@ where
         self.identity.pool().well_known_option_for_payload(payload)
     }
 
+    pub fn durable_anonymous_identity(&self, ty: Type) -> Option<crate::AnonymousNominalKey<K, M>> {
+        self.identity.pool().durable_anonymous_identity(ty)
+    }
+
+    pub fn durable_named_identity(&self, ty: Type) -> Option<K> {
+        self.identity.pool().durable_named_identity(ty)
+    }
+
     /// Mint an overlay [`SemanticDefinitionToken`] standing for a durable nominal
     /// key, recording the `(file, name, kind)` endpoint and the `(file, name)`
     /// preimage the `Named`-nominal arm of [`resolve_instance_type`] reverses. A
@@ -1004,6 +755,11 @@ where
     ) -> SemanticDefinitionToken {
         let symbol = self.identity.pool().intern_name(name);
         let mut overlay = self.overlay.borrow_mut();
+        if let Some(token) = overlay.definition_tokens.get(&key) {
+            let token = *token;
+            overlay.by_file_name.insert((file, symbol), key);
+            return token;
+        }
         let slot = overlay.next_slot;
         overlay.next_slot += 1;
         let token = SemanticDefinitionToken::new(OVERLAY_ISSUER, slot);
@@ -1013,9 +769,80 @@ where
                 file,
                 name: Arc::from(name),
                 kind,
+                owner: None,
             },
         );
-        overlay.by_file_name.insert((file, symbol), key);
+        overlay.by_file_name.insert((file, symbol), key.clone());
+        overlay.definition_tokens.insert(key, token);
+        token
+    }
+
+    /// Register one free-function endpoint in the body-local token and callable
+    /// overlays. The exact durable key supplies signature truth while the local
+    /// RIR supplies the declaration/body handles when the endpoint is
+    /// consulted.
+    pub fn register_function(&self, key: K, file: FileId, name: &str) -> SemanticDefinitionToken {
+        let symbol = self.identity.pool().intern_name(name);
+        let mut overlay = self.overlay.borrow_mut();
+        if let Some(token) = overlay.definition_tokens.get(&key) {
+            let token = *token;
+            overlay
+                .functions_by_file_name
+                .insert((file.index(), symbol), (symbol, key.clone()));
+            overlay.function_keys.insert(symbol, key);
+            return token;
+        }
+        let slot = overlay.next_slot;
+        overlay.next_slot += 1;
+        let token = SemanticDefinitionToken::new(OVERLAY_ISSUER, slot);
+        overlay.tokens.insert(
+            token,
+            EndpointEntry {
+                file: file.index(),
+                name: Arc::from(name),
+                kind: StableDefinitionKind::Function,
+                owner: None,
+            },
+        );
+        overlay
+            .functions_by_file_name
+            .insert((file.index(), symbol), (symbol, key.clone()));
+        overlay.function_keys.insert(symbol, key.clone());
+        overlay.definition_tokens.insert(key, token);
+        token
+    }
+
+    /// Mint an endpoint token for the exact body owner. Unlike
+    /// [`Self::register_function`], member and destructor owners are not
+    /// inserted into the free-function lookup maps.
+    pub fn register_body_owner(
+        &self,
+        key: K,
+        file: FileId,
+        name: &str,
+        kind: StableDefinitionKind,
+        owner: Option<&str>,
+    ) -> SemanticDefinitionToken {
+        if kind == StableDefinitionKind::Function && owner.is_none() {
+            return self.register_function(key, file, name);
+        }
+        let mut overlay = self.overlay.borrow_mut();
+        if let Some(token) = overlay.definition_tokens.get(&key) {
+            return *token;
+        }
+        let slot = overlay.next_slot;
+        overlay.next_slot += 1;
+        let token = SemanticDefinitionToken::new(OVERLAY_ISSUER, slot);
+        overlay.tokens.insert(
+            token,
+            EndpointEntry {
+                file: file.index(),
+                name: Arc::from(name),
+                kind,
+                owner: owner.map(Arc::from),
+            },
+        );
+        overlay.definition_tokens.insert(key, token);
         token
     }
 
@@ -1095,6 +922,23 @@ where
                 name: Arc::from(name),
             })
             .ok()?
+            .as_struct()?;
+        self.overlay
+            .borrow_mut()
+            .generated_slices
+            .insert(symbol, id);
+        Some(id)
+    }
+
+    /// Mint (or return) one generated fixed-capacity string and publish its
+    /// name in the same generated-nominal overlay used by slice views.
+    pub fn register_generated_fixed_string(&self, capacity: u64) -> Option<StructId> {
+        let name = format!("Str({capacity})");
+        let symbol = self.identity.pool().intern_name(&name);
+        let id = self
+            .identity
+            .pool_mut()?
+            .get_or_create_str_fixed(capacity)
             .as_struct()?;
         self.overlay
             .borrow_mut()
@@ -1194,14 +1038,11 @@ where
         read(&pool)
     }
 
-    /// Freeze the pool's containment metadata — the pool-side `freeze()` seam
-    /// hook the r4a-2a rider defers to the slice that wires the pool under body
-    /// analysis (RUE-1091 rFinal). A caller invokes this at the same point
-    /// production calls `finalize_containment_metadata` (after every nominal
-    /// the body consumes has been minted, before any drop/ownership read).
+    /// Freeze the pool's containment metadata after every nominal the body
+    /// consumes has been minted and before any drop/ownership read.
     /// The shared bundle/state path rebases the finalized base and permits
-    /// later body-local minting in an append-only overlay; the compatibility
-    /// constructor keeps its historical fail-closed refusal instead.
+    /// later body-local minting in an append-only overlay. A pool without the
+    /// shared bundle/state refuses the operation.
     /// `None` on a containment cycle (fail-closed). Before the freeze,
     /// [`Self::type_needs_drop`] / [`Self::type_carries_linear`] answer `None`.
     pub fn finalize_containment_metadata(&self) -> Option<()> {
@@ -1290,7 +1131,7 @@ where
 impl<P, S, K, M> BodyEndpointProvider for ProviderEndpointFacts<'_, P, S, K, M>
 where
     P: BodyFactProvider,
-    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M>,
+    S: DurableNominalSource<K, M> + DurableAnonymousSource<K, M> + DurableCallableSource<K, M>,
     K: Clone + Eq + Hash,
     M: Clone + Eq + Hash,
 {
@@ -1309,7 +1150,7 @@ where
             file: entry.file,
             name: entry.name.clone(),
             kind: entry.kind,
-            owner: None,
+            owner: entry.owner.clone(),
         })
     }
 
@@ -1317,11 +1158,12 @@ where
         self.overlay.borrow().module_tokens.get(&token).copied()
     }
 
-    fn function_by_file_name(&self, _file: FileId, _name: Spur) -> Option<Spur> {
-        // The call family: r4b-1's `ProviderCallFacts` answers the free-function
-        // identity; the `(file, name)`-keyed seam is r4b-3. Not consulted by
-        // `resolve_instance_type`.
-        None
+    fn function_by_file_name(&self, file: FileId, name: Spur) -> Option<Spur> {
+        self.overlay
+            .borrow()
+            .functions_by_file_name
+            .get(&(file.index(), name))
+            .map(|(symbol, _)| *symbol)
     }
 
     fn struct_by_file_name(&self, file: FileId, name: Spur) -> Option<StructId> {
@@ -1409,17 +1251,57 @@ where
             .as_enum()
     }
 
-    fn is_builtin_or_generated_struct(&self, name: Spur) -> bool {
-        self.builtin_or_generated_struct(name).is_some()
-    }
-
-    fn is_builtin_enum(&self, name: Spur) -> bool {
-        self.builtin_enum(name).is_some()
-    }
-
-    fn function_info(&self, _name: Spur) -> Option<FunctionInfo> {
-        // The call family: r4b-1's `ProviderCallFacts::function_info`.
-        None
+    fn function_info(&self, name: Spur) -> Option<FunctionInfo> {
+        let key = self.overlay.borrow().function_keys.get(&name).cloned()?;
+        let file = self
+            .overlay
+            .borrow()
+            .functions_by_file_name
+            .keys()
+            .find_map(|(file, symbol)| (*symbol == name).then_some(FileId::new(*file)))?;
+        let declaration = self.rir.rir_index().first_free_function(name, file)?;
+        let inst = self.rir.rir().get(declaration);
+        let rue_rir::InstData::FnDecl {
+            body,
+            return_type,
+            is_extern,
+            is_c_export,
+            directives,
+            ..
+        } = &inst.data
+        else {
+            return None;
+        };
+        let allow = |warning_name: &str| {
+            let allow_sym = self.rir.rir_interner().get("allow");
+            let warning_sym = self.rir.rir_interner().get(warning_name);
+            self.rir
+                .rir()
+                .directives(directives)
+                .iter()
+                .any(|directive| {
+                    Some(directive.name) == allow_sym
+                        && directive.args.iter().any(|arg| Some(*arg) == warning_sym)
+                })
+        };
+        self.identity
+            .pool_mut()?
+            .resolve_function(
+                &key,
+                FunctionIdentityHandle {
+                    body: *body,
+                    declaration,
+                    span: inst.span,
+                    return_type_sym: *return_type,
+                    is_extern: *is_extern,
+                    is_c_export: *is_c_export,
+                    allow_unused_function: allow("unused_function"),
+                    allow_unused_variable: allow("unused_variable"),
+                    allow_unreachable_code: allow("unreachable_code"),
+                    file_id: inst.span.file_id,
+                },
+            )
+            .ok()
     }
 
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodInfo> {
@@ -1432,29 +1314,6 @@ where
     fn source_function_name(&self, name: Spur) -> Spur {
         // Identity: the specialization name map is r5.
         name
-    }
-
-    fn first_free_function(&self, _source: Spur, _file_id: FileId) -> Option<InstRef> {
-        // Answered provider-naturally by the inherent
-        // `first_free_function(&str, FileId)`; the `Spur`-keyed trait op keys on
-        // an ambiguous interner and is not consulted by `resolve_instance_type`.
-        None
-    }
-
-    fn named_method_declaration(
-        &self,
-        owner_file: FileId,
-        owner_type_name: Spur,
-        method_name: Spur,
-    ) -> Option<InstRef> {
-        self.rir
-            .rir_index()
-            .named_method_declaration(owner_file, owner_type_name, method_name)
-    }
-
-    fn destructor(&self, _file: u32, _type_name: Spur) -> Option<RirDestructorDeclaration> {
-        // Answered provider-naturally by the inherent `destructor(FileId, &str)`.
-        None
     }
 
     fn module_id_for_file(&self, file: u32) -> Option<ModuleId> {

@@ -1,9 +1,9 @@
-//! Host capabilities for canonical one-body semantic analysis.
+//! Host capabilities for canonical body analysis.
 //!
 //! The trait deliberately describes only the facts an analyzer host can answer.
 //! It does not name the epoch, `Sema`, declaration phases, or any particular
-//! storage strategy. The canonical `Sema` implements it below; a future owned
-//! body host can implement the identical contract without borrowing an epoch.
+//! storage strategy. The provider body host supplies these facts to executable
+//! body analysis.
 
 use std::collections::HashMap;
 
@@ -80,7 +80,7 @@ impl<T> BodyAnalysisReadHost for T where
 {
 }
 
-/// Host capability consumed by the canonical one-body engine.
+/// Host capability consumed by the canonical body-analysis engine.
 ///
 /// Associated fact facades return owned or short-lived read-only values; the
 /// mutable operations take a request object so the contract stays independent
@@ -217,8 +217,9 @@ mod tests {
     use crate::sema::PreviewFeatures;
     use crate::sema::aggregate_resolution::AggregateModuleFact;
     use crate::sema::anon_structs::IssuedAnonymousNominalKey;
-    use crate::sema::declaration_index::RirDestructorDeclaration;
-    use crate::sema::info::{ConstInfo, FunctionInfo, MethodInfo};
+    use crate::sema::info::{
+        ConstInfo, FunctionCallInfo, FunctionInfo, MethodCallInfo, MethodInfo,
+    };
     use crate::types::{EnumId, ModuleDef, StructId};
     use crate::{
         SemanticDefinitionEndpoint, SemanticDefinitionToken, SemanticModuleEndpoint,
@@ -285,12 +286,6 @@ mod tests {
         fn endpoint_anon_enum(&self, _: &IssuedAnonymousNominalKey) -> Option<EnumId> {
             None
         }
-        fn endpoint_is_builtin_or_generated_struct(&self, _: Spur) -> bool {
-            false
-        }
-        fn endpoint_is_builtin_enum(&self, _: Spur) -> bool {
-            false
-        }
         fn endpoint_function_info(&self, _: Spur) -> Option<FunctionInfo> {
             None
         }
@@ -299,20 +294,6 @@ mod tests {
         }
         fn endpoint_source_function_name(&self, name: Spur) -> Spur {
             name
-        }
-        fn endpoint_first_free_function(&self, _: Spur, _: FileId) -> Option<InstRef> {
-            None
-        }
-        fn endpoint_named_method_declaration(
-            &self,
-            _: FileId,
-            _: Spur,
-            _: Spur,
-        ) -> Option<InstRef> {
-            None
-        }
-        fn endpoint_destructor(&self, _: u32, _: Spur) -> Option<RirDestructorDeclaration> {
-            None
         }
         fn endpoint_module_id_for_file(&self, _: u32) -> Option<ModuleId> {
             None
@@ -329,7 +310,7 @@ mod tests {
     }
 
     impl CallResolutionFactSource for OwnedReadHost {
-        fn call_function_info(&self, _: Spur) -> Option<FunctionInfo> {
+        fn call_function_info(&self, _: Spur) -> Option<FunctionCallInfo> {
             None
         }
         fn call_function_contains(&self, _: Spur) -> bool {
@@ -350,16 +331,13 @@ mod tests {
         fn call_module_binding(&self, _: FileId, _: Spur) -> Option<ConstInfo> {
             None
         }
-        fn call_method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
-            None
-        }
-        fn call_named_method_info(&self, _: StructId, _: Spur) -> Option<MethodInfo> {
+        fn call_method_info(&self, _: StructId, _: Spur) -> Option<MethodCallInfo> {
             None
         }
         fn call_named_method_by_callable_symbol(
             &self,
             _: Spur,
-        ) -> Option<(StructId, Spur, MethodInfo)> {
+        ) -> Option<(StructId, Spur, MethodCallInfo)> {
             None
         }
         fn call_named_method_declaration(&self, _: FileId, _: Spur, _: Spur) -> Option<InstRef> {

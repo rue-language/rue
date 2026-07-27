@@ -49,7 +49,9 @@ ALLOWANCES = {
     "crates/rue-compiler/src/diagnostic_attempt_store.rs": Allowance(2, "redundant diagnostic retention accounting"),
     "crates/rue-compiler/src/parsed_modules.rs": Allowance(2, "redundant source ownership checks"),
     "crates/rue-compiler/src/query_graph.rs": Allowance(3, "redundant query-node lifecycle checks"),
-    "crates/rue-compiler/src/revisioned_query_database.rs": Allowance(1, "redundant memo-retention accounting"),
+    "crates/rue-compiler/src/revisioned_query_database.rs": Allowance(
+        2, "redundant memo-retention and canonical-root accounting"
+    ),
     "crates/rue-compiler/src/semantic_query_nucleus.rs": Allowance(1, "redundant semantic query category check"),
     "crates/rue-compiler/src/session.rs": Allowance(8, "redundant canonical-session phase and provenance checks"),
     "crates/rue-compiler/src/source_identity.rs": Allowance(4, "redundant normalized-path representation checks"),
