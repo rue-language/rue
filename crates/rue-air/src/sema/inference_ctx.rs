@@ -13,7 +13,6 @@ use std::rc::Rc;
 use lasso::Spur;
 use rue_span::FileId;
 
-use super::fact_mode::BodyAnalysisReadHost;
 use super::{ConstValue, DeclarationPhase, Sema};
 use crate::inference::{FunctionSig, LazyInferenceFacts, MethodSig};
 use crate::types::{ModuleId, StructId, Type};
@@ -102,7 +101,7 @@ impl InferenceContext {
     /// Construct the context, snapshotting the generated-nominal overlays that
     /// the eager projection merged. The signature caches start empty and fill on
     /// demand.
-    pub(crate) fn new<H: BodyAnalysisReadHost>(host: &H) -> Self {
+    pub(crate) fn new<H: InferenceFactSource>(host: &H) -> Self {
         let InferenceGeneratedNominalOverlays {
             builtin_struct_types: gen_builtin_struct_types,
             struct_types_by_file: gen_struct_types_by_file,
@@ -125,12 +124,12 @@ impl InferenceContext {
 /// [`InferenceContext`] cache plus an immutable borrow of the analyzing host.
 /// The generator consults it through [`LazyInferenceFacts`]; every answer equals
 /// the value the eager projection would have held for that key.
-pub(crate) struct HostInferenceFacts<'a, H: BodyAnalysisReadHost> {
+pub(crate) struct HostInferenceFacts<'a, H: InferenceFactSource> {
     ctx: &'a InferenceContext,
     host: &'a H,
 }
 
-impl<'a, H: BodyAnalysisReadHost> HostInferenceFacts<'a, H> {
+impl<'a, H: InferenceFactSource> HostInferenceFacts<'a, H> {
     pub(crate) fn new(ctx: &'a InferenceContext, host: &'a H) -> Self {
         Self { ctx, host }
     }
@@ -144,7 +143,7 @@ impl<'a, H: BodyAnalysisReadHost> HostInferenceFacts<'a, H> {
     }
 }
 
-impl<H: BodyAnalysisReadHost> LazyInferenceFacts for HostInferenceFacts<'_, H> {
+impl<H: InferenceFactSource> LazyInferenceFacts for HostInferenceFacts<'_, H> {
     fn func_sig(&self, name: Spur) -> Option<Rc<FunctionSig>> {
         if let Some(cached) = self.ctx.func_sigs.borrow().get(&name) {
             return Some(Rc::clone(cached));

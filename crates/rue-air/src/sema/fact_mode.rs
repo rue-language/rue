@@ -85,7 +85,17 @@ impl<T> BodyAnalysisReadHost for T where
 /// Associated fact facades return owned or short-lived read-only values; the
 /// mutable operations take a request object so the contract stays independent
 /// of the current analyzer representation.
-pub(crate) trait BodyAnalysisHost: BodyAnalysisReadHost + Sized {
+///
+/// The supertrait is [`InferenceFactSource`] alone, not [`BodyAnalysisReadHost`].
+/// A host supplies its endpoint, call, and aggregate facts *through the three
+/// associated types* — an epoch host answers them with `EpochFacts` over its own
+/// read sources, and a provider-backed host answers them with the provider
+/// facades. Requiring the epoch-shaped read sources here would force every host
+/// to implement 47 point queries its own facades never consult, purely to
+/// satisfy a bound. Inference is the one family with no such indirection:
+/// `HostInferenceFacts` borrows the host directly, so that source stays a real
+/// requirement.
+pub(crate) trait BodyAnalysisHost: InferenceFactSource + Sized {
     type EndpointFacts<'a>: BodyEndpointProvider
     where
         Self: 'a;

@@ -1406,6 +1406,22 @@ mod tests {
         assert!(!CONTROL_FLOW_SOURCE.contains("struct BodySema"));
     }
 
+    /// The host contract requires the inference source and nothing wider.
+    ///
+    /// Endpoint, call, and aggregate facts reach the engine through the three
+    /// associated types, so a host that answers them with its own facades never
+    /// consults the epoch-shaped read sources. Widening this back to
+    /// `BodyAnalysisReadHost` would silently oblige every host — including the
+    /// provider-backed receiver — to implement 47 point queries nothing calls.
+    #[test]
+    fn the_host_contract_requires_only_the_inference_source() {
+        assert!(
+            FACT_MODE_SOURCE.contains("pub(crate) trait BodyAnalysisHost: InferenceFactSource"),
+            "the host contract's supertrait must stay narrowed to the one source \
+             `HostInferenceFacts` actually borrows the host for"
+        );
+    }
+
     #[test]
     fn one_body_host_contract_is_representation_agnostic() {
         assert!(FACT_MODE_SOURCE.contains("trait BodyAnalysisHost"));
@@ -1481,8 +1497,8 @@ mod tests {
             ),
             (
                 INFERENCE_CONTEXT_SOURCE,
-                "pub(crate) struct HostInferenceFacts<'a, H: BodyAnalysisReadHost>",
-                "impl<H: BodyAnalysisReadHost> LazyInferenceFacts for HostInferenceFacts<'_, H>",
+                "pub(crate) struct HostInferenceFacts<'a, H: InferenceFactSource>",
+                "impl<H: InferenceFactSource> LazyInferenceFacts for HostInferenceFacts<'_, H>",
             ),
         ];
         for (source, struct_header, impl_header) in adapters {
