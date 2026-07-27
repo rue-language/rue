@@ -106,8 +106,9 @@ jobs:
           rustup toolchain install "$NIGHTLY" --profile minimal
           --component clippy,rust-src
 
-      # This standalone crate has no buck2 target, so it sits outside the
-      # repository-wide `./clippy.sh` query. Gate it here so it does not rot
+      # This standalone crate has no buck2 target, so it declares no
+      # `<name>-clippy` gate and is invisible to the per-crate lint targets the
+      # rue_crate/rue_binary macros emit. Gate it here so it does not rot
       # (RUE-560). Same instrumentation flags as the run, so lints see the
       # sanitizer cfg the harness compiles under.
       - name: Clippy the ASan harness

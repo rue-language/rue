@@ -22,17 +22,17 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
-# The formatting gate lives in fmt.sh, not here. A `fmt-check` sh_test used to
-# sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`. A
-# Buck glob does not descend into subpackages, and all 30 crates that own a
-# BUCK file are subpackages -- so the list resolved to the single source under
+# The formatting and lint gates are per-crate, not here. A `fmt-check` sh_test
+# used to sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`.
+# A Buck glob does not descend into subpackages, and every crate owning a BUCK
+# file is a subpackage -- so the list resolved to the single source under
 # crates/rue-runtime-asan/ (the one crate without a BUCK file). The gate ran
 # rustfmt over 1 file of 281 and reported a pass for the other 280 (RUE-1152).
 #
-# Restoring cache-aware checking here means enumerating sources per crate,
-# which is a real change rather than a glob tweak; until then CI calls
-# `./fmt.sh check`, whose `find`-based discovery covers every source and now
-# fails rather than exits 0 when it finds none.
+# The replacement does not glob across packages at all: rue_crate/rue_binary
+# emit a `<name>-fmt-check` and a `<name>-clippy` per crate from the same
+# package-local srcs the library compiles (RUE-1153). Coverage is structural --
+# a crate is checked because it declares the targets.
 
 # The std library sources are runtime inputs to CLI integration tests and spec
 # cases that opt into the real std (compiled programs `@import` them via

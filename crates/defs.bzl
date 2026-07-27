@@ -21,6 +21,49 @@
 # (toolchains/rust/BUCK sets `deny_lints = ["warnings"]`), so these macros
 # do not pass any per-target lint flags.
 
+def _fmt_check(name, srcs):
+    """Emits `<name>-fmt-check`: rustfmt --check over this crate's own sources.
+
+    Coverage is structural. The gate this replaced took its file list from a
+    root-package `glob(["crates/**/*.rs"])`, and a Buck glob does not descend
+    into subpackages -- every crate owning a BUCK file was invisible, so the
+    check ran over 1 file of 281 and passed for the other 280 (RUE-1152).
+    Emitting the target from the macro every crate already calls means a crate
+    is checked because it declares the target, not because a glob reached it.
+
+    `srcs` is the same package-relative glob the library target compiles.
+    sh_test runs from the project root, so each path is prefixed with the
+    package to address the file the same way the old root-package target did.
+    Declaring `srcs` as resources is what makes Buck re-run the check when a
+    source changes rather than serving a stale pass.
+    """
+    native.sh_test(
+        name = name + "-fmt-check",
+        test = "toolchains//rust:rustfmt",
+        args = ["--edition", "2024", "--check"] + [
+            package_name() + "/" + src
+            for src in srcs
+        ],
+        resources = srcs,
+    )
+
+def _clippy_check(name):
+    """Emits `<name>-clippy`: fails when this crate's clippy diagnostics contain an error.
+
+    Buck's Rust rules capture clippy output into an always-succeeding
+    `[clippy.txt]` subtarget, so a build can never fail on a lint and something
+    must read the file and decide. Expressing that as a test rather than a
+    top-level script means Buck has to materialize the diagnostics before the
+    test can run -- the property clippy.sh had to request explicitly with
+    --materializations=all after a remote cache hit was found able to satisfy
+    the build without writing the file at all (RUE-1152).
+    """
+    native.sh_test(
+        name = name + "-clippy",
+        test = "//crates:clippy-gate",
+        args = ["$(location :" + name + "[clippy.txt])"],
+    )
+
 def rue_crate(
         name,
         deps = [],
@@ -36,6 +79,8 @@ def rue_crate(
     different srcs), use `tests = False` and write the rust_test by hand.
     """
     srcs = glob(["src/**/*.rs"])
+    _fmt_check(name, srcs)
+    _clippy_check(name)
     native.rust_library(
         name = name,
         srcs = srcs,
@@ -65,6 +110,8 @@ def rue_binary(
     build time).
     """
     srcs = glob(["src/**/*.rs"])
+    _fmt_check(name, srcs)
+    _clippy_check(name)
     native.rust_binary(
         name = name,
         srcs = srcs,
