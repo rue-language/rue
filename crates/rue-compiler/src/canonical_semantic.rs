@@ -3784,7 +3784,7 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let options = CompileOptions::default();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
 
         let ordinary = match rue_air::Sema::new_synthetic(
             rir.rir(),
@@ -3825,7 +3825,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&source).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         crate::bound_definitions::configure_canonical_sema(
             &merged,
             &rir,
@@ -3846,7 +3846,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(snapshot).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::test_support::test_import_graph(snapshot).unwrap();
         let output =
             analyze_canonical_program_for_test_support(&merged, &rir, options, &imports, ids)
                 .unwrap();
@@ -4200,9 +4200,23 @@ mod tests {
         let (relocated, _) = canonical(&relocated, &base_options, false);
         assert_ne!(base.input(), relocated.input());
 
-        let different_root = snapshot(&sources, 2);
-        let (different_root, _) = canonical(&different_root, &base_options, false);
-        assert_ne!(base.input(), different_root.input());
+        // The designated root is its own input axis. It is exercised on an
+        // import-free pair: designating `helper.rue` as the root of the
+        // import-bearing fixture above would leave `main.rue` unreachable, and
+        // a program's import graph covers only what discovery reaches from its
+        // root.
+        let roots = [
+            (1, "/roots/main.rue", "main.rue", "fn main() -> i32 { 0 }"),
+            (
+                2,
+                "/roots/helper.rue",
+                "helper.rue",
+                "fn main() -> i32 { 1 }",
+            ),
+        ];
+        let (first_root, _) = canonical(&snapshot(&roots, 1), &base_options, false);
+        let (second_root, _) = canonical(&snapshot(&roots, 2), &base_options, false);
+        assert_ne!(first_root.input(), second_root.input());
     }
 
     #[test]
@@ -4441,13 +4455,15 @@ mod tests {
                 let merged = crate::merge_parsed_modules(&parsed).unwrap();
                 let rir = crate::lower_canonical_rir(&merged).unwrap();
                 let options = CompileOptions::default();
-                let imports = crate::bound_definitions::test_fixture_import_graph(&merged).unwrap();
+                let imports =
+                    crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
                 let (definitions, query_declarations, _) =
                     crate::bound_definitions::bind_canonical_declaration_semantics(
                         &merged,
                         &rir,
                         options.preview_features.clone(),
                         options.target,
+                        &imports,
                     )
                     .unwrap();
                 let query_shells = super::super::query_owned_declaration_shells_for_test(

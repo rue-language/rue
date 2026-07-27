@@ -257,6 +257,80 @@ impl CanonicalImportGraph {
     }
 }
 
+/// A parsed or merged revision, viewed as the inputs an import-free canonical
+/// graph is derived from.
+pub(crate) trait ImportFreeRevision {
+    fn root(&self) -> &ModuleId;
+    fn modules(&self) -> &[Arc<crate::parsed_modules::ParsedModule>];
+    fn import_directives(&self) -> &ImportDirectives;
+}
+
+impl ImportFreeRevision for crate::ParsedProgram {
+    fn root(&self) -> &ModuleId {
+        crate::ParsedProgram::root(self)
+    }
+    fn modules(&self) -> &[Arc<crate::parsed_modules::ParsedModule>] {
+        crate::ParsedProgram::modules(self)
+    }
+    fn import_directives(&self) -> &ImportDirectives {
+        crate::ParsedProgram::import_directives(self)
+    }
+}
+
+impl ImportFreeRevision for crate::canonical_merge::CanonicalMergedAst {
+    fn root(&self) -> &ModuleId {
+        crate::canonical_merge::CanonicalMergedAst::root(self)
+    }
+    fn modules(&self) -> &[Arc<crate::parsed_modules::ParsedModule>] {
+        crate::canonical_merge::CanonicalMergedAst::modules(self)
+    }
+    fn import_directives(&self) -> &ImportDirectives {
+        crate::canonical_merge::CanonicalMergedAst::import_directives(self)
+    }
+}
+
+/// The uniquely valid canonical graph for a revision that declares no import
+/// directives: no records over that revision's own module set.
+///
+/// This is not a second resolver. An import-free revision has exactly one legal
+/// topology, so it needs no candidate precedence, no host observation, and no
+/// discovery epoch. The session's semantic path and the lower-layer unit tests
+/// that analyze an import-free fixture both construct it here, so neither one
+/// re-derives module resolution inputs on its own.
+pub(crate) fn import_free_canonical_graph(
+    program: &impl ImportFreeRevision,
+) -> Result<CanonicalImportGraph, crate::CompileErrors> {
+    if !program.import_directives().is_empty() {
+        return Err(crate::CompileErrors::from(
+            crate::CompileError::without_span(crate::ErrorKind::InvalidCompilerInput(
+                "an import-bearing revision has no import-free canonical graph; resolve it through discovery"
+                    .into(),
+            )),
+        ));
+    }
+    let inputs = ModuleResolutionInputs::new(
+        program.root().clone(),
+        program
+            .modules()
+            .iter()
+            .map(|module| crate::ModuleResolutionInput {
+                module: module.module_id().clone(),
+                physical_path: Arc::from(module.physical_path()),
+            })
+            .collect(),
+    )
+    .map_err(crate::CompileErrors::from)?;
+    CanonicalImportGraph::from_supplied(program.root().clone(), Vec::new(), &inputs).map_err(
+        |validation| {
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                crate::ErrorKind::InvalidCompilerInput(format!(
+                    "invalid import-free semantic graph: {validation:?}"
+                )),
+            ))
+        },
+    )
+}
+
 /// Stable malformed-topology finding for a canonical import graph.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CanonicalImportGraphProblem {

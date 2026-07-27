@@ -518,21 +518,15 @@ fn main() -> i32 {
     );
 }
 
-/// Publish `root_source` (trusted std `Option` present) into `session`, adopting
-/// the test import graph, and return the semantic output.
+/// Publish `root_source` (trusted std `Option` present) into `session` through
+/// the discovery protocol, and return the semantic output.
 fn publish_trusted_semantic(
     session: &mut CompilerSession,
     root_source: &str,
     options: &CompileOptions,
 ) -> Result<Arc<CanonicalSemanticOutput>, CompileErrors> {
     let snapshot = trusted_option_snapshot(root_source);
-    let program = session
-        .update_for_presentation(&snapshot)
-        .into_owner_result()?;
-    if !program.import_directives().is_empty() {
-        let graph = crate::test_fixture_import_graph(&program)?;
-        session.adopt_test_import_graph(graph);
-    }
+    crate::test_support::publish_test_snapshot(session, &snapshot)?;
     session.canonical_semantic(options)
 }
 
