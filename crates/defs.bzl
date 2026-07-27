@@ -21,10 +21,13 @@
 # (toolchains/rust/BUCK sets `deny_lints = ["warnings"]`), so these macros
 # do not pass any per-target lint flags.
 
+load("//:test_defs.bzl", "rue_test_labels")
+
 def rue_crate(
         name,
         deps = [],
         test_deps = [],
+        test_tier = "premerge",
         tests = True,
         visibility = ["PUBLIC"],
         **kwargs):
@@ -48,6 +51,7 @@ def rue_crate(
             name = name + "-test",
             srcs = srcs,
             deps = deps + test_deps,
+            labels = rue_test_labels(test_tier),
             **kwargs
         )
 
@@ -55,6 +59,7 @@ def rue_binary(
         name,
         deps = [],
         test_deps = [],
+        test_tier = "premerge",
         tests = True,
         visibility = ["PUBLIC"],
         **kwargs):
@@ -77,5 +82,6 @@ def rue_binary(
             name = name + "-test",
             srcs = srcs,
             deps = deps + test_deps,
+            labels = rue_test_labels(test_tier),
             **kwargs
         )

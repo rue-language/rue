@@ -835,10 +835,11 @@ test_testsh_unfiltered_audits_corpus_presence() {
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then
   # RUE-1116: test.sh issues a second uquery for the rue_cli_shard set and
-  # subtracts it from heavy-suite discovery. Serve FAKE_CLI_SHARDS (empty by
-  # default) for that query and FAKE_HEAVY_SUITES for the rue_heavy_suite one.
+  # subtracts it from heavy-suite discovery. RUE-1157 adds a dedicated-suite
+  # ownership query when required CI defers those tests to explicit jobs.
   case "$*" in
     *rue_cli_shard*) for t in ${FAKE_CLI_SHARDS:-}; do printf 'root%s\n' "$t"; done ;;
+    *rue_dedicated_suite*) for t in ${FAKE_DEDICATED_SUITES:-}; do printf 'root%s\n' "$t"; done ;;
     *) for t in $FAKE_HEAVY_SUITES; do printf 'root%s\n' "$t"; done ;;
   esac
   exit 0
@@ -902,7 +903,28 @@ EOF
   check "test.sh: deferred suites are not executed by the owning shard" \
     "$(! grep -Eq '^test (root)?//:(cli-tests(-caldera)?|spec-tests)' "$sb/calls.log" && echo 0 || echo 1)"
 
-  # (5) A stale shard name or local attempt to suppress coverage fails closed.
+  # (5) Dedicated pre-merge coverage may leave the broad CI pass only when the
+  # workflow-owned set exactly matches Buck's live scheduling metadata.
+  : >"$sb/calls.log"; rc=0
+  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+      RUE_CI_DEFER_HEAVY_SUITES= \
+      RUE_CI_DEFER_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
+      FAKE_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
+      FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" \
+      FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: required CI may defer the exact live dedicated-suite set" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--exclude rue_dedicated_suite' "$sb/calls.log" && echo 0 || echo 1)"
+
+  rc=0
+  out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
+      RUE_CI_DEFER_HEAVY_SUITES= \
+      RUE_CI_DEFER_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
+      FAKE_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test //:unowned-dedicated' \
+      FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: a live dedicated target without a CI owner fails closed" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'has no explicit CI owner' <<<"$out" && echo 0 || echo 1)"
+
+  # (6) A stale shard name or local attempt to suppress coverage fails closed.
   rc=0
   out="$(cd "$sb" && CI=true RUE_FULL_SUITE_LOCK_HELD=1 \
       RUE_CI_DEFER_HEAVY_SUITES='//:missing-suite' \
@@ -917,7 +939,16 @@ EOF
   check "test.sh: local callers cannot defer corpus coverage" \
     "$([ "$rc" -ne 0 ] && grep -Fq 'reserved for required CI' <<<"$out" && echo 0 || echo 1)"
 
-  # (6) RUE-1116: the CI-only CLI shards are labeled rue_heavy_suite but must be
+  rc=0
+  out="$(cd "$sb" && CI= RUE_FULL_SUITE_LOCK_HELD=1 \
+      RUE_CI_DEFER_HEAVY_SUITES= \
+      RUE_CI_DEFER_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
+      FAKE_DEDICATED_SUITES='//crates/rue-compiler:scaling-matrix-test' \
+      FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: local callers cannot defer dedicated coverage" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'reserved for required CI' <<<"$out" && echo 0 || echo 1)"
+
+  # (7) RUE-1116: the CI-only CLI shards are labeled rue_heavy_suite but must be
   #     excluded from a local full run, which covers their union once via the
   #     monolithic //:cli-tests. The run still succeeds (full corpus present).
   local with_shards="$all //:cli-tests-shard-0 //:cli-tests-shard-1"

@@ -1,4 +1,5 @@
 load("//crates:defs.bzl", "rue_binary")
+load("//:test_defs.bzl", "rue_sh_test")
 
 # The differential harness. Two modes:
 #  * default: runs the concrete rue-cli-tests corpus through the rue-oracle
@@ -47,8 +48,9 @@ rue_binary(
 # violations fail the harness; only typed model gaps remain coverage debt.
 # Preview-gated cases run when their declared preview flags can be mapped onto
 # the single-source oracle.
-sh_test(
+rue_sh_test(
     name = "oracle-diff-test",
+    labels = ["rue_not_quick"],
     test = ":rue-oracle-diff",
     env = {
         "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
@@ -62,8 +64,9 @@ sh_test(
 # are expanded via rue-test-runner; golden-IR-only / compile-fail cases are
 # skipped by the harness, not counted as disagreements. Preview-gated cases run
 # with their declared preview feature.
-sh_test(
+rue_sh_test(
     name = "oracle-diff-spec-test",
+    labels = ["rue_not_quick"],
     test = ":rue-oracle-diff",
     args = ["spec"],
     env = {

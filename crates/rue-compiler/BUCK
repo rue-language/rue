@@ -1,4 +1,5 @@
 load("//crates:defs.bzl", "rue_crate")
+load("//:test_defs.bzl", "rue_rust_test")
 
 filegroup(
     name = "runtime-abi-inventory-sources",
@@ -71,8 +72,9 @@ rue_crate(
 # target excludes. CI runs this as its own job, filtered to `scaling_matrix`, so
 # only the matrix cases execute here. Marking the CI check required in branch
 # protection is a maintainer action.
-rust_test(
+rue_rust_test(
     name = "scaling-matrix-test",
+    labels = ["rue_dedicated_suite"],
     srcs = glob(["src/**/*.rs"]),
     mapped_srcs = _RUNTIME_MAPPED_SRCS,
     deps = _DEPS,
@@ -85,7 +87,7 @@ rust_test(
 
 # Compiles against rue-compiler as an external crate so curated reexports and
 # visibility cannot be satisfied accidentally by crate-private test access.
-rust_test(
+rue_rust_test(
     name = "rue-compiler-public-api-test",
     srcs = ["tests/public_api.rs"],
     crate_root = "tests/public_api.rs",
@@ -98,7 +100,7 @@ rust_test(
 # A bounded, deterministic corpus comparing a long-lived session with
 # step-matched fresh sessions. Keeping this separate gives local and CI callers
 # a focused regression target for incremental correctness.
-rust_test(
+rue_rust_test(
     name = "rue-compiler-differential-oracle-test",
     srcs = ["tests/differential_oracle.rs"],
     crate_root = "tests/differential_oracle.rs",
@@ -113,7 +115,7 @@ rust_test(
 
 # Cross-phase payload-schema verification. This intentionally compiles as an
 # external consumer so it can exercise only production publication/query APIs.
-rust_test(
+rue_rust_test(
     name = "rue-compiler-payload-schema-test",
     srcs = ["tests/payload_schemas.rs"],
     crate_root = "tests/payload_schemas.rs",

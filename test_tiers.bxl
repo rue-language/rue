@@ -1,0 +1,55 @@
+"""Buck-graph validation for Rue's first-party test execution tiers."""
+
+_TEST_TIER_LABELS = [
+    "rue_test_tier_premerge",
+    "rue_test_tier_slow",
+    "rue_test_tier_stress",
+]
+
+def _validate(ctx):
+    # Vendored third-party tests follow their upstream-generated BUCK metadata.
+    # Rue owns every other test target in the cell and requires it to declare
+    # exactly one execution tier.
+    tests = ctx.uquery().eval(
+        'kind("^(.*_test|test_suite)$", //...) except //third-party/...',
+    ) + ctx.uquery().eval(
+        'kind("^(.*_test|test_suite)$", toolchains//...)',
+    )
+
+    errors = []
+    counts = {}
+    for tier in _TEST_TIER_LABELS:
+        counts[tier] = 0
+
+    for test in tests:
+        labels = test.get_attr("labels")
+        target_tiers = [
+            tier
+            for tier in _TEST_TIER_LABELS
+            if tier in labels
+        ]
+        if len(target_tiers) != 1:
+            errors.append("{} has {}; expected exactly one Rue test tier".format(
+                test.label,
+                target_tiers,
+            ))
+        else:
+            counts[target_tiers[0]] += 1
+
+    if errors:
+        fail("invalid Rue test-tier ownership:\n{}".format(
+            "\n".join(sorted(errors)),
+        ))
+
+    ctx.output.print(
+        "Rue test tiers valid: {} premerge, {} slow, {} stress".format(
+            counts["rue_test_tier_premerge"],
+            counts["rue_test_tier_slow"],
+            counts["rue_test_tier_stress"],
+        ),
+    )
+
+validate = bxl_main(
+    impl = _validate,
+    cli_args = {},
+)
