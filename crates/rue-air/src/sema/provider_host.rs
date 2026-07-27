@@ -127,20 +127,36 @@ pub(crate) struct ProviderBodyLocalState {
     pub(crate) comptime_type_call_depth: usize,
     /// Constructor type displays this body rendered, for diagnostics.
     pub(crate) ctor_type_displays: HashMap<Type, String>,
-    /// Endpoints for the stable identities this body actually consulted.
+    /// Coordinates for the stable identities this body actually consulted.
     ///
-    /// Symbol rendering needs `token -> (file, name, owner, kind)`, which the
-    /// epoch answers from a declaration-universe-sized reverse table
-    /// (`stable_definition_endpoints`). A body never needs that table: it can
-    /// only render a token it resolved, and every token it resolved came back
-    /// from a provider lookup that already carried the endpoint. Recording the
-    /// endpoint at that moment makes rendering `O(consulted)` and keeps the
-    /// dependency edge on the lookup that produced it, rather than on a table
-    /// read afterwards.
-    pub(crate) consulted_definition_endpoints:
-        HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>,
-    pub(crate) consulted_module_endpoints:
-        HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>,
+    /// Symbol rendering needs `token -> (module path, name, owner, kind)`,
+    /// which the epoch answers from two declaration-universe-sized reverse
+    /// tables (`stable_definition_endpoints` joined with `symbol_paths`). A
+    /// body never needs either: it can only render a token it resolved, and it
+    /// resolved that token by *supplying* exactly these coordinates to the
+    /// identity boundary. Recording them at that moment makes rendering
+    /// `O(consulted)` and keeps the dependency edge on the lookup that produced
+    /// the token rather than on a table read afterwards.
+    pub(crate) consulted_definitions: HashMap<crate::SemanticDefinitionToken, ConsultedDefinition>,
+    pub(crate) consulted_modules: HashMap<crate::SemanticModuleToken, std::sync::Arc<str>>,
+}
+
+/// The request-independent coordinates one resolved definition token was
+/// looked up under — which are exactly the inputs its stable digest component
+/// is built from.
+///
+/// Deliberately *not* [`crate::SemanticDefinitionEndpoint`]: that record
+/// carries a `file: u32` in the compiler's file numbering, and the body-scoped
+/// identity pool numbers its own files independently, in first-consult order.
+/// Keeping a file number here at all would leave two incompatible numbering
+/// universes meeting silently at the renderer. The logical module path is the
+/// one coordinate both sides agree on, so it is the only one stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConsultedDefinition {
+    pub(crate) module_path: std::sync::Arc<str>,
+    pub(crate) name: std::sync::Arc<str>,
+    pub(crate) owner: Option<std::sync::Arc<str>>,
+    pub(crate) kind: crate::StableDefinitionKind,
 }
 
 impl ProviderBodyLocalState {
@@ -162,40 +178,40 @@ impl ProviderBodyLocalState {
             .collect();
     }
 
-    /// Record the endpoint a provider lookup returned alongside its token.
+    /// Record the coordinates a token was resolved under, alongside the token.
     ///
-    /// Called at the consult, never at the render: a token whose endpoint was
-    /// never recorded is one this body never resolved, and rendering it would
-    /// be reaching for a fact the body has no dependency edge on.
-    pub(crate) fn record_consulted_definition_endpoint(
+    /// Called at the consult, never at the render: a token whose coordinates
+    /// were never recorded is one this body never resolved, and rendering it
+    /// would be reaching for a fact the body has no dependency edge on.
+    pub(crate) fn record_consulted_definition(
         &mut self,
-        endpoint: crate::SemanticDefinitionEndpoint,
+        token: crate::SemanticDefinitionToken,
+        consulted: ConsultedDefinition,
     ) {
-        self.consulted_definition_endpoints
-            .insert(endpoint.token, endpoint);
+        self.consulted_definitions.insert(token, consulted);
     }
 
-    pub(crate) fn record_consulted_module_endpoint(
+    pub(crate) fn record_consulted_module(
         &mut self,
-        endpoint: crate::SemanticModuleEndpoint,
+        token: crate::SemanticModuleToken,
+        module_path: std::sync::Arc<str>,
     ) {
-        self.consulted_module_endpoints
-            .insert(endpoint.token, endpoint);
+        self.consulted_modules.insert(token, module_path);
     }
 
-    /// The endpoint for a token this body resolved, or `None` when it did not.
-    pub(crate) fn consulted_definition_endpoint(
+    /// The coordinates of a token this body resolved, or `None` when it did
+    /// not.
+    pub(crate) fn consulted_definition(
         &self,
         token: &crate::SemanticDefinitionToken,
-    ) -> Option<&crate::SemanticDefinitionEndpoint> {
-        self.consulted_definition_endpoints.get(token)
+    ) -> Option<&ConsultedDefinition> {
+        self.consulted_definitions.get(token)
     }
 
-    pub(crate) fn consulted_module_endpoint(
-        &self,
-        token: &crate::SemanticModuleToken,
-    ) -> Option<&crate::SemanticModuleEndpoint> {
-        self.consulted_module_endpoints.get(token)
+    pub(crate) fn consulted_module(&self, token: &crate::SemanticModuleToken) -> Option<&str> {
+        self.consulted_modules
+            .get(token)
+            .map(std::sync::Arc::as_ref)
     }
 
     /// The producer-nominal identities this body actually minted.
@@ -404,6 +420,13 @@ pub(crate) const HOST_CAPABILITY_LEDGER: &[HostCapabilityRow] = &[
 /// which is the property that makes export `O(consulted)`: the epoch answers
 /// the same questions by scanning `stable_definition_tokens` and
 /// `stable_module_tokens`, both sized by the declaration universe.
+/// Every coordinate crossing this seam is **request-independent**. In
+/// particular a declaration is located by its logical module path, never by a
+/// file number: the body-scoped identity pool numbers files in first-consult
+/// order, so the same declaration carries different numbers in different
+/// bodies, and the durable universe on the other side is keyed on neither
+/// numbering. A file number crossing here would miss silently at best and
+/// collide with an unrelated declaration at worst.
 pub(crate) trait StableIdentityFacts {
     /// The stable token for one exact declaration coordinate.
     ///
@@ -412,20 +435,20 @@ pub(crate) trait StableIdentityFacts {
     /// the wrong kind is `WrongStableIdentityKind`. The caller never guesses.
     fn definition_token(
         &self,
-        file: u32,
+        module_path: &str,
         name: &str,
         owner: Option<&str>,
         kind: crate::StableDefinitionKind,
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
 
-    /// The stable token for one consulted module file.
+    /// The stable token for one consulted module.
     fn module_token(
         &self,
-        file: FileId,
+        module_path: &str,
     ) -> Result<crate::SemanticModuleToken, crate::SemanticBodyExportFailure>;
 
-    /// The file backing a module id this body resolved.
-    fn module_file(&self, module: crate::types::ModuleId) -> Option<FileId>;
+    /// The logical module path behind a module id this body resolved.
+    fn module_path(&self, module: crate::types::ModuleId) -> Option<std::sync::Arc<str>>;
 }
 
 /// One named method a rendered callable symbol reverses to.
@@ -434,11 +457,13 @@ pub(crate) trait StableIdentityFacts {
 /// provider answers it with `BodyFactProvider::callable_symbol_method`, whose
 /// fail-closed single-candidate contract is the same one the export path needs
 /// (an ambiguous receiver or method is `None`, never a guess).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExportedMethodSite {
     pub(crate) owner: StructId,
     pub(crate) method: Spur,
-    pub(crate) file: FileId,
+    /// The declaring module's logical path — the same request-independent
+    /// coordinate [`StableIdentityFacts`] is keyed on, for the same reason.
+    pub(crate) module_path: std::sync::Arc<str>,
     pub(crate) has_self: bool,
 }
 
@@ -448,9 +473,9 @@ pub(crate) struct ExportedMethodSite {
 /// implementation routes each call through the provider boundary so the edge is
 /// recorded, and neither operation has a whole-universe form.
 pub(crate) trait ExportCallableFacts {
-    /// The file declaring a free function, or `None` when the symbol does not
-    /// name one (it may still name a method).
-    fn free_function_file(&self, symbol: Spur) -> Option<FileId>;
+    /// The logical module path declaring a free function, or `None` when the
+    /// symbol does not name one (it may still name a method).
+    fn free_function_module(&self, symbol: Spur) -> Option<std::sync::Arc<str>>;
 
     /// The source name behind a possibly-specialized callable symbol.
     fn source_function_name(&self, symbol: Spur) -> Spur;
@@ -756,7 +781,7 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
             return Err(crate::SemanticBodyExportFailure::AnonymousNominal);
         }
         self.identity.definition_token(
-            def.file_id.index(),
+            &self.pool_module_path(def.file_id),
             def.name.as_str(),
             None,
             crate::StableDefinitionKind::Struct,
@@ -775,7 +800,7 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
             return Err(crate::SemanticBodyExportFailure::AnonymousNominal);
         }
         self.identity.definition_token(
-            def.file_id.index(),
+            &self.pool_module_path(def.file_id),
             def.name.as_str(),
             None,
             crate::StableDefinitionKind::Enum,
@@ -912,11 +937,11 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
                 self.canonical_type_instance(self.type_pool.ptr_mut_def(id))?,
             )),
             TypeKind::Module(id) => {
-                let file = self
+                let module = self
                     .identity
-                    .module_file(id)
+                    .module_path(id)
                     .ok_or(Failure::MissingStableIdentity)?;
-                T::Module(self.identity.module_token(file)?)
+                T::Module(self.identity.module_token(&module)?)
             }
             TypeKind::Error => return Err(Failure::UnsupportedType),
         })
@@ -927,10 +952,10 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
         &self,
         symbol: Spur,
     ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
-        if let Some(file) = self.callables.free_function_file(symbol) {
+        if let Some(module) = self.callables.free_function_module(symbol) {
             let source = self.callables.source_function_name(symbol);
             return self.identity.definition_token(
-                file.index(),
+                &module,
                 self.interner.resolve(&source),
                 None,
                 crate::StableDefinitionKind::Function,
@@ -946,7 +971,7 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
             return Err(crate::SemanticBodyExportFailure::AnonymousNominal);
         }
         self.identity.definition_token(
-            site.file.index(),
+            &site.module_path,
             method,
             Some(owner.name.as_str()),
             if method == "__drop" {
@@ -989,40 +1014,39 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
         })
     }
 
-    /// The request-independent logical module path of one consulted file.
+    /// The logical module path a pool-minted nominal was declared in.
     ///
-    /// The pool's path table is written at the mint that assigned a module its
-    /// body-local file id, so it holds exactly the modules this body consulted.
-    /// The epoch answers the same question from `symbol_paths`, sized by every
-    /// file in the program — this is the whole difference between the two
-    /// renderings.
+    /// This is the *only* legal use of a body-local file id: translating it
+    /// back through the same table that assigned it. The pool writes that entry
+    /// at the mint, so it holds exactly the modules this body consulted, and an
+    /// absent path means a broken pool rather than a reachable input — the
+    /// epoch fails closed on the same invariant.
     ///
-    /// Every file reaching here came from a nominal the pool minted, and
-    /// minting registers the path, so an absent path is a broken pool rather
-    /// than a reachable input. The epoch fails closed on the same invariant.
-    fn logical_module_component(&self, file: u32) -> String {
+    /// The number never escapes this method. Everything downstream — the
+    /// identity boundary and both symbol renderings — sees the path.
+    fn pool_module_path(&self, file: FileId) -> String {
         self.type_pool
-            .symbol_path(FileId::new(file))
-            .expect("every consulted endpoint's file has a canonical logical module path")
+            .symbol_path(file)
+            .expect("every pool-minted nominal's file has a canonical logical module path")
     }
 
     /// The request-independent content of one definition token.
     ///
-    /// Rendered from the endpoint recorded at the consult that produced the
+    /// Rendered from the coordinates recorded at the consult that produced the
     /// token, never from a reverse table: a body can only render an identity it
-    /// resolved. The uninstalled-token spelling matches the epoch's byte for
-    /// byte, because it feeds anonymous-identity digests that must agree across
-    /// the flip.
+    /// resolved, and it resolved it by supplying exactly these coordinates. The
+    /// uninstalled-token spelling matches the epoch's byte for byte, because it
+    /// feeds anonymous-identity digests that must agree across the flip.
     pub(crate) fn stable_definition_symbol_component(
         &self,
         token: &crate::SemanticDefinitionToken,
     ) -> String {
-        match self.local.consulted_definition_endpoint(token) {
-            Some(endpoint) => crate::stable_digest::stable_definition_component(
-                &self.logical_module_component(endpoint.file),
-                &endpoint.name,
-                endpoint.owner.as_deref(),
-                endpoint.kind as u8,
+        match self.local.consulted_definition(token) {
+            Some(consulted) => crate::stable_digest::stable_definition_component(
+                &consulted.module_path,
+                &consulted.name,
+                consulted.owner.as_deref(),
+                consulted.kind as u8,
             ),
             None => format!("d\u{1}{}\u{1}{}", token.issuer(), token.slot()),
         }
@@ -1033,10 +1057,8 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
         &self,
         token: &crate::SemanticModuleToken,
     ) -> String {
-        match self.local.consulted_module_endpoint(token) {
-            Some(endpoint) => crate::stable_digest::stable_module_component(
-                &self.logical_module_component(endpoint.file),
-            ),
+        match self.local.consulted_module(token) {
+            Some(module_path) => crate::stable_digest::stable_module_component(module_path),
             None => format!("m\u{1}{}\u{1}{}", token.issuer(), token.slot()),
         }
     }
@@ -1054,7 +1076,7 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
         crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
         crate::SemanticBodyExportFailure,
     > {
-        if self.callables.free_function_file(symbol).is_some() {
+        if self.callables.free_function_module(symbol).is_some() {
             return Ok(crate::FunctionInstanceKey::Definition(
                 self.function_identity(symbol)?,
             ));
@@ -1163,11 +1185,11 @@ impl<'a, I: StableIdentityFacts, C: ExportCallableFacts> ProviderExportHost<'a, 
                 self.export_body_type(self.type_pool.ptr_mut_def(id))?,
             )),
             TypeKind::Module(id) => {
-                let file = self
+                let module = self
                     .identity
-                    .module_file(id)
+                    .module_path(id)
                     .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
-                Exported::Module(self.identity.module_token(file)?)
+                Exported::Module(self.identity.module_token(&module)?)
             }
             TypeKind::Error => {
                 return Err(crate::SemanticBodyExportFailure::UnsupportedType);
@@ -1259,26 +1281,26 @@ mod tests {
         let consulted = crate::SemanticDefinitionToken::new(1, 7);
         let never_consulted = crate::SemanticDefinitionToken::new(1, 8);
 
-        assert!(state.consulted_definition_endpoint(&consulted).is_none());
+        assert!(state.consulted_definition(&consulted).is_none());
 
-        state.record_consulted_definition_endpoint(crate::SemanticDefinitionEndpoint {
-            token: consulted,
-            file: 3,
-            name: "helper".into(),
-            kind: crate::StableDefinitionKind::Function,
-            owner: None,
-        });
+        state.record_consulted_definition(
+            consulted,
+            ConsultedDefinition {
+                module_path: "app/helpers.rue".into(),
+                name: "helper".into(),
+                owner: None,
+                kind: crate::StableDefinitionKind::Function,
+            },
+        );
 
-        let endpoint = state
-            .consulted_definition_endpoint(&consulted)
-            .expect("a consulted token carries the endpoint its lookup returned");
-        assert_eq!(endpoint.file, 3);
-        assert_eq!(&*endpoint.name, "helper");
+        let recorded = state
+            .consulted_definition(&consulted)
+            .expect("a consulted token carries the coordinates its lookup used");
+        assert_eq!(&*recorded.module_path, "app/helpers.rue");
+        assert_eq!(&*recorded.name, "helper");
         assert!(
-            state
-                .consulted_definition_endpoint(&never_consulted)
-                .is_none(),
-            "a token this body never resolved has no endpoint to render from"
+            state.consulted_definition(&never_consulted).is_none(),
+            "a token this body never resolved has no coordinates to render from"
         );
     }
 
@@ -1293,11 +1315,11 @@ mod tests {
     #[derive(Default)]
     struct RecordingFacts {
         definition_consults: std::cell::RefCell<Vec<String>>,
-        module_consults: std::cell::RefCell<Vec<u32>>,
+        module_consults: std::cell::RefCell<Vec<String>>,
     }
 
     impl ExportCallableFacts for RecordingFacts {
-        fn free_function_file(&self, _: Spur) -> Option<FileId> {
+        fn free_function_module(&self, _: Spur) -> Option<std::sync::Arc<str>> {
             None
         }
         fn source_function_name(&self, symbol: Spur) -> Spur {
@@ -1424,26 +1446,28 @@ mod tests {
     impl StableIdentityFacts for RecordingFacts {
         fn definition_token(
             &self,
-            file: u32,
+            module_path: &str,
             name: &str,
             owner: Option<&str>,
             kind: crate::StableDefinitionKind,
         ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
             self.definition_consults
                 .borrow_mut()
-                .push(format!("{file}:{name}:{owner:?}:{kind:?}"));
+                .push(format!("{module_path}:{name}:{owner:?}:{kind:?}"));
             Err(crate::SemanticBodyExportFailure::MissingStableIdentity)
         }
 
         fn module_token(
             &self,
-            file: FileId,
+            module_path: &str,
         ) -> Result<crate::SemanticModuleToken, crate::SemanticBodyExportFailure> {
-            self.module_consults.borrow_mut().push(file.index());
+            self.module_consults
+                .borrow_mut()
+                .push(module_path.to_owned());
             Err(crate::SemanticBodyExportFailure::MissingStableIdentity)
         }
 
-        fn module_file(&self, _: crate::types::ModuleId) -> Option<FileId> {
+        fn module_path(&self, _: crate::types::ModuleId) -> Option<std::sync::Arc<str>> {
             None
         }
     }
@@ -1523,31 +1547,28 @@ mod tests {
         );
     }
 
-    /// Rendering a stable symbol component uses the endpoint recorded at the
-    /// consult and the module path the type pool wrote when it minted that
-    /// file, and encodes them with the digest encoder the epoch shares. Both
-    /// halves matter: the same encoder keeps anonymous-identity digests equal
-    /// across the flip, and the body-local path table is what makes the
-    /// rendering `O(consulted)` instead of `O(files)`.
+    /// Rendering a stable symbol component uses the coordinates recorded at the
+    /// consult, encoded with the digest encoder the epoch shares. The shared
+    /// encoder is what keeps anonymous-identity digests equal across the flip;
+    /// recording rather than reversing is what makes the rendering
+    /// `O(consulted)` instead of `O(declarations)`.
     #[test]
-    fn a_consulted_token_renders_from_its_recorded_endpoint() {
+    fn a_consulted_token_renders_from_its_recorded_coordinates() {
         let mut local = ProviderBodyLocalState::new();
         let pool = crate::intern_pool::TypeInternPool::new();
         let interner = lasso::ThreadedRodeo::new();
         let facts = RecordingFacts::default();
 
-        pool.set_symbol_paths(HashMap::from([(
-            FileId::new(3),
-            "app/widget.rue".to_owned(),
-        )]));
         let token = crate::SemanticDefinitionToken::new(1, 7);
-        local.record_consulted_definition_endpoint(crate::SemanticDefinitionEndpoint {
+        local.record_consulted_definition(
             token,
-            file: 3,
-            name: "render".into(),
-            kind: crate::StableDefinitionKind::Method,
-            owner: Some("Widget".into()),
-        });
+            ConsultedDefinition {
+                module_path: "app/widget.rue".into(),
+                name: "render".into(),
+                owner: Some("Widget".into()),
+                kind: crate::StableDefinitionKind::Method,
+            },
+        );
 
         let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
         assert_eq!(
@@ -1632,6 +1653,59 @@ mod tests {
                 Err(crate::SemanticBodyExportFailure::UnmappedFunction)
             ),
             "the function arm resolves through callable identity, and fails closed"
+        );
+    }
+
+    /// A pool-minted nominal reaches the identity boundary as a module path,
+    /// not as the pool's own file number.
+    ///
+    /// This is the invariant, not an implementation detail. The body-scoped
+    /// identity pool numbers files in first-consult order, so the *same*
+    /// declaration is file 1 in one body and file 4 in another, while the
+    /// durable universe on the far side of the boundary is keyed on neither
+    /// numbering. A file number crossing here resolves to the wrong declaration
+    /// or to none, silently, with no failure the exporter could report — which
+    /// is why the consult is asserted by its rendered text rather than merely
+    /// counted.
+    #[test]
+    fn the_identity_boundary_is_keyed_on_module_paths() {
+        let local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let facts = RecordingFacts::default();
+
+        // A nominal minted the way the body-scoped pool mints one: a
+        // body-local file id whose only meaning is the path it maps to.
+        let body_local_file = FileId::new(4);
+        pool.set_symbol_paths(HashMap::from([(
+            body_local_file,
+            "app/widget.rue".to_owned(),
+        )]));
+        let symbol = interner.get_or_intern("Widget");
+        let (widget, _) = pool.register_struct(
+            symbol,
+            crate::types::StructDef {
+                name: "Widget".to_owned(),
+                fields: Vec::new(),
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: true,
+                file_id: body_local_file,
+            },
+        );
+
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
+        assert!(matches!(
+            host.body_struct_identity(widget),
+            Err(crate::SemanticBodyExportFailure::MissingStableIdentity)
+        ));
+        assert_eq!(
+            facts.definition_consults.borrow().as_slice(),
+            ["app/widget.rue:Widget:None:Struct".to_owned()],
+            "the boundary must be consulted by logical module path; a pool file \
+             number here would key a durable lookup on body-local consult order"
         );
     }
 
