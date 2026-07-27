@@ -2161,6 +2161,16 @@ impl BodyRirBundle {
             .collect()
     }
 
+    /// The body's own lowered RIR.
+    ///
+    /// Borrowed from the bundle rather than through [`Self::view`] so the
+    /// borrow outlives one expression: the ordinary-body engine holds a `&Rir`
+    /// across a whole body evaluation, and a view materialized per call cannot
+    /// lend one.
+    pub(in crate::sema) fn rir(&self) -> &Rir {
+        &self.rir
+    }
+
     /// Borrow the one local RIR/index/interner authority for provider fact
     /// facades. The view is cheap and carries no independent identity state.
     pub fn view(&self) -> BodyRirView<'_> {

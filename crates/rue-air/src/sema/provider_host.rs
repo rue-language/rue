@@ -4,12 +4,14 @@
 //! [`OrdinaryBodyAnalysisHost`] implementation is `Sema`, which reaches a
 //! declaration-wide epoch for every fact a body asks for; that shape is the
 //! `O(bodies × declarations)` term the body-context repair exists to delete.
-//! The replacement receiver — [`ProviderBodyHost`] — owns exactly three things:
+//! The replacement receiver — [`ProviderBodyHost`] — owns exactly four things:
 //!
 //! - **Body-local mutable state** — [`ProviderBodyLocalState`] below. Every
 //!   field here is state one body evaluation creates, mutates, and drops. None
 //!   of it is shared with another body, and none of it is derived from the
 //!   declaration universe, so it is `O(this body)` by construction.
+//! - **This body's lowered RIR** — [`crate::sema::BodyRirBundle`], not the
+//!   whole-program `Rir` the epoch receiver borrows.
 //! - **The rue-air-owned identity authority** —
 //!   [`crate::sema::ProviderBodyAnalysisState`], the body-scoped type pool,
 //!   parameter arena, and interner.
@@ -17,7 +19,7 @@
 //!   whose typed operations answer exactly the questions a body asks and whose
 //!   implementation records the corresponding query edge per call.
 //!
-//! Everything a body needs is one of those three or a configuration constant.
+//! Everything a body needs is one of those four or a configuration constant.
 //! [`HOST_CAPABILITY_LEDGER`] states which, for every method on the host
 //! contract, and [`host_capability_ledger_covers_the_contract`] pins that claim
 //! against the real trait source so it cannot go stale as the contract moves.
@@ -40,7 +42,7 @@ use rue_span::FileId;
 
 use super::provider::BodyFactProvider;
 use super::semantic_body_export::SemanticBodyExportHost;
-use super::{DurableNominalSource, ProviderBodyAnalysisState};
+use super::{BodyRirBundle, BodyRirView, DurableNominalSource, ProviderBodyAnalysisState};
 use crate::intern_pool::TypeInternPool;
 
 use super::anon_structs::{
@@ -224,6 +226,11 @@ pub(crate) enum HostCapability {
     /// needs the adapter that maps the operation's owned fact onto the shape
     /// the engine expects.
     ProviderFact,
+    /// Answered from the body's own lowered RIR, which the receiver owns. The
+    /// epoch answers the same method from the whole-program `Rir` it borrows;
+    /// holding only this body's bundle is what keeps a live program-wide RIR
+    /// from crossing the query boundary.
+    BodyRir,
     /// Answered by [`ProviderExportHost`], the export view over the overlay,
     /// the type pool, and exact keyed identity lookups. A category of its own
     /// because one answer draws on all three — and because the epoch answers
@@ -352,14 +359,9 @@ pub(crate) const HOST_CAPABILITY_LEDGER: &[HostCapabilityRow] = &[
         "known_drop_glue_during_binding",
         HostCapability::InapplicableToBodies,
     ),
+    // --- The body's own lowered RIR. ---
+    row("body_rir_ref", HostCapability::BodyRir),
     // --- The remaining design work. ---
-    row(
-        "body_rir_ref",
-        HostCapability::NeedsProviderWiring(
-            "the engine borrows whole-program RIR; the flip must hand it the body's own \
-             lowered RIR so no live `Rir` crosses the query boundary",
-        ),
-    ),
     row(
         "resolve_body_type",
         HostCapability::NeedsProviderWiring(
@@ -476,16 +478,21 @@ impl<T> BodyHostFacts for T where T: BodyFactProvider + StableIdentityFacts + Ex
 /// The receiver one body evaluation runs on.
 ///
 /// This is the flip's substitution for `Sema`. The epoch receiver reaches a
-/// declaration-wide binding for every fact; this one has exactly the three
-/// parts the module documentation names, and [`HOST_CAPABILITY_LEDGER`] says
-/// which of them answers each contract method — `BodyLocal` rows come from
-/// `local`, `ProviderState` rows from `state`, `ProviderFact` rows from `facts`.
+/// declaration-wide binding for every fact; this one has exactly the four parts
+/// the module documentation names, and [`HOST_CAPABILITY_LEDGER`] says which of
+/// them answers each contract method — `BodyLocal` rows come from `local`,
+/// `BodyRir` from `rir`, `ProviderState` from `state`, `ProviderFact` from
+/// `facts`.
 ///
-/// None of the three is sized by the declaration universe, so constructing a
+/// None of the four is sized by the declaration universe, so constructing a
 /// receiver is `O(1)` in the program rather than `O(declarations)`. That is
 /// where the `O(bodies × declarations)` term goes: the epoch's cost was in
 /// building the receiver, not in the analysis that ran on it.
 pub(crate) struct ProviderBodyHost<K, M, S, P> {
+    /// This body's own lowered RIR. The epoch hands the engine the
+    /// whole-program `Rir`; the receiver holds only the bundle its own body was
+    /// lowered into, so no live program-wide RIR crosses the query boundary.
+    rir: BodyRirBundle,
     local: ProviderBodyLocalState,
     state: ProviderBodyAnalysisState<K, M, S>,
     facts: P,
@@ -503,13 +510,20 @@ where
     M: Eq + Hash,
     S: DurableNominalSource<K, M>,
 {
-    /// Begin one body evaluation over an identity authority and a fact
-    /// boundary. The overlay starts empty — a receiver never inherits another
-    /// body's mints.
-    pub(crate) fn new(state: ProviderBodyAnalysisState<K, M, S>, facts: P) -> Self {
+    /// Begin one body evaluation over its lowered RIR, a durable nominal
+    /// source, and a fact boundary. The overlay starts empty — a receiver never
+    /// inherits another body's mints.
+    ///
+    /// The identity authority is derived from the bundle rather than passed in
+    /// beside it, so the RIR and the state cannot be built over two different
+    /// interners. Every other construction path checks that invariant with an
+    /// assertion; here it holds by construction.
+    pub(crate) fn new(rir: BodyRirBundle, source: S, facts: P) -> Self {
+        let state = rir.provider_body_state(source);
         let type_pool = state.type_pool();
         let interner = state.interner();
         Self {
+            rir,
             local: ProviderBodyLocalState::new(),
             state,
             facts,
@@ -543,10 +557,21 @@ impl<K, M, S, P> ProviderBodyHost<K, M, S, P> {
     pub(crate) fn interner(&self) -> &ThreadedRodeo {
         &self.interner
     }
+
+    /// The host contract's `body_rir_ref`: this body's RIR, not the program's.
+    pub(crate) fn body_rir_ref(&self) -> &rue_rir::Rir {
+        self.rir.rir()
+    }
+
+    /// The shared RIR/index/interner view the endpoint and call fact facades
+    /// are constructed over.
+    pub(crate) fn rir_view(&self) -> BodyRirView<'_> {
+        self.rir.view()
+    }
 }
 
 impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
-    /// The export view over this receiver's own three parts.
+    /// The export view over this receiver's own overlay, pool, and boundary.
     ///
     /// Held for the duration of one export call rather than stored: it borrows
     /// the overlay immutably, so materializing it per call keeps the receiver
@@ -568,7 +593,7 @@ impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
 /// They are the receiver's answers, not the export view's, because the ledger
 /// is a claim about the *host contract*: stating that a contract method is
 /// answered means the receiver answers it. Each one is the export view over
-/// this body's own three parts, so none reaches a declaration-wide table.
+/// this body's own parts, so none reaches a declaration-wide table.
 impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
     pub(crate) fn canonical_type_instance(
         &self,
@@ -1634,14 +1659,27 @@ mod tests {
         RecordingFacts,
     >;
 
+    /// One body's receiver over an empty lowered RIR. A body with no
+    /// instructions is the smallest legal input, not a stub: the receiver's
+    /// invariants are about which authorities it shares, not about how much the
+    /// body does.
     fn test_host() -> TestHost {
-        let state =
-            ProviderBodyAnalysisState::new(NoDurableNominals, Rc::new(lasso::ThreadedRodeo::new()));
-        ProviderBodyHost::new(state, RecordingFacts::default())
+        let editor = rue_rir::RirEditor::new();
+        let validation = rue_rir::RirValidationContext {
+            symbol_count: 0,
+            source_lengths: &[],
+        };
+        let rir = rue_rir::ValidatedRir::finish(editor, &validation)
+            .expect("an empty body RIR validates");
+        ProviderBodyHost::new(
+            BodyRirBundle::new(rir, lasso::ThreadedRodeo::new()),
+            NoDurableNominals,
+            RecordingFacts::default(),
+        )
     }
 
-    /// The receiver's three parts are one authority each, not three that happen
-    /// to agree. If the host cached an interner or type pool other than the
+    /// The receiver's parts are one authority each, not several that happen to
+    /// agree. If the host cached an interner or type pool other than the
     /// identity state's, two halves of the same body would mint symbols in
     /// separate universes and publication would silently disagree with
     /// analysis.
@@ -1662,6 +1700,27 @@ mod tests {
                 .next()
                 .is_none(),
             "a fresh receiver starts with an empty overlay"
+        );
+    }
+
+    /// The receiver's RIR and its identity state are one authority.
+    ///
+    /// `ProviderEndpointFacts` and `ProviderCallFacts` refuse to be built over
+    /// a state and a view whose interners differ, because a symbol minted in
+    /// one universe means nothing in the other. Deriving the state from the
+    /// bundle makes that hold by construction rather than by assertion, so
+    /// there is no way to assemble a receiver those facades would reject.
+    #[test]
+    fn the_receiver_rir_and_identity_state_share_one_authority() {
+        let host = test_host();
+        assert!(
+            host.state().require_rir_authority(&host.rir_view()),
+            "the receiver's RIR view and identity state must share one interner"
+        );
+        assert_eq!(
+            host.body_rir_ref().len(),
+            0,
+            "the receiver lends its own body's RIR, not a program-wide one"
         );
     }
 
@@ -1734,7 +1793,7 @@ mod tests {
         }
         assert_eq!(
             outstanding.len(),
-            2,
+            1,
             "the outstanding host capabilities are {:?}; update this count in the same change \
              that wires one, so the worklist cannot shrink silently",
             outstanding.iter().map(|row| row.method).collect::<Vec<_>>()
