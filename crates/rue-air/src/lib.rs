@@ -105,6 +105,16 @@ pub use sema::{
     SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape, SourceParamAbi,
     SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
+
+/// The provider-backed body receiver the RUE-1092 flip installs.
+///
+/// Exported so the rFinal differential can build one over the real fact
+/// boundary and compare it against the epoch receiver. Nothing selects it at
+/// runtime yet; `analyze_body_query` remains the single body path.
+pub use crate::sema::provider_host::{
+    BodyHostFacts, ExportCallableFacts, ExportedMethodSite, ProviderBodyConfiguration,
+    ProviderBodyHost, StableIdentityFacts,
+};
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticAnonymousBodyExport, SemanticBody, SemanticBodyAnchor,
     SemanticBodyCallArg, SemanticBodyCandidate, SemanticBodyCandidateInstallWork,

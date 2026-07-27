@@ -433,7 +433,7 @@ pub(crate) const HOST_CAPABILITY_LEDGER: &[HostCapabilityRow] = &[
 /// bodies, and the durable universe on the other side is keyed on neither
 /// numbering. A file number crossing here would miss silently at best and
 /// collide with an unrelated declaration at worst.
-pub(crate) trait StableIdentityFacts {
+pub trait StableIdentityFacts {
     /// The stable token for one exact declaration coordinate.
     ///
     /// Fails closed, mirroring the epoch: absent is `MissingStableIdentity`,
@@ -464,13 +464,13 @@ pub(crate) trait StableIdentityFacts {
 /// fail-closed single-candidate contract is the same one the export path needs
 /// (an ambiguous receiver or method is `None`, never a guess).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ExportedMethodSite {
-    pub(crate) owner: StructId,
-    pub(crate) method: Spur,
+pub struct ExportedMethodSite {
+    pub owner: StructId,
+    pub method: Spur,
     /// The declaring module's logical path — the same request-independent
     /// coordinate [`StableIdentityFacts`] is keyed on, for the same reason.
-    pub(crate) module_path: std::sync::Arc<str>,
-    pub(crate) has_self: bool,
+    pub module_path: std::sync::Arc<str>,
+    pub has_self: bool,
 }
 
 /// The callable facts the export path consults, keyed and exact.
@@ -478,7 +478,7 @@ pub(crate) struct ExportedMethodSite {
 /// Same adapter discipline as [`StableIdentityFacts`]: the compiler-side
 /// implementation routes each call through the provider boundary so the edge is
 /// recorded, and neither operation has a whole-universe form.
-pub(crate) trait ExportCallableFacts {
+pub trait ExportCallableFacts {
     /// The logical module path declaring a free function, or `None` when the
     /// symbol does not name one (it may still name a method).
     fn free_function_module(&self, symbol: Spur) -> Option<std::sync::Arc<str>>;
@@ -499,10 +499,7 @@ pub(crate) trait ExportCallableFacts {
 /// answer a body receives came through the fact boundary, and therefore
 /// recorded its dependency edge at the consult. Three separate parameters would
 /// make an edge-free second authority expressible.
-pub(crate) trait BodyHostFacts:
-    BodyFactProvider + StableIdentityFacts + ExportCallableFacts
-{
-}
+pub trait BodyHostFacts: BodyFactProvider + StableIdentityFacts + ExportCallableFacts {}
 
 impl<T> BodyHostFacts for T where T: BodyFactProvider + StableIdentityFacts + ExportCallableFacts {}
 
@@ -519,7 +516,7 @@ impl<T> BodyHostFacts for T where T: BodyFactProvider + StableIdentityFacts + Ex
 /// receiver is `O(1)` in the program rather than `O(declarations)`. That is
 /// where the `O(bodies × declarations)` term goes: the epoch's cost was in
 /// building the receiver, not in the analysis that ran on it.
-pub(crate) struct ProviderBodyHost<K, M, S, P> {
+pub struct ProviderBodyHost<K, M, S, P> {
     /// This body's own lowered RIR. The epoch hands the engine the
     /// whole-program `Rir`; the receiver holds only the bundle its own body was
     /// lowered into, so no live program-wide RIR crosses the query boundary.
@@ -562,9 +559,9 @@ pub(crate) struct ProviderBodyHost<K, M, S, P> {
 ///
 /// Neither derived answer is sized by the declaration universe.
 #[derive(Debug, Clone)]
-pub(crate) struct ProviderBodyConfiguration {
-    pub(crate) target: Target,
-    pub(crate) preview_features: PreviewFeatures,
+pub struct ProviderBodyConfiguration {
+    pub target: Target,
+    pub preview_features: PreviewFeatures,
 }
 
 impl<K, M, S, P> ProviderBodyHost<K, M, S, P>
@@ -581,12 +578,7 @@ where
     /// beside it, so the RIR and the state cannot be built over two different
     /// interners. Every other construction path checks that invariant with an
     /// assertion; here it holds by construction.
-    pub(crate) fn new(
-        rir: BodyRirBundle,
-        source: S,
-        facts: P,
-        config: ProviderBodyConfiguration,
-    ) -> Self {
+    pub fn new(rir: BodyRirBundle, source: S, facts: P, config: ProviderBodyConfiguration) -> Self {
         let state = rir.provider_body_state(source);
         let type_pool = state.type_pool();
         let interner = state.interner();
