@@ -398,6 +398,270 @@ pub(crate) const HOST_CAPABILITY_LEDGER: &[HostCapabilityRow] = &[
     ),
 ];
 
+/// The forward stable-identity lookups the export path performs.
+///
+/// This is an adapter seam, not a second fact authority: the compiler-side
+/// implementation answers each call through the ordinary
+/// [`crate::sema::provider::BodyFactProvider`] lookup operations, so the
+/// dependency edge is recorded at the consult exactly as it is for every other
+/// provider fact. It exists so rue-air can express "resolve this exact stable
+/// identity" without the export path naming the provider's eight associated
+/// types.
+///
+/// Both operations are keyed and exact. Neither has a whole-universe form,
+/// which is the property that makes export `O(consulted)`: the epoch answers
+/// the same questions by scanning `stable_definition_tokens` and
+/// `stable_module_tokens`, both sized by the declaration universe.
+pub(crate) trait StableIdentityFacts {
+    /// The stable token for one exact declaration coordinate.
+    ///
+    /// Fails closed, mirroring the epoch: absent is `MissingStableIdentity`,
+    /// multiple candidates are `AmbiguousStableIdentity`, and a candidate of
+    /// the wrong kind is `WrongStableIdentityKind`. The caller never guesses.
+    fn definition_token(
+        &self,
+        file: u32,
+        name: &str,
+        owner: Option<&str>,
+        kind: crate::StableDefinitionKind,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
+
+    /// The stable token for one consulted module file.
+    fn module_token(
+        &self,
+        file: FileId,
+    ) -> Result<crate::SemanticModuleToken, crate::SemanticBodyExportFailure>;
+
+    /// The file backing a module id this body resolved.
+    fn module_file(&self, module: crate::types::ModuleId) -> Option<FileId>;
+}
+
+/// The export half of the provider-backed receiver.
+///
+/// It answers the same questions `BodySema` answers for publication, from the
+/// body-local overlay, the provider's type pool, and exact keyed lookups —
+/// never a declaration-wide table. The arms below deliberately mirror
+/// `BodySema::export_body_type` / `body_struct_identity` /
+/// `body_enum_identity` structurally, so a reviewer can read them side by side
+/// and see that the only difference is where the stable token comes from.
+pub(crate) struct ProviderExportHost<'a, I> {
+    local: &'a ProviderBodyLocalState,
+    type_pool: &'a crate::intern_pool::TypeInternPool,
+    identity: &'a I,
+    interner: &'a lasso::ThreadedRodeo,
+}
+
+impl<'a, I: StableIdentityFacts> ProviderExportHost<'a, I> {
+    pub(crate) fn new(
+        local: &'a ProviderBodyLocalState,
+        type_pool: &'a crate::intern_pool::TypeInternPool,
+        identity: &'a I,
+        interner: &'a lasso::ThreadedRodeo,
+    ) -> Self {
+        Self {
+            local,
+            type_pool,
+            identity,
+            interner,
+        }
+    }
+
+    pub(crate) fn resolve_publication_symbol(&self, symbol: &Spur) -> &str {
+        self.interner.resolve(symbol)
+    }
+
+    /// A slice-like struct's element type, if this struct is one.
+    fn slice_element_type(&self, ty: Type) -> Option<Type> {
+        let crate::types::TypeKind::Struct(struct_id) = ty.kind() else {
+            return None;
+        };
+        let def = self.type_pool.struct_def(struct_id);
+        let is_slice = def.name.starts_with('[')
+            && def.name.ends_with(']')
+            && crate::types::parse_array_type_syntax(&def.name).is_none();
+        let is_str_fixed = def.name.starts_with("Str(") && def.name.ends_with(')');
+        if is_slice || def.name == "str" || is_str_fixed {
+            if let crate::types::TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
+                return Some(self.type_pool.ptr_const_def(ptr_id));
+            }
+        }
+        None
+    }
+
+    /// The named-nominal arm: the compact id carries its own file and name, so
+    /// the stable token is one exact forward lookup rather than a reverse map.
+    fn struct_identity(
+        &self,
+        id: StructId,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        let def = self
+            .type_pool
+            .struct_metadata(id)
+            .ok_or(crate::SemanticBodyExportFailure::UnsupportedType)?;
+        if def.name.starts_with("__anon_struct_") {
+            return Err(crate::SemanticBodyExportFailure::AnonymousNominal);
+        }
+        self.identity.definition_token(
+            def.file_id.index(),
+            def.name.as_str(),
+            None,
+            crate::StableDefinitionKind::Struct,
+        )
+    }
+
+    fn enum_identity(
+        &self,
+        id: EnumId,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        let def = self
+            .type_pool
+            .enum_metadata(id)
+            .ok_or(crate::SemanticBodyExportFailure::UnsupportedType)?;
+        if def.name.starts_with("__anon_enum_") {
+            return Err(crate::SemanticBodyExportFailure::AnonymousNominal);
+        }
+        self.identity.definition_token(
+            def.file_id.index(),
+            def.name.as_str(),
+            None,
+            crate::StableDefinitionKind::Enum,
+        )
+    }
+
+    pub(crate) fn body_struct_identity(
+        &self,
+        id: StructId,
+    ) -> Result<
+        crate::NominalInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        let ty = Type::new_struct(id);
+        Ok(match self.local.canonical_anonymous_types.get(&ty) {
+            Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
+            None if self.type_pool.struct_def(id).is_builtin
+                || self.type_pool.struct_def(id).name == "str" =>
+            {
+                crate::NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Struct,
+                    name: std::sync::Arc::from(self.type_pool.struct_def(id).name.as_str()),
+                }
+            }
+            None => crate::NominalInstanceKey::Named(self.struct_identity(id)?),
+        })
+    }
+
+    pub(crate) fn body_enum_identity(
+        &self,
+        id: EnumId,
+    ) -> Result<
+        crate::NominalInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        let ty = Type::new_enum(id);
+        Ok(match self.local.canonical_anonymous_types.get(&ty) {
+            Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
+            None if rue_builtins::BUILTIN_ENUMS
+                .iter()
+                .any(|builtin| builtin.name == self.type_pool.enum_def(id).name) =>
+            {
+                crate::NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Enum,
+                    name: std::sync::Arc::from(self.type_pool.enum_def(id).name.as_str()),
+                }
+            }
+            None => crate::NominalInstanceKey::Named(self.enum_identity(id)?),
+        })
+    }
+
+    pub(crate) fn export_body_type(
+        &self,
+        ty: Type,
+    ) -> Result<
+        crate::SemanticImportType<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        use crate::SemanticImportType as Exported;
+        use crate::types::TypeKind;
+
+        self.type_pool
+            .validate_complete_type(ty)
+            .map_err(|_| crate::SemanticBodyExportFailure::UnsupportedType)?;
+        Ok(match ty.kind() {
+            TypeKind::I8 => Exported::I8,
+            TypeKind::I16 => Exported::I16,
+            TypeKind::I32 => Exported::I32,
+            TypeKind::I64 => Exported::I64,
+            TypeKind::U8 => Exported::U8,
+            TypeKind::U16 => Exported::U16,
+            TypeKind::U32 => Exported::U32,
+            TypeKind::U64 => Exported::U64,
+            TypeKind::Bool => Exported::Bool,
+            TypeKind::Unit => Exported::Unit,
+            TypeKind::Never => Exported::Never,
+            TypeKind::ComptimeType => Exported::ComptimeType,
+            TypeKind::Struct(id) => {
+                let def = self.type_pool.struct_def(id);
+                if let Some(identity) = self.local.canonical_anonymous_types.get(&ty) {
+                    Exported::AnonymousNominal(identity.clone())
+                } else if let Some(element) = self.slice_element_type(ty)
+                    && def.name.starts_with('[')
+                {
+                    Exported::Slice {
+                        element: Box::new(self.export_body_type(element)?),
+                        name: std::sync::Arc::from(def.name.as_str()),
+                    }
+                } else if def.is_builtin || def.name == "str" {
+                    Exported::BuiltinNominal {
+                        name: std::sync::Arc::from(def.name.as_str()),
+                        kind: crate::SemanticImportNominalKind::Struct,
+                    }
+                } else {
+                    Exported::Nominal(self.struct_identity(id)?)
+                }
+            }
+            TypeKind::Enum(id) => {
+                let def = self.type_pool.enum_def(id);
+                if let Some(identity) = self.local.canonical_anonymous_types.get(&ty) {
+                    Exported::AnonymousNominal(identity.clone())
+                } else if rue_builtins::BUILTIN_ENUMS
+                    .iter()
+                    .any(|builtin| builtin.name == def.name)
+                {
+                    Exported::BuiltinNominal {
+                        name: std::sync::Arc::from(def.name.as_str()),
+                        kind: crate::SemanticImportNominalKind::Enum,
+                    }
+                } else {
+                    Exported::Nominal(self.enum_identity(id)?)
+                }
+            }
+            TypeKind::Array(id) => {
+                let (element, len) = self.type_pool.array_def(id);
+                Exported::Array {
+                    element: Box::new(self.export_body_type(element)?),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => Exported::PtrConst(Box::new(
+                self.export_body_type(self.type_pool.ptr_const_def(id))?,
+            )),
+            TypeKind::PtrMut(id) => Exported::PtrMut(Box::new(
+                self.export_body_type(self.type_pool.ptr_mut_def(id))?,
+            )),
+            TypeKind::Module(id) => {
+                let file = self
+                    .identity
+                    .module_file(id)
+                    .ok_or(crate::SemanticBodyExportFailure::MissingStableIdentity)?;
+                Exported::Module(self.identity.module_token(file)?)
+            }
+            TypeKind::Error => {
+                return Err(crate::SemanticBodyExportFailure::UnsupportedType);
+            }
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,6 +766,92 @@ mod tests {
                 .is_none(),
             "a token this body never resolved has no endpoint to render from"
         );
+    }
+
+    /// A `StableIdentityFacts` that records every consult, so a test can assert
+    /// not just what was exported but how much of the boundary it cost.
+    #[derive(Default)]
+    struct RecordingIdentityFacts {
+        definition_consults: std::cell::RefCell<Vec<String>>,
+        module_consults: std::cell::RefCell<Vec<u32>>,
+    }
+
+    impl StableIdentityFacts for RecordingIdentityFacts {
+        fn definition_token(
+            &self,
+            file: u32,
+            name: &str,
+            owner: Option<&str>,
+            kind: crate::StableDefinitionKind,
+        ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+            self.definition_consults
+                .borrow_mut()
+                .push(format!("{file}:{name}:{owner:?}:{kind:?}"));
+            Err(crate::SemanticBodyExportFailure::MissingStableIdentity)
+        }
+
+        fn module_token(
+            &self,
+            file: FileId,
+        ) -> Result<crate::SemanticModuleToken, crate::SemanticBodyExportFailure> {
+            self.module_consults.borrow_mut().push(file.index());
+            Err(crate::SemanticBodyExportFailure::MissingStableIdentity)
+        }
+
+        fn module_file(&self, _: crate::types::ModuleId) -> Option<FileId> {
+            None
+        }
+    }
+
+    /// Exporting a primitive consults the identity boundary zero times.
+    ///
+    /// This is the locality claim in its smallest form: the epoch answers these
+    /// same cases while holding a declaration-universe token table, and the
+    /// provider host answers them from the type pool alone. A regression that
+    /// reintroduced a table read would show up here as a consult.
+    #[test]
+    fn exporting_primitives_costs_no_boundary_consults() {
+        let local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let identity = RecordingIdentityFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &identity, &interner);
+
+        for (ty, expected) in [
+            (Type::I32, crate::SemanticImportType::I32),
+            (Type::BOOL, crate::SemanticImportType::Bool),
+            (Type::UNIT, crate::SemanticImportType::Unit),
+        ] {
+            assert_eq!(
+                host.export_body_type(ty).expect("a primitive exports"),
+                expected
+            );
+        }
+
+        assert!(
+            identity.definition_consults.borrow().is_empty(),
+            "primitives resolved through the identity boundary: {:?}",
+            identity.definition_consults.borrow()
+        );
+        assert!(identity.module_consults.borrow().is_empty());
+    }
+
+    /// An unresolvable stable identity fails closed rather than inventing a
+    /// token. The epoch has a synthetic-test fallback that mints one from a
+    /// hash when its table is empty; the provider host must not inherit it,
+    /// because "the table is empty" is not a state the provider can be in.
+    #[test]
+    fn an_unresolved_module_identity_fails_closed() {
+        let local = ProviderBodyLocalState::new();
+        let pool = crate::intern_pool::TypeInternPool::new();
+        let interner = lasso::ThreadedRodeo::new();
+        let identity = RecordingIdentityFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &identity, &interner);
+
+        assert!(matches!(
+            host.export_body_type(Type::ERROR),
+            Err(crate::SemanticBodyExportFailure::UnsupportedType)
+        ));
     }
 
     /// The only category with design work left in it is the one the flip has
