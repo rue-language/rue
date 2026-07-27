@@ -74,9 +74,9 @@
 //! - `exit_code`: expected program exit code (default 0)
 //! - `contract`: named execution contract supplying scheduling class and
 //!   separate compile/runtime budgets (ordinary cases default to 10s for each)
-//! - section-level `tier = "slow"`: keep exhaustive large-program behavior
-//!   behind the dedicated slow Buck target while the automatic example remains
-//!   a bounded premerge compile/run canary
+//! - `tier = "slow"` on a section or `[[automatic_example]]`: keep exhaustive
+//!   or full-program large-example coverage behind the dedicated slow Buck
+//!   target
 //! - `known_bug = "RUE-NN"`: expected failure (xfail). An ordinary assertion
 //!   failure is ignored with the bug reference. A fatal subprocess failure or
 //!   unexpected pass fails loudly.
@@ -805,8 +805,8 @@ struct TestFile {
     /// cases share one scheduling and timeout policy.
     #[serde(default, rename = "contract")]
     contracts: HashMap<String, ExecutionContract>,
-    /// Contracts for recursively discovered examples, keyed by the path that
-    /// also determines their `cli.examples::...` test name.
+    /// Contracts and tiers for recursively discovered examples, keyed by the
+    /// path that also determines their `cli.examples::...` test name.
     #[serde(default)]
     automatic_example: Vec<AutomaticExampleContract>,
     #[serde(default, rename = "case")]
@@ -827,7 +827,7 @@ struct Section {
     #[serde(default)]
     contract: Option<String>,
     /// Logical execution tier for this section's explicit cases. Automatic
-    /// example smoke tests are independently owned premerge canaries.
+    /// examples declare their tier independently.
     #[serde(default)]
     tier: CliCaseTier,
 }
@@ -874,10 +874,6 @@ impl CliCaseTierSelection {
                 (Self::Premerge, CliCaseTier::Premerge) | (Self::Slow, CliCaseTier::Slow)
             )
     }
-
-    fn includes_automatic_examples(self) -> bool {
-        matches!(self, Self::All | Self::Premerge)
-    }
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
@@ -922,6 +918,14 @@ impl ExecutionContract {
 struct AutomaticExampleContract {
     path: String,
     contract: String,
+    #[serde(default)]
+    tier: CliCaseTier,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutomaticExampleMetadata {
+    contract: ExecutionContract,
+    tier: CliCaseTier,
 }
 
 #[derive(Debug)]
@@ -2184,7 +2188,7 @@ fn resolve_contract(
 fn validate_contract_metadata(
     corpus: &LoadedCorpus,
     discovered_examples: &HashSet<String>,
-) -> Result<HashMap<String, ExecutionContract>, String> {
+) -> Result<HashMap<String, AutomaticExampleMetadata>, String> {
     let mut used_contracts = HashSet::new();
 
     for (source, file) in &corpus.files {
@@ -2216,7 +2220,13 @@ fn validate_contract_metadata(
             )
         })?;
         if automatic_contracts
-            .insert(entry.path.clone(), contract.clone())
+            .insert(
+                entry.path.clone(),
+                AutomaticExampleMetadata {
+                    contract: contract.clone(),
+                    tier: entry.tier,
+                },
+            )
             .is_some()
         {
             return Err(format!(
@@ -2422,7 +2432,8 @@ fn discover_examples() -> Result<Vec<DiscoveredExample>, String> {
 /// Build one automatic smoke-test trial per discovered example (RUE-48).
 fn example_trials(
     examples: Vec<DiscoveredExample>,
-    automatic_contracts: &HashMap<String, ExecutionContract>,
+    automatic_contracts: &HashMap<String, AutomaticExampleMetadata>,
+    case_tier: CliCaseTierSelection,
     rue_binary: &Path,
     real_std: &Path,
     shard: Option<&CliShardPlan>,
@@ -2432,9 +2443,13 @@ fn example_trials(
     for example in examples {
         let path = example.path;
         let relative_path = example.relative_path;
-        let contract = automatic_contracts
-            .get(&relative_path)
-            .cloned()
+        let metadata = automatic_contracts.get(&relative_path);
+        let tier = metadata.map_or(CliCaseTier::Premerge, |metadata| metadata.tier);
+        if !case_tier.includes(tier) {
+            continue;
+        }
+        let contract = metadata
+            .map(|metadata| metadata.contract.clone())
             .unwrap_or_else(ExecutionContract::ordinary);
         let heavyweight = contract.is_heavyweight();
         let rue_binary = rue_binary.to_path_buf();
@@ -2541,7 +2556,12 @@ fn main() {
         .chain(
             examples
                 .iter()
-                .filter(|_| case_tier.includes_automatic_examples())
+                .filter(|example| {
+                    let tier = automatic_contracts
+                        .get(&example.relative_path)
+                        .map_or(CliCaseTier::Premerge, |metadata| metadata.tier);
+                    case_tier.includes(tier)
+                })
                 .map(|example| example_test_name(&example.relative_path)),
         )
         .collect::<Vec<_>>();
@@ -2603,16 +2623,15 @@ fn main() {
     // RUE-48: compile+run every examples/**/*.rue through the real driver, so a
     // regression that breaks a shipped example (or an example referencing a
     // removed flag) can't slip past CI unnoticed.
-    if case_tier.includes_automatic_examples() {
-        tests.extend(example_trials(
-            examples,
-            &automatic_contracts,
-            &rue_binary,
-            &real_std,
-            shard.as_ref(),
-            &timings,
-        ));
-    }
+    tests.extend(example_trials(
+        examples,
+        &automatic_contracts,
+        case_tier,
+        &rue_binary,
+        &real_std,
+        shard.as_ref(),
+        &timings,
+    ));
 
     if let Some(shard) = &shard {
         eprintln!(
@@ -2686,26 +2705,33 @@ mod tests {
         let all = CliCaseTierSelection::parse(None).unwrap();
         assert!(all.includes(CliCaseTier::Premerge));
         assert!(all.includes(CliCaseTier::Slow));
-        assert!(all.includes_automatic_examples());
 
         let premerge = CliCaseTierSelection::parse(Some("premerge")).unwrap();
         assert!(premerge.includes(CliCaseTier::Premerge));
         assert!(!premerge.includes(CliCaseTier::Slow));
-        assert!(premerge.includes_automatic_examples());
 
         let slow = CliCaseTierSelection::parse(Some("slow")).unwrap();
         assert!(!slow.includes(CliCaseTier::Premerge));
         assert!(slow.includes(CliCaseTier::Slow));
-        assert!(!slow.includes_automatic_examples());
 
         assert!(CliCaseTierSelection::parse(Some("slwo")).is_err());
     }
 
     #[test]
     fn maintained_large_example_sections_share_their_automatic_contract() {
-        for (section_id, example_path) in [
-            ("cli.examples_mosaic", "mosaic/main.rue"),
-            ("cli.examples_rill", "rill/main.rue"),
+        for (section_id, example_path, tier_line, expected_tier) in [
+            (
+                "cli.examples_mosaic",
+                "mosaic/main.rue",
+                r#"tier = "slow""#,
+                CliCaseTier::Slow,
+            ),
+            (
+                "cli.examples_rill",
+                "rill/main.rue",
+                "",
+                CliCaseTier::Premerge,
+            ),
         ] {
             let corpus = corpus_from_toml(&format!(
                 r#"
@@ -2722,6 +2748,7 @@ mod tests {
                     [[automatic_example]]
                     path = "{example_path}"
                     contract = "heavyweight"
+                    {tier_line}
 
                     [[case]]
                     name = "ordinary_behavior"
@@ -2737,7 +2764,8 @@ mod tests {
                 assert!(case.contract.is_none(), "case contract must stay inherited");
                 let explicit =
                     resolve_contract(&corpus.contracts, case_contract_name(&file.section, case));
-                assert_eq!(automatic[example_path], explicit);
+                assert_eq!(automatic[example_path].contract, explicit);
+                assert_eq!(automatic[example_path].tier, expected_tier);
                 assert!(explicit.is_heavyweight());
                 assert_eq!(explicit.compile_timeout(), Duration::from_secs(30));
                 assert_eq!(explicit.runtime_timeout(), Duration::from_secs(30));

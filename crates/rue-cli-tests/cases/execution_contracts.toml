@@ -33,6 +33,7 @@ contract = "heavyweight_long"
 [[automatic_example]]
 path = "mosaic/main.rue"
 contract = "heavyweight"
+tier = "slow"
 
 [[automatic_example]]
 path = "rill/main.rue"
