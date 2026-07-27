@@ -30,6 +30,7 @@ rue_crate(
         "//crates/rue-target:rue-target",
         "//third-party:fixedbitset",
         "//third-party:lasso",
+        "//third-party:tracing",
     ],
     test_deps = [
         "//crates/rue-lexer:rue-lexer",

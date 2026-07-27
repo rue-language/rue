@@ -1155,6 +1155,11 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
+    // Rebinding the durable declaration records and rebuilding the query
+    // dependency edges runs before whole-program analysis opens `sema`. It is
+    // real per-declaration work, so it gets its own leaf instead of widening
+    // the pipeline's unattributed residual (RUE-786).
+    let declaration_reuse_span = info_span!("declaration_reuse").entered();
     let input = CodegenInputDescriptor {
         semantic: SemanticInputDescriptor::new(
             merged.definitions().source_snapshot(),
@@ -1444,6 +1449,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     );
     reuse.durable_records_reused = durable.len();
     reuse.ordinary_declaration_resolutions_skipped = 1;
+    drop(declaration_reuse_span);
     let sema_span = info_span!("sema").entered();
     finish_canonical_analysis(
         input,
@@ -2532,7 +2538,11 @@ pub(crate) fn analyze_body_query<'a>(
     } else {
         None
     };
-    let epoch = match shared_base.get_or_derive(
+    // Deriving this body's epoch from the shared declaration base runs for
+    // every reached body, unlike the one-shot prepare/project/install stages
+    // above, so it is timed separately (RUE-786).
+    let derive_span = info_span!("body_derive_epoch").entered();
+    let derived = shared_base.get_or_derive(
         merged,
         rir,
         options,
@@ -2544,7 +2554,9 @@ pub(crate) fn analyze_body_query<'a>(
         key,
         shared_projection,
         work,
-    ) {
+    );
+    drop(derive_span);
+    let epoch = match derived {
         Ok(epoch) => epoch,
         Err(failure) => return Ok(failure),
     };
@@ -3611,6 +3623,11 @@ fn finish_canonical_analysis_with(
             work,
         )
     })?;
+    // Everything after CFG construction — drop-dependency attachment, warning
+    // ordering, and semantic-output assembly — is the finalization tail. It
+    // runs outside both `sema` and `cfg_construction`, so it needs its own leaf
+    // for the pipeline residual to stay honest (RUE-786).
+    let _finalization_span = info_span!("semantic_finalization").entered();
     let durable_specialized_body_payloads =
         crate::durable_body::attach_specialized_implicit_drop_dependencies(
             durable_specialized_body_payloads,

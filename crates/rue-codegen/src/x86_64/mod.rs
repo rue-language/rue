@@ -30,6 +30,7 @@ use lasso::ThreadedRodeo;
 use rue_air::FrozenTypeInternPool;
 use rue_cfg::ValidatedCfg;
 use rue_error::CompileResult;
+use tracing::info_span;
 
 // Re-export from parent
 pub use super::{EmittedCode, EmittedRelocation, MachineCode};
@@ -125,17 +126,26 @@ fn generate_inner(
             | X86Inst::StringConstCap { string_id, .. } => Some(*string_id),
             _ => None,
         });
-    let (local_strings, string_id_remap) =
-        crate::compact_string_table(strings, atoms, referenced_strings, require_complete_atoms)?;
-    for inst in prepared.mir.instructions_vec_mut() {
-        let string_id = match inst {
-            X86Inst::StringConstPtr { string_id, .. }
-            | X86Inst::StringConstLen { string_id, .. }
-            | X86Inst::StringConstCap { string_id, .. } => string_id,
-            _ => continue,
-        };
-        *string_id = string_id_remap[string_id];
-    }
+    let local_strings = {
+        let _span = info_span!("string_table_compaction").entered();
+        let (local_strings, string_id_remap) = crate::compact_string_table(
+            strings,
+            atoms,
+            referenced_strings,
+            require_complete_atoms,
+        )?;
+        for inst in prepared.mir.instructions_vec_mut() {
+            let string_id = match inst {
+                X86Inst::StringConstPtr { string_id, .. }
+                | X86Inst::StringConstLen { string_id, .. }
+                | X86Inst::StringConstCap { string_id, .. } => string_id,
+                _ => continue,
+            };
+            *string_id = string_id_remap[string_id];
+        }
+        local_strings
+    };
+    let _emission_span = info_span!("machine_emission").entered();
     let emitter = Emitter::new(
         &prepared.mir,
         prepared.total_locals,

@@ -490,14 +490,17 @@ pub(crate) fn link_internal_with_warnings(
     let mut linker = Linker::new(options.target);
 
     // Add all object files to the linker
-    for obj_bytes in object_files {
-        let obj = ObjectFile::parse(obj_bytes)
-            .map_err(link_error)
-            .map_err(CompileErrors::from)?;
-        linker
-            .add_object(obj)
-            .map_err(link_error)
-            .map_err(CompileErrors::from)?;
+    {
+        let _span = info_span!("link_parse_objects", object_count = object_files.len()).entered();
+        for obj_bytes in object_files {
+            let obj = ObjectFile::parse(obj_bytes)
+                .map_err(link_error)
+                .map_err(CompileErrors::from)?;
+            linker
+                .add_object(obj)
+                .map_err(link_error)
+                .map_err(CompileErrors::from)?;
+        }
     }
 
     // Determine the entry point symbol based on target.
@@ -518,24 +521,27 @@ pub(crate) fn link_internal_with_warnings(
     // before the runtime so a foreign member that itself depends on a runtime
     // symbol can still be satisfied. Each archive resolves the undefined
     // `extern "C"` symbols referenced by the compiled objects.
-    for archive_path in &options.link_archives {
-        let archive = read_user_archive(archive_path)
-            .map_err(CompileError::without_span)
+    {
+        let _span = info_span!("link_archive_resolve").entered();
+        for archive_path in &options.link_archives {
+            let archive = read_user_archive(archive_path)
+                .map_err(CompileError::without_span)
+                .map_err(CompileErrors::from)?;
+            linker
+                .add_archive(archive)
+                .map_err(link_error)
+                .map_err(CompileErrors::from)?;
+        }
+
+        // Add the runtime library
+        let runtime = validate_runtime_archive(runtime_bytes, options.target)
+            .map_err(link_error)
             .map_err(CompileErrors::from)?;
         linker
-            .add_archive(archive)
+            .add_archive(runtime)
             .map_err(link_error)
             .map_err(CompileErrors::from)?;
     }
-
-    // Add the runtime library
-    let runtime = validate_runtime_archive(runtime_bytes, options.target)
-        .map_err(link_error)
-        .map_err(CompileErrors::from)?;
-    linker
-        .add_archive(runtime)
-        .map_err(link_error)
-        .map_err(CompileErrors::from)?;
 
     // Link to executable. An undefined symbol at this point is an unresolved
     // `extern "C"` import (or a runtime gap); name the symbol and the archives

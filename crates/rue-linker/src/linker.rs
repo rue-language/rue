@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 
 use rue_target::Target;
+use tracing::info_span;
 
 use crate::archive::Archive;
 use crate::constants::{
@@ -1100,6 +1101,9 @@ impl Linker {
         use crate::constants::{VM_PROT_EXECUTE, VM_PROT_READ};
         use crate::macho::{MachOBuilder, Section64, Segment64, VM_BASE};
 
+        // The Mach-O path splits into the same three phases as `link_elf`.
+        let layout_span = info_span!("link_layout").entered();
+
         // Merge sections and collect relocations
         // For Mach-O, we put code AND rodata in the __TEXT segment (same as clang/ld64).
         // Only writable data goes in __DATA.
@@ -1337,6 +1341,9 @@ impl Linker {
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
         let entry_offset = entry_vaddr - text_vaddr;
 
+        drop(layout_span);
+        let relocate_span = info_span!("link_relocate").entered();
+
         // Apply relocations
         for PendingRelocation {
             offset: patch_offset,
@@ -1433,6 +1440,9 @@ impl Linker {
             )?;
         }
 
+        drop(relocate_span);
+        let _emit_span = info_span!("link_emit").entered();
+
         // Now build the binary with the relocated code.
         // Note: rodata is already included in merged_text (code + rodata in __TEXT);
         // only writable data goes to the __DATA segment.
@@ -1487,6 +1497,12 @@ impl Linker {
         // (vaddr % page_size) must equal (file_offset % page_size).
         // With code at file offset HEADER_SIZE, we set vaddr accordingly.
         let code_start = self.base_addr + HEADER_SIZE;
+
+        // Section merge, segment addresses, and symbol resolution are one
+        // layout phase; relocation and image serialization follow it. The
+        // guards are dropped at those boundaries so the three phases are
+        // sibling leaves rather than one opaque `linker` row (RUE-786).
+        let layout_span = info_span!("link_layout").entered();
 
         // First, collect and merge all code sections
         let mut merged_text = Vec::new();
@@ -1723,6 +1739,9 @@ impl Linker {
             .get(entry_point)
             .ok_or_else(|| LinkError::UndefinedSymbol(entry_point.to_string()))?;
 
+        drop(layout_span);
+        let relocate_span = info_span!("link_relocate").entered();
+
         // Apply relocations
         for PendingRelocation {
             offset,
@@ -1801,6 +1820,9 @@ impl Linker {
             // Mach-O path via `apply_relocation` (RUE-335).
             apply_relocation(buf, offset, pc, target_addr, addend, rel_type, &sym_name)?;
         }
+
+        drop(relocate_span);
+        let _emit_span = info_span!("link_emit").entered();
 
         // Build the ELF with proper W^X segment separation
         //

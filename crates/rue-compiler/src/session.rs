@@ -3765,12 +3765,17 @@ impl CompilerSession {
             );
             return Err(errors);
         }
+        // Staging splits into the canonical parse of everything read so far and
+        // the import-plan construction over the resulting program. Both were
+        // previously folded into the driver's unattributed region (RUE-786).
+        let parse_staging_span = tracing::info_span!("import_parse_staging").entered();
         let (parse_result, staged_work, staged_successor_parse) = self.parse_staging_snapshot(
             snapshot,
             successor
                 .as_ref()
                 .map(|(revision, delta)| (*revision, delta)),
         );
+        drop(parse_staging_span);
         parse_work.accumulate(staged_work);
         let program = match parse_result {
             Ok(program) => program,
@@ -3822,6 +3827,7 @@ impl CompilerSession {
             self.last_good_discovery_artifact()
                 .and_then(|artifact| artifact.plan.clone())
         });
+        let plan_build_span = tracing::info_span!("import_plan_build").entered();
         let plan_build = match (new_modules, predecessor_plan) {
             (Some(new_modules), Some(predecessor)) => {
                 crate::ImportDiscoveryPlan::extend_trusted_successor(
@@ -3885,6 +3891,8 @@ impl CompilerSession {
                 return Err(errors);
             }
         };
+        drop(plan_build_span);
+        let _plan_publish_span = tracing::info_span!("import_plan_publish").entered();
         let plan_diagnostics = if publish_plan {
             let shape_diagnostics = crate::ImportDiscoveryPlan::shape_diagnostics(&program);
             self.publish_import_diagnostics(
@@ -4987,6 +4995,11 @@ impl CompilerSession {
         ParsedModulesWork,
         ParseInvalidationSummary,
     ) {
+        // Keying, module parsing, and terminal publication are separate costs
+        // inside the parse query. Timing them apart keeps the staging residual
+        // from hiding whole-snapshot content hashing behind `parse_file`
+        // (RUE-786).
+        let key_span = tracing::info_span!("parse_query_key").entered();
         let source = ExactSourceInput::new(snapshot);
         // An ordinary key carries every file's exact content identity, so the
         // typed store hashes and compares each of them.
@@ -5018,11 +5031,16 @@ impl CompilerSession {
         self.parse_modules_dispatched = self
             .parse_modules_dispatched
             .saturating_add(demanded_modules.len() as u64);
-        let (modular_result, modular_work) = self.queries.revisioned.parse_program(
-            revision,
-            snapshot.source_revision().root(),
-            demanded_modules,
-        );
+        drop(key_span);
+        let (modular_result, modular_work) = {
+            let _span = tracing::info_span!("parse_program").entered();
+            self.queries.revisioned.parse_program(
+                revision,
+                snapshot.source_revision().root(),
+                demanded_modules,
+            )
+        };
+        let _commit_span = tracing::info_span!("parse_query_commit").entered();
         self.parse_invalidation_entries_compared = self
             .parse_invalidation_entries_compared
             .saturating_add(snapshot.len() as u64);
@@ -6017,10 +6035,12 @@ impl CompilerSession {
             .last_good_record()
             .expect("merge has a successful parse terminal")
             .runtime_revision;
-        let projected_indexes = self
-            .queries
-            .revisioned
-            .projected_module_indexes(runtime_revision, &parsed);
+        let projected_indexes = {
+            let _span = tracing::info_span!("module_index_projection").entered();
+            self.queries
+                .revisioned
+                .projected_module_indexes(runtime_revision, &parsed)
+        };
         // Freeze the traversal work before the fallible duplicate/definition
         // checks so deterministic merge failures retain the work already done.
         *attempt_work = Some(CanonicalMergeWork {
@@ -6042,16 +6062,19 @@ impl CompilerSession {
             .batch_diagnostic_order
             .as_ref()
             .map(crate::shared_segments::SharedList::as_arc);
-        let merged = projected_indexes
-            .and_then(|indexes| {
-                merge_parsed_modules_reusing_indexes(
-                    &parsed,
-                    &indexes,
-                    self.definition_shard_baseline.as_ref(),
-                    batch_order.as_deref(),
-                )
-            })
-            .map(Arc::new);
+        let merged = {
+            let _span = tracing::info_span!("canonical_merge").entered();
+            projected_indexes
+                .and_then(|indexes| {
+                    merge_parsed_modules_reusing_indexes(
+                        &parsed,
+                        &indexes,
+                        self.definition_shard_baseline.as_ref(),
+                        batch_order.as_deref(),
+                    )
+                })
+                .map(Arc::new)
+        };
         if self.cancel_merge_at_commit_boundary() {
             guard.request_cancel();
             return Err(CompileErrors::from(CompileError::without_span(
@@ -6192,11 +6215,17 @@ impl CompilerSession {
                     .iter()
                     .map(|module| module.module_id().clone())
                     .collect::<Vec<_>>();
-                let (module_rirs, query_work) =
-                    self.queries.revisioned.module_rirs(revision, module_ids);
+                let (module_rirs, query_work) = {
+                    let _span = tracing::info_span!("module_rir_lowering").entered();
+                    self.queries.revisioned.module_rirs(revision, module_ids)
+                };
                 match module_rirs {
                     Ok(modules) => {
-                        match project_module_rirs_with_work(merged, &modules, query_work) {
+                        let projected = {
+                            let _span = tracing::info_span!("rir_projection").entered();
+                            project_module_rirs_with_work(merged, &modules, query_work)
+                        };
+                        match projected {
                             Ok(rir) => {
                                 let rir = Arc::new(rir);
                                 *attempt_work = Some(rir.work());
@@ -6566,15 +6595,20 @@ impl CompilerSession {
             .revisioned
             .current_semantic_revision()
             .expect("semantic preparation observes a published source/import revision");
-        let query_shells = self.queries.revisioned.projected_declaration_shells(
-            runtime_revision,
-            merged.ast(),
-            cancellation.clone(),
-        );
+        let declaration_shells_span = tracing::info_span!("declaration_shells").entered();
+        let query_shells = {
+            let _span = tracing::info_span!("declaration_shell_projection").entered();
+            self.queries.revisioned.projected_declaration_shells(
+                runtime_revision,
+                merged.ast(),
+                cancellation.clone(),
+            )
+        };
         let mut body_query_shells = None;
         let mut prepared = match query_shells {
             Ok(query_shells) => {
                 body_query_shells = Some(query_shells.clone());
+                let _span = tracing::info_span!("declaration_shell_prepare").entered();
                 prepare_query_declaration_shells(&merged, &rir, options, &imports, &query_shells)
             }
             Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Query(abort)) => {
@@ -6587,18 +6621,23 @@ impl CompilerSession {
                 CanonicalSemanticWork::default(),
             )),
         };
+        drop(declaration_shells_span);
+        let declaration_semantics = {
+            let _span = tracing::info_span!("declaration_semantics_projection").entered();
+            self.queries.revisioned.projected_declaration_semantics(
+                runtime_revision,
+                merged.ast(),
+                options.target,
+                &options.preview_features,
+                cancellation.clone(),
+            )
+        };
         let (
             query_declarations,
             query_anonymous_nominals,
             query_declaration_dependencies,
             query_c_export_roots,
-        ) = match self.queries.revisioned.projected_declaration_semantics(
-            runtime_revision,
-            merged.ast(),
-            options.target,
-            &options.preview_features,
-            cancellation.clone(),
-        ) {
+        ) = match declaration_semantics {
             Ok(projection) => (
                 Some(projection.declarations),
                 projection.anonymous_nominals,
@@ -7013,6 +7052,12 @@ impl CompilerSession {
                     Arc::clone(&declaration_base_meter),
                 );
                 while let Some(instance) = priority_pending.pop().or_else(|| pending.pop_first()) {
+                    // Worklist scheduling — depth bookkeeping, producer-deferral
+                    // detection, and visit marking — runs for every popped
+                    // instance, including the ones that defer without ever
+                    // reaching a query. It is timed here so the coordinator's own
+                    // cost is separable from the per-body queries (RUE-786).
+                    let schedule_span = tracing::info_span!("body_schedule").entered();
                     let popped_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                     // Producer-nominal identity is exact: a reached anonymous
                     // member is already its own canonical producer identity, so
@@ -7108,6 +7153,7 @@ impl CompilerSession {
                         instance: instance.clone(),
                         configuration: configuration.clone(),
                     };
+                    drop(schedule_span);
                     // RUE-1112: query THIS reached body's trusted-toolchain
                     // demand projection (the registered `body-toolchain-demands`
                     // node over its exact raw body) FIRST, and check the demanded
@@ -7118,11 +7164,15 @@ impl CompilerSession {
                     // The projection is pure and I/O-free, so this never itself
                     // reads the filesystem; the host driver acquires the absent
                     // modules and retries on a successor.
-                    match self.queries.revisioned.body_toolchain_demands(
-                        runtime_revision,
-                        key.clone(),
-                        cancellation.clone(),
-                    ) {
+                    let toolchain_demands = {
+                        let _span = tracing::info_span!("body_toolchain_demands").entered();
+                        self.queries.revisioned.body_toolchain_demands(
+                            runtime_revision,
+                            key.clone(),
+                            cancellation.clone(),
+                        )
+                    };
+                    match toolchain_demands {
                         Ok(terminal) => {
                             let rue_query::QueryOutcome::Success(demand) = terminal.outcome()
                             else {
@@ -7245,6 +7295,12 @@ impl CompilerSession {
                     };
                     let attempted_before = queried_body_work.bodies_attempted;
                     let had_retained_body = self.queries.revisioned.has_retained_body_key(&key);
+                    // The body transaction is the per-body query node the
+                    // traversal spends most of its time in; the `body_*`
+                    // pipeline stages nest inside its analysis closure, so
+                    // without this span the reuse-and-dispatch cost around them
+                    // fell into `body_queries`' residual (RUE-786).
+                    let transaction_span = tracing::info_span!("body_transaction").entered();
                     let transaction = self.queries.revisioned.body_transaction(
                         runtime_revision,
                         key.clone(),
@@ -7278,6 +7334,12 @@ impl CompilerSession {
                             if specialized {
                                 queried_body_work.specialized_bodies_attempted += 1;
                             }
+                            // Merging this body's selected anonymous nominals
+                            // over the whole-program set is per-body work
+                            // proportional to that set, so it is timed apart
+                            // from the analysis it feeds (RUE-786).
+                            let anonymous_span =
+                                tracing::info_span!("body_anonymous_scope").entered();
                             let mut body_anonymous = query_anonymous_nominals
                                 .iter()
                                 .cloned()
@@ -7290,9 +7352,11 @@ impl CompilerSession {
                                     .map(|nominal| (nominal.identity.clone(), nominal)),
                             );
                             let body_anonymous = body_anonymous.into_values().collect::<Vec<_>>();
+                            drop(anonymous_span);
                             let query_declarations = query_declarations.as_deref().expect(
                                 "body traversal follows a successful declaration projection",
                             );
+                            let analysis_span = tracing::info_span!("body_analysis").entered();
                             let transaction = crate::canonical_semantic::analyze_body_query(
                                 &merged,
                                 &rir,
@@ -7308,6 +7372,7 @@ impl CompilerSession {
                                 &shared_base,
                                 &mut stage_context,
                             );
+                            drop(analysis_span);
                             // Fold the stage-sourced per-body declaration-context
                             // work (whatever actually ran) into the running total.
                             let context = &mut queried_body_work.per_body_declaration_context;
@@ -7391,6 +7456,7 @@ impl CompilerSession {
                             transaction
                         },
                     );
+                    drop(transaction_span);
                     let transaction = match transaction {
                         Ok(terminal) => terminal,
                         Err(crate::revisioned_query_database::BodyTransactionRequestFailure::ProducerFailed(
@@ -7523,8 +7589,16 @@ impl CompilerSession {
                     else {
                         unreachable!("BodyTransaction publishes typed values")
                     };
-                    body_query_reference_cache
-                        .insert(instance.clone(), transaction.references().clone());
+                    // Recording this body's outcome — its reference set, its
+                    // diagnostics, and the anonymous producers it published —
+                    // is the coordinator's other per-body cost. The anonymous
+                    // projection nests inside as its own leaf (RUE-786).
+                    let _record_span = tracing::info_span!("body_record").entered();
+                    {
+                        let _span = tracing::info_span!("body_cache_references").entered();
+                        body_query_reference_cache
+                            .insert(instance.clone(), transaction.references().clone());
+                    }
                     if let crate::body_query::BodyTransaction::DeterministicFailure {
                         errors, ..
                     } = &transaction
@@ -7535,14 +7609,15 @@ impl CompilerSession {
                         transaction,
                         crate::body_query::BodyTransaction::Success { .. }
                     ) {
-                        let produced = match self
-                            .queries
-                            .revisioned
-                            .body_produced_anonymous_projection(
+                        let projection = {
+                            let _span = tracing::info_span!("body_anonymous_projection").entered();
+                            self.queries.revisioned.body_produced_anonymous_projection(
                                 runtime_revision,
                                 key.clone(),
                                 cancellation.clone(),
-                            ) {
+                            )
+                        };
+                        let produced = match projection {
                             Ok(produced) => produced,
                             Err(rue_query::QueryAbort::Canceled) if !cancellation.is_canceled() => {
                                 body_query_errors.insert(
@@ -7616,6 +7691,7 @@ impl CompilerSession {
                             }
                         }
                     }
+                    let enqueue_span = tracing::info_span!("body_enqueue_references").entered();
                     let references = transaction.references();
                     for reference in references.0.iter() {
                         if let crate::body_query::BodyReference::Callable(callable) = reference
@@ -7652,11 +7728,14 @@ impl CompilerSession {
                             );
                         }
                     }
+                    drop(enqueue_span);
                     if matches!(
                         transaction,
                         crate::body_query::BodyTransaction::Success { .. }
                     ) && callable_has_query_body(&instance)
                     {
+                        let _projection_span =
+                            tracing::info_span!("body_canonical_projection").entered();
                         let body = match self.queries.revisioned.canonical_body_projection(
                             runtime_revision,
                             key.clone(),

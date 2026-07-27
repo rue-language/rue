@@ -9868,6 +9868,13 @@ impl RevisionedQueryDatabase {
             key.clone(),
             cancellation,
             |context| {
+                // The transaction's prerequisite fan-out (raw body, toolchain
+                // demands, transitive anonymous nominals, well-known `Option`
+                // resolution) and its trailing lookup-edge recording both run
+                // per reached body around the analysis itself. They are timed
+                // as their own leaves so the residual between `body_transaction`
+                // and `body_analysis` is not telemetry-dark (RUE-786).
+                let prerequisites_span = tracing::info_span!("body_query_prerequisites").entered();
                 let raw = context.query_registered(
                     &self.raw_declaration_bodies,
                     RawDeclarationBodyQueryKey(candidate),
@@ -10134,6 +10141,7 @@ impl RevisionedQueryDatabase {
                         ),
                     }
                 };
+                drop(prerequisites_span);
                 let transaction = compute(
                     selected_anonymous
                         .into_values()
@@ -10141,6 +10149,7 @@ impl RevisionedQueryDatabase {
                         .into(),
                     well_known,
                 )?;
+                let _lookups_span = tracing::info_span!("body_query_lookups").entered();
                 for lookup in transaction.lookup_observations() {
                     match lookup {
                         crate::body_query::BodyLookupKey::Name {
@@ -10703,6 +10712,10 @@ impl RevisionedQueryDatabase {
             if cancellation.is_canceled() {
                 return Err(SemanticNucleusBatchFailure::Query(QueryAbort::Canceled));
             }
+            // Declaration-semantics projection splits into a per-module
+            // occurrence index and a per-declaration nucleus request; both were
+            // previously inside the pipeline's unattributed residual (RUE-786).
+            let index_span = tracing::info_span!("declaration_occurrence_index").entered();
             let indexed = self.runtime.request_registered(
                 &self.declaration_occurrence_indexes,
                 revision,
@@ -10712,6 +10725,7 @@ impl RevisionedQueryDatabase {
             let terminal = indexed
                 .into_result()
                 .map_err(SemanticNucleusBatchFailure::Query)?;
+            drop(index_span);
             let rue_query::QueryOutcome::Success(indexed) = terminal.outcome() else {
                 unreachable!("DeclarationOccurrenceIndex publishes typed values")
             };
@@ -10748,6 +10762,7 @@ impl RevisionedQueryDatabase {
                     configuration: configuration.clone(),
                 };
                 let request = |key: Key| {
+                    let _span = tracing::info_span!("declaration_nucleus").entered();
                     let attempt = self.runtime.request_registered(
                         &self.semantic_nucleus,
                         revision,

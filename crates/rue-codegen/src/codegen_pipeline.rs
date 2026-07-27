@@ -8,6 +8,7 @@
 use rue_air::{ArgClass, ArgConvention, FrozenTypeInternPool, NativeCallAbi, ReturnClass};
 use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue};
 use rue_error::{CompileError, CompileResult, ErrorKind};
+use tracing::info_span;
 
 use crate::frame_layout::{FrameLayout, SavedRegScheme};
 
@@ -181,14 +182,29 @@ where
         validate_pre_lowering_budget(cfg, type_pool, arg_reg_count, return_reg_count, scheme)?;
     let param_homing = param_homing_plan(cfg);
 
-    let (mir, mut artifacts) = lower()?;
+    let (mir, mut artifacts) = {
+        let _span = info_span!("mir_lowering").entered();
+        lower()?
+    };
     let existing_slots = checked_slot_sum([num_locals_original, num_params, u32::from(has_sret)])
         .ok_or_else(|| frame_budget_error(cfg, None))?;
-    let (mut mir, num_spills, used_callee_saved) = allocate(mir, existing_slots, &mut artifacts)?;
+    let (mut mir, num_spills, used_callee_saved) = {
+        let _span = info_span!("register_allocation").entered();
+        allocate(mir, existing_slots, &mut artifacts)?
+    };
 
-    peephole(&mut mir);
-    schedule(&mut mir);
-    verify(&mir)?;
+    {
+        let _span = info_span!("mir_peephole").entered();
+        peephole(&mut mir);
+    }
+    {
+        let _span = info_span!("mir_scheduling").entered();
+        schedule(&mut mir);
+    }
+    {
+        let _span = info_span!("mir_verification").entered();
+        verify(&mir)?;
+    }
 
     let total_locals = num_locals_original
         .checked_add(num_spills)
