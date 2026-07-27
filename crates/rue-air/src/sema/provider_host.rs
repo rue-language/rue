@@ -114,6 +114,20 @@ pub(crate) struct ProviderBodyLocalState {
     pub(crate) comptime_type_call_depth: usize,
     /// Constructor type displays this body rendered, for diagnostics.
     pub(crate) ctor_type_displays: HashMap<Type, String>,
+    /// Endpoints for the stable identities this body actually consulted.
+    ///
+    /// Symbol rendering needs `token -> (file, name, owner, kind)`, which the
+    /// epoch answers from a declaration-universe-sized reverse table
+    /// (`stable_definition_endpoints`). A body never needs that table: it can
+    /// only render a token it resolved, and every token it resolved came back
+    /// from a provider lookup that already carried the endpoint. Recording the
+    /// endpoint at that moment makes rendering `O(consulted)` and keeps the
+    /// dependency edge on the lookup that produced it, rather than on a table
+    /// read afterwards.
+    pub(crate) consulted_definition_endpoints:
+        HashMap<crate::SemanticDefinitionToken, crate::SemanticDefinitionEndpoint>,
+    pub(crate) consulted_module_endpoints:
+        HashMap<crate::SemanticModuleToken, crate::SemanticModuleEndpoint>,
 }
 
 impl ProviderBodyLocalState {
@@ -133,6 +147,42 @@ impl ProviderBodyLocalState {
             .chain(self.anon_enum_identities.keys())
             .cloned()
             .collect();
+    }
+
+    /// Record the endpoint a provider lookup returned alongside its token.
+    ///
+    /// Called at the consult, never at the render: a token whose endpoint was
+    /// never recorded is one this body never resolved, and rendering it would
+    /// be reaching for a fact the body has no dependency edge on.
+    pub(crate) fn record_consulted_definition_endpoint(
+        &mut self,
+        endpoint: crate::SemanticDefinitionEndpoint,
+    ) {
+        self.consulted_definition_endpoints
+            .insert(endpoint.token, endpoint);
+    }
+
+    pub(crate) fn record_consulted_module_endpoint(
+        &mut self,
+        endpoint: crate::SemanticModuleEndpoint,
+    ) {
+        self.consulted_module_endpoints
+            .insert(endpoint.token, endpoint);
+    }
+
+    /// The endpoint for a token this body resolved, or `None` when it did not.
+    pub(crate) fn consulted_definition_endpoint(
+        &self,
+        token: &crate::SemanticDefinitionToken,
+    ) -> Option<&crate::SemanticDefinitionEndpoint> {
+        self.consulted_definition_endpoints.get(token)
+    }
+
+    pub(crate) fn consulted_module_endpoint(
+        &self,
+        token: &crate::SemanticModuleToken,
+    ) -> Option<&crate::SemanticModuleEndpoint> {
+        self.consulted_module_endpoints.get(token)
     }
 
     /// The producer-nominal identities this body actually minted.
@@ -300,39 +350,50 @@ pub(crate) const HOST_CAPABILITY_LEDGER: &[HostCapabilityRow] = &[
              `TypeSyntaxHost`, so this is binding that host to the provider rather than to `Sema`",
         ),
     ),
+    // The five export rows below are one job, not five. `SemanticBodyExportHost`
+    // already abstracts the publication path over exactly these facts, so the
+    // work is a second implementation of that trait rather than new machinery.
+    // Tracing the epoch's implementation shows no reverse identity map is
+    // needed: a compact id carries its own `(file, name)` through the type pool,
+    // so the stable token is a FORWARD keyed lookup the fact provider already
+    // answers, and the only genuinely reverse fact — token to endpoint, for
+    // symbol rendering — is memoized body-locally at the consult that produced
+    // the token (`consulted_definition_endpoints`). Every export fact is
+    // therefore already body-local, derivable from the type pool, or recorded
+    // at lookup time.
     row(
         "canonical_type_instance",
         HostCapability::NeedsProviderWiring(
-            "compact type -> stable instance key; needs the provider identity pool to own the \
-             export direction, not just the import direction",
+            "compact type -> stable instance key; anonymous and builtin arms are already \
+             body-local and type-pool reads, and the named arm is a forward \
+             `(file, name, kind)` lookup through the fact boundary",
         ),
     ),
     row(
         "canonical_argument_value",
         HostCapability::NeedsProviderWiring(
-            "compact const value -> stable argument value; same export direction as \
+            "compact const value -> stable argument value; rides the same arms as \
              `canonical_type_instance`",
         ),
     ),
     row(
         "function_identity",
         HostCapability::NeedsProviderWiring(
-            "rendered symbol -> stable definition token; `callable_symbol_method` covers the \
-             method case, the free-function case needs the same reversal",
+            "rendered symbol -> stable definition token; `callable_symbol_method` answers the \
+             method arm and the free-function arm is the same forward lookup",
         ),
     ),
     row(
         "stable_definition_symbol_component",
         HostCapability::NeedsProviderWiring(
-            "symbol rendering currently reads epoch endpoint tables; the provider must render \
-             from the stable token alone",
+            "render from the endpoint recorded at consult time, not from the epoch's \
+             universe-sized `stable_definition_endpoints` table",
         ),
     ),
     row(
         "stable_module_symbol_component",
         HostCapability::NeedsProviderWiring(
-            "module half of the same rendering; must not consult a module registry the body \
-             does not own",
+            "module half of the same rendering, from `consulted_module_endpoints`",
         ),
     ),
 ];
@@ -408,6 +469,39 @@ mod tests {
         assert!(state.generated_structs.is_empty());
         assert_eq!(state.comptime_type_call_depth, 0);
         assert!(state.produced_anonymous_identities().next().is_none());
+    }
+
+    /// Rendering a stable symbol is only legal for a token this body resolved.
+    /// The memo is populated at the consult, so an unconsulted token misses —
+    /// which is the difference between `O(consulted)` rendering and reading the
+    /// epoch's declaration-universe endpoint table.
+    #[test]
+    fn only_consulted_tokens_can_be_rendered() {
+        let mut state = ProviderBodyLocalState::new();
+        let consulted = crate::SemanticDefinitionToken::new(1, 7);
+        let never_consulted = crate::SemanticDefinitionToken::new(1, 8);
+
+        assert!(state.consulted_definition_endpoint(&consulted).is_none());
+
+        state.record_consulted_definition_endpoint(crate::SemanticDefinitionEndpoint {
+            token: consulted,
+            file: 3,
+            name: "helper".into(),
+            kind: crate::StableDefinitionKind::Function,
+            owner: None,
+        });
+
+        let endpoint = state
+            .consulted_definition_endpoint(&consulted)
+            .expect("a consulted token carries the endpoint its lookup returned");
+        assert_eq!(endpoint.file, 3);
+        assert_eq!(&*endpoint.name, "helper");
+        assert!(
+            state
+                .consulted_definition_endpoint(&never_consulted)
+                .is_none(),
+            "a token this body never resolved has no endpoint to render from"
+        );
     }
 
     /// The only category with design work left in it is the one the flip has
