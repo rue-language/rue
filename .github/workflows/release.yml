@@ -48,5 +48,6 @@ jobs:
       - name: Run full release suite
         run: >-
           scripts/ci-timed "full release suite" --
-          ./buck2 test //... --exclude rue_cli_shard
+          ./buck2 test //... toolchains//... --exclude rue_cli_shard
+          --ignore-tests-attribute
           --target-platforms //platforms:release

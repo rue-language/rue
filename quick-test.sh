@@ -26,9 +26,11 @@ echo "Running unit tests (quick mode)..."
 # coverage, not fast iteration.
 # (RUE-132, RUE-1157)
 ./buck2 test //crates/... \
+    --include rue_test_tier_premerge \
     --exclude rue_not_quick \
     --exclude rue_dedicated_suite \
-    --always-exclude
+    --always-exclude \
+    --ignore-tests-attribute
 
 echo ""
 echo "Unit tests passed! Run ./test.sh for full verification before committing."

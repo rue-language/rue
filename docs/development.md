@@ -19,6 +19,10 @@ scripts/rue build                    # build the compiler
 scripts/rue exec program.rue         # compile and run a program
 scripts/rue quick                    # Rust unit tests
 scripts/rue test [pattern]           # full suite, optionally filtered
+scripts/rue premerge                 # required-CI test tier
+scripts/rue slow                     # scheduled exhaustive tests
+scripts/rue stress                   # opt-in resource stress tests
+scripts/rue all                      # union of every test tier
 scripts/rue spec 4.2                 # filtered specification cases
 scripts/rue cli abi                  # filtered CLI integration cases
 scripts/rue fmt                      # format first-party Rust

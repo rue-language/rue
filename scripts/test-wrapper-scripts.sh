@@ -277,6 +277,33 @@ test_rue_cli_examples_survive_case_chdir() {
   rm -rf "$sb"
 }
 
+# Canonical tier commands are intentionally thin: scripts/rue names the
+# selection while test.sh owns execution and reads Buck's tier metadata.
+test_rue_named_test_tiers_delegate_to_testsh() {
+  local sb; sb="$(make_rue_sandbox)"
+  cat >"$sb/test.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "${RUE_TEST_TIER:-unset}" >>"$TIER_LOG"
+EOF
+  chmod +x "$sb/test.sh"
+
+  local tier rc
+  for tier in premerge slow stress all; do
+    rc=0
+    (cd "$sb/work" && TIER_LOG="$sb/tiers.log" "$sb/scripts/rue" "$tier") \
+      >/dev/null 2>&1 || rc=$?
+    check "scripts/rue $tier: delegates the named tier to test.sh" \
+      "$([ "$rc" -eq 0 ] && tail -1 "$sb/tiers.log" | grep -Fxq "$tier" && echo 0 || echo 1)"
+  done
+
+  rc=0
+  (cd "$sb/work" && TIER_LOG="$sb/tiers.log" "$sb/scripts/rue" slow unexpected) \
+    >/dev/null 2>&1 || rc=$?
+  check "scripts/rue slow: rejects case-filter arguments" \
+    "$([ "$rc" -eq 2 ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # Filtered `test.sh` reaches the same CLI path after its unit/spec/UI steps. Its
 # absolute path must survive the cwd change, and its sentinel must agree with
 # the propagated harness status.
@@ -756,6 +783,10 @@ if [ "$1" = "uquery" ]; then
   printf 'root%s\n' "${FAKE_LABELED_TARGET:-//:cli-tests}"
   exit 0
 fi
+if [ "$1" = "bxl" ]; then
+  printf 'Rue test tiers valid\n'
+  exit 0
+fi
 if [ "$1" = "test" ]; then
   if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
   for arg in "$@"; do
@@ -855,6 +886,10 @@ if [ "$1" = "uquery" ]; then
   esac
   exit 0
 fi
+if [ "$1" = "bxl" ]; then
+  printf 'Rue test tiers valid\n'
+  exit 0
+fi
 if [ "$1" = "test" ]; then
   if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
   tgt="$2"
@@ -880,6 +915,23 @@ EOF
   out="$(cd "$sb" && RUE_CI_DEFER_HEAVY_SUITES= RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" FAKE_PASS_TARGETS="$all" ./test.sh 2>&1)" || rc=$?
   check "test.sh: unfiltered run with the full corpus reports success" \
     "$([ "$rc" -eq 0 ] && grep -Fxq '=== TEST SUITE: PASSED ===' <<< "$out" && echo 0 || echo 1)"
+
+  # The required-CI spelling selects premerge from canonical Buck metadata,
+  # while slow selections are allowed to have no heavy corpus targets and do
+  # not claim the premerge omission sentinels executed.
+  : >"$sb/calls.log"; rc=0
+  out="$(cd "$sb" && RUE_TEST_TIER=premerge RUE_CI_DEFER_HEAVY_SUITES= \
+      RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" \
+      FAKE_PASS_TARGETS="$all" FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: premerge selection uses the canonical Buck tier label" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_premerge' "$sb/calls.log" && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"; rc=0
+  out="$(cd "$sb" && RUE_TEST_TIER=slow RUE_CI_DEFER_HEAVY_SUITES= \
+      RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES= \
+      FAKE_PASS_TARGETS= FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: slow selection is valid without premerge corpus claims" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && echo 0 || echo 1)"
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.
@@ -984,6 +1036,7 @@ test_fmt_uses_one_buck_run_and_preserves_paths
 test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
+test_rue_named_test_tiers_delegate_to_testsh
 test_testsh_cli_examples_survive_case_chdir
 test_rue_unit_maps_crate_and_forwards_args
 test_rue_unit_zero_match_fails_loud

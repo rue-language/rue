@@ -48,12 +48,44 @@ Every first-party Buck test target carries exactly one execution-tier label:
 repository, crate, and toolchain tests; generated crate unit tests default to
 `premerge`. A test that belongs outside pre-merge must opt into `slow` or
 `stress` at its definition rather than returning success from a skipped body.
+The required Valgrind and ASan jobs are logical `premerge` coverage but remain
+explicit workflow jobs: Valgrind provisions an external runtime tool, while
+ASan requires a pinned nightly Cargo toolchain that Buck does not model.
 
 `./buck2 bxl //test_tiers.bxl:validate` queries Buck's live first-party test
 graph and fails unless every target has exactly one tier. Required formatting
 CI runs that validation, so adding a raw test rule or conflicting tier label
 cannot silently change suite ownership. Vendored `//third-party/...` targets
 are excluded because their generated BUCK metadata is upstream-owned.
+
+The same BXL file exposes the canonical named selections:
+
+```bash
+./buck2 bxl //test_tiers.bxl:premerge
+./buck2 bxl //test_tiers.bxl:slow
+./buck2 bxl //test_tiers.bxl:stress
+./buck2 bxl //test_tiers.bxl:all
+```
+
+Each prints the exact live Buck targets in that selection. The `all` and
+per-tier selections omit `rue_cli_shard` scheduling alternatives because the
+canonical monolithic CLI target already owns their union. CI invokes those
+shards explicitly on separate runners.
+
+Use `scripts/rue premerge`, `scripts/rue slow`, `scripts/rue stress`, or
+`scripts/rue all` to execute a named selection. `scripts/rue test` retains its
+standard full-suite behavior: premerge plus slow, with resource-stress tests
+remaining opt in. Filtered `scripts/rue test PATTERN` behavior is unchanged.
+Required CI sets `RUE_TEST_TIER=premerge`, while `scripts/rue all` and the
+scheduled full-release workflow exercise the complete union.
+
+The exhaustive CLI- and specification-oracle differential harnesses are
+`slow`: premerge retains the fixed generated oracle smoke corpus as its bounded
+codegen canary. The normal 100/1k structural scaling matrix remains a dedicated
+premerge canary; `//crates/rue-compiler:scaling-matrix-stress-test` enables the
+real 10k-per-axis ladder and belongs to `stress`. Caldera and Meridian remain
+explicitly tracked by RUE-1162 until their real release-built slow targets and
+reduced premerge canaries replace the current skips/stub.
 
 Execution tier and scheduling are separate concerns. A required pre-merge test
 may also carry `rue_heavy_suite` or `rue_dedicated_suite` so it runs in an

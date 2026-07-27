@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Run all tests for the rue compiler.
+# Run the canonical Rue test selection.
 #
-# Every suite is a Buck test target, so one `buck2 test //...` runs the unit
+# Every suite is a Buck test target. With no environment override this retains
+# the standard full-suite behavior (premerge + slow, with resource-stress tests
+# opt in); `RUE_TEST_TIER=premerge|slow|stress|all` selects a canonical
+# execution tier or their complete union from the same Buck metadata used by
+# `//test_tiers.bxl:{premerge,slow,stress,all}`.
+#
+# One broad `buck2 test //...` runs the unit
 # tests for ALL crates plus the spec/UI/CLI harness suites, tutorial snippet
 # checker, spec traceability gate, and ADR registry validator (the root BUCK
 # file's sh_tests, which declare the rue binary, cases/, std/, docs/, and
@@ -43,6 +49,20 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 repo_root="$PWD"
+
+requested_test_tier="${RUE_TEST_TIER:-}"
+test_tier="${requested_test_tier:-standard}"
+case "$test_tier" in
+    standard|all|premerge|slow|stress) ;;
+    *)
+        echo "error: unknown RUE_TEST_TIER '$test_tier' (expected all, premerge, slow, or stress)" >&2
+        exit 2
+        ;;
+esac
+if [[ $# -gt 0 && -n "$requested_test_tier" ]]; then
+    echo "error: filtered test.sh runs cannot be combined with RUE_TEST_TIER=$test_tier" >&2
+    exit 2
+fi
 
 # Direct full-suite invocations also bootstrap an already-installed private
 # cache config. This is a no-op when the user has not opted in.
@@ -95,6 +115,10 @@ REQUIRED_CORPUS_HARNESSES=(
 )
 
 if [[ $# -eq 0 ]]; then
+    # Fail closed before executing anything if a target is unowned, multiply
+    # owned, or a named tier has no real members.
+    ./buck2 bxl //test_tiers.bxl:validate
+
     # Keep discovery broad so new crate and repository tests cannot disappear
     # behind a hand-maintained list. Heavy opaque harnesses are labeled in BUCK:
     # query that label from the live graph, exclude it from the broad pass, then
@@ -106,13 +130,22 @@ if [[ $# -eq 0 ]]; then
     # exactly once instead of re-running every 1/N slice, so subtract the
     # rue_cli_shard set from heavy-suite discovery here.
     cli_shard_targets="$(./buck2 uquery 'attrfilter(labels, rue_cli_shard, //...)')"
+    heavy_query='attrfilter(labels, rue_heavy_suite, //...)'
+    tier_label=""
+    if [[ "$test_tier" == standard ]]; then
+        heavy_query='attrfilter(labels, rue_heavy_suite, //...) except attrfilter(labels, rue_test_tier_stress, //...)'
+    elif [[ "$test_tier" != all ]]; then
+        tier_label="rue_test_tier_$test_tier"
+        heavy_query="attrfilter(labels, rue_heavy_suite, attrfilter(labels, $tier_label, //...))"
+    fi
+
     HEAVY_SUITES=()
     while IFS= read -r suite; do
         [[ -n "$suite" ]] || continue
         grep -Fxq "$suite" <<<"$cli_shard_targets" && continue
         HEAVY_SUITES+=("$suite")
-    done < <(./buck2 uquery 'attrfilter(labels, rue_heavy_suite, //...)')
-    if [[ ${#HEAVY_SUITES[@]} -eq 0 ]]; then
+    done < <(./buck2 uquery "$heavy_query")
+    if [[ ${#HEAVY_SUITES[@]} -eq 0 && "$test_tier" != slow && "$test_tier" != stress ]]; then
         echo "error: Buck query found no rue_heavy_suite targets" >&2
         exit 1
     fi
@@ -163,8 +196,13 @@ if [[ $# -eq 0 ]]; then
     run_log="$(mktemp)"
     overall_status=0
     set +e
-    echo "Running unit tests and lightweight repository checks..."
-    broad_test_args=(//... --exclude rue_heavy_suite --always-exclude)
+    echo "Running $test_tier unit tests and lightweight repository checks..."
+    broad_test_args=(//... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute)
+    if [[ "$test_tier" == standard ]]; then
+        broad_test_args+=(--exclude rue_test_tier_stress)
+    elif [[ -n "$tier_label" ]]; then
+        broad_test_args+=(--include "$tier_label")
+    fi
     if [[ -n "${RUE_CI_DEFER_DEDICATED_SUITES:-}" ]]; then
         if [[ "${CI:-}" != "true" ]]; then
             echo "error: RUE_CI_DEFER_DEDICATED_SUITES is reserved for required CI" >&2
@@ -176,7 +214,13 @@ if [[ $# -eq 0 ]]; then
         # the workflow's declared set to match Buck's live scheduling metadata
         # exactly before excluding the label, so a newly tagged target cannot
         # disappear behind a stale environment variable.
-        dedicated_targets="$(./buck2 uquery 'attrfilter(labels, rue_dedicated_suite, //...)')"
+        dedicated_query='attrfilter(labels, rue_dedicated_suite, //...)'
+        if [[ "$test_tier" == standard ]]; then
+            dedicated_query='attrfilter(labels, rue_dedicated_suite, //...) except attrfilter(labels, rue_test_tier_stress, //...)'
+        elif [[ -n "$tier_label" ]]; then
+            dedicated_query="attrfilter(labels, rue_dedicated_suite, attrfilter(labels, $tier_label, //...))"
+        fi
+        dedicated_targets="$(./buck2 uquery "$dedicated_query")"
         read -r -a deferred_dedicated <<<"$RUE_CI_DEFER_DEDICATED_SUITES"
         for deferred in "${deferred_dedicated[@]}"; do
             if ! grep -Fxq "root${deferred#root}" <<<"$dedicated_targets"; then
@@ -200,19 +244,21 @@ if [[ $# -eq 0 ]]; then
     ./buck2 test "${broad_test_args[@]}" 2>&1 | tee "$run_log"
     step_status=${PIPESTATUS[0]}
     [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
-    for suite in "${HEAVY_SUITES[@]}"; do
-        if suite_is_deferred "$suite"; then
-            echo "Deferring heavy suite $suite to its required CI shard..."
-            continue
-        fi
-        echo "Running heavy suite $suite..."
-        # Normalize Buck's configured-cell spelling before handing execution
-        # to the single audited heavy-suite runner. It owns target-specific
-        # executor arguments as well as the per-target result check.
-        ./scripts/ci-heavy-suite "${suite#root}" 2>&1 | tee -a "$run_log"
-        step_status=${PIPESTATUS[0]}
-        [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
-    done
+    if [[ ${#HEAVY_SUITES[@]} -gt 0 ]]; then
+        for suite in "${HEAVY_SUITES[@]}"; do
+            if suite_is_deferred "$suite"; then
+                echo "Deferring heavy suite $suite to its required CI shard..."
+                continue
+            fi
+            echo "Running heavy suite $suite..."
+            # Normalize Buck's configured-cell spelling before handing execution
+            # to the single audited heavy-suite runner. It owns target-specific
+            # executor arguments as well as the per-target result check.
+            ./scripts/ci-heavy-suite "${suite#root}" 2>&1 | tee -a "$run_log"
+            step_status=${PIPESTATUS[0]}
+            [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
+        done
+    fi
     set -e
 
     # buck2 prints exactly one "<Status>: root<target> (<time>)" summary line
@@ -221,6 +267,12 @@ if [[ $# -eq 0 ]]; then
     # — neither in the broad pass nor as a heavy suite.
     missing_corpus=()
     for target in "${REQUIRED_CORPUS_HARNESSES[@]}"; do
+        # The current omission sentinels are all premerge corpora. Slow and
+        # stress selections have their own explicit targets and must not claim
+        # these premerge harnesses executed.
+        if [[ "$test_tier" == slow || "$test_tier" == stress ]]; then
+            continue
+        fi
         if suite_is_deferred "$target"; then
             continue
         fi

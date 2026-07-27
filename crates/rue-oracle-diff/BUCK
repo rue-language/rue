@@ -50,6 +50,7 @@ rue_binary(
 # the single-source oracle.
 rue_sh_test(
     name = "oracle-diff-test",
+    tier = "slow",
     labels = ["rue_not_quick"],
     test = ":rue-oracle-diff",
     env = {
@@ -66,6 +67,7 @@ rue_sh_test(
 # with their declared preview feature.
 rue_sh_test(
     name = "oracle-diff-spec-test",
+    tier = "slow",
     labels = ["rue_not_quick"],
     test = ":rue-oracle-diff",
     args = ["spec"],

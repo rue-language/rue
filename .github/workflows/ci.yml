@@ -212,6 +212,7 @@ jobs:
         # per-matrix expression. Local full suites still own every discovered
         # target in one invocation.
         env:
+          RUE_TEST_TIER: premerge
           RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:cli-tests-caldera //:spec-tests'
           RUE_CI_DEFER_DEDICATED_SUITES: '//crates/rue-compiler:scaling-matrix-test'
         run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
