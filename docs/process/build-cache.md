@@ -221,14 +221,35 @@ Two consequences are worth knowing before changing a corpus target:
    a harness reads at runtime must reach it through `env`, and hence through
    `$(location ...)`.
 2. **Paths must be absolute.** `$(location ...)` expands to an absolute path in
-   an `sh_test`, which runs from the project root, but to a path relative to the
-   action's working directory in a genrule. The harnesses spawn the compiler with
-   each case's temp directory as cwd, and `find_dir` falls back to relative
-   defaults, so a relative value can resolve to a real but wrong directory and
-   quietly test nothing. `corpus-action` resolves everything named in the suite's
-   `absolutize` list immediately before the harness runs; it cannot be done in
-   BUCK because a genrule cmd has no shell command substitution — `$(...)` is
-   Buck's own macro syntax.
+   an `sh_test`, which runs from the project root, but to a project-relative path
+   in a build action. The harnesses spawn the compiler with each case's temp
+   directory as cwd, and `find_dir` falls back to relative defaults, so a
+   relative value can resolve to a real but wrong directory and quietly test
+   nothing. `corpus-action` resolves everything named in the suite's
+   `absolutize` list immediately before the harness runs.
+3. **The suite must be a rule that permits cache uploads.** `cached_corpus_suite`
+   defines its own rule rather than using `genrule` for one reason: the prelude
+   computes `cacheable = attrs.cacheable and (local_only or prefer_local)` and
+   passes that as `allow_cache_upload`, where those two flags come from a
+   Meta-internal label allowlist (`uses_sudo`, `qt_moc`, `yarn_install`, ...). A
+   plain genrule therefore never uploads here, and the first merge_group run of
+   RUE-1118 re-executed every corpus on a tree byte-identical to the one the PR
+   run had just built. The rule sets `allow_cache_upload = True` explicitly.
+
+### Reading whether a corpus was cache-served
+
+The thin `sh_test` reports `Pass: root//:NAME (0.0s)` whether the corpus ran for
+eleven minutes or was served from cache — it only checks the stamp. **Do not read
+that line as evidence of anything.** Two signals actually answer the question:
+
+- `Commands: N (cached: C, remote: R, local: L)` — the corpus is one action, so a
+  cache-served suite adds to `cached` and a re-executed one adds to `local`. The
+  pre-RUE-1118 baseline for a CLI shard was 465 commands; it is 466 now.
+- the job's wall time, which is unambiguous.
+
+This matters because the two failure modes look identical in the test output. A
+merge_group run that reports `Pass (0.0s)` on all eighteen corpus jobs while each
+one takes ten minutes is doing no caching at all.
 
 `//:reproducible-programs` and `//:oracle-diff-generated-smoke` remain plain
 `sh_test`s: their harnesses are shell scripts that read repository paths
