@@ -359,10 +359,11 @@ jobs:
   # separate machines (RUE-1115) while each main platform lane retains broad
   # discovery, the smaller corpora, and omission-audit coverage. Every platform
   # defers the same heavy corpora (see RUE_CI_DEFER_HEAVY_SUITES on the `test`
-  # job). RUE-1116: the ordinary CLI corpus is split into CLI_TEST_SHARD_COUNT
-  # (BUCK) hash-partitioned shards per platform so its ~12 min collapses to
-  # ~N-way parallel slices; //:cli-shard-coverage-validation keeps this matrix
-  # and the BUCK shard set in lockstep.
+  # job). RUE-1116/RUE-1158: the ordinary CLI corpus is split into
+  # CLI_TEST_SHARD_COUNT (BUCK) measured-cost shards per platform so its wall
+  # time collapses to balanced N-way parallel slices;
+  # //:cli-shard-coverage-validation keeps this matrix and the BUCK shard set
+  # in lockstep.
   #
   # RUE-1119: each job first consults the affected-targets determinator and,
   # on a pull_request where its corpus is provably unaffected, skips the heavy
@@ -515,6 +516,15 @@ jobs:
       - name: Run ${{ matrix.name }} corpus
         if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.check_name }} corpus" -- scripts/ci-heavy-suite "${{ matrix.target }}"
+
+      - name: Upload CLI case timings
+        if: always() && startsWith(matrix.name, 'cli-shard-') && steps.sel.outputs.run == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.check_name }}-case-timings
+          path: ${{ runner.temp }}/rue-cli-case-timings.jsonl
+          if-no-files-found: ignore
+          overwrite: true
 
   # Focused release-mode coverage (RUE-1129). Correctness-critical compiler
   # invariants are enforced independently by validate-debug-assert-policy.py;

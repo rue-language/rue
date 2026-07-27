@@ -104,12 +104,25 @@
 //! that are meant only to compile.
 
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
+use rue_test_runner::{
+    DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, ShardSelector, TestFailure,
+    TestResult, classify_expected_failure, compiler_command, find_dir, find_rue_binary,
+    ice_message, run_with_timeout, validate_nonempty_case_corpus,
+};
+use serde::{Deserialize, Serialize};
+
+use sharding::CliShardPlan;
+
+mod sharding;
 
 /// Build a tiny C-free static archive of pure machine code for `target`
 /// (ADR-0064 C FFI proof). Each function is a leaf object produced with the
@@ -436,13 +449,6 @@ fn write_ar_field(header: &mut [u8; 60], offset: usize, width: usize, value: &[u
     let len = value.len().min(width);
     header[offset..offset + len].copy_from_slice(&value[..len]);
 }
-use rue_test_runner::{
-    DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, ShardSelector, TestFailure,
-    TestResult, classify_expected_failure, compiler_command, find_dir, find_rue_binary,
-    ice_message, run_with_timeout, validate_nonempty_case_corpus,
-};
-use serde::Deserialize;
-
 /// Possible paths for the cases directory.
 const CASES_DIR_PATHS: &[&str] = &[
     "crates/rue-cli-tests/cases",
@@ -455,6 +461,60 @@ const STD_DIR_PATHS: &[&str] = &["std", "../std", "../../std"];
 
 /// Possible paths for the repo's `examples/` directory (RUE-48 smoke tests).
 const EXAMPLES_DIR_PATHS: &[&str] = &["examples", "../../examples", "../examples"];
+
+#[derive(Clone, Default)]
+struct CaseTimingRecorder {
+    writer: Option<Arc<Mutex<BufWriter<File>>>>,
+}
+
+#[derive(Serialize)]
+struct CaseTiming<'a> {
+    event: &'static str,
+    name: &'a str,
+    elapsed_s: f64,
+}
+
+impl CaseTimingRecorder {
+    fn from_env() -> Result<Self, String> {
+        let Some(path) = std::env::var_os("RUE_CLI_CASE_TIMINGS") else {
+            return Ok(Self::default());
+        };
+        let path = PathBuf::from(path);
+        let file = File::create(&path)
+            .map_err(|error| format!("cannot create {}: {error}", path.display()))?;
+        Ok(Self {
+            writer: Some(Arc::new(Mutex::new(BufWriter::new(file)))),
+        })
+    }
+
+    fn measure(
+        &self,
+        name: &str,
+        run: impl FnOnce() -> Result<(), RunError>,
+    ) -> Result<(), RunError> {
+        let started = Instant::now();
+        let result = run();
+        if let Some(writer) = &self.writer {
+            let timing = CaseTiming {
+                event: "rue_cli_case_timing",
+                name,
+                elapsed_s: started.elapsed().as_secs_f64(),
+            };
+            let mut writer = writer
+                .lock()
+                .map_err(|_| RunError::fail("CLI timing output lock was poisoned"))?;
+            serde_json::to_writer(&mut *writer, &timing)
+                .map_err(|error| RunError::fail(format!("cannot write CLI timing: {error}")))?;
+            writer
+                .write_all(b"\n")
+                .map_err(|error| RunError::fail(format!("cannot write CLI timing: {error}")))?;
+            writer
+                .flush()
+                .map_err(|error| RunError::fail(format!("cannot flush CLI timing: {error}")))?;
+        }
+        result
+    }
+}
 
 /// Expected outcome of compiling and running one `examples/**/*.rue` program.
 ///
@@ -2310,7 +2370,8 @@ fn example_trials(
     automatic_contracts: &HashMap<String, ExecutionContract>,
     rue_binary: &Path,
     real_std: &Path,
-    shard: Option<&ShardSelector>,
+    shard: Option<&CliShardPlan>,
+    timings: &CaseTimingRecorder,
 ) -> Vec<Trial> {
     let mut trials = Vec::with_capacity(examples.len());
     for example in examples {
@@ -2330,12 +2391,16 @@ fn example_trials(
                 continue;
             }
         }
+        let timing_name = test_name.clone();
+        let timings = timings.clone();
         let trial = Trial::test(test_name, move |_ctx| {
-            let expectation = EXAMPLE_EXPECTATIONS
-                .iter()
-                .find(|e| e.path == relative_path);
-            run_example(&path, expectation, &rue_binary, &real_std, &contract)
-                .map_err(RunError::fail)
+            timings.measure(&timing_name, || {
+                let expectation = EXAMPLE_EXPECTATIONS
+                    .iter()
+                    .find(|e| e.path == relative_path);
+                run_example(&path, expectation, &rue_binary, &real_std, &contract)
+                    .map_err(RunError::fail)
+            })
         });
         trials.push(if heavyweight {
             trial.exclusive()
@@ -2355,11 +2420,15 @@ fn main() {
         return;
     }
 
-    // RUE-1116: an optional `INDEX/COUNT` spec runs a stable hash-partitioned
-    // 1/N slice of the corpus so CI can fan the slices across parallel runners.
-    // Unset (the default, and every local/filtered run) means the whole corpus.
-    let shard = ShardSelector::from_env("RUE_CLI_TEST_SHARD").unwrap_or_else(|error| {
+    // An optional `INDEX/COUNT` spec selects one cost-balanced slice of the
+    // corpus so CI can fan the work across parallel runners. Unset (the
+    // default, and every local/filtered run) means the whole corpus.
+    let shard_selector = ShardSelector::from_env("RUE_CLI_TEST_SHARD").unwrap_or_else(|error| {
         eprintln!("error: invalid RUE_CLI_TEST_SHARD: {error}");
+        std::process::exit(2);
+    });
+    let timings = CaseTimingRecorder::from_env().unwrap_or_else(|error| {
+        eprintln!("error: {error}");
         std::process::exit(2);
     });
 
@@ -2394,6 +2463,33 @@ fn main() {
             std::process::exit(1);
         });
 
+    let discovered_names = corpus
+        .files
+        .iter()
+        .flat_map(|(_, file)| {
+            file.cases
+                .iter()
+                .map(|case| format!("{}::{}", file.section.id, case.name))
+        })
+        .chain(
+            examples
+                .iter()
+                .map(|example| example_test_name(&example.relative_path)),
+        )
+        .collect::<Vec<_>>();
+    let shard = shard_selector.map(|selector| {
+        let weights_path = std::env::var_os("RUE_CLI_SHARD_WEIGHTS").unwrap_or_else(|| {
+            eprintln!("error: RUE_CLI_SHARD_WEIGHTS is required when RUE_CLI_TEST_SHARD is set");
+            std::process::exit(2);
+        });
+        CliShardPlan::load(selector, discovered_names, Path::new(&weights_path)).unwrap_or_else(
+            |error| {
+                eprintln!("error: invalid CLI shard plan: {error}");
+                std::process::exit(2);
+            },
+        )
+    });
+
     let total: usize = corpus.files.iter().map(|(_, f)| f.cases.len()).sum();
     if let Err(error) = validate_nonempty_case_corpus(&cases_dir, total, "CLI") {
         eprintln!("error: {error}");
@@ -2420,8 +2516,12 @@ fn main() {
             let rue_binary = rue_binary.clone();
             let real_std = real_std.clone();
             let repo_root = repo_root.clone();
+            let timing_name = test_name.clone();
+            let case_timings = timings.clone();
             let trial = Trial::test(test_name, move |ctx| {
-                run_case_wrapper(&case, &contract, &rue_binary, &real_std, &repo_root, ctx)
+                case_timings.measure(&timing_name, || {
+                    run_case_wrapper(&case, &contract, &rue_binary, &real_std, &repo_root, ctx)
+                })
             });
             tests.push(if heavyweight {
                 trial.exclusive()
@@ -2440,15 +2540,19 @@ fn main() {
         &rue_binary,
         &real_std,
         shard.as_ref(),
+        &timings,
     ));
 
     if let Some(shard) = &shard {
         eprintln!(
-            "cli-tests: shard {}/{} — running {} of {} discovered cases",
-            shard.index(),
-            shard.count(),
+            "cli-tests: shard {}/{} ({}) — running {} of {} discovered cases; estimated {} ms across {} assigned cases",
+            shard_selector.unwrap().index(),
+            shard_selector.unwrap().count(),
+            shard.platform(),
             tests.len(),
             discovered,
+            shard.selected_estimated_load_ms(),
+            shard.selected_case_count(),
         );
     }
 

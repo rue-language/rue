@@ -43,7 +43,7 @@ jobs:
           scripts/provision-build-cache apply
 
       # The monolithic //:cli-tests target owns the complete CLI corpus here.
-      # Exclude its CI-only hash shards so the same corpus is not repeated four
+      # Exclude its CI-only shards so the same corpus is not repeated four
       # additional times by the //... expansion.
       - name: Run full release suite
         run: >-

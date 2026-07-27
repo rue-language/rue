@@ -249,8 +249,8 @@ rue_sh_test(
 )
 
 # RUE-1116: parallel CI shards of the CLI corpus. Same harness and declared
-# inputs as //:cli-tests, but each sets RUE_CLI_TEST_SHARD=k/N so it runs a
-# stable hash-partitioned 1/N slice; the shards' union is the full corpus. They
+# inputs as //:cli-tests, but each sets RUE_CLI_TEST_SHARD=k/N so it runs one
+# deterministic cost-balanced slice; the shards' union is the full corpus. They
 # carry BOTH labels deliberately:
 #   * rue_heavy_suite — scripts/ci-heavy-suite accepts them unchanged, and the
 #     broad `buck2 test //... --exclude rue_heavy_suite` pass skips them;
@@ -270,6 +270,7 @@ CLI_TEST_SHARD_COUNT = 4
         args = _CLI_TEST_ARGS,
         env = dict(_CLI_TEST_ENV.items() + [
             ("RUE_CLI_TEST_SHARD", "{}/{}".format(_shard, CLI_TEST_SHARD_COUNT)),
+            ("RUE_CLI_SHARD_WEIGHTS", "$(location //crates/rue-cli-tests:shard-weights)"),
         ]),
     )
     for _shard in range(CLI_TEST_SHARD_COUNT)
@@ -440,6 +441,25 @@ rue_sh_test(
     name = "cli-shard-coverage-tool-tests",
     test = "scripts/test-cli-shard-coverage.py",
     resources = ["scripts/validate-cli-shard-coverage.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+rue_sh_test(
+    name = "cli-shard-weights-validation",
+    test = "scripts/generate-cli-shard-weights.py",
+    args = [
+        "--check",
+        "--output",
+        "$(location //crates/rue-cli-tests:shard-weights)",
+    ],
+)
+
+rue_sh_test(
+    name = "cli-shard-weight-tool-tests",
+    test = "scripts/test-cli-shard-weights.py",
+    resources = ["scripts/generate-cli-shard-weights.py"],
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
     },

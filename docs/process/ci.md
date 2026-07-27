@@ -30,7 +30,7 @@ It does not build every crate target or run the exhaustive suite.
 `.github/workflows/release.yml` runs the complete release-configured `//...`
 suite nightly and on manual dispatch. Its `rue_cli_shard` exclusion is
 intentional: the monolithic `//:cli-tests` target owns the full CLI corpus, so
-also running the four CI-only hash shards would execute that corpus twice.
+also running the four CI-only shards would execute that corpus twice.
 
 Production `debug_assert*` use is governed by
 `scripts/validate-debug-assert-policy.py`, run by required formatting CI and
@@ -80,18 +80,40 @@ target against Buck's live `rue_heavy_suite` query, and continues to audit
 every corpus target it owns. Local full suites never defer coverage.
 
 The ordinary CLI corpus is additionally split into `CLI_TEST_SHARD_COUNT` (root
-`BUCK`) hash-partitioned shards, `//:cli-tests-shard-0 .. -N`, so its ~12-minute
-wall clock collapses to N parallel slices per platform (RUE-1116). Each shard
-sets `RUE_CLI_TEST_SHARD=k/N`; the harness selects a stable 1/N slice of the
-corpus by a fixed hash of the test name, and the shards' union is the full
-corpus. The shards carry both `rue_heavy_suite` (so `ci-heavy-suite` runs them
-and the broad pass skips them) and `rue_cli_shard` (so a local `./test.sh` full
-run executes the monolithic `//:cli-tests` once instead of every slice —
-`test.sh` subtracts the `rue_cli_shard` set from its heavy-suite discovery).
-Nothing else re-runs the slices on CI, so `//:cli-shard-coverage-validation`
-fails the build if the shard targets in `BUCK` and the `platform-corpus` matrix
-in `ci.yml` ever drift apart. Changing `CLI_TEST_SHARD_COUNT` therefore means
-updating the matrix (and branch protection) to match.
+`BUCK`) cost-balanced shards, `//:cli-tests-shard-0 .. -N`, so its wall clock
+collapses to N parallel slices per platform (RUE-1116/RUE-1158). Each shard
+sets `RUE_CLI_TEST_SHARD=k/N`; the harness assigns the longest measured cases
+first to the currently lightest shard, with stable name and shard-index
+tie-breaking. This makes the assignment deterministic, exhaustive, and
+pairwise disjoint while balancing estimated runtime rather than case count.
+The checked `crates/rue-cli-tests/shard-weights.json` has common weights plus
+optional `linux-x64`, `linux-arm64`, and `macos` overrides. A run rejects an
+estimated slowest shard more than 25% above the mean.
+
+Each executed required shard writes `rue_cli_case_timing` JSONL records and
+uploads them as a `*-case-timings` artifact. A remotely cached test result has
+zero executed cases and therefore no artifact. Combine repeated samples with
+the median and update the checked weights deterministically:
+
+```bash
+scripts/generate-cli-shard-weights.py \
+  --timings linux-x64=linux-x64-1.jsonl \
+  --timings linux-x64=linux-x64-2.jsonl \
+  --timings linux-arm64=linux-arm64.jsonl \
+  --timings macos=macos.jsonl
+./buck2 test //:cli-shard-weights-validation
+```
+
+Use `common=PATH` to refresh the cross-platform fallback and the default cost
+for newly discovered cases. The shards carry both `rue_heavy_suite` (so
+`ci-heavy-suite` runs them and the broad pass skips them) and `rue_cli_shard`
+(so a local `./test.sh` full run executes the monolithic `//:cli-tests` once
+instead of every slice — `test.sh` subtracts the `rue_cli_shard` set from its
+heavy-suite discovery). Nothing else re-runs the slices on CI, so
+`//:cli-shard-coverage-validation` fails the build if the shard targets in
+`BUCK` and the `platform-corpus` matrix in `ci.yml` ever drift apart. Changing
+`CLI_TEST_SHARD_COUNT` therefore means updating the matrix (and branch
+protection) to match.
 
 ## Affected-corpus selection on pull requests (RUE-1119)
 
@@ -136,7 +158,8 @@ possible follow-ups once a single `ci-success` aggregate check exists.
 
 Major Buck commands run through `scripts/ci-timed`, which preserves output and
 the exact command exit status while appending wall time and aggregate
-`Commands: (cached / remote / local)` counters to the GitHub job summary. Read
+`Commands: (cached / remote / local)` counters to the GitHub job summary. CLI
+shard summaries also show the number of measured cases next to wall time. Read
 wall time together with hit count: a small number of invalidated ThinLTO actions
 can dominate a release build even when its hit rate is above 90 percent.
 

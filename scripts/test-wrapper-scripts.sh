@@ -666,6 +666,7 @@ test_ci_timed_preserves_status_and_summarizes_actions() {
 echo 'first line'
 echo 'Commands: 10 (cached: 7, remote: 1, local: 2)'
 echo 'Commands: 5 (cached: 3, remote: 1, local: 1)'
+echo 'cli-tests: measured 37 cases in /tmp/timings.jsonl'
 exit "${FAKE_EXIT:-0}"
 EOF
   chmod +x "$sb/fake-command"
@@ -678,6 +679,8 @@ EOF
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
   check "ci-timed: all Buck summaries are aggregated" \
     "$(grep -Fq '| passed |' "$sb/summary" && grep -Fq '| 2 | 15 | 10 | 2 | 3 |' "$sb/summary" && echo 0 || echo 1)"
+  check "ci-timed: CLI case count is included" \
+    "$(grep -Fq '| 37 | 2 | 15 |' "$sb/summary" && echo 0 || echo 1)"
 
   rc=0
   RUE_CI_REQUIRE_REMOTE_ACTIONS=1 "$sb/ci-timed" "remote wrapper" -- "$sb/fake-command" >/dev/null 2>&1 || rc=$?
@@ -755,6 +758,14 @@ if [ "$1" = "uquery" ]; then
 fi
 if [ "$1" = "test" ]; then
   if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+  for arg in "$@"; do
+    case "$arg" in
+      RUE_CLI_CASE_TIMINGS=*)
+        timing_path="${arg#RUE_CLI_CASE_TIMINGS=}"
+        printf '%s\n' '{"event":"rue_cli_case_timing","name":"fake","elapsed_s":0.1}' >"$timing_path"
+        ;;
+    esac
+  done
   if [ "${FAKE_OMIT:-0}" != 1 ]; then printf 'Pass: root%s (0.1s)\n' "$2"; fi
   exit "${FAKE_EXIT:-0}"
 fi
@@ -777,7 +788,7 @@ EOF
   rc=0
   (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
   check "ci-heavy-suite: CLI shard receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-shard-1 -- --timeout 1200' "$sb/calls.log" && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && grep -Eq '^test //:cli-tests-shard-1 -- --timeout 1200 --env RUE_CLI_CASE_TIMINGS=' "$sb/calls.log" && echo 0 || echo 1)"
 
   local other_target
   for other_target in \
