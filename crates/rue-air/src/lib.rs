@@ -66,7 +66,7 @@ pub use intern_pool::{
 };
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;
-pub use param_arena::{ParamArena, ParamRange};
+pub use param_arena::{ParamArena, ParamRange, ParamRangeData};
 pub use path_norm::{mangle_symbol_component, normalize_module_path, unmangle_symbol_component};
 pub use runtime_call::{
     OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
@@ -91,19 +91,19 @@ pub use sema::{
     OneBodyCanonicalArtifact, OneBodyDependency, OneBodyInterruption, OneBodyNonTerminalReason,
     OneBodyRequest, OneBodyTransactionOutcome, OperatorMemberCandidate, OperatorName,
     OrdinaryFreeFunctionDependencyEvent, ParamSlotModes, PerBodyDeclarationContextWork,
-    ProviderAggregateFacts, ProviderCallFacts, ProviderDefinitionKind, ProviderEndpointFacts,
-    ProviderIdentityContext, ProviderModuleMember, ProviderNamespace, ProviderQualifiedType,
-    ProviderStructHead, RirDeclarationIndexWork, Sema, SemaMetadata, SemaOutput,
-    SemanticAnonymousMethodSignature, SemanticAnonymousMethodType, SemanticAnonymousNominalExport,
-    SemanticAnonymousNominalIdentity, SemanticAnonymousNominalShape, SemanticBinding,
-    SemanticBindingManifest, SemanticBindingManifestWork, SemanticDeclarationExport,
-    SemanticDeclarationExportWork, SemanticDeclarationPayload, SemanticDeclarationShell,
-    SemanticDeclarationShellIdentity, SemanticDefinitionIdentity, SemanticExportConstValue,
-    SemanticExportFailure, SemanticExportParameter, SemanticExportType, SemanticNominalIdentity,
-    SemanticParameterMode, SemanticProducedAnonymousMethodSignature,
-    SemanticProducedAnonymousMethodType, SemanticProducedAnonymousNominal,
-    SemanticProducedAnonymousNominalShape, SourceParamAbi, SpecializedFreeFunctionDependencyEvent,
-    SpecializedFreeFunctionOrigin,
+    ProviderAggregateFacts, ProviderBodyAnalysisState, ProviderCallFacts, ProviderDefinitionKind,
+    ProviderEndpointFacts, ProviderIdentityContext, ProviderModuleMember, ProviderNamespace,
+    ProviderQualifiedType, ProviderStructHead, RirDeclarationIndexWork, Sema, SemaMetadata,
+    SemaOutput, SemanticAnonymousMethodSignature, SemanticAnonymousMethodType,
+    SemanticAnonymousNominalExport, SemanticAnonymousNominalIdentity,
+    SemanticAnonymousNominalShape, SemanticBinding, SemanticBindingManifest,
+    SemanticBindingManifestWork, SemanticDeclarationExport, SemanticDeclarationExportWork,
+    SemanticDeclarationPayload, SemanticDeclarationShell, SemanticDeclarationShellIdentity,
+    SemanticDefinitionIdentity, SemanticExportConstValue, SemanticExportFailure,
+    SemanticExportParameter, SemanticExportType, SemanticNominalIdentity, SemanticParameterMode,
+    SemanticProducedAnonymousMethodSignature, SemanticProducedAnonymousMethodType,
+    SemanticProducedAnonymousNominal, SemanticProducedAnonymousNominalShape, SourceParamAbi,
+    SpecializedFreeFunctionDependencyEvent, SpecializedFreeFunctionOrigin,
 };
 pub use semantic_body::{
     SEMANTIC_BODY_INST_KINDS, SemanticAnonymousBodyExport, SemanticBody, SemanticBodyAnchor,

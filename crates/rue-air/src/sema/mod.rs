@@ -118,7 +118,7 @@ pub use body_identity::{
     BodyRirBundle, BodyRirView, DurableAnonymousShape, DurableAnonymousSource,
     DurableCallableSource, DurableConst, DurableConstSource, DurableFunction, DurableMethod,
     DurableNominal, DurableNominalBody, DurableNominalSource, DurableSignatureParameter,
-    ProviderIdentityContext,
+    ProviderBodyAnalysisState, ProviderIdentityContext,
 };
 pub use call_resolution::ProviderCallFacts;
 

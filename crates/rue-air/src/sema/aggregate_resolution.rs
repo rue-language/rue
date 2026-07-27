@@ -460,6 +460,10 @@ where
     /// Construct the driver over the shared identity context used by every
     /// provider fact family for one body.
     pub fn with_identity(identity: ProviderIdentityContext<K, M, S>) -> Self {
+        Self::with_overlay_identity(identity.fail_closed())
+    }
+
+    fn with_overlay_identity(identity: ProviderIdentityContext<K, M, S>) -> Self {
         Self {
             identity,
             by_file_name: HashMap::new(),
@@ -467,6 +471,12 @@ where
             value_consts: RefCell::new(HashMap::new()),
             module_bindings: RefCell::new(HashMap::new()),
         }
+    }
+
+    /// Construct the aggregate facade from the one task-local provider
+    /// authority shared with endpoint and call resolution.
+    pub fn with_state(state: &super::ProviderBodyAnalysisState<K, M, S>) -> Self {
+        Self::with_overlay_identity(state.identity_context())
     }
 
     /// Record that a durable nominal key is declared as `(file, name)`, the

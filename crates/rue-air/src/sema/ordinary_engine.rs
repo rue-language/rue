@@ -2,10 +2,11 @@
 //!
 //! The existing body implementation is split across many inherent `BodySema`
 //! blocks. This module is the first migration seam: it makes the request-local
-//! RIR, identity-backed fact families, type pool, and parameter arena available
-//! through capabilities rather than through a `Sema` wrapper or `Deref`. The
-//! current production adapter is `BodySema`; a provider-backed receiver will
-//! implement the same contract only after its evaluator owns exact facts.
+//! RIR, identity-backed fact families, type pool, and exact parameter-point
+//! copies available through capabilities rather than through a `Sema` wrapper
+//! or `Deref`. The current production adapter is `BodySema`; a provider-backed
+//! receiver will implement the same contract only after its evaluator owns
+//! exact facts.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,15 +26,14 @@ use super::fact_mode::BodyAnalysisHost;
 use super::{
     AnalyzedBodyOwnerEvent, AnalyzedFunction, BodyAnalysisWork, ConstInfo, ConstValue,
     DeclarationPhase, DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
-    FunctionInfo, InferenceContext, KnownSymbols, MethodInfo, ParamArena, ParamSlotModes, StructId,
-    Type,
+    FunctionInfo, InferenceContext, KnownSymbols, MethodInfo, ParamSlotModes, StructId, Type,
 };
-use crate::ParamRange;
 use crate::inference::InferType;
 use crate::inst::Air;
 use crate::inst::{AirInst, AirInstData};
 use crate::intern_pool::TypeInternPool;
 use crate::types::{ArrayTypeId, EnumId, ModuleDef, ModuleId};
+use crate::{ParamRange, ParamRangeData};
 use rue_target::Target;
 
 pub(crate) fn reject_runtime_type_value(
@@ -59,7 +59,7 @@ pub(crate) fn reject_runtime_type_value(
 /// by the ordinary expression engine. Transaction publication remains outside
 /// this extraction.
 pub(crate) trait OrdinaryBodyAnalysisHost: BodyAnalysisHost {
-    fn body_param_arena(&self) -> &ParamArena;
+    fn body_param_data(&self, range: ParamRange) -> ParamRangeData;
     fn allocate_method_params(
         &mut self,
         names: impl IntoIterator<Item = Spur>,
@@ -241,8 +241,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn body_type_pool(&self) -> &TypeInternPool {
         self.storage.body_type_pool()
     }
-    pub(crate) fn body_param_arena(&self) -> &ParamArena {
-        self.storage.body_param_arena()
+    pub(crate) fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
+        self.storage.body_param_data(range)
     }
     pub(crate) fn known_symbols(&self) -> &KnownSymbols {
         self.storage.known_symbols()
@@ -862,8 +862,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let mut values = Vec::new();
         for (index, (param_name, _, _, is_comptime)) in self
             .storage
-            .body_param_arena()
-            .iter(function.params)
+            .body_param_data(function.params)
+            .iter()
             .enumerate()
         {
             if !*is_comptime {
@@ -1804,8 +1804,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
 }
 
 impl<'a, D: DeclarationPhase> OrdinaryBodyAnalysisHost for super::Sema<'a, D> {
-    fn body_param_arena(&self) -> &ParamArena {
-        &self.param_arena
+    fn body_param_data(&self, range: ParamRange) -> ParamRangeData {
+        self.param_arena.copy_range(range)
     }
     fn allocate_method_params(
         &mut self,
