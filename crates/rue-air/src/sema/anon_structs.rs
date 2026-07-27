@@ -76,7 +76,7 @@ impl EpochLocalConstCandidateProducer {
 ///
 /// This is the single place the AIR domain walks a `StableProducerId` to its
 /// definition. It backs both the deterministic export ordering
-/// ([`Sema::anonymous_key_cmp`]) and trusted-producer recognition under `?`
+/// ([`anonymous_key_cmp`]) and trusted-producer recognition under `?`
 /// (RUE-1112): a `Type` whose anonymous key roots at the trusted
 /// `std/option.rue::Option` (or `std/result.rue::Result`) function definition is
 /// an exact std producer, everything else a lookalike.
@@ -108,25 +108,25 @@ pub(crate) fn anonymous_producer_root(
     }
 }
 
-impl<D: DeclarationPhase> Sema<'_, D> {
-    /// Deterministic export/presentation ordering of two producer-nominal keys.
-    ///
-    /// This is a *presentation* order only — it decides how anonymous exports are
-    /// listed and sorted (see the `one_body.rs` sort), never type identity.
-    /// Identity is the producer-nominal `AnonymousNominalKey` itself (ADR-0066);
-    /// two keys that order equal here are still distinct types unless they are
-    /// the same key. Since RUE-1112 deleted the last min-selection consumer
-    /// (`find_compatible_anon_enum`), no code treats this ordering as identity
-    /// authority.
-    pub(crate) fn anonymous_key_cmp(
-        left: &IssuedAnonymousNominalKey,
-        right: &IssuedAnonymousNominalKey,
-    ) -> Ordering {
-        anonymous_producer_root(&left.producer)
-            .cmp(&anonymous_producer_root(&right.producer))
-            .then_with(|| left.cmp(right))
-    }
+/// Deterministic export/presentation ordering of two producer-nominal keys.
+///
+/// This is a *presentation* order only — it decides how anonymous exports are
+/// listed and sorted (see the `one_body.rs` sort), never type identity.
+/// Identity is the producer-nominal `AnonymousNominalKey` itself (ADR-0066);
+/// two keys that order equal here are still distinct types unless they are the
+/// same key. Since RUE-1112 deleted the last min-selection consumer
+/// (`find_compatible_anon_enum`), no code treats this ordering as identity
+/// authority.
+pub(crate) fn anonymous_key_cmp(
+    left: &IssuedAnonymousNominalKey,
+    right: &IssuedAnonymousNominalKey,
+) -> Ordering {
+    anonymous_producer_root(&left.producer)
+        .cmp(&anonymous_producer_root(&right.producer))
+        .then_with(|| left.cmp(right))
+}
 
+impl<D: DeclarationPhase> Sema<'_, D> {
     /// The trusted standard-library producer family `ty` is an exact
     /// specialization of, or `None` for a non-enum or a lookalike (RUE-1112).
     ///

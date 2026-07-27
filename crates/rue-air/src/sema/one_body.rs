@@ -218,36 +218,35 @@ fn interruption_outcome(interruption: OneBodyInterruption) -> OneBodyTransaction
     }
 }
 
-fn stable_token(
-    sema: &BodySema<'_>,
+fn stable_token<H: OneBodyPublicationHost>(
+    host: &H,
     file: u32,
     name: &str,
     owner: Option<&str>,
     kind: StableDefinitionKind,
 ) -> Result<SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
-    sema.stable_definition_token(file, name, owner, kind)
+    host.publication_stable_token(file, name, owner, kind)
 }
 
-fn target_dependency(
-    sema: &BodySema<'_>,
+fn target_dependency<H: OneBodyPublicationHost>(
+    host: &H,
     target: &super::NamedConstDependencyTargetEvent,
 ) -> Result<OneBodyDependency, crate::SemanticBodyExportFailure> {
     use super::{DeclarationTypeDependencyTargetKind as TK, NamedConstDependencyTargetEvent as T};
     match target {
         T::ValueConst { file, name } => {
-            stable_token(sema, *file, name, None, StableDefinitionKind::ValueConst)
+            stable_token(host, *file, name, None, StableDefinitionKind::ValueConst)
                 .map(OneBodyDependency::Definition)
         }
         T::FreeFunction { file, name } => {
-            stable_token(sema, *file, name, None, StableDefinitionKind::Function)
+            stable_token(host, *file, name, None, StableDefinitionKind::Function)
                 .map(|token| OneBodyDependency::Callable(FunctionInstanceKey::Definition(token)))
         }
         T::NamedType { file, name, kind } => {
-            if let Some(symbol) = sema.interner.get(name.as_str()) {
-                let facts = sema.endpoint_facts();
-                let builtin_kind = if facts.is_builtin_enum(symbol) {
+            if let Some(symbol) = host.publication_name_symbol(name.as_str()) {
+                let builtin_kind = if host.publication_is_builtin_enum(symbol) {
                     Some(crate::AnonymousNominalKind::Enum)
-                } else if facts.is_builtin_or_generated_struct(symbol) {
+                } else if host.publication_is_builtin_or_generated_struct(symbol) {
                     Some(crate::AnonymousNominalKind::Struct)
                 } else {
                     None
@@ -264,7 +263,7 @@ fn target_dependency(
                 TK::Enum => StableDefinitionKind::Enum,
                 TK::ValueConst => StableDefinitionKind::ValueConst,
             };
-            let token = stable_token(sema, *file, name, None, kind)?;
+            let token = stable_token(host, *file, name, None, kind)?;
             if matches!(
                 kind,
                 StableDefinitionKind::Struct | StableDefinitionKind::Enum
@@ -277,14 +276,14 @@ fn target_dependency(
             }
         }
         T::ModuleBinding { file, name } => {
-            stable_token(sema, *file, name, None, StableDefinitionKind::ModuleBinding)
+            stable_token(host, *file, name, None, StableDefinitionKind::ModuleBinding)
                 .map(OneBodyDependency::Definition)
         }
     }
 }
 
 #[derive(Debug)]
-enum ReferenceProjectionFailure {
+pub(super) enum ReferenceProjectionFailure {
     TypedIncomplete(crate::SemanticBodyExportFailure),
     EngineAbort,
 }
@@ -292,6 +291,262 @@ enum ReferenceProjectionFailure {
 impl From<crate::SemanticBodyExportFailure> for ReferenceProjectionFailure {
     fn from(reason: crate::SemanticBodyExportFailure) -> Self {
         Self::TypedIncomplete(reason)
+    }
+}
+
+/// Representation-neutral facts and ledgers consumed by the canonical
+/// one-body publication funnel.
+///
+/// Semantic analysis and specialization finish before this boundary. The
+/// funnel owns stable positive-reference projection, deterministic failure
+/// classification, produced-anonymous export, and success serialization. A
+/// host exposes point operations and immutable request-local ledgers; it does
+/// not lend an analyzer or a declaration epoch to the algorithm.
+pub(super) trait OneBodyPublicationHost:
+    super::semantic_body_export::SemanticBodyExportHost
+{
+    fn publication_stable_token(
+        &self,
+        file: u32,
+        name: &str,
+        owner: Option<&str>,
+        kind: StableDefinitionKind,
+    ) -> Result<SemanticDefinitionToken, crate::SemanticBodyExportFailure>;
+    fn publication_name_symbol(&self, name: &str) -> Option<Spur>;
+    fn publication_resolve_symbol(&self, symbol: &Spur) -> &str;
+    fn publication_is_builtin_or_generated_struct(&self, symbol: Spur) -> bool;
+    fn publication_is_builtin_enum(&self, symbol: Spur) -> bool;
+    fn publication_body_function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    >;
+    fn publication_method_identity(
+        &self,
+        structure: crate::StructId,
+        method: Spur,
+    ) -> Result<
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        ReferenceProjectionFailure,
+    >;
+    fn publication_canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<
+        TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    >;
+    fn publication_canonical_argument_value(
+        &self,
+        value: super::ConstValue,
+    ) -> Result<
+        crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    >;
+
+    fn publication_specialization_dependencies(
+        &self,
+    ) -> &[(
+        AnalyzedBodyOwnerEvent,
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    )];
+    fn publication_callable_dependencies(&self) -> &[(AnalyzedBodyOwnerEvent, Spur)];
+    fn publication_named_dependencies(&self) -> &[super::BodyNamedDependencyEvent];
+    fn publication_type_dependencies(&self) -> &[super::DeclarationTypeDependencyEvent];
+    fn publication_type_call_head_dependencies(
+        &self,
+    ) -> &[super::DeclarationTypeCallHeadDependencyEvent];
+
+    fn publication_anonymous_identities(
+        &self,
+    ) -> Vec<(
+        Type,
+        crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    )>;
+    fn publication_initial_anonymous_contains(
+        &self,
+        identity: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    ) -> bool;
+    fn publication_type_pool(&self) -> &crate::TypeInternPool;
+    fn publication_anonymous_method_signatures(
+        &self,
+        structure: crate::StructId,
+    ) -> &[super::AnonMethodSig];
+    fn publication_anonymous_type_captures(&self, structure: crate::StructId) -> Vec<(Spur, Type)>;
+    fn publication_anonymous_value_captures(
+        &self,
+        structure: crate::StructId,
+    ) -> Vec<(Spur, super::ConstValue)>;
+
+    fn publication_inference_failure_incomplete(&self) -> bool;
+    fn publication_recovered_errors(&self) -> &[CompileError];
+}
+
+impl OneBodyPublicationHost for BodySema<'_> {
+    fn publication_stable_token(
+        &self,
+        file: u32,
+        name: &str,
+        owner: Option<&str>,
+        kind: StableDefinitionKind,
+    ) -> Result<SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        self.stable_definition_token(file, name, owner, kind)
+    }
+
+    fn publication_name_symbol(&self, name: &str) -> Option<Spur> {
+        self.interner.get(name)
+    }
+
+    fn publication_resolve_symbol(&self, symbol: &Spur) -> &str {
+        self.interner.resolve(symbol)
+    }
+
+    fn publication_is_builtin_or_generated_struct(&self, symbol: Spur) -> bool {
+        self.endpoint_facts().is_builtin_or_generated_struct(symbol)
+    }
+
+    fn publication_is_builtin_enum(&self, symbol: Spur) -> bool {
+        self.endpoint_facts().is_builtin_enum(symbol)
+    }
+
+    fn publication_body_function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.body_function_identity(symbol)
+    }
+
+    fn publication_method_identity(
+        &self,
+        structure: crate::StructId,
+        method: Spur,
+    ) -> Result<
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        ReferenceProjectionFailure,
+    > {
+        let Some(info) = self.endpoint_facts().method_info(structure, method) else {
+            return Err(ReferenceProjectionFailure::EngineAbort);
+        };
+        let symbol = self.method_symbol(structure, self.interner.resolve(&method), info.has_self);
+        let Some(symbol) = self.interner.get(&symbol) else {
+            return Err(ReferenceProjectionFailure::EngineAbort);
+        };
+        self.body_function_identity(symbol).map_err(Into::into)
+    }
+
+    fn publication_canonical_type_instance(
+        &self,
+        ty: Type,
+    ) -> Result<
+        TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.canonical_type_instance(ty)
+    }
+
+    fn publication_canonical_argument_value(
+        &self,
+        value: super::ConstValue,
+    ) -> Result<
+        crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.canonical_argument_value(value)
+    }
+
+    fn publication_specialization_dependencies(
+        &self,
+    ) -> &[(
+        AnalyzedBodyOwnerEvent,
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    )] {
+        &self.body_specialization_dependencies
+    }
+
+    fn publication_callable_dependencies(&self) -> &[(AnalyzedBodyOwnerEvent, Spur)] {
+        &self.body_callable_dependencies
+    }
+
+    fn publication_named_dependencies(&self) -> &[super::BodyNamedDependencyEvent] {
+        &self.body_named_dependencies
+    }
+
+    fn publication_type_dependencies(&self) -> &[super::DeclarationTypeDependencyEvent] {
+        &self.declaration_type_dependencies
+    }
+
+    fn publication_type_call_head_dependencies(
+        &self,
+    ) -> &[super::DeclarationTypeCallHeadDependencyEvent] {
+        &self.declaration_type_call_head_dependencies
+    }
+
+    fn publication_anonymous_identities(
+        &self,
+    ) -> Vec<(
+        Type,
+        crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    )> {
+        self.canonical_anonymous_types
+            .iter()
+            .map(|(ty, identity)| (*ty, identity.clone()))
+            .collect()
+    }
+
+    fn publication_initial_anonymous_contains(
+        &self,
+        identity: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
+    ) -> bool {
+        self.one_body_initial_anonymous_identities
+            .contains(identity)
+    }
+
+    fn publication_type_pool(&self) -> &crate::TypeInternPool {
+        &self.type_pool
+    }
+
+    fn publication_anonymous_method_signatures(
+        &self,
+        structure: crate::StructId,
+    ) -> &[super::AnonMethodSig] {
+        self.anon_struct_method_sigs
+            .get(&structure)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    fn publication_anonymous_type_captures(&self, structure: crate::StructId) -> Vec<(Spur, Type)> {
+        self.anon_struct_type_subst
+            .get(&structure)
+            .into_iter()
+            .flat_map(|captures| captures.iter())
+            .map(|(name, ty)| (*name, *ty))
+            .collect()
+    }
+
+    fn publication_anonymous_value_captures(
+        &self,
+        structure: crate::StructId,
+    ) -> Vec<(Spur, super::ConstValue)> {
+        self.anon_struct_captured_values
+            .get(&structure)
+            .into_iter()
+            .flat_map(|captures| captures.iter())
+            .map(|(name, value)| (*name, *value))
+            .collect()
+    }
+
+    fn publication_inference_failure_incomplete(&self) -> bool {
+        self.one_body_inference_failure_incomplete
+    }
+
+    fn publication_recovered_errors(&self) -> &[CompileError] {
+        &self.one_body_recovered_errors
     }
 }
 
@@ -314,13 +569,13 @@ fn semantic_parameter_mode(mode: rue_rir::RirParamMode) -> crate::SemanticParame
     }
 }
 
-fn produced_method_type(
-    sema: &BodySema<'_>,
+fn produced_method_type<H: OneBodyPublicationHost>(
+    host: &H,
     ty: &super::AnonMethodType,
     owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
 ) -> Result<SemanticProducedAnonymousMethodType, crate::SemanticBodyExportFailure> {
-    fn concrete(
-        sema: &BodySema<'_>,
+    fn concrete<H: OneBodyPublicationHost>(
+        host: &H,
         ty: &super::AnonMethodType,
         owner: &crate::AnonymousNominalKey<SemanticDefinitionToken, SemanticModuleToken>,
     ) -> Result<
@@ -331,16 +586,16 @@ fn produced_method_type(
             super::AnonMethodType::SelfType => {
                 TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(owner.clone()))
             }
-            super::AnonMethodType::Concrete(ty) => sema.canonical_type_instance(*ty)?,
+            super::AnonMethodType::Concrete(ty) => host.publication_canonical_type_instance(*ty)?,
             super::AnonMethodType::Array { element, len } => TypeInstanceKey::Array {
-                element: Box::new(concrete(sema, element, owner)?),
+                element: Box::new(concrete(host, element, owner)?),
                 len: *len,
             },
             super::AnonMethodType::PtrConst(pointee) => {
-                TypeInstanceKey::PtrConst(Box::new(concrete(sema, pointee, owner)?))
+                TypeInstanceKey::PtrConst(Box::new(concrete(host, pointee, owner)?))
             }
             super::AnonMethodType::PtrMut(pointee) => {
-                TypeInstanceKey::PtrMut(Box::new(concrete(sema, pointee, owner)?))
+                TypeInstanceKey::PtrMut(Box::new(concrete(host, pointee, owner)?))
             }
             super::AnonMethodType::Syntax(_) => {
                 return Err(crate::SemanticBodyExportFailure::UnsupportedType);
@@ -350,48 +605,40 @@ fn produced_method_type(
 
     Ok(match ty {
         super::AnonMethodType::SelfType => SemanticProducedAnonymousMethodType::SelfType,
-        _ => SemanticProducedAnonymousMethodType::Concrete(concrete(sema, ty, owner)?),
+        _ => SemanticProducedAnonymousMethodType::Concrete(concrete(host, ty, owner)?),
     })
 }
 
-fn produced_anonymous_nominals(
-    sema: &BodySema<'_>,
+fn produced_anonymous_nominals<H: OneBodyPublicationHost>(
+    host: &H,
 ) -> Result<Arc<[SemanticProducedAnonymousNominal]>, crate::SemanticBodyExportFailure> {
-    let mut identities = sema
-        .canonical_anonymous_types
-        .iter()
-        .filter(|(_, identity)| {
-            !sema
-                .one_body_initial_anonymous_identities
-                .contains(*identity)
-        })
-        .map(|(ty, identity)| (*ty, identity.clone()))
+    let mut identities = host
+        .publication_anonymous_identities()
+        .into_iter()
+        .filter(|(_, identity)| !host.publication_initial_anonymous_contains(identity))
         .collect::<Vec<_>>();
     // Deterministic total order over the direct producer keys so the exported
     // nominal stream never depends on `HashMap` iteration order.
-    identities.sort_by(|(_, left), (_, right)| BodySema::anonymous_key_cmp(left, right));
+    identities.sort_by(|(_, left), (_, right)| super::anon_structs::anonymous_key_cmp(left, right));
 
     identities
         .into_iter()
         .map(|(ty, identity)| {
             let (shape, type_captures, value_captures) = match (ty.kind(), identity.kind) {
                 (crate::TypeKind::Struct(struct_id), crate::AnonymousNominalKind::Struct) => {
-                    let definition = sema.type_pool.struct_def(struct_id);
+                    let definition = host.publication_type_pool().struct_def(struct_id);
                     let fields = definition
                         .fields
                         .iter()
                         .map(|field| {
                             Ok((
                                 Arc::from(field.name.as_str()),
-                                sema.canonical_type_instance(field.ty)?,
+                                host.publication_canonical_type_instance(field.ty)?,
                             ))
                         })
                         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
-                    let methods = sema
-                        .anon_struct_method_sigs
-                        .get(&struct_id)
-                        .map(Vec::as_slice)
-                        .unwrap_or_default()
+                    let methods = host
+                        .publication_anonymous_method_signatures(struct_id)
                         .iter()
                         .map(|method| {
                             let parameters = method
@@ -401,33 +648,31 @@ fn produced_anonymous_nominals(
                                 .zip(&method.param_comptime)
                                 .map(|((ty, mode), is_comptime)| {
                                     Ok((
-                                        produced_method_type(sema, ty, &identity)?,
+                                        produced_method_type(host, ty, &identity)?,
                                         semantic_parameter_mode(*mode),
                                         *is_comptime,
                                     ))
                                 })
                                 .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
                             Ok(SemanticProducedAnonymousMethodSignature {
-                                name: Arc::from(sema.interner.resolve(&method.name)),
+                                name: Arc::from(host.publication_resolve_symbol(&method.name)),
                                 has_self: method.has_self,
                                 self_mode: semantic_parameter_mode(method.self_mode),
                                 parameters: parameters.into(),
-                                result: produced_method_type(sema, &method.return_type, &identity)?,
+                                result: produced_method_type(host, &method.return_type, &identity)?,
                             })
                         })
                         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
                     let mut type_captures: Vec<(
                         Arc<str>,
                         TypeInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
-                    )> = sema
-                        .anon_struct_type_subst
-                        .get(&struct_id)
+                    )> = host
+                        .publication_anonymous_type_captures(struct_id)
                         .into_iter()
-                        .flat_map(|captures| captures.iter())
                         .map(|(name, ty)| {
                             Ok((
-                                Arc::<str>::from(sema.interner.resolve(name)),
-                                sema.canonical_type_instance(*ty)?,
+                                Arc::<str>::from(host.publication_resolve_symbol(&name)),
+                                host.publication_canonical_type_instance(ty)?,
                             ))
                         })
                         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
@@ -435,15 +680,13 @@ fn produced_anonymous_nominals(
                     let mut value_captures: Vec<(
                         Arc<str>,
                         crate::CanonicalArgumentValue<SemanticDefinitionToken, SemanticModuleToken>,
-                    )> = sema
-                        .anon_struct_captured_values
-                        .get(&struct_id)
+                    )> = host
+                        .publication_anonymous_value_captures(struct_id)
                         .into_iter()
-                        .flat_map(|captures| captures.iter())
                         .map(|(name, value)| {
                             Ok((
-                                Arc::<str>::from(sema.interner.resolve(name)),
-                                sema.canonical_argument_value(*value)?,
+                                Arc::<str>::from(host.publication_resolve_symbol(&name)),
+                                host.publication_canonical_argument_value(value)?,
                             ))
                         })
                         .collect::<Result<Vec<_>, crate::SemanticBodyExportFailure>>()?;
@@ -458,7 +701,7 @@ fn produced_anonymous_nominals(
                     )
                 }
                 (crate::TypeKind::Enum(enum_id), crate::AnonymousNominalKind::Enum) => {
-                    let definition = sema.type_pool.enum_def(enum_id);
+                    let definition = host.publication_type_pool().enum_def(enum_id);
                     let variants = definition
                         .variants
                         .iter()
@@ -467,7 +710,7 @@ fn produced_anonymous_nominals(
                             let payload = definition
                                 .variant_payload(index)
                                 .iter()
-                                .map(|ty| sema.canonical_type_instance(*ty))
+                                .map(|ty| host.publication_canonical_type_instance(*ty))
                                 .collect::<Result<Vec<_>, _>>()?;
                             Ok((Arc::from(name.as_str()), Arc::from(payload)))
                         })
@@ -577,8 +820,8 @@ fn dependency_has_issuer(dependency: &OneBodyDependency, issuer: u64) -> bool {
     }
 }
 
-fn body_references(
-    sema: &BodySema<'_>,
+fn body_references<H: OneBodyPublicationHost>(
+    host: &H,
     owner: Option<super::BodyOwnerToken>,
     referenced_functions: &HashSet<Spur>,
     referenced_methods: &HashSet<(crate::StructId, Spur)>,
@@ -593,40 +836,33 @@ fn body_references(
 ) -> Result<Arc<[OneBodyDependency]>, ReferenceProjectionFailure> {
     let mut references = BTreeSet::new();
     for function in referenced_functions {
-        let identity = sema.body_function_identity(*function)?;
+        let identity = host.publication_body_function_identity(*function)?;
         references.insert(OneBodyDependency::Callable(identity));
     }
     for (structure, method) in referenced_methods {
-        let Some(info) = sema.endpoint_facts().method_info(*structure, *method) else {
-            return Err(ReferenceProjectionFailure::EngineAbort);
-        };
-        let symbol = sema.method_symbol(*structure, sema.interner.resolve(method), info.has_self);
-        let Some(symbol) = sema.interner.get(&symbol) else {
-            return Err(ReferenceProjectionFailure::EngineAbort);
-        };
-        let identity = sema.body_function_identity(symbol)?;
+        let identity = host.publication_method_identity(*structure, *method)?;
         references.insert(OneBodyDependency::Callable(identity));
     }
-    for (source, identity) in &sema.body_specialization_dependencies {
+    for (source, identity) in host.publication_specialization_dependencies() {
         if owner.is_some_and(|owner| source.token() != Some(owner)) {
             continue;
         }
         references.insert(OneBodyDependency::Callable(identity.clone()));
     }
-    for (source, symbol) in &sema.body_callable_dependencies {
+    for (source, symbol) in host.publication_callable_dependencies() {
         if owner.is_some_and(|owner| source.token() != Some(owner)) {
             continue;
         }
-        let identity = sema.body_function_identity(*symbol)?;
+        let identity = host.publication_body_function_identity(*symbol)?;
         references.insert(OneBodyDependency::Callable(identity));
     }
-    for event in &sema.body_named_dependencies {
+    for event in host.publication_named_dependencies() {
         if owner.is_some_and(|owner| event.source.token() != Some(owner)) {
             continue;
         }
-        references.insert(target_dependency(sema, &event.target)?);
+        references.insert(target_dependency(host, &event.target)?);
     }
-    for event in &sema.declaration_type_dependencies {
+    for event in host.publication_type_dependencies() {
         if event.dependency_kind != super::DeclarationTypeDependencyKind::Body
             || owner.is_some_and(|owner| event.source_token != Some(owner))
         {
@@ -642,10 +878,13 @@ fn body_references(
         {
             continue;
         }
-        if sema.interner.get(&event.target_name).is_some_and(|symbol| {
-            let facts = sema.endpoint_facts();
-            facts.is_builtin_or_generated_struct(symbol) || facts.is_builtin_enum(symbol)
-        }) {
+        if host
+            .publication_name_symbol(&event.target_name)
+            .is_some_and(|symbol| {
+                host.publication_is_builtin_or_generated_struct(symbol)
+                    || host.publication_is_builtin_enum(symbol)
+            })
+        {
             continue;
         }
         let kind = match event.target_kind {
@@ -655,7 +894,7 @@ fn body_references(
                 StableDefinitionKind::ValueConst
             }
         };
-        let token = stable_token(sema, event.target_file, &event.target_name, None, kind)?;
+        let token = stable_token(host, event.target_file, &event.target_name, None, kind)?;
         if matches!(
             kind,
             StableDefinitionKind::Struct | StableDefinitionKind::Enum
@@ -667,14 +906,14 @@ fn body_references(
             references.insert(OneBodyDependency::Definition(token));
         }
     }
-    for event in &sema.declaration_type_call_head_dependencies {
+    for event in host.publication_type_call_head_dependencies() {
         if event.dependency_kind != super::DeclarationTypeDependencyKind::Body
             || owner.is_some_and(|owner| event.source_token != Some(owner))
         {
             continue;
         }
         let token = stable_token(
-            sema,
+            host,
             event.callable_file,
             &event.callable_name,
             None,
@@ -699,15 +938,15 @@ fn body_references(
                     instance,
                     FunctionInstanceKey::Specialization { arguments, .. }
                         if !arguments.values.is_empty()
-                ) && !sema
-                    .body_specialization_dependencies
+                ) && !host
+                    .publication_specialization_dependencies()
                     .iter()
                     .any(|(_, recorded)| recorded == *instance)
             })
             .cloned()
             .map(OneBodyDependency::Callable),
     );
-    for (source, identity) in &sema.body_specialization_dependencies {
+    for (source, identity) in host.publication_specialization_dependencies() {
         if owner.is_some_and(|owner| source.token() != Some(owner)) {
             continue;
         }
@@ -728,12 +967,12 @@ fn body_references(
     Ok(references)
 }
 
-fn fail(
-    sema: &BodySema<'_>,
+fn fail<H: OneBodyPublicationHost>(
+    host: &H,
     owner: Option<super::BodyOwnerToken>,
     error: CompileError,
 ) -> OneBodyTransactionOutcome {
-    if sema.one_body_inference_failure_incomplete {
+    if host.publication_inference_failure_incomplete() {
         return OneBodyTransactionOutcome::NonTerminal {
             reason: OneBodyNonTerminalReason::TypedIncomplete(
                 crate::SemanticBodyExportFailure::MissingStableIdentity,
@@ -754,16 +993,16 @@ fn fail(
             reason: OneBodyNonTerminalReason::EngineAbort,
         };
     }
-    let errors = if sema.one_body_recovered_errors.is_empty() {
+    let errors = if host.publication_recovered_errors().is_empty() {
         CompileErrors::from(error)
     } else {
         let mut errors = CompileErrors::new();
-        for error in &sema.one_body_recovered_errors {
+        for error in host.publication_recovered_errors() {
             errors.push(error.clone());
         }
         errors
     };
-    match body_references(sema, owner, &HashSet::new(), &HashSet::new(), &[], &[]) {
+    match body_references(host, owner, &HashSet::new(), &HashSet::new(), &[], &[]) {
         Ok(references) => OneBodyTransactionOutcome::DeterministicFailure { errors, references },
         Err(failure) => projection_failure_outcome(failure),
     }
@@ -785,8 +1024,42 @@ fn finalize_ordinary(
             Ok(selected) => selected,
             Err(error) => return fail(sema, Some(owner), error),
         };
-    let references = match body_references(
+    publish_ordinary(
         sema,
+        owner,
+        body_span,
+        function,
+        warnings,
+        strings,
+        referenced_functions,
+        referenced_methods,
+        specializations,
+        specialization_instances,
+        interruption,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_ordinary<H: OneBodyPublicationHost>(
+    host: &H,
+    owner: super::BodyOwnerToken,
+    body_span: Span,
+    function: AnalyzedFunction,
+    warnings: Vec<rue_error::CompileWarning>,
+    strings: Vec<String>,
+    referenced_functions: HashSet<Spur>,
+    referenced_methods: HashSet<(crate::StructId, Spur)>,
+    specializations: Vec<(
+        Spur,
+        SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
+    )>,
+    specialization_instances: Vec<
+        FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>,
+    >,
+    interruption: Option<OneBodyInterruption>,
+) -> OneBodyTransactionOutcome {
+    let references = match body_references(
+        host,
         Some(owner),
         &referenced_functions,
         &referenced_methods,
@@ -800,7 +1073,7 @@ fn finalize_ordinary(
         return interruption_outcome(interruption);
     }
     let specialized_calls = specializations.iter().cloned().collect::<HashMap<_, _>>();
-    let produced_anonymous_nominals = match produced_anonymous_nominals(sema) {
+    let produced_anonymous_nominals = match produced_anonymous_nominals(host) {
         Ok(produced) => produced,
         Err(reason) => {
             return OneBodyTransactionOutcome::NonTerminal {
@@ -808,13 +1081,14 @@ fn finalize_ordinary(
             };
         }
     };
-    match sema.export_one_body_with_specializations(
+    match super::semantic_body_export::export_body(
+        host,
         owner,
         body_span,
         &function,
         &strings,
         &warnings,
-        &specialized_calls,
+        Some(&specialized_calls),
     ) {
         Ok(artifact) => OneBodyTransactionOutcome::Success {
             artifact: OneBodyCanonicalArtifact::Ordinary(Box::new(artifact)),
