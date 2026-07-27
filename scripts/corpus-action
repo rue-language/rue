@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Run one corpus harness as a cacheable Buck build action (RUE-1118).
+#
+# buck2 re-executes every `buck2 test` invocation. Test executions are not
+# actions: they are handed to the test executor, they never appear in buck2's
+# `Commands: N (cached: ...)` accounting, and OSS buck2 has no test-result
+# cache. A corpus that runs as a *build* action instead is keyed on its declared
+# inputs like any other action, so the merge_group run reuses the result the PR
+# run uploaded rather than re-running the suite.
+#
+# usage: scripts/corpus-action STAMP HARNESS [ARG ...]
+#
+# Buck expands $(location) and $(exe_target) inside a genrule to paths relative
+# to the action's working directory, which is not the project root. The corpus
+# harnesses spawn the compiler with each case's temp directory as cwd, so every
+# path handed to them must be absolute. The environment variables named in
+# RUE_CORPUS_ABSOLUTIZE are resolved here, immediately before the harness runs,
+# rather than in BUCK: a genrule cmd cannot use shell command substitution
+# because `$(...)` is Buck's own macro syntax.
+set -uo pipefail
+
+if [[ $# -lt 2 ]]; then
+    echo "usage: scripts/corpus-action STAMP HARNESS [ARG ...]" >&2
+    exit 2
+fi
+
+stamp="$1"
+harness="$2"
+shift 2
+
+# Resolve a path without requiring GNU realpath (macOS runners ship BSD tools
+# and no coreutils). A directory resolves directly; anything else resolves
+# through its parent so that missing-but-declared outputs still absolutize.
+absolutize() {
+    local path="$1"
+    if [[ -d "$path" ]]; then
+        (cd "$path" && pwd)
+        return
+    fi
+    local dir base
+    dir="$(dirname "$path")"
+    base="$(basename "$path")"
+    if [[ ! -d "$dir" ]]; then
+        echo "error: cannot resolve '$path': no such directory '$dir'" >&2
+        return 1
+    fi
+    printf '%s/%s\n' "$(cd "$dir" && pwd)" "$base"
+}
+
+for name in ${RUE_CORPUS_ABSOLUTIZE:-}; do
+    value="${!name:-}"
+    if [[ -z "$value" ]]; then
+        echo "error: $name is listed in RUE_CORPUS_ABSOLUTIZE but is unset or empty" >&2
+        exit 2
+    fi
+    if ! resolved="$(absolutize "$value")"; then
+        echo "error: cannot absolutize $name='$value'" >&2
+        exit 2
+    fi
+    export "$name=$resolved"
+done
+# The harness must not observe this action's own plumbing.
+unset RUE_CORPUS_ABSOLUTIZE
+
+harness="$(absolutize "$harness")" || exit 2
+
+# The per-case budgets in execution_contracts.toml are the honest gates. This
+# outer bound only replaces the test executor's timeout, which a build action
+# does not get: without it a wedged harness runs until the GitHub job timeout
+# and reports nothing useful.
+timeout_seconds="${RUE_CORPUS_TIMEOUT_SECONDS:-}"
+unset RUE_CORPUS_TIMEOUT_SECONDS
+if [[ -n "$timeout_seconds" ]] && command -v timeout >/dev/null 2>&1; then
+    timeout "$timeout_seconds" "$harness" "$@"
+    status=$?
+    if [[ "$status" -eq 124 ]]; then
+        echo "error: corpus harness exceeded ${timeout_seconds}s: $harness $*" >&2
+    fi
+else
+    "$harness" "$@"
+    status=$?
+fi
+
+if [[ "$status" -ne 0 ]]; then
+    # Buck surfaces a failed action's stderr, and no stamp is written, so the
+    # failure cannot be cached and the next run re-executes the corpus.
+    echo "error: corpus harness failed (exit $status): $harness $*" >&2
+    exit "$status"
+fi
+
+# The stamp is the action's only output. Its content is deliberately not the
+# harness's stdout: an identical tree must produce an identical stamp, or the
+# artifact would differ between the PR run and the merge_group run for no
+# semantic reason.
+printf 'corpus harness passed\n' >"$stamp"

@@ -28,13 +28,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# CLI correctness deadlines come from the same declarative authority as the
-# per-case hang profiles. They include generous headroom and are deliberately
-# not performance promises.
+# RUE-1118: the converted corpora run as cacheable build actions, and the test
+# executor only asserts the action's stamp — a sub-second check whatever the
+# corpus costs. An executor `--timeout` would therefore bound the wrong thing;
+# each suite's timeout_seconds in BUCK bounds the action that does the work.
+# //:cli-tests-slow is NOT converted, so it keeps the declarative policy from
+# RUE-1159. The per-case budgets in execution_contracts.toml remain the honest
+# gates for both.
 test_args=("$target")
 timings=""
 case "$target" in
-    //:cli-tests|//:cli-tests-slow)
+    //:cli-tests-slow)
         timeout_tool="${RUE_CLI_TIMEOUT_POLICY_TOOL:-scripts/cli-timeout-policy.py}"
         timeout="$("$timeout_tool" \
             --policy "${RUE_CLI_TIMEOUT_POLICY:-crates/rue-cli-tests/cases/execution_contracts.toml}" \
@@ -42,21 +46,15 @@ case "$target" in
             --target "$target")" || exit $?
         test_args+=(-- --timeout "$timeout")
         ;;
-    //:cli-tests-shard-*)
-        timeout_tool="${RUE_CLI_TIMEOUT_POLICY_TOOL:-scripts/cli-timeout-policy.py}"
-        timeout="$("$timeout_tool" \
-            --policy "${RUE_CLI_TIMEOUT_POLICY:-crates/rue-cli-tests/cases/execution_contracts.toml}" \
-            --weights "${RUE_CLI_SHARD_WEIGHTS:-crates/rue-cli-tests/shard-weights.json}" \
-            --target "$target")" || exit $?
-        if [[ -n "${RUNNER_TEMP:-}" ]]; then
-            timings="$RUNNER_TEMP/rue-cli-case-timings.jsonl"
-        else
-            timings="$(mktemp "${TMPDIR:-/tmp}/rue-cli-case-timings.XXXXXX")"
-        fi
-        test_args+=(-- --timeout "$timeout" --env "RUE_CLI_CASE_TIMINGS=$timings")
-        ;;
 esac
+
+# RUE-1159 repeats a shard to expose flakes, which only works if each repetition
+# actually executes. A cached corpus action would serve repetitions 2..N from the
+# first one's result and report a clean sweep having run the cases once, so a
+# repetition run is explicitly cache-free. This is a scheduled workflow, not the
+# merge-queue critical path, so the lost reuse costs nothing that matters.
 if [[ -n "${RUE_CORRECTNESS_REPETITION:-}" ]]; then
+    test_args+=(--no-remote-cache)
     test_args+=(--env "RUE_CORRECTNESS_REPETITION=$RUE_CORRECTNESS_REPETITION")
 fi
 

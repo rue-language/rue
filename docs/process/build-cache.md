@@ -178,11 +178,62 @@ lane can report a 95 percent hit rate and still spend nearly all its wall time
 in one harness process — that is a corpus-sharding problem, not a cache problem,
 and the two are only distinguishable when the summary reports both.
 
+The separation is not a presentational choice: the first three counters *cannot*
+see test execution. A `buck2 test` run is handed to the test executor rather than
+evaluated as an action, so it never enters the `Commands:` accounting, and OSS
+buck2 ships no test-result cache to serve it from. In one `merge_group` run,
+`//:cli-tests-caldera` (which executed nothing) and `//:cli-tests-shard-1` (which
+ran for 11:18) both reported `Commands: 465 (cached: 465/464)`. A corpus job can
+therefore print a perfect hit rate while re-running an eleven-minute suite in
+full, and that reads as "everything was cached" to anyone who stops at the
+cache columns. Test time is the signal that separates those two runs. RUE-1118
+has the measurements.
+
 RUE-320 also adds a merge-group-only remote-execution canary. It disables action
 cache reads, selects the no-fallback `//platforms:remote_execution` executor, and
 requires Buck to report remotely executed actions. This is deliberately
 separate from the cache probe: one proves worker execution, the other proves
 unchanged-action reuse.
+
+## Corpus suites are build actions (RUE-1118)
+
+Because test executions cannot be cached, a plain `sh_test` corpus re-ran on
+every merge even when the merge commit's tree was byte-identical to the tree the
+PR run had just validated. Three CI runs of one such tree — two `pull_request`,
+one `merge_group` — converged to 465/465 cached build actions while every corpus
+re-executed in full, at 91–97% of the merge queue's critical path.
+
+`cached_corpus_suite` (`corpus.bzl`) therefore splits each heavy corpus in two:
+
+- a **genrule** that runs the harness through `scripts/corpus-action` and writes
+  a stamp on success. This is an ordinary action, so the PR run uploads it and
+  the `merge_group` run reads it back like any compile;
+- a thin **`sh_test`** that asserts the stamp. It keeps the suite's name, labels,
+  and `Pass: root//:NAME (time)` result line, so `scripts/ci-heavy-suite` and
+  test.sh's RUE-924 corpus-omission audit keep working unchanged.
+
+Two consequences are worth knowing before changing a corpus target:
+
+1. **The declared input contract is now load-bearing.** Under a plain `sh_test`
+   an undeclared input was merely untracked — the suite re-ran regardless. Here
+   an undeclared input is a false pass: change a file the action does not name
+   and the corpus reports success against the previous tree's result. Every path
+   a harness reads at runtime must reach it through `env`, and hence through
+   `$(location ...)`.
+2. **Paths must be absolute.** `$(location ...)` expands to an absolute path in
+   an `sh_test`, which runs from the project root, but to a path relative to the
+   action's working directory in a genrule. The harnesses spawn the compiler with
+   each case's temp directory as cwd, and `find_dir` falls back to relative
+   defaults, so a relative value can resolve to a real but wrong directory and
+   quietly test nothing. `corpus-action` resolves everything named in the suite's
+   `absolutize` list immediately before the harness runs; it cannot be done in
+   BUCK because a genrule cmd has no shell command substitution — `$(...)` is
+   Buck's own macro syntax.
+
+`//:reproducible-programs` and `//:oracle-diff-generated-smoke` remain plain
+`sh_test`s: their harnesses are shell scripts that read repository paths
+directly rather than through declared env inputs, so establishing that contract
+has to come first. Both are off the merge queue's critical path.
 
 ## Updating the remote worker image
 
