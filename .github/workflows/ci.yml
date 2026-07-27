@@ -39,6 +39,9 @@ jobs:
       - name: Check production debug assertions
         run: scripts/validate-debug-assert-policy.py
 
+      - name: Validate Buck test-tier ownership
+        run: ./buck2 bxl //test_tiers.bxl:validate
+
   clippy:
     runs-on: ubuntu-latest
     steps:
@@ -210,6 +213,7 @@ jobs:
         # target in one invocation.
         env:
           RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:cli-tests-caldera //:spec-tests'
+          RUE_CI_DEFER_DEDICATED_SUITES: '//crates/rue-compiler:scaling-matrix-test'
         run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
 
   # RUE-617/RUE-1019: keep the byte-reproducibility proof independent of the

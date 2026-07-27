@@ -1,4 +1,5 @@
 load("//crates:defs.bzl", "rue_crate")
+load("//:test_defs.bzl", "rue_rust_test", "rue_sh_test")
 load(
     ":runtime.bzl",
     "RUNTIME_AARCH64_RUSTC_FLAGS",
@@ -53,8 +54,9 @@ runtime_staticlib(
     visibility = ["PUBLIC"],
 )
 
-sh_test(
+rue_sh_test(
     name = "runtime-archives-test",
+    labels = ["rue_not_quick"],
     test = "tests/validate_runtime_archives.py",
     env = {
         "RUNTIME_X86_64_LINUX": "$(location :rue-runtime-x86_64-unknown-linux-gnu)",
@@ -68,7 +70,7 @@ sh_test(
 # runtime. The crate is test-aware (the panic handler and _start/_main entry
 # points are #[cfg(not(test))]), and only the host's platform module compiles,
 # so each CI platform exercises its own syscall layer.
-rust_test(
+rue_rust_test(
     name = "rue-runtime-test",
     srcs = glob(["src/**/*.rs"]),
     crate = "rue_runtime",
@@ -81,8 +83,9 @@ rust_test(
 # The x86-64 Linux entry point is raw process-entry code and cannot be exercised
 # by libtest. Inspect the optimized staticlib and link a real Rue program through
 # a register probe at the kernel, helper, and generated-main boundaries.
-sh_test(
+rue_sh_test(
     name = "x86-64-linux-entry-test",
+    labels = ["rue_not_quick"],
     test = "tests/test-x86-64-linux-entry.sh",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",

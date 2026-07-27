@@ -40,6 +40,34 @@ code generation, and linking have no allowances: an invariant whose violation
 could change emitted code must be an always-on assertion or a real compiler
 diagnostic.
 
+## Test execution tiers
+
+Every first-party Buck test target carries exactly one execution-tier label:
+`rue_test_tier_premerge`, `rue_test_tier_slow`, or
+`rue_test_tier_stress`. The wrappers in `test_defs.bzl` attach those labels to
+repository, crate, and toolchain tests; generated crate unit tests default to
+`premerge`. A test that belongs outside pre-merge must opt into `slow` or
+`stress` at its definition rather than returning success from a skipped body.
+
+`./buck2 bxl //test_tiers.bxl:validate` queries Buck's live first-party test
+graph and fails unless every target has exactly one tier. Required formatting
+CI runs that validation, so adding a raw test rule or conflicting tier label
+cannot silently change suite ownership. Vendored `//third-party/...` targets
+are excluded because their generated BUCK metadata is upstream-owned.
+
+Execution tier and scheduling are separate concerns. A required pre-merge test
+may also carry `rue_heavy_suite` or `rue_dedicated_suite` so it runs in an
+isolated lane without being misrepresented as scheduled-only coverage.
+`scripts/rue quick` excludes non-unit integration harnesses via
+`rue_not_quick` and dedicated suites such as the structural scaling matrix.
+The full local suite still discovers and runs them once. Required CI
+sets `RUE_CI_DEFER_DEDICATED_SUITES` to the exact live set of
+`rue_dedicated_suite` targets, so the platform broad passes exclude work owned
+by explicit parallel jobs. `test.sh` fails unless the environment and Buck
+graph match exactly; a new dedicated target therefore cannot be silently
+dropped. The scaling matrix now runs only in its dedicated Linux job instead
+of once in each platform broad pass and then again in that job.
+
 The platform test lanes all retain broad target discovery. Every platform
 (linux-x64, linux-arm64, macOS) defers its three heaviest corpora —
 `//:cli-tests`, `//:cli-tests-caldera`, and `//:spec-tests` — to explicit

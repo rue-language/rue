@@ -4,13 +4,14 @@
 # The toolchain includes rustc, cargo, rust-lld, and the standard library.
 
 load(":defs.bzl", "RUST_VERSION", "RUST_RELEASES", "RUST_STD_RELEASES", "hermetic_rust_toolchain", "rustfmt", "host_rustfmt")
+load("@root//:test_defs.bzl", "rue_sh_test")
 
 export_file(
     name = "merge-sysroot",
     src = "merge_sysroot.sh",
 )
 
-sh_test(
+rue_sh_test(
     name = "merge-sysroot-test",
     test = "merge_sysroot_test.sh",
     args = ["$(location :merge-sysroot)"],

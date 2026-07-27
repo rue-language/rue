@@ -22,6 +22,8 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
+load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
+
 # The formatting gate lives in fmt.sh, not here. A `fmt-check` sh_test used to
 # sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`. A
 # Buck glob does not descend into subpackages, and all 30 crates that own a
@@ -164,7 +166,7 @@ filegroup(
     ]),
 )
 
-sh_test(
+rue_sh_test(
     name = "spec-tests",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-spec:rue-spec",
@@ -176,7 +178,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "spec-traceability",
     test = "//crates/rue-spec:rue-spec",
     args = ["--traceability"],
@@ -186,7 +188,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "ui-tests",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-ui-tests:rue-ui-tests",
@@ -226,7 +228,7 @@ _CLI_TEST_ENV = {
 # The full CLI corpus in one invocation: the canonical target that a local
 # `./test.sh` full run executes and that the RUE-924 corpus-omission audit
 # tracks (REQUIRED_CORPUS_HARNESSES in test.sh).
-sh_test(
+rue_sh_test(
     name = "cli-tests",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
@@ -239,7 +241,7 @@ sh_test(
 # differential-opt corpus through that release-built compiler. The scheduled
 # full-release workflow owns exhaustive //... coverage off the PR critical
 # path (RUE-1129).
-sh_test(
+rue_sh_test(
     name = "release-smoke",
     test = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet", "differential_opt"],
@@ -261,7 +263,7 @@ sh_test(
 CLI_TEST_SHARD_COUNT = 4
 
 [
-    sh_test(
+    rue_sh_test(
         name = "cli-tests-shard-{}".format(_shard),
         labels = ["rue_heavy_suite", "rue_cli_shard"],
         test = "//crates/rue-cli-tests:rue-cli-tests",
@@ -284,7 +286,7 @@ CLI_TEST_SHARD_COUNT = 4
 # UTC). This exact target stays a transparent success stub until the
 # remaining per-body incremental work brings the stress compile back into a
 # reasonable budget. Every other example family runs real cases above.
-sh_test(
+rue_sh_test(
     name = "cli-tests-caldera",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-cli-tests:rue-cli-tests",
@@ -297,7 +299,7 @@ sh_test(
 # RUE-1083: `examples/` is a declared input because this suite now also checks a
 # real maintained program (rill) for byte-stable output, not just the
 # purpose-built fixture. An edit under examples/ must therefore re-run it.
-sh_test(
+rue_sh_test(
     name = "reproducible-programs",
     labels = ["rue_heavy_suite"],
     test = "scripts/test-reproducible-output.sh",
@@ -321,7 +323,7 @@ sh_test(
 # and inside the broad `--exclude rue_heavy_suite` pass, contending with every
 # other test on the runner. Heavy-labeled at the root, it runs alone through
 # scripts/ci-heavy-suite like every peer corpus harness.
-sh_test(
+rue_sh_test(
     name = "frontend-diff-test",
     labels = ["rue_heavy_suite"],
     test = "//crates/rue-frontend-diff:rue-frontend-diff",
@@ -337,7 +339,7 @@ sh_test(
 # shape; this target then compiles and runs those programs through both the
 # reference oracle and native codegen. It lives at the root so full/no-argument
 # `test.sh` and CI include it while `quick-test.sh` remains unit-only.
-sh_test(
+rue_sh_test(
     name = "oracle-diff-generated-smoke",
     labels = ["rue_heavy_suite"],
     test = "scripts/oracle-diff-generated-smoke.sh",
@@ -350,7 +352,7 @@ sh_test(
     test_rule_timeout_ms = 600000,
 )
 
-sh_test(
+rue_sh_test(
     name = "tutorial-snippet-tests",
     test = "scripts/check-tutorial-snippets.py",
     args = [
@@ -363,7 +365,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "tutorial-snippet-tool-tests",
     test = "scripts/test-tutorial-snippets.py",
     env = {
@@ -372,7 +374,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "adr-registry-validation",
     test = "scripts/validate-adrs.py",
     args = [
@@ -381,13 +383,13 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "required-ci-container-pin-validation",
     test = "scripts/validate-required-ci-container-pins.py",
     args = ["$(location :required-ci-workflows)/.github/workflows/ci.yml"],
 )
 
-sh_test(
+rue_sh_test(
     name = "required-ci-container-pin-tool-tests",
     test = "scripts/test-required-ci-container-pins.py",
     resources = ["scripts/validate-required-ci-container-pins.py"],
@@ -396,7 +398,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "debug-assert-policy-tool-tests",
     test = "scripts/test-debug-assert-policy.py",
     env = {
@@ -404,7 +406,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
     env = {
@@ -423,7 +425,7 @@ filegroup(
 # listed in the required CI matrix drift apart. A shard present in BUCK but
 # missing from the matrix would silently drop that fraction of the corpus on CI
 # (the RUE-924 false-green failure mode), since nothing else re-runs the slices.
-sh_test(
+rue_sh_test(
     name = "cli-shard-coverage-validation",
     test = "scripts/validate-cli-shard-coverage.py",
     args = [
@@ -434,7 +436,7 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "cli-shard-coverage-tool-tests",
     test = "scripts/test-cli-shard-coverage.py",
     resources = ["scripts/validate-cli-shard-coverage.py"],
@@ -448,7 +450,7 @@ sh_test(
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.
 # The test uses local stubs for the BTD/Buck contract, so it proves a selective
 # decision without requiring a network download or a real Buck graph.
-sh_test(
+rue_sh_test(
     name = "affected-targets-tool-tests",
     test = "scripts/test-affected-targets.sh",
     resources = [
@@ -459,7 +461,7 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "runtime-abi-inventory-validation",
     test = "scripts/validate-runtime-abi-inventory.py",
     args = [
@@ -473,7 +475,7 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "runtime-abi-inventory-tool-tests",
     test = "scripts/test-runtime-abi-inventory.py",
     resources = ["scripts/validate-runtime-abi-inventory.py"],
@@ -482,7 +484,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "type-architecture-inventory-validation",
     test = "scripts/validate-type-architecture.py",
     args = [
@@ -495,7 +497,7 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "type-architecture-inventory-tool-tests",
     test = "scripts/test-type-architecture.py",
     resources = ["scripts/validate-type-architecture.py"],
@@ -504,7 +506,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "payload-ownership-inventory-validation",
     test = "scripts/validate-payload-ownership.py",
     args = [
@@ -515,7 +517,7 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "payload-ownership-inventory-tool-tests",
     test = "scripts/test-payload-ownership.py",
     resources = ["scripts/validate-payload-ownership.py"],
@@ -524,7 +526,7 @@ sh_test(
     },
 )
 
-sh_test(
+rue_sh_test(
     name = "body-analysis-capability-inventory-validation",
     test = "scripts/validate-body-analysis-capabilities.py",
     args = [
@@ -533,7 +535,7 @@ sh_test(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "body-analysis-capability-inventory-tool-tests",
     test = "scripts/test-body-analysis-capabilities.py",
     resources = ["scripts/validate-body-analysis-capabilities.py"],
@@ -542,12 +544,12 @@ sh_test(
     },
 )
 
-test_suite(
+rue_test_suite(
     name = "payload-ownership-compile-fail-tests",
     tests = ["//crates/rue-rir:rue-rir[doc]"],
 )
 
-sh_test(
+rue_sh_test(
     name = "benchmark-tool-tests",
     test = "scripts/test-benchmark-tools.py",
     env = {
@@ -560,7 +562,7 @@ sh_test(
 # RUE-1091: the value-audit protocol and adversarial fail-closed tests are
 # repository gates. Declare every script and checked-in manifest they import so
 # Buck cannot reuse a result after the protocol or fixture changes.
-sh_test(
+rue_sh_test(
     name = "value-audit-tool-tests",
     test = "scripts/test-value-audit.py",
     resources = [
@@ -587,7 +589,7 @@ filegroup(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "cleanup-script-tests",
     test = "scripts/test-cleanup-scripts.sh",
     env = {
@@ -619,7 +621,7 @@ filegroup(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "wrapper-script-tests",
     test = "scripts/test-wrapper-scripts.sh",
     env = {
@@ -639,7 +641,7 @@ filegroup(
     ],
 )
 
-sh_test(
+rue_sh_test(
     name = "build-sharing-tests",
     test = "scripts/test-build-sharing.sh",
     env = {
