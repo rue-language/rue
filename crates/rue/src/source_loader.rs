@@ -605,6 +605,20 @@ fn drive_import_discovery_to_close(
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
 ) -> Result<ClosedDiscovery, SourceLoadError> {
+    // Exactly one import-input request is opened per invocation, here, before
+    // the frontier loop below. Rounds inside that loop publish overlay
+    // successors which inherit this request's compatibility token, so the whole
+    // discovery of one program observes one filesystem regime.
+    //
+    // That single-request shape is load-bearing for soundness, not just tidy.
+    // Since RUE-1137 a successor request under an unchanged regime reuses its
+    // predecessor's retained terminals, which asserts that inputs it did not
+    // re-observe are unchanged. Nothing verifies that assertion yet — the Tier B
+    // re-observation sweep required by ADR-0063 §2.1 is unimplemented.
+    //
+    // So: do not add a second request per process, and do not make this driver
+    // long-lived or filesystem-watching, until RUE-1148 lands. A `--watch` mode
+    // or LSP host belongs behind that issue, not in front of it.
     let mut input_revision = match continuation {
         Some(revision) => revision,
         None => {

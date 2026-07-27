@@ -10899,10 +10899,32 @@ impl RevisionedQueryDatabase {
         let generation = self.next_import_request;
         self.current_import_revision = None;
         self.lineage_additions.clear();
-        // A new request generation is a fresh filesystem observation epoch.
-        // Reuse requires a future explicit watch/read-policy proof token. The
-        // API deliberately has no carried-ledger input that could be mistaken
-        // for freshness authority.
+        // A new request is a fresh filesystem observation epoch only when the
+        // observation *regime* changed. Under an unchanged regime the published
+        // revision carries the same compatibility token as its predecessor, so
+        // retained terminals stay eligible for red/green validation (RUE-1137,
+        // ADR-0063 §2.1). The API still has no carried-ledger input that could
+        // be mistaken for freshness authority.
+        //
+        // MISSING SOUNDNESS GUARD — implement RUE-1148 before any host reads
+        // sources from disk across requests.
+        //
+        // Carrying the token forward asserts that inputs this request did not
+        // re-observe are unchanged. Nothing here verifies that. ADR-0063 §2.1
+        // requires a Tier B re-observation sweep over the previous rooted
+        // closure's accepted-read set — stat, re-read and re-hash on metadata
+        // mismatch, republish only on content-digest change, and never trust an
+        // mtime inside the filesystem's indistinguishable window of now.
+        //
+        // That sweep does not exist yet. It is unobservable today because no
+        // host re-reads the filesystem between requests: the CLI opens exactly
+        // one request per invocation (`crates/rue/src/source_loader.rs`, before
+        // its frontier loop), in-process hosts supply their own snapshots, and
+        // nothing is retained across processes. A watch mode, LSP, or daemon
+        // breaks every one of those assumptions and must not ship first.
+        //
+        // The session-bench fixtures cannot catch this: they edit through the
+        // session API and never write out of band, so they pass either way.
         self.publish_import_view(
             snapshot,
             context,
