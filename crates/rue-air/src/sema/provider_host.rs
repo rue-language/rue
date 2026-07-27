@@ -55,6 +55,8 @@ use super::anon_structs::{
     IssuedAnonymousNominalKey, IssuedCanonicalArguments, IssuedFunctionInstanceKey,
     IssuedStableProducerId, IssuedTypeInstanceKey,
 };
+use super::body_endpoint::BodyEndpointProvider;
+use super::info::ConstInfo;
 use super::{
     AnalyzedBodyOwnerEvent, AnonMethodSig, BodyAnalysisWork, ConstValue,
     DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind, DeferredOwnershipGate,
@@ -490,21 +492,59 @@ pub(crate) trait ExportCallableFacts {
     fn method_by_callable_symbol(&self, symbol: Spur) -> Option<ExportedMethodSite>;
 }
 
+/// The declaration lookups a body performs for constants and module bindings.
+///
+/// Same adapter discipline as [`StableIdentityFacts`]: the compiler-side
+/// implementation routes each call through the ordinary [`BodyFactProvider`]
+/// lookup operations, so the dependency edge is recorded at the consult.
+///
+/// **Why this is keyed on a module path rather than a file id.** The engine asks
+/// for a constant by `(FileId, Spur)`, but that `FileId` is minted by
+/// [`crate::sema::BodyIdentityPool`] in *first-consult order* — the same
+/// declaration is file 1 in one body and file 4 in another. Handing that number
+/// to a durable lookup is the defect class this receiver exists to avoid: it
+/// misses for most bodies and, on a collision, resolves to an unrelated
+/// declaration without failing. The receiver therefore converts the number to a
+/// logical module path before the call (`pool_module_path`), and only the path
+/// crosses. Every coordinate on this seam is request-independent.
+///
+/// **Why it answers a key rather than a `ConstInfo`.** `ConstInfo` carries a
+/// pool-relative [`Type`] and [`ConstValue`], which only the body's own identity
+/// pool can mint. So the split is: the boundary answers *which declaration*
+/// (recording the edge), and the pool answers *what it is* (body-locally, from
+/// the durable record). That is the same division the nominal path already uses.
+pub(crate) trait BodyConstFacts<K> {
+    /// The durable key of the value-const declared as `name` in `module_path`,
+    /// or `None` when the module declares no such constant.
+    fn value_const_key(&self, module_path: &str, name: &str) -> Option<K>;
+
+    /// The durable key of the module binding declared as `name` in
+    /// `module_path`, or `None`.
+    fn module_binding_key(&self, module_path: &str, name: &str) -> Option<K>;
+}
+
 /// The one fact authority a provider-backed body consults.
 ///
-/// [`StableIdentityFacts`] and [`ExportCallableFacts`] are adapters over
-/// [`BodyFactProvider`], not peer authorities, so the receiver binds all three
-/// to a single type rather than to three independent parameters. That is the
-/// structural form of the claim the adapter docs make in prose: every non-local
-/// answer a body receives came through the fact boundary, and therefore
-/// recorded its dependency edge at the consult. Three separate parameters would
-/// make an edge-free second authority expressible.
-pub(crate) trait BodyHostFacts:
-    BodyFactProvider + StableIdentityFacts + ExportCallableFacts
+/// [`StableIdentityFacts`], [`ExportCallableFacts`], and [`BodyConstFacts`] are
+/// adapters over [`BodyFactProvider`], not peer authorities, so the receiver
+/// binds all four to a single type rather than to four independent parameters.
+/// That is the structural form of the claim the adapter docs make in prose:
+/// every non-local answer a body receives came through the fact boundary, and
+/// therefore recorded its dependency edge at the consult. Separate parameters
+/// would make an edge-free second authority expressible.
+///
+/// The const adapter is keyed on `K`, the receiver's own durable key type, so
+/// the boundary and the identity pool cannot be wired to two different key
+/// spaces — a key answered here is a key the pool can mint from.
+pub(crate) trait BodyHostFacts<K>:
+    BodyFactProvider + StableIdentityFacts + ExportCallableFacts + BodyConstFacts<K>
 {
 }
 
-impl<T> BodyHostFacts for T where T: BodyFactProvider + StableIdentityFacts + ExportCallableFacts {}
+impl<K, T> BodyHostFacts<K> for T where
+    T: BodyFactProvider + StableIdentityFacts + ExportCallableFacts + BodyConstFacts<K>
+{
+}
 
 /// The receiver one body evaluation runs on.
 ///
@@ -713,7 +753,7 @@ impl<K, M, S, P> ProviderBodyHost<K, M, S, P> {
     }
 }
 
-impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
+impl<K, M, S, P: BodyHostFacts<K>> ProviderBodyHost<K, M, S, P> {
     /// The export view over this receiver's own overlay, pool, and boundary.
     ///
     /// Held for the duration of one export call rather than stored: it borrows
@@ -737,7 +777,7 @@ impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
 /// is a claim about the *host contract*: stating that a contract method is
 /// answered means the receiver answers it. Each one is the export view over
 /// this body's own parts, so none reaches a declaration-wide table.
-impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
+impl<K, M, S, P: BodyHostFacts<K>> ProviderBodyHost<K, M, S, P> {
     pub(crate) fn canonical_type_instance(
         &self,
         ty: Type,
@@ -777,11 +817,276 @@ impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
     }
 }
 
+/// Which declaration namespace a constant lookup names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConstLookup {
+    ValueConst,
+    ModuleBinding,
+}
+
+/// The callable rows of [`HOST_CAPABILITY_LEDGER`] the inference source needs,
+/// answered through the endpoint driver over this body's own RIR and pool.
+///
+/// The driver is materialized per call rather than stored: it borrows the fact
+/// boundary and the RIR view, so holding one would make the receiver
+/// self-referential. Its own overlay is a cache of what this body already
+/// minted, and that lives in the shared identity context, so a fresh driver
+/// sees everything an earlier one did.
+impl<K, M, S, P: BodyHostFacts<K>> ProviderBodyHost<K, M, S, P>
+where
+    K: Clone + Eq + Hash,
+    M: Clone + Eq + Hash,
+    S: DurableNominalSource<K, M>
+        + super::DurableAnonymousSource<K, M>
+        + super::DurableConstSource<K, M>,
+{
+    fn endpoint_driver(&self) -> super::body_endpoint::ProviderEndpointFacts<'_, P, S, K, M> {
+        super::body_endpoint::ProviderEndpointFacts::with_state(
+            &self.facts,
+            &self.state,
+            self.rir.view(),
+        )
+    }
+
+    pub(crate) fn function_info(&self, name: Spur) -> Option<super::FunctionInfo> {
+        self.endpoint_driver().function_info(name)
+    }
+
+    pub(crate) fn method_info(&self, owner: StructId, name: Spur) -> Option<MethodInfo> {
+        self.endpoint_driver().method_info(owner, name)
+    }
+
+    pub(crate) fn resolve_function_name_local(&self, name: Spur, file: FileId) -> Option<Spur> {
+        self.endpoint_driver().function_by_file_name(file, name)
+    }
+
+    /// Which of a callable's parameters are comptime `type` parameters.
+    ///
+    /// Read off this body's own RIR and interner, exactly as the engine's
+    /// generic form does. An absent `type` symbol means this body never spelled
+    /// one, so no parameter can be a comptime type parameter.
+    pub(crate) fn comptime_type_param_flags(&self, function: &super::FunctionInfo) -> Vec<bool> {
+        let Some(type_symbol) = self.interner.get("type") else {
+            return vec![false; function.params.len()];
+        };
+        let rir = self.rir.rir();
+        rir.params(function.rir_params(rir))
+            .iter()
+            .map(|param| param.is_comptime && param.ty == type_symbol)
+            .collect()
+    }
+}
+
+impl<K, M, S, P: BodyHostFacts<K>> ProviderBodyHost<K, M, S, P>
+where
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+    S: DurableNominalSource<K, M> + super::DurableConstSource<K, M>,
+{
+    /// One constant: located through the boundary, minted by the pool.
+    ///
+    /// The two halves are deliberate. The boundary answers *which* declaration
+    /// the `(module, name)` coordinate names, which is where the dependency edge
+    /// belongs — a body that reads a constant depends on that constant's
+    /// declaration. The pool answers *what it is*, from the durable record,
+    /// because a `ConstInfo` carries a pool-relative type and value that only
+    /// this body's identity authority can mint.
+    ///
+    /// The file number is converted to a logical module path here and does not
+    /// cross the boundary; see [`BodyConstFacts`] for why that matters.
+    fn const_info(&self, file: FileId, name: Spur, lookup: ConstLookup) -> Option<ConstInfo> {
+        let module_path = self.type_pool.symbol_path(file)?;
+        let name = self.interner.resolve(&name);
+        let key = match lookup {
+            ConstLookup::ValueConst => self.facts.value_const_key(&module_path, name),
+            ConstLookup::ModuleBinding => self.facts.module_binding_key(&module_path, name),
+        }?;
+        let identity = self.state.identity_context();
+        let mut pool = identity.pool_mut()?;
+        // `Span::default()` is sound only because every caller below reads
+        // `ty`/`value` and discards the rest: the inference arms return a
+        // `Type`, an `i128`, or a `Spur`, never the `ConstInfo` itself. A
+        // diagnostic-bearing consult must supply the declaration's real span
+        // from this body's RIR rather than reuse this path.
+        pool.resolve_const(
+            &key,
+            super::body_identity::ConstIdentityHandle {
+                span: rue_span::Span::default(),
+            },
+        )
+        .ok()
+    }
+}
+
+/// The inference source, the one read family the host contract requires.
+///
+/// Every arm answers from this body's own parts: the overlay for what this body
+/// generated, the type pool for what it has already minted, this body's RIR for
+/// parameter syntax, and the fact boundary for constants it has not yet
+/// consulted. None reads a declaration-universe table, which is the whole point
+/// — the epoch answers these same fourteen questions from thirteen such tables.
+impl<K, M, S, P: BodyHostFacts<K>> super::inference_ctx::InferenceFactSource
+    for ProviderBodyHost<K, M, S, P>
+where
+    K: Clone + Eq + Hash,
+    M: Clone + Eq + Hash,
+    S: DurableNominalSource<K, M>
+        + super::DurableAnonymousSource<K, M>
+        + super::DurableConstSource<K, M>,
+{
+    /// The nominals *this body generated*, which is all the overlay can hold.
+    /// The epoch builds the same snapshot from its `generated_structs` /
+    /// `generated_enums`; those are body-local there too.
+    fn inference_generated_nominal_overlays(
+        &self,
+    ) -> super::inference_ctx::InferenceGeneratedNominalOverlays {
+        let mut builtin_struct_types = HashMap::new();
+        let mut struct_types_by_file = HashMap::new();
+        for (name, id) in &self.local.generated_structs {
+            let def = self.type_pool.struct_def(*id);
+            if def.is_builtin {
+                builtin_struct_types.insert(*name, Type::new_struct(*id));
+            }
+            struct_types_by_file
+                .entry((def.file_id, *name))
+                .or_insert_with(|| Type::new_struct(*id));
+        }
+        let mut enum_types_by_file = HashMap::new();
+        for (name, id) in &self.local.generated_enums {
+            let def = self.type_pool.enum_def(*id);
+            enum_types_by_file
+                .entry((def.file_id, *name))
+                .or_insert_with(|| Type::new_enum(*id));
+        }
+        super::inference_ctx::InferenceGeneratedNominalOverlays {
+            builtin_struct_types,
+            struct_types_by_file,
+            enum_types_by_file,
+        }
+    }
+
+    fn uncached_function_sig(&self, name: Spur) -> Option<crate::inference::FunctionSig> {
+        let info = self.function_info(name)?;
+        let rir = self.rir.rir();
+        let params = self.state.param_data(info.params);
+        Some(crate::inference::FunctionSig {
+            param_types: params
+                .types()
+                .iter()
+                .map(|ty| super::inference_ctx::type_to_infer_type(&self.type_pool, *ty))
+                .collect(),
+            return_type: super::inference_ctx::type_to_infer_type(
+                &self.type_pool,
+                info.return_type,
+            ),
+            is_generic: info.is_generic,
+            param_modes: params.modes().to_vec(),
+            param_comptime: params.comptime().to_vec(),
+            param_comptime_type: self.comptime_type_param_flags(&info),
+            param_names: params.names().to_vec(),
+            param_type_syms: rir
+                .params(info.rir_params(rir))
+                .iter()
+                .map(|param| param.ty)
+                .collect(),
+            return_type_sym: info.return_type_sym,
+        })
+    }
+
+    /// Anonymous members this body installed win over named ones, exactly as
+    /// they do on the epoch: a body that just minted an anonymous method must
+    /// see its own signature rather than a same-keyed named one.
+    fn uncached_method_sig(&self, key: (StructId, Spur)) -> Option<crate::inference::MethodSig> {
+        let info = match self.local.anonymous_methods.get(&key) {
+            Some(info) => *info,
+            None => self.method_info(key.0, key.1)?,
+        };
+        let params = self.state.param_data(info.params);
+        Some(crate::inference::MethodSig {
+            struct_type: info.struct_type,
+            has_self: info.has_self,
+            param_types: params
+                .types()
+                .iter()
+                .map(|ty| super::inference_ctx::type_to_infer_type(&self.type_pool, *ty))
+                .collect(),
+            param_modes: params.modes().to_vec(),
+            return_type: super::inference_ctx::type_to_infer_type(
+                &self.type_pool,
+                info.return_type,
+            ),
+        })
+    }
+
+    /// Builtins live at [`FileId::DEFAULT`] in this body's pool, registered
+    /// there exactly as a fresh import epoch registers them, so the builtin
+    /// arms are the by-file arms at that one file.
+    fn inference_builtin_struct_type(&self, name: Spur) -> Option<Type> {
+        self.type_pool
+            .get_struct_by_file_name(FileId::DEFAULT, name)
+    }
+
+    fn inference_struct_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.type_pool.get_struct_by_file_name(key.0, key.1)
+    }
+
+    fn inference_builtin_enum_type(&self, name: Spur) -> Option<Type> {
+        self.type_pool.get_enum_by_file_name(FileId::DEFAULT, name)
+    }
+
+    fn inference_enum_type_by_file(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.type_pool.get_enum_by_file_name(key.0, key.1)
+    }
+
+    fn inference_const_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.const_info(key.0, key.1, ConstLookup::ValueConst)
+            .map(|info| match info.value {
+                ConstValue::Type(_) => Type::COMPTIME_TYPE,
+                _ => info.ty,
+            })
+    }
+
+    fn inference_const_type_alias(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.const_info(key.0, key.1, ConstLookup::ValueConst)
+            .and_then(|info| match info.value {
+                ConstValue::Type(ty) => Some(ty),
+                _ => None,
+            })
+    }
+
+    fn inference_const_value(&self, key: (FileId, Spur)) -> Option<i128> {
+        self.const_info(key.0, key.1, ConstLookup::ValueConst)
+            .and_then(|info| info.value.as_int_value())
+    }
+
+    fn inference_const_function_alias(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.const_info(key.0, key.1, ConstLookup::ValueConst)
+            .and_then(|info| info.value.as_function())
+    }
+
+    fn inference_module_binding_type(&self, key: (FileId, Spur)) -> Option<Type> {
+        self.const_info(key.0, key.1, ConstLookup::ModuleBinding)
+            .map(|info| info.ty)
+    }
+
+    /// The pool's own module numbering answers this: `file_for_module` is what
+    /// assigned the id, so reversing it needs no registry read.
+    fn inference_module_file_id(&self, module: crate::types::ModuleId) -> Option<FileId> {
+        let identity = self.state.identity_context();
+        let modules = identity.modules();
+        modules.get(module).map(|definition| definition.file_id)
+    }
+
+    fn inference_function_by_file(&self, key: (FileId, Spur)) -> Option<Spur> {
+        self.resolve_function_name_local(key.1, key.0)
+    }
+}
+
 /// Publication reaches the provider receiver through the same neutral contract
 /// it reaches the epoch receiver through: `export_body` is one algorithm over
 /// this trait, so binding it here makes the export direction reachable without
 /// a second serializer.
-impl<K, M, S, P: BodyHostFacts> SemanticBodyExportHost for ProviderBodyHost<K, M, S, P> {
+impl<K, M, S, P: BodyHostFacts<K>> SemanticBodyExportHost for ProviderBodyHost<K, M, S, P> {
     fn export_body_type(
         &self,
         ty: Type,
@@ -1434,6 +1739,23 @@ mod tests {
     struct RecordingFacts {
         definition_consults: std::cell::RefCell<Vec<String>>,
         module_consults: std::cell::RefCell<Vec<String>>,
+        const_consults: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl BodyConstFacts<std::sync::Arc<str>> for RecordingFacts {
+        fn value_const_key(&self, module_path: &str, name: &str) -> Option<std::sync::Arc<str>> {
+            self.const_consults
+                .borrow_mut()
+                .push(format!("value:{module_path}:{name}"));
+            None
+        }
+
+        fn module_binding_key(&self, module_path: &str, name: &str) -> Option<std::sync::Arc<str>> {
+            self.const_consults
+                .borrow_mut()
+                .push(format!("binding:{module_path}:{name}"));
+            None
+        }
     }
 
     impl ExportCallableFacts for RecordingFacts {
@@ -1844,6 +2166,45 @@ mod tests {
         }
     }
 
+    impl super::super::DurableAnonymousSource<std::sync::Arc<str>, std::sync::Arc<str>>
+        for NoDurableNominals
+    {
+        fn anonymous_shape(
+            &self,
+            _: &crate::AnonymousNominalKey<std::sync::Arc<str>, std::sync::Arc<str>>,
+        ) -> Option<super::super::DurableAnonymousShape<std::sync::Arc<str>, std::sync::Arc<str>>>
+        {
+            None
+        }
+
+        /// The durable key *is* the rendered component in this test universe,
+        /// so the spelling stays whatever the caller supplied rather than
+        /// inventing one — an invented component would feed anonymous-identity
+        /// digests and fork identity silently.
+        fn definition_symbol_component(&self, key: &std::sync::Arc<str>) -> String {
+            key.to_string()
+        }
+
+        fn module_symbol_component(&self, module: &std::sync::Arc<str>) -> String {
+            module.to_string()
+        }
+    }
+
+    impl super::super::DurableConstSource<std::sync::Arc<str>, std::sync::Arc<str>>
+        for NoDurableNominals
+    {
+        fn constant(
+            &self,
+            _: &std::sync::Arc<str>,
+        ) -> Option<super::super::DurableConst<std::sync::Arc<str>, std::sync::Arc<str>>> {
+            None
+        }
+
+        fn function_name(&self, _: &std::sync::Arc<str>) -> Option<std::sync::Arc<str>> {
+            None
+        }
+    }
+
     type TestHost = ProviderBodyHost<
         std::sync::Arc<str>,
         std::sync::Arc<str>,
@@ -1931,6 +2292,64 @@ mod tests {
             host.builtin_arch_id(),
             host.builtin_os_id(),
             "distinct builtin enums must not collapse to one identity"
+        );
+    }
+
+    /// A constant reaches the boundary as a module path, not as a file number.
+    ///
+    /// Same invariant as `the_identity_boundary_is_keyed_on_module_paths`, and
+    /// it matters here for a sharper reason: the engine asks for a constant by
+    /// the `(FileId, Spur)` pair its analysis context carries, and on this
+    /// receiver that `FileId` is the pool's own first-consult numbering. Passing
+    /// it through would key a durable lookup on the order this body happened to
+    /// touch modules in — the same defect that made a struct resolve to an
+    /// unrelated declaration before the identity seam was re-keyed. The number
+    /// is converted here and must not appear in the consult.
+    #[test]
+    fn the_const_boundary_is_keyed_on_module_paths() {
+        use super::super::inference_ctx::InferenceFactSource;
+
+        let host = test_host();
+        let body_local_file = FileId::new(3);
+        host.type_pool().set_symbol_paths(HashMap::from([(
+            body_local_file,
+            "app/config.rue".to_owned(),
+        )]));
+        let name = host.interner().get_or_intern("LIMIT");
+
+        assert_eq!(
+            host.inference_const_type((body_local_file, name)),
+            None,
+            "an empty durable universe has no constant to answer with"
+        );
+        assert_eq!(
+            host.inference_module_binding_type((body_local_file, name)),
+            None
+        );
+
+        assert_eq!(
+            host.facts().const_consults.borrow().as_slice(),
+            [
+                "value:app/config.rue:LIMIT".to_owned(),
+                "binding:app/config.rue:LIMIT".to_owned(),
+            ],
+            "the const boundary must be consulted by logical module path; the \
+             pool's file number must not appear"
+        );
+    }
+
+    /// A constant the pool cannot place has no path to consult, so the boundary
+    /// is never asked — rather than being asked with a fabricated coordinate.
+    #[test]
+    fn an_unplaceable_constant_consults_nothing() {
+        use super::super::inference_ctx::InferenceFactSource;
+
+        let host = test_host();
+        let name = host.interner().get_or_intern("LIMIT");
+        assert_eq!(host.inference_const_type((FileId::new(9), name)), None);
+        assert!(
+            host.facts().const_consults.borrow().is_empty(),
+            "a file with no logical module path must not reach the boundary at all"
         );
     }
 
