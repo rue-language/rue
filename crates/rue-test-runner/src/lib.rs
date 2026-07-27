@@ -145,7 +145,13 @@ mod shard_selector_tests {
         assert_eq!(selector.index(), 2);
         assert_eq!(selector.count(), 4);
         // Surrounding whitespace is tolerated.
-        assert_eq!(ShardSelector::parse(Some(" 0 / 3 ")).unwrap().unwrap().count(), 3);
+        assert_eq!(
+            ShardSelector::parse(Some(" 0 / 3 "))
+                .unwrap()
+                .unwrap()
+                .count(),
+            3
+        );
     }
 
     #[test]
@@ -158,7 +164,10 @@ mod shard_selector_tests {
             ShardSelector::parse(Some("a/4")),
             Err(ShardSpecError::Malformed(_))
         ));
-        assert_eq!(ShardSelector::parse(Some("0/0")), Err(ShardSpecError::ZeroCount));
+        assert_eq!(
+            ShardSelector::parse(Some("0/0")),
+            Err(ShardSpecError::ZeroCount)
+        );
         assert_eq!(
             ShardSelector::parse(Some("4/4")),
             Err(ShardSpecError::IndexOutOfRange { index: 4, count: 4 })
@@ -174,7 +183,10 @@ mod shard_selector_tests {
         for i in 0..5000 {
             let name = format!("cli.section{}::case_{}", i % 37, i);
             let hits = shards.iter().filter(|shard| shard.includes(&name)).count();
-            assert_eq!(hits, 1, "name {name:?} matched {hits} shards, expected exactly 1");
+            assert_eq!(
+                hits, 1,
+                "name {name:?} matched {hits} shards, expected exactly 1"
+            );
         }
     }
 
