@@ -1,4 +1,4 @@
-"""Buck-graph validation for Rue's first-party test execution tiers."""
+"""Canonical Buck selections and validation for Rue's test execution tiers."""
 
 _TEST_TIER_LABELS = [
     "rue_test_tier_premerge",
@@ -6,28 +6,35 @@ _TEST_TIER_LABELS = [
     "rue_test_tier_stress",
 ]
 
-def _validate(ctx):
+_CLI_SHARD_LABEL = "rue_cli_shard"
+
+def _owned_tests(ctx):
     # Vendored third-party tests follow their upstream-generated BUCK metadata.
     # Rue owns every other test target in the cell and requires it to declare
     # exactly one execution tier.
-    tests = ctx.uquery().eval(
+    return ctx.uquery().eval(
         'kind("^(.*_test|test_suite)$", //...) except //third-party/...',
     ) + ctx.uquery().eval(
         'kind("^(.*_test|test_suite)$", toolchains//...)',
     )
 
+def _target_tiers(test):
+    labels = test.get_attr("labels")
+    return [
+        tier
+        for tier in _TEST_TIER_LABELS
+        if tier in labels
+    ]
+
+def _validate(ctx):
+    tests = _owned_tests(ctx)
     errors = []
     counts = {}
     for tier in _TEST_TIER_LABELS:
         counts[tier] = 0
 
     for test in tests:
-        labels = test.get_attr("labels")
-        target_tiers = [
-            tier
-            for tier in _TEST_TIER_LABELS
-            if tier in labels
-        ]
+        target_tiers = _target_tiers(test)
         if len(target_tiers) != 1:
             errors.append("{} has {}; expected exactly one Rue test tier".format(
                 test.label,
@@ -35,6 +42,10 @@ def _validate(ctx):
             ))
         else:
             counts[target_tiers[0]] += 1
+
+    for tier in _TEST_TIER_LABELS:
+        if counts[tier] == 0:
+            errors.append("{} has no real test targets".format(tier))
 
     if errors:
         fail("invalid Rue test-tier ownership:\n{}".format(
@@ -49,7 +60,70 @@ def _validate(ctx):
         ),
     )
 
+def _select(ctx, tiers):
+    selected = []
+    errors = []
+    for test in _owned_tests(ctx):
+        labels = test.get_attr("labels")
+        target_tiers = _target_tiers(test)
+        if len(target_tiers) != 1:
+            errors.append("{} has {}; expected exactly one Rue test tier".format(
+                test.label,
+                target_tiers,
+            ))
+            continue
+
+        # The four CI shards are scheduling alternatives for the canonical
+        # monolithic CLI target. Selecting both would execute the same logical
+        # corpus twice locally, so named tier entry points expose the canonical
+        # target and leave shards to their explicit platform jobs.
+        if _CLI_SHARD_LABEL in labels:
+            continue
+        if target_tiers[0] in tiers:
+            selected.append("{}".format(test.label))
+
+    if errors:
+        fail("invalid Rue test-tier ownership:\n{}".format(
+            "\n".join(sorted(errors)),
+        ))
+    if not selected:
+        fail("Rue test-tier selection is empty: {}".format(tiers))
+
+    ctx.output.print("\n".join(sorted(selected)))
+
+def _premerge(ctx):
+    _select(ctx, ["rue_test_tier_premerge"])
+
+def _slow(ctx):
+    _select(ctx, ["rue_test_tier_slow"])
+
+def _stress(ctx):
+    _select(ctx, ["rue_test_tier_stress"])
+
+def _all(ctx):
+    _select(ctx, _TEST_TIER_LABELS)
+
 validate = bxl_main(
     impl = _validate,
+    cli_args = {},
+)
+
+premerge = bxl_main(
+    impl = _premerge,
+    cli_args = {},
+)
+
+slow = bxl_main(
+    impl = _slow,
+    cli_args = {},
+)
+
+stress = bxl_main(
+    impl = _stress,
+    cli_args = {},
+)
+
+all = bxl_main(
+    impl = _all,
     cli_args = {},
 )

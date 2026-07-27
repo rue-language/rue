@@ -74,6 +74,10 @@ scripts/rue build                    # build the compiler and print its path
 scripts/rue exec prog.rue            # compile and run a quick program
 RUE="$(scripts/rue-bin)"; "$RUE" main.rue -o out
 scripts/rue quick                    # fast unit suite
+scripts/rue premerge                 # canonical required-CI tier
+scripts/rue slow                     # canonical scheduled slow tier
+scripts/rue stress                   # canonical opt-in stress tier
+scripts/rue all                      # canonical union of all tiers
 scripts/rue unit compiler durable_   # one compiler unit test
 scripts/rue spec 4.2                 # filtered specification tests
 scripts/rue cli abi                  # filtered CLI integration tests

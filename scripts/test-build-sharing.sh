@@ -287,7 +287,7 @@ EOF
     fi
     check "suite: unfiltered orchestration succeeds" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
     check "suite: broad discovery excludes opaque heavy tests" \
-        "$(grep -Fxq 'test //... --exclude rue_heavy_suite --always-exclude' "$sb/calls" && echo 0 || echo 1)"
+        "$(grep -Fxq 'test //... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute --exclude rue_test_tier_stress' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
     check "suite: monolithic CLI corpus receives the extended executor timeout" \

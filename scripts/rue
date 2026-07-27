@@ -8,6 +8,10 @@
 #   scripts/rue exec prog.rue      Compile prog.rue to a temp file AND run it
 #   scripts/rue test [pattern]     Full suite (./test.sh), optional filter
 #   scripts/rue quick              Unit tests only (./quick-test.sh)
+#   scripts/rue premerge           Canonical required test tier
+#   scripts/rue slow               Canonical scheduled slow tier
+#   scripts/rue stress             Canonical opt-in stress tier
+#   scripts/rue all                Canonical union of every test tier
 #   scripts/rue unit <crate> [args] One crate's Rust unit tests, case-filtered
 #                                  (crate name with or without the rue- prefix,
 #                                  or an explicit <crate>:<target>; forwards
@@ -87,6 +91,13 @@ case "$cmd" in
         ;;
     test)
         ./test.sh "$@"
+        ;;
+    premerge|slow|stress|all)
+        if [[ $# -ne 0 ]]; then
+            echo "usage: scripts/rue $cmd" >&2
+            exit 2
+        fi
+        RUE_TEST_TIER="$cmd" ./test.sh
         ;;
     quick)
         ./quick-test.sh "$@"

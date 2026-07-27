@@ -1,5 +1,5 @@
 load("//crates:defs.bzl", "rue_crate")
-load("//:test_defs.bzl", "rue_rust_test")
+load("//:test_defs.bzl", "rue_rust_test", "rue_sh_test")
 
 filegroup(
     name = "runtime-abi-inventory-sources",
@@ -66,23 +66,40 @@ rue_crate(
     ],
 )
 
-# Dedicated heavy-matrix test target (Finding 6, RUE-1086). Compiling with
-# `--cfg=scaling_matrix` turns on the `#[cfg(scaling_matrix)]` 100/1k (opt-in
-# 10k via RUE_SCALING_LARGE=1) structural scaling tests that the default unit
-# target excludes. CI runs this as its own job, filtered to `scaling_matrix`, so
-# only the matrix cases execute here. Marking the CI check required in branch
-# protection is a maintainer action.
+# Dedicated heavy-matrix test targets (Finding 6, RUE-1086). Compiling with
+# `--cfg=scaling_matrix` turns on the `#[cfg(scaling_matrix)]` structural
+# scaling tests that the default unit target excludes.
+_SCALING_MATRIX_SRCS = glob(["src/**/*.rs"])
+_SCALING_MATRIX_RUSTC_FLAGS = [
+    "--cfg=scaling_matrix",
+    "--check-cfg=cfg(scaling_matrix)",
+    "--check-cfg=cfg(test)",
+]
+
+# The bounded 100/1k matrix is a required premerge canary. CI runs it as its
+# own job, filtered to `scaling_matrix`, so it is not duplicated in each broad
+# platform pass.
 rue_rust_test(
     name = "scaling-matrix-test",
     labels = ["rue_dedicated_suite"],
-    srcs = glob(["src/**/*.rs"]),
+    srcs = _SCALING_MATRIX_SRCS,
     mapped_srcs = _RUNTIME_MAPPED_SRCS,
     deps = _DEPS,
-    rustc_flags = [
-        "--cfg=scaling_matrix",
-        "--check-cfg=cfg(scaling_matrix)",
-        "--check-cfg=cfg(test)",
-    ],
+    rustc_flags = _SCALING_MATRIX_RUSTC_FLAGS,
+)
+
+# The opt-in 10k-per-axis ladder is intentionally absent from premerge. This
+# real stress target uses the same compiler test binary but enables the extreme
+# cases explicitly, making their suite ownership visible and reproducible.
+rue_sh_test(
+    name = "scaling-matrix-stress-test",
+    tier = "stress",
+    args = ["scaling_matrix", "--nocapture"],
+    env = {
+        "RUE_SCALING_LARGE": "1",
+    },
+    labels = ["rue_dedicated_suite"],
+    test = ":scaling-matrix-test",
 )
 
 # Compiles against rue-compiler as an external crate so curated reexports and
