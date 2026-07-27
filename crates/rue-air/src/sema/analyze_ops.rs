@@ -61,7 +61,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
-                            ty: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            ty: ty.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         inst.span,
                     ));
@@ -193,7 +193,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     };
                     return Err(CompileError::new(
                         ErrorKind::CannotNegate(
-                            ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            ty.safe_name_with_pool(Some(self.body_type_pool())),
                         ),
                         inst.span,
                     )
@@ -252,7 +252,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "integer type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         inst.span,
                     ));

@@ -3460,8 +3460,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ) -> CompileError {
         CompileError::new(
             ErrorKind::TypeMismatch {
-                expected: expected.safe_name_with_pool(Some(&self.body_type_pool())),
-                found: found.safe_name_with_pool(Some(&self.body_type_pool())),
+                expected: expected.safe_name_with_pool(Some(self.body_type_pool())),
+                found: found.safe_name_with_pool(Some(self.body_type_pool())),
             },
             span,
         )

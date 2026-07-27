@@ -156,7 +156,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                                     expected: "()".to_string(),
                                     found: result
                                         .ty
-                                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                                        .safe_name_with_pool(Some(self.body_type_pool())),
                                 },
                                 self.body_rir_ref().get(block).span,
                             )
@@ -233,15 +233,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: then_type
-                                    .safe_name_with_pool(Some(&self.body_type_pool())),
-                                found: else_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                                    .safe_name_with_pool(Some(self.body_type_pool())),
+                                found: else_type.safe_name_with_pool(Some(self.body_type_pool())),
                             },
                             else_span,
                         )
                         .with_label(
                             format!(
                                 "this is of type `{}`",
-                                then_type.safe_name_with_pool(Some(&self.body_type_pool()))
+                                then_type.safe_name_with_pool(Some(self.body_type_pool()))
                             ),
                             then_span,
                         )
@@ -278,7 +278,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "()".to_string(),
-                        found: then_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: then_type.safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     self.body_rir_ref().get(then_block).span,
                 )
@@ -486,7 +486,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         scrutinee_type: Type,
         span: Span,
     ) -> CompileResult<i64> {
-        let ty_name = scrutinee_type.safe_name_with_pool(Some(&self.body_type_pool()));
+        let ty_name = scrutinee_type.safe_name_with_pool(Some(self.body_type_pool()));
         if negative {
             if scrutinee_type.is_unsigned() {
                 return Err(
@@ -824,7 +824,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Err(CompileError::new(
                 ErrorKind::InvalidMatchType(
-                    scrutinee_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    scrutinee_type.safe_name_with_pool(Some(self.body_type_pool())),
                 ),
                 span,
             ));
@@ -950,7 +950,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type
-                                    .safe_name_with_pool(Some(&self.body_type_pool())),
+                                    .safe_name_with_pool(Some(self.body_type_pool())),
                                 found: "integer".to_string(),
                             },
                             pattern_span,
@@ -991,7 +991,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type
-                                    .safe_name_with_pool(Some(&self.body_type_pool())),
+                                    .safe_name_with_pool(Some(self.body_type_pool())),
                                 found: "bool".to_string(),
                             },
                             pattern_span,
@@ -1061,7 +1061,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type
-                                    .safe_name_with_pool(Some(&self.body_type_pool())),
+                                    .safe_name_with_pool(Some(self.body_type_pool())),
                                 found: enum_def.name.clone(),
                             },
                             pattern_span,
@@ -1116,7 +1116,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // The enclosing match dispatched on the discriminant, so in this
             // arm the payload is read (move mode) via `EnumPayloadGet`.
             let mut binding_stmts =
-                self.materialize_match_bindings(air, &pattern, scrutinee_result.air_ref, ctx)?;
+                self.materialize_match_bindings(air, pattern, scrutinee_result.air_ref, ctx)?;
 
             // RUE-238: a non-binding arm (a wildcard `_`, or a variant matched
             // without binding its payload) still *consumes* the scrutinee — the
@@ -1410,7 +1410,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::QuestionOutsideOptionFn {
                                 return_type: return_type
-                                    .safe_name_with_pool(Some(&self.body_type_pool())),
+                                    .safe_name_with_pool(Some(self.body_type_pool())),
                             },
                             span,
                         ));
@@ -1456,7 +1456,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::QuestionOutsideResultFn {
                                 return_type: return_type
-                                    .safe_name_with_pool(Some(&self.body_type_pool())),
+                                    .safe_name_with_pool(Some(self.body_type_pool())),
                             },
                             span,
                         ));
@@ -1465,8 +1465,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if !self.types_equivalent(err_ty, ret_err_ty) {
                     return Err(CompileError::new(
                         ErrorKind::QuestionErrTypeMismatch {
-                            operand_err: err_ty.safe_name_with_pool(Some(&self.body_type_pool())),
-                            fn_err: ret_err_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            operand_err: err_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                            fn_err: ret_err_ty.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));
@@ -1704,13 +1704,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // rather than losing a field (RUE-269). The `_` discard (RUE-601) is
         // exempt: it binds nothing, so any number may repeat (`Rect(_, _)`).
         for (i, name) in bindings.iter().enumerate() {
-            if self.body_interner().resolve(&name) == "_" {
+            if self.body_interner().resolve(name) == "_" {
                 continue;
             }
             if bindings.iter().take(i).any(|existing| existing == name) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicatePatternBinding {
-                        name: self.body_interner().resolve(&name).to_string(),
+                        name: self.body_interner().resolve(name).to_string(),
                     },
                     pattern_span,
                 ));
@@ -1725,7 +1725,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // discriminant-only match on a payload-carrying variant. The
             // enumerate index `i` still tracks the real field position for the
             // other bindings.
-            if self.body_interner().resolve(&binding_name) == "_" {
+            if self.body_interner().resolve(binding_name) == "_" {
                 continue;
             }
             let field_ty = payload[i];
@@ -1812,8 +1812,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ErrorKind::TypeMismatch {
                         expected: ctx
                             .return_type
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
-                        found: inner_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
+                        found: inner_ty.safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 ));
@@ -1826,7 +1826,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ErrorKind::TypeMismatch {
                         expected: ctx
                             .return_type
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                         found: "()".to_string(),
                     },
                     span,

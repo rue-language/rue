@@ -171,7 +171,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
                 expected: "integer, bool, string, unit, struct, array, or enum".to_string(),
-                found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                found: ty.safe_name_with_pool(Some(self.body_type_pool())),
             },
             span,
         ))
@@ -338,7 +338,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         expected: "a type".to_string(),
                         found: head_result
                             .ty
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 ));
@@ -349,7 +349,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: reduced_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: reduced_ty.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));
@@ -363,7 +363,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         expected: "module".to_string(),
                         found: module_result
                             .ty
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 ));
@@ -404,7 +404,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         return Err(CompileError::new(
                             ErrorKind::TypeMismatch {
                                 expected: "struct type".to_string(),
-                                found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                                found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                             },
                             span,
                         ));
@@ -509,7 +509,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         ErrorKind::LiteralOutOfRange {
                             value: *value,
                             ty: expected_field_type
-                                .safe_name_with_pool(Some(&self.body_type_pool())),
+                                .safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         field_inst.span,
                     ));
@@ -555,10 +555,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: expected_field_type
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                         found: field_result
                             .ty
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 )
@@ -566,7 +566,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     format!(
                         "field '{}' expects type {}",
                         init_name,
-                        expected_field_type.safe_name_with_pool(Some(&self.body_type_pool()))
+                        expected_field_type.safe_name_with_pool(Some(self.body_type_pool()))
                     ),
                     span,
                 ));
@@ -871,7 +871,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "a runtime value".to_string(),
-                    found: elem_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: elem_ty.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 span,
             ));
@@ -1150,7 +1150,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the comptime-only `type`, would reach the intern pool and panic
         // (RUE-253).
         for elem_ref in &elem_refs {
-            if let Some(elem_ty) = ctx.resolved_types.get(&elem_ref).copied() {
+            if let Some(elem_ty) = ctx.resolved_types.get(elem_ref).copied() {
                 self.reject_non_runtime_array_element(elem_ty, span)?;
             }
         }
@@ -1190,7 +1190,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array literal inferred as non-array type: {}",
-                        array_type.safe_name_with_pool(Some(&self.body_type_pool()))
+                        array_type.safe_name_with_pool(Some(self.body_type_pool()))
                     )),
                     span,
                 ));
@@ -1266,7 +1266,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::InternalError(format!(
                         "Array-repeat literal inferred as non-array type: {}",
-                        array_type.safe_name_with_pool(Some(&self.body_type_pool()))
+                        array_type.safe_name_with_pool(Some(self.body_type_pool()))
                     )),
                     span,
                 ));
@@ -1285,7 +1285,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::ArrayRepeatNonCopy {
-                    element_type: elem_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    element_type: elem_type.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 span,
             ));

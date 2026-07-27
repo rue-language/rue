@@ -630,8 +630,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if !self.types_compatible(found, expected) && !expected.is_error() {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: expected.safe_name_with_pool(Some(&self.body_type_pool())),
-                            found: found.safe_name_with_pool(Some(&self.body_type_pool())),
+                            expected: expected.safe_name_with_pool(Some(self.body_type_pool())),
+                            found: found.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         self.body_rir_ref().get(args.get(i).unwrap().value).span,
                     ));
@@ -888,7 +888,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     }
                     return Err(CompileError::new(
                         ErrorKind::UndefinedAssocFn {
-                            type_name: reduced_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            type_name: reduced_ty.safe_name_with_pool(Some(self.body_type_pool())),
                             function_name: variant_name,
                         },
                         span,
@@ -915,7 +915,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             _ => {
                 return Err(CompileError::new(
                     ErrorKind::MethodCallOnNonStruct {
-                        found: receiver_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: receiver_type.safe_name_with_pool(Some(self.body_type_pool())),
                         method_name: method_name_str,
                     },
                     span,
@@ -1313,7 +1313,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));
@@ -1335,7 +1335,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
                             expected: "struct type".to_string(),
-                            found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));

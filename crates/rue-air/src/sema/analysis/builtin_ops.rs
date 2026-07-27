@@ -85,7 +85,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return Err(CompileError::new(
                     ErrorKind::TypeMismatch {
                         expected: "StrBuf".to_string(),
-                        found: operand.ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: operand.ty.safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 ));
@@ -181,7 +181,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .with_help(format!("`{fn_name}` takes exactly one text argument")));
         }
         self.validate_explicit_call_modes(&args, std::iter::once(RirParamMode::Normal))?;
-        let arg_value = args.get(0).unwrap().value;
+        let arg_value = args.first().unwrap().value;
 
         // Borrow the argument (like a `+` operand): analyze in projection mode
         // and cancel any move marker so a variable operand is not consumed and
@@ -198,7 +198,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "text".to_string(),
                     found: arg_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 self.body_rir_ref().get(arg_value).span,
             )
@@ -298,7 +298,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "integer type".to_string(),
                     found: lhs_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 span,
             ));
@@ -378,7 +378,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(
                 ErrorKind::TypeMismatch {
                     expected: "integer".to_string(),
-                    found: lhs_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: lhs_type.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 self.body_rir_ref().get(lhs).span,
             ));

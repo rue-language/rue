@@ -602,7 +602,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Err(CompileError::new(
             ErrorKind::TypeMismatch {
                 expected: "an array or a StrBuf".to_string(),
-                found: coll_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                found: coll_type.safe_name_with_pool(Some(self.body_type_pool())),
             },
             span,
         )
@@ -637,7 +637,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "StrBuf".to_string(),
                     found: coll_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 span,
             )
@@ -764,7 +764,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "dbg".to_string(),
                     expected: "integer, bool, or String".to_string(),
-                    found: arg_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: arg_type.safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 span,
             ));
@@ -994,7 +994,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "bool condition".to_string(),
                     found: cond_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 cond_span,
             ));
@@ -1068,7 +1068,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
                     expected: "text message".to_string(),
-                    found: message_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: message_ty.safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 message_span,
             ));
@@ -1110,7 +1110,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_name.to_string(),
                     expected: "integer".to_string(),
-                    found: from_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: from_ty.safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1135,7 +1135,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: intrinsic_name.to_string(),
                         expected: "integer".to_string(),
-                        found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                     })),
                     span,
                 ));
@@ -1266,7 +1266,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: intrinsic_display.to_string(),
                     expected: format!("Option({payload_display})"),
-                    found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1366,7 +1366,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: "@to_string".to_string(),
                     expected: "integer".to_string(),
-                    found: arg_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: arg_type.safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1457,7 +1457,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                     name: format!("@{}", intrinsic_name_str),
                     expected: "text".to_string(),
-                    found: arg_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: arg_type.safe_name_with_pool(Some(self.body_type_pool())),
                 })),
                 span,
             ));
@@ -1693,7 +1693,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                 name: format!("@{display}"),
                 expected: "u64".to_string(),
-                found: found.safe_name_with_pool(Some(&self.body_type_pool())),
+                found: found.safe_name_with_pool(Some(self.body_type_pool())),
             })),
             span,
         ))
@@ -1744,7 +1744,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
                         name: format!("@{display}"),
                         expected: "integer".to_string(),
-                        found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                     })),
                     self.body_rir_ref().get(arg.value).span,
                 ));

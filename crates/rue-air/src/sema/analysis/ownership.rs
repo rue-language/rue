@@ -1517,7 +1517,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 "consider making parameter `{}` inout: `inout {}: {}`",
                 name_str,
                 name_str,
-                ty.safe_name_with_pool(Some(&self.body_type_pool()))
+                ty.safe_name_with_pool(Some(self.body_type_pool()))
             ))
         }
     }
@@ -1632,10 +1632,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 {
                     return Err(CompileError::new(
                         ErrorKind::TypeMismatch {
-                            expected: param_ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                            expected: param_ty.safe_name_with_pool(Some(self.body_type_pool())),
                             found: value_result
                                 .ty
-                                .safe_name_with_pool(Some(&self.body_type_pool())),
+                                .safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         self.body_rir_ref().get(value).span,
                     ));
@@ -2051,7 +2051,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
                             element_type: field_type
-                                .safe_name_with_pool(Some(&self.body_type_pool())),
+                                .safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     )
@@ -2182,7 +2182,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::FieldAccessOnNonStruct {
-                        found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 ));
@@ -2332,7 +2332,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     // This shouldn't happen if try_trace_place worked correctly
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: parent_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: parent_type.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));
@@ -2392,7 +2392,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(
                         ErrorKind::MoveOutOfIndex {
                             element_type: elem_type
-                                .safe_name_with_pool(Some(&self.body_type_pool())),
+                                .safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     )
@@ -2514,7 +2514,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::IndexOnNonArray {
-                        found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                        found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     span,
                 ));
@@ -2540,7 +2540,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.is_type_copy(elem_type) {
             return Err(CompileError::new(
                 ErrorKind::MoveOutOfIndex {
-                    element_type: elem_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                    element_type: elem_type.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 span,
             )
@@ -2635,7 +2635,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "an integer".to_string(),
                     found: index_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -2738,7 +2738,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "an integer".to_string(),
                     found: index_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -2823,7 +2823,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     expected: "an integer".to_string(),
                     found: index_result
                         .ty
-                        .safe_name_with_pool(Some(&self.body_type_pool())),
+                        .safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 self.body_rir_ref().get(index).span,
             ));
@@ -3052,7 +3052,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));
@@ -3215,7 +3215,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         span,
                     ));
@@ -3232,7 +3232,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         expected: "integer type".to_string(),
                         found: index_result
                             .ty
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     self.body_rir_ref().get(index).span,
                 ));
@@ -3565,7 +3565,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if !self.type_requires_consumption(dest_ty) || discharged {
             return Ok(());
         }
-        let type_name = dest_ty.safe_name_with_pool(Some(&self.body_type_pool()));
+        let type_name = dest_ty.safe_name_with_pool(Some(self.body_type_pool()));
         let err = if through_inout {
             CompileError::new(
                 ErrorKind::LinearValueOverwrittenThroughInout { type_name },
@@ -3639,7 +3639,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
         let err = CompileError::new(
             ErrorKind::LinearValueDiscarded {
-                type_name: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                type_name: ty.safe_name_with_pool(Some(self.body_type_pool())),
             },
             self.body_rir_ref().get(inst_ref).span,
         )
@@ -4050,7 +4050,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         if self.is_strbuf(found) || self.is_str_fixed_struct(found) {
-            let found_name = found.safe_name_with_pool(Some(&self.body_type_pool()));
+            let found_name = found.safe_name_with_pool(Some(self.body_type_pool()));
             let mut err = CompileError::new(
                 ErrorKind::BufferNotFirstClassStr {
                     found: found_name,

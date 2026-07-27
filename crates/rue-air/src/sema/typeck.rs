@@ -3405,7 +3405,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         if let Some(value) = value {
             let (function_name, param_name) = contract.expect("value contracts name a parameter");
             return super::comptime_eval::validate_comptime_value_for_type_impl(
-                &self.interner,
+                self.interner,
                 &self.type_pool,
                 function_name,
                 param_name,
@@ -3451,7 +3451,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             Some(slots) => Ok(slots as u32),
             None => Err(CompileError::new(
                 ErrorKind::TypeTooLarge {
-                    type_name: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    type_name: ty.safe_name_with_pool(Some(self.body_type_pool())),
                     max_bytes: MAX_TYPE_SIZE_BYTES,
                 },
                 span,
