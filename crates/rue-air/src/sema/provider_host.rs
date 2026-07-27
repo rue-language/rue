@@ -4,34 +4,44 @@
 //! [`OrdinaryBodyAnalysisHost`] implementation is `Sema`, which reaches a
 //! declaration-wide epoch for every fact a body asks for; that shape is the
 //! `O(bodies × declarations)` term the body-context repair exists to delete.
-//! The replacement receiver owns exactly two things:
+//! The replacement receiver — [`ProviderBodyHost`] — owns exactly three things:
 //!
 //! - **Body-local mutable state** — [`ProviderBodyLocalState`] below. Every
 //!   field here is state one body evaluation creates, mutates, and drops. None
 //!   of it is shared with another body, and none of it is derived from the
 //!   declaration universe, so it is `O(this body)` by construction.
+//! - **The rue-air-owned identity authority** —
+//!   [`crate::sema::ProviderBodyAnalysisState`], the body-scoped type pool,
+//!   parameter arena, and interner.
 //! - **A narrow fact boundary** — [`crate::sema::provider::BodyFactProvider`],
 //!   whose typed operations answer exactly the questions a body asks and whose
 //!   implementation records the corresponding query edge per call.
 //!
-//! Everything a body needs is one of those two things or a configuration
-//! constant. [`HOST_CAPABILITY_LEDGER`] states which, for every method on the
-//! host contract, and [`host_capability_ledger_covers_the_contract`] pins that
-//! claim against the real trait source so it cannot go stale as the contract
-//! moves. The ledger is the flip's worklist: `NeedsProviderWiring` is the only
+//! Everything a body needs is one of those three or a configuration constant.
+//! [`HOST_CAPABILITY_LEDGER`] states which, for every method on the host
+//! contract, and [`host_capability_ledger_covers_the_contract`] pins that claim
+//! against the real trait source so it cannot go stale as the contract moves.
+//! The ledger is the flip's worklist: `NeedsProviderWiring` is the only
 //! category with design work left in it.
 
-// The overlay state is declared before the receiver that mutates it: the host
-// impl lands with the fact adapters, and every field here is storage that impl
-// needs. Nothing selects this module at runtime, so it is inert rather than a
-// peer body path — the ledger test is its only consumer today.
+// The overlay state is declared before the receiver that mutates it, and the
+// receiver before the contracts it implements. Nothing selects this module at
+// runtime yet, so it is inert rather than a peer body path — publication
+// reaches it only once the body query's evaluator is registered.
 #![allow(dead_code)]
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::hash::Hash;
+use std::rc::Rc;
 
-use lasso::Spur;
+use lasso::{Spur, ThreadedRodeo};
 use rue_error::CompileError;
 use rue_span::FileId;
+
+use super::provider::BodyFactProvider;
+use super::semantic_body_export::SemanticBodyExportHost;
+use super::{DurableNominalSource, ProviderBodyAnalysisState};
+use crate::intern_pool::TypeInternPool;
 
 use super::anon_structs::{
     IssuedAnonymousNominalKey, IssuedCanonicalArguments, IssuedStableProducerId,
@@ -465,6 +475,164 @@ pub(crate) trait ExportCallableFacts {
 
     /// The named method a rendered callable symbol reverses to.
     fn method_by_callable_symbol(&self, symbol: Spur) -> Option<ExportedMethodSite>;
+}
+
+/// The one fact authority a provider-backed body consults.
+///
+/// [`StableIdentityFacts`] and [`ExportCallableFacts`] are adapters over
+/// [`BodyFactProvider`], not peer authorities, so the receiver binds all three
+/// to a single type rather than to three independent parameters. That is the
+/// structural form of the claim the adapter docs make in prose: every non-local
+/// answer a body receives came through the fact boundary, and therefore
+/// recorded its dependency edge at the consult. Three separate parameters would
+/// make an edge-free second authority expressible.
+pub(crate) trait BodyHostFacts:
+    BodyFactProvider + StableIdentityFacts + ExportCallableFacts
+{
+}
+
+impl<T> BodyHostFacts for T where T: BodyFactProvider + StableIdentityFacts + ExportCallableFacts {}
+
+/// The receiver one body evaluation runs on.
+///
+/// This is the flip's substitution for `Sema`. The epoch receiver reaches a
+/// declaration-wide binding for every fact; this one has exactly the three
+/// parts the module documentation names, and [`HOST_CAPABILITY_LEDGER`] says
+/// which of them answers each contract method — `BodyLocal` rows come from
+/// `local`, `ProviderState` rows from `state`, `ProviderFact` rows from `facts`.
+///
+/// None of the three is sized by the declaration universe, so constructing a
+/// receiver is `O(1)` in the program rather than `O(declarations)`. That is
+/// where the `O(bodies × declarations)` term goes: the epoch's cost was in
+/// building the receiver, not in the analysis that ran on it.
+pub(crate) struct ProviderBodyHost<K, M, S, P> {
+    local: ProviderBodyLocalState,
+    state: ProviderBodyAnalysisState<K, M, S>,
+    facts: P,
+    /// Handles cloned once from `state`, so an engine-facing borrow is a field
+    /// read rather than a refcount bump per call. Containment sealing rebases
+    /// the pool's locked inner value in place, so a handle taken at
+    /// construction stays current for the life of the body.
+    type_pool: Rc<TypeInternPool>,
+    interner: Rc<ThreadedRodeo>,
+}
+
+impl<K, M, S, P> ProviderBodyHost<K, M, S, P>
+where
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+    S: DurableNominalSource<K, M>,
+{
+    /// Begin one body evaluation over an identity authority and a fact
+    /// boundary. The overlay starts empty — a receiver never inherits another
+    /// body's mints.
+    pub(crate) fn new(state: ProviderBodyAnalysisState<K, M, S>, facts: P) -> Self {
+        let type_pool = state.type_pool();
+        let interner = state.interner();
+        Self {
+            local: ProviderBodyLocalState::new(),
+            state,
+            facts,
+            type_pool,
+            interner,
+        }
+    }
+}
+
+impl<K, M, S, P> ProviderBodyHost<K, M, S, P> {
+    pub(crate) fn local(&self) -> &ProviderBodyLocalState {
+        &self.local
+    }
+
+    pub(crate) fn local_mut(&mut self) -> &mut ProviderBodyLocalState {
+        &mut self.local
+    }
+
+    pub(crate) fn state(&self) -> &ProviderBodyAnalysisState<K, M, S> {
+        &self.state
+    }
+
+    pub(crate) fn facts(&self) -> &P {
+        &self.facts
+    }
+
+    pub(crate) fn type_pool(&self) -> &TypeInternPool {
+        &self.type_pool
+    }
+
+    pub(crate) fn interner(&self) -> &ThreadedRodeo {
+        &self.interner
+    }
+}
+
+impl<K, M, S, P: BodyHostFacts> ProviderBodyHost<K, M, S, P> {
+    /// The export view over this receiver's own three parts.
+    ///
+    /// Held for the duration of one export call rather than stored: it borrows
+    /// the overlay immutably, so materializing it per call keeps the receiver
+    /// mutable everywhere else.
+    fn export_host(&self) -> ProviderExportHost<'_, P, P> {
+        ProviderExportHost::new(
+            &self.local,
+            &self.type_pool,
+            &self.facts,
+            &self.facts,
+            &self.interner,
+        )
+    }
+}
+
+/// Publication reaches the provider receiver through the same neutral contract
+/// it reaches the epoch receiver through: `export_body` is one algorithm over
+/// this trait, so binding it here makes the export direction reachable without
+/// a second serializer.
+impl<K, M, S, P: BodyHostFacts> SemanticBodyExportHost for ProviderBodyHost<K, M, S, P> {
+    fn export_body_type(
+        &self,
+        ty: Type,
+    ) -> Result<
+        crate::SemanticImportType<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.export_host().export_body_type(ty)
+    }
+
+    fn body_struct_identity(
+        &self,
+        id: StructId,
+    ) -> Result<
+        crate::NominalInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.export_host().body_struct_identity(id)
+    }
+
+    fn body_enum_identity(
+        &self,
+        id: EnumId,
+    ) -> Result<
+        crate::NominalInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.export_host().body_enum_identity(id)
+    }
+
+    fn body_function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<
+        crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        crate::SemanticBodyExportFailure,
+    > {
+        self.export_host().body_function_identity(symbol)
+    }
+
+    /// Spelled from the receiver's own interner, which is the identity
+    /// authority's interner — not a peer table a symbol could be translated
+    /// through.
+    fn resolve_publication_symbol(&self, symbol: &Spur) -> &str {
+        self.interner.resolve(symbol)
+    }
 }
 
 /// The export half of the provider-backed receiver.
@@ -980,10 +1148,21 @@ mod tests {
         );
     }
 
-    /// Callable facts for a body that names none.
-    struct AbsentCallableFacts;
+    /// One fact authority over an empty declaration universe, recording every
+    /// consult so a test can assert not just what was exported but how much of
+    /// the boundary it cost.
+    ///
+    /// It implements all three fact traits on one type for the same reason
+    /// production does (see [`BodyHostFacts`]): a test whose identity lookups
+    /// came from somewhere other than its provider would not be testing the
+    /// shape the flip installs.
+    #[derive(Default)]
+    struct RecordingFacts {
+        definition_consults: std::cell::RefCell<Vec<String>>,
+        module_consults: std::cell::RefCell<Vec<u32>>,
+    }
 
-    impl ExportCallableFacts for AbsentCallableFacts {
+    impl ExportCallableFacts for RecordingFacts {
         fn free_function_file(&self, _: Spur) -> Option<FileId> {
             None
         }
@@ -995,15 +1174,120 @@ mod tests {
         }
     }
 
-    /// A `StableIdentityFacts` that records every consult, so a test can assert
-    /// not just what was exported but how much of the boundary it cost.
-    #[derive(Default)]
-    struct RecordingIdentityFacts {
-        definition_consults: std::cell::RefCell<Vec<String>>,
-        module_consults: std::cell::RefCell<Vec<u32>>,
+    /// Every operation answers "the universe holds nothing", which is a legal
+    /// provider state (a body that consults a name no module declares), not a
+    /// stub: no operation panics, so a test that accidentally reaches the
+    /// boundary fails on its assertion rather than on an `unimplemented!`.
+    impl BodyFactProvider for RecordingFacts {
+        type ModuleRef = ();
+        type DeclarationRef = ();
+        type BodyInstanceRef = ();
+        type ReceiverType = ();
+        type DeclarationIdentity = ();
+        type Signature = ();
+        type ConstComptime = ();
+        type ComptimeType = ();
+        type ComptimeValue = ();
+        type ComptimeCall = ();
+        type AnonymousFacts = ();
+        type ProducerBodyFacts = ();
+        type ToolchainFacts = ();
+
+        fn lookup_unqualified(
+            &self,
+            _: &(),
+            _: super::super::provider::ProviderNamespace,
+            _: &str,
+        ) -> super::super::provider::NameResolution {
+            super::super::provider::NameResolution::Absent
+        }
+
+        fn lookup_qualified(
+            &self,
+            _: &(),
+            _: super::super::provider::ProviderNamespace,
+            _: &str,
+        ) -> super::super::provider::NameResolution {
+            super::super::provider::NameResolution::Absent
+        }
+
+        fn method_candidates(
+            &self,
+            _: &(),
+            _: &str,
+        ) -> Vec<super::super::provider::MemberCandidate<()>> {
+            Vec::new()
+        }
+
+        fn operator_candidates(
+            &self,
+            _: &(),
+            _: super::super::provider::OperatorName,
+        ) -> Vec<super::super::provider::OperatorMemberCandidate<()>> {
+            Vec::new()
+        }
+
+        fn declaration_identity(&self, _: &()) -> Option<()> {
+            None
+        }
+
+        fn signature(&self, _: &()) -> Option<()> {
+            None
+        }
+
+        fn const_comptime(&self, _: &()) -> Option<()> {
+            None
+        }
+
+        fn reduce_comptime_call(
+            &self,
+            _: &(),
+            _: &[(std::sync::Arc<str>, ())],
+            _: &[(std::sync::Arc<str>, ())],
+        ) -> Option<()> {
+            None
+        }
+
+        fn nominal_well_formedness(
+            &self,
+            _: &(),
+        ) -> Option<super::super::provider::NominalWellFormedness> {
+            None
+        }
+
+        fn anonymous_facts(&self, _: &()) -> Option<()> {
+            None
+        }
+
+        fn language_item(
+            &self,
+            _: &(),
+            _: super::super::provider::ProviderNamespace,
+            _: &str,
+        ) -> Option<crate::types::LangItem> {
+            None
+        }
+
+        fn drop_copy_metadata(&self, _: &()) -> Option<super::super::provider::DropCopyMetadata> {
+            None
+        }
+
+        fn resolve_import(&self, _: &(), _: &str) -> super::super::provider::ImportResolution {
+            super::super::provider::ImportResolution::Absent
+        }
+
+        fn callable_symbol_method(&self, _: &str) -> Option<((), std::sync::Arc<str>)> {
+            None
+        }
+
+        fn producer_body_facts(&self, _: &()) -> Option<()> {
+            None
+        }
+
+        fn trusted_toolchain_facts(&self, _: &()) {}
     }
 
-    impl StableIdentityFacts for RecordingIdentityFacts {
+    impl StableIdentityFacts for RecordingFacts {
         fn definition_token(
             &self,
             file: u32,
@@ -1041,9 +1325,8 @@ mod tests {
         let local = ProviderBodyLocalState::new();
         let pool = crate::intern_pool::TypeInternPool::new();
         let interner = lasso::ThreadedRodeo::new();
-        let identity = RecordingIdentityFacts::default();
-        let callables = AbsentCallableFacts;
-        let host = ProviderExportHost::new(&local, &pool, &identity, &callables, &interner);
+        let facts = RecordingFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
 
         for (ty, expected) in [
             (Type::I32, crate::SemanticImportType::I32),
@@ -1057,11 +1340,11 @@ mod tests {
         }
 
         assert!(
-            identity.definition_consults.borrow().is_empty(),
+            facts.definition_consults.borrow().is_empty(),
             "primitives resolved through the identity boundary: {:?}",
-            identity.definition_consults.borrow()
+            facts.definition_consults.borrow()
         );
-        assert!(identity.module_consults.borrow().is_empty());
+        assert!(facts.module_consults.borrow().is_empty());
     }
 
     /// An unresolvable stable identity fails closed rather than inventing a
@@ -1073,9 +1356,8 @@ mod tests {
         let local = ProviderBodyLocalState::new();
         let pool = crate::intern_pool::TypeInternPool::new();
         let interner = lasso::ThreadedRodeo::new();
-        let identity = RecordingIdentityFacts::default();
-        let callables = AbsentCallableFacts;
-        let host = ProviderExportHost::new(&local, &pool, &identity, &callables, &interner);
+        let facts = RecordingFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
 
         assert!(matches!(
             host.export_body_type(Type::ERROR),
@@ -1092,9 +1374,8 @@ mod tests {
         let local = ProviderBodyLocalState::new();
         let pool = crate::intern_pool::TypeInternPool::new();
         let interner = lasso::ThreadedRodeo::new();
-        let identity = RecordingIdentityFacts::default();
-        let callables = AbsentCallableFacts;
-        let host = ProviderExportHost::new(&local, &pool, &identity, &callables, &interner);
+        let facts = RecordingFacts::default();
+        let host = ProviderExportHost::new(&local, &pool, &facts, &facts, &interner);
 
         let symbol = interner.get_or_intern("nowhere");
         assert!(matches!(
@@ -1102,9 +1383,110 @@ mod tests {
             Err(crate::SemanticBodyExportFailure::UnmappedFunction)
         ));
         assert!(
-            identity.definition_consults.borrow().is_empty(),
+            facts.definition_consults.borrow().is_empty(),
             "an unmapped symbol consulted the identity boundary: {:?}",
-            identity.definition_consults.borrow()
+            facts.definition_consults.borrow()
+        );
+    }
+
+    /// A durable universe with no nominals in it. The receiver tests exercise
+    /// the parts that must work before any nominal is consulted, so the source
+    /// answering `None` is the honest input, not a placeholder.
+    struct NoDurableNominals;
+
+    impl super::super::DurableNominalSource<std::sync::Arc<str>, std::sync::Arc<str>>
+        for NoDurableNominals
+    {
+        fn nominal(
+            &self,
+            _: &std::sync::Arc<str>,
+        ) -> Option<super::super::DurableNominal<std::sync::Arc<str>, std::sync::Arc<str>>>
+        {
+            None
+        }
+    }
+
+    type TestHost = ProviderBodyHost<
+        std::sync::Arc<str>,
+        std::sync::Arc<str>,
+        NoDurableNominals,
+        RecordingFacts,
+    >;
+
+    fn test_host() -> TestHost {
+        let state =
+            ProviderBodyAnalysisState::new(NoDurableNominals, Rc::new(lasso::ThreadedRodeo::new()));
+        ProviderBodyHost::new(state, RecordingFacts::default())
+    }
+
+    /// The receiver's three parts are one authority each, not three that happen
+    /// to agree. If the host cached an interner or type pool other than the
+    /// identity state's, two halves of the same body would mint symbols in
+    /// separate universes and publication would silently disagree with
+    /// analysis.
+    #[test]
+    fn the_receiver_shares_one_identity_authority() {
+        let host = test_host();
+        assert!(
+            std::ptr::eq(host.interner(), Rc::as_ref(&host.state().interner())),
+            "the receiver's interner is the identity state's, not a peer table"
+        );
+        assert!(
+            std::ptr::eq(host.type_pool(), Rc::as_ref(&host.state().type_pool())),
+            "the receiver's type pool is the identity state's, not a peer pool"
+        );
+        assert!(
+            host.local()
+                .produced_anonymous_identities()
+                .next()
+                .is_none(),
+            "a fresh receiver starts with an empty overlay"
+        );
+    }
+
+    /// Publication can reach the provider receiver.
+    ///
+    /// The assertion that matters is the generic bound: `publish` names only
+    /// `SemanticBodyExportHost`, which is the contract the canonical
+    /// `export_body` algorithm consumes, so a receiver that satisfies it is
+    /// reachable from publication without a second serializer. Before the
+    /// receiver existed, the export code in this module had no caller that
+    /// could be typed this way.
+    #[test]
+    fn publication_reaches_the_provider_receiver() {
+        fn publish<H: SemanticBodyExportHost>(
+            host: &H,
+            ty: Type,
+        ) -> Result<
+            crate::SemanticImportType<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+            crate::SemanticBodyExportFailure,
+        > {
+            host.export_body_type(ty)
+        }
+
+        let host = test_host();
+        assert_eq!(
+            publish(&host, Type::I32).expect("a primitive exports through the receiver"),
+            crate::SemanticImportType::I32
+        );
+        assert!(
+            host.facts().definition_consults.borrow().is_empty(),
+            "publishing a primitive consulted the fact boundary: {:?}",
+            host.facts().definition_consults.borrow()
+        );
+    }
+
+    /// A symbol publication spells is resolved through the receiver's own
+    /// interner. `export_body` renders every callable symbol this way, so a
+    /// receiver whose spelling came from elsewhere would publish names the
+    /// analysis never interned.
+    #[test]
+    fn the_receiver_spells_symbols_from_its_own_interner() {
+        let host = test_host();
+        let symbol = host.interner().get_or_intern("helper");
+        assert_eq!(
+            SemanticBodyExportHost::resolve_publication_symbol(&host, &symbol),
+            "helper"
         );
     }
 
