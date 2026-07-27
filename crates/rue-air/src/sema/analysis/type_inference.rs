@@ -341,7 +341,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut cgen = ConstraintGenerator::with_lazy_facts(
                 self.body_rir_ref(),
                 self.body_interner(),
-                &self.body_type_pool(),
+                self.body_type_pool(),
                 type_subst,
                 &facts,
             );
@@ -501,34 +501,34 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let error_kind = match &err.kind {
                 UnifyResult::Ok => unreachable!("UnificationError should never contain Ok"),
                 UnifyResult::TypeMismatch { expected, found } => ErrorKind::TypeMismatch {
-                    expected: expected.name_with_pool(&self.body_type_pool()),
-                    found: found.name_with_pool(&self.body_type_pool()),
+                    expected: expected.name_with_pool(self.body_type_pool()),
+                    found: found.name_with_pool(self.body_type_pool()),
                 },
                 UnifyResult::IntLiteralNonInteger { found } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: found.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: found.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 UnifyResult::StringLiteralNonString { found } => ErrorKind::TypeMismatch {
                     expected: "string type".to_string(),
-                    found: found.name_with_pool(&self.body_type_pool()),
+                    found: found.name_with_pool(self.body_type_pool()),
                 },
                 UnifyResult::OccursCheck { var, ty } => ErrorKind::TypeMismatch {
                     expected: "non-recursive type".to_string(),
                     found: format!(
                         "{var} = {} (infinite type)",
-                        ty.name_with_pool(&self.body_type_pool())
+                        ty.name_with_pool(self.body_type_pool())
                     ),
                 },
                 UnifyResult::NotSigned { ty } => {
-                    ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(&self.body_type_pool())))
+                    ErrorKind::CannotNegate(ty.safe_name_with_pool(Some(self.body_type_pool())))
                 }
                 UnifyResult::NotInteger { ty } => ErrorKind::TypeMismatch {
                     expected: "integer type".to_string(),
-                    found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 UnifyResult::NotUnsigned { ty } => ErrorKind::TypeMismatch {
                     expected: "unsigned integer type".to_string(),
-                    found: ty.safe_name_with_pool(Some(&self.body_type_pool())),
+                    found: ty.safe_name_with_pool(Some(self.body_type_pool())),
                 },
                 UnifyResult::ArrayLengthMismatch { expected, found } => {
                     ErrorKind::ArrayLengthMismatch {
@@ -743,7 +743,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::FieldAccessOnNonStruct {
-                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         field_span,
                     ));
@@ -839,7 +839,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 _ => {
                     return Err(CompileError::new(
                         ErrorKind::IndexOnNonArray {
-                            found: base_type.safe_name_with_pool(Some(&self.body_type_pool())),
+                            found: base_type.safe_name_with_pool(Some(self.body_type_pool())),
                         },
                         inst.span,
                     ));
@@ -858,7 +858,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         expected: "integer type".to_string(),
                         found: index_result
                             .ty
-                            .safe_name_with_pool(Some(&self.body_type_pool())),
+                            .safe_name_with_pool(Some(self.body_type_pool())),
                     },
                     self.body_rir_ref().get(*index).span,
                 ));

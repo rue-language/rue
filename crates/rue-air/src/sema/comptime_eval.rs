@@ -937,7 +937,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 };
                 let arms = self.body_rir_ref().match_arms(arms).to_vec();
                 for (pattern, body) in arms.iter() {
-                    match const_pattern_matches(&pattern, scrut) {
+                    match const_pattern_matches(pattern, scrut) {
                         Some(true) => return self.eval_const_expr(*body, env),
                         Some(false) => continue,
                         // Undecidable pattern (e.g. an enum-variant `Path`
