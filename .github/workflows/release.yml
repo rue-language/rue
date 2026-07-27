@@ -7,6 +7,17 @@ on:
   schedule:
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      program:
+        description: Large maintained program to execute
+        type: choice
+        options: [all, caldera, meridian]
+        default: all
+      tier:
+        description: Runtime tier for the selected large program
+        type: choice
+        options: [slow, stress]
+        default: slow
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -44,10 +55,78 @@ jobs:
 
       # //:cli-tests owns the premerge shards' complete union; //:cli-tests-slow
       # owns declarative slow sections. Exclude the CI-only shards so the
-      # premerge inventory is not repeated four times by the //... expansion.
+      # premerge inventory is not repeated four times, and exclude only the
+      # separately scheduled large-program targets owned by the matrix below.
       - name: Run full release suite
         run: >-
           scripts/ci-timed "full release suite" --
           ./buck2 test //... toolchains//... --exclude rue_cli_shard
+          --exclude rue_scheduled_large_example
           --ignore-tests-attribute
+          --target-platforms //platforms:release
+
+  # Caldera and Meridian are real compile-and-run coverage, not required-CI
+  # success stubs. Each matrix job builds a release compiler, compiles its
+  # selected root once, and the target reuses that executable across all
+  # runtime scenarios. Separate jobs keep a scheduled regression attributable
+  # and rerunnable. Manual dispatch may select either program (or both), and
+  # may opt into the separate 4x stress tier.
+  large-program:
+    strategy:
+      fail-fast: false
+      matrix:
+        program: [caldera, meridian]
+    name: ${{ matrix.program }} (${{ github.event_name == 'schedule' && 'slow' || inputs.tier }}, linux-x64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Select dispatched program
+        id: select
+        run: >-
+          echo "run=${{
+            github.event_name == 'schedule' ||
+            inputs.program == 'all' ||
+            inputs.program == matrix.program
+          }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        if: steps.select.outputs.run == 'true'
+
+      - name: Install dotslash
+        if: steps.select.outputs.run == 'true'
+        uses: facebook/install-dotslash@v2
+
+      - name: Cache dotslash artifacts
+        if: steps.select.outputs.run == 'true'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Provision remote build cache
+        if: steps.select.outputs.run == 'true'
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable; building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Run scheduled slow program
+        if: steps.select.outputs.run == 'true' && (github.event_name == 'schedule' || inputs.tier == 'slow')
+        run: >-
+          scripts/ci-timed "${{ matrix.program }} slow" --
+          ./buck2 test "//:large-example-${{ matrix.program }}-slow"
+          --target-platforms //platforms:release
+
+      - name: Run manual stress program
+        if: steps.select.outputs.run == 'true' && github.event_name == 'workflow_dispatch' && inputs.tier == 'stress'
+        run: >-
+          scripts/ci-timed "${{ matrix.program }} stress" --
+          ./buck2 test "//:large-example-${{ matrix.program }}-stress"
           --target-platforms //platforms:release

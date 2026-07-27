@@ -205,15 +205,14 @@ jobs:
         run: scripts/ci-timed "${{ matrix.name }} build" -- ./buck2 build //crates/...
 
       - name: Run tests
-        # Every platform now shards its Caldera, ordinary CLI, and spec corpora
-        # onto explicit parallel jobs below (RUE-1115); the main lane keeps the
-        # broad discovery pass plus the smaller heavy suites. The deferral set is
-        # identical across platforms, so it is a constant rather than a
-        # per-matrix expression. Local full suites still own every discovered
-        # target in one invocation.
+        # Every platform shards its ordinary CLI and spec corpora onto explicit
+        # parallel jobs below (RUE-1115); the main lane keeps broad pre-merge
+        # discovery plus the smaller heavy suites. Full Caldera and Meridian
+        # execution belongs to scheduled slow coverage; their reduced canaries
+        # run in this broad pass.
         env:
           RUE_TEST_TIER: premerge
-          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:cli-tests-caldera //:spec-tests'
+          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:spec-tests'
           RUE_CI_DEFER_DEDICATED_SUITES: '//crates/rue-compiler:scaling-matrix-test'
         run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
 
@@ -355,12 +354,12 @@ jobs:
           RUE_AFFECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/affected-targets decide
 
-  # The CLI and spec corpora dominate each platform's wall clock, and Caldera
-  # intentionally stresses compiler resources on every architecture. Run them on
+  # The CLI and spec corpora dominate each platform's wall clock. Run them on
   # separate machines (RUE-1115) while each main platform lane retains broad
-  # discovery, the smaller corpora, and omission-audit coverage. Every platform
-  # defers the same heavy corpora (see RUE_CI_DEFER_HEAVY_SUITES on the `test`
-  # job). RUE-1116/RUE-1158: the ordinary CLI corpus is split into
+  # pre-merge discovery, the large-example canaries, the smaller corpora, and
+  # omission-audit coverage. Every platform defers the same heavy corpora (see
+  # RUE_CI_DEFER_HEAVY_SUITES on the `test` job). RUE-1116/RUE-1158: the
+  # ordinary CLI corpus is split into
   # CLI_TEST_SHARD_COUNT (BUCK) measured-cost shards per platform so its wall
   # time collapses to balanced N-way parallel slices;
   # //:cli-shard-coverage-validation keeps this matrix and the BUCK shard set
@@ -398,11 +397,6 @@ jobs:
             check_name: macos-cli-shard-3
           - os: macos-15
             cache_name: macos
-            target: //:cli-tests-caldera
-            name: cli-caldera
-            check_name: macos-cli-caldera
-          - os: macos-15
-            cache_name: macos
             target: //:spec-tests
             name: spec
             check_name: macos-spec
@@ -428,11 +422,6 @@ jobs:
             check_name: linux-x64-cli-shard-3
           - os: ubuntu-latest
             cache_name: linux-x64
-            target: //:cli-tests-caldera
-            name: cli-caldera
-            check_name: linux-x64-cli-caldera
-          - os: ubuntu-latest
-            cache_name: linux-x64
             target: //:spec-tests
             name: spec
             check_name: linux-x64-spec
@@ -456,11 +445,6 @@ jobs:
             target: //:cli-tests-shard-3
             name: cli-shard-3
             check_name: linux-arm64-cli-shard-3
-          - os: ubuntu-24.04-arm
-            cache_name: linux-arm64
-            target: //:cli-tests-caldera
-            name: cli-caldera
-            check_name: linux-arm64-cli-caldera
           - os: ubuntu-24.04-arm
             cache_name: linux-arm64
             target: //:spec-tests

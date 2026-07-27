@@ -71,7 +71,6 @@ SELECTABLE_CORPUS=(
     //:cli-tests-shard-1
     //:cli-tests-shard-2
     //:cli-tests-shard-3
-    //:cli-tests-caldera
     //:spec-tests
 )
 

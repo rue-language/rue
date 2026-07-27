@@ -200,16 +200,10 @@ rue_sh_test(
 )
 
 # Shared verbatim by //:cli-tests and its shards so a slice runs exactly the
-# same cases the monolithic target would. Caldera is skipped here because it
-# deliberately exceeds the ordinary corpus's aggregate budget; it runs as the
-# isolated //:cli-tests-caldera target below.
-#
-# RUE-1083: Meridian is also skipped. Its cold compile no longer fits a
-# reasonable per-case budget on cold CI runners while per-body incremental
-# work continues: linux-x64 killed a family case at 120.025s against the
-# 120-second long contract, and linux-arm64 killed the automatic example at
-# 300.022s even against the widened 300-second extra-long contract. Restore
-# both skips when large-program compile time comes back down.
+# same cases the monolithic target would. The full Caldera and Meridian roots
+# deliberately live outside the required pre-merge corpus: reduced canaries
+# below exercise their core compiler/runtime paths, while the real applications
+# compile and run in the explicit slow tier.
 _CLI_TEST_ARGS = [
     "--quiet",
     "--skip", "cli.examples::caldera::main",
@@ -293,26 +287,63 @@ CLI_TEST_SHARD_COUNT = 4
     for _shard in range(CLI_TEST_SHARD_COUNT)
 ]
 
-# Caldera deliberately pushes a single compiler invocation past the ordinary
-# CLI corpus's aggregate budget. Keep it in the required corpus, but isolate it
-# so CI can run the stress program in parallel with the ordinary CLI cases.
-#
-# RUE-1083: Caldera's cold compile still measures far past any reasonable
-# required-CI budget: killed at its 300s contract on linux-arm64, and ~31
-# minutes end to end (compile + memcheck) with the non-release linux-x64
-# compiler in the Valgrind corpus (run 30211132077, 16:48:20 -> 17:19:10
-# UTC). This exact target stays a transparent success stub until the
-# remaining per-body incremental work brings the stress compile back into a
-# reasonable budget. Every other example family runs real cases above.
-rue_sh_test(
-    name = "cli-tests-caldera",
-    labels = ["rue_heavy_suite"],
-    test = "//crates/rue-cli-tests:rue-cli-tests",
-    args = ["--quiet", "caldera"],
-    env = dict(_CLI_TEST_ENV.items() + [
-        ("RUE_CALDERA_SUCCESS_STUB", "RUE-1083"),
-    ]),
-)
+# The required pre-merge canaries compile a reduced root from each maintained
+# application and execute its core path. They are intentionally honest about
+# their scope: neither target claims to compile the complete generated graph.
+[
+    rue_sh_test(
+        name = "large-example-{}-canary".format(_program),
+        test = "scripts/run-large-example.sh",
+        args = [_program, "canary"],
+        env = {
+            "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+            "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+            "RUE_STD_DIR": "$(location :std)/std",
+        },
+        test_rule_timeout_ms = 600000,
+    )
+    for _program in ["caldera", "meridian"]
+]
+
+# Scheduled slow coverage compiles each complete application exactly once and
+# reuses the resulting executable across its help/demo/file/selftest/scaling
+# and benchmark runtime scenarios. The release workflow selects these targets
+# explicitly under //platforms:release.
+[
+    rue_sh_test(
+        name = "large-example-{}-slow".format(_program),
+        tier = "slow",
+        labels = ["rue_scheduled_large_example"],
+        test = "scripts/run-large-example.sh",
+        args = [_program, "slow"],
+        env = {
+            "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+            "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+            "RUE_STD_DIR": "$(location :std)/std",
+        },
+        test_rule_timeout_ms = 7200000,
+    )
+    for _program in ["caldera", "meridian"]
+]
+
+# The 4x generated workload is an extreme scaling experiment rather than a
+# correctness smoke, so it has explicit stress-tier ownership.
+[
+    rue_sh_test(
+        name = "large-example-{}-stress".format(_program),
+        tier = "stress",
+        labels = ["rue_scheduled_large_example"],
+        test = "scripts/run-large-example.sh",
+        args = [_program, "stress"],
+        env = {
+            "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+            "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
+            "RUE_STD_DIR": "$(location :std)/std",
+        },
+        test_rule_timeout_ms = 7200000,
+    )
+    for _program in ["caldera", "meridian"]
+]
 
 # RUE-1083: `examples/` is a declared input because this suite now also checks a
 # real maintained program (rill) for byte-stable output, not just the
@@ -653,6 +684,7 @@ filegroup(
         "scripts/rue-bin",
         "scripts/provision-build-cache",
         "scripts/with-full-suite-lock",
+        "scripts/run-large-example.sh",
         "scripts/run-sanitizer.sh",
         "test.sh",
     ],

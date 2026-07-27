@@ -27,11 +27,14 @@ fails unless `//platforms:release` supplies `-Copt-level=3 -Clto=thin` while
 representative differential-opt cases, through a release-built Rue compiler.
 It does not build every crate target or run the exhaustive suite.
 
-`.github/workflows/release.yml` runs the complete release-configured `//...`
-suite nightly and on manual dispatch. Its `rue_cli_shard` exclusion is
-intentional: `//:cli-tests` owns the shards' complete premerge union, while
-`//:cli-tests-slow` owns declarative slow sections. Also running the four
-CI-only shards would execute the premerge inventory twice.
+`.github/workflows/release.yml` runs the release-configured suite nightly and
+on manual dispatch. Its `rue_cli_shard` exclusion avoids repeating the
+premerge CLI inventory owned by `//:cli-tests`; `//:cli-tests-slow` still owns
+declarative slow sections. The broad release job excludes only the separately
+scheduled large-program targets. Dedicated Caldera and Meridian jobs run their
+real slow targets nightly with a release compiler, compiling each application
+once and reusing the executable across runtime scenarios. Manual dispatch can
+select either full program and may select the separate 4x stress tier.
 
 Production `debug_assert*` use is governed by
 `scripts/validate-debug-assert-policy.py`, run by required formatting CI and
@@ -77,8 +80,9 @@ Use `scripts/rue premerge`, `scripts/rue slow`, `scripts/rue stress`, or
 `scripts/rue all` to execute a named selection. `scripts/rue test` retains its
 standard full-suite behavior: premerge plus slow, with resource-stress tests
 remaining opt in. Filtered `scripts/rue test PATTERN` behavior is unchanged.
-Required CI sets `RUE_TEST_TIER=premerge`, while `scripts/rue all` and the
-scheduled full-release workflow exercise the complete union.
+Required CI sets `RUE_TEST_TIER=premerge`; `scripts/rue all` exercises the
+complete union, while the scheduled release workflow gives the dedicated
+large-program targets their own compile-once jobs.
 
 The exhaustive CLI- and specification-oracle differential harnesses are
 `slow`: premerge retains the fixed generated oracle smoke corpus as its bounded
@@ -86,15 +90,13 @@ codegen canary. CLI corpus sections may likewise declare `tier = "slow"`.
 Automatic examples have the same declarative tier field.
 `//:cli-tests-slow` owns those real cases. Mosaic's shipped-program smoke and
 17 exhaustive behavior cases are slow, so the four required CLI shards do not
-spend their critical path compiling that large program. A genuinely reduced
-premerge large-program canary remains part of the RUE-1162 follow-up rather
-than being approximated by the full program with a wider timeout.
+spend their critical path compiling that large program. Caldera and Meridian
+instead use dedicated reduced premerge roots plus compile-once slow targets.
 
 The normal 100/1k structural scaling matrix remains a dedicated premerge
 canary; `//crates/rue-compiler:scaling-matrix-stress-test` enables the real
-10k-per-axis ladder and belongs to `stress`. Caldera and Meridian remain
-explicitly tracked by RUE-1162 until their real release-built slow targets and
-reduced premerge canaries replace the current skips/stub.
+10k-per-axis ladder and belongs to `stress`. Caldera and Meridian likewise
+keep their 4x configurations in dedicated stress targets.
 
 Execution tier and scheduling are separate concerns. A required pre-merge test
 may also carry `rue_heavy_suite` or `rue_dedicated_suite` so it runs in an
@@ -110,15 +112,31 @@ dropped. The scaling matrix now runs only in its dedicated Linux job instead
 of once in each platform broad pass and then again in that job.
 
 The platform test lanes all retain broad target discovery. Every platform
-(linux-x64, linux-arm64, macOS) defers its three heaviest corpora —
-`//:cli-tests`, `//:cli-tests-caldera`, and `//:spec-tests` — to explicit
+(linux-x64, linux-arm64, macOS) defers its two heaviest pre-merge corpora —
+`//:cli-tests` and `//:spec-tests` — to explicit
 `platform-corpus` jobs so those corpora overlap the main lane instead of
-serializing behind it (RUE-1115). Each architecture therefore has a matching
-`cli`, `cli-caldera`, and `spec` shard in the `platform-corpus` matrix, and
+serializing behind it (RUE-1115). Each architecture therefore has matching
+`cli` and `spec` shards in the `platform-corpus` matrix, and
 those checks must be marked required in branch protection (a maintainer
 action). `test.sh` accepts that deferral only under `CI=true`, validates each
 target against Buck's live `rue_heavy_suite` query, and continues to audit
 every corpus target it owns. Local full suites never defer coverage.
+
+Caldera and Meridian are absent from the ordinary CLI corpus by explicit
+filters because their complete generated graphs are slow-tier workloads. The
+required broad pass instead runs `//:large-example-caldera-canary` and
+`//:large-example-meridian-canary`, reduced roots that exercise each
+application's core compiler/runtime path without claiming full-program
+coverage. Nightly `//:large-example-{caldera,meridian}-slow` targets compile
+and execute the real roots with no success-stub environment. Their `stress4`
+configurations live only in the corresponding `-stress` targets.
+
+Required Valgrind coverage explicitly sets
+`RUE_SANITIZER_LARGE_PROGRAMS=none`; it does not quietly recurse around one
+large directory while including the other. Manual sanitizer dispatch can
+select `caldera`, `meridian`, or `all`. The ASan job instruments the Rust arena
+allocator rather than compiled Rue applications, so that selection does not
+apply to it.
 
 The ordinary CLI corpus is additionally split into `CLI_TEST_SHARD_COUNT` (root
 `BUCK`) cost-balanced shards, `//:cli-tests-shard-0 .. -N`, so its wall clock

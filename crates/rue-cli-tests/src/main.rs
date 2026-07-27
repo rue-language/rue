@@ -2482,14 +2482,6 @@ fn example_trials(
 }
 
 fn main() {
-    // RUE-1083: keep the required Caldera CI target present while its cold
-    // compile remains past any reasonable required-CI budget. Only that
-    // target sets this marker; the ordinary CLI corpus and filtered local
-    // runs remain real.
-    if std::env::var_os("RUE_CALDERA_SUCCESS_STUB").is_some() {
-        return;
-    }
-
     // An optional `INDEX/COUNT` spec selects one cost-balanced slice of the
     // corpus so CI can fan the work across parallel runners. Unset (the
     // default, and every local/filtered run) means the whole corpus.

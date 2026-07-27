@@ -1205,6 +1205,25 @@ CORE.update({
             println("caldera: command is not implemented yet"); 2
         }
     ''',
+    "canary.rue": r'''
+        // Reduced pre-merge canary for Caldera's core simulation path. The scheduled
+        // slow target compiles the complete generated application graph.
+        const checksum = @import("checksum.rue");
+        const simulation = @import("simulation.rue");
+        const worldgen = @import("worldgen.rue");
+
+        fn main() -> i32 {
+            let mut world = worldgen.demo(1);
+            let before = checksum.world(borrow world);
+            let result = simulation.run(inout world, 4);
+            let after = checksum.world(borrow world);
+            if result.valid && result.ticks == 4 && before != after && after == result.checksum {
+                0
+            } else {
+                1
+            }
+        }
+    ''',
 })
 
 CORE.update({
