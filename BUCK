@@ -22,23 +22,17 @@
 # files so that `buck2 test //crates/...` (quick-test.sh, test.sh's filtered
 # path) still means "unit tests only".
 
-# Formatting is a first-class repository check. The source files are both
-# passed to rustfmt and declared as resources, so Buck invalidates the cached
-# result when any Rust source changes. The rustfmt target's RunInfo owns host
-# selection and dynamic-library setup; write-mode formatting remains in
-# fmt.sh because build/test actions must not mutate the source tree.
-_RUST_SOURCES = glob(["crates/**/*.rs"])
-
-sh_test(
-    name = "fmt-check",
-    test = "toolchains//rust:rustfmt",
-    args = [
-        "--edition",
-        "2024",
-        "--check",
-    ] + _RUST_SOURCES,
-    resources = _RUST_SOURCES,
-)
+# The formatting gate lives in fmt.sh, not here. A `fmt-check` sh_test used to
+# sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`. A
+# Buck glob does not descend into subpackages, and all 30 crates that own a
+# BUCK file are subpackages -- so the list resolved to the single source under
+# crates/rue-runtime-asan/ (the one crate without a BUCK file). The gate ran
+# rustfmt over 1 file of 281 and reported a pass for the other 280 (RUE-1152).
+#
+# Restoring cache-aware checking here means enumerating sources per crate,
+# which is a real change rather than a glob tweak; until then CI calls
+# `./fmt.sh check`, whose `find`-based discovery covers every source and now
+# fails rather than exits 0 when it finds none.
 
 # The std library sources are runtime inputs to CLI integration tests and spec
 # cases that opt into the real std (compiled programs `@import` them via
