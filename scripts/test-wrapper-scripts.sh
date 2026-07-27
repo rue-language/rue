@@ -833,26 +833,32 @@ EOF
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
-  : >"$sb/calls.log"
-  rc=0
-  (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: premerge CLI corpus receives the derived executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 3600' "$sb/calls.log" && echo 0 || echo 1)"
-
+  # //:cli-tests-slow is the one CLI corpus RUE-1118 does not convert, so it is
+  # also the only one that still takes a declarative executor timeout.
   : >"$sb/calls.log"
   rc=0
   (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-slow FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-slow) >/dev/null 2>&1 || rc=$?
   check "ci-heavy-suite: slow CLI corpus receives the declarative executor timeout" \
     "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls.log" && echo 0 || echo 1)"
 
+  # RUE-1159 flake detection only means anything if each repetition executes, so
+  # a repetition run must defeat the corpus action's cache.
   : >"$sb/calls.log"
   rc=0
-  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: CLI shard receives the cost-derived executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Eq '^test //:cli-tests-shard-1 -- --timeout 1234 --env RUE_CLI_CASE_TIMINGS=' "$sb/calls.log" && echo 0 || echo 1)"
+  (cd "$sb" && RUE_CORRECTNESS_REPETITION=2 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: a correctness repetition runs cache-free" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--no-remote-cache' "$sb/calls.log" && grep -Fq 'RUE_CORRECTNESS_REPETITION=2' "$sb/calls.log" && echo 0 || echo 1)"
 
-  local other_target
-  for other_target in \
+  # RUE-1118: ci-heavy-suite no longer carries per-target executor timeouts for
+  # the converted corpora. Each runs as a cacheable build action and the test
+  # executor only asserts its stamp, so the outer bound belongs on the action —
+  # it is each suite's timeout_seconds in BUCK. A stray `--timeout` here would
+  # bound the wrong thing (a sub-second stamp check) and read as if the corpus
+  # were still bounded, so pin that every target is invoked identically and bare.
+  local heavy_target
+  for heavy_target in \
+    //:cli-tests \
+    //:cli-tests-shard-1 \
     //:spec-tests \
     //:ui-tests \
     //:oracle-diff-generated-smoke \
@@ -860,9 +866,9 @@ EOF
     //:tutorial-snippet-tests; do
     : >"$sb/calls.log"
     rc=0
-    (cd "$sb" && FAKE_LABELED_TARGET="$other_target" FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite "$other_target") >/dev/null 2>&1 || rc=$?
-    check "ci-heavy-suite: $other_target retains the default executor timeout" \
-      "$([ "$rc" -eq 0 ] && grep -Fxq "test $other_target" "$sb/calls.log" && echo 0 || echo 1)"
+    (cd "$sb" && FAKE_LABELED_TARGET="$heavy_target" FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite "$heavy_target") >/dev/null 2>&1 || rc=$?
+    check "ci-heavy-suite: $heavy_target is invoked without an executor timeout" \
+      "$([ "$rc" -eq 0 ] && grep -Fxq "test $heavy_target" "$sb/calls.log" && echo 0 || echo 1)"
   done
 
   # RUE-1117: heavy suites are no longer only root-package targets. The label,
