@@ -1885,9 +1885,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .to_string(),
         });
         let params = fn_info.params;
-        let param_names = self.body_param_arena().names(params).to_vec();
-        let param_modes = self.body_param_arena().modes(params).to_vec();
-        let param_comptime = self.body_param_arena().comptime(params).to_vec();
+        let param_data = self.body_param_data(params);
+        let param_names = param_data.names().to_vec();
+        let param_modes = param_data.modes().to_vec();
+        let param_comptime = param_data.comptime().to_vec();
         let param_comptime_type = self.comptime_type_param_flags(&fn_info);
         let args = self.body_rir_ref().call_args(args).to_vec();
         if args.len() != param_names.len() {
@@ -1976,9 +1977,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         callee_values: &HashMap<Spur, ConstValue>,
     ) -> CompileResult<()> {
         let params = function.params;
-        let param_names = self.body_param_arena().names(params).to_vec();
-        let param_types = self.body_param_arena().types(params).to_vec();
-        let param_comptime = self.body_param_arena().comptime(params).to_vec();
+        let param_data = self.body_param_data(params);
+        let param_names = param_data.names().to_vec();
+        let param_types = param_data.types().to_vec();
+        let param_comptime = param_data.comptime().to_vec();
         let param_comptime_type = self.comptime_type_param_flags(function);
 
         let expected_type_args = param_comptime
@@ -2149,7 +2151,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let Some(fn_info) = self.function_info(ctor) else {
             return;
         };
-        let param_names = self.body_param_arena().names(fn_info.params).to_vec();
+        let param_names = self.body_param_data(fn_info.params).names().to_vec();
         let mut args: Vec<String> = Vec::with_capacity(param_names.len());
         for param in &param_names {
             if let Some(arg_ty) = callee_types.get(param) {

@@ -785,7 +785,12 @@ impl TypeInternPoolInner {
             }
         }
 
+        // Keep incomplete declaration shells, and complete types containing
+        // them, fail-closed. The loop deliberately skips any node without an
+        // exact by-value definition; availability is tracked separately so
+        // write-back cannot turn that absence into semantic defaults.
         let mut facts = vec![TypeContainmentFacts::default(); entry_count];
+        let mut facts_available = vec![false; entry_count];
         for &index in &postorder {
             let mut value = match self.entry(index) {
                 TypeData::Struct(data) => TypeContainmentFacts {
@@ -801,24 +806,33 @@ impl TypeInternPoolInner {
                 | TypeData::DeclaredEnum(_) => continue,
             };
             let has_values = !matches!(self.entry(index), TypeData::Array { len: 0, .. });
+            let mut available = true;
             if has_values {
                 for &child in &edges[index] {
+                    if !facts_available[child] {
+                        available = false;
+                        break;
+                    }
                     value.carries_linear |= facts[child].carries_linear;
                     value.needs_drop |= facts[child].needs_drop;
                 }
             }
-            facts[index] = value;
+            if available {
+                facts[index] = value;
+                facts_available[index] = true;
+            }
         }
 
         for (index, value) in facts.iter().copied().enumerate() {
-            if value.carries_linear
+            if facts_available[index]
+                && value.carries_linear
                 && let TypeData::Struct(data) = self.entry_mut(index)
             {
                 data.def.is_linear = true;
             }
         }
         for (index, value) in facts.into_iter().enumerate() {
-            self.set_facts(index, Some(value));
+            self.set_facts(index, facts_available[index].then_some(value));
         }
         Ok(work)
     }
@@ -2818,6 +2832,17 @@ impl TypeInternPool {
         Self {
             inner: RwLock::new(inner.derive_overlay()),
         }
+    }
+
+    /// Rebase this pool in place while preserving the outer handle identity.
+    ///
+    /// Body analysis can retain an `Rc<TypeInternPool>` while lazy facts append
+    /// after containment sealing. Replacing the pool value would leave that
+    /// handle observing the old universe; swapping only the locked inner keeps
+    /// every handle pointed at the current append-only overlay.
+    pub(crate) fn rebase_overlay_in_place(&self) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        *inner = inner.derive_overlay();
     }
 
     /// Check if the pool is empty (no composite types).

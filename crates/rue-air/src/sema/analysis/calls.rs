@@ -368,11 +368,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(name);
 
-        // Get parameter data from the arena
-        let param_types = self.body_param_arena().types(fn_info.params).to_vec();
-        let param_modes = self.body_param_arena().modes(fn_info.params).to_vec();
-        let param_comptime = self.body_param_arena().comptime(fn_info.params).to_vec();
-        let param_names = self.body_param_arena().names(fn_info.params).to_vec();
+        // Copy the exact parameter point before any lazy fact can append.
+        let param_data = self.body_param_data(fn_info.params);
+        let param_types = param_data.types().to_vec();
+        let param_modes = param_data.modes().to_vec();
+        let param_comptime = param_data.comptime().to_vec();
+        let param_names = param_data.names().to_vec();
 
         self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
         // The declaration, visibility, checked-call policy, and explicit call
@@ -957,8 +958,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let method_param_types = self.body_param_arena().types(method_info.params).to_vec();
-        let method_param_modes = self.body_param_arena().modes(method_info.params).to_vec();
+        let method_param_data = self.body_param_data(method_info.params);
+        let method_param_types = method_param_data.types().to_vec();
+        let method_param_modes = method_param_data.modes().to_vec();
         // The receiver's autoref is implicit and deliberately excluded from
         // the explicit contract. Receiver-aware exclusivity runs below.
         self.validate_call_contract(
@@ -1219,8 +1221,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Track this function as referenced (for lazy analysis)
         ctx.referenced_functions.insert(function_key);
 
-        let param_types = self.body_param_arena().types(fn_info.params).to_vec();
-        let param_modes = self.body_param_arena().modes(fn_info.params).to_vec();
+        let param_data = self.body_param_data(fn_info.params);
+        let param_types = param_data.types().to_vec();
+        let param_modes = param_data.modes().to_vec();
         // A re-export was already visibility-checked against its facade const.
         let accessible =
             via_reexport || self.is_accessible(span.file_id, fn_info.file_id, fn_info.is_pub);
@@ -1391,8 +1394,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let method_param_types = self.body_param_arena().types(method_info.params).to_vec();
-        let method_param_modes = self.body_param_arena().modes(method_info.params).to_vec();
+        let method_param_data = self.body_param_data(method_info.params);
+        let method_param_types = method_param_data.types().to_vec();
+        let method_param_modes = method_param_data.modes().to_vec();
         self.validate_call_contract(
             args_range,
             &method_param_types,

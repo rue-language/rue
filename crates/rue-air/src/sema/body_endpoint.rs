@@ -844,11 +844,34 @@ where
     /// Construct the driver over one request-local RIR view and identity
     /// context. The view's declaration index is shared rather than rebuilt.
     pub fn new(provider: &'a P, source: S, rir: BodyRirView<'a>) -> Self {
-        Self::with_identity(provider, ProviderIdentityContext::new(source), rir)
+        let identity = ProviderIdentityContext::new(source);
+        Self::with_identity(provider, identity, rir)
+    }
+
+    /// Construct the endpoint facade from the one task-local provider
+    /// authority shared with calls, aggregates, and body analysis.
+    pub fn with_state(
+        provider: &'a P,
+        state: &super::ProviderBodyAnalysisState<K, M, S>,
+        rir: BodyRirView<'a>,
+    ) -> Self {
+        assert!(
+            state.require_rir_authority(&rir),
+            "provider body state and RIR view must share one interner authority"
+        );
+        Self::with_overlay_identity(provider, state.identity_context(), rir)
     }
 
     /// Construct the driver inside an existing per-body identity universe.
     pub fn with_identity(
+        provider: &'a P,
+        identity: ProviderIdentityContext<K, M, S>,
+        rir: BodyRirView<'a>,
+    ) -> Self {
+        Self::with_overlay_identity(provider, identity.fail_closed(), rir)
+    }
+
+    fn with_overlay_identity(
         provider: &'a P,
         identity: ProviderIdentityContext<K, M, S>,
         rir: BodyRirView<'a>,
@@ -1176,8 +1199,9 @@ where
     /// analysis (RUE-1091 rFinal). A caller invokes this at the same point
     /// production calls `finalize_containment_metadata` (after every nominal
     /// the body consumes has been minted, before any drop/ownership read).
-    /// Freezing is shared by all drivers in this identity context: later mint
-    /// attempts fail closed instead of invalidating the finalized metadata.
+    /// The shared bundle/state path rebases the finalized base and permits
+    /// later body-local minting in an append-only overlay; the compatibility
+    /// constructor keeps its historical fail-closed refusal instead.
     /// `None` on a containment cycle (fail-closed). Before the freeze,
     /// [`Self::type_needs_drop`] / [`Self::type_carries_linear`] answer `None`.
     pub fn finalize_containment_metadata(&self) -> Option<()> {

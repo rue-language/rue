@@ -396,11 +396,33 @@ where
     /// Construct the driver over one request-local RIR bundle and identity
     /// context. The bundle's declaration index is shared rather than rebuilt.
     pub fn new(provider: &'a P, source: S, rir: BodyRirView<'a>) -> Self {
-        Self::with_identity(provider, ProviderIdentityContext::new(source), rir)
+        let identity = ProviderIdentityContext::new(source);
+        Self::with_identity(provider, identity, rir)
+    }
+
+    /// Construct the call facade from the one task-local provider authority.
+    pub fn with_state(
+        provider: &'a P,
+        state: &super::ProviderBodyAnalysisState<K, M, S>,
+        rir: BodyRirView<'a>,
+    ) -> Self {
+        assert!(
+            state.require_rir_authority(&rir),
+            "provider body state and RIR view must share one interner authority"
+        );
+        Self::with_overlay_identity(provider, state.identity_context(), rir)
     }
 
     /// Construct the driver inside an existing per-body identity universe.
     pub fn with_identity(
+        provider: &'a P,
+        identity: ProviderIdentityContext<K, M, S>,
+        rir: BodyRirView<'a>,
+    ) -> Self {
+        Self::with_overlay_identity(provider, identity.fail_closed(), rir)
+    }
+
+    fn with_overlay_identity(
         provider: &'a P,
         identity: ProviderIdentityContext<K, M, S>,
         rir: BodyRirView<'a>,

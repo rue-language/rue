@@ -291,7 +291,7 @@ enum PoolNominal {
 /// deduplicated by durable key thereafter.
 pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     type_pool: Rc<TypeInternPool>,
-    interner: ThreadedRodeo,
+    interner: Rc<ThreadedRodeo>,
     source: S,
     struct_ids: HashMap<K, StructId>,
     enum_ids: HashMap<K, EnumId>,
@@ -446,6 +446,9 @@ pub struct ProviderIdentityContext<K, M, S> {
     /// preimages; the owner maps point back into the canonical compact maps.
     methods: Rc<RefCell<ProviderMethodRegistry>>,
     frozen: Rc<Cell<bool>>,
+    /// Compatibility contexts retain the historical post-seal refusal. Only
+    /// [`ProviderBodyAnalysisState`] enables the append-only overlay protocol.
+    allow_post_seal_overlay: bool,
 }
 
 impl<K, M, S> Clone for ProviderIdentityContext<K, M, S> {
@@ -455,6 +458,7 @@ impl<K, M, S> Clone for ProviderIdentityContext<K, M, S> {
             modules: Rc::clone(&self.modules),
             methods: Rc::clone(&self.methods),
             frozen: Rc::clone(&self.frozen),
+            allow_post_seal_overlay: self.allow_post_seal_overlay,
         }
     }
 }
@@ -467,12 +471,32 @@ where
 {
     /// Create the single identity universe for one provider-driven body.
     pub fn new(source: S) -> Self {
+        Self::with_interner_mode(source, Rc::new(ThreadedRodeo::new()), false)
+    }
+
+    fn with_interner_mode(
+        source: S,
+        interner: Rc<ThreadedRodeo>,
+        allow_post_seal_overlay: bool,
+    ) -> Self {
         Self {
-            pool: Rc::new(RefCell::new(BodyIdentityPool::new(source))),
+            pool: Rc::new(RefCell::new(BodyIdentityPool::new(source, interner))),
             modules: Rc::new(RefCell::new(ProviderModuleRegistry::default())),
             methods: Rc::new(RefCell::new(ProviderMethodRegistry::default())),
             frozen: Rc::new(Cell::new(false)),
+            allow_post_seal_overlay,
         }
+    }
+
+    /// Return the interner authority shared by all provider facades in this
+    /// identity context.
+    pub fn interner(&self) -> Rc<ThreadedRodeo> {
+        Rc::clone(&self.pool.borrow().interner)
+    }
+
+    /// Intern a provider-facing name in the shared body authority.
+    pub fn name_symbol(&self, name: &str) -> Spur {
+        self.pool.borrow().intern_name(name)
     }
 
     pub(in crate::sema) fn pool(&self) -> Ref<'_, BodyIdentityPool<K, M, S>> {
@@ -480,7 +504,16 @@ where
     }
 
     pub(in crate::sema) fn pool_mut(&self) -> Option<RefMut<'_, BodyIdentityPool<K, M, S>>> {
-        (!self.frozen.get()).then(|| self.pool.borrow_mut())
+        if self.frozen.get() && !self.allow_post_seal_overlay {
+            None
+        } else {
+            Some(self.pool.borrow_mut())
+        }
+    }
+
+    pub(in crate::sema) fn fail_closed(mut self) -> Self {
+        self.allow_post_seal_overlay = false;
+        self
     }
 
     /// Clone the pool's stable type-universe handle while holding the outer
@@ -491,10 +524,7 @@ where
     }
 
     pub(in crate::sema) fn finalize_containment_metadata(&self) -> Option<()> {
-        if self.frozen.get() {
-            return Some(());
-        }
-        self.pool.borrow().finalize_containment_metadata()?;
+        self.pool.borrow_mut().finalize_containment_metadata()?;
         self.frozen.set(true);
         Some(())
     }
@@ -575,6 +605,112 @@ where
     }
 }
 
+/// The rue-air-owned type and parameter authority for one provider body.
+///
+/// Provider fact facades clone the identity context from this state; they do
+/// not create peer pools or interners. `finalize_containment_metadata` seals
+/// the exact prerequisite facts and rebases the authority onto append-only
+/// type/parameter overlays, so lazy body-local materialization remains valid.
+pub struct ProviderBodyAnalysisState<K, M, S> {
+    identity: ProviderIdentityContext<K, M, S>,
+    /// Stable outer handle; containment sealing rebases its locked inner value
+    /// in place so engine-facing references never go stale.
+    type_pool: Rc<TypeInternPool>,
+}
+
+impl<K, M, S> Clone for ProviderBodyAnalysisState<K, M, S> {
+    fn clone(&self) -> Self {
+        Self {
+            identity: self.identity.clone(),
+            type_pool: Rc::clone(&self.type_pool),
+        }
+    }
+}
+
+impl<K, M, S> ProviderBodyAnalysisState<K, M, S>
+where
+    K: Clone + Eq + Hash,
+    M: Eq + Hash,
+    S: DurableNominalSource<K, M>,
+{
+    pub fn new(source: S, interner: Rc<ThreadedRodeo>) -> Self {
+        let identity = ProviderIdentityContext::with_interner_mode(source, interner, true);
+        let type_pool = identity.type_pool();
+        Self {
+            identity,
+            type_pool,
+        }
+    }
+
+    pub fn from_identity(mut identity: ProviderIdentityContext<K, M, S>) -> Self {
+        // Entering the explicit state seam opts an older context into the
+        // append-only protocol without changing the legacy facade behavior.
+        identity.allow_post_seal_overlay = true;
+        let type_pool = identity.type_pool();
+        Self {
+            identity,
+            type_pool,
+        }
+    }
+
+    pub fn identity_context(&self) -> ProviderIdentityContext<K, M, S> {
+        self.identity.clone()
+    }
+
+    pub fn interner(&self) -> Rc<ThreadedRodeo> {
+        self.identity.interner()
+    }
+
+    pub fn type_pool(&self) -> Rc<TypeInternPool> {
+        Rc::clone(&self.type_pool)
+    }
+
+    pub fn with_type_pool<R>(&self, read: impl FnOnce(&TypeInternPool) -> R) -> R {
+        read(&self.type_pool)
+    }
+
+    pub fn with_type_pool_mut<R>(&self, write: impl FnOnce(&TypeInternPool) -> R) -> R {
+        write(&self.type_pool)
+    }
+
+    pub fn with_param_arena<R>(&self, read: impl FnOnce(&ParamArena) -> R) -> R {
+        read(self.identity.pool().param_arena())
+    }
+
+    /// Copy one exact callable signature point without lending the mutable
+    /// arena across a lazy provider fact operation.
+    pub fn param_data(&self, range: ParamRange) -> crate::ParamRangeData {
+        self.with_param_arena(|arena| arena.copy_range(range))
+    }
+
+    pub fn allocate_params(
+        &self,
+        names: impl IntoIterator<Item = Spur>,
+        types: impl IntoIterator<Item = Type>,
+        modes: impl IntoIterator<Item = RirParamMode>,
+        comptime: impl IntoIterator<Item = bool>,
+    ) -> ParamRange {
+        self.identity
+            .pool_mut()
+            .expect("provider identity authority is available")
+            .param_arena
+            .alloc(names, types, modes, comptime)
+    }
+
+    pub fn finalize_containment_metadata(&self) -> Option<()> {
+        self.identity.finalize_containment_metadata()
+    }
+
+    pub fn base_sealed(&self) -> bool {
+        self.identity.frozen.get()
+    }
+
+    pub(in crate::sema) fn require_rir_authority(&self, rir: &BodyRirView<'_>) -> bool {
+        let state_interner = self.interner();
+        std::ptr::eq(rir.rir_interner(), Rc::as_ref(&state_interner))
+    }
+}
+
 /// The durable-signature-derived subset of a [`FunctionInfo`], minted once and
 /// cached by callable key. Every field here is recoverable from the durable
 /// signature facts alone; the request/RIR-carried remainder (`body`,
@@ -610,9 +746,8 @@ where
 {
     /// Create an empty pool with the builtin enums and the core `str` identity
     /// pre-registered, mirroring a fresh import epoch.
-    pub(in crate::sema) fn new(source: S) -> Self {
+    pub(in crate::sema) fn new(source: S, interner: Rc<ThreadedRodeo>) -> Self {
         let type_pool = Rc::new(TypeInternPool::new());
-        let interner = ThreadedRodeo::new();
         let mut builtins = HashMap::new();
 
         for builtin in rue_builtins::BUILTIN_ENUMS {
@@ -701,21 +836,19 @@ where
         &self.param_arena
     }
 
-    /// Freeze the pool's containment metadata — the pool-side `freeze()`
-    /// hook the module docs defer to the slice that wires the pool under body
-    /// analysis (RUE-1091 rFinal). Called at the same point production freezes
-    /// (`Sema::finalize_containment_metadata` at the end of declaration
-    /// registration, before drop/ownership reads), after every nominal the body
-    /// consumes has been minted. `None` on a containment cycle (fail-closed,
-    /// exactly as production surfaces the cycle as an error). Until this is
-    /// called, [`Self::type_needs_drop`] / [`Self::type_carries_linear`] answer
-    /// `None` — the un-finalized state production's shell/completion pair also
-    /// leaves before its freeze.
-    pub(in crate::sema) fn finalize_containment_metadata(&self) -> Option<()> {
-        self.type_pool
-            .finalize_containment_metadata()
-            .ok()
-            .map(|_| ())
+    /// Seal the exact prerequisite facts, then retain an append-only overlay.
+    ///
+    /// The type and parameter bases are never mutated after this point. A
+    /// later lazy nominal/callable consult writes only to the derived layers,
+    /// while existing `Type` and `ParamRange` handles continue to resolve
+    /// through the shared prefix. Re-running this method is the explicit safe
+    /// re-finalization protocol: any additions made since the previous seal
+    /// are finalized and become part of the next sealed base.
+    pub(in crate::sema) fn finalize_containment_metadata(&mut self) -> Option<()> {
+        self.type_pool.finalize_containment_metadata().ok()?;
+        self.type_pool.rebase_overlay_in_place();
+        self.param_arena = self.param_arena.derive_overlay();
+        Some(())
     }
 
     /// Whether a minted type transitively needs drop, or `None` before
@@ -1974,7 +2107,7 @@ pub(in crate::sema) struct BodyRirIndex {
 #[derive(Debug)]
 pub struct BodyRirBundle {
     rir: ValidatedRir,
-    rir_interner: ThreadedRodeo,
+    rir_interner: Rc<ThreadedRodeo>,
     rir_index: Arc<BodyRirIndex>,
 }
 
@@ -1983,9 +2116,34 @@ impl BodyRirBundle {
         let rir_index = Arc::new(BodyRirIndex::new(&rir));
         Self {
             rir,
-            rir_interner,
+            rir_interner: Rc::new(rir_interner),
             rir_index,
         }
+    }
+
+    /// The one interner authority for this body RIR and its provider facades.
+    pub fn shared_interner(&self) -> Rc<ThreadedRodeo> {
+        Rc::clone(&self.rir_interner)
+    }
+
+    /// Build a fail-closed compatibility context over this RIR's interner.
+    /// Overlay-capable state must come from [`Self::provider_body_state`].
+    pub fn provider_identity_context<K, M, S>(&self, source: S) -> ProviderIdentityContext<K, M, S>
+    where
+        K: Clone + Eq + Hash,
+        M: Eq + Hash,
+        S: DurableNominalSource<K, M>,
+    {
+        ProviderIdentityContext::with_interner_mode(source, self.shared_interner(), false)
+    }
+
+    pub fn provider_body_state<K, M, S>(&self, source: S) -> ProviderBodyAnalysisState<K, M, S>
+    where
+        K: Clone + Eq + Hash,
+        M: Eq + Hash,
+        S: DurableNominalSource<K, M>,
+    {
+        ProviderBodyAnalysisState::new(source, self.shared_interner())
     }
 
     pub fn instruction_count(&self) -> usize {
@@ -2203,6 +2361,158 @@ mod tests {
     }
 
     #[test]
+    fn provider_body_state_shares_identity_and_rebases_append_only_authority() {
+        fn engine_authority_shape(
+            type_pool: &TypeInternPool,
+            params: crate::ParamRangeData,
+        ) -> (&TypeInternPool, Vec<Type>) {
+            (type_pool, params.types().to_vec())
+        }
+
+        let interner = Rc::new(ThreadedRodeo::new());
+        let widget = interner.get_or_intern("Widget");
+        let state = ProviderBodyAnalysisState::new(source([]), Rc::clone(&interner));
+
+        // RIR-local and provider-created names are the same Spur, not merely
+        // strings that were translated between two interner universes.
+        let context = state.identity_context();
+        assert_eq!(context.name_symbol("Widget"), widget);
+        assert!(Rc::ptr_eq(&context.interner(), &interner));
+        let stable_type_pool = state.type_pool();
+        let opposite_order_context = state.identity_context();
+        assert!(Rc::ptr_eq(
+            &context.interner(),
+            &opposite_order_context.interner()
+        ));
+        assert_eq!(
+            context.name_symbol("FacadeFirst"),
+            opposite_order_context.name_symbol("FacadeFirst"),
+            "facade construction order does not fork symbol identity"
+        );
+
+        let base_type = state.with_type_pool_mut(|pool| {
+            let (id, _) = pool.register_struct(
+                widget,
+                StructDef {
+                    name: "Widget".to_owned(),
+                    fields: Vec::new(),
+                    is_copy: true,
+                    is_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: true,
+                    file_id: FileId::new(1),
+                },
+            );
+            Type::new_struct(id)
+        });
+        let base_range =
+            state.allocate_params([widget], [base_type], [RirParamMode::Borrow], [false]);
+        let base_type_count = state.with_type_pool(|pool| pool.len());
+        let base_param_count = state.with_param_arena(ParamArena::total_params);
+
+        state
+            .finalize_containment_metadata()
+            .expect("exact prerequisite facts have no containment cycle");
+        assert!(state.base_sealed());
+        assert_eq!(
+            state.with_type_pool(|pool| pool.try_type_needs_drop(base_type)),
+            Some(false),
+            "sealed prerequisite facts remain readable"
+        );
+        assert_eq!(
+            state.with_param_arena(|arena| arena.types(base_range).to_vec()),
+            &[base_type],
+            "callable ParamRanges remain valid through the engine-facing arena"
+        );
+        assert_eq!(state.param_data(base_range).types(), &[base_type]);
+        assert!(Rc::ptr_eq(&stable_type_pool, &state.type_pool()));
+        let (_, engine_param_types) =
+            engine_authority_shape(&stable_type_pool, state.param_data(base_range));
+        assert_eq!(engine_param_types, &[base_type]);
+        assert_eq!(
+            stable_type_pool.try_type_needs_drop(base_type),
+            Some(false),
+            "a preexisting type-pool handle observes the in-place rebase"
+        );
+
+        let generated = interner.get_or_intern("Generated");
+        let overlay_type = state.with_type_pool_mut(|pool| {
+            let (id, _) = pool.register_struct(
+                generated,
+                StructDef {
+                    name: "Generated".to_owned(),
+                    fields: Vec::new(),
+                    is_copy: true,
+                    is_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: true,
+                    file_id: FileId::new(2),
+                },
+            );
+            Type::new_struct(id)
+        });
+        let overlay_range =
+            state.allocate_params([widget], [overlay_type], [RirParamMode::Normal], [true]);
+        assert_eq!(
+            state.with_type_pool(|pool| pool.shared_len()),
+            base_type_count,
+            "the sealed type base is not mutated by body-local additions"
+        );
+        assert!(state.with_type_pool(|pool| pool.local_len()) > 0);
+        assert!(stable_type_pool.local_len() > 0);
+        assert_eq!(
+            state.with_param_arena(|arena| arena.shared_params()),
+            base_param_count,
+            "the sealed parameter base is not mutated by body-local additions"
+        );
+        assert_eq!(
+            state.with_param_arena(|arena| arena.types(overlay_range).to_vec()),
+            &[overlay_type]
+        );
+        let pending_type = state.with_type_pool_mut(|pool| {
+            let (id, _) = pool.declare_struct(
+                interner.get_or_intern("Pending"),
+                StructDef {
+                    name: "Pending".to_owned(),
+                    fields: Vec::new(),
+                    is_copy: true,
+                    is_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: true,
+                    file_id: FileId::new(3),
+                },
+            );
+            Type::new_struct(id)
+        });
+        assert_eq!(
+            state.with_type_pool(|pool| pool.try_type_needs_drop(pending_type)),
+            None,
+            "unmaterialized required facts fail closed"
+        );
+
+        state
+            .finalize_containment_metadata()
+            .expect("re-finalizing the overlay is explicit and safe");
+        assert_eq!(
+            state.with_type_pool(|pool| pool.try_type_needs_drop(overlay_type)),
+            Some(false)
+        );
+        assert_eq!(
+            state.with_type_pool(|pool| pool.try_type_needs_drop(pending_type)),
+            None,
+            "re-finalization does not invent facts for an unmaterialized type"
+        );
+        assert_eq!(
+            state.with_param_arena(|arena| arena.types(base_range).to_vec()),
+            &[base_type],
+            "rebasing preserves the original callable range"
+        );
+    }
+
+    #[test]
     fn provider_fact_facades_use_the_shared_body_rir_view() {
         let endpoint = include_str!("body_endpoint.rs");
         let endpoint_start = endpoint.find("pub struct ProviderEndpointFacts").unwrap();
@@ -2216,6 +2526,7 @@ mod tests {
         assert!(!endpoint_fields.contains("ThreadedRodeo"));
         assert!(!endpoint_fields.contains("BodyRirIndex"));
         assert!(!endpoint.contains("BodyRirIndex::new"));
+        assert!(endpoint.contains("pub fn with_state("));
 
         let calls = include_str!("call_resolution.rs");
         let calls_start = calls.find("pub struct ProviderCallFacts").unwrap();
@@ -2229,6 +2540,66 @@ mod tests {
         assert!(!calls_fields.contains("ThreadedRodeo"));
         assert!(!calls_fields.contains("BodyRirIndex"));
         assert!(!calls.contains("BodyRirIndex::new"));
+        assert!(calls.contains("pub fn with_state("));
+
+        let aggregate = include_str!("aggregate_resolution.rs");
+        assert!(aggregate.contains("pub fn with_state("));
+
+        let ordinary = include_str!("ordinary_engine.rs");
+        assert!(ordinary.contains("fn body_param_data(&self, range: ParamRange)"));
+        assert!(!ordinary.contains("fn body_param_arena(&self) -> &ParamArena"));
+        assert!(ordinary.contains("fn body_type_pool(&self) -> &TypeInternPool"));
+        assert!(calls.contains("let identity = ProviderIdentityContext::new(source)"));
+        assert!(endpoint.contains("let identity = ProviderIdentityContext::new(source)"));
+    }
+
+    #[test]
+    fn bundle_peer_context_is_fail_closed_while_state_is_overlay_capable() {
+        let editor = rue_rir::RirEditor::new();
+        let validation = rue_rir::RirValidationContext {
+            symbol_count: 0,
+            source_lengths: &[],
+        };
+        let rir = ValidatedRir::finish(editor, &validation).unwrap();
+        let bundle = BodyRirBundle::new(rir, ThreadedRodeo::new());
+
+        let peer = bundle.provider_identity_context(source([]));
+        peer.finalize_containment_metadata().unwrap();
+        assert!(peer.pool_mut().is_none());
+
+        let state = bundle.provider_body_state(source([]));
+        state.finalize_containment_metadata().unwrap();
+        assert!(state.identity_context().pool_mut().is_some());
+    }
+
+    #[test]
+    fn provider_state_keeps_compatibility_contexts_fail_closed_and_checks_rir_addresses() {
+        let legacy = ProviderIdentityContext::new(source([]));
+        legacy.finalize_containment_metadata().unwrap();
+        assert!(legacy.pool_mut().is_none());
+
+        let interner = Rc::new(ThreadedRodeo::new());
+        let state = ProviderBodyAnalysisState::new(source([]), Rc::clone(&interner));
+        state.finalize_containment_metadata().unwrap();
+        assert!(state.identity_context().pool_mut().is_some());
+        assert!(Rc::ptr_eq(&interner, &state.interner()));
+        let state_interner = state.interner();
+        assert!(std::ptr::eq(
+            Rc::as_ref(&interner),
+            Rc::as_ref(&state_interner)
+        ));
+
+        let rir = Rir::default();
+        let matching = BodyRirView::from_parts(&rir, Rc::as_ref(&interner));
+        assert_eq!(
+            matching.rir_interner() as *const ThreadedRodeo,
+            Rc::as_ref(&interner) as *const ThreadedRodeo
+        );
+        assert!(state.require_rir_authority(&matching));
+
+        let other_interner = ThreadedRodeo::new();
+        let mismatched = BodyRirView::from_parts(&rir, &other_interner);
+        assert!(!state.require_rir_authority(&mismatched));
     }
 
     /// A durable nominal + callable source backed by fixed maps, standing in for
@@ -2305,7 +2676,7 @@ mod tests {
     fn pool(
         nominals: impl IntoIterator<Item = (Key, DurableNominal<Key, Module>)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
-        BodyIdentityPool::new(source(nominals))
+        BodyIdentityPool::new(source(nominals), Rc::new(ThreadedRodeo::new()))
     }
 
     /// A pool seeded with nominals, functions, and methods for the callable
@@ -2315,14 +2686,17 @@ mod tests {
         functions: impl IntoIterator<Item = (Key, DurableFunction<Key, Module>)>,
         methods: impl IntoIterator<Item = (Key, DurableMethod<Key, Module>)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
-        BodyIdentityPool::new(MapSource {
-            nominals: nominals.into_iter().collect(),
-            functions: functions.into_iter().collect(),
-            methods: methods.into_iter().collect(),
-            consts: HashMap::new(),
-            anonymous_shapes: HashMap::new(),
-            def_component_overrides: HashMap::new(),
-        })
+        BodyIdentityPool::new(
+            MapSource {
+                nominals: nominals.into_iter().collect(),
+                functions: functions.into_iter().collect(),
+                methods: methods.into_iter().collect(),
+                consts: HashMap::new(),
+                anonymous_shapes: HashMap::new(),
+                def_component_overrides: HashMap::new(),
+            },
+            Rc::new(ThreadedRodeo::new()),
+        )
     }
 
     fn const_pool(
@@ -2330,14 +2704,17 @@ mod tests {
         functions: impl IntoIterator<Item = (Key, DurableFunction<Key, Module>)>,
         consts: impl IntoIterator<Item = (Key, DurableConst<Key, Module>)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
-        BodyIdentityPool::new(MapSource {
-            nominals: nominals.into_iter().collect(),
-            functions: functions.into_iter().collect(),
-            methods: HashMap::new(),
-            consts: consts.into_iter().collect(),
-            anonymous_shapes: HashMap::new(),
-            def_component_overrides: HashMap::new(),
-        })
+        BodyIdentityPool::new(
+            MapSource {
+                nominals: nominals.into_iter().collect(),
+                functions: functions.into_iter().collect(),
+                methods: HashMap::new(),
+                consts: consts.into_iter().collect(),
+                anonymous_shapes: HashMap::new(),
+                def_component_overrides: HashMap::new(),
+            },
+            Rc::new(ThreadedRodeo::new()),
+        )
     }
 
     /// A pool seeded with nominals plus anonymous shapes (and optional forced
@@ -2347,14 +2724,17 @@ mod tests {
         anonymous_shapes: impl IntoIterator<Item = (AnonKey, DurableAnonymousShape<Key, Module>)>,
         def_component_overrides: impl IntoIterator<Item = (Key, String)>,
     ) -> BodyIdentityPool<Key, Module, MapSource> {
-        BodyIdentityPool::new(MapSource {
-            nominals: nominals.into_iter().collect(),
-            functions: HashMap::new(),
-            methods: HashMap::new(),
-            consts: HashMap::new(),
-            anonymous_shapes: anonymous_shapes.into_iter().collect(),
-            def_component_overrides: def_component_overrides.into_iter().collect(),
-        })
+        BodyIdentityPool::new(
+            MapSource {
+                nominals: nominals.into_iter().collect(),
+                functions: HashMap::new(),
+                methods: HashMap::new(),
+                consts: HashMap::new(),
+                anonymous_shapes: anonymous_shapes.into_iter().collect(),
+                def_component_overrides: def_component_overrides.into_iter().collect(),
+            },
+            Rc::new(ThreadedRodeo::new()),
+        )
     }
 
     /// An anonymous producer key rooting at definition `producer` with anchor

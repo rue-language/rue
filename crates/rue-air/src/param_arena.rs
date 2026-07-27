@@ -126,6 +126,46 @@ impl ParamRange {
     }
 }
 
+/// An owned copy of the exact parameter facts selected by one [`ParamRange`].
+///
+/// This is the safe engine-facing shape for arenas that may be rebased while
+/// lazy facts are materialized: callers copy one point's facts and never hold
+/// a borrow across a later append or rebase.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamRangeData {
+    names: Vec<Spur>,
+    types: Vec<Type>,
+    modes: Vec<RirParamMode>,
+    comptime: Vec<bool>,
+}
+
+impl ParamRangeData {
+    pub fn names(&self) -> &[Spur] {
+        &self.names
+    }
+
+    pub fn types(&self) -> &[Type] {
+        &self.types
+    }
+
+    pub fn modes(&self) -> &[RirParamMode] {
+        &self.modes
+    }
+
+    pub fn comptime(&self) -> &[bool] {
+        &self.comptime
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Spur, &Type, &RirParamMode, &bool)> {
+        self.names
+            .iter()
+            .zip(&self.types)
+            .zip(&self.modes)
+            .zip(&self.comptime)
+            .map(|(((name, ty), mode), comptime)| (name, ty, mode, comptime))
+    }
+}
+
 /// The contiguous parameter storage one arena layer owns.
 #[derive(Debug, Default, Clone)]
 struct ParamStore {
@@ -228,6 +268,16 @@ impl ParamArena {
     /// Returns the total number of parameters stored in the arena.
     pub fn total_params(&self) -> usize {
         self.base_len + self.local.types.len()
+    }
+
+    /// Copy the exact facts selected by `range` without lending arena storage.
+    pub fn copy_range(&self, range: ParamRange) -> ParamRangeData {
+        ParamRangeData {
+            names: self.names(range).to_vec(),
+            types: self.types(range).to_vec(),
+            modes: self.modes(range).to_vec(),
+            comptime: self.comptime(range).to_vec(),
+        }
     }
 
     /// The layer a range was allocated in, plus the range's offset inside it.
