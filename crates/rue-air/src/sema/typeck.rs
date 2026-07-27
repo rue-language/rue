@@ -3105,37 +3105,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     fn type_name_mentions_type_param(&self, type_name: &str, type_params: &[Spur]) -> bool {
-        if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
-            let length_mentions = match length {
-                ArrayLen::Literal(_) => false,
-                ArrayLen::Named(name) => self.type_name_mentions_type_param(&name, type_params),
-            };
-            return length_mentions
-                || self.type_name_mentions_type_param(&element_type, type_params);
-        }
-        if let Some(pointee) = type_name
-            .strip_prefix("ptr const ")
-            .or_else(|| type_name.strip_prefix("ptr mut "))
-        {
-            return self.type_name_mentions_type_param(pointee, type_params);
-        }
-        // A type-function application `Name(arg, ...)` mentions a type parameter
-        // if any argument does — `Option(T)` mentions `T`, so a signature/return
-        // type applying an enclosing constructor to a type parameter is deferred
-        // (as `Type::COMPTIME_TYPE`) until specialization, exactly like `[T; N]`
-        // (RUE-272). The constructor name itself is never a type parameter, so
-        // only the arguments are inspected.
-        if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
-            return arg_strs
-                .iter()
-                .any(|arg| self.type_name_mentions_type_param(arg, type_params));
-        }
-        // Leaf name: only a match against an already-interned symbol counts
-        // (type parameter names are interned by the parser).
-        match self.interner.get(type_name) {
-            Some(sym) => type_params.contains(&sym),
-            None => false,
-        }
+        type_name_mentions_type_param(self.interner, type_name, type_params)
     }
 
     /// Check whether a signature type symbol mentions any of the given comptime
@@ -3162,29 +3132,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     }
 
     fn type_name_mentions_value_param(&self, type_name: &str, value_params: &[Spur]) -> bool {
-        if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
-            let length_mentions = match len {
-                ArrayLen::Literal(_) => false,
-                ArrayLen::Named(name) => self.type_name_mentions_value_param(&name, value_params),
-            };
-            // Recurse into the element type (nested arrays / pointers).
-            return length_mentions
-                || self.type_name_mentions_value_param(&element_type, value_params);
-        }
-        if let Some(pointee) = type_name
-            .strip_prefix("ptr const ")
-            .or_else(|| type_name.strip_prefix("ptr mut "))
-        {
-            return self.type_name_mentions_value_param(pointee, value_params);
-        }
-        if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
-            return arg_strs
-                .iter()
-                .any(|arg| self.type_name_mentions_value_param(arg, value_params));
-        }
-        self.interner
-            .get(type_name)
-            .is_some_and(|sym| value_params.contains(&sym))
+        type_name_mentions_value_param(self.interner, type_name, value_params)
     }
 
     /// Validate the non-deferred parts of a signature type that will otherwise
@@ -3340,13 +3288,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> bool {
-        type_params.iter().all(|name| {
-            type_subst.contains_key(name)
-                || !self.type_name_mentions_type_param(type_name, &[*name])
-        }) && value_params.iter().all(|name| {
-            value_subst.contains_key(name)
-                || !self.type_name_mentions_value_param(type_name, &[*name])
-        })
+        deferred_signature_substitutions_are_ready(
+            self.interner,
+            type_name,
+            type_params,
+            value_params,
+            type_subst,
+            value_subst,
+        )
     }
 
     fn validate_deferred_value_result(
@@ -3359,74 +3308,17 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         expression: &str,
         span: Span,
     ) -> CompileResult<()> {
-        if require_integer {
-            if let Some(value) = value {
-                let Some(integer) = value.as_int_value() else {
-                    return Err(CompileError::new(
-                        ErrorKind::InvalidArrayLength {
-                            reason: format!(
-                                "array length expression '{}' is not an integer",
-                                expression
-                            ),
-                        },
-                        span,
-                    ));
-                };
-                if integer < 0 || u64::try_from(integer).is_err() {
-                    return Err(CompileError::new(
-                        ErrorKind::InvalidArrayLength {
-                            reason: format!(
-                                "array length expression '{}' is outside the valid range",
-                                expression
-                            ),
-                        },
-                        span,
-                    ));
-                }
-            } else if let Some(found) = found
-                && !found.is_integer()
-            {
-                return Err(CompileError::new(
-                    ErrorKind::InvalidArrayLength {
-                        reason: format!(
-                            "array length expression '{}' has non-integer type {}",
-                            expression,
-                            found.safe_name_with_pool(Some(&self.type_pool))
-                        ),
-                    },
-                    span,
-                ));
-            }
-        }
-
-        let Some(expected) = expected else {
-            return Ok(());
-        };
-        if let Some(value) = value {
-            let (function_name, param_name) = contract.expect("value contracts name a parameter");
-            return super::comptime_eval::validate_comptime_value_for_type_impl(
-                self.interner,
-                &self.type_pool,
-                function_name,
-                param_name,
-                value,
-                expected,
-                span,
-            );
-        }
-        if let Some(found) = found
-            && found != expected
-            && !(found.is_integer() && expected.is_integer())
-        {
-            return Err(CompileError::new(
-                ErrorKind::TypeMismatch {
-                    expected: expected.safe_name_with_pool(Some(&self.type_pool)),
-                    found: found.safe_name_with_pool(Some(&self.type_pool)),
-                },
-                span,
-            ));
-        }
-        Ok(())
+        validate_deferred_value_result(
+            self.interner,
+            &self.type_pool,
+            value,
+            found,
+            expected,
+            contract,
+            require_integer,
+            expression,
+            span,
+        )
     }
 
     /// Get or create an array type for the given element type and length.
@@ -3530,5 +3422,277 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
         self.body_type_pool().provisional_abi_slot_count(ty)
+    }
+}
+
+/// Type-syntax predicates and validation that need nothing but a symbol
+/// interner and a type pool.
+///
+/// They are free functions rather than methods because both body receivers
+/// need them and neither owns anything else they consume: the epoch reaches
+/// them through `Sema`, and the provider-backed host through its own identity
+/// authority. Keeping one implementation is what makes the two receivers agree
+/// about which signature types defer to specialization — a disagreement there
+/// would change which programs compile, not merely how they are spelled.
+
+pub(super) fn type_name_mentions_type_param(
+    interner: &lasso::ThreadedRodeo,
+    type_name: &str,
+    type_params: &[Spur],
+) -> bool {
+    if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
+        let length_mentions = match length {
+            ArrayLen::Literal(_) => false,
+            ArrayLen::Named(name) => type_name_mentions_type_param(interner, &name, type_params),
+        };
+        return length_mentions
+            || type_name_mentions_type_param(interner, &element_type, type_params);
+    }
+    if let Some(pointee) = type_name
+        .strip_prefix("ptr const ")
+        .or_else(|| type_name.strip_prefix("ptr mut "))
+    {
+        return type_name_mentions_type_param(interner, pointee, type_params);
+    }
+    // A type-function application `Name(arg, ...)` mentions a type parameter
+    // if any argument does — `Option(T)` mentions `T`, so a signature/return
+    // type applying an enclosing constructor to a type parameter is deferred
+    // (as `Type::COMPTIME_TYPE`) until specialization, exactly like `[T; N]`
+    // (RUE-272). The constructor name itself is never a type parameter, so
+    // only the arguments are inspected.
+    if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+        return arg_strs
+            .iter()
+            .any(|arg| type_name_mentions_type_param(interner, arg, type_params));
+    }
+    // Leaf name: only a match against an already-interned symbol counts
+    // (type parameter names are interned by the parser).
+    match interner.get(type_name) {
+        Some(sym) => type_params.contains(&sym),
+        None => false,
+    }
+}
+
+pub(super) fn type_name_mentions_value_param(
+    interner: &lasso::ThreadedRodeo,
+    type_name: &str,
+    value_params: &[Spur],
+) -> bool {
+    if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
+        let length_mentions = match len {
+            ArrayLen::Literal(_) => false,
+            ArrayLen::Named(name) => type_name_mentions_value_param(interner, &name, value_params),
+        };
+        // Recurse into the element type (nested arrays / pointers).
+        return length_mentions
+            || type_name_mentions_value_param(interner, &element_type, value_params);
+    }
+    if let Some(pointee) = type_name
+        .strip_prefix("ptr const ")
+        .or_else(|| type_name.strip_prefix("ptr mut "))
+    {
+        return type_name_mentions_value_param(interner, pointee, value_params);
+    }
+    if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
+        return arg_strs
+            .iter()
+            .any(|arg| type_name_mentions_value_param(interner, arg, value_params));
+    }
+    interner
+        .get(type_name)
+        .is_some_and(|sym| value_params.contains(&sym))
+}
+
+pub(super) fn deferred_signature_substitutions_are_ready(
+    interner: &lasso::ThreadedRodeo,
+    type_name: &str,
+    type_params: &[Spur],
+    value_params: &[Spur],
+    type_subst: &HashMap<Spur, Type>,
+    value_subst: &HashMap<Spur, ConstValue>,
+) -> bool {
+    type_params.iter().all(|name| {
+        type_subst.contains_key(name)
+            || !type_name_mentions_type_param(interner, type_name, &[*name])
+    }) && value_params.iter().all(|name| {
+        value_subst.contains_key(name)
+            || !type_name_mentions_value_param(interner, type_name, &[*name])
+    })
+}
+
+pub(super) fn validate_deferred_value_result(
+    interner: &lasso::ThreadedRodeo,
+    type_pool: &crate::intern_pool::TypeInternPool,
+    value: Option<ConstValue>,
+    found: Option<Type>,
+    expected: Option<Type>,
+    contract: Option<(Spur, Spur)>,
+    require_integer: bool,
+    expression: &str,
+    span: Span,
+) -> CompileResult<()> {
+    if require_integer {
+        if let Some(value) = value {
+            let Some(integer) = value.as_int_value() else {
+                return Err(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: format!(
+                            "array length expression '{}' is not an integer",
+                            expression
+                        ),
+                    },
+                    span,
+                ));
+            };
+            if integer < 0 || u64::try_from(integer).is_err() {
+                return Err(CompileError::new(
+                    ErrorKind::InvalidArrayLength {
+                        reason: format!(
+                            "array length expression '{}' is outside the valid range",
+                            expression
+                        ),
+                    },
+                    span,
+                ));
+            }
+        } else if let Some(found) = found
+            && !found.is_integer()
+        {
+            return Err(CompileError::new(
+                ErrorKind::InvalidArrayLength {
+                    reason: format!(
+                        "array length expression '{}' has non-integer type {}",
+                        expression,
+                        found.safe_name_with_pool(Some(type_pool))
+                    ),
+                },
+                span,
+            ));
+        }
+    }
+
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    if let Some(value) = value {
+        let (function_name, param_name) = contract.expect("value contracts name a parameter");
+        return super::comptime_eval::validate_comptime_value_for_type_impl(
+            interner,
+            type_pool,
+            function_name,
+            param_name,
+            value,
+            expected,
+            span,
+        );
+    }
+    if let Some(found) = found
+        && found != expected
+        && !(found.is_integer() && expected.is_integer())
+    {
+        return Err(CompileError::new(
+            ErrorKind::TypeMismatch {
+                expected: expected.safe_name_with_pool(Some(type_pool)),
+                found: found.safe_name_with_pool(Some(type_pool)),
+            },
+            span,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod type_syntax_predicate_tests {
+    use super::*;
+
+    /// Deferral looks through composite syntax rather than matching the whole
+    /// spelling. `[T; 3]` mentions `T`, so a signature written that way defers
+    /// to specialization; getting this wrong changes which programs compile,
+    /// not merely how a type is rendered.
+    ///
+    /// Reachable as a unit test only because the predicate takes an interner
+    /// rather than a whole analyzer — the property it states is about type
+    /// syntax, and nothing about a declaration epoch was ever involved.
+    #[test]
+    fn type_parameter_mentions_look_through_composite_syntax() {
+        let interner = lasso::ThreadedRodeo::new();
+        let t = interner.get_or_intern("T");
+        let params = [t];
+
+        for mentioning in [
+            "T",
+            "[T; 3]",
+            "ptr const T",
+            "ptr mut [T; 3]",
+            "[[T; 2]; 3]",
+            "Option(T)",
+        ] {
+            assert!(
+                type_name_mentions_type_param(&interner, mentioning, &params),
+                "{mentioning} mentions T"
+            );
+        }
+        for unrelated in ["i32", "[i32; 3]", "ptr const i32", "Option(i32)"] {
+            assert!(
+                !type_name_mentions_type_param(&interner, unrelated, &params),
+                "{unrelated} does not mention T"
+            );
+        }
+    }
+
+    /// A comptime *value* parameter is mentioned only through an array length —
+    /// an element or pointee can never be a value — and the constructor name in
+    /// a type application is never itself a parameter.
+    #[test]
+    fn value_parameter_mentions_are_array_lengths() {
+        let interner = lasso::ThreadedRodeo::new();
+        let n = interner.get_or_intern("N");
+        let params = [n];
+
+        for mentioning in ["N", "[i32; N]", "ptr const [i32; N]", "[[i32; N]; 3]"] {
+            assert!(
+                type_name_mentions_value_param(&interner, mentioning, &params),
+                "{mentioning} mentions N"
+            );
+        }
+        assert!(
+            !type_name_mentions_value_param(&interner, "[i32; 3]", &params),
+            "a literal length mentions no parameter"
+        );
+    }
+
+    /// Substitutions are ready when every parameter the type actually mentions
+    /// has one. A parameter the type never mentions cannot hold it back — that
+    /// is what lets a partially-substituted signature resolve.
+    #[test]
+    fn readiness_ignores_parameters_the_type_does_not_mention() {
+        let interner = lasso::ThreadedRodeo::new();
+        let t = interner.get_or_intern("T");
+        let u = interner.get_or_intern("U");
+        let n = interner.get_or_intern("N");
+
+        let bound = HashMap::from([(t, Type::I32)]);
+        assert!(
+            deferred_signature_substitutions_are_ready(
+                &interner,
+                "[T; 3]",
+                &[t, u],
+                &[],
+                &bound,
+                &HashMap::new(),
+            ),
+            "U is unbound but unmentioned, so the signature is ready"
+        );
+        assert!(
+            !deferred_signature_substitutions_are_ready(
+                &interner,
+                "[T; N]",
+                &[t],
+                &[n],
+                &bound,
+                &HashMap::new(),
+            ),
+            "N is mentioned as the length and unbound"
+        );
     }
 }
