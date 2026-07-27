@@ -103,7 +103,7 @@ REPOSITORY_QUALITY_GATES=(
 # binary, so a silent omission (cache, pattern narrowing, platform gate) is
 # exactly the failure that hides miscompilations behind a green tally. The
 # unfiltered path audits that every one of these produced a result line.
-REQUIRED_CORPUS_HARNESSES=(
+REQUIRED_PREMERGE_CORPUS_HARNESSES=(
     //:cli-tests
     //:cli-tests-caldera
     //:spec-tests
@@ -112,6 +112,10 @@ REQUIRED_CORPUS_HARNESSES=(
     //:reproducible-programs
     //:tutorial-snippet-tests
     //:frontend-diff-test
+)
+
+REQUIRED_SLOW_CORPUS_HARNESSES=(
+    //:cli-tests-slow
 )
 
 if [[ $# -eq 0 ]]; then
@@ -266,13 +270,14 @@ if [[ $# -eq 0 ]]; then
     # such line for a required harness means it never ran under this invocation
     # — neither in the broad pass nor as a heavy suite.
     missing_corpus=()
-    for target in "${REQUIRED_CORPUS_HARNESSES[@]}"; do
-        # The current omission sentinels are all premerge corpora. Slow and
-        # stress selections have their own explicit targets and must not claim
-        # these premerge harnesses executed.
-        if [[ "$test_tier" == slow || "$test_tier" == stress ]]; then
-            continue
-        fi
+    required_corpus=()
+    if [[ "$test_tier" == standard || "$test_tier" == all || "$test_tier" == premerge ]]; then
+        required_corpus+=("${REQUIRED_PREMERGE_CORPUS_HARNESSES[@]}")
+    fi
+    if [[ "$test_tier" == standard || "$test_tier" == all || "$test_tier" == slow ]]; then
+        required_corpus+=("${REQUIRED_SLOW_CORPUS_HARNESSES[@]}")
+    fi
+    for target in "${required_corpus[@]}"; do
         if suite_is_deferred "$target"; then
             continue
         fi

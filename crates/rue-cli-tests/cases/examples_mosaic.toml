@@ -3,6 +3,7 @@
 id = "cli.examples_mosaic"
 name = "Mosaic static-site generator written in Rue"
 description = "exercise manifests, front matter, block/inline markup, graph validation, deterministic rendering, filesystem output, audits, and scaling"
+tier = "slow"
 # Every case below compiles the same maintained large Mosaic program, so the
 # whole section carries the bounded heavyweight contract, matching the
 # automatic mosaic example.

@@ -29,8 +29,9 @@ It does not build every crate target or run the exhaustive suite.
 
 `.github/workflows/release.yml` runs the complete release-configured `//...`
 suite nightly and on manual dispatch. Its `rue_cli_shard` exclusion is
-intentional: the monolithic `//:cli-tests` target owns the full CLI corpus, so
-also running the four CI-only shards would execute that corpus twice.
+intentional: `//:cli-tests` owns the shards' complete premerge union, while
+`//:cli-tests-slow` owns declarative slow sections. Also running the four
+CI-only shards would execute the premerge inventory twice.
 
 Production `debug_assert*` use is governed by
 `scripts/validate-debug-assert-policy.py`, run by required formatting CI and
@@ -69,8 +70,8 @@ The same BXL file exposes the canonical named selections:
 
 Each prints the exact live Buck targets in that selection. The `all` and
 per-tier selections omit `rue_cli_shard` scheduling alternatives because the
-canonical monolithic CLI target already owns their union. CI invokes those
-shards explicitly on separate runners.
+canonical premerge CLI target already owns their union. CI invokes those shards
+explicitly on separate runners.
 
 Use `scripts/rue premerge`, `scripts/rue slow`, `scripts/rue stress`, or
 `scripts/rue all` to execute a named selection. `scripts/rue test` retains its
@@ -81,9 +82,16 @@ scheduled full-release workflow exercise the complete union.
 
 The exhaustive CLI- and specification-oracle differential harnesses are
 `slow`: premerge retains the fixed generated oracle smoke corpus as its bounded
-codegen canary. The normal 100/1k structural scaling matrix remains a dedicated
-premerge canary; `//crates/rue-compiler:scaling-matrix-stress-test` enables the
-real 10k-per-axis ladder and belongs to `stress`. Caldera and Meridian remain
+codegen canary. CLI corpus sections may likewise declare `tier = "slow"`.
+`//:cli-tests-slow` owns those real cases, while each maintained large
+program's automatic example remains a single premerge compile/run canary.
+Mosaic's 17 exhaustive behavior cases use that split, so the four required CLI
+shards do not each spend their critical path recompiling the same large
+program.
+
+The normal 100/1k structural scaling matrix remains a dedicated premerge
+canary; `//crates/rue-compiler:scaling-matrix-stress-test` enables the real
+10k-per-axis ladder and belongs to `stress`. Caldera and Meridian remain
 explicitly tracked by RUE-1162 until their real release-built slow targets and
 reduced premerge canaries replace the current skips/stub.
 
