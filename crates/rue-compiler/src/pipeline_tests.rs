@@ -480,7 +480,7 @@ mod tests {
             FileMetadataFingerprint::new(1, 1, 1),
             Arc::new(
                 r#"
-                    const std = @import("/sdk/_std.rue");
+                    const std = @import("std/_std.rue");
                     const other = @import("other.rue");
                     const Qualified = std.strbuf.StrBuf;
                     const Alias = Qualified;
@@ -617,7 +617,7 @@ mod tests {
             PhysicalFileIdentity::new(1, 1),
             FileMetadataFingerprint::new(1, 1, 1),
             Arc::new(
-                r#"const std = @import("/sdk/_std.rue");
+                r#"const std = @import("std/_std.rue");
                    fn main() -> i32 { let value: StrBuf = "x"; @intCast(value.len()) }"#
                     .to_owned(),
             ),
@@ -656,20 +656,24 @@ mod tests {
         );
     }
 
+    /// Trust comes from the captured standard-library root, never from how an
+    /// import is spelled. A project module reached through an `std/`-shaped
+    /// specifier resolves to an ordinary project module, so its `StrBuf` is a
+    /// plain struct rather than the `StrBuf` language item.
     #[test]
-    fn caller_logical_std_spelling_cannot_spoof_strbuf_language_item() {
+    fn caller_std_shaped_specifier_cannot_spoof_strbuf_language_item() {
         let root = FileId::new(1);
         let spoof_file = FileId::new(2);
         let metadata = SourceMetadata::new(
             root,
             [
-                (root, "main.rue".to_owned()),
-                (spoof_file, "spoof.rue".to_owned()),
+                (root, "/checkout/main.rue".to_owned()),
+                (spoof_file, "/checkout/std/strbuf.rue".to_owned()),
             ]
             .into(),
             [
                 (root, "main.rue".to_owned()),
-                (spoof_file, "\0rue-std/strbuf.rue".to_owned()),
+                (spoof_file, "std/strbuf.rue".to_owned()),
             ]
             .into(),
         )
@@ -677,25 +681,26 @@ mod tests {
         let snapshot = SourceSnapshot::from_sources(
             &[
                 SourceView::new(
-                    "main.rue",
-                    "const spoof = @import(\"spoof.rue\"); fn main() -> i32 { 0 }",
+                    "/checkout/main.rue",
+                    "const spoof = @import(\"std/strbuf.rue\"); fn main() -> i32 { 0 }",
                     root,
                 ),
-                SourceView::new("spoof.rue", "pub struct StrBuf { value: i32 }", spoof_file),
+                SourceView::new(
+                    "/checkout/std/strbuf.rue",
+                    "pub struct StrBuf { value: i32 }",
+                    spoof_file,
+                ),
             ],
             metadata,
         )
         .unwrap();
         let (_, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())
-            .expect("caller-authored sentinel spelling remains an ordinary module");
+            .expect("a caller-authored std-shaped specifier remains an ordinary module");
         let spoof = semantic
             .type_pool()
             .all_struct_ids()
             .into_iter()
-            .find(|id| {
-                let def = semantic.type_pool().struct_def(*id);
-                def.name == "StrBuf" && def.file_id == spoof_file
-            })
+            .find(|id| semantic.type_pool().struct_def(*id).name == "StrBuf")
             .unwrap();
         assert_eq!(semantic.type_pool().struct_lang_item(spoof), None);
         assert!(!semantic.type_pool().is_strbuf(spoof));
@@ -872,15 +877,33 @@ mod tests {
         .unwrap();
         let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
 
-        let output = test_compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+        // An import-bearing program is parsed by its discovery epoch, and the
+        // batch pass that follows reuses that parse rather than repeating it.
+        // So the one-pass claim splits in two: discovery lexes and parses each
+        // module exactly once, and the batch adds no parse work at all.
+        let mut session = CompilerSession::new();
+        let discovery = crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut session)
+            .unwrap();
+        assert_eq!(discovery.parse_work.syntax.lexer_invocations, sources.len());
+        assert_eq!(
+            discovery.parse_work.syntax.parser_invocations,
+            sources.len()
+        );
+        let output = crate::queries::compile_with_session(
+            &mut session,
+            &discovery.snapshot,
+            &CompileOptions::default(),
+        )
+        .unwrap();
         let stats = output.source_stats;
         let work = output.work;
 
         assert_eq!(stats.files, sources.len());
-        assert_eq!(work.parsed.modules_considered, sources.len());
-        assert_eq!(work.parsed.modules_reparsed, sources.len());
-        assert_eq!(work.parsed.syntax.lexer_invocations, sources.len());
-        assert_eq!(work.parsed.syntax.parser_invocations, sources.len());
+        assert_eq!(work.parsed.modules_reparsed, 0);
+        assert_eq!(work.parsed.syntax.lexer_invocations, 0);
+        assert_eq!(work.parsed.syntax.parser_invocations, 0);
         assert_eq!(work.merged.parser_invocations, 0);
         assert_eq!(work.merged.ast_payload_clones, 0);
         assert_eq!(work.merged.source_text_clones, 0);

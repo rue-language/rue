@@ -89,8 +89,8 @@ pub(crate) fn test_compile_snapshot(
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
     let mut session = CompilerSession::new();
-    publish_test_snapshot(&mut session, snapshot)?;
-    crate::queries::compile_with_session(&mut session, snapshot, options)
+    let published = publish_test_snapshot(&mut session, snapshot)?;
+    crate::queries::compile_with_session(&mut session, &published, options)
 }
 
 pub(crate) fn test_compile_sources(
@@ -116,91 +116,273 @@ pub(crate) fn test_compile_sources_with_metadata(
     test_compile_snapshot(&snapshot, options)
 }
 
-fn publish_test_snapshot(
+/// Publish `snapshot` into `session` and return the snapshot the session
+/// actually holds.
+///
+/// An import-bearing fixture is republished by its discovery epoch, whose
+/// snapshot holds the modules reached from the root under their canonical
+/// identities — so consumers that must agree with the published program compile
+/// against the returned snapshot, not the fixture's declared one.
+pub(crate) fn publish_test_snapshot(
     session: &mut CompilerSession,
     snapshot: &SourceSnapshot,
-) -> MultiErrorResult<()> {
-    let program = session
-        .update_for_presentation(snapshot)
-        .into_owner_result()?;
-    if !program.import_directives().is_empty() {
-        let graph = test_fixture_import_graph(&program)?;
-        session.adopt_test_import_graph(graph);
+) -> MultiErrorResult<SourceSnapshot> {
+    if !fixture_has_imports(snapshot)? {
+        session
+            .update_for_presentation(snapshot)
+            .into_owner_result()?;
+        return Ok(snapshot.clone());
     }
-    Ok(())
+    Ok(TestDiscoveryHost::new(snapshot)?.drive(session)?.snapshot)
 }
 
-/// Build explicit canonical records for in-memory fixtures whose import
-/// spellings name one loaded logical or physical module spelling. This is
-/// deliberately a test-data convention, not a path-resolution implementation.
-pub(crate) fn test_fixture_import_graph(
-    program: &ParsedProgram,
-) -> MultiErrorResult<CanonicalImportGraph> {
-    test_fixture_import_graph_parts(
-        program.root(),
-        program
-            .modules()
-            .iter()
-            .map(|module| {
-                (
-                    module.module_id().clone(),
-                    std::sync::Arc::from(module.physical_path()),
-                )
-            })
-            .collect(),
-        program.import_directives(),
-    )
+/// Whether `snapshot` declares any import directive, decided by a standalone
+/// parse so the answer costs the session nothing when discovery follows.
+pub(crate) fn fixture_has_imports(snapshot: &SourceSnapshot) -> MultiErrorResult<bool> {
+    let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot)?;
+    Ok(!parsed.import_directives().is_empty())
 }
 
-pub(crate) fn test_fixture_import_graph_parts(
-    root: &ModuleId,
-    modules: Vec<(ModuleId, std::sync::Arc<str>)>,
-    directives: &ImportDirectives,
+/// The canonical import graph `snapshot` commits, for lower-layer unit tests
+/// that analyze a fixture without owning a session.
+///
+/// Import-bearing fixtures resolve through a full discovery epoch; import-free
+/// ones take production's own uniquely valid empty graph over their declared
+/// module set.
+pub(crate) fn test_import_graph(
+    snapshot: &SourceSnapshot,
 ) -> MultiErrorResult<CanonicalImportGraph> {
-    let inputs = ModuleResolutionInputs::new(
-        root.clone(),
-        modules
-            .iter()
-            .map(|(module, physical_path)| ModuleResolutionInput {
-                module: module.clone(),
-                physical_path: physical_path.clone(),
-            })
-            .collect(),
-    )
-    .map_err(CompileErrors::from)?;
-    let records = directives
-        .iter()
-        .map(|directive| {
-            let target = modules
-                .iter()
-                .find(|(module, physical_path)| {
-                    [module.as_str(), physical_path.as_ref()]
-                        .into_iter()
-                        .any(|spelling| {
-                            spelling == directive.specifier()
-                                || spelling.strip_suffix(directive.specifier()).is_some_and(
-                                    |prefix| prefix.is_empty() || prefix.ends_with('/'),
-                                )
-                        })
-                })
-                .ok_or_else(|| {
-                    CompileErrors::from(CompileError::without_span(
-                        ErrorKind::InvalidCompilerInput(format!(
-                            "test fixture has no logical module matching import {:?}",
-                            directive.specifier()
-                        )),
-                    ))
-                })?;
-            Ok(CanonicalImportRecord::new(
-                directive.importer().clone(),
-                directive.specifier(),
-                CanonicalImportResolution::Resolved(target.0.clone()),
-            ))
+    if !fixture_has_imports(snapshot)? {
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot)?;
+        return crate::import_graph::import_free_canonical_graph(&parsed);
+    }
+    let mut session = CompilerSession::new();
+    let discovery = TestDiscoveryHost::new(snapshot)?.drive(&mut session)?;
+    Ok(discovery.graph)
+}
+
+/// What one in-memory discovery epoch produced.
+pub(crate) struct TestDiscovery {
+    /// The snapshot discovery assembled and the session published — the modules
+    /// actually reached from the root, not the fixture's declared set.
+    pub(crate) snapshot: SourceSnapshot,
+    /// Parse work accumulated across the epoch's staging rounds.
+    pub(crate) parse_work: crate::ParsedModulesWork,
+    pub(crate) graph: CanonicalImportGraph,
+}
+
+/// One file the fixture can serve, keyed by the path discovery would request.
+struct TestFixtureFile {
+    canonical_path: std::sync::Arc<str>,
+    identity: PhysicalFileIdentity,
+    fingerprint: FileMetadataFingerprint,
+    source: std::sync::Arc<String>,
+}
+
+/// An in-memory host for the real import-discovery protocol (ADR-0051).
+///
+/// A fixture's *logical* module paths describe a virtual project tree: each
+/// module is served at exactly the path production would request for that
+/// module identity, under a synthetic project root. Its *physical* paths carry
+/// over as canonical identity, which is their production role — a canonical
+/// path that differs from the requested one is the relocated-or-linked file
+/// case, not a second spelling the resolver is allowed to match against.
+///
+/// The host answers one question per compiler-issued frontier request: does
+/// this exact requested path exist, and what are its bytes. Candidate
+/// precedence, canonical identity, provenance, and read policy stay in the
+/// compiler, so a fixture cannot resolve an import the real resolver would not.
+pub(crate) struct TestDiscoveryHost {
+    context: ImportDiscoveryContext,
+    root_requested_path: String,
+    files: std::collections::BTreeMap<String, TestFixtureFile>,
+}
+
+/// The synthetic project root every fixture's virtual tree hangs from. Fixtures
+/// name modules logically, so the tree needs a root but never a real directory.
+const FIXTURE_PROJECT_ROOT: &str = "/rue-fixture";
+const FIXTURE_STD_ROOT: &str = "/rue-fixture/std";
+const TRUSTED_MODULE_PREFIX: &str = "\0rue-std/";
+
+impl TestDiscoveryHost {
+    pub(crate) fn new(snapshot: &SourceSnapshot) -> MultiErrorResult<Self> {
+        let metadata = snapshot.metadata();
+        let mut trusted = false;
+        let mut files = std::collections::BTreeMap::new();
+        for source in snapshot.files() {
+            let module = metadata
+                .module_id(source.file_id)
+                .expect("validated snapshot metadata names every file");
+            let requested = fixture_requested_path(&module)?;
+            trusted |= module.is_trusted_standard_library();
+            // A trusted module's canonical path must stay under the captured
+            // std root, so only project modules can carry a fixture-declared
+            // relocation. A relative fixture spelling names no on-disk file at
+            // all and is canonically its own requested path.
+            let canonical = if module.is_trusted_standard_library()
+                || !std::path::Path::new(source.path).is_absolute()
+            {
+                requested.clone()
+            } else {
+                source.path.to_owned()
+            };
+            let text = snapshot
+                .shared_source_text(source.file_id)
+                .expect("validated snapshot retains every file's text");
+            files.insert(
+                requested,
+                TestFixtureFile {
+                    identity: PhysicalFileIdentity::new(
+                        1,
+                        crate::import_discovery::source_fingerprint(&canonical),
+                    ),
+                    fingerprint: FileMetadataFingerprint::new(text.len() as u64, 0, 0),
+                    canonical_path: std::sync::Arc::from(canonical.as_str()),
+                    source: text,
+                },
+            );
+        }
+        let root_module = metadata.root_module_id();
+        if root_module.is_trusted_standard_library() {
+            return Err(invalid_fixture(
+                "a discovery root cannot be a trusted standard-library module",
+            ));
+        }
+        let context = ImportDiscoveryContext::new(
+            1,
+            FIXTURE_PROJECT_ROOT,
+            trusted.then_some(FIXTURE_STD_ROOT),
+            "test-fixture-discovery",
+        )
+        .map_err(CompileErrors::from)?;
+        Ok(Self {
+            context,
+            root_requested_path: fixture_requested_path(&root_module)?,
+            files,
         })
-        .collect::<MultiErrorResult<Vec<_>>>()?;
-    CanonicalImportGraph::from_supplied(root.clone(), records, &inputs).map_err(|validation| {
-        CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-            format!("test fixture supplied an invalid import graph: {validation:?}"),
-        )))
-    })
+    }
+
+    fn assembler(&self) -> MultiErrorResult<DiscoverySourceAssembler> {
+        let root = self
+            .files
+            .get(&self.root_requested_path)
+            .expect("the root module is one of the fixture's own files");
+        DiscoverySourceAssembler::new(
+            self.context.clone(),
+            self.root_requested_path.as_str(),
+            root.canonical_path.as_ref(),
+            root.identity,
+            root.fingerprint,
+            root.source.clone(),
+        )
+        .map_err(CompileErrors::from)
+    }
+
+    /// Answer one compiler-issued probe: the fixture reports existence and
+    /// bytes for the exact requested path, and nothing else.
+    fn serve(&self, request: crate::ImportDiscoveryRequest) -> MultiErrorResult<ImportObservation> {
+        let Some(file) = self.files.get(request.requested_path()) else {
+            return Ok(ImportObservation::absent(request));
+        };
+        let accepted = AcceptedImportSource::new(
+            request.requested_path(),
+            file.canonical_path.as_ref(),
+            file.identity,
+            file.fingerprint,
+            file.source.clone(),
+        )
+        .map_err(CompileErrors::from)?;
+        ImportObservation::accepted(request, accepted).map_err(CompileErrors::from)
+    }
+
+    /// Run one complete discovery epoch against `session` and commit its graph.
+    pub(crate) fn drive(&self, session: &mut CompilerSession) -> MultiErrorResult<TestDiscovery> {
+        let mut assembler = self.assembler()?;
+        let initial = assembler.snapshot().map_err(CompileErrors::from)?;
+        let mut revision = session
+            .begin_import_input_request(
+                &initial,
+                self.context.clone(),
+                assembler.accepted_read_manifest(),
+            )
+            .map_err(CompileErrors::from)?;
+        loop {
+            let snapshot = assembler.snapshot().map_err(CompileErrors::from)?;
+            let ledger = session
+                .import_observation_ledger(revision)
+                .map_err(CompileErrors::from)?;
+            let plan = session.stage_import_discovery(
+                &snapshot,
+                self.context.clone(),
+                assembler.accepted_read_manifest().shared_slice(),
+                ledger.clone(),
+            )?;
+            let frontier = session
+                .import_demand_frontier_for_roots(
+                    revision,
+                    &plan,
+                    ImportDemandMode::Rooted,
+                    &plan.demand_roots(),
+                )
+                .map_err(CompileErrors::from)?;
+            if frontier.requests().is_empty() {
+                let artifact = session.close_import_discovery(ledger)?;
+                let graph = artifact
+                    .graph()
+                    .expect("a closed-valid discovery revision retains its canonical graph")
+                    .graph()
+                    .clone();
+                return Ok(TestDiscovery {
+                    snapshot: artifact.snapshot().clone(),
+                    parse_work: artifact.parse_work(),
+                    graph,
+                });
+            }
+            let observations = frontier
+                .requests()
+                .iter()
+                .cloned()
+                .map(|request| self.serve(request))
+                .collect::<MultiErrorResult<Vec<_>>>()?;
+            let mut assembly_ledger = ledger;
+            for observation in observations.iter().cloned() {
+                assembly_ledger
+                    .record(observation)
+                    .map_err(CompileErrors::from)?;
+            }
+            assembler
+                .add_plan_reads(&plan, &assembly_ledger)
+                .map_err(CompileErrors::from)?;
+            let successor = assembler.snapshot().map_err(CompileErrors::from)?;
+            revision = session
+                .publish_import_observation_batch(
+                    &frontier,
+                    &successor,
+                    assembler.accepted_read_manifest(),
+                    observations,
+                )
+                .map_err(CompileErrors::from)?;
+        }
+    }
+}
+
+/// The path production would request for `module` inside the fixture tree —
+/// the compiler's own module-identity-to-path inverse, not a search.
+fn fixture_requested_path(module: &ModuleId) -> MultiErrorResult<String> {
+    let (root, relative) = match module.as_str().strip_prefix(TRUSTED_MODULE_PREFIX) {
+        Some(relative) => (FIXTURE_STD_ROOT, relative),
+        None => (FIXTURE_PROJECT_ROOT, module.as_str()),
+    };
+    if relative.is_empty() || relative.starts_with('/') {
+        return Err(invalid_fixture(&format!(
+            "fixture module {module} has no project-relative logical path"
+        )));
+    }
+    Ok(format!("{root}/{relative}"))
+}
+
+fn invalid_fixture(message: &str) -> CompileErrors {
+    CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
+        message.to_owned(),
+    )))
 }

@@ -555,30 +555,9 @@ pub(crate) fn bind_canonical_definitions(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<BoundDefinitionSet> {
-    let imports = test_fixture_import_graph(merged)?;
+    let imports = crate::import_graph::import_free_canonical_graph(merged.ast())?;
     bind_canonical_definitions_with_work(merged, rir, preview_features, target, &imports)
         .map(|(definitions, _)| definitions)
-}
-
-#[cfg(test)]
-pub(crate) fn test_fixture_import_graph(
-    merged: &CanonicalMergedProgram,
-) -> MultiErrorResult<crate::CanonicalImportGraph> {
-    crate::test_support::test_fixture_import_graph_parts(
-        merged.ast().root(),
-        merged
-            .ast()
-            .modules()
-            .iter()
-            .map(|module| {
-                (
-                    module.module_id().clone(),
-                    Arc::from(module.physical_path()),
-                )
-            })
-            .collect(),
-        merged.ast().import_directives(),
-    )
 }
 
 /// Bind once and export stable, request-independent declaration semantics
@@ -590,18 +569,18 @@ pub(crate) fn bind_canonical_declaration_semantics(
     rir: &CanonicalRirOutput,
     preview_features: PreviewFeatures,
     target: Target,
+    imports: &crate::CanonicalImportGraph,
 ) -> MultiErrorResult<(
     BoundDefinitionSet,
     Arc<[crate::DurableDeclarationSemantic]>,
     rue_air::SemanticDeclarationExportWork,
 )> {
-    let imports = test_fixture_import_graph(merged)?;
     let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
         merged,
         rir,
         preview_features,
         target,
-        &imports,
+        imports,
     )?;
     let manifest = bound.binding_manifest();
     let definitions = issue_bound_definitions(
@@ -649,7 +628,7 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     preview_features: PreviewFeatures,
     target: Target,
 ) -> MultiErrorResult<(crate::DurableSemanticProjectionWork, DeclarationBindingWork)> {
-    let imports = test_fixture_import_graph(merged)?;
+    let imports = crate::import_graph::import_free_canonical_graph(merged.ast())?;
     let ordinary = crate::canonical_semantic::bind_query_owned_declarations_for_test(
         merged,
         rir,
@@ -1252,11 +1231,13 @@ mod tests {
         let parsed = parse_source_snapshot_modules(snapshot).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         bind_canonical_declaration_semantics(
             &merged,
             &rir,
             PreviewFeatures::new(),
             Target::default(),
+            &imports,
         )
         .unwrap()
     }
@@ -1339,7 +1320,7 @@ mod tests {
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
         let current_definitions = bind(&relocated);
-        let imports = test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
             &merged,
             &rir,
@@ -1387,7 +1368,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
             &merged,
             &rir,
@@ -1420,7 +1401,7 @@ mod tests {
         let parsed = parse_source_snapshot_modules(&input).unwrap();
         let merged = merge_parsed_modules(&parsed).unwrap();
         let rir = lower_canonical_rir(&merged).unwrap();
-        let imports = test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
             &merged,
             &rir,
@@ -1479,7 +1460,7 @@ mod tests {
         )
         .unwrap();
         // A fresh oracle epoch remains valid after the query-owned install.
-        let imports = test_fixture_import_graph(&merged).unwrap();
+        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         crate::canonical_semantic::bind_query_owned_declarations_for_test(
             &merged,
             &rir,

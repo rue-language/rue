@@ -1344,8 +1344,14 @@ pub struct CompilerSession {
     /// successor classifies only its appended delta.
     parse_invalidation_entries_compared: u64,
     queries: FrontendQueryDatabase,
-    #[cfg(test)]
-    supplied_test_import_graph: Option<CanonicalImportGraph>,
+    /// One-shot cancellation injections, each consumed with `mem::take` at a
+    /// fixed point inside an attempt.
+    ///
+    /// Test-only because production cancellation arrives asynchronously through
+    /// a `CancellationToken`, and a test cannot deterministically land it
+    /// between two chosen steps. They gate no selection logic: the branch each
+    /// one triggers is the same cancellation path a real token drives, so both
+    /// configurations still compile one implementation of that path (RUE-1143).
     #[cfg(test)]
     cancel_merge_before_commit: bool,
     #[cfg(test)]
@@ -1385,10 +1391,31 @@ pub struct CompilerSession {
     /// reuse. Never populated on the production path.
     #[cfg(test)]
     recipe_cache_slot: std::sync::Mutex<Option<Arc<crate::recipe_cache::RecipeCache>>>,
-    #[cfg(test)]
+    /// Explicit durable baseline for the next semantic attempt (RUE-1143).
+    ///
+    /// `None` on every ordinary compile, in which case a semantic attempt reuses
+    /// from the last-good semantic record. No production path sets it.
+    ///
+    /// It is deliberately NOT `#[cfg(test)]`. The reuse-baseline selection this
+    /// feeds is the most correctness-sensitive lookup in the compiler, and it
+    /// previously existed twice: production read the last-good record, while a
+    /// `cfg(test)` shadow field took precedence under test. Tests therefore
+    /// validated a selection order production never executed — underneath the
+    /// differential oracle, which is the defense for exactly that class of bug.
+    /// Keeping the slot unconditional means both configurations compile one
+    /// selection expression; only whether anything ever fills it differs.
+    durable_baseline_override: Option<DurableBaselineOverride>,
+}
+
+/// An explicit durable baseline supplied in place of the last-good record.
+///
+/// Tests use this to drive a specific — including deliberately stale, corrupt,
+/// or partially-populated — durable cache through the production reuse path,
+/// rather than through a parallel branch compiled only under `cfg(test)`.
+#[derive(Debug, Default, Clone)]
+struct DurableBaselineOverride {
+    successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
-    #[cfg(test)]
-    last_successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
 }
 
 fn stable_type_definition_root(
@@ -3061,10 +3088,6 @@ impl CompilerSession {
     fn accepted_semantic_import_graph(&self) -> Result<CanonicalImportGraph, CompileErrors> {
         let program = self.published.as_ref().ok_or_else(no_published_program)?;
         let graph = if !program.import_directives().is_empty() {
-            #[cfg(test)]
-            if let Some(graph) = &self.supplied_test_import_graph {
-                return Ok(graph.clone());
-            }
             let committed = self.committed_import_graph()?;
             if &committed.input().sources != program.source_revision() {
                 return Err(CompileErrors::from(CompileError::without_span(
@@ -3075,26 +3098,7 @@ impl CompilerSession {
             }
             committed.graph().clone()
         } else {
-            let inputs = ModuleResolutionInputs::new(
-                program.root().clone(),
-                program
-                    .modules()
-                    .iter()
-                    .map(|module| crate::ModuleResolutionInput {
-                        module: module.module_id().clone(),
-                        physical_path: Arc::from(module.physical_path()),
-                    })
-                    .collect(),
-            )
-            .map_err(CompileErrors::from)?;
-            CanonicalImportGraph::from_supplied(program.root().clone(), Vec::new(), &inputs)
-                .map_err(|validation| {
-                    CompileErrors::from(CompileError::without_span(
-                        ErrorKind::InvalidCompilerInput(format!(
-                            "invalid import-free semantic graph: {validation:?}"
-                        )),
-                    ))
-                })?
+            crate::import_graph::import_free_canonical_graph(program.as_ref())?
         };
         Ok(graph)
     }
@@ -3106,16 +3110,6 @@ impl CompilerSession {
         self.published.as_ref()
     }
 
-    /// Explicitly supply accepted canonical records to lower-layer unit tests.
-    /// Production import-bearing sessions can only consume the atomically
-    /// committed discovery artifact.
-    #[cfg(test)]
-    pub(crate) fn adopt_test_import_graph(&mut self, graph: CanonicalImportGraph) {
-        self.queries
-            .revisioned
-            .adopt_test_import_graph(graph.clone());
-        self.supplied_test_import_graph = Some(graph);
-    }
     /// Derive the pre-closure import plan for the session's current parsed
     /// revision.
     ///
@@ -4669,6 +4663,43 @@ impl CompilerSession {
     pub fn last_good_semantic_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
         self.diagnostics.last_good_semantic()
     }
+
+    /// Per-function durable CFG artifacts retained by the last successful
+    /// semantic record — the baseline an ordinary attempt reuses from.
+    ///
+    /// This reads the production source of truth. It exists so a caller that
+    /// wants to inspect or perturb the reuse baseline does so through the same
+    /// record the reuse path consults, rather than through a separate mirror
+    /// (RUE-1143).
+    #[cfg(test)]
+    fn last_good_successful_cfg_cache(&self) -> Option<&Arc<[crate::queries::DurableCfgArtifact]>> {
+        self.queries
+            .semantic
+            .last_good_record()
+            .and_then(|entry| entry.successful_cfg_cache.as_ref())
+    }
+
+    /// Durable declaration cache retained by the last successful semantic
+    /// record. Companion to [`Self::last_good_successful_cfg_cache`].
+    #[cfg(test)]
+    fn last_good_durable_declaration_cache(&self) -> Option<&DurableDeclarationCache> {
+        self.queries
+            .semantic
+            .last_good_record()
+            .and_then(|entry| entry.durable_declaration_cache.as_ref())
+    }
+
+    /// Supply an explicit durable baseline for the next semantic attempt,
+    /// replacing the last-good record as the reuse source.
+    ///
+    /// No production path calls this. It is the injection seam that lets a test
+    /// drive a chosen — including deliberately stale or corrupt — durable cache
+    /// through the production reuse path, instead of a `cfg(test)` branch that
+    /// production never compiles (RUE-1143).
+    #[cfg(test)]
+    fn set_durable_baseline_override(&mut self, baseline: Option<DurableBaselineOverride>) {
+        self.durable_baseline_override = baseline;
+    }
     /// Look up the currently selected, or otherwise most recently indexed,
     /// diagnostic batch matching a source-attempt and public query stage.
     ///
@@ -4855,10 +4886,6 @@ impl CompilerSession {
     }
 
     pub fn update(&mut self, snapshot: &SourceSnapshot) -> CompilerSessionUpdate {
-        #[cfg(test)]
-        {
-            self.supplied_test_import_graph = None;
-        }
         // A source update supersedes the predecessor any outstanding
         // trusted-toolchain continuation or successor-delta authority was
         // issued against (RUE-1112): a stale capability can neither stage nor
@@ -4879,10 +4906,6 @@ impl CompilerSession {
         &mut self,
         snapshot: &SourceSnapshot,
     ) -> CompilerSessionUpdate {
-        #[cfg(test)]
-        {
-            self.supplied_test_import_graph = None;
-        }
         // A presentation update replaces the retained parse artifact exactly
         // like a source update, so it likewise supersedes any outstanding
         // trusted-toolchain continuation or successor-delta authority
@@ -4907,10 +4930,6 @@ impl CompilerSession {
         successor: bool,
         retained_successor_parse: Option<ParseQueryRecord>,
     ) -> CompilerSessionUpdate {
-        #[cfg(test)]
-        {
-            self.supplied_test_import_graph = None;
-        }
         // A trusted-successor close adopts by RE-SELECTING the exact successor
         // parse terminal its stage computed and retained on the open artifact
         // — same key, same revision — never by re-deriving an extension
@@ -5835,32 +5854,6 @@ impl CompilerSession {
             return Ok(graph.clone());
         }
         let parsed = self.published.clone().ok_or_else(no_published_program)?;
-        #[cfg(test)]
-        if let Some(graph) = self.supplied_test_import_graph.as_ref() {
-            let resolution = ModuleResolutionInputs::new(
-                parsed.root().clone(),
-                parsed
-                    .modules()
-                    .iter()
-                    .map(|module| crate::ModuleResolutionInput {
-                        module: module.module_id().clone(),
-                        physical_path: Arc::from(module.physical_path()),
-                    })
-                    .collect(),
-            )
-            .expect("published parsed modules have validated resolution inputs");
-            let validation = validate_canonical_import_graph(graph, &resolution);
-            *execution = QueryAttemptExecution::Reused;
-            return Ok(Arc::new(CanonicalImportGraphOutput {
-                input: ImportGraphInputDescriptor {
-                    sources: parsed.source_revision().clone(),
-                    resolution,
-                    std_dir: std_dir.map(Arc::from),
-                },
-                graph: graph.clone(),
-                validation,
-            }));
-        }
         if !parsed.import_directives().is_empty() {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InvalidCompilerInput(
@@ -5887,16 +5880,7 @@ impl CompilerSession {
         };
         *execution = QueryAttemptExecution::Computed;
         guard.started();
-        let graph = CanonicalImportGraph::from_supplied(
-            parsed.root().clone(),
-            Vec::new(),
-            &input.resolution,
-        )
-        .map_err(|validation| {
-            CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
-                format!("invalid import-free graph: {validation:?}"),
-            )))
-        })?;
+        let graph = crate::import_graph::import_free_canonical_graph(parsed.as_ref())?;
         let validation = validate_canonical_import_graph(&graph, &input.resolution);
         Ok(Arc::new(CanonicalImportGraphOutput {
             input,
@@ -6490,11 +6474,6 @@ impl CompilerSession {
                     .direct_dependencies::<SemanticQuery>(handle.observed().node),
             );
             guard.attach_diagnostics(entry.diagnostics.clone());
-            #[cfg(test)]
-            if result.is_ok() {
-                self.last_successful_cfg_cache = entry.successful_cfg_cache.clone();
-                self.durable_declaration_cache = entry.durable_declaration_cache.clone();
-            }
             self.reuse_diagnostics(entry.diagnostics.clone());
             if cancellation.is_canceled() {
                 return Err(SemanticRequestControl::Abort(
@@ -6504,15 +6483,20 @@ impl CompilerSession {
             return result.map_err(SemanticRequestControl::Compile);
         }
         let durable_baseline = self.queries.semantic.last_good_record().cloned();
-        let previous_cfg_cache = durable_baseline
-            .as_ref()
-            .and_then(|entry| entry.successful_cfg_cache.clone())
-            .unwrap_or_else(|| Arc::from([]));
-        #[cfg(test)]
+        // One selection order, compiled identically under test and production
+        // (RUE-1143): an explicit override when one was supplied, otherwise the
+        // last-good record. Ordinary compiles never set the override, so this
+        // reduces to the last-good record.
         let previous_cfg_cache = self
-            .last_successful_cfg_cache
-            .clone()
-            .unwrap_or(previous_cfg_cache);
+            .durable_baseline_override
+            .as_ref()
+            .and_then(|override_baseline| override_baseline.successful_cfg_cache.clone())
+            .or_else(|| {
+                durable_baseline
+                    .as_ref()
+                    .and_then(|entry| entry.successful_cfg_cache.clone())
+            })
+            .unwrap_or_else(|| Arc::from([]));
 
         let rir_result = self.canonical_rir();
         if cancellation.is_canceled() {
@@ -8095,11 +8079,6 @@ impl CompilerSession {
         ];
         guard.observe(dependencies);
         guard.attach_diagnostics(diagnostics.clone());
-        #[cfg(test)]
-        if result.is_ok() {
-            self.last_successful_cfg_cache = published_cfg_cache.clone();
-            self.durable_declaration_cache = published_declaration_cache.clone();
-        }
         let handle = self
             .queries
             .semantic
@@ -9166,18 +9145,18 @@ impl CompilerSession {
         body_dependency_blockers.sort();
         body_dependency_blockers.dedup();
         let mut durable_body_work = crate::DurableBodyWork::default();
+        // Same single selection order as the CFG baseline above (RUE-1143).
         let durable_declarations = self
-            .queries
-            .semantic
-            .last_good_record()
-            .and_then(|entry| entry.durable_declaration_cache.as_ref())
-            .map(|cache| cache.semantics.clone());
-        #[cfg(test)]
-        let durable_declarations = self
-            .durable_declaration_cache
+            .durable_baseline_override
             .as_ref()
-            .map(|cache| cache.semantics.clone())
-            .or(durable_declarations);
+            .and_then(|override_baseline| override_baseline.durable_declaration_cache.as_ref())
+            .or_else(|| {
+                self.queries
+                    .semantic
+                    .last_good_record()
+                    .and_then(|entry| entry.durable_declaration_cache.as_ref())
+            })
+            .map(|cache| cache.semantics.clone());
         let durable_ordinary_bodies = match &semantic {
             Ok(semantic) => match crate::finalize_durable_ordinary_bodies(
                 semantic.durable_ordinary_body_payloads(),
@@ -12091,7 +12070,7 @@ mod tests {
         session.canonical_semantic(&default).unwrap();
         let diagnostics = session.latest_diagnostics().unwrap().clone();
         let last_good = session.last_good_semantic_diagnostics().unwrap().clone();
-        let cfgs = session.last_successful_cfg_cache.clone().unwrap();
+        let cfgs = session.last_good_successful_cfg_cache().cloned().unwrap();
         let edited = snapshot(
             &[
                 (7, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
@@ -12145,7 +12124,7 @@ mod tests {
             &last_good
         ));
         assert!(Arc::ptr_eq(
-            session.last_successful_cfg_cache.as_ref().unwrap(),
+            session.last_good_successful_cfg_cache().unwrap(),
             &cfgs
         ));
         assert_eq!(session.work().semantic.calls, 2);
@@ -12196,18 +12175,25 @@ mod tests {
         }
     }
 
+    /// Publish `source` and, when it imports, commit its graph through a real
+    /// discovery epoch served from the fixture's own modules. The returned work
+    /// is the epoch's accumulated parse work, which is the parse an
+    /// import-bearing revision actually performs.
     fn publish_with_test_imports(
         session: &mut CompilerSession,
         source: &SourceSnapshot,
     ) -> ParsedModulesWork {
-        let update = session.update(source);
-        let work = update.work();
-        let program = update.into_owner_result().unwrap();
-        if !program.import_directives().is_empty() {
-            let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
-            session.adopt_test_import_graph(graph);
+        if !crate::test_support::fixture_has_imports(source).unwrap() {
+            let update = session.update(source);
+            let work = update.work();
+            update.into_owner_result().unwrap();
+            return work;
         }
-        work
+        crate::test_support::TestDiscoveryHost::new(source)
+            .unwrap()
+            .drive(session)
+            .unwrap()
+            .parse_work
     }
 
     fn legacy_air_declaration_shell_oracle(
@@ -12568,8 +12554,7 @@ mod tests {
             0
         );
         let module = session
-            .durable_declaration_cache
-            .as_ref()
+            .last_good_durable_declaration_cache()
             .unwrap()
             .semantics
             .iter()
@@ -12631,7 +12616,13 @@ mod tests {
         let mut session = CompilerSession::new();
         publish_with_test_imports(&mut session, &first);
         session.canonical_semantic(&options).unwrap();
-        let cache = session.durable_declaration_cache.as_mut().unwrap();
+        // Perturb a copy of the produced baseline and inject it, so the next
+        // attempt resolves it through the same selection order production uses
+        // (RUE-1143).
+        let mut cache = session
+            .last_good_durable_declaration_cache()
+            .unwrap()
+            .clone();
         let mut records = cache.semantics.to_vec();
         let module = records
             .iter_mut()
@@ -12641,6 +12632,10 @@ mod tests {
             target: crate::ModuleId::from_logical_path("missing.rue").unwrap(),
         };
         cache.semantics = records.into();
+        session.set_durable_baseline_override(Some(DurableBaselineOverride {
+            durable_declaration_cache: Some(cache),
+            ..DurableBaselineOverride::default()
+        }));
 
         publish_with_test_imports(&mut session, &edited);
         let fallback = session.canonical_semantic(&options).unwrap();
@@ -12880,8 +12875,10 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         session.canonical_semantic(&options).unwrap();
-        let cache = Arc::make_mut(session.last_successful_cfg_cache.as_mut().unwrap());
-        let specialization = cache
+        // As above: perturb a copy and inject it rather than reaching into a
+        // mirror of the baseline (RUE-1143).
+        let mut artifacts = session.last_good_successful_cfg_cache().unwrap().to_vec();
+        let specialization = artifacts
             .iter_mut()
             .find(|candidate| {
                 matches!(
@@ -12891,8 +12888,17 @@ mod tests {
             })
             .unwrap();
         specialization.semantic_schema_version.implementation_epoch += 1;
+        session.set_durable_baseline_override(Some(DurableBaselineOverride {
+            successful_cfg_cache: Some(artifacts.into()),
+            ..DurableBaselineOverride::default()
+        }));
         session.update(&second).into_result().unwrap();
         let warm = session.canonical_semantic(&options).unwrap();
+        // The override stood in for the last-good record for exactly that one
+        // attempt. Drop it so the repair below reuses the record the warm
+        // attempt actually published, which is what the old mirror did
+        // implicitly by repopulating after every successful attempt.
+        session.set_durable_baseline_override(None);
         assert_eq!(warm.work().cfg.cfg_import_failures, 2);
         assert_eq!(warm.work().cfg.cfg_schema_version_rejections, 1);
         assert_eq!(warm.work().cfg.cfg_fallbacks, 2);
@@ -15159,7 +15165,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn supplied_test_graph_is_consumed_without_resolution_fallback() {
+    fn committed_discovery_graph_is_consumed_without_resolution_fallback() {
         let source = snapshot(
             &[
                 (
@@ -15173,9 +15179,7 @@ fn main() -> i32 {
             1,
         );
         let mut session = CompilerSession::new();
-        let program = session.update(&source).into_owner_result().unwrap();
-        let graph = crate::test_support::test_fixture_import_graph(&program).unwrap();
-        session.adopt_test_import_graph(graph);
+        publish_with_test_imports(&mut session, &source);
         assert!(session.import_graph(None).is_ok());
         assert_eq!(session.work().imports.executions, 0);
     }
@@ -15842,7 +15846,11 @@ fn main() -> i32 {
         ));
         assert_eq!(relocated.work().import_records_visited, 1);
         assert_eq!(relocated.work().extra_rir_instructions_visited, 0);
-        assert_eq!(session.work().dependency_manifests.executions, 2);
+        // Relocation moves only the canonical read provenance behind an
+        // unchanged requested path. Module identity, source text, and therefore
+        // the published revision are all untouched, so the manifest is reused
+        // rather than recomputed — the edge is stable without recomputing it.
+        assert_eq!(session.work().dependency_manifests.executions, 1);
     }
 
     #[test]
@@ -16976,69 +16984,73 @@ fn main() -> i32 {
 
     #[test]
     fn semantic_diagnostic_identity_includes_the_accepted_import_graph() {
-        let source = snapshot(
+        // Candidate precedence retargets the import, not a substituted graph:
+        // the importer-relative candidate outranks the project-root one, so
+        // adding a sibling `choice.rue` next to the importer moves
+        // `@import("choice.rue")` off the root-level module without touching a
+        // single spelling in the importer.
+        let main = r#"const selected = @import("choice.rue");
+fn main() -> i32 { selected.value() }"#;
+        let root_only = snapshot(
             &[
+                (1, "/p/app/main.rue", "app/main.rue", main),
                 (
-                    1,
-                    "/p/main.rue",
-                    "main.rue",
-                    r#"const selected = @import("choice.rue");
-fn main() -> i32 { selected.value() }"#,
+                    2,
+                    "/p/choice.rue",
+                    "choice.rue",
+                    "pub fn value() -> i32 { 1 }",
                 ),
-                (2, "/p/a.rue", "a.rue", "pub fn value() -> i32 { 1 }"),
-                (3, "/p/b.rue", "b.rue", "pub fn value() -> i32 { 2 }"),
             ],
             1,
         );
-        let root = source.module_id(FileId::new(1)).unwrap().clone();
-        let a = source.module_id(FileId::new(2)).unwrap().clone();
-        let b = source.module_id(FileId::new(3)).unwrap().clone();
-        let resolution = ModuleResolutionInputs::new(
-            root.clone(),
-            [
-                (root.clone(), "/p/main.rue"),
-                (a.clone(), "/p/a.rue"),
-                (b.clone(), "/p/b.rue"),
-            ]
-            .into_iter()
-            .map(|(module, path)| crate::ModuleResolutionInput {
-                module,
-                physical_path: Arc::from(path),
-            })
-            .collect(),
-        )
-        .unwrap();
-        let graph = |target| {
-            CanonicalImportGraph::from_supplied(
-                root.clone(),
-                vec![crate::CanonicalImportRecord::new(
-                    root.clone(),
+        let with_sibling = snapshot(
+            &[
+                (1, "/p/app/main.rue", "app/main.rue", main),
+                (
+                    2,
+                    "/p/choice.rue",
                     "choice.rue",
-                    CanonicalImportResolution::Resolved(target),
-                )],
-                &resolution,
-            )
-            .unwrap()
+                    "pub fn value() -> i32 { 1 }",
+                ),
+                (
+                    3,
+                    "/p/app/choice.rue",
+                    "app/choice.rue",
+                    "pub fn value() -> i32 { 2 }",
+                ),
+            ],
+            1,
+        );
+        let resolved_target = |graph: &CanonicalImportGraph| match graph.records()[0].resolution() {
+            CanonicalImportResolution::Resolved(module) => module.as_str().to_owned(),
+            other => panic!("expected a resolved import, got {other:?}"),
         };
-        let graph_a = graph(a);
-        let graph_b = graph(b);
+
         let options = CompileOptions::default();
         let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-
-        session.adopt_test_import_graph(graph_a.clone());
+        let graph_a = crate::test_support::TestDiscoveryHost::new(&root_only)
+            .unwrap()
+            .drive(&mut session)
+            .unwrap()
+            .graph;
+        assert_eq!(resolved_target(&graph_a), "choice.rue");
         let output_a = session.canonical_semantic(&options).unwrap();
         let diagnostics_a = session.latest_diagnostics().unwrap().clone();
-        let main = body_query_key(&mut session, &options, "main");
-        let main_a = retained_body_transaction(&session, &main).0;
-        session.adopt_test_import_graph(graph_b.clone());
+        let main_key = body_query_key(&mut session, &options, "main");
+        let main_a = retained_body_transaction(&session, &main_key).0;
+
+        let graph_b = crate::test_support::TestDiscoveryHost::new(&with_sibling)
+            .unwrap()
+            .drive(&mut session)
+            .unwrap()
+            .graph;
+        assert_eq!(resolved_target(&graph_b), "app/choice.rue");
         let output_b = session.canonical_semantic(&options).unwrap();
         let diagnostics_b = session.latest_diagnostics().unwrap().clone();
-        let main_b = retained_body_transaction(&session, &main).0;
+        let main_b = retained_body_transaction(&session, &main_key).0;
 
         let mut fresh = CompilerSession::new();
-        fresh.update(&source).into_result().unwrap();
-        fresh.adopt_test_import_graph(graph_b.clone());
+        publish_with_test_imports(&mut fresh, &with_sibling);
         let fresh_b = fresh.canonical_semantic(&options).unwrap();
 
         assert!(!Arc::ptr_eq(&diagnostics_a, &diagnostics_b));
