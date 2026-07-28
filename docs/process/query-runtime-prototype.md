@@ -117,15 +117,8 @@ unique-key churn, eviction/recreation stamp ABA, foreign pins, red publication,
 and one-worker/many-worker diagnostic/work equivalence. They use barriers,
 channels, and structural counters instead of latency assertions.
 
-Run the representative microbenchmark with:
-
-```text
-./buck2 run //crates/rue-query-bench:rue-query-bench -- --keys 64 --workers 1
-./buck2 run //crates/rue-query-bench:rue-query-bench -- --keys 64 --workers 8
-```
-
-On an Apple Silicon macOS 26.5.1 development host with Rust 1.92.0, a sample run
-produced these JSON records:
+The retired prototype runner produced the following historical samples on an
+Apple Silicon macOS 26.5.1 development host with Rust 1.92.0:
 
 ```json
 {"schema":1,"keys":64,"workers":1,"cold_micros":191,"reuse_micros":42,"red_micros":131,"join_micros":55,"checksum":6240,"join_stamp":1,"claims":129,"joins":1,"reuses":64,"green_publications":65,"red_publications":64,"peak_active_bodies":1,"retained_terminals":129,"retained_nodes":65,"evictions":0}

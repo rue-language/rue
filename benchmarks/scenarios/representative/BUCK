@@ -1,8 +1,0 @@
-export_file(name = "labels.rue", visibility = ["PUBLIC"])
-export_file(name = "labels_alt.rue", visibility = ["PUBLIC"])
-export_file(name = "main.rue", visibility = ["PUBLIC"])
-export_file(name = "model.rue", visibility = ["PUBLIC"])
-export_file(name = "report.rue", visibility = ["PUBLIC"])
-export_file(name = "std_root.rue", src = "std/_std.rue", visibility = ["PUBLIC"])
-export_file(name = "std_math.rue", src = "std/math.rue", visibility = ["PUBLIC"])
-export_file(name = "worker.rue", visibility = ["PUBLIC"])

@@ -60,20 +60,10 @@ filegroup(
 filegroup(
     name = "frontend-diff-corpus",
     srcs = dict([(path, path) for path in glob([
-        "benchmarks/**/*.rue",
         "examples/**/*.rue",
         "reproducibility/**/*.rue",
         "std/**/*.rue",
-    ])] + [
-        ("benchmarks/scenarios/representative/labels.rue", "//benchmarks/scenarios/representative:labels.rue"),
-        ("benchmarks/scenarios/representative/labels_alt.rue", "//benchmarks/scenarios/representative:labels_alt.rue"),
-        ("benchmarks/scenarios/representative/main.rue", "//benchmarks/scenarios/representative:main.rue"),
-        ("benchmarks/scenarios/representative/model.rue", "//benchmarks/scenarios/representative:model.rue"),
-        ("benchmarks/scenarios/representative/report.rue", "//benchmarks/scenarios/representative:report.rue"),
-        ("benchmarks/scenarios/representative/std/_std.rue", "//benchmarks/scenarios/representative:std_root.rue"),
-        ("benchmarks/scenarios/representative/std/math.rue", "//benchmarks/scenarios/representative:std_math.rue"),
-        ("benchmarks/scenarios/representative/worker.rue", "//benchmarks/scenarios/representative:worker.rue"),
-    ]),
+    ])]),
     visibility = ["PUBLIC"],
 )
 
@@ -123,47 +113,6 @@ filegroup(
 filegroup(
     name = "required-ci-workflows",
     srcs = [".github/workflows/ci.yml"],
-)
-
-benchmark_tool_local_inputs = glob(["benchmarks/**"]) + [
-        "scripts/append-benchmark.py",
-        "scripts/benchmark_collection.py",
-        "scripts/benchmark_manifest.py",
-        "scripts/benchmark_scaling.py",
-        "scripts/benchmark_annotations.py",
-        "scripts/benchmark_evolution.py",
-        "scripts/benchmark_history.py",
-        "scripts/benchmark_metrics.py",
-        "scripts/benchmark_recent.py",
-        "scripts/benchmark_scenarios.py",
-        "scripts/benchmark_validation.py",
-        "scripts/generate-charts.py",
-        "scripts/generate-site-status.py",
-        "scripts/parser-profile.py",
-        "scripts/perf-baseline.py",
-        "scripts/scaling_workloads.py",
-        "scripts/validate-benchmark.py",
-        "website/build.sh",
-        "website/css/input.css",
-        "website/templates/performance.html",
-        "website/templates/index.html",
-    ]
-
-filegroup(
-    name = "benchmark-tool-inputs",
-    srcs = dict([(path, path) for path in benchmark_tool_local_inputs] + [
-        ("benchmarks/scenarios/representative/labels.rue", "//benchmarks/scenarios/representative:labels.rue"),
-        ("benchmarks/scenarios/representative/labels_alt.rue", "//benchmarks/scenarios/representative:labels_alt.rue"),
-        ("benchmarks/scenarios/representative/main.rue", "//benchmarks/scenarios/representative:main.rue"),
-        ("benchmarks/scenarios/representative/model.rue", "//benchmarks/scenarios/representative:model.rue"),
-        ("benchmarks/scenarios/representative/report.rue", "//benchmarks/scenarios/representative:report.rue"),
-        ("benchmarks/scenarios/representative/std/_std.rue", "//benchmarks/scenarios/representative:std_root.rue"),
-        ("benchmarks/scenarios/representative/std/math.rue", "//benchmarks/scenarios/representative:std_math.rue"),
-        ("benchmarks/scenarios/representative/worker.rue", "//benchmarks/scenarios/representative:worker.rue"),
-        ("crates/rue/src/main.rs", "//crates/rue:benchmark-definition"),
-        ("crates/rue-compiler-session-bench/src/main.rs", "//crates/rue-compiler-session-bench:benchmark-main-definition"),
-        ("crates/rue-compiler-session-bench/src/representative.rs", "//crates/rue-compiler-session-bench:benchmark-representative-definition"),
-    ]),
 )
 
 rue_sh_test(
@@ -576,7 +525,6 @@ rue_sh_test(
 filegroup(
     name = "timeout-workflow-test-inputs",
     srcs = [
-        ".github/workflows/benchmarks.yml",
         ".github/workflows/ci.yml",
         ".github/workflows/correctness-repetitions.yml",
         "scripts/ci-repeat-correctness",
@@ -639,7 +587,6 @@ rue_sh_test(
         "--source", "rue-cfg=$(location //crates/rue-cfg:type-architecture-inventory-sources)",
         "--source", "rue-codegen=$(location //crates/rue-codegen:type-architecture-inventory-sources)",
         "--source", "rue-compiler=$(location //crates/rue-compiler:type-architecture-inventory-sources)",
-        "--source", "rue-compiler-session-bench=$(location //crates/rue-compiler-session-bench:type-architecture-inventory-sources)",
         "--source", "rue-oracle=$(location //crates/rue-oracle:type-architecture-inventory-sources)",
     ],
 )
@@ -694,34 +641,6 @@ rue_sh_test(
 rue_test_suite(
     name = "payload-ownership-compile-fail-tests",
     tests = ["//crates/rue-rir:rue-rir[doc]"],
-)
-
-rue_sh_test(
-    name = "benchmark-tool-tests",
-    test = "scripts/test-benchmark-tools.py",
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "RUE_BENCHMARK_TEST_ROOT": "$(location :benchmark-tool-inputs)",
-        "RUE_DEEP_NESTING_CASE": "$(location //crates/rue-cli-tests:deep-nesting-case)/cases/deep_nesting.toml",
-    },
-)
-
-# RUE-1091: the value-audit protocol and adversarial fail-closed tests are
-# repository gates. Declare every script and checked-in manifest they import so
-# Buck cannot reuse a result after the protocol or fixture changes.
-rue_sh_test(
-    name = "value-audit-tool-tests",
-    test = "scripts/test-value-audit.py",
-    resources = [
-        "scripts/rue-value-audit.py",
-        "scripts/perf-baseline.py",
-        "benchmarks/manifest.toml",
-        "benchmarks/value-audit/manifest.toml",
-        "benchmarks/value-audit/README.md",
-    ],
-    env = {
-        "PYTHONDONTWRITEBYTECODE": "1",
-    },
 )
 
 # The destructive maintenance scripts under test (jj-tidy, worktree-gc). Their

@@ -20,7 +20,6 @@
 #   scripts/rue cli [pattern]      CLI integration tests, optional filter
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
 #   scripts/rue frontend-manifest  Refresh the audited frontend corpus manifest
-#   scripts/rue perf [args...]     Per-pass compiler perf baseline (scripts/perf-baseline.py)
 #   scripts/rue fmt                Format the code (./fmt.sh)
 #   scripts/rue gc                 Reclaim disk: drop buck-out artifacts unused for 1+ week
 #   scripts/rue cache [args...]    Provision the shared BuildBuddy action cache
@@ -179,13 +178,6 @@ case "$cmd" in
         RUE_FRONTEND_DIFF_CORPUS="$repo_root/$corpus_output" \
         ./buck2 run //crates/rue-frontend-diff:rue-frontend-diff -- \
             --refresh-manifest "$repo_root/crates/rue-frontend-diff/src/corpus_manifest.rs"
-        ;;
-    perf)
-        # Per-pass compiler performance baseline (RUE-249). Builds the compiler
-        # first so the harness times a fresh binary, then hands off remaining
-        # args (e.g. --iterations, --format) to the Python harness.
-        scripts/rue-bin >/dev/null
-        python3 scripts/perf-baseline.py "$@"
         ;;
     fmt)
         ./fmt.sh "$@"

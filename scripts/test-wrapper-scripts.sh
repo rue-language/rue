@@ -96,24 +96,6 @@ EOF
   rm -rf "$sb"
 }
 
-test_ruebin_session_bench_uses_canonical_resolver() {
-  local sb; sb="$(mktemp -d)"
-  mkdir -p "$sb/scripts" "$sb/fakebin"
-  cp "$SRC_ROOT/scripts/rue-bin" "$sb/scripts/rue-bin"; chmod +x "$sb/scripts/rue-bin"
-  printf '#!/bin/sh\ntrue\n' >"$sb/fakebin/session"; chmod +x "$sb/fakebin/session"
-  cat >"$sb/buck2" <<'EOF'
-#!/usr/bin/env bash
-echo "root//crates/rue-compiler-session-bench:rue-compiler-session-bench fakebin/session"
-EOF
-  chmod +x "$sb/buck2"
-
-  local rc out
-  out="$( "$sb/scripts/rue-bin" --session-bench 2>/dev/null )"; rc=$?
-  check "rue-bin: session benchmark uses canonical absolute resolver" \
-    "$([ "$rc" -eq 0 ] && [ "$out" = "$sb/fakebin/session" ] && echo 0 || echo 1)"
-  rm -rf "$sb"
-}
-
 # fmt.sh delegates rustfmt's runtime environment to `buck2 run`; a failing
 # invocation must remain loud.
 test_fmt_build_failure_is_loud() {
@@ -1081,7 +1063,6 @@ EOF
 
 test_ruebin_build_failure_is_loud
 test_ruebin_success_prints_clean_path
-test_ruebin_session_bench_uses_canonical_resolver
 test_fmt_build_failure_is_loud
 test_fmt_uses_one_buck_run_and_preserves_paths
 test_rue_exec_resolves_from_caller_cwd

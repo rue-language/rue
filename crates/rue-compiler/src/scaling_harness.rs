@@ -8,10 +8,8 @@
 //! binding/manifest/body counters that already exist on
 //! [`CanonicalSemanticWork`].
 //!
-//! Wall-time, allocation-count, and peak-memory measurement live in a *separate*
-//! opt-in binary, `//crates/rue-scaling-bench`, so they never mix with these
-//! counter assertions. See that crate's module docs for the reproducible runner
-//! command lines and the recorded-baseline provenance.
+//! Wall-time, allocation-count, and peak-memory experiments must remain
+//! separate from these deterministic counter assertions.
 //!
 //! # What it proves
 //!
@@ -69,15 +67,10 @@
 //! a projection that reuses cached exports) therefore drops the corresponding
 //! counter, and this harness observes it.
 //!
-//! # Reference host and recorded prediction
+//! # Recorded prediction
 //!
-//! The recorded structural baselines below were captured on the CI/dev host; the
-//! `//crates/rue-scaling-bench` runner prints `nproc`, total memory, and the
-//! commit hash at run time so any wall-time/allocation/memory baseline is
-//! attributable to a concrete host and revision.
-//!
-//! Two distinct Caldera figures must not be conflated (ADR-0066 §3, RUE-1086
-//! provenance in `docs/benchmarks/rue-1086-caldera-baseline.json`):
+//! Two distinct historical Caldera figures must not be conflated (ADR-0066 §3,
+//! RUE-1086):
 //!
 //! * **~62% of cold wall time at Caldera scale** — the frozen ADR-0066 recorded
 //!   prediction, restored verbatim: the per-body *install/project/endpoint*
@@ -91,10 +84,8 @@
 //! measured at commit aca4acb, release build (`--target-platforms
 //! //platforms:release`), linux x64, `RUE_STD_PATH` set, 200 gdb stack samples
 //! at 0.25s intervals plus per-stage `--time-passes` spans over
-//! `examples/caldera/main.rue`. The full machine-readable record — including
-//! this host's configuration and the per-sample raw evidence — is checked in at
-//! `docs/benchmarks/rue-1086-caldera-baseline.json`. The ~45 ms *pre-link*
-//! target is an eventual reference-host goal, not a current gate.
+//! `examples/caldera/main.rue`. The ~45 ms *pre-link* target is an eventual
+//! reference-host goal, not a current gate.
 //!
 //! ## Recorded structural baseline (stage-sourced counters)
 //!

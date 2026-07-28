@@ -5,10 +5,8 @@ be merged into one "before/after" claim.
 
 ## Current-production value audit
 
-The reproducible user-value audit is run by
-[`scripts/rue-value-audit.py`](../../scripts/rue-value-audit.py), using the
-fixture matrix in [`benchmarks/value-audit/manifest.toml`](../../benchmarks/value-audit/manifest.toml).
-Its candidate baseline is the current production compiler. A historical
+The retired user-value audit used a fixed fixture matrix and the current
+production compiler as its candidate baseline. A historical
 pre-query revision is retained only as context; if it cannot consume the
 modern benchmark/session protocol, the runner uses a thin cold black-box
 compile fallback. Cross-protocol timing comparisons are indeterminate and
@@ -52,9 +50,7 @@ RUE-1135 (A3) built the request-scoped immutable declaration base the probe was
 run to size: one bound declaration epoch per rooted attempt, with each reached
 body deriving its epoch from it instead of rebuilding one. Design, the
 soundness argument, and a cold-coefficient measurement are in
-[`rue-1135-request-scoped-declaration-base.md`](rue-1135-request-scoped-declaration-base.md),
-with raw evidence in
-[`../benchmarks/rue-1135-declaration-base.jsonl`](../benchmarks/rue-1135-declaration-base.jsonl).
+[`rue-1135-request-scoped-declaration-base.md`](rue-1135-request-scoped-declaration-base.md).
 
 It lands by maintainer decision as an intentionally transitional coefficient
 repair. It is a real coefficient win (3.6× to 8.4× cold semantic phase on the
@@ -90,8 +86,8 @@ Every locality-asserting row in this gauntlet runs on the constant-token path:
 
 - the RUE-1121 exact-recompute-set and exact-flat context rows (stage 3) drive
   `session.update` plus `canonical_semantic` with no discovery at all;
-- the stage 7/8 allocation and timing rows use `rue-scaling-bench`, which does
-  the same;
+- the stage 7/8 allocation and timing rows used a standalone scaling runner
+  that did the same;
 - stage 9 is a cold Caldera compile, where warm reuse does not apply.
 
 The one harness row that does drive the rooted-demand protocol
@@ -113,17 +109,9 @@ If the project wants to claim (2), the gauntlet needs one added row that drives
 a warm edit through the same rooted-demand protocol the driver uses. Until that
 row exists, the post-flip summary should say which host shape it measured.
 
-Use this template for the authoritative run after the analyzer flip. The runner
-retains a `summary.tsv` plus one full log per stage:
-
-```sh
-scripts/rue-1091-measurement.sh --results-dir /absolute/path/to/results
-```
-
-For plumbing validation on current trunk, use `--pre-flip`. That mode changes
-only the Caldera stage to `--allow-fail`; it does not relax any structural or
-correctness stage. Resume an interrupted run with `--stage N` and the same
-results directory.
+The retired runner retained a `summary.tsv` plus one full log per stage. Its
+`--pre-flip` mode changed only the Caldera stage to `--allow-fail`; it did not
+relax any structural or correctness stage.
 
 ## Provenance
 

@@ -54,8 +54,8 @@ reported as its own timing root. Hold the parent span by value and re-enter it
 as the first statement inside the closure, as `codegen` does in
 `crates/rue-compiler/src/backend.rs`.
 
-The full current span tree, and the harness bound on unattributed time, are in
-[perf-baseline.md](perf-baseline.md).
+The current span tree is exposed by the driver's `--time-passes` and
+`--benchmark-json` modes.
 
 ### Adding Instrumentation
 

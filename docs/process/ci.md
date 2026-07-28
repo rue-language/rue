@@ -13,10 +13,9 @@ manual re-validation). There is deliberately no `push: [trunk]` trigger
 (RUE-1006): trunk only advances through the merge queue, and the merge-group
 run's checks are attached to the exact commit that lands, so a post-merge
 trunk run would re-test an identical tree. Do not re-add a push trigger;
-`Benchmarks` keeps its push trigger because per-commit measurement on trunk is
-its purpose. Valgrind and ASan are part of this same CI dependency graph, so
-they cannot complete outside the aggregate gate. Manual CI dispatch retains
-the `large_program` selector for expanded Valgrind coverage.
+Valgrind and ASan are part of this same CI dependency graph, so they cannot
+complete outside the aggregate gate. Manual CI dispatch retains the
+`large_program` selector for expanded Valgrind coverage.
 
 Pull-request runs provide early feedback and may intentionally deselect
 unaffected heavy corpus jobs. The merge-group run is authoritative: affected
@@ -141,23 +140,23 @@ Automatic examples have the same declarative tier field.
 spend their critical path compiling that large program. Caldera and Meridian
 instead use dedicated reduced premerge roots plus compile-once slow targets.
 
-The normal 100/1k structural scaling matrix remains a dedicated premerge
-canary; `//crates/rue-compiler:scaling-matrix-stress-test` enables the real
+The normal 100/1k structural scaling matrix remains a distinct premerge
+canary target in the Linux premerge graph;
+`//crates/rue-compiler:scaling-matrix-stress-test` enables the real
 10k-per-axis ladder and belongs to `stress`. Caldera and Meridian likewise
 keep their 4x configurations in dedicated stress targets.
 
-Execution tier and scheduling are separate concerns. A required pre-merge test
-may also carry `rue_heavy_suite` or `rue_dedicated_suite` so it runs in an
-isolated lane without being misrepresented as scheduled-only coverage.
+Execution tier and discovery are separate concerns. A required pre-merge test
+may also carry `rue_heavy_suite` or `rue_dedicated_suite` so wrappers can
+select it explicitly without misrepresenting it as scheduled-only coverage.
 `scripts/rue quick` excludes non-unit integration harnesses via
 `rue_not_quick` and dedicated suites such as the structural scaling matrix.
-The full local suite still discovers and runs them once. Required CI
-sets `RUE_CI_DEFER_DEDICATED_SUITES` to the exact live set of
-`rue_dedicated_suite` targets, so the platform broad passes exclude work owned
-by explicit parallel jobs. `test.sh` fails unless the environment and Buck
-graph match exactly; a new dedicated target therefore cannot be silently
-dropped. The scaling matrix now runs only in its dedicated Linux job instead
-of once in each platform broad pass and then again in that job.
+The full local suite still discovers and runs them once. Required CI may set
+`RUE_CI_DEFER_DEDICATED_SUITES` to the exact live set of
+`rue_dedicated_suite` targets when explicit parallel jobs own them. `test.sh`
+fails unless the environment and Buck graph match exactly, so a dedicated
+target cannot be silently dropped. The scaling matrix currently remains in the
+Linux premerge graph rather than having its own workflow job.
 
 The Linux premerge lane retains broad target discovery and defers its two
 heaviest corpora — `//:cli-tests` and `//:spec-tests` — to explicit Linux
@@ -222,7 +221,7 @@ heavy-suite discovery). Nothing else re-runs the slices on required CI, so
 `CLI_TEST_SHARD_COUNT` therefore means updating the matrix; the protected
 `CI success` context remains unchanged.
 
-### Correctness hang guards and performance budgets
+### Correctness hang guards
 
 `crates/rue-cli-tests/cases/execution_contracts.toml` is the single authority
 for CLI timeout profiles. `ordinary`, `slow`, and `stress` are generous
@@ -236,12 +235,6 @@ then adds proportional and fixed headroom and applies a conservative minimum.
 This lets a truly stuck compiler fail while leaving loaded CI hosts room to
 finish. Mosaic remains in the slow tier and uses the slow hang profile; stress
 programs remain opt-in or scheduled.
-
-Performance thresholds live in `benchmarks/manifest.toml` and are enforced by
-the separate Benchmarks workflow. A correctness timeout therefore never
-asserts that a case is fast enough. Conversely, benchmark regressions are
-reported as performance failures rather than being recast as correctness
-timeouts.
 
 The weekly Correctness repetitions workflow runs every ordinary CLI shard
 multiple independent times. It uploads per-run logs and a summary, continues

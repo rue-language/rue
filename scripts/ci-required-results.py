@@ -16,7 +16,6 @@ EXPECTED_REQUIRED_JOBS = (
     "linux-premerge",
     "native-platforms",
     "compiler-reproducibility",
-    "scaling-matrix",
     "affected-targets",
     "platform-corpus",
     "release",

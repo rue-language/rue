@@ -201,7 +201,6 @@ class GateWiringTests(unittest.TestCase):
 
     def test_filtered_wrapper_lists_repository_quality_gates(self):
         wrapper = (INPUT_ROOT / "test.sh").read_text()
-        self.assertIn("//:benchmark-tool-tests", wrapper)
         self.assertIn("//:tutorial-snippet-tool-tests", wrapper)
         self.assertIn("//:tutorial-snippet-tests", wrapper)
 

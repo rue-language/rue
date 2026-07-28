@@ -3,26 +3,6 @@
 
 pub(crate) const ROOTS: &[(&str, &[&str])] = &[
     (
-        "benchmarks",
-        &[
-            "scenarios/representative/labels.rue",
-            "scenarios/representative/labels_alt.rue",
-            "scenarios/representative/main.rue",
-            "scenarios/representative/model.rue",
-            "scenarios/representative/report.rue",
-            "scenarios/representative/std/_std.rue",
-            "scenarios/representative/std/math.rue",
-            "scenarios/representative/worker.rue",
-            "stress/arithmetic_heavy.rue",
-            "stress/array_heavy.rue",
-            "stress/control_flow.rue",
-            "stress/deep_nesting.rue",
-            "stress/large_structs.rue",
-            "stress/many_functions.rue",
-            "stress/register_pressure.rue",
-        ],
-    ),
-    (
         "examples",
         &[
             "arrays.rue",

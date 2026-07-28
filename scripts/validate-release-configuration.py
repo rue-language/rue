@@ -17,12 +17,6 @@ PLATFORMS = {
     "release": "//platforms:release",
 }
 RELEASE_FLAGS = ("-Copt-level=3", "-Clto=thin")
-RELEASE_CALLERS = {
-    "bench.sh": "//platforms:$BUILD_MODE",
-    "scripts/parser-profile.py": "//platforms:release",
-    "scripts/perf-baseline.py": "//platforms:release",
-}
-
 
 def rustc_cfg_command(payload: str, platform: str) -> str:
     try:
@@ -49,22 +43,6 @@ def validate_commands(debug: str, release: str) -> list[str]:
             errors.append(f"release rustc_cfg is missing {flag}")
         if flag in debug:
             errors.append(f"debug rustc_cfg unexpectedly contains {flag}")
-    return errors
-
-
-def validate_callers(root: Path) -> list[str]:
-    errors: list[str] = []
-    for relative, expected_platform in RELEASE_CALLERS.items():
-        source = (root / relative).read_text()
-        if "--modifier //constraints:release" in source:
-            errors.append(
-                f"{relative}: uses the RUE-277 no-op release modifier; "
-                "use --target-platforms //platforms:release"
-            )
-        if expected_platform not in source:
-            errors.append(
-                f"{relative}: release caller no longer names {expected_platform}"
-            )
     return errors
 
 
@@ -101,7 +79,7 @@ def main() -> int:
         print(f"error: could not inspect Buck release configuration: {error}", file=sys.stderr)
         return 1
 
-    errors = validate_commands(debug, release) + validate_callers(ROOT)
+    errors = validate_commands(debug, release)
     if errors:
         for error in errors:
             print(f"error: {error}", file=sys.stderr)

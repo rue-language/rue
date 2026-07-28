@@ -115,12 +115,11 @@ integer-division quotient. A hard row pins one declaration prefix per request.
 
 ## Measured
 
-Cold semantic phase, `rue-scaling-bench --mode timing`, five iterations per
-point, release build. Both arms were measured in one session on the same
+Cold semantic phase, five iterations per point, release build. Both arms were
+measured in one session on the same
 container so they share host conditions; the container is shared and not quiet,
-so read the ratios rather than the absolute milliseconds. Raw evidence, every
-sample retained:
-[`../benchmarks/rue-1135-declaration-base.jsonl`](../benchmarks/rue-1135-declaration-base.jsonl).
+so read the ratios rather than the absolute milliseconds. The raw artifact was
+part of the retired benchmark-data setup and is no longer checked in.
 
 | bodies × decls | before (`ef75a7a`) | after (`52e93ee`) | speedup |
 | -- | --: | --: | --: |
@@ -139,9 +138,8 @@ Two limits on these points. The synthetic corpus declares no structs, so its
 canonical type pool is nearly empty and this curve does not exercise the
 type-pool overlay — the family RUE-1133 flagged as the one its own corpus made
 invisible. And this is a coefficient measurement, not a value-audit row: the
-protocol in `benchmarks/value-audit/manifest.toml` needs three role binaries, a
-historical baseline, and its paired median/MAD sampling policy on a quiet host,
-and it has not been run for this change.
+retired broader protocol needed three role binaries, a historical baseline, and
+paired median/MAD sampling on a quiet host, and it was not run for this change.
 
 ## Why this is sound
 

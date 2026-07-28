@@ -189,8 +189,7 @@ Rue deliberately tests at several boundaries:
   differential tests compare it with compiled programs.
 - `rue-fuzz` targets the lexer, parser, semantic analysis, full compiler, and
   emitters with mutation and property-based testing.
-- Sanitizer and benchmark workflows cover runtime memory safety and performance
-  regressions.
+- Sanitizer workflows cover runtime memory safety.
 
 The full suite and specification traceability gate are run by `scripts/rue
 test`. See [development.md](development.md) for commands and

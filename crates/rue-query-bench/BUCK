@@ -1,9 +1,0 @@
-load("//crates:defs.bzl", "rue_binary")
-
-# The benchmark is exercised through its deterministic JSON output; an empty
-# libtest binary would add no coverage.
-rue_binary(
-    name = "rue-query-bench",
-    tests = False,
-    deps = ["//crates/rue-query:rue-query"],
-)

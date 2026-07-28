@@ -178,9 +178,8 @@ a language guarantee.
 The 62% figure in that recorded prediction is a pre-implementation hypothesis,
 not repository-proven evidence in this ADR. Before RUE-1090 uses it, RUE-1086
 attaches the raw Caldera artifact, command, base commit, reference host and
-configuration, and samples that establish its provenance. RUE-1086 has attached
-that machine-readable record at
-`docs/benchmarks/rue-1086-caldera-baseline.json`; it separates the 62%
+configuration, and samples that establish its provenance. RUE-1086's archived
+measurement record separates the 62%
 install/project/endpoint share (the figure the gate reads) from the distinct
 ~85% total per-body setup share, so the two are attributed rather than
 conflated.
@@ -811,5 +810,3 @@ establishes producer ownership.
 - `docs/spec/src/04-expressions/14-comptime.md`
 - `crates/rue-spec/cases/expressions/comptime.toml`
 - `crates/rue-spec/cases/types/destructors.toml`
-- `docs/benchmarks/rue-1086-caldera-baseline.json` (RUE-1086 raw Caldera
-  provenance, reference-host configuration, and runner samples)

@@ -13,7 +13,6 @@
 # Any extra arguments are passed through to `buck2 build`, e.g. a release build:
 #
 #   RUE_BINARY="$(scripts/rue-bin --target-platforms //platforms:release)"
-#   SESSION_BENCH="$(scripts/rue-bin --session-bench)"
 #
 set -euo pipefail
 
@@ -23,11 +22,6 @@ cd "$repo_root"
 
 target="//crates/rue:rue"
 target_label="crates/rue:rue"
-if [[ "${1:-}" == "--session-bench" ]]; then
-    target="//crates/rue-compiler-session-bench:rue-compiler-session-bench"
-    target_label="crates/rue-compiler-session-bench:rue-compiler-session-bench"
-    shift
-fi
 
 # Build the compiler. Capture Buck's stdout (which carries the --show-output
 # line) and its stderr (build chatter/diagnostics) SEPARATELY, guarding the exit

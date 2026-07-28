@@ -25,7 +25,7 @@ trap cleanup EXIT
 
 # CLI correctness deadlines come from the same declarative authority as the
 # per-case hang profiles. They include generous headroom and are deliberately
-# not performance promises; benchmark jobs own regression thresholds.
+# not performance promises.
 test_args=("$target")
 timings=""
 case "$target" in

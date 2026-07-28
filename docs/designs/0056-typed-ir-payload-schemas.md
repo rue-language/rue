@@ -612,11 +612,11 @@ The reproducible matrix is:
 | Compiler clean build | Added crate/macro/code-generation and type-checking cost | Wall time and peak RSS for `./buck2 build //crates/rue:rue` from an equivalent clean state |
 | Compiler incremental rebuild after a deterministic edit in each owner crate | Locality and downstream rebuild cost | Wall time and rebuilt action count for RIR, AIR, and CFG edits |
 
-The first three workloads use the repository's benchmark infrastructure and
-`--benchmark-json`/fresh-process accounting described in
-`docs/process/perf-baseline.md`; deterministic generators added for this work
-are checked in or recorded verbatim. Peak RSS uses the platform's standard
-process accounting. Allocation counts use a benchmark-only counting allocator
+The first three workloads used the now-retired external data-collection
+infrastructure together with the compiler's preserved `--benchmark-json`
+instrumentation. Deterministic generators added for this work were checked in
+or recorded verbatim. Peak RSS used the platform's standard process accounting.
+Allocation counts used a benchmark-only counting allocator
 around the compiler phase or focused traversal, with counting disabled outside
 the measured interval. The benchmark must account for iterator construction
 and full consumption, not merely creation.
@@ -824,4 +824,3 @@ issue making a local exception.
 
 - [ADR-0024: Canonical Type Handle and Intern Pool](0024-type-intern-pool.md)
 - [ADR-0053: Typed CompilerSession query state](0053-typed-compiler-query-state.md)
-- [Compiler performance baseline](../process/perf-baseline.md)

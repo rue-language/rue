@@ -1,9 +1,9 @@
 # Warm body locality is decided by the discovery protocol, not module count
 
-Status: diagnostic measurement. Produced by
-`rue-compiler-session-bench --module-axis`, which holds the call graph, reached
-body count, and edit shape fixed and varies only the number of modules the
-bodies are spread across and the protocol used to commit import discovery.
+Status: historical diagnostic measurement. The retired standalone runner held
+the call graph, reached body count, and edit shape fixed while varying only the
+number of modules the bodies were spread across and the protocol used to commit
+import discovery.
 
 ## The disagreement this resolves
 
@@ -176,14 +176,8 @@ rebuilds still recompute every body afterward, that is the epoch reset, not a
 failed repair — and the post-flip measurement should say which rows it expects
 to move before it is run rather than after.
 
-## Reproducing
-
-```sh
-./buck2 run //crates/rue-compiler-session-bench:rue-compiler-session-bench -- \
-  --module-axis --bodies 16 --module-counts 1,2,4,8
-```
-
-The workload gates on structural counters only and asserts warm/fresh parity for
+The historical workload gated on structural counters only and asserted
+warm/fresh parity for
 every measured edit. It pins the `staged` locality result, because that is the
 behavior the existing audit claim rests on; the `rooted_demand` rows are
 deliberately left unasserted so a repair does not read as a failure.
