@@ -347,17 +347,23 @@ fn derive_epoch(
             };
             past.push(summary);
 
+            // Everything here is per compilation, matching `sample_value`'s
+            // latency convention. Mixing a per-compilation band with a
+            // per-batch total would make the stack fail to sum to its own
+            // reported total by exactly the batch size.
             let bands_ns = average_bands(&valid);
-            let compiler_root_ns = mean(
-                &valid
-                    .iter()
-                    .map(|sample| sample.phases.compiler_root_ns)
-                    .collect::<Vec<_>>(),
-            );
+            // The reported root is the sum of the averaged bands, not an
+            // independently averaged root. Each band's mean truncates, so an
+            // independent average would miss their sum by up to a nanosecond
+            // per band — and a stack that does not add up to its own stated
+            // total is the exact dishonesty the additive model exists to
+            // prevent. Defining the total as the sum makes it hold by
+            // construction rather than by luck.
+            let compiler_root_ns = bands_ns.values().sum();
             let process_elapsed_ns = mean(
                 &valid
                     .iter()
-                    .map(|sample| sample.process_elapsed_ns)
+                    .map(|sample| sample.process_elapsed_ns / u64::from(sample.batch_size).max(1))
                     .collect::<Vec<_>>(),
             );
 
@@ -537,6 +543,11 @@ mod tests {
         ResolvedPins, RunIdentity, Sample, WorkloadObservation,
     };
 
+    fn manifest_for_batch(batch_size: u32) -> Manifest {
+        Manifest::parse(&MANIFEST.replace("batch_size = 1", &format!("batch_size = {batch_size}")))
+            .expect("fixture manifest")
+    }
+
     const MANIFEST: &str = r#"
 [[suite]]
 revision = 1
@@ -588,6 +599,17 @@ window = 3
     }
 
     fn run_at(commit: &str, finished: &str, latencies: [u64; 3]) -> RunObject {
+        run_at_batched(commit, finished, latencies, 1)
+    }
+
+    /// A batch size greater than one is the case that matters: it is the only
+    /// way a per-compilation band and a per-batch total can disagree.
+    fn run_at_batched(
+        commit: &str,
+        finished: &str,
+        latencies: [u64; 3],
+        batch_size: u32,
+    ) -> RunObject {
         RunObject {
             schema_version: RUN_SCHEMA_VERSION,
             identity: RunIdentity {
@@ -615,12 +637,17 @@ window = 3
                 workload: "startup".to_string(),
                 samples: latencies
                     .iter()
-                    .map(|ns| Sample {
-                        batch_size: 1,
-                        process_elapsed_ns: ns + 1_000_000,
-                        peak_memory_bytes: 32 * 1024 * 1024,
-                        output_binary_bytes: 12_288,
-                        phases: accounting(*ns),
+                    .map(|ns| {
+                        // The runner stores batch totals, so a sample of K
+                        // compilations records K times the per-compile figures.
+                        let batch = u64::from(batch_size);
+                        Sample {
+                            batch_size,
+                            process_elapsed_ns: (ns + 1_000_000) * batch,
+                            peak_memory_bytes: 32 * 1024 * 1024,
+                            output_binary_bytes: 12_288,
+                            phases: accounting(ns * batch),
+                        }
                     })
                     .collect(),
             }],
@@ -750,19 +777,57 @@ window = 3
     #[test]
     fn the_derived_bands_still_sum_to_the_reported_compiler_root() {
         // A stacked chart whose bands do not add to its own total is the exact
-        // dishonesty the additive model exists to prevent, so averaging must
-        // preserve it.
-        let base = run_at("a", "2026-07-28T00:00:00Z", [100, 133, 177]);
-        let manifest = Manifest::parse(MANIFEST).unwrap();
-        let data = derive(&manifest, &[base]);
+        // dishonesty the additive model exists to prevent.
+        //
+        // Batch sizes above one are the case that matters, and the case an
+        // earlier version of this test missed: with `batch_size: 1` a
+        // per-compilation band and a per-batch total are identical, so the
+        // assertion passed while the real data was wrong by exactly the batch
+        // size.
+        for batch in [1u32, 2, 5] {
+            let manifest = manifest_for_batch(batch);
+            let run = run_at_batched("a", "2026-07-28T00:00:00Z", [100, 130, 170], batch);
+            let data = derive(&manifest, &[run]);
+            let point = &data.platforms[0].epochs[0].points[0].workloads["startup"];
+            let summed: u64 = point.bands_ns.values().sum();
+            assert_eq!(
+                summed, point.compiler_root_ns,
+                "batch {batch}: bands {:?} must sum to root {}",
+                point.bands_ns, point.compiler_root_ns
+            );
+        }
+    }
 
-        let point = &data.platforms[0].epochs[0].points[0].workloads["startup"];
-        let summed: u64 = point.bands_ns.values().sum();
-        assert_eq!(
-            summed, point.compiler_root_ns,
-            "bands {:?} must sum to root {}",
-            point.bands_ns, point.compiler_root_ns
+    #[test]
+    fn every_reported_figure_is_per_compilation() {
+        // The median comes from `sample_value`, which divides by the batch.
+        // The root total and the bands must use the same convention, or the
+        // page shows a total the median contradicts.
+        let unbatched = derive(
+            &manifest_for_batch(1),
+            &[run_at_batched(
+                "a",
+                "2026-07-28T00:00:00Z",
+                [100, 100, 100],
+                1,
+            )],
         );
+        let batched = derive(
+            &manifest_for_batch(4),
+            &[run_at_batched(
+                "a",
+                "2026-07-28T00:00:00Z",
+                [100, 100, 100],
+                4,
+            )],
+        );
+        let one = &unbatched.platforms[0].epochs[0].points[0].workloads["startup"];
+        let four = &batched.platforms[0].epochs[0].points[0].workloads["startup"];
+
+        assert_eq!(one.median_ns, four.median_ns);
+        assert_eq!(one.compiler_root_ns, four.compiler_root_ns);
+        assert_eq!(one.process_elapsed_ns, four.process_elapsed_ns);
+        assert_eq!(one.driver_overhead_ns, four.driver_overhead_ns);
     }
 
     #[test]

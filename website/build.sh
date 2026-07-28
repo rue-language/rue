@@ -24,6 +24,41 @@ else
     find website/content/spec -name "*.md" -exec sed -i 's|@/\([0-9]\)|@/spec/\1|g' {} \;
 fi
 
+# Rebuild the performance dashboard's data from the raw records (ADR-0067).
+#
+# Everything derived — indexes, medians, dispersion, flags, phase composition —
+# is recomputed here from `performance-data-v1` and never stored on that branch.
+# The page renders honestly with nothing to show when collection has not run
+# yet, which is its normal first state rather than an error.
+echo "Deriving performance data..."
+PERF_DATA_ROOT="$(mktemp -d)"
+if git rev-parse --verify origin/performance-data-v1 >/dev/null 2>&1 \
+   || git fetch origin performance-data-v1 --depth=50 >/dev/null 2>&1; then
+    git --work-tree="$PERF_DATA_ROOT" checkout origin/performance-data-v1 -- . 2>/dev/null || true
+    git reset >/dev/null 2>&1 || true
+else
+    echo "  (no performance-data-v1 branch yet; the page will render empty)"
+fi
+
+BENCH="$("$ROOT/buck2" build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+if [ -n "$BENCH" ] && [ -x "$BENCH" ]; then
+    "$BENCH" derive \
+        --manifest "$ROOT/performance/manifest.toml" \
+        --data-root "$PERF_DATA_ROOT" \
+        --out "$ROOT/website/static/performance-data.json"
+    # Tooltips need commit subjects, which the raw records deliberately do not
+    # carry: a run object stores what was measured, not how the commit was
+    # described. Resolving them here keeps the derivation free of git.
+    python3 "$ROOT/scripts/annotate-performance-subjects.py" \
+        --data "$ROOT/website/static/performance-data.json" \
+        --repo "$ROOT"
+else
+    echo "  (rue-bench unavailable; writing an empty dataset)"
+    printf '{"bands":[],"workloads":[],"platforms":[],"rejected":[]}\n' \
+        > "$ROOT/website/static/performance-data.json"
+fi
+rm -rf "$PERF_DATA_ROOT"
+
 # Build Tailwind CSS
 echo "Building Tailwind CSS..."
 cd website

@@ -27,3 +27,9 @@ third-party/.cargo/.global-cache/
 # Python bytecode from repository tooling scripts.
 __pycache__/
 *.pyc
+
+# Derived at site build time from the raw records on performance-data-v1
+# (ADR-0067). Never committed: a stored derived value would eventually disagree
+# with the observations it came from, and the stored copy is the one that would
+# be believed.
+website/static/performance-data.json
