@@ -150,6 +150,7 @@ Crate ownership, when locating changes:
 | `rue-allocator`, `rue-runtime`, `rue-runtime-abi` | heap policy, target runtime, and compiler/runtime ABI contract |
 | `rue-error`, `rue-span` | diagnostics and source locations |
 | `rue-spec`, `rue-ui-tests`, `rue-cli-tests` | language and integration tests |
+| `rue-perf-schema` | compiler-performance measurement contract (ADR-0067) |
 
 ## Testing strategy
 
