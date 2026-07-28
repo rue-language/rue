@@ -1,4 +1,3 @@
-use rayon::prelude::*;
 use tracing::{info, info_span};
 
 use crate::*;
@@ -336,17 +335,16 @@ pub(crate) fn build_functions_and_cfgs(
     // resolved through `legacy_to_machine` only at the codegen boundary; this
     // keeps presentation and durable CFG reuse independent of interner slots.
     let mut all_functions = projected;
-    // Function order controls indexed Rayon collection, object-file order,
-    // and final linker layout. Machine symbols are the stable semantic
+    // Function order controls CFG collection, object-file order, and final
+    // linker layout. Machine symbols are the stable semantic
     // identity shared by user, specialized, destructor, and glue functions.
     all_functions.sort_by(|left, right| left.4.cmp(&right.4));
 
-    // Entered once on the calling thread and held across the Rayon collect
-    // below, so the phase stays active for the whole parallel region.
+    // Entered once on the calling thread and held across the stable collection.
     let _span = info_span!("cfg_construction", phase = "cfg_and_optimization").entered();
 
     let results: Vec<_> = all_functions
-        .into_par_iter()
+        .into_iter()
         .map(
             |(func, semantic_identity, symbol, local_atoms, machine_name)| {
                 let legacy_name = func.name.clone();
@@ -866,12 +864,6 @@ fn compile_snapshot_impl(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
-    // NOTE: the Rayon global thread pool is deliberately NOT configured here.
-    // `build_global()` panics if called twice, and the `--emit` driver path
-    // never reaches this function, so it was silently ignoring `-j`/`--jobs`
-    // (RUE-352). The jobs setting is now applied once in the driver's `main()`
-    // via `configure_thread_pool` before dispatching to any path.
-
     let mut session = CompilerSession::new();
     session.update_for_presentation(snapshot).into_result()?;
     compile_with_session(&mut session, snapshot, options)

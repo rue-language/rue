@@ -13885,11 +13885,13 @@ mod tests {
         // A deterministic per-body stage failure must reach the caller as a real
         // compiler diagnostic rather than a disguised abort that panics the
         // uncanceled session.
-        let errors = crate::revisioned_query_database::with_test_body_transaction_failure(|| {
-            session
-                .canonical_semantic(&CompileOptions::default())
-                .unwrap_err()
-        });
+        let _injection = session
+            .queries
+            .revisioned
+            .inject_body_transaction_failure_for_test();
+        let errors = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap_err();
         let rendered = errors.to_string();
         assert!(
             rendered.contains("injected_body_transaction_failure"),

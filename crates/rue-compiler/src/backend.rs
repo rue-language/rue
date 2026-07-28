@@ -69,7 +69,7 @@ pub(crate) struct FunctionBackendProduct {
 /// Compile analyzed functions to a binary.
 ///
 /// This backend handles both architectures. It:
-/// 1. Generates machine code for each function in parallel
+/// 1. Generates machine code for each function
 /// 2. Creates object files with relocations
 /// 3. Links them into an executable
 ///
@@ -201,11 +201,8 @@ pub(crate) fn generate_backend_products(
     foreign_symbols: &[String],
     request: rue_codegen::BackendArtifactRequest,
 ) -> MultiErrorResult<Vec<FunctionBackendProduct>> {
-    // Rayon workers do not inherit the calling thread's current span, so the
-    // per-function subphase spans inside rue-codegen would otherwise be
-    // reported as extra timing roots. Hold the span by value and re-enter it
-    // inside the closure so every worker's subphases nest under this one
-    // `codegen` aggregate (RUE-786).
+    // Keep every per-function subphase nested under one `codegen` aggregate
+    // timing root (RUE-786).
     let codegen_span = info_span!("codegen", arch = ?options.target.arch(), phase = "backend");
     let _entered = codegen_span.clone().entered();
     let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
@@ -214,7 +211,7 @@ pub(crate) fn generate_backend_products(
         rue_codegen::MachineSymbolResolver::new_with_foreign(&symbol_mappings, &foreign_set);
 
     let results: Vec<CompileResult<FunctionBackendProduct>> = functions
-        .par_iter()
+        .iter()
         .map(|func| {
             let _worker = codegen_span.enter();
             let stable_atom_ids = func
@@ -282,8 +279,8 @@ fn project_backend_object(
     product: FunctionBackendProduct,
     target: Target,
 ) -> CompileResult<Vec<u8>> {
-    // Object serialization runs after the parallel codegen fan-out, so it is a
-    // sibling leaf of `codegen` rather than one of its subphases (RUE-786).
+    // Object serialization runs after code generation, so it is a sibling leaf
+    // of `codegen` rather than one of its subphases (RUE-786).
     let _span = info_span!("object_serialization", phase = "object_generation").entered();
     let mut obj_builder = ObjectBuilder::new(target, &product.machine_name)
         .code(product.machine_code.code)
@@ -418,7 +415,6 @@ fn validate_production_call_relocations(
 }
 
 // ============================================================================
-use rayon::prelude::*;
 use tracing::{info, info_span};
 
 use crate::linking::{link_internal_with_warnings, link_system_with_warnings};

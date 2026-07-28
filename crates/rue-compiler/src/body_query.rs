@@ -299,6 +299,22 @@ pub(crate) struct BodyClosurePublicationKey {
     pub(crate) epoch: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BodyClosureMembershipKey {
+    pub(crate) closure: BodyClosureQueryKey,
+    pub(crate) instance: crate::FunctionInstanceKey,
+}
+
+impl rue_query::QueryKey for BodyClosureMembershipKey {
+    fn stable_identity(&self) -> String {
+        format!(
+            "{};member={:?}",
+            self.closure.stable_identity(),
+            self.instance
+        )
+    }
+}
+
 impl rue_query::QueryKey for BodyClosurePublicationKey {
     fn stable_identity(&self) -> String {
         format!("{};epoch={}", self.closure.stable_identity(), self.epoch)
@@ -309,6 +325,24 @@ impl rue_query::QueryKey for BodyClosurePublicationKey {
 pub(crate) struct BodyClosureBody {
     pub(crate) key: BodyQueryKey,
     pub(crate) bundle: Arc<rue_query::QueryTerminal<BodyAnalysisBundle>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct BodyReachabilityOutput {
+    pub(crate) reached: Arc<[crate::FunctionInstanceKey]>,
+    pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
+    pub(crate) fatal: Option<BodyClosureFatal>,
+    pub(crate) parked_toolchain: Option<crate::ParkedToolchainModules>,
+}
+
+pub(crate) fn body_reachability_output_equal(
+    left: &BodyReachabilityOutput,
+    right: &BodyReachabilityOutput,
+) -> bool {
+    left.reached == right.reached
+        && left.scheduling_errors == right.scheduling_errors
+        && left.fatal == right.fatal
+        && left.parked_toolchain == right.parked_toolchain
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -338,6 +372,7 @@ pub(crate) enum BodyClosureFatal {
 
 #[derive(Debug, Clone)]
 pub(crate) struct BodyClosureOutput {
+    pub(crate) reached: Arc<[crate::FunctionInstanceKey]>,
     pub(crate) bodies: Arc<[BodyClosureBody]>,
     pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
     pub(crate) fatal: Option<BodyClosureFatal>,
@@ -348,7 +383,8 @@ pub(crate) fn body_closure_output_equal(
     left: &BodyClosureOutput,
     right: &BodyClosureOutput,
 ) -> bool {
-    left.bodies.len() == right.bodies.len()
+    left.reached == right.reached
+        && left.bodies.len() == right.bodies.len()
         && left
             .bodies
             .iter()

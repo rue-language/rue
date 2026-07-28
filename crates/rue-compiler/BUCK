@@ -44,7 +44,6 @@ _DEPS = [
     "//third-party:annotate-snippets",
     "//third-party:lasso",
     "//third-party:libc",
-    "//third-party:rayon",
     "//third-party:sha2",
     "//third-party:serde",
     "//third-party:serde_json",
