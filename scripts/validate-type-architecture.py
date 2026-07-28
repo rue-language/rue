@@ -15,7 +15,6 @@ CONSUMER_CRATES = (
     "rue-cfg",
     "rue-codegen",
     "rue-compiler",
-    "rue-compiler-session-bench",
     "rue-oracle",
 )
 OPAQUE_IDS = (

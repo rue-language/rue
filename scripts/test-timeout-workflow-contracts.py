@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pin the separation between correctness repetition and performance gates."""
+"""Pin correctness repetition and required-CI timeout behavior."""
 
 import os
 import unittest
@@ -20,14 +20,6 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("(( failures == 0 ))", script)
         self.assertNotIn("until scripts/ci-heavy-suite", script.lower())
         self.assertNotIn("while scripts/ci-heavy-suite", script.lower())
-
-    def test_performance_thresholds_live_in_benchmark_workflow(self):
-        benchmark = (ROOT / ".github/workflows/benchmarks.yml").read_text()
-        correctness = (ROOT / ".github/workflows/correctness-repetitions.yml").read_text()
-        self.assertIn("enforce performance thresholds", benchmark)
-        self.assertIn("./bench.sh", benchmark)
-        self.assertNotIn("bench.sh", correctness)
-        self.assertNotIn("enforce-budgets", correctness)
 
     def test_required_correctness_workflow_has_no_retry_action(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text().lower()

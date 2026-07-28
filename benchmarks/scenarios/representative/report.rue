@@ -1,6 +1,0 @@
-const model = @import("model.rue");
-const labels = @import("labels.rue");
-
-pub fn adjust(value: i32) -> i32 {
-    if model.weight(value) > 20 { labels.adjustment() } else { 2 }
-}

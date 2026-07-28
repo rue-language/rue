@@ -8,8 +8,7 @@ name = "CLI execution contracts"
 description = "scheduling classes and generous correctness hang guards"
 
 # These are correctness hang guards with deliberate headroom for loaded CI
-# hosts. They are not performance promises. Performance regressions are
-# assessed separately by the benchmark workflow.
+# hosts. They are not performance promises.
 [timeout_profile.ordinary]
 compile_hang_timeout_ms = 180000
 runtime_hang_timeout_ms = 120000

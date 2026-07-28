@@ -1,5 +1,0 @@
-load("//crates:defs.bzl", "rue_binary")
-rue_binary(
-    name = "rue-air-micro-profile",
-    deps = ["//crates/rue-air:rue-air", "//crates/rue-span:rue-span", "//third-party:lasso", "//third-party:serde_json"],
-)

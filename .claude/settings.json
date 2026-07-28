@@ -11,7 +11,6 @@
       "Bash(./test.sh:*)",
       "Bash(./quick-test.sh:*)",
       "Bash(./fmt.sh:*)",
-      "Bash(./bench.sh:*)",
       "Bash(jj status:*)",
       "Bash(jj log:*)",
       "Bash(jj diff:*)",

@@ -29,7 +29,7 @@ The repository contains a complete native compiler pipeline, including:
 - x86-64 Linux, AArch64 Linux, and AArch64 macOS code generation;
 - a small runtime, ELF/Mach-O object and linking support, and direct
   machine-code emitters;
-- specification, UI, CLI, differential-oracle, fuzz, sanitizer, and benchmark
+- specification, UI, CLI, differential-oracle, fuzz, sanitizer, and stress
   suites.
 
 The authoritative language definition is the [Rue specification](docs/spec/).

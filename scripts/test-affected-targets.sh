@@ -87,7 +87,7 @@ expect_selectable "docs/process/logging.md"
 expect_selectable "website/src/index.md"
 expect_selectable "examples/hello/main.rue"
 expect_selectable "README.md"
-expect_selectable "scripts/generate-charts.py"
+expect_selectable "website/build.sh"
 
 # A diff touching a mix of selectable and force-full paths forces a full run.
 TESTS=$((TESTS + 1))

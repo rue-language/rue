@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -48,21 +47,6 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
         self.assertIn("debug rustc_cfg unexpectedly contains -Clto=thin", errors)
         self.assertIn("release rustc_cfg is missing -Clto=thin", errors)
-
-    def test_rejects_old_modifier_and_missing_platform(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for relative, expected in release_configuration.RELEASE_CALLERS.items():
-                path = root / relative
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(f"--target-platforms {expected}\n")
-
-            self.assertEqual(release_configuration.validate_callers(root), [])
-
-            (root / "bench.sh").write_text("--modifier //constraints:release\n")
-            errors = release_configuration.validate_callers(root)
-            self.assertTrue(any("RUE-277 no-op" in error for error in errors))
-            self.assertTrue(any("no longer names" in error for error in errors))
 
     def test_rejects_missing_or_ambiguous_rustc_action(self) -> None:
         with self.assertRaisesRegex(ValueError, "0 matching"):

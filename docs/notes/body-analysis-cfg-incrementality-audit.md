@@ -117,9 +117,9 @@ The schema-11 session benchmark hard-gates supported N=128 workloads:
 - cold analysis populates declaration, body, and CFG caches from its one
   canonical pass, without duplicate cache-population analysis.
 
-Those hard gates measure a single-file corpus committed through the staged
-discovery protocol. `rue-compiler-session-bench --module-axis` holds the corpus
-and edit fixed and varies only the protocol: under the rooted import-demand
+Those hard gates measured a single-file corpus committed through the staged
+discovery protocol. A historical module-axis study held the corpus and edit
+fixed and varied only the protocol: under the rooted import-demand
 protocol that every multi-module program must use, the same leaf edit reanalyzes
 every reached body rather than the leaf and its direct reverse caller. Module
 count is not the variable — one module and eight behave identically. See
@@ -133,9 +133,8 @@ identities, specialized durable-body payloads, durable ordinary bodies exposed
 by the manifest, dependency/completeness records, diagnostics, and
 byte-identical emitted output. The private retained durable-CFG cache has no
 comparison accessor, so its parity is asserted through imported public CFGs,
-exact work counters, and emitted bytes. See
-[`session-invalidation-benchmark.md`](../process/session-invalidation-benchmark.md)
-for the field-level contract.
+exact work counters, and emitted bytes. The retired session harness documented
+the field-level contract used for this historical audit.
 
 ## Remaining boundaries
 

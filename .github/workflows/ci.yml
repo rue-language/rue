@@ -4,8 +4,7 @@ name: CI
 # queue, and the merge_group run's checks are attached to the exact commit that
 # lands, so a trunk push run would re-validate an identical tree — ~8 duplicate
 # (including a macOS slot) per merge, usually cancelled mid-flight by the
-# concurrency group after burning runner time. Benchmarks keep their push
-# trigger (per-commit history is their purpose); use workflow_dispatch for a
+# concurrency group after burning runner time. Use workflow_dispatch for a
 # manual re-validation of trunk.
 on:
   pull_request:
@@ -98,8 +97,7 @@ jobs:
 
       - name: Lint GitHub Actions workflows
         # A workflow file GitHub can't parse fails every run in 0s with no
-        # useful error, and nothing in ./test.sh can see it — benchmarks.yml
-        # was broken this way for five months (gh-991). actionlint also
+        # useful error, and nothing in ./test.sh can see it. actionlint also
         # shellchecks all run: blocks. Keep the reviewed release visible next
         # to its immutable OCI index digest; docs/process/ci.md documents the
         # update and verification procedure.
@@ -153,8 +151,9 @@ jobs:
         run: python3 scripts/validate-rust-project.py
 
   # Linux owns the complete target-independent premerge graph. Heavy corpus
-  # and dedicated targets are deferred only to explicit Linux jobs below, all
-  # of which feed the stable aggregate gate.
+  # targets are deferred only to explicit Linux jobs below; dedicated
+  # target-independent canaries remain in this graph. Every required result
+  # feeds the stable aggregate gate.
   linux-premerge:
     runs-on: ubuntu-latest
     name: premerge (linux-x64)
@@ -201,13 +200,11 @@ jobs:
         run: scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
 
       - name: Run complete target-independent premerge suite
-        # CLI and spec are sharded onto explicit Linux jobs; the structural
-        # scaling matrix has its own Linux job. The omission audit proves those
-        # are the only deferred targets.
+        # CLI and spec are sharded onto explicit Linux jobs. The omission audit
+        # proves those are the only deferred targets.
         env:
           RUE_TEST_TIER: premerge
           RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:spec-tests'
-          RUE_CI_DEFER_DEDICATED_SUITES: '//crates/rue-compiler:scaling-matrix-test'
         run: scripts/ci-timed "linux-x64 premerge" -- ./test.sh
 
       - name: Run explicit cross-backend compilation and encoding coverage
@@ -324,48 +321,6 @@ jobs:
           path: ${{ runner.temp }}/rue-compiler-repro-artifacts
           if-no-files-found: ignore
 
-  # RUE-1086: the heavy 100/1k structural scaling matrix is split out of the
-  # fast `rue-compiler-test` unit suite (which keeps only the small 20x20 smoke)
-  # into its own `scaling-matrix-test` target, compiled with `--cfg=scaling_matrix`.
-  # Run it as its own job, filtered to the matrix cases. Set RUE_SCALING_LARGE=1
-  # to also exercise the opt-in 10k ladder. Marking this check required in branch
-  # protection is a maintainer action.
-  scaling-matrix:
-    runs-on: ubuntu-latest
-    name: scaling matrix (linux-x64)
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Install dotslash
-        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Cache dotslash artifacts
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/dotslash
-          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
-          restore-keys: |
-            dotslash-linux-x64-
-
-      - name: Provision remote build cache
-        env:
-          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
-        run: |
-          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
-            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
-            exit 0
-          fi
-          scripts/provision-build-cache install
-          scripts/provision-build-cache apply
-
-      - name: Build scaling matrix target
-        run: scripts/ci-timed "scaling-matrix build" -- ./buck2 build //crates/rue-compiler:scaling-matrix-test
-
-      - name: Run scaling matrix
-        # `buck2 run` drives the libtest binary directly so the trailing
-        # `scaling_matrix` filter selects only the heavy matrix cases compiled in
-        # by `--cfg=scaling_matrix`, not the whole compiler unit suite.
-        run: scripts/ci-timed "scaling-matrix run" -- ./buck2 run //crates/rue-compiler:scaling-matrix-test -- scaling_matrix --nocapture
 
   # RUE-1119: on pull_request, select only the heavy corpus suites the diff
   # actually affects, using Meta's off-the-shelf Buck Target Determinator (BTD,
@@ -687,7 +642,6 @@ jobs:
       - linux-premerge
       - native-platforms
       - compiler-reproducibility
-      - scaling-matrix
       - affected-targets
       - platform-corpus
       - release

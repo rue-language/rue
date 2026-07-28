@@ -7,9 +7,6 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
 
-# Platforms to generate charts for
-PLATFORMS=("x86-64-linux" "aarch64-linux" "aarch64-macos")
-
 # Copy spec content into website/content/spec
 # We use a copy rather than a symlink for Windows compatibility (symlinks
 # require elevated privileges on Windows). The spec source lives in
@@ -25,129 +22,6 @@ if [[ "$OSTYPE" == "darwin"* ]]; then
     find website/content/spec -name "*.md" -exec sed -i '' 's|@/\([0-9]\)|@/spec/\1|g' {} \;
 else
     find website/content/spec -name "*.md" -exec sed -i 's|@/\([0-9]\)|@/spec/\1|g' {} \;
-fi
-
-# Generate homepage status-board data (git info, spec rule counts, benchmark
-# sparkline). Degrades gracefully when inputs are missing.
-echo "Generating status data..."
-python3 "$ROOT/scripts/generate-site-status.py"
-
-# Generate benchmark charts for each platform
-echo "Generating benchmark charts..."
-BENCHMARKS_DIR="$ROOT/website/static/benchmarks"
-mkdir -p "$BENCHMARKS_DIR/platforms"
-mkdir -p "$BENCHMARKS_DIR/comparison"
-
-# Track which platforms have data for the root metadata.json
-PLATFORMS_WITH_DATA=()
-HISTORY_FILES_WITH_DATA=()
-
-for platform in "${PLATFORMS[@]}"; do
-    history_file="$BENCHMARKS_DIR/history-${platform}"
-    if [[ ! -d "$history_file" ]]; then
-        history_file="$BENCHMARKS_DIR/history-${platform}.json"
-    fi
-    platform_dir="$BENCHMARKS_DIR/platforms/${platform}"
-
-    if [[ -e "$history_file" ]]; then
-        echo "  Generating charts for ${platform}..."
-        mkdir -p "$platform_dir"
-        python3 "$ROOT/scripts/generate-charts.py" \
-            "$history_file" \
-            "$platform_dir" \
-            --platform "$platform"
-        PLATFORMS_WITH_DATA+=("$platform")
-        HISTORY_FILES_WITH_DATA+=("$history_file")
-    else
-        echo "  No history file for ${platform} (skipping)"
-    fi
-done
-
-# Generate comparison charts if we have multiple platforms
-if [[ ${#PLATFORMS_WITH_DATA[@]} -gt 0 ]]; then
-    echo "  Generating comparison charts..."
-    python3 "$ROOT/scripts/generate-charts.py" \
-        --comparison \
-        "$BENCHMARKS_DIR/comparison" \
-        "${HISTORY_FILES_WITH_DATA[@]}"
-fi
-
-# Generate root metadata.json listing all platforms
-echo "  Generating root metadata.json..."
-# Build a JSON array of platform IDs to pass to Python
-PLATFORMS_JSON="["
-first=true
-for platform in "${PLATFORMS_WITH_DATA[@]+"${PLATFORMS_WITH_DATA[@]}"}"; do
-    if [ "$first" = true ]; then
-        first=false
-    else
-        PLATFORMS_JSON+=","
-    fi
-    PLATFORMS_JSON+="\"$platform\""
-done
-PLATFORMS_JSON+="]"
-
-python3 -c "
-import json
-import sys
-from pathlib import Path
-
-benchmarks_dir = Path('$BENCHMARKS_DIR')
-platforms_with_data = json.loads('$PLATFORMS_JSON')
-platforms = []
-
-for platform in platforms_with_data:
-    platform = platform.strip()
-    if not platform:
-        continue
-    metadata_file = benchmarks_dir / 'platforms' / platform / 'metadata.json'
-    if metadata_file.exists():
-        with open(metadata_file) as f:
-            data = json.load(f)
-        platforms.append({
-            'id': platform,
-            'name': data.get('platform_name', platform),
-            'has_data': True,
-            'run_count': data.get('run_count', 0),
-            'latest_commit': data.get('latest_commit')
-        })
-
-# Add platforms without data
-all_platforms = ['x86-64-linux', 'aarch64-linux', 'aarch64-macos']
-platform_ids = [p['id'] for p in platforms]
-for platform in all_platforms:
-    if platform not in platform_ids:
-        platforms.append({
-            'id': platform,
-            'name': {'x86-64-linux': 'Linux x86-64', 'aarch64-linux': 'Linux ARM64', 'aarch64-macos': 'macOS ARM64'}.get(platform, platform),
-            'has_data': False
-        })
-
-# Sort by platform id for consistency
-platforms.sort(key=lambda p: p['id'])
-
-metadata = {
-    'platforms': platforms,
-    # Absolute time on one real machine is the public diagnostic default.
-    'default_platform': (
-        'x86-64-linux'
-        if 'x86-64-linux' in platforms_with_data
-        else platforms_with_data[0] if platforms_with_data else None
-    )
-}
-
-with open(benchmarks_dir / 'metadata.json', 'w') as f:
-    json.dump(metadata, f, indent=2)
-print(f'  Generated {benchmarks_dir}/metadata.json with {len([p for p in platforms if p[\"has_data\"]])} platforms with data')
-"
-
-# Backwards compatibility: Generate charts from legacy history.json if it exists
-# and no per-platform history exists yet
-if [[ -f "$BENCHMARKS_DIR/history.json" && ${#PLATFORMS_WITH_DATA[@]} -eq 0 ]]; then
-    echo "  Generating legacy charts from history.json..."
-    python3 "$ROOT/scripts/generate-charts.py" \
-        "$BENCHMARKS_DIR/history.json" \
-        "$BENCHMARKS_DIR/"
 fi
 
 # Build Tailwind CSS

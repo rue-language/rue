@@ -1,21 +1,13 @@
 name: Website
 
 on:
-  # Deploy (post-merge on trunk) only on real website changes. The spec is
-  # published from docs/spec, but re-deploying on every spec commit rolls the
-  # dice against the flaky GitHub Pages backend far too often; spec, benchmark,
-  # and status-board changes are picked up by the daily schedule (or a manual
-  # run) instead.
+  # Deploy post-merge on trunk only for website changes. Pull requests also
+  # build on specification changes because the spec is copied into the site.
   push:
     branches: [trunk]
     paths:
       - 'website/**'
-      - 'scripts/generate-charts.py'
-      - 'scripts/generate-site-status.py'
-      - 'scripts/benchmark_annotations.py'
-      - 'scripts/benchmark_evolution.py'
-      - 'scripts/benchmark_recent.py'
-      - 'benchmarks/annotations.toml'
+      - 'docs/spec/**'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
   # spec edit that breaks the website build is caught before merge.
@@ -24,17 +16,7 @@ on:
     paths:
       - 'website/**'
       - 'docs/spec/**'
-      - 'scripts/generate-charts.py'
-      - 'scripts/generate-site-status.py'
-      - 'scripts/benchmark_annotations.py'
-      - 'scripts/benchmark_evolution.py'
-      - 'scripts/benchmark_recent.py'
-      - 'benchmarks/annotations.toml'
       - '.github/workflows/deploy-website.yml'
-  # Daily refresh so the published spec, benchmark sparkline, and status board
-  # don't drift more than ~24 hours behind trunk.
-  schedule:
-    - cron: '0 6 * * *'
   workflow_dispatch:
 
 permissions:
@@ -42,9 +24,7 @@ permissions:
   pages: write
   id-token: write
 
-# Use a fixed concurrency group for all website deployments to ensure
-# they run sequentially and don't cancel each other (especially important
-# when triggered by benchmark workflow completion)
+# Use a fixed concurrency group so website deployments run sequentially.
 concurrency:
   group: "pages"
   cancel-in-progress: false
@@ -55,30 +35,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
-        with:
-          # Annotation commit/range validation needs the authoritative history.
-          fetch-depth: 0
 
       - name: Setup dotslash
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
-
-      - name: Fetch benchmark data from perf branch
-        run: |
-          # Try to fetch benchmark history from the perf branch
-          # This may fail if the perf branch doesn't exist yet (new repos)
-          mkdir -p website/static/benchmarks
-
-          if git fetch origin perf --depth=1 2>/dev/null; then
-            echo "Fetched perf branch, extracting benchmark history..."
-
-            # Extract the complete benchmark tree from one perf commit. This
-            # keeps every index and its shards in the same atomic snapshot.
-            rm -rf website/static/benchmarks
-            mkdir -p website/static
-            git archive origin/perf benchmarks | tar -x -C website/static
-          else
-            echo "Perf branch not found, using empty benchmark history"
-          fi
 
       - name: Build website
         run: website/build.sh

@@ -91,7 +91,6 @@ print_test_suite_result() {
 trap print_test_suite_result EXIT
 
 REPOSITORY_QUALITY_GATES=(
-    //:benchmark-tool-tests
     //:tutorial-snippet-tool-tests
     //:tutorial-snippet-tests
     //:spec-traceability

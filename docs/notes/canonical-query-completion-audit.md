@@ -16,7 +16,7 @@ The implementation evidence is:
 
 | RUE-627 work area | Current evidence |
 | --- | --- |
-| Delivered measurement | `docs/process/perf-baseline.md` defines fresh-process phase, wall-time, peak-RSS, and source/work-accounting measurement. `rue-compiler-session-bench` hard-gates bounded cold-versus-reused edit sequences with structural counters instead of inferring reuse from elapsed time. Focused clone and lock decisions were measured in RUE-659 and RUE-660. |
+| Delivered measurement | The retired fresh-process and session harnesses characterized phase time, peak RSS, source/work accounting, and bounded cold-versus-reused edit sequences. Focused clone and lock decisions were measured in RUE-659 and RUE-660. |
 | Explicit identity and module graph | `SourceSnapshot`, `SourceId`, `ModuleId`, `SourceRevision`, and `ModuleResolutionInputs` carry validated root, source, logical-module, relocation, and import identity independently of load order. |
 | Per-module syntax and indexes | `ParsedModule` retains its AST, symbol provenance, definition candidates, and revision. Canonical merge/lowering translates those artifacts into one request-local semantic universe. |
 | Query and invalidation seams | `CompilerSession` owns parse, import, merge, RIR, semantic, body, CFG, diagnostic, dependency-manifest, and invalidation-plan state. Public query results are immutable `Arc` artifacts; missing durable provenance fails closed to ordinary computation. |

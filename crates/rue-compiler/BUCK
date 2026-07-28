@@ -76,9 +76,9 @@ _SCALING_MATRIX_RUSTC_FLAGS = [
     "--check-cfg=cfg(test)",
 ]
 
-# The bounded 100/1k matrix is a required premerge canary. CI runs it as its
-# own job, filtered to `scaling_matrix`, so it is not duplicated in each broad
-# platform pass.
+# The bounded 100/1k matrix is a required premerge canary. It remains a
+# separate target so `scaling_matrix` coverage is isolated from the default
+# unit target while still running in the Linux premerge graph.
 rue_rust_test(
     name = "scaling-matrix-test",
     labels = ["rue_dedicated_suite"],

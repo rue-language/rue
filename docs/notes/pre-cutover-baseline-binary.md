@@ -8,10 +8,9 @@ to size the remaining work, and no verdict may cite it.
 
 ## The binary
 
-The `[historical_reference]` figures in
-[`benchmarks/value-audit/manifest.toml`](../../benchmarks/value-audit/manifest.toml)
-came from a prose table with no reproducible artifact behind it. There is one
-now, and it is cheap to rebuild:
+The retired value-audit manifest's `[historical_reference]` figures came from a
+prose table with no reproducible artifact behind it. There is one now, and it
+is cheap to rebuild:
 
 ```sh
 # 586f50c is "RUE-1027: make bodies revisioned query terminals" — the body-query
@@ -171,18 +170,8 @@ That makes the 6x multiplier a fallback calibration rather than a load-bearing
 threshold. It still matters for a bare run; it no longer stands between a
 repaired compiler and a false failure on a slow host.
 
-## Reproducing
+## Historical runtime
 
-```sh
-scripts/rue-value-audit.py \
-  --historical-baseline /path/to/pre-cutover/rue \
-  --current <current rue> --candidate <current rue> \
-  --source-dir historical_baseline=/path/to/pre-cutover \
-  --source-dir current_production=. --source-dir candidate=. \
-  --workload rill --workload mosaic --workload harbor --workload lattice \
-  --output results/value-audit-cold.json
-```
-
-Rill and mosaic together take a few minutes; harbor and lattice add roughly
+Rill and mosaic together took a few minutes; harbor and lattice added roughly
 20 minutes each at seven paired samples per role. Meridian is the expensive one
 and should be run deliberately rather than inside an iteration loop.
