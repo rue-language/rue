@@ -788,6 +788,21 @@ test_cache_probe_counter_validation() {
 test_ci_heavy_suite_audits_its_target() {
   local sb; sb="$(mktemp -d)"
   cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/ci-heavy-suite"; chmod +x "$sb/ci-heavy-suite"
+  mkdir -p "$sb/scripts"
+  cat >"$sb/scripts/cli-timeout-policy.py" <<'EOF'
+#!/usr/bin/env bash
+target=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--target" ]; then target="$2"; shift 2; else shift; fi
+done
+case "$target" in
+  //:cli-tests) echo 3600 ;;
+  //:cli-tests-slow) echo 7200 ;;
+  //:cli-tests-shard-*) echo 1234 ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$sb/scripts/cli-timeout-policy.py"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then
@@ -823,20 +838,20 @@ EOF
   : >"$sb/calls.log"
   rc=0
   (cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: premerge CLI corpus receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: premerge CLI corpus receives the derived executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests -- --timeout 3600' "$sb/calls.log" && echo 0 || echo 1)"
 
   : >"$sb/calls.log"
   rc=0
   (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-slow FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-slow) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: slow CLI corpus receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-slow -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: slow CLI corpus receives the declarative executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls.log" && echo 0 || echo 1)"
 
   : >"$sb/calls.log"
   rc=0
   (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: CLI shard receives the extended executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Eq '^test //:cli-tests-shard-1 -- --timeout 1200 --env RUE_CLI_CASE_TIMINGS=' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: CLI shard receives the cost-derived executor timeout" \
+    "$([ "$rc" -eq 0 ] && grep -Eq '^test //:cli-tests-shard-1 -- --timeout 1234 --env RUE_CLI_CASE_TIMINGS=' "$sb/calls.log" && echo 0 || echo 1)"
 
   local other_target
   for other_target in \
@@ -888,7 +903,20 @@ test_testsh_unfiltered_audits_corpus_presence() {
   mkdir -p "$sb/scripts"
   cp "$SRC_ROOT/test.sh" "$sb/test.sh"
   cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
-  chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite"
+  cat >"$sb/scripts/cli-timeout-policy.py" <<'EOF'
+#!/usr/bin/env bash
+target=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--target" ]; then target="$2"; shift 2; else shift; fi
+done
+case "$target" in
+  //:cli-tests) echo 3600 ;;
+  //:cli-tests-slow) echo 7200 ;;
+  //:cli-tests-shard-*) echo 1234 ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" "$sb/scripts/cli-timeout-policy.py"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 if [ "$1" = "uquery" ]; then
@@ -953,7 +981,7 @@ EOF
       RUE_FULL_SUITE_LOCK_HELD=1 FAKE_HEAVY_SUITES="$all" \
       FAKE_PASS_TARGETS='//:cli-tests-slow' FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: slow selection audits its real CLI corpus target" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && grep -Fq 'test //:cli-tests-slow -- --timeout 1800' "$sb/calls.log" && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && grep -Fq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls.log" && echo 0 || echo 1)"
 
   # (2) A corpus harness OMITTED while every buck2 invocation still exits 0 is
   #     the RUE-924 false-green: it must become a hard failure naming the suite.

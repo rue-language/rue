@@ -174,6 +174,33 @@ heavy-suite discovery). Nothing else re-runs the slices on CI, so
 `CLI_TEST_SHARD_COUNT` therefore means updating the matrix (and branch
 protection) to match.
 
+### Correctness hang guards and performance budgets
+
+`crates/rue-cli-tests/cases/execution_contracts.toml` is the single authority
+for CLI timeout profiles. `ordinary`, `slow`, and `stress` are generous
+correctness hang guards, not promises about compiler speed. Cases select a
+named execution contract; raw per-case or per-contract millisecond deadlines
+are rejected so one-off budgets cannot drift into the corpus.
+
+The same file defines whole-suite headroom. `scripts/ci-heavy-suite` derives
+each shard's executor deadline from that shard's LPT-assigned expected cost,
+then adds proportional and fixed headroom and applies a conservative minimum.
+This lets a truly stuck compiler fail while leaving loaded CI hosts room to
+finish. Mosaic remains in the slow tier and uses the slow hang profile; stress
+programs remain opt-in or scheduled.
+
+Performance thresholds live in `benchmarks/manifest.toml` and are enforced by
+the separate Benchmarks workflow. A correctness timeout therefore never
+asserts that a case is fast enough. Conversely, benchmark regressions are
+reported as performance failures rather than being recast as correctness
+timeouts.
+
+The weekly Correctness repetitions workflow runs every ordinary CLI shard
+multiple independent times. It uploads per-run logs and a summary, continues
+after a failure only to gather flake evidence, and exits failed if *any*
+repetition failed; a later pass never masks an earlier failure. Required
+correctness jobs do not automatically retry failed cases.
+
 ## Affected-corpus selection on pull requests (RUE-1119)
 
 On a `pull_request` run, the heavy `platform-corpus` suites are selected down to

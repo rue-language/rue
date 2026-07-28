@@ -23,28 +23,37 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# RUE-1083 recalibrated several per-case heavyweight compile budgets upward
-# while per-body incremental work continues, so the CLI corpus's serialized
-# heavyweight aggregate can exceed the test executor's 600-second default
-# (linux-arm64 shard 1 hit the outer timeout at 10:00 with zero case
-# failures). The outer margin is plumbing; the per-case contract budgets in
-# execution_contracts.toml remain the honest gates. Re-tighten when the
-# per-case budgets come back down.
+# CLI correctness deadlines come from the same declarative authority as the
+# per-case hang profiles. They include generous headroom and are deliberately
+# not performance promises; benchmark jobs own regression thresholds.
 test_args=("$target")
 timings=""
 case "$target" in
     //:cli-tests|//:cli-tests-slow)
-        test_args+=(-- --timeout 1800)
+        timeout_tool="${RUE_CLI_TIMEOUT_POLICY_TOOL:-scripts/cli-timeout-policy.py}"
+        timeout="$("$timeout_tool" \
+            --policy "${RUE_CLI_TIMEOUT_POLICY:-crates/rue-cli-tests/cases/execution_contracts.toml}" \
+            --weights "${RUE_CLI_SHARD_WEIGHTS:-crates/rue-cli-tests/shard-weights.json}" \
+            --target "$target")" || exit $?
+        test_args+=(-- --timeout "$timeout")
         ;;
     //:cli-tests-shard-*)
+        timeout_tool="${RUE_CLI_TIMEOUT_POLICY_TOOL:-scripts/cli-timeout-policy.py}"
+        timeout="$("$timeout_tool" \
+            --policy "${RUE_CLI_TIMEOUT_POLICY:-crates/rue-cli-tests/cases/execution_contracts.toml}" \
+            --weights "${RUE_CLI_SHARD_WEIGHTS:-crates/rue-cli-tests/shard-weights.json}" \
+            --target "$target")" || exit $?
         if [[ -n "${RUNNER_TEMP:-}" ]]; then
             timings="$RUNNER_TEMP/rue-cli-case-timings.jsonl"
         else
             timings="$(mktemp "${TMPDIR:-/tmp}/rue-cli-case-timings.XXXXXX")"
         fi
-        test_args+=(-- --timeout 1200 --env "RUE_CLI_CASE_TIMINGS=$timings")
+        test_args+=(-- --timeout "$timeout" --env "RUE_CLI_CASE_TIMINGS=$timings")
         ;;
 esac
+if [[ -n "${RUE_CORRECTNESS_REPETITION:-}" ]]; then
+    test_args+=(--env "RUE_CORRECTNESS_REPETITION=$RUE_CORRECTNESS_REPETITION")
+fi
 
 ./buck2 test "${test_args[@]}" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}

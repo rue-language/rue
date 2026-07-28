@@ -5,22 +5,44 @@
 [section]
 id = "cli.execution_contracts"
 name = "CLI execution contracts"
-description = "bounded scheduling and phase-specific budgets for heavyweight dogfood programs"
+description = "scheduling classes and generous correctness hang guards"
+
+# These are correctness hang guards with deliberate headroom for loaded CI
+# hosts. They are not performance promises. Performance regressions are
+# assessed separately by the benchmark workflow.
+[timeout_profile.ordinary]
+compile_hang_timeout_ms = 180000
+runtime_hang_timeout_ms = 120000
+
+[timeout_profile.slow]
+compile_hang_timeout_ms = 900000
+runtime_hang_timeout_ms = 300000
+
+[timeout_profile.stress]
+compile_hang_timeout_ms = 1800000
+runtime_hang_timeout_ms = 600000
+
+# Whole-corpus deadlines are derived from measured expected cost plus both
+# proportional and fixed headroom. Minima protect sparse or stale weight data;
+# none of these values is a performance threshold.
+[timeout_policy]
+expected_cost_multiplier_percent = 150
+fixed_headroom_ms = 300000
+minimum_shard_timeout_ms = 900000
+minimum_monolith_timeout_ms = 3600000
+minimum_slow_suite_timeout_ms = 7200000
 
 [contract.heavyweight]
 class = "heavyweight"
-compile_timeout_ms = 30000
-runtime_timeout_ms = 30000
+timeout_profile = "ordinary"
 
 [contract.heavyweight_long]
 class = "heavyweight"
-compile_timeout_ms = 120000
-runtime_timeout_ms = 120000
+timeout_profile = "slow"
 
 [contract.heavyweight_extra_long]
 class = "heavyweight"
-compile_timeout_ms = 300000
-runtime_timeout_ms = 120000
+timeout_profile = "stress"
 
 [[automatic_example]]
 path = "harbor/main.rue"
@@ -32,7 +54,7 @@ contract = "heavyweight_long"
 
 [[automatic_example]]
 path = "mosaic/main.rue"
-contract = "heavyweight"
+contract = "heavyweight_long"
 tier = "slow"
 
 [[automatic_example]]

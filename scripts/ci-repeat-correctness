@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Repeat a correctness shard for flake detection. Every failure is retained:
+# later success is evidence of a flake, never an automatic retry that clears it.
+set -uo pipefail
+
+if [[ $# -ne 2 || "$1" != //:cli-tests-shard-* || ! "$2" =~ ^[1-9][0-9]*$ ]]; then
+    echo "usage: scripts/ci-repeat-correctness //:cli-tests-shard-N REPETITIONS" >&2
+    exit 2
+fi
+target="$1"
+repetitions="$2"
+if (( repetitions > 20 )); then
+    echo "error: repetitions must not exceed 20" >&2
+    exit 2
+fi
+
+log_dir="${RUE_REPETITION_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-correctness-repetitions}"
+mkdir -p "$log_dir"
+failures=0
+for ((iteration = 1; iteration <= repetitions; iteration++)); do
+    log="$log_dir/repetition-$iteration.log"
+    echo "correctness repetition $iteration/$repetitions: $target"
+    if RUE_CORRECTNESS_REPETITION="$iteration" scripts/ci-heavy-suite "$target" 2>&1 | tee "$log"; then
+        result=PASS
+    else
+        result=FAIL
+        failures=$((failures + 1))
+    fi
+    printf '%s\t%s\t%s\n' "$iteration" "$result" "$log" >>"$log_dir/results.tsv"
+done
+
+{
+    echo "## Correctness repetition report"
+    echo
+    echo "\`$target\`: $failures failure(s) across $repetitions independent runs."
+    echo "Failures remain failures even if a later repetition passes; inspect the uploaded logs for the case name."
+} | tee "$log_dir/summary.md"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    cat "$log_dir/summary.md" >>"$GITHUB_STEP_SUMMARY"
+fi
+(( failures == 0 ))

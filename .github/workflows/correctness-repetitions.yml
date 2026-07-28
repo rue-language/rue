@@ -1,0 +1,42 @@
+name: Correctness repetitions
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: Independent executions per shard (failures are never cleared)
+        default: "5"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  repeat-cli-shards:
+    name: repeat (linux-x64 shard ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: facebook/install-dotslash@v2
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-repetitions-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: dotslash-repetitions-linux-x64-
+      - name: Repeat correctness shard and retain every failure
+        env:
+          RUE_REPETITION_LOG_DIR: ${{ runner.temp }}/repetitions
+        run: scripts/ci-repeat-correctness "//:cli-tests-shard-${{ matrix.shard }}" "${{ inputs.repetitions || '5' }}"
+      - name: Upload independent-run report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: correctness-repetitions-linux-x64-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/repetitions
+          if-no-files-found: error

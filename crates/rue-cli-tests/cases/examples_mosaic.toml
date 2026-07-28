@@ -7,7 +7,7 @@ tier = "slow"
 # Every case below compiles the same maintained large Mosaic program, so the
 # whole section carries the bounded heavyweight contract, matching the
 # automatic mosaic example.
-contract = "heavyweight"
+contract = "heavyweight_long"
 
 [[case]]
 name = "mosaic_builds_site_and_shared_artifacts"
