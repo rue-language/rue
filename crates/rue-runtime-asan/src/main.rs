@@ -36,14 +36,48 @@
 //! A negative control is a deliberate one-byte out-of-bounds write into this
 //! harness's own poisoned redzone whose sole purpose is to make ASan fault; it
 //! exercises no external input and touches no memory outside the harness.
+//!
+//! # Controls are judged on their evidence, not their exit code (RUE-1190)
+//!
+//! "The child failed" is not the same claim as "the redzone caught the
+//! overrun". A control child that panicked before its deliberate write, or
+//! that aborted on some unrelated sanitizer report, exits nonzero too — so
+//! crediting any nonzero exit reopens the RUE-560 gap one level up: coverage
+//! could rot while the job stayed green. Each child therefore announces
+//! [`CONTROL_REACHED`] on stderr immediately before its overrun, and the
+//! parent requires that marker plus exactly one `use-after-poison` report
+//! before crediting the control (see [`control_verdict`]).
+//!
+//! The parent also captures each child's output instead of letting it stream
+//! into the job log. Two expected ASan reports printed verbatim, with nothing
+//! marking them as deliberate, made a passing run indistinguishable from a
+//! catastrophic failure. A healthy run now prints one line per control, and
+//! the captured report is dumped only when a control fails to behave.
 
-use std::process::Command;
+use std::process::{Command, ExitStatus};
 
 /// Environment variable that puts the harness into negative-control (self-test)
 /// mode. Set by [`require_negative_controls_fail`] when it re-execs this binary
 /// as a child; the child performs one deliberate poisoned-redzone overrun and
 /// is expected to abort under ASan.
 const SELFTEST_ENV: &str = "RUE_ASAN_SELFTEST";
+
+/// Announced on stderr by a negative-control child immediately before its
+/// deliberate overrun, and required by [`control_verdict`]. A child that dies
+/// without printing this failed somewhere earlier, so its nonzero exit proves
+/// nothing about the redzones (RUE-1190).
+const CONTROL_REACHED: &str = "rue-asan negative control reached its overrun:";
+
+/// Prefix of an AddressSanitizer report line, used to count the reports a
+/// negative-control child produced.
+const ASAN_ERROR: &str = "ERROR: AddressSanitizer:";
+
+/// The one report a negative control may produce: a write into the manually
+/// poisoned redzone past a live allocation's usable end.
+const EXPECTED_REPORT: &str = "use-after-poison";
+
+/// The negative controls, each a distinct route to the same overrun class.
+const CONTROLS: [&str; 2] = ["raw-overflow", "growth-overflow"];
 
 /// Bytes of poisoned redzone placed past every guarded allocation's usable end.
 /// A whole number of 8-byte ASan shadow granules so the poison covers complete
@@ -203,7 +237,10 @@ fn main() {
     exercise_guarded_allocations();
     exercise_container_growth();
     require_negative_controls_fail();
-    println!("rue-runtime ASan harness: OK");
+    println!(
+        "rue-runtime ASan harness: OK (allocator exercises clean, {} negative controls proven)",
+        CONTROLS.len()
+    );
 }
 
 /// Drive the real allocator through its main paths with strictly in-bounds
@@ -361,20 +398,66 @@ fn exercise_container_growth() {
 /// The child inherits `RUSTFLAGS`-baked ASan instrumentation and `ASAN_OPTIONS`
 /// from the environment; it runs [`run_negative_control`] and is expected to
 /// abort with a `use-after-poison` report (nonzero exit).
+///
+/// Each child's output is captured rather than inherited, so the expected ASan
+/// reports do not stream into the job log and masquerade as a failure. It is
+/// also the evidence [`control_verdict`] judges: a child is credited only when
+/// it reached its deliberate overrun and died on exactly that report.
 fn require_negative_controls_fail() {
     let exe = std::env::current_exe().expect("current_exe");
-    for mode in ["raw-overflow", "growth-overflow"] {
-        let status = Command::new(&exe)
+    for mode in CONTROLS {
+        let output = Command::new(&exe)
             .env(SELFTEST_ENV, mode)
-            .status()
+            .output()
             .expect("spawn negative-control child");
-        assert!(
-            !status.success(),
-            "NEGATIVE CONTROL '{mode}' DID NOT FAIL under AddressSanitizer: the \
-             redzone instrumentation is not catching intra-arena overruns — the \
-             RUE-560 coverage gap has regressed (child exited {status})"
-        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Err(reason) = control_verdict(mode, output.status, &stderr) {
+            panic!(
+                "NEGATIVE CONTROL '{mode}' DID NOT PROVE ASan CAUGHT ITS OVERRUN: \
+                 {reason}. The redzone instrumentation is not demonstrably \
+                 catching intra-arena overruns — the RUE-560 coverage gap has \
+                 regressed.\n--- captured child output ---\n{stderr}\
+                 --- end captured child output ---"
+            );
+        }
+        println!("negative control '{mode}': ASan reported {EXPECTED_REPORT} as required");
     }
+}
+
+/// Decide whether a negative-control child proved the redzone fired.
+///
+/// Only one outcome counts: the child announced [`CONTROL_REACHED`], then died
+/// on exactly one `use-after-poison` report. Every other nonzero exit — a panic
+/// before the overrun, a different sanitizer report, an extra report from
+/// somewhere else in the child — is a failure to demonstrate coverage, not
+/// evidence of it (RUE-1190).
+fn control_verdict(mode: &str, status: ExitStatus, stderr: &str) -> Result<(), String> {
+    if status.success() {
+        return Err(format!(
+            "the child exited successfully ({status}), so the deliberate \
+             overrun landed in valid arena bytes instead of poisoned shadow"
+        ));
+    }
+    if !stderr.contains(&format!("{CONTROL_REACHED} {mode}")) {
+        return Err(format!(
+            "the child exited {status} before announcing that it reached the \
+             deliberate overrun, so its failure has some other cause"
+        ));
+    }
+    let reports = stderr.matches(ASAN_ERROR).count();
+    if reports != 1 {
+        return Err(format!(
+            "expected exactly one AddressSanitizer report, but the child \
+             produced {reports}"
+        ));
+    }
+    if !stderr.contains(&format!("{ASAN_ERROR} {EXPECTED_REPORT}")) {
+        return Err(format!(
+            "the child's AddressSanitizer report was not `{EXPECTED_REPORT}`, \
+             so the redzone is not what stopped it"
+        ));
+    }
+    Ok(())
 }
 
 /// Perform exactly one deliberate poisoned-redzone overrun for the named
@@ -388,6 +471,7 @@ fn run_negative_control(mode: &str) {
         "raw-overflow" => {
             let g = guarded_alloc(64, 8);
             g.write_and_verify(0xAB); // in-bounds, fine
+            announce_reached(mode);
             // One byte past the usable end -> poisoned -> ASan aborts.
             unsafe { *g.ptr.add(g.size) = 0xFF };
         }
@@ -399,6 +483,7 @@ fn run_negative_control(mode: &str) {
             for i in 0..8usize {
                 v.push(i as u8);
             }
+            announce_reached(mode);
             // `v` is full (len == cap == 8). Simulate a grow-path bug that
             // recorded capacity without reserving it: write at the real end
             // WITHOUT growing. That byte lands in the poisoned redzone.
@@ -409,4 +494,11 @@ fn run_negative_control(mode: &str) {
             std::process::exit(3);
         }
     }
+}
+
+/// Tell the parent this child got as far as its deliberate overrun, so a
+/// following ASan report can be attributed to that write (RUE-1190). Printed to
+/// stderr, which is unbuffered, so it survives the abort that follows.
+fn announce_reached(mode: &str) {
+    eprintln!("{CONTROL_REACHED} {mode}");
 }
