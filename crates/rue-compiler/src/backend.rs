@@ -206,7 +206,7 @@ pub(crate) fn generate_backend_products(
     // reported as extra timing roots. Hold the span by value and re-enter it
     // inside the closure so every worker's subphases nest under this one
     // `codegen` aggregate (RUE-786).
-    let codegen_span = info_span!("codegen", arch = ?options.target.arch());
+    let codegen_span = info_span!("codegen", arch = ?options.target.arch(), phase = "backend");
     let _entered = codegen_span.clone().entered();
     let symbol_mappings = foreign_call_symbol_mappings(functions, foreign_symbols);
     let foreign_set: std::collections::BTreeSet<String> = foreign_symbols.iter().cloned().collect();
@@ -284,7 +284,7 @@ fn project_backend_object(
 ) -> CompileResult<Vec<u8>> {
     // Object serialization runs after the parallel codegen fan-out, so it is a
     // sibling leaf of `codegen` rather than one of its subphases (RUE-786).
-    let _span = info_span!("object_serialization").entered();
+    let _span = info_span!("object_serialization", phase = "object_generation").entered();
     let mut obj_builder = ObjectBuilder::new(target, &product.machine_name)
         .code(product.machine_code.code)
         .strings(product.machine_code.strings);

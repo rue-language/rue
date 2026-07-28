@@ -66,6 +66,28 @@ impl Phase {
             Phase::Linking => "linking",
         }
     }
+
+    /// The phase with this wire name, if the taxonomy declares one.
+    ///
+    /// The compiler's instrumentation names its phases with these strings, so
+    /// parsing them here rather than in the collector keeps the producer and
+    /// this schema from drifting apart silently.
+    pub fn from_wire_name(name: &str) -> Option<Phase> {
+        Phase::ALL
+            .into_iter()
+            .find(|phase| phase.wire_name() == name)
+    }
+
+    /// This phase's position in [`Phase::ALL`].
+    ///
+    /// Collectors keep per-phase state in fixed-size arrays; this is the index
+    /// into them.
+    pub fn index(self) -> usize {
+        Phase::ALL
+            .into_iter()
+            .position(|phase| phase == self)
+            .expect("Phase::ALL covers every phase")
+    }
 }
 
 /// A band of the additive stack: a published phase or a structural bucket.
@@ -526,6 +548,27 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), Phase::ALL.len() + 2);
+    }
+
+    #[test]
+    fn wire_names_round_trip_through_from_wire_name() {
+        for phase in Phase::ALL {
+            assert_eq!(Phase::from_wire_name(phase.wire_name()), Some(phase));
+        }
+        assert_eq!(Phase::from_wire_name("semantic"), None);
+        assert_eq!(Phase::from_wire_name(""), None);
+        // The structural buckets are bands, not phases, and must not parse as
+        // one: a producer marking a span `mixed_parallel` is a bug, not a
+        // declaration.
+        assert_eq!(Phase::from_wire_name("mixed_parallel"), None);
+        assert_eq!(Phase::from_wire_name("unattributed"), None);
+    }
+
+    #[test]
+    fn phase_indexes_are_unique_and_dense() {
+        let mut indexes: Vec<usize> = Phase::ALL.into_iter().map(Phase::index).collect();
+        indexes.sort_unstable();
+        assert_eq!(indexes, (0..Phase::ALL.len()).collect::<Vec<_>>());
     }
 
     #[test]

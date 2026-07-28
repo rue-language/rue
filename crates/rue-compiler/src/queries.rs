@@ -341,7 +341,9 @@ pub(crate) fn build_functions_and_cfgs(
     // identity shared by user, specialized, destructor, and glue functions.
     all_functions.sort_by(|left, right| left.4.cmp(&right.4));
 
-    let _span = info_span!("cfg_construction").entered();
+    // Entered once on the calling thread and held across the Rayon collect
+    // below, so the phase stays active for the whole parallel region.
+    let _span = info_span!("cfg_construction", phase = "cfg_and_optimization").entered();
 
     let results: Vec<_> = all_functions
         .into_par_iter()
@@ -840,7 +842,7 @@ pub(crate) fn pre_link_object_bytes_with_session(
 ) -> MultiErrorResult<usize> {
     let _span = info_span!("compile_pipeline_pre_link").entered();
     let rir = {
-        let _span = info_span!("semantic_astgen").entered();
+        let _span = info_span!("semantic_astgen", phase = "program_construction").entered();
         session.canonical_rir()?
     };
     let semantic = session.canonical_semantic(options)?;
@@ -893,7 +895,7 @@ pub(crate) fn compile_with_session(
     let _span = info_span!("compile_pipeline").entered();
 
     let rir = {
-        let _span = info_span!("semantic_astgen").entered();
+        let _span = info_span!("semantic_astgen", phase = "program_construction").entered();
         session.canonical_rir()?
     };
     let semantic = session.canonical_semantic(options)?;

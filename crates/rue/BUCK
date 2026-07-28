@@ -3,6 +3,9 @@ load("//crates:defs.bzl", "rue_binary")
 _DEPS = [
     "//crates/rue-compiler:rue-compiler",
     "//crates/rue-error:rue-error",
+    # The published phase taxonomy lives with the measurement contract, so the
+    # collector and the run-object schema cannot drift on wire names.
+    "//crates/rue-perf-schema:rue-perf-schema",
     "//crates/rue-rir:rue-rir",
     "//crates/rue-target:rue-target",
     "//third-party:libc",

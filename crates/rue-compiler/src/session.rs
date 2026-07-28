@@ -5052,7 +5052,9 @@ impl CompilerSession {
             .saturating_add(demanded_modules.len() as u64);
         drop(key_span);
         let (modular_result, modular_work) = {
-            let _span = tracing::info_span!("parse_program").entered();
+            let _span =
+                tracing::info_span!("parse_program", phase = "source_discovery_and_parsing")
+                    .entered();
             self.queries.revisioned.parse_program(
                 revision,
                 snapshot.source_revision().root(),
@@ -6607,7 +6609,11 @@ impl CompilerSession {
         };
         drop(declaration_shells_span);
         let declaration_semantics = {
-            let _span = tracing::info_span!("declaration_semantics_projection").entered();
+            let _span = tracing::info_span!(
+                "declaration_semantics_projection",
+                phase = "semantic_analysis"
+            )
+            .entered();
             self.queries.revisioned.projected_declaration_semantics(
                 runtime_revision,
                 merged.ast(),
@@ -6943,7 +6949,8 @@ impl CompilerSession {
             // attributes the aggregate reach-and-analyze cost that RUE-1083
             // traced to the previously unspanned semantic-query path. The
             // per-body pipeline stages nest beneath it as timed leaves.
-            let _body_queries_span = tracing::info_span!("body_queries").entered();
+            let _body_queries_span =
+                tracing::info_span!("body_queries", phase = "semantic_analysis").entered();
             // Producer-nominal identity is exact and stable (RUE-1089): a reached
             // anonymous member owns its precise producer identity, so no reached
             // body can change an anonymous representative and force a re-traversal.

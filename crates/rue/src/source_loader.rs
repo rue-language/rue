@@ -715,7 +715,8 @@ fn drive_import_discovery_to_close(
             witness = frontier;
             break;
         }
-        let _read_span = tracing::info_span!("import_read").entered();
+        let _read_span =
+            tracing::info_span!("import_read", phase = "source_discovery_and_parsing").entered();
         let observations = frontier
             .requests()
             .iter()

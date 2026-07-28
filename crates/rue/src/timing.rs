@@ -18,6 +18,56 @@
 //!    timing as a human-readable table. For machine-readable output, use
 //!    `TimingData::to_json()`.
 //!
+//! # Two timing models, kept distinct
+//!
+//! This module publishes two kinds of phase measurement, and they must never be
+//! mixed in one visualization (ADR-0067).
+//!
+//! **Inclusive spans** are the `passes` table. Spans nest and overlap, a child's
+//! duration is contained in its parent's, and codegen subphases run
+//! concurrently across Rayon workers. Summing them double-counts, which is why
+//! the root total is a union of active intervals rather than a sum.
+//!
+//! **Wall-clock phase accounting** is [`BenchmarkTiming::phase_accounting`]. A
+//! small set of explicitly instrumented, mutually exclusive phases partitions
+//! compiler-root wall time so that, in exact integer nanoseconds:
+//!
+//! ```text
+//! sum(phase_ns) + mixed_parallel_ns + unattributed_ns == compiler_root_ns
+//! ```
+//!
+//! Only this model may be stacked.
+//!
+//! ## Declaring a phase
+//!
+//! Membership is declared at the instrumentation site with a `phase = "..."`
+//! span field naming a `rue_perf_schema::Phase`, never inferred from span names.
+//! Compiler spans nest deeply, so a name-based mapping would read a nested span
+//! as a second concurrent phase and charge the interval to `mixed_parallel`.
+//! Unlike `driver_phase`, the marker is not inherited: a marker on a descendant
+//! is a phase *transition*, and an unmarked child simply continues its parent's
+//! phase.
+//!
+//! Two rules follow for anyone adding a marker:
+//!
+//! * **Mark the work, not the orchestration.** The session is demand-driven, so
+//!   a step that merely *drives* analysis is not itself a phase. Marking such a
+//!   wrapper makes it the sole active phase for the whole subtree and starves the
+//!   real phases inside it, which then only ever appear as `mixed_parallel`.
+//! * **Published phases must not nest.** If two markers can be active at once,
+//!   redraw the boundary rather than accepting the mixed band.
+//!
+//! Because attribution follows the demand context, work reached lazily is
+//! charged to the phase that demanded it — on-demand parsing inside semantic
+//! analysis counts as semantic analysis. Total parse cost remains available in
+//! the inclusive `passes` table, which is exactly what the two-model split is
+//! for.
+//!
+//! `mixed_parallel` and `unattributed` are published bands, not artifacts.
+//! Growth in the first means the boundaries no longer describe the compiler's
+//! parallel structure; growth in the second means compiler time is moving
+//! somewhere the instrumentation does not describe.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -43,6 +93,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use rue_perf_schema::{Phase, PhaseAccounting};
 use serde::Serialize;
 
 use tracing::Subscriber;
@@ -99,6 +150,34 @@ struct TimingDataInner {
     /// deterministic regression test.
     last_root_transition: Option<Instant>,
 
+    /// Reference count per published phase, indexed by [`Phase::index`].
+    ///
+    /// A phase is active exactly while its count is greater than zero. The set
+    /// of active phases is always derived from these counts and never tracked
+    /// independently, so the two can never disagree. Multiple concurrent spans
+    /// of the same phase are expected — Rayon workers re-enter one `codegen`
+    /// span by value (RUE-786) — and the count absorbs them.
+    phase_counts: [u64; Phase::ALL.len()],
+    /// Wall time charged to each published phase, indexed by [`Phase::index`].
+    phase_durations: [Duration; Phase::ALL.len()],
+    /// Wall time during which more than one distinct phase was active.
+    ///
+    /// A published band, not an artifact. Sustained growth means the phase
+    /// boundaries no longer describe the compiler's parallel structure.
+    mixed_parallel: Duration,
+    /// Wall time during which the root was active but no phase was.
+    ///
+    /// Growth here means compiler time is moving somewhere the instrumentation
+    /// does not describe.
+    unattributed: Duration,
+    /// Start of the interval not yet charged to a bucket.
+    ///
+    /// Every root or phase transition charges the interval since this cursor to
+    /// the bucket the *previous* state implied, then advances it. That is what
+    /// makes the phase-sum invariant exact rather than approximate: the charged
+    /// intervals and `root_duration` are driven from the same clamped timeline.
+    charge_cursor: Option<Instant>,
+
     /// Direct parent-child span names captured by the real timing layer.
     ///
     /// This remains test-only so parentage regressions can be checked without
@@ -134,6 +213,14 @@ pub struct BenchmarkTiming {
     pub schema_version: u32,
     /// Pass durations are inclusive and may overlap their parents.
     pub timing_model: &'static str,
+    /// The additive wall-clock partition of compiler-root time.
+    ///
+    /// This is the only model that may be stacked. Its integer nanoseconds
+    /// satisfy `sum(phase_ns) + mixed_parallel_ns + unattributed_ns ==
+    /// compiler_root_ns` exactly. The `passes` table below is the *other*
+    /// model — inclusive spans that nest and overlap — and the two must never
+    /// be mixed in one visualization.
+    pub phase_accounting: PhaseAccounting,
     /// Metadata about this benchmark run.
     pub metadata: BenchmarkMetadata,
     /// Individual pass timings in milliseconds.
@@ -220,6 +307,11 @@ impl TimingData {
                 active_roots: 0,
                 root_active_since: None,
                 last_root_transition: None,
+                phase_counts: [0; Phase::ALL.len()],
+                phase_durations: [Duration::ZERO; Phase::ALL.len()],
+                mixed_parallel: Duration::ZERO,
+                unattributed: Duration::ZERO,
+                charge_cursor: None,
                 #[cfg(test)]
                 parent_edges: Vec::new(),
             })),
@@ -269,6 +361,10 @@ impl TimingData {
         if is_root {
             let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
             inner.root_duration += duration;
+            // Synthetic root time has no phase active, so it is unattributed.
+            // Charging it keeps the phase-sum invariant true for tests that
+            // fabricate root spans instead of driving the span lifecycle.
+            inner.unattributed += duration;
         }
     }
 
@@ -289,6 +385,42 @@ impl TimingData {
             .unwrap_or_else(PoisonError::into_inner)
             .parent_edges
             .clone()
+    }
+
+    /// Enter a published phase.
+    ///
+    /// The span's extension lock is held by the caller, and the global timing
+    /// lock is acquired before sampling the clock — the same order root
+    /// transitions already use, so phase intervals join one serialized timeline
+    /// and no new lock ordering is introduced.
+    fn enter_phase(&self, phase: Phase) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = ordered_root_timestamp(&mut inner, Instant::now());
+        charge_interval(&mut inner, now);
+        inner.phase_counts[phase.index()] += 1;
+    }
+
+    /// Exit a published phase.
+    fn exit_phase(&self, phase: Phase) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now = ordered_root_timestamp(&mut inner, Instant::now());
+        charge_interval(&mut inner, now);
+        let count = &mut inner.phase_counts[phase.index()];
+        // An unbalanced exit would underflow. Tolerating it keeps a broken
+        // instrumentation site from aborting the compiler; the resulting
+        // accounting still has to satisfy the invariant, so the bug surfaces as
+        // an invalidated sample rather than silently skewed bands.
+        *count = count.saturating_sub(1);
+    }
+
+    /// Snapshot the additive wall-clock partition of compiler-root time.
+    ///
+    /// Production readers reach this through the benchmark JSON, which snapshots
+    /// the partition and the root total together.
+    #[cfg(test)]
+    pub(crate) fn phase_accounting(&self) -> PhaseAccounting {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        phase_accounting_locked(&mut inner)
     }
 
     /// Enter a root span and update both timing views as one serialized event.
@@ -322,6 +454,11 @@ impl TimingData {
     }
 
     fn root_enter_inner(inner: &mut TimingDataInner, now: Instant) {
+        // Charge before the count changes: the elapsed interval belongs to the
+        // previous state, which had the root inactive and is therefore excluded.
+        // This also seeds `charge_cursor` to the same instant as
+        // `root_active_since`, which is what makes the two totals agree exactly.
+        charge_interval(inner, now);
         if inner.active_roots == 0 {
             inner.root_active_since = Some(now);
         }
@@ -332,6 +469,9 @@ impl TimingData {
         if inner.active_roots == 0 {
             return;
         }
+        // Charge while the root is still active, so this interval lands in a
+        // band rather than being excluded.
+        charge_interval(inner, now);
         inner.active_roots -= 1;
         if inner.active_roots == 0 {
             if let Some(started) = inner.root_active_since.take() {
@@ -437,16 +577,22 @@ impl TimingData {
         source_metrics: Option<SourceMetrics>,
         peak_memory_bytes: Option<u64>,
     ) -> BenchmarkTiming {
-        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
 
-        let total_ms = current_root_duration(&inner).as_secs_f64() * 1000.0;
+        // Take the partition first so `total_ms` and the bands describe the same
+        // instant; `phase_accounting_locked` charges the in-flight interval.
+        let phase_accounting = phase_accounting_locked(&mut inner);
+        let total_ms = phase_accounting.compiler_root_ns as f64 / 1_000_000.0;
 
         let passes = inner
             .pass_order
             .iter()
             .filter_map(|pass| {
                 inner.passes.get(pass).map(|measurement| {
-                    let duration_ms = measurement.duration.as_secs_f64() * 1000.0;
+                    // Derived from integer nanoseconds, like every other
+                    // millisecond value here, so the root row and `total_ms`
+                    // agree bit for bit rather than to within rounding.
+                    let duration_ms = duration_ns(measurement.duration) as f64 / 1_000_000.0;
                     let percent = if total_ms > 0.0 {
                         (duration_ms / total_ms) * 100.0
                     } else {
@@ -473,7 +619,7 @@ impl TimingData {
                     .get(phase)
                     .map(|measurement| DriverPhaseTiming {
                         name: phase.clone(),
-                        duration_ms: measurement.duration.as_secs_f64() * 1000.0,
+                        duration_ms: duration_ns(measurement.duration) as f64 / 1_000_000.0,
                         invocations: measurement.invocations,
                     })
             })
@@ -486,8 +632,9 @@ impl TimingData {
         };
 
         BenchmarkTiming {
-            schema_version: 2,
+            schema_version: 3,
             timing_model: "inclusive_spans",
+            phase_accounting,
             metadata,
             passes,
             driver_phases,
@@ -534,6 +681,74 @@ fn ordered_root_timestamp(inner: &mut TimingDataInner, now: Instant) -> Instant 
         .map_or(now, |previous| previous.max(now));
     inner.last_root_transition = Some(now);
     now
+}
+
+/// Charge the interval since the last transition to the bucket the previous
+/// state implied, then advance the cursor.
+///
+/// Every interval of compiler-root wall time is partitioned into exactly one
+/// bucket:
+///
+/// * exactly one phase active -> that phase;
+/// * more than one distinct phase active -> `mixed_parallel`;
+/// * root active with no phase active -> `unattributed`;
+/// * root inactive -> excluded from compiler-root totals entirely.
+///
+/// Because this partitions a single timeline rather than summing independent
+/// measurements, the phase-sum invariant holds exactly.
+fn charge_interval(inner: &mut TimingDataInner, now: Instant) {
+    let Some(previous) = inner.charge_cursor.replace(now) else {
+        // First transition: there is no earlier interval to attribute.
+        return;
+    };
+    if inner.active_roots == 0 {
+        return;
+    }
+    let elapsed = now.saturating_duration_since(previous);
+    let mut active_phase = None;
+    let mut distinct = 0usize;
+    for (index, count) in inner.phase_counts.iter().enumerate() {
+        if *count > 0 {
+            distinct += 1;
+            active_phase = Some(index);
+        }
+    }
+    match (distinct, active_phase) {
+        (0, _) => inner.unattributed += elapsed,
+        (1, Some(index)) => inner.phase_durations[index] += elapsed,
+        _ => inner.mixed_parallel += elapsed,
+    }
+}
+
+/// Read the phase partition and the root total as of one instant.
+///
+/// Charging before reading is what lets an in-flight compilation report bands
+/// that still sum to its root total. Reading without charging would report a
+/// root total including the current interval while the bands excluded it.
+fn phase_accounting_locked(inner: &mut TimingDataInner) -> PhaseAccounting {
+    let now = ordered_root_timestamp(inner, Instant::now());
+    charge_interval(inner, now);
+    let in_flight = inner.root_active_since.map_or(Duration::ZERO, |started| {
+        now.saturating_duration_since(started)
+    });
+    PhaseAccounting {
+        phase_ns: Phase::ALL
+            .into_iter()
+            .map(|phase| (phase, duration_ns(inner.phase_durations[phase.index()])))
+            .collect(),
+        mixed_parallel_ns: duration_ns(inner.mixed_parallel),
+        unattributed_ns: duration_ns(inner.unattributed),
+        compiler_root_ns: duration_ns(inner.root_duration + in_flight),
+    }
+}
+
+/// A duration as integer nanoseconds.
+///
+/// Raw records are integers so that content addressing never depends on
+/// floating-point formatting. `u64` nanoseconds spans roughly 584 years, so the
+/// saturation arm is unreachable for a compilation.
+fn duration_ns(duration: Duration) -> u64 {
+    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// Snapshot the union of intervals in which at least one root span was active.
@@ -665,18 +880,43 @@ struct SpanTiming {
     /// Set by a `driver_phase = true` span field, and inherited by children so
     /// nested driver work cannot be mistaken for a compiler pass.
     is_driver_phase: bool,
+    /// The published phase this span declares, if any.
+    ///
+    /// Deliberately NOT inherited from the parent, unlike `is_driver_phase`. A
+    /// phase marker on a nested span is a phase *transition*; inheriting it
+    /// would make every child re-enter its ancestor's phase and inflate the
+    /// reference count without a matching boundary.
+    phase: Option<Phase>,
 }
 
-/// Reads the `driver_phase` marker off a span's creation-time fields.
+/// Reads the `driver_phase` and `phase` markers off a span's creation-time
+/// fields.
+///
+/// Phase membership is declared at the instrumentation site rather than inferred
+/// from span names. The compiler's spans nest deeply — `parser_grammar_execution`
+/// under `parser` under `parse_file`, the MIR subphases under the backend — so a
+/// name-based mapping would read nested spans as concurrent phases and charge
+/// them to `mixed_parallel`. Declaring membership keeps the published phases
+/// genuinely top-level.
 #[derive(Default)]
-struct DriverPhaseVisitor {
+struct SpanMarkerVisitor {
     is_driver_phase: bool,
+    phase: Option<Phase>,
 }
 
-impl tracing::field::Visit for DriverPhaseVisitor {
+impl tracing::field::Visit for SpanMarkerVisitor {
     fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
         if field.name() == "driver_phase" {
             self.is_driver_phase = value;
+        }
+    }
+
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "phase" {
+            // An unrecognized name yields `None`, so the span simply marks no
+            // phase and its time falls to `unattributed`. That is visible in the
+            // published bands rather than silently misattributed.
+            self.phase = Phase::from_wire_name(value);
         }
     }
 
@@ -724,7 +964,7 @@ where
                 .parent()
                 .map(|parent| (parent.name().to_owned(), span.name().to_owned()));
             let is_root = parent_id.is_none();
-            let mut visitor = DriverPhaseVisitor::default();
+            let mut visitor = SpanMarkerVisitor::default();
             attrs.record(&mut visitor);
             let parent_is_driver_phase = parent_id
                 .as_ref()
@@ -743,6 +983,7 @@ where
                 has_children: false,
                 is_root,
                 is_driver_phase: visitor.is_driver_phase || parent_is_driver_phase,
+                phase: visitor.phase,
             });
             drop(extensions);
 
@@ -773,6 +1014,11 @@ where
                     // concurrent callbacks cannot apply stale timestamps.
                     timing.enter_at(Instant::now());
                 }
+                // A driver phase is outside the compiler root by construction,
+                // so it can never also be a published compiler phase.
+                if let Some(phase) = timing.phase.filter(|_| !timing.is_driver_phase) {
+                    self.data.enter_phase(phase);
+                }
             }
         }
     }
@@ -781,6 +1027,12 @@ where
         if let Some(span) = ctx.span(id) {
             let mut extensions = span.extensions_mut();
             if let Some(timing) = extensions.get_mut::<SpanTiming>() {
+                // Leave the phase before the root: the interval belongs to the
+                // phase that was running, and the root must still be active for
+                // it to be charged to a band at all.
+                if let Some(phase) = timing.phase.filter(|_| !timing.is_driver_phase) {
+                    self.data.exit_phase(phase);
+                }
                 if timing.is_root && !timing.is_driver_phase {
                     self.data.exit_root_span(timing);
                 } else {
@@ -1404,6 +1656,7 @@ mod tests {
             has_children: false,
             is_root: true,
             is_driver_phase: false,
+            phase: None,
         };
         let mut delayed = SpanTiming {
             active_enters: 0,
@@ -1412,6 +1665,7 @@ mod tests {
             has_children: false,
             is_root: true,
             is_driver_phase: false,
+            phase: None,
         };
 
         // Model a callback that captured t=10ms, stalled, and was applied
@@ -1447,6 +1701,7 @@ mod tests {
             has_children: false,
             is_root: false,
             is_driver_phase: false,
+            phase: None,
         };
         timing.enter_at(start);
         timing.enter_at(start + Duration::from_millis(10));
@@ -1475,7 +1730,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None);
-        assert!(json.contains("\"schema_version\":2"));
+        assert!(json.contains("\"schema_version\":3"));
         assert!(json.contains("\"timing_model\":\"inclusive_spans\""));
         assert!(json.contains("\"passes\""));
         assert!(json.contains("\"name\""));
@@ -1550,5 +1805,349 @@ mod tests {
         assert!(is_leap_year(2000)); // divisible by 400
         assert!(is_leap_year(2024)); // divisible by 4, not by 100
         assert!(!is_leap_year(2025)); // not divisible by 4
+    }
+}
+
+/// Measurement-boundary tests for the ADR-0067 wall-clock phase partition.
+///
+/// These drive the real tracing span lifecycle rather than poking the
+/// aggregate, because the properties under test are about *transitions* — which
+/// bucket an interval lands in depends on the state at the moment a span is
+/// entered or exited.
+#[cfg(test)]
+mod phase_accounting_tests {
+    use std::thread;
+    use std::time::Duration;
+
+    use tracing_subscriber::layer::SubscriberExt;
+
+    use super::*;
+
+    /// Long enough that a scheduler hiccup cannot make an interval read as zero,
+    /// short enough to keep the suite fast.
+    const TICK: Duration = Duration::from_millis(20);
+
+    fn collect(body: impl FnOnce()) -> PhaseAccounting {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, body);
+        data.phase_accounting()
+    }
+
+    fn phase_ns(accounting: &PhaseAccounting, phase: Phase) -> u64 {
+        accounting.phase_ns.get(&phase).copied().unwrap_or(0)
+    }
+
+    /// The property the whole design rests on: the bands partition root time
+    /// exactly, in integer nanoseconds, with no slack to absorb a mistake.
+    fn assert_invariant(accounting: &PhaseAccounting) {
+        assert!(
+            accounting.holds(),
+            "bands sum to {} ns but compiler root is {} ns: {accounting:?}",
+            accounting.attributed_ns(),
+            accounting.compiler_root_ns,
+        );
+        assert!(
+            accounting.missing_phases().is_empty(),
+            "every published phase must be present, including zero: {:?}",
+            accounting.missing_phases()
+        );
+    }
+
+    #[test]
+    fn a_single_phase_owns_its_interval_exactly() {
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let _phase = tracing::info_span!("sema", phase = "semantic_analysis").entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        let semantic = phase_ns(&accounting, Phase::SemanticAnalysis);
+        assert!(semantic > 0, "the sole active phase must be charged");
+        // Everything under the root belongs to that one phase, so the two
+        // structural buckets stay empty.
+        assert_eq!(accounting.mixed_parallel_ns, 0);
+        assert!(
+            semantic * 2 > accounting.compiler_root_ns,
+            "the phase should dominate root time: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn time_under_the_root_with_no_phase_is_unattributed() {
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        assert!(accounting.unattributed_ns > 0);
+        assert_eq!(accounting.mixed_parallel_ns, 0);
+        for phase in Phase::ALL {
+            assert_eq!(phase_ns(&accounting, phase), 0, "{}", phase.wire_name());
+        }
+    }
+
+    #[test]
+    fn time_outside_the_root_is_excluded_entirely() {
+        let accounting = collect(|| {
+            {
+                let _root = tracing::info_span!("compile").entered();
+                thread::sleep(TICK);
+            }
+            // The root has closed. This interval is real time the process
+            // spends, but it is driver overhead rather than compiler work, so it
+            // must not enter the phase stack at all.
+            thread::sleep(TICK * 2);
+        });
+
+        assert_invariant(&accounting);
+        // Root time covers only the first tick, not the three ticks elapsed.
+        assert!(
+            accounting.compiler_root_ns < duration_ns(TICK * 2),
+            "excluded time leaked into the root total: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn two_distinct_concurrent_phases_are_mixed_parallel() {
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let _first = tracing::info_span!("sema", phase = "semantic_analysis").entered();
+            let _second = tracing::info_span!("codegen", phase = "backend").entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        assert!(
+            accounting.mixed_parallel_ns > 0,
+            "overlapping distinct phases must be mixed, never split: {accounting:?}"
+        );
+        // The first phase owns only the gap between the two `entered()` calls,
+        // which is two transitions apart and therefore tiny. The overlapping
+        // interval itself goes to neither: fractional attribution across
+        // concurrent phases is deliberately not offered.
+        let semantic = phase_ns(&accounting, Phase::SemanticAnalysis);
+        assert_eq!(phase_ns(&accounting, Phase::Backend), 0);
+        assert!(
+            accounting.mixed_parallel_ns > semantic * 4,
+            "the shared interval must dominate the entry gap: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn nesting_two_phases_is_reported_as_mixed_rather_than_innermost_wins() {
+        // Documents the rule that forces phase markers onto genuinely
+        // non-overlapping boundaries: a nested marker is not "more specific",
+        // it is two phases active at once.
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let _outer = tracing::info_span!("outer", phase = "semantic_analysis").entered();
+            thread::sleep(TICK);
+            let _inner = tracing::info_span!("inner", phase = "cfg_and_optimization").entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        assert!(
+            phase_ns(&accounting, Phase::SemanticAnalysis) > 0,
+            "{accounting:?}"
+        );
+        assert!(accounting.mixed_parallel_ns > 0, "{accounting:?}");
+        assert_eq!(phase_ns(&accounting, Phase::CfgAndOptimization), 0);
+    }
+
+    #[test]
+    fn concurrent_spans_of_the_same_phase_are_that_phase_not_mixed() {
+        // This is the Rayon shape: RUE-786 has workers re-enter one `codegen`
+        // span by value, so the same phase is entered many times at once. The
+        // reference count must absorb that rather than reporting mixed.
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let first = tracing::info_span!("codegen", phase = "backend");
+            let _a = first.clone().entered();
+            let _b = first.clone().entered();
+            let _c = first.entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        assert!(phase_ns(&accounting, Phase::Backend) > 0, "{accounting:?}");
+        assert_eq!(
+            accounting.mixed_parallel_ns, 0,
+            "same-phase concurrency is not mixed: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn a_phase_stays_active_until_its_last_concurrent_span_exits() {
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let span = tracing::info_span!("codegen", phase = "backend");
+            let outer = span.clone().entered();
+            {
+                let _inner = span.entered();
+                thread::sleep(TICK);
+            }
+            // One span exited, but the count is still positive, so the phase
+            // owns this interval too.
+            thread::sleep(TICK);
+            drop(outer);
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        let backend = phase_ns(&accounting, Phase::Backend);
+        assert!(
+            backend >= duration_ns(TICK),
+            "the phase must cover both concurrent intervals: {accounting:?}"
+        );
+        assert!(
+            accounting.unattributed_ns > 0,
+            "the interval after the last exit is unattributed: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn phases_entered_on_rayon_workers_are_accounted_across_threads() {
+        // Real threads, real contention on the aggregate lock. The partition is
+        // of wall time globally, not per thread, so overlapping workers in one
+        // phase still yield that phase.
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let span = tracing::info_span!("codegen", phase = "backend");
+            thread::scope(|scope| {
+                for _ in 0..4 {
+                    let worker_span = span.clone();
+                    scope.spawn(move || {
+                        let _entered = worker_span.entered();
+                        thread::sleep(TICK);
+                    });
+                }
+            });
+        });
+
+        assert_invariant(&accounting);
+        assert!(phase_ns(&accounting, Phase::Backend) > 0, "{accounting:?}");
+        assert_eq!(
+            accounting.mixed_parallel_ns, 0,
+            "four workers in one phase is not mixed: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn the_invariant_holds_across_many_interleaved_transitions() {
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            for round in 0..12 {
+                let phase = Phase::ALL[round % Phase::ALL.len()];
+                let _span = tracing::info_span!("work", phase = phase.wire_name()).entered();
+                thread::sleep(Duration::from_millis(2));
+            }
+        });
+
+        assert_invariant(&accounting);
+    }
+
+    #[test]
+    fn a_phase_marker_is_not_inherited_by_child_spans() {
+        // Inheriting would make every descendant re-enter its ancestor's phase,
+        // inflating the reference count without a matching boundary. An
+        // unmarked child simply continues its parent's phase.
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let _parent = tracing::info_span!("sema", phase = "semantic_analysis").entered();
+            let _child = tracing::info_span!("body_analysis").entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        assert!(phase_ns(&accounting, Phase::SemanticAnalysis) > 0);
+        assert_eq!(
+            accounting.mixed_parallel_ns, 0,
+            "an unmarked child must not register as a second phase: {accounting:?}"
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_phase_name_marks_no_phase() {
+        let accounting = collect(|| {
+            let _root = tracing::info_span!("compile").entered();
+            let _span = tracing::info_span!("work", phase = "not_a_published_phase").entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        // Visible as unattributed rather than silently misfiled under some
+        // nearby phase.
+        assert!(accounting.unattributed_ns > 0);
+        for phase in Phase::ALL {
+            assert_eq!(phase_ns(&accounting, phase), 0, "{}", phase.wire_name());
+        }
+    }
+
+    #[test]
+    fn a_driver_phase_is_never_a_published_compiler_phase() {
+        // Driver work lives outside the compiler root by construction, so even
+        // an explicit phase marker on it must not enter the stack.
+        let accounting = collect(|| {
+            {
+                let _root = tracing::info_span!("compile").entered();
+                thread::sleep(Duration::from_millis(2));
+            }
+            let _driver =
+                tracing::info_span!("output_write", driver_phase = true, phase = "linking")
+                    .entered();
+            thread::sleep(TICK);
+        });
+
+        assert_invariant(&accounting);
+        assert_eq!(phase_ns(&accounting, Phase::Linking), 0, "{accounting:?}");
+    }
+
+    #[test]
+    fn an_unbalanced_phase_exit_does_not_panic_or_corrupt_the_partition() {
+        let data = TimingData::new();
+        data.exit_phase(Phase::Backend);
+        data.exit_phase(Phase::Backend);
+        data.enter_phase(Phase::Backend);
+        data.exit_phase(Phase::Backend);
+        let accounting = data.phase_accounting();
+        assert_invariant(&accounting);
+    }
+
+    #[test]
+    fn the_benchmark_json_reports_both_timing_models_without_mixing_them() {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
+            let _root = tracing::info_span!("compile").entered();
+            let _phase = tracing::info_span!("sema", phase = "semantic_analysis").entered();
+            let _child = tracing::info_span!("body_analysis").entered();
+            thread::sleep(TICK);
+        });
+
+        let timing = data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None);
+        assert_eq!(timing.schema_version, 3);
+        assert_eq!(timing.timing_model, "inclusive_spans");
+        assert_invariant(&timing.phase_accounting);
+
+        // The inclusive table still holds the nested child, which the additive
+        // partition deliberately does not surface as its own band.
+        assert!(
+            timing
+                .passes
+                .iter()
+                .any(|pass| pass.name == "body_analysis")
+        );
+
+        // total_ms and the partition describe the same instant.
+        let root_ms = timing.phase_accounting.compiler_root_ns as f64 / 1_000_000.0;
+        assert!(
+            (timing.total_ms - root_ms).abs() < f64::EPSILON,
+            "total_ms {} disagrees with compiler_root_ns {root_ms}",
+            timing.total_ms
+        );
     }
 }

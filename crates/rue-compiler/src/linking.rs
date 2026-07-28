@@ -483,7 +483,7 @@ pub(crate) fn link_internal_with_warnings(
     object_files: &[Vec<u8>],
     warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
-    let _span = info_span!("linker", mode = "internal").entered();
+    let _span = info_span!("linker", mode = "internal", phase = "linking").entered();
 
     let runtime_bytes = runtime_for_target(options.target);
 
@@ -584,7 +584,13 @@ pub(crate) fn link_system_with_warnings(
     linker_cmd: &str,
     warnings: &[CompileWarning],
 ) -> MultiErrorResult<CompileOutput> {
-    let _span = info_span!("linker", mode = "system", command = linker_cmd).entered();
+    let _span = info_span!(
+        "linker",
+        mode = "system",
+        command = linker_cmd,
+        phase = "linking"
+    )
+    .entered();
 
     let runtime_bytes = runtime_for_target(options.target);
     // The system linker consumes the archive bytes directly, so validate the
