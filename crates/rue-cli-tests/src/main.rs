@@ -98,9 +98,10 @@
 //! # Timeouts
 //!
 //! Both the COMPILE step and the compiled program run under phase-specific
-//! wall-clock budgets (default [`rue_test_runner::DEFAULT_TIMEOUT_MS`]). Named
-//! contracts can raise either budget and move heavyweight cases into the
-//! harness's bounded serial lane. If either phase runs long — an infinite loop
+//! wall-clock hang guards selected from the declarative `ordinary`, `slow`, and
+//! `stress` profiles. Named contracts also move heavyweight cases into the
+//! harness's bounded serial lane. These generous guards are correctness
+//! backstops, not performance promises. If either phase runs long — an infinite loop
 //! in generated code, or a compile-time hang in comptime evaluation — its whole
 //! process group is killed and the diagnostic names the phase, elapsed time,
 //! and budget. `compile_only = true` still skips the run entirely for sources
@@ -117,9 +118,9 @@ use std::time::{Duration, Instant};
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 use rue_test_runner::{
-    DEFAULT_TIMEOUT_MS, ExpectedFailureOutcome, KNOWN_TARGETS, ShardSelector, TestFailure,
-    TestResult, classify_expected_failure, compiler_command, find_dir, find_rue_binary,
-    ice_message, run_with_timeout, validate_nonempty_case_corpus,
+    ExpectedFailureOutcome, KNOWN_TARGETS, ShardSelector, TestFailure, TestResult,
+    classify_expected_failure, compiler_command, find_dir, find_rue_binary, ice_message,
+    run_with_timeout, validate_nonempty_case_corpus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -804,7 +805,15 @@ struct TestFile {
     /// the same declarative corpus as cases lets automatic examples and TOML
     /// cases share one scheduling and timeout policy.
     #[serde(default, rename = "contract")]
-    contracts: HashMap<String, ExecutionContract>,
+    contracts: HashMap<String, ExecutionContractDeclaration>,
+    /// The one declarative authority for correctness hang guards. Contracts
+    /// select a named profile instead of inventing raw deadlines.
+    #[serde(default, rename = "timeout_profile")]
+    timeout_profiles: HashMap<TimeoutProfile, HangTimeoutProfile>,
+    /// Parsed here so unknown policy fields fail closed. The CI wrapper owns
+    /// the whole-suite derivation from these values.
+    #[serde(default)]
+    timeout_policy: Option<TimeoutPolicy>,
     /// Contracts and tiers for recursively discovered examples, keyed by the
     /// path that also determines their `cli.examples::...` test name.
     #[serde(default)]
@@ -883,8 +892,39 @@ enum ExecutionClass {
     Heavyweight,
 }
 
+#[derive(Debug, Clone, Copy, Deserialize, Hash, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum TimeoutProfile {
+    Ordinary,
+    Slow,
+    Stress,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+struct HangTimeoutProfile {
+    compile_hang_timeout_ms: u64,
+    runtime_hang_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TimeoutPolicy {
+    expected_cost_multiplier_percent: u64,
+    fixed_headroom_ms: u64,
+    minimum_shard_timeout_ms: u64,
+    minimum_monolith_timeout_ms: u64,
+    minimum_slow_suite_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ExecutionContractDeclaration {
+    class: ExecutionClass,
+    timeout_profile: TimeoutProfile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ExecutionContract {
     class: ExecutionClass,
     compile_timeout_ms: u64,
@@ -892,14 +932,6 @@ struct ExecutionContract {
 }
 
 impl ExecutionContract {
-    fn ordinary() -> Self {
-        Self {
-            class: ExecutionClass::Ordinary,
-            compile_timeout_ms: DEFAULT_TIMEOUT_MS,
-            runtime_timeout_ms: DEFAULT_TIMEOUT_MS,
-        }
-    }
-
     fn compile_timeout(&self) -> Duration {
         Duration::from_millis(self.compile_timeout_ms)
     }
@@ -931,7 +963,8 @@ struct AutomaticExampleMetadata {
 #[derive(Debug)]
 struct LoadedCorpus {
     files: Vec<(String, TestFile)>,
-    contracts: HashMap<String, ExecutionContract>,
+    contracts: HashMap<String, ExecutionContractDeclaration>,
+    timeout_profiles: HashMap<TimeoutProfile, HangTimeoutProfile>,
     automatic_examples: Vec<AutomaticExampleContract>,
 }
 
@@ -2043,6 +2076,9 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
     let mut out = Vec::new();
     let mut contracts = HashMap::new();
     let mut contract_origins = HashMap::<String, String>::new();
+    let mut timeout_profiles = HashMap::new();
+    let mut timeout_profile_origins = HashMap::<TimeoutProfile, String>::new();
+    let mut timeout_policy_origin = None::<String>;
     let mut automatic_examples = Vec::new();
     for path in toml_files {
         let content = match std::fs::read_to_string(&path) {
@@ -2129,14 +2165,6 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                 }
 
                 for (name, contract) in &tf.contracts {
-                    if contract.compile_timeout_ms == 0 || contract.runtime_timeout_ms == 0 {
-                        eprintln!(
-                            "error: {}: contract '{}' must use non-zero compile and runtime budgets",
-                            path.display(),
-                            name,
-                        );
-                        std::process::exit(1);
-                    }
                     if let Some(previous) =
                         contract_origins.insert(name.clone(), path.display().to_string())
                     {
@@ -2150,6 +2178,49 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                     }
                     contracts.insert(name.clone(), contract.clone());
                 }
+                for (name, profile) in &tf.timeout_profiles {
+                    if profile.compile_hang_timeout_ms == 0 || profile.runtime_hang_timeout_ms == 0
+                    {
+                        eprintln!(
+                            "error: {}: timeout profile '{name:?}' must use non-zero hang guards",
+                            path.display(),
+                        );
+                        std::process::exit(1);
+                    }
+                    if let Some(previous) =
+                        timeout_profile_origins.insert(*name, path.display().to_string())
+                    {
+                        eprintln!(
+                            "error: {}: duplicate timeout profile '{name:?}' (already defined in {previous})",
+                            path.display(),
+                        );
+                        std::process::exit(1);
+                    }
+                    timeout_profiles.insert(*name, profile.clone());
+                }
+                if let Some(policy) = &tf.timeout_policy {
+                    if let Some(previous) =
+                        timeout_policy_origin.replace(path.display().to_string())
+                    {
+                        eprintln!(
+                            "error: {}: duplicate timeout_policy (already defined in {previous})",
+                            path.display(),
+                        );
+                        std::process::exit(1);
+                    }
+                    if policy.expected_cost_multiplier_percent < 100
+                        || policy.fixed_headroom_ms == 0
+                        || policy.minimum_shard_timeout_ms == 0
+                        || policy.minimum_monolith_timeout_ms == 0
+                        || policy.minimum_slow_suite_timeout_ms == 0
+                    {
+                        eprintln!(
+                            "error: {}: invalid zero or sub-100 timeout_policy value",
+                            path.display()
+                        );
+                        std::process::exit(1);
+                    }
+                }
                 automatic_examples.extend(tf.automatic_example.iter().cloned());
                 out.push((path.display().to_string(), tf));
             }
@@ -2162,6 +2233,7 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
     LoadedCorpus {
         files: out,
         contracts,
+        timeout_profiles,
         automatic_examples,
     }
 }
@@ -2171,15 +2243,30 @@ fn case_contract_name<'a>(section: &'a Section, case: &'a Case) -> Option<&'a st
 }
 
 fn resolve_contract(
-    contracts: &HashMap<String, ExecutionContract>,
+    contracts: &HashMap<String, ExecutionContractDeclaration>,
+    timeout_profiles: &HashMap<TimeoutProfile, HangTimeoutProfile>,
     name: Option<&str>,
 ) -> ExecutionContract {
-    name.map_or_else(ExecutionContract::ordinary, |name| {
-        contracts
-            .get(name)
-            .unwrap_or_else(|| panic!("contract '{name}' was not validated"))
-            .clone()
-    })
+    let declaration = name.map_or(
+        ExecutionContractDeclaration {
+            class: ExecutionClass::Ordinary,
+            timeout_profile: TimeoutProfile::Ordinary,
+        },
+        |name| {
+            contracts
+                .get(name)
+                .unwrap_or_else(|| panic!("contract '{name}' was not validated"))
+                .clone()
+        },
+    );
+    let profile = timeout_profiles
+        .get(&declaration.timeout_profile)
+        .unwrap_or_else(|| panic!("timeout profile was not validated"));
+    ExecutionContract {
+        class: declaration.class,
+        compile_timeout_ms: profile.compile_hang_timeout_ms,
+        runtime_timeout_ms: profile.runtime_hang_timeout_ms,
+    }
 }
 
 /// Validate the contract graph against the complete, unfiltered inventory.
@@ -2189,6 +2276,26 @@ fn validate_contract_metadata(
     corpus: &LoadedCorpus,
     discovered_examples: &HashSet<String>,
 ) -> Result<HashMap<String, AutomaticExampleMetadata>, String> {
+    for required in [
+        TimeoutProfile::Ordinary,
+        TimeoutProfile::Slow,
+        TimeoutProfile::Stress,
+    ] {
+        if !corpus.timeout_profiles.contains_key(&required) {
+            return Err(format!("missing required timeout profile '{required:?}'"));
+        }
+    }
+    for (name, contract) in &corpus.contracts {
+        if !corpus
+            .timeout_profiles
+            .contains_key(&contract.timeout_profile)
+        {
+            return Err(format!(
+                "execution contract '{name}' references missing timeout profile '{:?}'",
+                contract.timeout_profile
+            ));
+        }
+    }
     let mut used_contracts = HashSet::new();
 
     for (source, file) in &corpus.files {
@@ -2213,17 +2320,22 @@ fn validate_contract_metadata(
                 entry.path,
             ));
         }
-        let contract = corpus.contracts.get(&entry.contract).ok_or_else(|| {
-            format!(
+        if !corpus.contracts.contains_key(&entry.contract) {
+            return Err(format!(
                 "automatic example '{}' references unknown contract '{}'",
                 entry.path, entry.contract,
-            )
-        })?;
+            ));
+        }
+        let contract = resolve_contract(
+            &corpus.contracts,
+            &corpus.timeout_profiles,
+            Some(&entry.contract),
+        );
         if automatic_contracts
             .insert(
                 entry.path.clone(),
                 AutomaticExampleMetadata {
-                    contract: contract.clone(),
+                    contract,
                     tier: entry.tier,
                 },
             )
@@ -2433,6 +2545,7 @@ fn discover_examples() -> Result<Vec<DiscoveredExample>, String> {
 fn example_trials(
     examples: Vec<DiscoveredExample>,
     automatic_contracts: &HashMap<String, AutomaticExampleMetadata>,
+    timeout_profiles: &HashMap<TimeoutProfile, HangTimeoutProfile>,
     case_tier: CliCaseTierSelection,
     rue_binary: &Path,
     real_std: &Path,
@@ -2450,7 +2563,7 @@ fn example_trials(
         }
         let contract = metadata
             .map(|metadata| metadata.contract.clone())
-            .unwrap_or_else(ExecutionContract::ordinary);
+            .unwrap_or_else(|| resolve_contract(&HashMap::new(), timeout_profiles, None));
         let heavyweight = contract.is_heavyweight();
         let rue_binary = rue_binary.to_path_buf();
         let real_std = real_std.to_path_buf();
@@ -2577,6 +2690,7 @@ fn main() {
         std::process::exit(1);
     }
     let mut tests: Vec<Trial> = Vec::with_capacity(total);
+    let timeout_profiles = corpus.timeout_profiles.clone();
 
     for (_, file) in corpus.files {
         if !case_tier.includes(file.section.tier) {
@@ -2585,7 +2699,7 @@ fn main() {
         let section_id = file.section.id.clone();
         for case in file.cases {
             let contract_name = case_contract_name(&file.section, &case);
-            let contract = resolve_contract(&corpus.contracts, contract_name);
+            let contract = resolve_contract(&corpus.contracts, &timeout_profiles, contract_name);
             let heavyweight = contract.is_heavyweight();
             let test_name = format!("{}::{}", section_id, case.name);
             // RUE-1116: keep only the cases this shard owns (unset shard = all).
@@ -2618,6 +2732,7 @@ fn main() {
     tests.extend(example_trials(
         examples,
         &automatic_contracts,
+        &timeout_profiles,
         case_tier,
         &rue_binary,
         &real_std,
@@ -2684,9 +2799,22 @@ mod tests {
     }
 
     fn corpus_from_toml(source: &str) -> LoadedCorpus {
-        let file = toml::from_str::<TestFile>(source).expect("valid test corpus TOML");
+        let profiles = r#"
+            [timeout_profile.ordinary]
+            compile_hang_timeout_ms = 180000
+            runtime_hang_timeout_ms = 120000
+            [timeout_profile.slow]
+            compile_hang_timeout_ms = 900000
+            runtime_hang_timeout_ms = 300000
+            [timeout_profile.stress]
+            compile_hang_timeout_ms = 1800000
+            runtime_hang_timeout_ms = 600000
+        "#;
+        let source = format!("{profiles}\n{source}");
+        let file = toml::from_str::<TestFile>(&source).expect("valid test corpus TOML");
         LoadedCorpus {
             contracts: file.contracts.clone(),
+            timeout_profiles: file.timeout_profiles.clone(),
             automatic_examples: file.automatic_example.clone(),
             files: vec![("inline.toml".to_string(), file)],
         }
@@ -2734,8 +2862,7 @@ mod tests {
 
                     [contract.heavyweight]
                     class = "heavyweight"
-                    compile_timeout_ms = 30000
-                    runtime_timeout_ms = 30000
+                    timeout_profile = "slow"
 
                     [[automatic_example]]
                     path = "{example_path}"
@@ -2754,23 +2881,33 @@ mod tests {
             let file = &corpus.files[0].1;
             for case in &file.cases {
                 assert!(case.contract.is_none(), "case contract must stay inherited");
-                let explicit =
-                    resolve_contract(&corpus.contracts, case_contract_name(&file.section, case));
+                let explicit = resolve_contract(
+                    &corpus.contracts,
+                    &corpus.timeout_profiles,
+                    case_contract_name(&file.section, case),
+                );
                 assert_eq!(automatic[example_path].contract, explicit);
                 assert_eq!(automatic[example_path].tier, expected_tier);
                 assert!(explicit.is_heavyweight());
-                assert_eq!(explicit.compile_timeout(), Duration::from_secs(30));
-                assert_eq!(explicit.runtime_timeout(), Duration::from_secs(30));
+                assert_eq!(explicit.compile_timeout(), Duration::from_secs(900));
+                assert_eq!(explicit.runtime_timeout(), Duration::from_secs(300));
             }
         }
     }
 
     #[test]
-    fn ordinary_contract_keeps_strict_ten_second_defaults() {
-        let contract = ExecutionContract::ordinary();
+    fn ordinary_profile_has_generous_correctness_headroom() {
+        let corpus = corpus_from_toml(
+            r#"
+                [section]
+                id = "cli.contracts"
+                name = "contracts"
+            "#,
+        );
+        let contract = resolve_contract(&corpus.contracts, &corpus.timeout_profiles, None);
         assert!(!contract.is_heavyweight());
-        assert_eq!(contract.compile_timeout(), Duration::from_secs(10));
-        assert_eq!(contract.runtime_timeout(), Duration::from_secs(10));
+        assert_eq!(contract.compile_timeout(), Duration::from_secs(180));
+        assert_eq!(contract.runtime_timeout(), Duration::from_secs(120));
     }
 
     #[test]
@@ -2783,8 +2920,7 @@ mod tests {
 
                 [contract.heavy]
                 class = "heavyweight"
-                compile_timeout_ms = 30000
-                runtime_timeout_ms = 30000
+                timeout_profile = "ordinary"
 
                 [[automatic_example]]
                 path = "renamed/main.rue"
@@ -2843,7 +2979,7 @@ mod tests {
             class: ExecutionClass::Ordinary,
             // Keep fixture setup comfortably outside the forced runtime budget
             // so loaded hosts cannot turn this into a compiler-phase timeout.
-            compile_timeout_ms: DEFAULT_TIMEOUT_MS,
+            compile_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
             runtime_timeout_ms: 10,
         };
         let runtime_error = run_case(
@@ -3021,7 +3157,11 @@ mod tests {
 
         let result = run_case_differential(
             &case,
-            &ExecutionContract::ordinary(),
+            &ExecutionContract {
+                class: ExecutionClass::Ordinary,
+                compile_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+                runtime_timeout_ms: rue_test_runner::DEFAULT_TIMEOUT_MS,
+            },
             &binary,
             Path::new("std"),
             Path::new("."),

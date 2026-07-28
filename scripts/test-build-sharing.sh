@@ -243,7 +243,25 @@ test_full_suite_orchestration() {
     cp "$SRC_ROOT/test.sh" "$sb/test.sh"
     cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
     cp "$SRC_ROOT/scripts/with-full-suite-lock" "$sb/scripts/with-full-suite-lock"
-    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" "$sb/scripts/with-full-suite-lock"
+    cat >"$sb/scripts/cli-timeout-policy.py" <<'EOF'
+#!/usr/bin/env bash
+target=""
+while [[ "$#" -gt 0 ]]; do
+    if [[ "$1" == "--target" ]]; then
+        target="$2"
+        shift 2
+    else
+        shift
+    fi
+done
+case "$target" in
+    //:cli-tests) echo 3600 ;;
+    //:cli-tests-slow) echo 7200 ;;
+    *) exit 2 ;;
+esac
+EOF
+    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" \
+        "$sb/scripts/cli-timeout-policy.py" "$sb/scripts/with-full-suite-lock"
     cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$BUCK_LOG"
@@ -292,10 +310,10 @@ EOF
         "$(grep -Fxq 'test //... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute --exclude rue_test_tier_stress' "$sb/calls" && echo 0 || echo 1)"
     check "suite: heavy targets are discovered from the live graph" \
         "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: premerge CLI corpus receives the extended executor timeout" \
-        "$(grep -Fxq 'test //:cli-tests -- --timeout 1800' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: slow CLI corpus receives the extended executor timeout" \
-        "$(grep -Fxq 'test //:cli-tests-slow -- --timeout 1800' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: premerge CLI corpus receives the derived executor timeout" \
+        "$(grep -Fxq 'test //:cli-tests -- --timeout 3600' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: slow CLI corpus receives the declarative executor timeout" \
+        "$(grep -Fxq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls" && echo 0 || echo 1)"
     check "suite: every other heavy target uses the default executor timeout" \
         "$([ "$(grep -Ec '^test //:(spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs|frontend-diff-test)$' "$sb/calls")" -eq 5 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \

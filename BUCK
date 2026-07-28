@@ -513,6 +513,52 @@ rue_sh_test(
     },
 )
 
+rue_sh_test(
+    name = "cli-timeout-policy-validation",
+    test = "scripts/cli-timeout-policy.py",
+    args = [
+        "--policy",
+        "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml",
+        "--weights",
+        "$(location //crates/rue-cli-tests:shard-weights)",
+    ],
+)
+
+rue_sh_test(
+    name = "cli-timeout-policy-tool-tests",
+    test = "scripts/test-cli-timeout-policy.py",
+    resources = ["scripts/cli-timeout-policy.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_CLI_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
+    },
+)
+
+rue_sh_test(
+    name = "correctness-repetition-script-tests",
+    test = "scripts/test-ci-repeat-correctness.sh",
+    resources = ["scripts/ci-repeat-correctness"],
+)
+
+filegroup(
+    name = "timeout-workflow-test-inputs",
+    srcs = [
+        ".github/workflows/benchmarks.yml",
+        ".github/workflows/ci.yml",
+        ".github/workflows/correctness-repetitions.yml",
+        "scripts/ci-repeat-correctness",
+    ],
+)
+
+rue_sh_test(
+    name = "timeout-workflow-contract-tests",
+    test = "scripts/test-timeout-workflow-contracts.py",
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_TIMEOUT_WORKFLOW_ROOT": "$(location :timeout-workflow-test-inputs)",
+    },
+)
+
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-
 # corpus selection — the out-of-graph force-full matcher in
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.
@@ -678,6 +724,7 @@ filegroup(
     srcs = [
         "fmt.sh",
         "scripts/ci-heavy-suite",
+        "scripts/cli-timeout-policy.py",
         "scripts/ci-timed",
         "scripts/check-cache-probe",
         "scripts/rue",
@@ -704,6 +751,7 @@ filegroup(
         "buck2",
         "buck2-bin",
         "scripts/ci-heavy-suite",
+        "scripts/cli-timeout-policy.py",
         "scripts/provision-build-cache",
         "scripts/with-full-suite-lock",
         "test.sh",

@@ -72,7 +72,9 @@ jobs:
           restore-keys: |
             dotslash-${{ matrix.platform }}-
 
-      - name: Run benchmarks
+      # Performance budgets are enforced here, separately from correctness
+      # hang guards in the CLI corpus.
+      - name: Run benchmarks and enforce performance thresholds
         run: |
           iterations="${{ github.event.inputs.iterations || '5' }}"
           export RUE_BENCH_RUNNER_IMAGE="${ImageOS:-${{ runner.os }}}:${ImageVersion:-unknown}:${{ runner.arch }}"
