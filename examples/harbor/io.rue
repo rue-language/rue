@@ -3,11 +3,9 @@ const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
 const Bytes = std.arraybuf.ArrayBuf(u8);
 const OptBytes = std.option.Option(Bytes);
-const File = std.fs.File;
-const FileError = std.fs.FileError;
-const FileRes = std.result.Result(File, FileError);
-const ReadRes = std.result.Result(u64, FileError);
-const WriteRes = std.result.Result((), FileError);
+const FileRes = std.result.Result(std.fs.File, std.fs.FileError);
+const ReadRes = std.result.Result(u64, std.fs.FileError);
+const WriteRes = std.result.Result((), std.fs.FileError);
 
 pub fn read_bytes(borrow path: StrBuf) -> OptBytes {
     let O = OptBytes;

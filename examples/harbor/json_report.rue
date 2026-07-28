@@ -10,8 +10,6 @@ const state = @import("state.rue");
 const text = @import("text.rue");
 const utilization = @import("utilization.rue");
 const StrBuf = std.strbuf.StrBuf;
-const Json = std.json.Json;
-const ParseError = std.json.ParseError;
 
 fn key(inout out: StrBuf, name: str) {
     let mut value = StrBuf.new();
@@ -205,7 +203,7 @@ pub fn reparses(borrow report: StrBuf) -> bool {
     let mut copy = StrBuf.new();
     text.append_string(inout copy, borrow report);
     match std.json.parse(copy) {
-        std.result.Result(Json, ParseError).Ok(value) => true,
-        std.result.Result(Json, ParseError).Err(error) => false,
+        std.result.Result(std.json.Json, std.json.ParseError).Ok(value) => true,
+        std.result.Result(std.json.Json, std.json.ParseError).Err(error) => false,
     }
 }

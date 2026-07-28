@@ -387,7 +387,7 @@ pub struct Parser {
         let mut path = self.add(ast.IDENT, first.value, first.start, first.end, 0, 0, 0);
         loop {
             if self.at(token.LPAREN) && self.paren_followed_by_dot() {
-                let args = self.parse_type_args();
+                let args = self.parse_pattern_type_args();
                 path = self.add(ast.TYPE_CALL, 0, first.start, self.previous().end, path, args, 0);
             } else if self.eat(token.DOT) {
                 let seg = self.expect(token.IDENT);
@@ -408,6 +408,26 @@ pub struct Parser {
             let _ = self.expect(token.RPAREN);
         }
         self.add(ast.PATTERN, 0, start, self.previous().end, path, binds, 0)
+    }
+
+    fn parse_pattern_type_args(inout self) -> u64 {
+        let _ = self.expect(token.LPAREN);
+        let mut args: u64 = 0;
+        while !self.at(token.RPAREN) && !self.eof() {
+            let parsed = self.parse_type_arg();
+            let node = self.arena.at(parsed);
+            // Generic pattern arguments are expression-shaped in the production AST:
+            // bare names retain a type node, while qualified paths are field chains.
+            let arg = if node.kind == ast.TYPE && node.a != 0 && self.arena.at(node.a).kind == ast.FIELD {
+                node.a
+            } else {
+                parsed
+            };
+            args = self.append(args, arg);
+            if !self.eat(token.COMMA) { break; }
+        }
+        let _ = self.expect(token.RPAREN);
+        args
     }
 
     fn paren_followed_by_dot(borrow self) -> bool {
@@ -618,16 +638,19 @@ pub struct Parser {
         let _ = self.expect(token.LPAREN);
         let mut args: u64 = 0;
         while !self.at(token.RPAREN) && !self.eof() {
-            let arg = if Self.is_primitive(self.kind()) || self.at(token.SELFTYPE) || self.at(token.LBRACKET) || self.at(token.PTR) || self.at(token.STRUCT) || self.at(token.ENUM) {
-                self.parse_type()
-            } else if self.at(token.MINUS) || self.at(token.INT) {
-                self.parse_expr(0, true)
-            } else { self.parse_type() };
-            args = self.append(args, arg);
+            args = self.append(args, self.parse_type_arg());
             if !self.eat(token.COMMA) { break; }
         }
         let _ = self.expect(token.RPAREN);
         args
+    }
+
+    fn parse_type_arg(inout self) -> u64 {
+        if self.at(token.MINUS) || self.at(token.INT) {
+            self.parse_expr(0, true)
+        } else {
+            self.parse_type()
+        }
     }
 
     fn parse_directives(inout self) -> u64 {
