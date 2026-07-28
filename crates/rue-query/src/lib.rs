@@ -839,7 +839,7 @@ struct RuntimeCore {
     wait_graph: Mutex<BTreeMap<TaskId, WaitEdge>>,
     family_names: Mutex<BTreeSet<Arc<str>>>,
     revisions: Mutex<RevisionStore>,
-    nodes: Mutex<BTreeMap<u64, Weak<dyn ErasedNode>>>,
+    nodes: Mutex<NodeRegistry>,
     next_task: AtomicU64,
     next_family: AtomicU64,
     next_node: AtomicU64,
@@ -853,6 +853,79 @@ struct RuntimeCore {
     /// close. Never present in non-test builds and free of cost otherwise.
     #[cfg(test)]
     interpose: InterposeSlot,
+}
+
+#[derive(Debug, Default)]
+struct NodeRegistry {
+    // The index never owns a node. Its entries are removed by the matching
+    // node's destructor, so registration and cleanup each address one
+    // incarnation rather than scanning the live population.
+    entries: BTreeMap<u64, RegisteredNode>,
+    // Deterministic structural work: every inspection of a stored registry
+    // value charges this counter. The counter is shared with the values so a
+    // retain-style population traversal cannot hide behind one API call.
+    #[cfg(test)]
+    entry_visits: Arc<AtomicUsize>,
+}
+
+#[derive(Debug)]
+struct RegisteredNode {
+    node: Weak<dyn ErasedNode>,
+    #[cfg(test)]
+    entry_visits: Arc<AtomicUsize>,
+}
+
+impl RegisteredNode {
+    fn ptr_eq(&self, node: &Weak<dyn ErasedNode>) -> bool {
+        #[cfg(test)]
+        self.entry_visits.fetch_add(1, Ordering::Relaxed);
+        Weak::ptr_eq(&self.node, node)
+    }
+
+    // This is the operation used by the former scan-on-insert implementation.
+    // Keeping its structural charge on the stored value makes that regression
+    // deterministic without adding production telemetry.
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn strong_count(&self) -> usize {
+        self.entry_visits.fetch_add(1, Ordering::Relaxed);
+        self.node.strong_count()
+    }
+}
+
+impl NodeRegistry {
+    fn get(&self, incarnation: &u64) -> Option<&Weak<dyn ErasedNode>> {
+        self.entries.get(incarnation).map(|entry| &entry.node)
+    }
+
+    fn insert(&mut self, incarnation: u64, node: Weak<dyn ErasedNode>) -> bool {
+        let node = RegisteredNode {
+            node,
+            #[cfg(test)]
+            entry_visits: self.entry_visits.clone(),
+        };
+        if let std::collections::btree_map::Entry::Vacant(entry) = self.entries.entry(incarnation) {
+            entry.insert(node);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn remove(&mut self, incarnation: u64, node: &Weak<dyn ErasedNode>) {
+        if self
+            .entries
+            .get(&incarnation)
+            .is_some_and(|registered| registered.ptr_eq(node))
+        {
+            self.entries.remove(&incarnation);
+        }
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 /// Test-only holder for the interposition hook, with a `Debug` impl so the
@@ -1013,7 +1086,7 @@ impl QueryRuntime {
                     entries: BTreeMap::new(),
                     retired_through: 0,
                 }),
-                nodes: Mutex::new(BTreeMap::new()),
+                nodes: Mutex::new(NodeRegistry::default()),
                 next_task: AtomicU64::new(1),
                 next_family: AtomicU64::new(1),
                 next_node: AtomicU64::new(1),
@@ -1795,6 +1868,12 @@ struct Node<K, V> {
     key: K,
     identity: NodeIdentity,
     incarnation: u64,
+    // Both links are weak: the runtime and node therefore remain free to die
+    // independently, while the destructor can still find its registry.
+    registry_core: Weak<RuntimeCore>,
+    // Allocation identity makes removal ABA-safe even if an incarnation slot
+    // were ever occupied by a different node.
+    registry_self: Weak<dyn ErasedNode>,
     users: AtomicUsize,
     wait: Arc<WaitCell>,
     demand: Option<Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>>,
@@ -1808,6 +1887,15 @@ impl<K, V> fmt::Debug for Node<K, V> {
             .field("identity", &self.identity)
             .field("incarnation", &self.incarnation)
             .finish_non_exhaustive()
+    }
+}
+
+impl<K, V> Drop for Node<K, V> {
+    fn drop(&mut self) {
+        let Some(core) = self.registry_core.upgrade() else {
+            return;
+        };
+        lock(&core.nodes).remove(self.incarnation, &self.registry_self);
     }
 }
 
@@ -2140,29 +2228,36 @@ where
                 })
                     as Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>
             });
-            let node = Arc::new(Node {
-                key: key.clone(),
-                identity: NodeIdentity {
-                    family: self.inner.name.clone(),
-                    key: stable_key,
-                },
-                incarnation,
-                users: AtomicUsize::new(0),
-                wait: Arc::new(WaitCell {
-                    cv: Condvar::new(),
-                    generation: Mutex::new(0),
-                }),
-                demand,
-                state: Mutex::new(NodeState {
-                    next_attempt: 1,
-                    next_stamp: 1,
-                    attempts: VecDeque::new(),
-                }),
+            let registry_core = Arc::downgrade(&self.core);
+            let node: Arc<Node<K, V>> = Arc::new_cyclic(|registry_self: &Weak<Node<K, V>>| {
+                let registry_self: Weak<dyn ErasedNode> = registry_self.clone();
+                Node {
+                    key: key.clone(),
+                    identity: NodeIdentity {
+                        family: self.inner.name.clone(),
+                        key: stable_key,
+                    },
+                    incarnation,
+                    registry_core,
+                    registry_self,
+                    users: AtomicUsize::new(0),
+                    wait: Arc::new(WaitCell {
+                        cv: Condvar::new(),
+                        generation: Mutex::new(0),
+                    }),
+                    demand,
+                    state: Mutex::new(NodeState {
+                        next_attempt: 1,
+                        next_stamp: 1,
+                        attempts: VecDeque::new(),
+                    }),
+                }
             });
             let erased: Arc<dyn ErasedNode> = node.clone();
             let mut registry = lock(&self.core.nodes);
-            registry.retain(|_, node| node.strong_count() > 0);
-            registry.insert(incarnation, Arc::downgrade(&erased));
+            let inserted = registry.insert(incarnation, Arc::downgrade(&erased));
+            drop(registry);
+            assert!(inserted, "node incarnations are unique within a runtime");
             nodes.insert(key.clone(), node.clone());
             self.inner.retained_nodes.fetch_add(1, Ordering::Relaxed);
             node
@@ -4837,6 +4932,43 @@ mod tests {
         fn stable_identity(&self) -> String {
             self.0.to_string()
         }
+    }
+
+    #[test]
+    fn node_registry_avoids_population_traversal() {
+        const NODE_COUNT: usize = 512;
+
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .family::<Slot, u64>("bounded-node-registry-maintenance", 1)
+            .unwrap();
+        let leases = (0..NODE_COUNT)
+            .map(|key| family.node(Slot(key as u64)).unwrap())
+            .collect::<Vec<_>>();
+
+        {
+            let registry = lock(&runtime.core.nodes);
+            assert_eq!(registry.len(), NODE_COUNT);
+            assert_eq!(
+                registry.entry_visits.load(Ordering::Relaxed),
+                0,
+                "registration must not inspect previously registered node values"
+            );
+        }
+
+        drop(leases);
+
+        let registry = lock(&runtime.core.nodes);
+        assert_eq!(
+            registry.len(),
+            0,
+            "dropping a node must remove its exact entry without waiting for another insertion"
+        );
+        assert_eq!(
+            registry.entry_visits.load(Ordering::Relaxed),
+            NODE_COUNT,
+            "each node drop must inspect only its exact incarnation entry"
+        );
     }
 
     static CONTAINS_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
