@@ -58,3 +58,94 @@ batch_size = 5
 [epoch.flagging]
 k = 3.0
 window = 10
+
+# Calibration epochs (ADR-0067 Phase 4, RUE-1187).
+#
+# These exist so the calibration workflow has a sampling policy and an
+# environment policy to follow on each hosted platform. They are NOT collection
+# targets, and the content pins below are deliberate placeholders.
+#
+# That is sound because calibration does not compare across revisions: it
+# measures the dispersion of one unchanged revision, so comparability — which is
+# what the pins protect — is not in question. The runner reports a pin mismatch
+# and exits 3, and the workflow tolerates exactly that exit while still treating
+# a runner failure as fatal.
+#
+# The collection epochs, with pins that resolve and with the counts, batching
+# factors, and flagging multiplier this calibration produces, are declared in
+# RUE-1188. `aarch64-macos` is included from the start by maintainer decision,
+# which is also why its noise profile is the most interesting output here.
+
+[[epoch]]
+id = 1
+platform = "x86_64-linux"
+suite_revision = 1
+target = "x86_64-unknown-linux-gnu"
+args = []
+toolchain_hash = "calibration-epoch-pins-are-placeholders"
+stdlib_hash = "calibration-epoch-pins-are-placeholders"
+
+[epoch.workload_source_hashes]
+startup = "calibration-epoch-pins-are-placeholders"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+# Uncalibrated starting points. The whole purpose of the sweep is to replace
+# these with measured values, so treating them as meaningful would be circular.
+[epoch.sampling.startup]
+samples = 9
+batch_size = 5
+
+[epoch.flagging]
+k = 3.0
+window = 5
+
+[[epoch]]
+id = 1
+platform = "aarch64-linux"
+suite_revision = 1
+target = "aarch64-unknown-linux-gnu"
+args = []
+toolchain_hash = "calibration-epoch-pins-are-placeholders"
+stdlib_hash = "calibration-epoch-pins-are-placeholders"
+
+[epoch.workload_source_hashes]
+startup = "calibration-epoch-pins-are-placeholders"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 9
+batch_size = 5
+
+[epoch.flagging]
+k = 3.0
+window = 5
+
+[[epoch]]
+id = 1
+platform = "aarch64-macos"
+suite_revision = 1
+target = "aarch64-apple-darwin"
+args = []
+toolchain_hash = "calibration-epoch-pins-are-placeholders"
+stdlib_hash = "calibration-epoch-pins-are-placeholders"
+
+[epoch.workload_source_hashes]
+startup = "calibration-epoch-pins-are-placeholders"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.startup]
+samples = 9
+batch_size = 5
+
+[epoch.flagging]
+k = 3.0
+window = 5

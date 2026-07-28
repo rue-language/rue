@@ -1,0 +1,121 @@
+# Noise calibration for the compiler-performance suite (ADR-0067 Phase 4).
+#
+# Repeatedly measures ONE unchanged compiler revision on each hosted platform,
+# then reports what the hardware's noise implies for sampling counts, batching
+# factors, and the flagging rule.
+#
+# The method rests on measuring the same revision every time: nothing real is
+# changing, so any difference the flagging rule reports is a false positive by
+# construction, and `k` can be chosen as the smallest multiplier producing none.
+#
+# NOTHING THIS WORKFLOW PRODUCES MAY ENTER A SERIES. Output is uploaded as
+# workflow artifacts and never written to the data branch. This workflow holds
+# no write permission, so that is structural rather than a convention: there is
+# no path from a calibration artifact to published history.
+name: Performance calibration
+
+on:
+  workflow_dispatch:
+    inputs:
+      repetitions:
+        description: Calibration runs per platform
+        required: false
+        default: "12"
+
+# Read-only. Calibration must not be able to publish.
+permissions:
+  contents: read
+
+# Calibration measures noise, so two overlapping runs on one runner would
+# measure each other. Never cancel in progress: a partial calibration is not
+# usable, and restarting is cheaper than reasoning about a truncated sweep.
+concurrency:
+  group: performance-calibration
+  cancel-in-progress: false
+
+jobs:
+  calibrate:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: x86_64-linux
+            image: ubuntu-24.04
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux
+            image: ubuntu-24.04
+          - os: macos-15
+            platform: aarch64-macos
+            image: macos-15
+    runs-on: ${{ matrix.os }}
+    name: calibrate (${{ matrix.platform }})
+    # Repeated measurement of a whole corpus is slow by design.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 16.2
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the compiler and the runner
+        run: |
+          ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
+
+      - name: Run the calibration repetitions
+        env:
+          # The fingerprint records the environment policy this run satisfies.
+          # Set explicitly rather than detected, so a run can never quietly
+          # claim a runner class it is not.
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p calibration-runs
+          RUE="$(scripts/rue-bin)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          COMMIT="${{ github.sha }}"
+
+          for index in $(seq 1 "${{ inputs.repetitions }}"); do
+            echo "::group::calibration run $index"
+            # Exit 3 means "written but not appendable", which is expected here:
+            # the calibration epoch is not a collection target. Only a runner
+            # failure (2) should stop the sweep.
+            set +e
+            "$BENCH" \
+              --manifest performance/manifest.toml \
+              --platform "${{ matrix.platform }}" \
+              --epoch 1 \
+              --compiler "$RUE" \
+              --commit "$COMMIT" \
+              --repo-root . \
+              --out "calibration-runs/run-$(printf '%03d' "$index").json"
+            status=$?
+            set -e
+            if [ "$status" -eq 2 ]; then
+              echo "runner failed to produce a run object; stopping"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
+
+      - name: Analyse
+        run: |
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          "$BENCH" calibrate \
+            --runs calibration-runs \
+            --report "calibration-${{ matrix.platform }}.md"
+
+      - name: Upload calibration artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: calibration-${{ matrix.platform }}
+          path: |
+            calibration-runs/
+            calibration-${{ matrix.platform }}.md
+            calibration-${{ matrix.platform }}.json
+          retention-days: 30

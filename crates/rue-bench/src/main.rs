@@ -12,6 +12,7 @@
 //! out of the producer is what lets validation catch a producer that is itself
 //! wrong.
 
+mod calibrate;
 mod environment;
 mod measure;
 mod pins;
@@ -65,6 +66,12 @@ Required:
   --commit <sha>       40-character compiler revision being measured
   --out <path>         where to write the run object
 
+Subcommands:
+  calibrate --runs <dir> [--report <path>]
+                       analyse repeated runs and recommend sampling counts,
+                       batching factors, and the flagging rule. Produces
+                       artifacts only; nothing here enters a series.
+
 Optional:
   --repo-root <path>   root for resolving workload sources (default: .)
   --std-root <path>    standard-library root (default: <repo-root>/std)
@@ -72,6 +79,18 @@ Optional:
 ";
 
 fn main() -> ExitCode {
+    // `calibrate` reads runs that already exist; every other invocation
+    // produces one. Keeping them one binary means the calibration analysis and
+    // the collector can never disagree about what a run object means.
+    if std::env::args().nth(1).as_deref() == Some("calibrate") {
+        return match run_calibration() {
+            Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("rue-bench: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
     let options = match parse_args() {
         Ok(options) => options,
         Err(message) => {
@@ -86,6 +105,45 @@ fn main() -> ExitCode {
             ExitCode::from(exit::USAGE)
         }
     }
+}
+
+/// Analyse a directory of calibration runs.
+///
+/// Nothing this produces may enter a series. The report is a workflow artifact
+/// and a recommendation for a maintainer, not a measurement.
+fn run_calibration() -> Result<(), String> {
+    let mut runs_dir = None;
+    let mut report_path = None;
+    let mut args = std::env::args().skip(2);
+    while let Some(flag) = args.next() {
+        let mut value = || {
+            args.next()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        match flag.as_str() {
+            "--runs" => runs_dir = Some(PathBuf::from(value()?)),
+            "--report" => report_path = Some(PathBuf::from(value()?)),
+            other => return Err(format!("unrecognized argument {other:?}")),
+        }
+    }
+    let runs_dir = runs_dir.ok_or("calibrate requires --runs <directory>")?;
+
+    let runs = calibrate::load_runs(&runs_dir).map_err(|error| error.to_string())?;
+    let report = calibrate::calibrate(&runs).map_err(|error| error.to_string())?;
+    let rendered = calibrate::render(&report);
+
+    if let Some(path) = report_path {
+        std::fs::write(&path, &rendered)
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+        let json = path.with_extension("json");
+        let encoded = serde_json::to_string_pretty(&report)
+            .map_err(|error| format!("could not serialize the report: {error}"))?;
+        std::fs::write(&json, encoded)
+            .map_err(|error| format!("could not write {}: {error}", json.display()))?;
+        eprintln!("rue-bench: wrote {} and {}", path.display(), json.display());
+    }
+    println!("{rendered}");
+    Ok(())
 }
 
 fn parse_args() -> Result<Options, String> {

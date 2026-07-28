@@ -35,6 +35,7 @@ mod canonical;
 mod manifest;
 mod run;
 mod series;
+mod stats;
 mod validate;
 
 pub use canonical::{CanonicalError, canonical_json, content_address};
@@ -47,6 +48,10 @@ pub use run::{
     RunIdentity, RunObject, Sample, WorkloadObservation,
 };
 pub use series::{Metric, SeriesId};
+pub use stats::{
+    Summary, flags_movement, geometric_mean, median, median_absolute_deviation, pooled_uncertainty,
+    ratio, sample_value,
+};
 pub use validate::{
     Completeness, InvalidSample, InvalidSampleReason, ValidationError, ValidationOutcome,
     validate_run,
