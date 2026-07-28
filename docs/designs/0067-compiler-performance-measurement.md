@@ -351,25 +351,25 @@ keyboard-reachable and exposed to assistive technology.
 
 ## Implementation Phases
 
-- [ ] **Phase 1: Measurement schema** - RUE-NNN. Suite revisions, platform
+- [ ] **Phase 1: Measurement schema** - RUE-1184. Suite revisions, platform
       epochs, series identity, run-object schema, canonical serialization and
       SHA-256 content addressing, validation rules.
-- [ ] **Phase 2: Compiler phase accounting** - RUE-NNN. The reference-counted
+- [ ] **Phase 2: Compiler phase accounting** - RUE-1185. The reference-counted
       state machine of §2 in the timing collector, published alongside
       existing spans; measurement-boundary tests including Rayon-parallel and
       same-phase-concurrent workloads; exact nanosecond invariant under test;
       `compiler_root_ns` / `process_elapsed_ns` distinction.
-- [ ] **Phase 3: Runner** - RUE-NNN. `crates/rue-bench`, workload manifest,
+- [ ] **Phase 3: Runner** - RUE-1186. `crates/rue-bench`, workload manifest,
       sampling and batching, partial-failure records, run-object emission.
-- [ ] **Phase 4: Noise calibration (unpublished)** - RUE-NNN. Repeated runs
+- [ ] **Phase 4: Noise calibration (unpublished)** - RUE-1187. Repeated runs
       on hosted runners per platform as workflow artifacts or explicitly
       marked non-series records; establishes sample counts, batching factors,
       the flagging multiplier and window, and the environment-fingerprint
       annotation policy. Nothing from this phase enters any series.
-- [ ] **Phase 5: Declare and collect** - RUE-NNN. Suite revision 1 and the
+- [ ] **Phase 5: Declare and collect** - RUE-1188. Suite revision 1 and the
       initial platform epochs with calibrated policies; `performance-data-v1`
       orphan branch; serialized collector workflow; first baselines.
-- [ ] **Phase 6: Dashboard** - RUE-NNN. The page of §11, including
+- [ ] **Phase 6: Dashboard** - RUE-1189. The page of §11, including
       collection-health presentation.
 
 ## Consequences
