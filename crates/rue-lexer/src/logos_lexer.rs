@@ -8,6 +8,16 @@ use logos::Logos;
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::{FileId, Span};
 
+/// Preserve the existing one-token-per-four-bytes estimate for ordinary source
+/// files, but do not let sparse input turn source bytes into an equally
+/// unbounded token allocation. Sources up to 64 KiB retain the exact old
+/// reserve; denser larger sources grow the `Vec` geometrically as tokens arrive.
+const MAX_INITIAL_TOKEN_CAPACITY: usize = 16 * 1024;
+
+fn initial_token_capacity(source_len: usize) -> usize {
+    (source_len / 4).min(MAX_INITIAL_TOKEN_CAPACITY)
+}
+
 /// Error type for lexing failures.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LexError {
@@ -722,8 +732,9 @@ impl<'a> LogosLexer<'a> {
     pub fn tokenize_preserving_interner(
         self,
     ) -> Result<(Vec<Token>, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
-        // Estimate capacity: source length / 4 is a rough heuristic for token density
-        let mut tokens = Vec::with_capacity(self.source.len() / 4);
+        // Keep the old density estimate for ordinary files, but cap the initial
+        // allocation so sparse large sources do not reserve per-source memory.
+        let mut tokens = Vec::with_capacity(initial_token_capacity(self.source.len()));
         let mut errors = CompileErrors::new();
 
         let mut lexer = LogosTokenKind::lexer_with_extras(self.source, self.interner);
@@ -1732,6 +1743,53 @@ mod tests {
 
         assert_eq!(sym0, sym1);
         assert_eq!(sym1, sym2);
+    }
+
+    #[test]
+    fn test_dense_ordinary_source_keeps_the_existing_reserve() {
+        let source = "fn f(x: i32) -> i32 { x + 1 }\n".repeat(512);
+        assert!(source.len() <= MAX_INITIAL_TOKEN_CAPACITY * 4);
+        assert_eq!(initial_token_capacity(source.len()), source.len() / 4);
+
+        let (tokens, _) = LogosLexer::new(&source).tokenize().unwrap();
+        assert!(tokens.len() > 512);
+        assert!(matches!(tokens.last().unwrap().kind, TokenKind::Eof));
+    }
+
+    #[test]
+    fn test_sparse_source_token_capacity_is_capped() {
+        let source_len = MAX_INITIAL_TOKEN_CAPACITY * 5;
+        let whitespace = " ".repeat(source_len);
+        let comments = "// comment payload\n".repeat(source_len / 19);
+
+        for (distribution, source) in [("whitespace", whitespace), ("comments", comments)] {
+            let old_reserve = source.len() / 4;
+            assert!(
+                old_reserve > MAX_INITIAL_TOKEN_CAPACITY,
+                "{distribution} fixture must exercise the cap"
+            );
+
+            let (tokens, _) = LogosLexer::new(&source).tokenize().unwrap();
+            assert_eq!(tokens.len(), 1, "{distribution} should produce only EOF");
+            assert!(
+                tokens.capacity() <= MAX_INITIAL_TOKEN_CAPACITY,
+                "{distribution} capacity {} exceeded the fixed initial bound",
+                tokens.capacity()
+            );
+        }
+    }
+
+    #[test]
+    fn test_dense_source_grows_past_the_initial_cap() {
+        let source = "x + ".repeat(MAX_INITIAL_TOKEN_CAPACITY * 2);
+        assert_eq!(
+            initial_token_capacity(source.len()),
+            MAX_INITIAL_TOKEN_CAPACITY
+        );
+
+        let (tokens, _) = LogosLexer::new(&source).tokenize().unwrap();
+        assert_eq!(tokens.len(), MAX_INITIAL_TOKEN_CAPACITY * 4 + 1);
+        assert!(tokens.capacity() >= tokens.len());
     }
 
     #[test]
