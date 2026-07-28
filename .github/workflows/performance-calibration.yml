@@ -111,7 +111,7 @@ jobs:
             --report "calibration-${{ matrix.platform }}.md"
 
       - name: Upload calibration artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: calibration-${{ matrix.platform }}
           path: |
