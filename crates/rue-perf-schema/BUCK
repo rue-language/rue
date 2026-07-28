@@ -1,0 +1,14 @@
+load("//crates:defs.bzl", "rue_crate")
+
+# The ADR-0067 measurement contract. Deliberately dependency-light: it is
+# shared by the runner, the collector, and the site build, and none of them
+# should have to link the compiler to read a run object.
+rue_crate(
+    name = "rue-perf-schema",
+    deps = [
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:sha2",
+        "//third-party:toml",
+    ],
+)
