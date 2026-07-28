@@ -13,6 +13,7 @@
 //! wrong.
 
 mod calibrate;
+mod derive;
 mod environment;
 mod measure;
 mod pins;
@@ -67,6 +68,10 @@ Required:
   --out <path>         where to write the run object
 
 Subcommands:
+  derive --manifest <path> --data-root <dir> --out <path>
+                       rebuild the dashboard's view from raw records. Reads the
+                       performance-data-v1 checkout; writes derived JSON.
+
   calibrate --runs <dir> [--report <path>]
                        analyse repeated runs and recommend sampling counts,
                        batching factors, and the flagging rule. Produces
@@ -82,6 +87,15 @@ fn main() -> ExitCode {
     // `calibrate` reads runs that already exist; every other invocation
     // produces one. Keeping them one binary means the calibration analysis and
     // the collector can never disagree about what a run object means.
+    if std::env::args().nth(1).as_deref() == Some("derive") {
+        return match run_derive() {
+            Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("rue-bench: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
     if std::env::args().nth(1).as_deref() == Some("calibrate") {
         return match run_calibration() {
             Ok(()) => ExitCode::from(exit::OK),
@@ -143,6 +157,64 @@ fn run_calibration() -> Result<(), String> {
         eprintln!("rue-bench: wrote {} and {}", path.display(), json.display());
     }
     println!("{rendered}");
+    Ok(())
+}
+
+/// Rebuild everything the dashboard renders from the raw records.
+///
+/// Deliberately a subcommand of the runner rather than a step in the site
+/// build: it goes through the same `rue_perf_schema::stats` the calibrator
+/// uses, so the page and the calibration can never disagree about what moved.
+fn run_derive() -> Result<(), String> {
+    let mut manifest_path = None;
+    let mut data_root = None;
+    let mut out = None;
+    let mut args = std::env::args().skip(2);
+    while let Some(flag) = args.next() {
+        let mut value = || {
+            args.next()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        match flag.as_str() {
+            "--manifest" => manifest_path = Some(PathBuf::from(value()?)),
+            "--data-root" => data_root = Some(PathBuf::from(value()?)),
+            "--out" => out = Some(PathBuf::from(value()?)),
+            other => return Err(format!("unrecognized argument {other:?}")),
+        }
+    }
+    let manifest_path = manifest_path.ok_or("derive requires --manifest <path>")?;
+    let data_root = data_root.ok_or("derive requires --data-root <directory>")?;
+    let out = out.ok_or("derive requires --out <path>")?;
+
+    let text = std::fs::read_to_string(&manifest_path)
+        .map_err(|error| format!("could not read {}: {error}", manifest_path.display()))?;
+    let manifest = Manifest::parse(&text).map_err(|error| error.to_string())?;
+
+    let runs = derive::load_data_branch(&data_root)?;
+    let data = derive::derive(&manifest, &runs);
+
+    let encoded = serde_json::to_string_pretty(&data)
+        .map_err(|error| format!("could not serialize the site data: {error}"))?;
+    if let Some(parent) = out.parent().filter(|path| !path.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    std::fs::write(&out, encoded)
+        .map_err(|error| format!("could not write {}: {error}", out.display()))?;
+
+    let points: usize = data
+        .platforms
+        .iter()
+        .flat_map(|platform| platform.epochs.iter())
+        .map(|epoch| epoch.points.len())
+        .sum();
+    eprintln!(
+        "rue-bench: derived {} point(s) across {} platform(s) into {}; {} run(s) rejected",
+        points,
+        data.platforms.len(),
+        out.display(),
+        data.rejected.len()
+    );
     Ok(())
 }
 
