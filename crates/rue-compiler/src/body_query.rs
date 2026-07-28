@@ -329,6 +329,11 @@ pub(crate) enum BodyClosureFatal {
         instance: crate::FunctionInstanceKey,
         failure: crate::revisioned_query_database::WellKnownOptionResolutionFailure,
     },
+    AnonymousDigestCollision {
+        digest: u128,
+        first: crate::AnonymousNominalKey,
+        second: crate::AnonymousNominalKey,
+    },
 }
 
 #[derive(Debug, Clone)]

@@ -6728,6 +6728,19 @@ impl CompilerSession {
                         Some(instance.clone()),
                         well_known_option_resolution_diagnostics(merged.ast(), failure),
                     ),
+                    crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
+                        digest,
+                        first,
+                        second,
+                    } => (
+                        roots.iter().next().cloned(),
+                        crate::CompileErrors::from(crate::CompileError::without_span(
+                            rue_error::ErrorKind::InternalError(format!(
+                                "stable anonymous symbol digest {digest:032x} is shared by distinct \
+                                 producer-nominal identities {first:?} and {second:?}"
+                            )),
+                        )),
+                    ),
                 };
                 if let Some(instance) = instance {
                     body_query_errors.insert(instance, errors);

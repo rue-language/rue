@@ -2403,6 +2403,61 @@ fn rue_1027_production_body_authority_is_query_owned_and_import_only() {
 }
 
 #[test]
+fn rue_1191_anonymous_digest_collision_authority_is_body_closure_owned() {
+    let database = include_str!("revisioned_query_database.rs");
+    let production = database
+        .split("\n#[cfg(test)]\nmod tests")
+        .next()
+        .expect("production revisioned database source");
+    let closure = database
+        .split("let body_closures =")
+        .nth(1)
+        .and_then(|source| source.split("let closures_for_publication =").next())
+        .expect("registered body-closure evaluator");
+
+    assert!(closure.contains("anonymous_digest_owners"));
+    assert!(closure.contains("compiler_anonymous_identity_digest"));
+    assert!(closure.contains("BodyClosureFatal::AnonymousDigestCollision"));
+    assert_eq!(
+        closure
+            .matches("register_body_closure_anonymous_digest(")
+            .count(),
+        2,
+        "closure aggregation must register declaration and body-produced anonymous facts"
+    );
+    assert_eq!(
+        production
+            .matches("register_body_closure_anonymous_digest(")
+            .count(),
+        3,
+        "the two closure call sites plus the helper definition are the complete production authority"
+    );
+
+    let body_local_projection = database
+        .split("let body_produced_anonymous =")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("let produced_anonymous_for_semantic_nucleus =")
+                .next()
+        })
+        .expect("body-produced-anonymous evaluator");
+    assert!(
+        !body_local_projection.contains("register_body_closure_anonymous_digest("),
+        "the per-body projection must not call the cross-body registrar"
+    );
+    let transaction_evaluator = production
+        .split("impl BodyTransactionEvaluator {")
+        .nth(1)
+        .and_then(|source| source.split("\nimpl RevisionedQueryDatabase {").next())
+        .expect("registered per-body transaction evaluator");
+    assert!(
+        !transaction_evaluator.contains("register_body_closure_anonymous_digest("),
+        "the per-body evaluator must not call the cross-body registrar"
+    );
+}
+
+#[test]
 fn import_resolution_remains_discovery_owned() {
     let production = PRODUCTION_MODULES
         .iter()
