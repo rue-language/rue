@@ -189,7 +189,10 @@ test_rue_exec_resolves_from_caller_cwd() {
   ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" COMPILE_LOG="$sb/compile.log" \
       "$sb/scripts/rue" exec hello.rue ) >/dev/null 2>&1
   local cwd_line
-  cwd_line="$(grep '^cwd=' "$sb/compile.log" 2>/dev/null | head -1)"
+  # `grep -m1` reads the file directly. Piping into `head -1` would let head
+  # close the pipe and, under `pipefail`, grep's EPIPE becomes the pipeline's
+  # status -- the construct RUE-1011 already removed from this file (RUE-1155).
+  cwd_line="$(grep -m1 '^cwd=' "$sb/compile.log" 2>/dev/null)"
   check "scripts/rue exec: compiler runs in the caller's cwd" \
     "$([ "$cwd_line" = "cwd=$sb/work" ] && echo 0 || echo 1)"
   rm -rf "$sb"
@@ -202,7 +205,10 @@ test_rue_run_resolves_relative_output() {
   ( cd "$sb/work" && FAKE_COMPILER="$sb/compiler" COMPILE_LOG="$sb/compile.log" \
       "$sb/scripts/rue" run hello.rue -o out ) >/dev/null 2>&1
   local cwd_line
-  cwd_line="$(grep '^cwd=' "$sb/compile.log" 2>/dev/null | head -1)"
+  # `grep -m1` reads the file directly. Piping into `head -1` would let head
+  # close the pipe and, under `pipefail`, grep's EPIPE becomes the pipeline's
+  # status -- the construct RUE-1011 already removed from this file (RUE-1155).
+  cwd_line="$(grep -m1 '^cwd=' "$sb/compile.log" 2>/dev/null)"
   check "scripts/rue run: compiler runs in the caller's cwd" \
     "$([ "$cwd_line" = "cwd=$sb/work" ] && echo 0 || echo 1)"
   check "scripts/rue run: relative -o is written in the caller's cwd" \
@@ -275,7 +281,7 @@ EOF
     (cd "$sb/work" && TIER_LOG="$sb/tiers.log" "$sb/scripts/rue" "$tier") \
       >/dev/null 2>&1 || rc=$?
     check "scripts/rue $tier: delegates the named tier to test.sh" \
-      "$([ "$rc" -eq 0 ] && tail -1 "$sb/tiers.log" | grep -Fxq "$tier" && echo 0 || echo 1)"
+      "$([ "$rc" -eq 0 ] && grep -Fxq "$tier" <<<"$(tail -1 "$sb/tiers.log")" && echo 0 || echo 1)"
   done
 
   rc=0

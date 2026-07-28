@@ -44,6 +44,11 @@ jobs:
       - name: Check production debug assertions
         run: scripts/validate-debug-assert-policy.py
 
+      # The gates themselves must not fail open. `grep -q` behind a pipe under
+      # `pipefail` discards the very finding it just made (RUE-1011, RUE-1155).
+      - name: Check shell pipefail pipelines
+        run: scripts/validate-shell-pipefail-pipelines.py
+
       - name: Validate Buck test-tier ownership
         run: ./buck2 bxl //test_tiers.bxl:validate
 
