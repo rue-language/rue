@@ -85,3 +85,73 @@ fn main() -> i32 {
     if score == 17 { 42 } else { @intCast(score) }
 }
 """ }]
+
+[[case]]
+name = "intmap_tombstone_churn"
+description = "IntMap reuses a tombstone after bounded probing when churn leaves no empty slots."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+args = ["main.rue", "-o", "prog"]
+exit_code = 42
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let M = std.intmap.IntMap(i64);
+    let O = std.option.Option(i64);
+    let mut m = M.new(0);
+
+    // With capacity 8, these keys occupy slots 0 through 4. Removing them
+    // leaves five tombstones and three empty slots.
+    let mut i: i64 = 0;
+    while i < 5 {
+        m.insert(i, i * 10);
+        i = i + 1;
+    }
+    i = 0;
+    while i < 5 {
+        if !m.remove(i) {
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Small positive keys hash to their value modulo 8. These fill the three
+    // remaining empty slots without crossing the live-count growth threshold.
+    i = 5;
+    while i < 8 {
+        m.insert(i, i * 10);
+        i = i + 1;
+    }
+
+    // The table now contains only occupied slots and tombstones. This insert
+    // previously probed forever; it must reuse the first tombstone.
+    m.insert(8, 80);
+    if m.len() != 4 {
+        return 2;
+    }
+
+    i = 5;
+    while i < 9 {
+        match m.get(i) {
+            O.Some(v) => {
+                if v != i * 10 {
+                    return 3;
+                }
+            },
+            O.None => {
+                return 4;
+            },
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < 5 {
+        if m.contains(i) {
+            return 5;
+        }
+        i = i + 1;
+    }
+    42
+}
+""" }]

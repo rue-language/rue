@@ -139,7 +139,11 @@ pub fn IntMap(comptime V: type) -> type {
             }
             let mut idx = self._slot(k);
             let mut first_tomb: u64 = self.cap;
-            loop {
+            // Probe at most `cap` slots: insert/remove churn can turn every
+            // non-live slot into a tombstone while `count` remains below the
+            // growth threshold, leaving no EMPTY slot to stop an open loop.
+            let mut probes: u64 = 0;
+            while probes < self.cap {
                 let st = self.states.get_or(idx, _EMPTY());
                 if st == _EMPTY() {
                     let target = if first_tomb < self.cap { first_tomb } else { idx };
@@ -147,11 +151,11 @@ pub fn IntMap(comptime V: type) -> type {
                     self.vals.set(target, v);
                     self.states.set(target, _OCCUPIED());
                     self.count = self.count + 1;
-                    break;
+                    return;
                 } else if st == _OCCUPIED() {
                     if self.keys.get_or(idx, 0) == k {
                         self.vals.set(idx, v);
-                        break;
+                        return;
                     }
                 } else {
                     if first_tomb >= self.cap {
@@ -159,7 +163,14 @@ pub fn IntMap(comptime V: type) -> type {
                     }
                 }
                 idx = (idx + 1) % self.cap;
+                probes = probes + 1;
             }
+            // Every slot was probed without finding an EMPTY slot or matching
+            // key. Growth keeps `count` below `cap`, so reuse the first tombstone.
+            self.keys.set(first_tomb, k);
+            self.vals.set(first_tomb, v);
+            self.states.set(first_tomb, _OCCUPIED());
+            self.count = self.count + 1;
         }
 
         // The value for `k`, or `None`.
