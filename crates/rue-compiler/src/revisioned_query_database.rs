@@ -35,6 +35,13 @@ pub(crate) fn with_test_body_transaction_failure<T>(run: impl FnOnce() -> T) -> 
     run()
 }
 
+#[cfg(test)]
+#[derive(Debug, Default)]
+struct TestBodyClosureAnonymousDigestForcing {
+    sealed: bool,
+    digests: BTreeMap<crate::AnonymousNominalKey, u128>,
+}
+
 use rue_query::{
     CancellationToken, InputIdentity, QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutput,
     QueryRequestAttempt, QueryRuntime, QuerySelection, QueryTerminalKind, RequestExecution,
@@ -576,6 +583,12 @@ pub(crate) struct RevisionedQueryDatabase {
     /// Test-only log of every consulted import-path key evaluated.
     #[cfg(test)]
     lookup_import_eval_log: Arc<Mutex<Vec<LookupImportKey>>>,
+    /// Test-only per-database digest substitutions. The closure evaluator still
+    /// performs the production stable-content relocation for every unforced
+    /// identity; focused collision tests force only their two exact producer
+    /// keys without installing process-global mutable state.
+    #[cfg(test)]
+    body_closure_anonymous_digest_forcing: Arc<Mutex<TestBodyClosureAnonymousDigestForcing>>,
     next_import_request: u64,
     current_import_revision: Option<ImportInputRevision>,
     #[cfg(test)]
@@ -7672,6 +7685,9 @@ impl RevisionedQueryDatabase {
         #[cfg(test)]
         let lookup_import_eval_log: Arc<Mutex<Vec<LookupImportKey>>> =
             Arc::new(Mutex::new(Vec::new()));
+        #[cfg(test)]
+        let body_closure_anonymous_digest_forcing =
+            Arc::new(Mutex::new(TestBodyClosureAnonymousDigestForcing::default()));
         let parse_for_index = parse_modules.clone();
         #[cfg(test)]
         let module_index_build_probe = module_index_build_log.clone();
@@ -10827,12 +10843,22 @@ impl RevisionedQueryDatabase {
         let bundles_for_body_closure = body_analysis_bundles.clone();
         let inputs_for_body_closure = body_inputs.clone();
         let declarations_for_body_closure = declaration_semantics_projection.clone();
+        #[cfg(test)]
+        let anonymous_digest_forcing_for_body_closure =
+            body_closure_anonymous_digest_forcing.clone();
         let body_closures = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-closure",
                 BODY_CLOSURE_MEMO_RETENTION,
                 crate::body_query::body_closure_output_equal,
                 move |context, _, key: &crate::body_query::BodyClosureQueryKey| {
+                    #[cfg(test)]
+                    {
+                        anonymous_digest_forcing_for_body_closure
+                            .lock()
+                            .expect("body-closure forced-digest state is not poisoned")
+                            .sealed = true;
+                    }
                     debug_assert!(
                         key.modules.windows(2).all(|pair| pair[0] < pair[1])
                             && key.roots.windows(2).all(|pair| pair[0] < pair[1])
@@ -10898,6 +10924,42 @@ impl RevisionedQueryDatabase {
                     let mut fatal = None;
                     let mut parked_toolchain = None;
                     let mut produced_anonymous = BTreeMap::new();
+                    // This request/revision-owned registry is the aggregation
+                    // authority for stable anonymous symbols. Per-body semantic
+                    // epochs and durable pools cannot see identities published
+                    // by another registered body transaction.
+                    let mut anonymous_digest_owners = BTreeMap::new();
+                    let mut anonymous_digest_collision = None;
+                    let body_closure_anonymous_digest =
+                        |identity: &crate::AnonymousNominalKey| {
+                            #[cfg(test)]
+                            {
+                                let canonical = identity.with_canonical_producer();
+                                if let Some(digest) = anonymous_digest_forcing_for_body_closure
+                                    .lock()
+                                    .expect("body-closure forced-digest state is not poisoned")
+                                    .digests
+                                    .get(canonical.as_ref())
+                                    .copied()
+                                {
+                                    return digest;
+                                }
+                            }
+                            compiler_anonymous_identity_digest(identity)
+                        };
+                    // Declaration analysis can materialize anonymous nominals
+                    // without a reached body transaction. Seed those exact keys
+                    // into the same closure-wide authority before scheduling any
+                    // body, so declaration/declaration and declaration/body
+                    // collisions cannot bypass reconciliation.
+                    for nominal in projection.anonymous_nominals.iter() {
+                        register_body_closure_anonymous_digest(
+                            &mut anonymous_digest_owners,
+                            &mut anonymous_digest_collision,
+                            body_closure_anonymous_digest(&nominal.identity),
+                            &nominal.identity,
+                        );
+                    }
 
                     while let Some(instance) =
                         priority_pending.pop().or_else(|| pending.pop_first())
@@ -11158,6 +11220,14 @@ impl RevisionedQueryDatabase {
                         if let Some(crate::body_query::ProducedAnonymous::Produced(produced)) =
                             bundle.produced_anonymous.as_ref()
                         {
+                            for nominal in produced.0.iter() {
+                                register_body_closure_anonymous_digest(
+                                    &mut anonymous_digest_owners,
+                                    &mut anonymous_digest_collision,
+                                    body_closure_anonymous_digest(&nominal.identity),
+                                    &nominal.identity,
+                                );
+                            }
                             produced_anonymous.extend(
                                 produced
                                     .0
@@ -11240,6 +11310,25 @@ impl RevisionedQueryDatabase {
                         }
                     }
 
+                    // Existing semantic/control failures, scheduling errors,
+                    // and toolchain parking have precedence over the collision
+                    // summary regardless of which fact was discovered first.
+                    // Promote a collision only for an otherwise complete
+                    // closure; this keeps the observable outcome traversal- and
+                    // scheduling-order independent.
+                    if fatal.is_none()
+                        && scheduling_errors.is_empty()
+                        && parked_toolchain.is_none()
+                        && let Some((digest, first, second)) = anonymous_digest_collision
+                    {
+                        fatal = Some(
+                            crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
+                                digest,
+                                first,
+                                second,
+                            },
+                        );
+                    }
                     bodies.sort_by(|left, right| left.key.instance.cmp(&right.key.instance));
                     let scheduling_errors = scheduling_errors.into_iter().collect::<Vec<_>>();
                     let is_failure = !scheduling_errors.is_empty()
@@ -11443,6 +11532,8 @@ impl RevisionedQueryDatabase {
             lookup_name_eval_log,
             #[cfg(test)]
             lookup_import_eval_log,
+            #[cfg(test)]
+            body_closure_anonymous_digest_forcing,
             next_import_request: 0,
             current_import_revision: None,
             #[cfg(test)]
@@ -11470,6 +11561,25 @@ impl RevisionedQueryDatabase {
 }
 
 impl RevisionedQueryDatabase {
+    #[cfg(test)]
+    fn force_body_closure_anonymous_digest_for_test(
+        &self,
+        identity: crate::AnonymousNominalKey,
+        digest: u128,
+    ) {
+        let mut forcing = self
+            .body_closure_anonymous_digest_forcing
+            .lock()
+            .expect("body-closure forced-digest state is not poisoned");
+        assert!(
+            !forcing.sealed,
+            "body-closure digest forcing must be configured before the first closure evaluation"
+        );
+        forcing
+            .digests
+            .insert(identity.with_canonical_producer().into_owned(), digest);
+    }
+
     /// An owned snapshot of the live provider-op observation counters.
     pub(crate) fn provider_observation_metrics(
         &self,
@@ -16242,6 +16352,63 @@ fn provider_definition_symbol_component(key: &crate::StableDefinitionKey) -> Str
         key.owner().map(|owner| owner.name()),
         key.kind() as u8,
     )
+}
+
+/// Render a compiler-owned anonymous identity into the same stable-content
+/// domain used by `CompilerBodyDurableSource`, then take the single AIR digest.
+/// Body closure aggregation calls this before any CFG/codegen consumer can
+/// materialize the collected nominal set.
+fn compiler_anonymous_identity_digest(identity: &crate::AnonymousNominalKey) -> u128 {
+    let identity = identity.with_canonical_producer();
+    let relocated: rue_air::AnonymousNominalKey<String, String> = identity
+        .as_ref()
+        .try_map_identities::<String, String, std::convert::Infallible>(
+            &|definition| Ok(provider_definition_symbol_component(definition)),
+            &|module| {
+                Ok(rue_air::stable_digest::stable_module_component(
+                    module.logical_path(),
+                ))
+            },
+        )
+        .expect("compiler anonymous identity relocation to stable content is infallible");
+    rue_air::stable_digest::stable_anonymous_identity_digest(&relocated)
+}
+
+fn register_body_closure_anonymous_digest(
+    owners: &mut BTreeMap<u128, crate::AnonymousNominalKey>,
+    collision: &mut Option<(u128, crate::AnonymousNominalKey, crate::AnonymousNominalKey)>,
+    digest: u128,
+    identity: &crate::AnonymousNominalKey,
+) {
+    // AIR deduplicates anonymous identities in canonical-producer form before
+    // digest ownership is checked. Store and compare that same logical exact
+    // key here, so an empty-specialization wrapper cannot manufacture a
+    // collision with its canonical base identity. Typed failures therefore
+    // also carry canonical keys.
+    let identity = identity.with_canonical_producer().into_owned();
+    match owners.entry(digest) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(identity);
+        }
+        std::collections::btree_map::Entry::Occupied(mut entry) if entry.get() != &identity => {
+            let (first, second) = if entry.get() < &identity {
+                (entry.get().clone(), identity)
+            } else {
+                let first = identity;
+                let second = entry.get().clone();
+                entry.insert(first.clone());
+                (first, second)
+            };
+            let candidate = (digest, first, second);
+            if collision
+                .as_ref()
+                .is_none_or(|current| &candidate < current)
+            {
+                *collision = Some(candidate);
+            }
+        }
+        std::collections::btree_map::Entry::Occupied(_) => {}
+    }
 }
 
 impl rue_air::DurableAnonymousSource<crate::StableDefinitionKey, ModuleId>
@@ -30957,5 +31124,476 @@ fn main() -> i32 {
         assert!(matches!(attempt.abort(), Some(QueryAbort::Canceled)));
         assert!(attempt.terminal().is_none());
         assert!(!database.body_inputs.contains_retained_key(&key));
+    }
+
+    fn assert_forced_body_closure_digest_collision(first_body: &str, second_body: &str) {
+        let source = format!(
+            "fn First() -> type {{ {first_body} }}\n\
+             fn Second() -> type {{ {second_body} }}\n"
+        );
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", &source)], 1);
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let configuration = semantic_configuration();
+        let instance = |name| crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, name)),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let first_instance = instance("First");
+        let second_instance = instance("Second");
+        let body_key = |instance| crate::body_query::BodyQueryKey {
+            instance,
+            configuration: configuration.clone(),
+        };
+        let first_key = body_key(first_instance.clone());
+        let second_key = body_key(second_instance.clone());
+
+        // Identity discovery is deliberately isolated from the system under
+        // test. Stable identities are request-independent, so a probe database
+        // can discover the exact forcing keys while the real database remains
+        // completely cold until its closure request.
+        let mut probe = RevisionedQueryDatabase::default();
+        let probe_revision = revision_for(&mut probe, &snapshot);
+        let produced_identity = |key: crate::body_query::BodyQueryKey| {
+            let terminal = probe
+                .body_produced_anonymous_projection(probe_revision, key, CancellationToken::new())
+                .expect("registered producer body publishes its anonymous projection");
+            let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
+                produced,
+            )) = terminal.outcome()
+            else {
+                panic!("producer body must publish anonymous nominals")
+            };
+            assert_eq!(produced.0.len(), 1);
+            produced.0[0].identity.clone()
+        };
+        let first_identity = produced_identity(first_key.clone());
+        let second_identity = produced_identity(second_key.clone());
+        assert_ne!(first_identity, second_identity);
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let forced_digest = 0x1191;
+        database
+            .force_body_closure_anonymous_digest_for_test(first_identity.clone(), forced_digest);
+        database
+            .force_body_closure_anonymous_digest_for_test(second_identity.clone(), forced_digest);
+
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module]),
+            roots: Arc::from([second_instance, first_instance]),
+            configuration: configuration.clone(),
+        };
+        let cold = database
+            .body_closure(revision, closure_key.clone(), CancellationToken::new())
+            .expect("body closure publishes a typed forced-collision failure");
+        for key in [&first_key, &second_key] {
+            assert_eq!(
+                cold.execution_for(key),
+                rue_query::RequestExecution::Computed,
+                "the cold closure must compute each producer transaction"
+            );
+            assert!(!cold.was_retained(key));
+        }
+        let rue_query::QueryOutcome::Success(output) = cold.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_collision_fatal(
+            output,
+            forced_digest,
+            first_identity.clone(),
+            second_identity.clone(),
+        );
+        assert_eq!(
+            output.bodies.len(),
+            2,
+            "the collision must be reconciled across two separate registered body transactions"
+        );
+        assert_eq!(
+            output
+                .bodies
+                .iter()
+                .map(|body| body.key.stable_identity())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([first_key.stable_identity(), second_key.stable_identity()])
+        );
+        assert_eq!(
+            output
+                .bodies
+                .iter()
+                .map(|body| body.bundle.origin_request_id())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            2,
+            "each producer must retain a distinct registered bundle terminal"
+        );
+
+        let warm = database
+            .body_closure(revision, closure_key.clone(), CancellationToken::new())
+            .expect("warm body closure reuses the typed forced-collision failure");
+        assert!(Arc::ptr_eq(&cold.terminal, &warm.terminal));
+        for key in [&first_key, &second_key] {
+            assert_eq!(warm.execution_for(key), rue_query::RequestExecution::Reused);
+            assert!(warm.was_retained(key));
+        }
+
+        let unchanged_revision = revision_for(&mut database, &snapshot);
+        assert_ne!(unchanged_revision, revision);
+        let unchanged = database
+            .body_closure(unchanged_revision, closure_key, CancellationToken::new())
+            .expect("unchanged successor revision retains the collision failure");
+        let rue_query::QueryOutcome::Success(unchanged_output) = unchanged.terminal.outcome()
+        else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_eq!(unchanged_output.fatal, output.fatal);
+        for key in [&first_key, &second_key] {
+            assert_eq!(
+                unchanged.execution_for(key),
+                rue_query::RequestExecution::Reused,
+                "unchanged successor revision must reuse each producer transaction"
+            );
+            assert!(unchanged.was_retained(key));
+        }
+    }
+
+    #[test]
+    fn body_closure_rejects_forced_struct_struct_digest_collision() {
+        assert_forced_body_closure_digest_collision(
+            "struct { first: i32 }",
+            "struct { second: bool }",
+        );
+    }
+
+    #[test]
+    fn body_closure_rejects_forced_enum_enum_digest_collision() {
+        assert_forced_body_closure_digest_collision(
+            "enum { First(i32), Empty }",
+            "enum { Second(bool), Empty }",
+        );
+    }
+
+    #[test]
+    fn body_closure_rejects_forced_struct_enum_digest_collision() {
+        assert_forced_body_closure_digest_collision(
+            "struct { first: i32 }",
+            "enum { Second(bool), Empty }",
+        );
+    }
+
+    fn projected_anonymous_nominals(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        snapshot: &SourceSnapshot,
+    ) -> Arc<[crate::durable_semantics::DurableAnonymousNominal]> {
+        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
+        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        database
+            .projected_declaration_semantics(
+                revision,
+                merged.ast(),
+                rue_target::Target::X86_64Linux,
+                &crate::PreviewFeatures::default(),
+                CancellationToken::new(),
+            )
+            .expect("declaration semantics project")
+            .anonymous_nominals
+    }
+
+    fn assert_collision_fatal(
+        output: &crate::body_query::BodyClosureOutput,
+        digest: u128,
+        left: crate::AnonymousNominalKey,
+        right: crate::AnonymousNominalKey,
+    ) {
+        let left = left.with_canonical_producer().into_owned();
+        let right = right.with_canonical_producer().into_owned();
+        let (first, second) = if left < right {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        assert_eq!(
+            output.fatal,
+            Some(
+                crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
+                    digest,
+                    first,
+                    second,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn body_closure_rejects_forced_declaration_declaration_digest_collision() {
+        let source = "fn First() -> type { struct { first: i32 } }\n\
+                      fn Second() -> type { enum { Second(bool), Empty } }\n\
+                      struct FirstHolder { value: First() }\n\
+                      struct SecondHolder { value: Second() }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let projected = projected_anonymous_nominals(&database, revision, &snapshot);
+        assert_eq!(projected.len(), 2);
+        let first = projected[0].identity.clone();
+        let second = projected[1].identity.clone();
+        let digest = 0xdede;
+        database.force_body_closure_anonymous_digest_for_test(first.clone(), digest);
+        database.force_body_closure_anonymous_digest_for_test(second.clone(), digest);
+
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module]),
+                    roots: Arc::from([]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("declaration-only closure publishes typed collision failure");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_collision_fatal(output, digest, first, second);
+        assert!(output.bodies.is_empty());
+    }
+
+    #[test]
+    fn body_closure_rejects_forced_declaration_body_digest_collision() {
+        let source = "fn Declared() -> type { struct { declared: i32 } }\n\
+                      fn Produced() -> type { enum { Produced(bool), Empty } }\n\
+                      struct Holder { value: Declared() }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let projected = projected_anonymous_nominals(&database, revision, &snapshot);
+        assert_eq!(projected.len(), 1);
+        let declaration_identity = projected[0].identity.clone();
+        let produced_instance = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Produced")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let produced_key = crate::body_query::BodyQueryKey {
+            instance: produced_instance.clone(),
+            configuration: semantic_configuration(),
+        };
+        let produced = database
+            .body_produced_anonymous_projection(
+                revision,
+                produced_key.clone(),
+                CancellationToken::new(),
+            )
+            .expect("body producer publishes anonymous facts");
+        let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
+            produced,
+        )) = produced.outcome()
+        else {
+            panic!("body producer must succeed")
+        };
+        assert_eq!(produced.0.len(), 1);
+        let body_identity = produced.0[0].identity.clone();
+        let digest = 0xdbdb;
+        database.force_body_closure_anonymous_digest_for_test(declaration_identity.clone(), digest);
+        database.force_body_closure_anonymous_digest_for_test(body_identity.clone(), digest);
+
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module]),
+                    roots: Arc::from([produced_instance]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("mixed declaration/body closure publishes typed collision failure");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_collision_fatal(output, digest, declaration_identity, body_identity);
+        assert_eq!(output.bodies.len(), 1);
+        assert_eq!(
+            closure.execution_for(&produced_key),
+            rue_query::RequestExecution::Computed
+        );
+    }
+
+    #[test]
+    fn body_closure_parked_outcome_precedes_an_already_observed_collision() {
+        let source = "fn First() -> type { struct { first: i32 } }\n\
+                      fn Second() -> type { enum { Second(bool), Empty } }\n\
+                      struct FirstHolder { value: First() }\n\
+                      struct SecondHolder { value: Second() }\n\
+                      fn main() -> i32 { let _value = @parse_u32(\"1\"); 0 }\n";
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", source)], 1);
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let projected = projected_anonymous_nominals(&database, revision, &snapshot);
+        assert_eq!(projected.len(), 2);
+        database
+            .force_body_closure_anonymous_digest_for_test(projected[0].identity.clone(), 0xfeed);
+        database
+            .force_body_closure_anonymous_digest_for_test(projected[1].identity.clone(), 0xfeed);
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("closure parks for absent trusted toolchain modules");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert!(output.parked_toolchain.is_some());
+        assert!(
+            output.fatal.is_none(),
+            "an already observed collision must not leak past the higher-precedence park"
+        );
+    }
+
+    fn anonymous_identity_for_digest_test(
+        name: &str,
+        kind: rue_air::AnonymousNominalKind,
+    ) -> crate::AnonymousNominalKey {
+        let module = ModuleId::from_logical_path("digest-test.rue").unwrap();
+        let definition = crate::StableDefinitionKey::from_stable_parts(
+            module,
+            crate::StableDefinitionNamespace::Value,
+            crate::StableDefinitionKind::Function,
+            Arc::from(name),
+            None,
+        );
+        crate::AnonymousNominalKey {
+            kind,
+            producer: crate::StableProducerId::Function(Box::new(
+                crate::FunctionInstanceKey::Definition(definition),
+            )),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: crate::CanonicalArguments::default(),
+        }
+    }
+
+    #[test]
+    fn body_closure_digest_registrar_is_permutation_independent_across_collisions() {
+        let entries = [
+            (
+                7,
+                anonymous_identity_for_digest_test("A", rue_air::AnonymousNominalKind::Struct),
+            ),
+            (
+                7,
+                anonymous_identity_for_digest_test("B", rue_air::AnonymousNominalKind::Struct),
+            ),
+            (
+                7,
+                anonymous_identity_for_digest_test("C", rue_air::AnonymousNominalKind::Struct),
+            ),
+            (
+                8,
+                anonymous_identity_for_digest_test("D", rue_air::AnonymousNominalKind::Struct),
+            ),
+            (
+                8,
+                anonymous_identity_for_digest_test("E", rue_air::AnonymousNominalKind::Struct),
+            ),
+        ];
+        let register = |entries: Vec<(u128, crate::AnonymousNominalKey)>| {
+            let mut owners = BTreeMap::new();
+            let mut collision = None;
+            for (digest, identity) in entries {
+                register_body_closure_anonymous_digest(
+                    &mut owners,
+                    &mut collision,
+                    digest,
+                    &identity,
+                );
+            }
+            collision
+        };
+        let forward = register(entries.to_vec());
+        let reverse = register(entries.iter().cloned().rev().collect());
+        assert_eq!(forward, reverse);
+        assert_eq!(
+            forward,
+            Some((7, entries[0].1.clone(), entries[1].1.clone()))
+        );
+    }
+
+    #[test]
+    fn compiler_anonymous_digest_canonicalizes_empty_specialization_producers() {
+        let canonical =
+            anonymous_identity_for_digest_test("Canonical", rue_air::AnonymousNominalKind::Struct);
+        let mut wrapped = canonical.clone();
+        let crate::StableProducerId::Function(producer) = &canonical.producer else {
+            unreachable!()
+        };
+        wrapped.producer = crate::StableProducerId::Function(Box::new(
+            crate::FunctionInstanceKey::Specialization {
+                base: producer.clone(),
+                arguments: crate::CanonicalArguments::default(),
+            },
+        ));
+        assert_ne!(canonical, wrapped);
+        assert_eq!(
+            compiler_anonymous_identity_digest(&canonical),
+            compiler_anonymous_identity_digest(&wrapped)
+        );
+        for identities in [
+            [canonical.clone(), wrapped.clone()],
+            [wrapped, canonical.clone()],
+        ] {
+            let mut owners = BTreeMap::new();
+            let mut collision = None;
+            for identity in identities {
+                register_body_closure_anonymous_digest(
+                    &mut owners,
+                    &mut collision,
+                    0xcafe,
+                    &identity,
+                );
+            }
+            assert!(
+                collision.is_none(),
+                "canonical and empty-specialization producer forms are one logical exact owner"
+            );
+            assert_eq!(owners, BTreeMap::from([(0xcafe, canonical.clone())]));
+        }
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "body-closure digest forcing must be configured before the first closure evaluation"
+    )]
+    fn body_closure_digest_forcing_rejects_mutation_after_publication() {
+        let snapshot = source_snapshot(&[(1, "/m.rue", "m.rue", "fn main() -> i32 { 0 }\n")], 1);
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module]),
+                    roots: Arc::from([]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .unwrap();
+        database.force_body_closure_anonymous_digest_for_test(
+            anonymous_identity_for_digest_test("TooLate", rue_air::AnonymousNominalKind::Struct),
+            1,
+        );
     }
 }
