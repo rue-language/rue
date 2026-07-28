@@ -22,9 +22,11 @@ owner_value() {
     [[ -r "$lock_dir/owner" ]] || return 1
     # `sed ... | head -n 1` would let head close the pipe first, and under
     # `pipefail` sed's EPIPE becomes the pipeline's status -- so a lock this
-    # process owns reads as unowned and never gets released (RUE-1155). sed
-    # stops at the first match itself, so no pipe is needed.
-    sed -n "s/^${key}=//{p;q;}" "$lock_dir/owner"
+    # process owns reads as unowned and never gets released (RUE-1155). The
+    # address form stops at the first match itself, so no pipe is needed.
+    # (`s/^x=//{p;q;}` is NOT this: a block after `s` is not conditional on the
+    # substitution, and sed rejects it as an unknown `s` option.)
+    sed -n "/^${key}=/{s/^${key}=//;p;q;}" "$lock_dir/owner"
 }
 
 release_lock() {
