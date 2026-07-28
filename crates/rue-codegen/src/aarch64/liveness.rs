@@ -269,7 +269,7 @@ fn uses(inst: &Aarch64Inst) -> Vec<VReg> {
 }
 
 /// Get virtual registers defined (written) by an instruction.
-fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
+pub(crate) fn defs(inst: &Aarch64Inst) -> Vec<VReg> {
     // Most instructions define 0-1 registers; pre-allocate for common case
     let mut result = Vec::with_capacity(1);
 
