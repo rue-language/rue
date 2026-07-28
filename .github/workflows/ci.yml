@@ -13,6 +13,12 @@ on:
   merge_group:
     branches: [trunk]
   workflow_dispatch:
+    inputs:
+      large_program:
+        description: Full large program to include in manual Valgrind coverage
+        type: choice
+        options: [none, caldera, meridian, all]
+        default: none
 
 # Cancel in-progress runs for the same branch
 concurrency:
@@ -146,24 +152,14 @@ jobs:
         # ./gen-rust-project.sh when it complains.
         run: python3 scripts/validate-rust-project.py
 
-  test:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            name: linux-x64
-          - os: ubuntu-24.04-arm
-            name: linux-arm64
-          - os: macos-15
-            name: macos
-    runs-on: ${{ matrix.os }}
-    name: test (${{ matrix.name }})
+  # Linux owns the complete target-independent premerge graph. Heavy corpus
+  # and dedicated targets are deferred only to explicit Linux jobs below, all
+  # of which feed the stable aggregate gate.
+  linux-premerge:
+    runs-on: ubuntu-latest
+    name: premerge (linux-x64)
     steps:
       - uses: actions/checkout@v6
-
-      - name: Select Xcode 16.2
-        if: runner.os == 'macOS'
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Install dotslash
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
@@ -180,9 +176,9 @@ jobs:
           path: |
             ~/.cache/dotslash
             ~/Library/Caches/dotslash
-          key: dotslash-${{ matrix.name }}-${{ hashFiles('buck2') }}
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
           restore-keys: |
-            dotslash-${{ matrix.name }}-
+            dotslash-linux-x64-
 
       # BuildBuddy remote action cache (RUE-316/RUE-1006/RUE-1019); see the
       # clippy job for the secret-availability contract. Compiler
@@ -202,19 +198,98 @@ jobs:
       # Uses hermetic Rust toolchain downloaded by Buck2
       # First verify everything builds (catches issues tests might miss)
       - name: Build all targets
-        run: scripts/ci-timed "${{ matrix.name }} build" -- ./buck2 build //crates/...
+        run: scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
 
-      - name: Run tests
-        # Every platform shards its ordinary CLI and spec corpora onto explicit
-        # parallel jobs below (RUE-1115); the main lane keeps broad pre-merge
-        # discovery plus the smaller heavy suites. Full Caldera and Meridian
-        # execution belongs to scheduled slow coverage; their reduced canaries
-        # run in this broad pass.
+      - name: Run complete target-independent premerge suite
+        # CLI and spec are sharded onto explicit Linux jobs; the structural
+        # scaling matrix has its own Linux job. The omission audit proves those
+        # are the only deferred targets.
         env:
           RUE_TEST_TIER: premerge
           RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:spec-tests'
           RUE_CI_DEFER_DEDICATED_SUITES: '//crates/rue-compiler:scaling-matrix-test'
-        run: scripts/ci-timed "${{ matrix.name }} tests" -- ./test.sh
+        run: scripts/ci-timed "linux-x64 premerge" -- ./test.sh
+
+      - name: Run explicit cross-backend compilation and encoding coverage
+        # Both the x86-64 and AArch64 encoders are host-independent Rust tests.
+        # Keep this named step visible even though the broad suite also reaches
+        # the target, so platform responsibility cannot become implicit.
+        run: scripts/ci-timed "cross-backend codegen" -- ./buck2 test //crates/rue-codegen:rue-codegen-test
+
+  # Native ARM64 lanes own only behavior that requires their host ABI, linker,
+  # runtime, or backend. Target-independent unit/spec coverage remains on
+  # Linux, avoiding three copies of the same broad suite.
+  native-platforms:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+          - os: macos-15
+            name: macos-arm64
+    runs-on: ${{ matrix.os }}
+    name: native (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 16.2
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cache/dotslash
+            ~/Library/Caches/dotslash
+          key: dotslash-${{ matrix.name }}-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-${{ matrix.name }}-
+
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Build native compiler and linker
+        run: scripts/ci-timed "${{ matrix.name }} native build" -- ./buck2 build //crates/rue:rue
+
+      - name: Run native backend, linker, runtime, ABI, allocator, and target tests
+        run: >-
+          scripts/ci-timed "${{ matrix.name }} native units" --
+          ./buck2 test
+          //crates/rue-compiler:rue-compiler-test
+          //crates/rue-codegen:rue-codegen-test
+          //crates/rue-linker:rue-linker-test
+          //crates/rue-runtime:rue-runtime-test
+          //crates/rue-runtime:runtime-archives-test
+          //crates/rue-runtime-abi:rue-runtime-abi-test
+          //crates/rue-allocator:rue-allocator-test
+          //crates/rue-target:rue-target-test
+
+      - name: Run every declaratively platform-scoped spec and CLI case
+        # The shared manifest selector registers all `only_on` cases for this
+        # host, including cases added later, without repeating either complete
+        # target-independent corpus.
+        run: scripts/ci-timed "${{ matrix.name }} platform corpus" -- scripts/run-native-platform-corpus.sh
+
+      - name: Run native ABI programs
+        run: scripts/ci-timed "${{ matrix.name }} ABI" -- scripts/rue cli abi
+
+      - name: Run native linker programs
+        run: scripts/ci-timed "${{ matrix.name }} linker" -- scripts/rue cli cli.linker
+
+      - name: Run native filesystem and platform programs
+        run: scripts/ci-timed "${{ matrix.name }} platform" -- scripts/rue cli cli.fs_file_io
 
   # RUE-617/RUE-1019: keep the byte-reproducibility proof independent of the
   # cache-enabled Linux test lane. Both reference and relocated candidate are
@@ -354,14 +429,9 @@ jobs:
           RUE_AFFECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: scripts/affected-targets decide
 
-  # The CLI and spec corpora dominate each platform's wall clock. Run them on
-  # separate machines (RUE-1115) while each main platform lane retains broad
-  # pre-merge discovery, the large-example canaries, the smaller corpora, and
-  # omission-audit coverage. Every platform defers the same heavy corpora (see
-  # RUE_CI_DEFER_HEAVY_SUITES on the `test` job). RUE-1116/RUE-1158: the
-  # ordinary CLI corpus is split into
-  # CLI_TEST_SHARD_COUNT (BUCK) measured-cost shards per platform so its wall
-  # time collapses to balanced N-way parallel slices;
+  # The target-independent CLI and spec corpora run on Linux. RUE-1116/RUE-1158:
+  # the ordinary CLI corpus is split into CLI_TEST_SHARD_COUNT (BUCK)
+  # measured-cost shards so its wall time collapses to balanced N-way slices;
   # //:cli-shard-coverage-validation keeps this matrix and the BUCK shard set
   # in lockstep.
   #
@@ -375,31 +445,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-15
-            cache_name: macos
-            target: //:cli-tests-shard-0
-            name: cli-shard-0
-            check_name: macos-cli-shard-0
-          - os: macos-15
-            cache_name: macos
-            target: //:cli-tests-shard-1
-            name: cli-shard-1
-            check_name: macos-cli-shard-1
-          - os: macos-15
-            cache_name: macos
-            target: //:cli-tests-shard-2
-            name: cli-shard-2
-            check_name: macos-cli-shard-2
-          - os: macos-15
-            cache_name: macos
-            target: //:cli-tests-shard-3
-            name: cli-shard-3
-            check_name: macos-cli-shard-3
-          - os: macos-15
-            cache_name: macos
-            target: //:spec-tests
-            name: spec
-            check_name: macos-spec
           - os: ubuntu-latest
             cache_name: linux-x64
             target: //:cli-tests-shard-0
@@ -425,31 +470,6 @@ jobs:
             target: //:spec-tests
             name: spec
             check_name: linux-x64-spec
-          - os: ubuntu-24.04-arm
-            cache_name: linux-arm64
-            target: //:cli-tests-shard-0
-            name: cli-shard-0
-            check_name: linux-arm64-cli-shard-0
-          - os: ubuntu-24.04-arm
-            cache_name: linux-arm64
-            target: //:cli-tests-shard-1
-            name: cli-shard-1
-            check_name: linux-arm64-cli-shard-1
-          - os: ubuntu-24.04-arm
-            cache_name: linux-arm64
-            target: //:cli-tests-shard-2
-            name: cli-shard-2
-            check_name: linux-arm64-cli-shard-2
-          - os: ubuntu-24.04-arm
-            cache_name: linux-arm64
-            target: //:cli-tests-shard-3
-            name: cli-shard-3
-            check_name: linux-arm64-cli-shard-3
-          - os: ubuntu-24.04-arm
-            cache_name: linux-arm64
-            target: //:spec-tests
-            name: spec
-            check_name: linux-arm64-spec
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.check_name }})
     steps:
@@ -563,3 +583,126 @@ jobs:
       # programs across -O0/-O1/-O2/-O3) through the release-built compiler.
       - name: Run focused release smoke
         run: scripts/ci-timed "release smoke" -- ./buck2 test //:release-smoke --target-platforms //platforms:release
+
+  # Generated-code memory safety under Valgrind. Required PR and merge-group
+  # coverage excludes the full generated applications; manual CI dispatch can
+  # opt into either application through the workflow input.
+  valgrind:
+    runs-on: ubuntu-latest
+    name: valgrind (linux-x64)
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
+
+      - name: Cache dotslash artifacts
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: |
+            dotslash-linux-x64-
+
+      - name: Provision remote build cache
+        env:
+          BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+        run: |
+          if [ -z "${BUILDBUDDY_API_KEY:-}" ]; then
+            echo "BUILDBUDDY_API_KEY unavailable (fork PR or unset); building without the remote cache."
+            exit 0
+          fi
+          scripts/provision-build-cache install
+          scripts/provision-build-cache apply
+
+      - name: Install valgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y valgrind
+
+      - name: Build Rue compiler
+        run: ./buck2 build //crates/rue:rue
+
+      - name: Run programs under Valgrind memcheck
+        env:
+          RUE_SANITIZER_LARGE_PROGRAMS: ${{ github.event_name == 'workflow_dispatch' && inputs.large_program || 'none' }}
+        run: scripts/run-sanitizer.sh
+
+  # AddressSanitizer over rue-runtime's arena allocator. This standalone Cargo
+  # harness requires a pinned nightly and therefore remains an explicit job.
+  asan:
+    runs-on: ubuntu-latest
+    name: asan (linux-x64)
+    env:
+      NIGHTLY: nightly-2026-04-13
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install pinned nightly Rust
+        run: >
+          rustup toolchain install "$NIGHTLY" --profile minimal
+          --component clippy,rust-src
+
+      - name: Clippy the ASan harness
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+        run: >
+          cargo "+$NIGHTLY" clippy
+          --manifest-path crates/rue-runtime-asan/Cargo.toml
+          --target x86_64-unknown-linux-gnu
+          -- -D warnings
+
+      - name: Exercise the arena allocator under AddressSanitizer
+        env:
+          RUSTFLAGS: "-Zsanitizer=address"
+          ASAN_OPTIONS: "detect_leaks=0"
+        run: >
+          cargo "+$NIGHTLY" run
+          --manifest-path crates/rue-runtime-asan/Cargo.toml
+          --target x86_64-unknown-linux-gnu
+
+  # Independent structural proof that the aggregate dependency inventory and
+  # platform responsibilities still match the reviewed contract. It has no
+  # needs, uses always(), and itself feeds the aggregate.
+  ci-contract:
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    name: CI contract
+    steps:
+      - uses: actions/checkout@v6
+      - name: Validate aggregate gate and platform responsibilities
+        run: scripts/validate-ci-gate.py .github/workflows/ci.yml
+
+  # The only stable branch-protection context. Matrix children may be reshaped
+  # without changing this displayed name. The evaluator rejects missing,
+  # renamed, extra, failed, cancelled, or unexpectedly skipped dependencies.
+  ci-success:
+    if: ${{ always() }}
+    needs:
+      - fmt
+      - clippy
+      - actionlint
+      - remote-execution
+      - rust-project
+      - linux-premerge
+      - native-platforms
+      - compiler-reproducibility
+      - scaling-matrix
+      - affected-targets
+      - platform-corpus
+      - release
+      - valgrind
+      - asan
+      - ci-contract
+    runs-on: ubuntu-latest
+    name: CI success
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require every expected CI dependency
+        env:
+          RUE_CI_EVENT: ${{ github.event_name }}
+          RUE_CI_NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          scripts/ci-required-results.py
+          --event "$RUE_CI_EVENT"
+          --needs-json "$RUE_CI_NEEDS"

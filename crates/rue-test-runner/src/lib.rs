@@ -575,6 +575,46 @@ pub const KNOWN_TARGETS: &[&str] = &[
     "x86-64-macos",
 ];
 
+/// Select which declarative platform cases a test harness registers.
+///
+/// Required native CI uses `native` to run every case whose `only_on` list
+/// includes the current host, without duplicating the target-independent
+/// corpus. Keeping this selection in the shared manifest layer means a newly
+/// added platform-scoped case is picked up automatically.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PlatformCaseSelection {
+    #[default]
+    All,
+    Native,
+}
+
+impl PlatformCaseSelection {
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        match value {
+            None | Some("") | Some("all") => Ok(Self::All),
+            Some("native") => Ok(Self::Native),
+            Some(other) => Err(format!(
+                "unknown RUE_PLATFORM_CASE_SELECTION {other:?} (expected all or native)"
+            )),
+        }
+    }
+
+    pub fn from_env() -> Result<Self, String> {
+        match std::env::var("RUE_PLATFORM_CASE_SELECTION") {
+            Ok(value) => Self::parse(Some(&value)),
+            Err(std::env::VarError::NotPresent) => Self::parse(None),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub fn includes(self, only_on: &[String]) -> bool {
+        match self {
+            Self::All => true,
+            Self::Native => !only_on.is_empty() && should_skip_for_platform(only_on).is_none(),
+        }
+    }
+}
+
 /// Check if a test should be skipped based on `only_on` restrictions.
 ///
 /// Returns `Some(reason)` if the test should be skipped, `None` if it should run.
@@ -4196,5 +4236,38 @@ exit_code = 42
                 "test harness target whitelist is missing compiler target {target}"
             );
         }
+    }
+
+    #[test]
+    fn native_platform_selection_is_declarative_and_host_scoped() {
+        let host = get_host_target().to_string();
+        let other = KNOWN_TARGETS
+            .iter()
+            .find(|target| **target != host)
+            .expect("at least one non-host target")
+            .to_string();
+
+        assert!(PlatformCaseSelection::All.includes(&[]));
+        assert!(PlatformCaseSelection::All.includes(std::slice::from_ref(&other)));
+        assert!(!PlatformCaseSelection::Native.includes(&[]));
+        assert!(PlatformCaseSelection::Native.includes(&[host, other.clone()]));
+        assert!(!PlatformCaseSelection::Native.includes(&[other]));
+    }
+
+    #[test]
+    fn platform_selection_rejects_unknown_modes() {
+        assert_eq!(
+            PlatformCaseSelection::parse(None),
+            Ok(PlatformCaseSelection::All)
+        );
+        assert_eq!(
+            PlatformCaseSelection::parse(Some("native")),
+            Ok(PlatformCaseSelection::Native)
+        );
+        assert!(
+            PlatformCaseSelection::parse(Some("platform-ish"))
+                .unwrap_err()
+                .contains("expected all or native")
+        );
     }
 }

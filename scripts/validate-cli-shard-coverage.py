@@ -30,7 +30,7 @@ BUCK_SHARD_RE = re.compile(r'name\s*=\s*"cli-tests-shard-(\d+)"')
 BUCK_SHARD_LOOP_RE = re.compile(r'name\s*=\s*"cli-tests-shard-\{\}"\.format\(')
 BUCK_SHARD_RANGE_RE = re.compile(r"range\(\s*CLI_TEST_SHARD_COUNT\s*\)")
 # platform-corpus jobs are identified by their check_name, e.g.
-#   check_name: linux-arm64-cli-shard-2
+#   check_name: linux-x64-cli-shard-2
 # The non-greedy platform group stops at the "-cli-shard" suffix.
 CHECK_SHARD_RE = re.compile(r"([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?)-cli-shard-(\d+)\b")
 

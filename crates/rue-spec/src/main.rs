@@ -33,14 +33,17 @@
 //! - `RUE_SPEC_DIR` - Path to specification markdown files (default: `docs/spec/src`)
 //! - `RUE_SPEC_CASES` - Path to test case TOML files (default: `crates/rue-spec/cases`)
 //! - `RUE_BINARY` - Path to the rue compiler binary
+//! - `RUE_PLATFORM_CASE_SELECTION=native` - register only declaratively
+//!   platform-scoped cases applicable to the current host
 //!
 //! Cases that intentionally exercise the repository standard library opt in
 //! with `real_std = true`. Other cases remain isolated from `RUE_STD_PATH`.
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_test_runner::{
-    Case, ExpectedFailureOutcome, TestResult, classify_expected_failure, find_dir, find_rue_binary,
-    load_test_files, run_test_case, should_skip_for_platform, validate_nonempty_case_corpus,
+    Case, ExpectedFailureOutcome, PlatformCaseSelection, TestResult, classify_expected_failure,
+    find_dir, find_rue_binary, load_test_files, run_test_case, should_skip_for_platform,
+    validate_nonempty_case_corpus,
 };
 use std::path::Path;
 
@@ -168,6 +171,11 @@ fn main() {
         return;
     }
 
+    let platform_selection = PlatformCaseSelection::from_env().unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(2);
+    });
+
     // Find the rue binary
     let rue_binary = find_rue_binary();
 
@@ -193,6 +201,9 @@ fn main() {
         let section_id = spec.section.id.clone();
 
         for case in spec.case {
+            if !platform_selection.includes(&case.only_on) {
+                continue;
+            }
             let test_name = format!("{}::{}", section_id, case.name);
             let skip = case.skip;
             let is_preview = case.preview.is_some();
@@ -217,6 +228,14 @@ fn main() {
 
             tests.push(trial);
         }
+    }
+
+    if tests.is_empty() {
+        eprintln!(
+            "error: platform case selection {platform_selection:?} selected no spec cases on {}",
+            rue_test_runner::get_host_target()
+        );
+        std::process::exit(1);
     }
 
     // Run all tests

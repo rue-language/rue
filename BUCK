@@ -495,6 +495,39 @@ rue_sh_test(
 )
 
 rue_sh_test(
+    name = "ci-required-results-tool-tests",
+    test = "scripts/test-ci-required-results.py",
+    resources = ["scripts/ci-required-results.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+rue_sh_test(
+    name = "ci-gate-validation",
+    test = "scripts/validate-ci-gate.py",
+    args = ["$(location :required-ci-workflows)/.github/workflows/ci.yml"],
+    resources = [
+        "scripts/ci-required-results.py",
+        "scripts/run-native-platform-corpus.sh",
+    ],
+)
+
+rue_sh_test(
+    name = "ci-gate-validator-tool-tests",
+    test = "scripts/test-validate-ci-gate.py",
+    resources = [
+        "scripts/ci-required-results.py",
+        "scripts/run-native-platform-corpus.sh",
+        "scripts/validate-ci-gate.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",
+    },
+)
+
+rue_sh_test(
     name = "cli-shard-weights-validation",
     test = "scripts/generate-cli-shard-weights.py",
     args = [
