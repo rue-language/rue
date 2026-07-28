@@ -969,7 +969,8 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     // dependency edges runs before whole-program analysis opens `sema`. It is
     // real per-declaration work, so it gets its own leaf instead of widening
     // the pipeline's unattributed residual (RUE-786).
-    let declaration_reuse_span = info_span!("declaration_reuse").entered();
+    let declaration_reuse_span =
+        info_span!("declaration_reuse", phase = "semantic_analysis").entered();
     let input = CodegenInputDescriptor {
         semantic: SemanticInputDescriptor::new(
             merged.definitions().source_snapshot(),

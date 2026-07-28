@@ -500,7 +500,8 @@ pub(crate) fn load(
     // then the demand-driven import-discovery frontier. It was previously
     // timed only through the `parse_file` spans it happens to contain, which
     // left the rest of discovery in the root's unattributed residual (RUE-786).
-    let _span = tracing::info_span!("source_loading").entered();
+    let _span =
+        tracing::info_span!("source_loading", phase = "source_discovery_and_parsing").entered();
     let manifest = {
         let _span = tracing::info_span!("source_manifest").entered();
         let manifest = request
