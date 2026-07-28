@@ -71,10 +71,9 @@ window = 10
 # and exits 3, and the workflow tolerates exactly that exit while still treating
 # a runner failure as fatal.
 #
-# The collection epochs, with pins that resolve and with the counts, batching
-# factors, and flagging multiplier this calibration produces, are declared in
-# RUE-1188. `aarch64-macos` is included from the start by maintainer decision,
-# which is also why its noise profile is the most interesting output here.
+# The collection epochs are declared below as epoch 2 on each platform. Epoch
+# identifiers are never reused, so calibration keeps epoch 1 and the calibration
+# workflow keeps working unchanged.
 
 [[epoch]]
 id = 1
@@ -149,3 +148,121 @@ batch_size = 5
 [epoch.flagging]
 k = 3.0
 window = 5
+
+# ---------------------------------------------------------------------------
+# Collection epochs (ADR-0067 Phase 5, RUE-1188).
+#
+# These are the real ones. Their pins resolve, so a run that does not match the
+# tree it claims to have measured cannot enter a series, and their sampling and
+# flagging policies come from the RUE-1187 calibration sweep
+# (run 30373471741, 12 repetitions per platform).
+#
+# Epoch 2, not 1: identifiers are never reused, and epoch 1 on each platform is
+# the calibration epoch above.
+#
+# Measured dispersion of the startup probe, and what it implies:
+#
+# | platform      | rel. MAD | samples | resulting median uncertainty |
+# | ------------- | -------- | ------- | ---------------------------- |
+# | aarch64-linux |    0.59% |       3 |                        0.63% |
+# | x86_64-linux  |    1.59% |       9 |                        0.98% |
+# | aarch64-macos |    6.18% |      99 |                        1.15% |
+#
+# macOS is roughly ten times noisier than aarch64-linux per observation, but
+# sampling absorbs almost all of it: at 99 samples its published median is about
+# as certain as Linux's. That costs about five seconds of measured compile time,
+# which is why it is included from the start rather than deferred.
+#
+# Two things here are provisional, and deliberately so.
+#
+# `aarch64-macos` flagging (k = 5, window = 10) is the only pairing in the sweep
+# with no false flags, but it rests on two comparisons — too thin to be called
+# settled. It is set wide on purpose: a rule that flags constantly is worse than
+# one that is slow to flag, because the first trains people to ignore it.
+#
+# Every sampling count is calibrated against the startup probe alone, which is
+# the whole corpus today. A probe of a few tens of milliseconds makes 99 samples
+# free; a workload of several seconds would not. When the corpus grows — caldera
+# is expected back — these counts need re-deriving, and that is a new epoch on
+# each affected platform.
+#
+# macOS's true need at the 1% target is about 132 samples. The calibrator clamps
+# its recommendation to 99 so one pathological workload cannot make collection
+# unaffordable, and reaching that ceiling is itself a finding. The declared 99
+# is the calibrated recommendation rather than the uncapped figure; the gap is
+# 1.15% achieved uncertainty against the 1.00% target.
+
+[[epoch]]
+id = 2
+platform = "x86_64-linux"
+suite_revision = 1
+target = "x86_64-unknown-linux-gnu"
+args = []
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 9
+batch_size = 3
+
+[epoch.flagging]
+k = 2.0
+window = 3
+
+[[epoch]]
+id = 2
+platform = "aarch64-linux"
+suite_revision = 1
+target = "aarch64-unknown-linux-gnu"
+args = []
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+
+[epoch.sampling.startup]
+samples = 3
+batch_size = 2
+
+[epoch.flagging]
+k = 2.0
+window = 3
+
+[[epoch]]
+id = 2
+platform = "aarch64-macos"
+suite_revision = 1
+target = "aarch64-apple-darwin"
+args = []
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+
+[epoch.environment]
+runner_label = "github-hosted"
+runner_image = "macos-15"
+
+[epoch.sampling.startup]
+samples = 99
+batch_size = 4
+
+# Provisional: the only false-flag-free pairing in the sweep, on two
+# comparisons. Set wide deliberately — a rule that flags constantly trains
+# people to ignore it.
+[epoch.flagging]
+k = 5.0
+window = 10
