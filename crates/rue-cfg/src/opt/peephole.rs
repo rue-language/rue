@@ -13,9 +13,10 @@
 //!   would elide a mandatory trap (the RUE-57 class).
 //!
 //! * **Identity rewiring**: operations that provably return one operand
-//!   unchanged and cannot trap — `x+0`, `0+x`, `x-0`, `x*1`, `1*x`, `x/1`,
-//!   `x|0`, `x^0`, `x<<0`, `x>>0`, `x&x`, `x|x`, `!!x` — have every use
-//!   re-pointed at the operand through one batched
+//!   unchanged and cannot trap — `x+0`, `0+x`, `x-0`, `x*1`, `1*x`, their
+//!   wrapping-arithmetic counterparts, `x/1`, `x|0`, `x^0`, `x<<0`, `x>>0`,
+//!   `x&x`, `x|x`, `!!x` — have every use re-pointed at the operand through one
+//!   batched
 //!   [`Cfg::rewrite_value_uses`] sweep. The identity instruction itself is
 //!   rewritten to a dead placeholder constant: DCE conservatively keeps any
 //!   arithmetic that might trap, so simply orphaning an `Add` would leave it
@@ -161,6 +162,25 @@ fn identity_target(cfg: &Cfg, value: CfgValue) -> Option<CfgValue> {
                 None
             }
         }
+        CfgInstData::WrappingAdd(a, b) => {
+            if is0(b) {
+                Some(a)
+            } else if is0(a) {
+                Some(b)
+            } else {
+                None
+            }
+        }
+        CfgInstData::WrappingSub(a, b) if is0(b) => Some(a),
+        CfgInstData::WrappingMul(a, b) => {
+            if is1(b) {
+                Some(a)
+            } else if is1(a) {
+                Some(b)
+            } else {
+                None
+            }
+        }
         CfgInstData::Div(a, b) if is1(b) => Some(a),
         // Bitwise ops and shifts never trap. (x & 0, x ^ x fold to constants
         // in the constfold kernel instead.)
@@ -261,6 +281,28 @@ mod tests {
     }
 
     #[test]
+    fn test_wrapping_identity_chain_rewired_to_operand() {
+        let mut cfg = make_cfg();
+        let x = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let zero = push(&mut cfg, CfgInstData::Const(0), Type::I32);
+        let one = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        let add = push(&mut cfg, CfgInstData::WrappingAdd(zero, x), Type::I32);
+        let sub = push(&mut cfg, CfgInstData::WrappingSub(add, zero), Type::I32);
+        let mul = push(&mut cfg, CfgInstData::WrappingMul(one, sub), Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(mul) });
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.identities_rewired, 3);
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Return { value: Some(v) } if v == x
+        ));
+        assert!(matches!(cfg.get_inst(add).data, CfgInstData::Const(0)));
+        assert!(matches!(cfg.get_inst(sub).data, CfgInstData::Const(0)));
+        assert!(matches!(cfg.get_inst(mul).data, CfgInstData::Const(0)));
+    }
+
+    #[test]
     fn test_identity_chain_resolves_transitively() {
         // ((x + 0) | 0) << 0 — every layer is an identity; the final use
         // must land on x itself.
@@ -316,16 +358,22 @@ mod tests {
 
     #[test]
     fn test_non_identity_untouched() {
-        // x + 1 and x - x-with-different-values must not be rewired.
+        // x + 1 and x wrapping_mul 2 must not be rewired.
         let mut cfg = make_cfg();
         let x = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
         let one = push(&mut cfg, CfgInstData::Const(1), Type::I32);
+        let two = push(&mut cfg, CfgInstData::Const(2), Type::I32);
         let add = push(&mut cfg, CfgInstData::Add(x, one), Type::I32);
-        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(add) });
+        let mul = push(&mut cfg, CfgInstData::WrappingMul(add, two), Type::I32);
+        cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(mul) });
 
         let stats = run(&mut cfg).unwrap();
         assert_eq!(stats.identities_rewired, 0);
         assert!(matches!(cfg.get_inst(add).data, CfgInstData::Add(..)));
+        assert!(matches!(
+            cfg.get_inst(mul).data,
+            CfgInstData::WrappingMul(..)
+        ));
     }
 
     #[test]

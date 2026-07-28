@@ -6,7 +6,7 @@
 //!
 //! ## What gets folded
 //!
-//! - Binary arithmetic: add, sub, mul, div, mod
+//! - Binary arithmetic: add, sub, mul, wrapping add/sub/mul, div, mod
 //! - Comparisons: eq, ne, lt, gt, le, ge
 //! - Bitwise: and, or, xor, shl, shr
 //! - Logical: and, or (on booleans)
@@ -52,6 +52,27 @@ pub(super) fn fold_instruction(cfg: &mut Cfg, value: CfgValue) -> bool {
                     (get_const_int(cfg, *lhs) == Some(0) || get_const_int(cfg, *rhs) == Some(0))
                         .then_some(CfgInstData::Const(0))
                 })
+        }
+        CfgInstData::WrappingAdd(lhs, rhs) => fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
+            Some(truncate_to_type(a.wrapping_add(b), ty))
+        }),
+        CfgInstData::WrappingSub(lhs, rhs) => {
+            fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
+                Some(truncate_to_type(a.wrapping_sub(b), ty))
+            })
+            // x wrapping_sub x is always zero and cannot trap.
+            .or_else(|| (lhs == rhs).then_some(CfgInstData::Const(0)))
+        }
+        CfgInstData::WrappingMul(lhs, rhs) => {
+            fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| {
+                Some(truncate_to_type(a.wrapping_mul(b), ty))
+            })
+            // Wrapping multiplication never traps, so either zero operand
+            // annihilates the result even when the other operand is dynamic.
+            .or_else(|| {
+                (get_const_int(cfg, *lhs) == Some(0) || get_const_int(cfg, *rhs) == Some(0))
+                    .then_some(CfgInstData::Const(0))
+            })
         }
         CfgInstData::Div(lhs, rhs) => {
             fold_binary_arith(cfg, *lhs, *rhs, ty, |a, b| checked_div(a, b, ty))
@@ -554,6 +575,36 @@ mod tests {
         )
     }
 
+    fn assert_wrapping_fold(
+        ty: Type,
+        lhs: u64,
+        rhs: u64,
+        op: fn(CfgValue, CfgValue) -> CfgInstData,
+        expected: u64,
+    ) {
+        let mut cfg = make_cfg();
+        let lhs = add_const(&mut cfg, lhs, ty);
+        let rhs = add_const(&mut cfg, rhs, ty);
+        let entry = cfg.entry;
+        let result = cfg.add_inst_to_block(
+            entry,
+            CfgInst {
+                data: op(lhs, rhs),
+                ty,
+                span: Span::new(0, 0),
+            },
+        );
+        finalize_cfg(&mut cfg, result);
+
+        crate::opt::constopt::run(&mut cfg);
+
+        assert!(
+            matches!(cfg.get_inst(result).data, CfgInstData::Const(v) if v == expected),
+            "{ty:?}: expected Const({expected}), got {:?}",
+            cfg.get_inst(result).data
+        );
+    }
+
     fn finalize_cfg(cfg: &mut Cfg, ret_val: CfgValue) {
         let entry = cfg.entry;
         cfg.set_terminator(
@@ -579,6 +630,111 @@ mod tests {
             CfgInstData::Const(5) => {}
             other => panic!("Expected Const(5), got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_fold_wrapping_arithmetic_all_integer_types() {
+        #[allow(clippy::type_complexity)]
+        let cases: [(Type, u64, u64, u64, u64, u64, u64); 8] = [
+            (
+                Type::I8,
+                i8::MAX as u64,
+                (i8::MIN as i64) as u64,
+                (i8::MIN as i64) as u64,
+                i8::MAX as u64,
+                64,
+                (i8::MIN as i64) as u64,
+            ),
+            (
+                Type::I16,
+                i16::MAX as u64,
+                (i16::MIN as i64) as u64,
+                (i16::MIN as i64) as u64,
+                i16::MAX as u64,
+                16_384,
+                (i16::MIN as i64) as u64,
+            ),
+            (
+                Type::I32,
+                i32::MAX as u64,
+                (i32::MIN as i64) as u64,
+                (i32::MIN as i64) as u64,
+                i32::MAX as u64,
+                1_073_741_824,
+                (i32::MIN as i64) as u64,
+            ),
+            (
+                Type::I64,
+                i64::MAX as u64,
+                i64::MIN as u64,
+                i64::MIN as u64,
+                i64::MAX as u64,
+                4_611_686_018_427_387_904,
+                i64::MIN as u64,
+            ),
+            (Type::U8, u8::MAX as u64, 0, 0, u8::MAX as u64, 128, 0),
+            (Type::U16, u16::MAX as u64, 0, 0, u16::MAX as u64, 32_768, 0),
+            (
+                Type::U32,
+                u32::MAX as u64,
+                0,
+                0,
+                u32::MAX as u64,
+                2_147_483_648,
+                0,
+            ),
+            (
+                Type::U64,
+                u64::MAX,
+                0,
+                0,
+                u64::MAX,
+                9_223_372_036_854_775_808,
+                0,
+            ),
+        ];
+
+        for (ty, add_lhs, add_expected, sub_lhs, sub_expected, mul_lhs, mul_expected) in cases {
+            assert_wrapping_fold(ty, add_lhs, 1, CfgInstData::WrappingAdd, add_expected);
+            assert_wrapping_fold(ty, sub_lhs, 1, CfgInstData::WrappingSub, sub_expected);
+            assert_wrapping_fold(ty, mul_lhs, 2, CfgInstData::WrappingMul, mul_expected);
+        }
+    }
+
+    #[test]
+    fn test_fold_dynamic_wrapping_annihilators() {
+        let mut cfg = make_cfg();
+        let x = cfg.add_inst_to_block(
+            cfg.entry,
+            CfgInst {
+                data: CfgInstData::Param { index: 0 },
+                ty: Type::U32,
+                span: Span::new(0, 0),
+            },
+        );
+        let zero = add_const(&mut cfg, 0, Type::U32);
+        let sub = cfg.add_inst_to_block(
+            cfg.entry,
+            CfgInst {
+                data: CfgInstData::WrappingSub(x, x),
+                ty: Type::U32,
+                span: Span::new(0, 0),
+            },
+        );
+        let mul = cfg.add_inst_to_block(
+            cfg.entry,
+            CfgInst {
+                data: CfgInstData::WrappingMul(sub, zero),
+                ty: Type::U32,
+                span: Span::new(0, 0),
+            },
+        );
+        finalize_cfg(&mut cfg, mul);
+
+        crate::opt::constopt::run(&mut cfg);
+
+        assert!(matches!(cfg.get_inst(sub).data, CfgInstData::Const(0)));
+        assert!(matches!(cfg.get_inst(mul).data, CfgInstData::Const(0)));
     }
 
     #[test]

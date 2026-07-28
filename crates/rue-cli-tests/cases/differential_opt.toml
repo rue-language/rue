@@ -45,6 +45,108 @@ stdout = """59
 """
 exit_code = 59
 
+# Wrapping arithmetic: every operation at every integer width and signedness.
+# The constant-heavy shape exercises folding at -O1+, while -O0 anchors each
+# modular result to native execution.
+[[case]]
+name = "wrapping_arithmetic_across_opt_levels"
+differential_opt = true
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let i8_max: i8 = 127;
+    let i8_min: i8 = -128;
+    let i8_one: i8 = 1;
+    let i8_half: i8 = 64;
+    @dbg(@wrapping_add(i8_max, i8_one));
+    @dbg(@wrapping_sub(i8_min, i8_one));
+    @dbg(@wrapping_mul(i8_half, 2));
+
+    let i16_max: i16 = 32767;
+    let i16_min: i16 = -32768;
+    let i16_one: i16 = 1;
+    let i16_half: i16 = 16384;
+    @dbg(@wrapping_add(i16_max, i16_one));
+    @dbg(@wrapping_sub(i16_min, i16_one));
+    @dbg(@wrapping_mul(i16_half, 2));
+
+    let i32_max: i32 = 2147483647;
+    let i32_min: i32 = -2147483648;
+    let i32_one: i32 = 1;
+    let i32_half: i32 = 1073741824;
+    @dbg(@wrapping_add(i32_max, i32_one));
+    @dbg(@wrapping_sub(i32_min, i32_one));
+    @dbg(@wrapping_mul(i32_half, 2));
+
+    let i64_max: i64 = 9223372036854775807;
+    let i64_min: i64 = -9223372036854775808;
+    let i64_one: i64 = 1;
+    let i64_half: i64 = 4611686018427387904;
+    @dbg(@wrapping_add(i64_max, i64_one));
+    @dbg(@wrapping_sub(i64_min, i64_one));
+    @dbg(@wrapping_mul(i64_half, 2));
+
+    let u8_max: u8 = 255;
+    let u8_zero: u8 = 0;
+    let u8_one: u8 = 1;
+    let u8_half: u8 = 128;
+    @dbg(@wrapping_add(u8_max, u8_one));
+    @dbg(@wrapping_sub(u8_zero, u8_one));
+    @dbg(@wrapping_mul(u8_half, 2));
+
+    let u16_max: u16 = 65535;
+    let u16_zero: u16 = 0;
+    let u16_one: u16 = 1;
+    let u16_half: u16 = 32768;
+    @dbg(@wrapping_add(u16_max, u16_one));
+    @dbg(@wrapping_sub(u16_zero, u16_one));
+    @dbg(@wrapping_mul(u16_half, 2));
+
+    let u32_max: u32 = 4294967295;
+    let u32_zero: u32 = 0;
+    let u32_one: u32 = 1;
+    let u32_half: u32 = 2147483648;
+    @dbg(@wrapping_add(u32_max, u32_one));
+    @dbg(@wrapping_sub(u32_zero, u32_one));
+    @dbg(@wrapping_mul(u32_half, 2));
+
+    let u64_max: u64 = 18446744073709551615;
+    let u64_zero: u64 = 0;
+    let u64_one: u64 = 1;
+    let u64_half: u64 = 9223372036854775808;
+    @dbg(@wrapping_add(u64_max, u64_one));
+    @dbg(@wrapping_sub(u64_zero, u64_one));
+    @dbg(@wrapping_mul(u64_half, 2));
+
+    0
+}
+""" }]
+stdout = """-128
+127
+-128
+-32768
+32767
+-32768
+-2147483648
+2147483647
+-2147483648
+-9223372036854775808
+9223372036854775807
+-9223372036854775808
+0
+255
+0
+0
+65535
+0
+0
+4294967295
+0
+0
+18446744073709551615
+0
+"""
+exit_code = 0
+
 # Control flow: nested loops, branches, mutation, early-ish exits. Exercises
 # CFG-shaped code where a bad block-simplification would show up.
 [[case]]
