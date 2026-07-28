@@ -12,34 +12,20 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 #[cfg(test)]
-thread_local! {
-    static INJECT_BODY_TRANSACTION_FAILURE: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(crate) fn with_test_body_transaction_failure<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            INJECT_BODY_TRANSACTION_FAILURE.with(|enabled| enabled.set(false));
-        }
-    }
-    INJECT_BODY_TRANSACTION_FAILURE.with(|enabled| {
-        assert!(
-            !enabled.replace(true),
-            "body transaction failure injection is not nestable"
-        );
-    });
-    let _reset = Reset;
-    run()
-}
-
-#[cfg(test)]
 #[derive(Debug, Default)]
 struct TestBodyClosureAnonymousDigestForcing {
     sealed: bool,
     digests: BTreeMap<crate::AnonymousNominalKey, u128>,
+}
+
+#[cfg(test)]
+pub(crate) struct TestBodyTransactionFailureGuard(Arc<std::sync::atomic::AtomicBool>);
+
+#[cfg(test)]
+impl Drop for TestBodyTransactionFailureGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 use rue_query::{
@@ -73,16 +59,11 @@ use crate::typed_query_store::{TerminalKind, TypedQueryFamily};
 
 const IMPORT_INPUT_REVISION_RETENTION: usize = 64;
 const MODULE_QUERY_MEMO_RETENTION: usize = 4096;
-// Body-keyed families must retain the entire reached-body universe of one
-// cold compile. Terminal eviction below that size is not merely a cache miss:
-// the body-produced-anonymous projection resolves through the retained
-// BodyTransaction terminal, so evicting a still-reachable body's terminal
-// makes the projection fail (surfaced as a "did not publish a terminal"
-// internal diagnostic), and every coordinator restart recomputes each evicted
-// body from scratch. examples/caldera reaches more than 10,000 bodies and
-// exceeded the module-family cap (RUE-1083). RUE-1028's database-owned
-// reachability should replace this fixed cap with exact rooted membership.
-const BODY_QUERY_MEMO_RETENTION: usize = 65536;
+// The published body-closure lease owns the exact registered dependency cone
+// of the current reachability root. Body families therefore need only a small
+// unrooted history; a large reached program grows past this floor through its
+// exact pins and releases superseded/deleted members atomically.
+const BODY_QUERY_MEMO_RETENTION: usize = 8;
 const BODY_CLOSURE_MEMO_RETENTION: usize = 8;
 // Declaration-keyed families scale with the program's declaration universe
 // exactly as body-keyed families scale with reached bodies, and the
@@ -91,7 +72,7 @@ const BODY_CLOSURE_MEMO_RETENTION: usize = 8;
 // projection the body retention protects. Module-keyed families stay at the
 // module-scaled retention; real programs have orders of magnitude fewer
 // modules than declarations.
-const DECLARATION_QUERY_MEMO_RETENTION: usize = BODY_QUERY_MEMO_RETENTION;
+const DECLARATION_QUERY_MEMO_RETENTION: usize = 65536;
 // ResolveImport is keyed by parser occurrence plus demand mode, not by module.
 // Large programs can have thousands of sites per module universe (Caldera has
 // 4,093 occurrences), and rooted/speculative variants may both be retained.
@@ -542,9 +523,16 @@ pub(crate) struct RevisionedQueryDatabase {
     #[allow(dead_code)]
     body_analysis_bundles:
         QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyAnalysisBundle>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    body_reachability: QueryFamily<
+        crate::body_query::BodyClosureQueryKey,
+        crate::body_query::BodyReachabilityOutput,
+    >,
     #[allow(dead_code)]
     body_closures:
         QueryFamily<crate::body_query::BodyClosureQueryKey, crate::body_query::BodyClosureOutput>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    body_closure_memberships: QueryFamily<crate::body_query::BodyClosureMembershipKey, bool>,
     body_closure_publications: QueryFamily<
         crate::body_query::BodyClosurePublicationKey,
         Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
@@ -642,6 +630,15 @@ pub(crate) struct RevisionedQueryDatabase {
     /// lookup-pin set here. Behind a `Mutex` because promotion is a `&self`
     /// operation on the shared database.
     lookup_root_lease: Arc<Mutex<PublishedRootLookupLease>>,
+    #[allow(dead_code)]
+    body_closure_root: Arc<Mutex<PublishedBodyClosureRoot>>,
+    #[allow(dead_code)]
+    body_reachability_root: Arc<Mutex<PublishedBodyReachabilityRoot>>,
+    /// Session-scoped injection shared with structured body-query children.
+    /// Keeping it on the database avoids both thread-local scheduler escapes
+    /// and cross-test interference between independent compiler sessions.
+    #[cfg(test)]
+    inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
     /// Test-only witness that the rooted-publication promotion hook took its
     /// non-empty branch — i.e. entered the promotion path at all (RUE-1091). The
     /// hook checks the observed set for emptiness FIRST, before formatting the
@@ -798,6 +795,7 @@ impl ObservedLookupRoot {
 #[derive(Debug)]
 struct RootLeaseEntry {
     observations: ObservedLookupRoot,
+    publication: u64,
 }
 
 #[derive(Debug, Default)]
@@ -807,6 +805,9 @@ struct PublishedRootLookupLease {
     /// predecessor, so the shared terminals of an edit/error/fix loop are never
     /// left unprotected across the swap.
     roots: BTreeMap<String, RootLeaseEntry>,
+    /// Monotonic identity for conditionally rolling back a publication without
+    /// overwriting a newer concurrent successor.
+    next_root_publication: u64,
     /// Last observed node incarnation per distinct logical lookup key, bounded
     /// FIFO, for rederivation-after-eviction detection.
     incarnations: BTreeMap<Arc<str>, (u64, u64)>,
@@ -879,10 +880,16 @@ fn replace_published_lookup_root(
         }
         lease.record_incarnation(identity, *incarnation);
     }
+    let publication = lease.next_root_publication;
+    lease.next_root_publication = lease
+        .next_root_publication
+        .checked_add(1)
+        .expect("lookup-root publication generation overflow");
     let prior = lease.roots.insert(
         root,
         RootLeaseEntry {
             observations: observed,
+            publication,
         },
     );
     let evictions_before = runtime.metrics().evictions;
@@ -896,19 +903,127 @@ struct PublishedLookupRootHandoff {
     runtime: QueryRuntime,
     root: String,
     observed: Option<ObservedLookupRoot>,
+    rollback: Option<PublishedLookupRootRollback>,
+}
+
+#[derive(Debug)]
+struct PublishedLookupRootRollback {
+    previous: Option<RootLeaseEntry>,
+    publication: u64,
+    previous_incarnations: BTreeMap<Arc<str>, (u64, u64)>,
+    previous_incarnation_order: BTreeSet<(u64, Arc<str>)>,
+    previous_next_incarnation_generation: u64,
+    previous_rederivations_after_eviction: u64,
+    previous_supersession_evictions: u64,
+    previous_next_root_publication: u64,
+    expected_next_root_publication: u64,
 }
 
 impl rue_query::QueryAttemptHandoff for PublishedLookupRootHandoff {
     fn commit(&mut self) {
+        assert!(
+            self.rollback.is_none(),
+            "lookup-root handoff commits from pending"
+        );
         let observed = self
             .observed
             .take()
             .expect("lookup-root handoff commits at most once");
-        replace_published_lookup_root(&self.lease, &self.runtime, self.root.clone(), observed);
+        let mut lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let previous_incarnations = lease.incarnations.clone();
+        let previous_incarnation_order = lease.incarnation_order.clone();
+        let previous_next_incarnation_generation = lease.next_incarnation_generation;
+        let previous_rederivations_after_eviction = lease.rederivations_after_eviction;
+        let previous_supersession_evictions = lease.supersession_evictions;
+        let previous_next_root_publication = lease.next_root_publication;
+        for (key, incarnation) in &observed.observed_keys {
+            let identity = key.display_identity();
+            if let Some(previous) = lease.seen_incarnation(&identity)
+                && previous != *incarnation
+            {
+                lease.rederivations_after_eviction += 1;
+            }
+            lease.record_incarnation(identity, *incarnation);
+        }
+        let publication = lease.next_root_publication;
+        lease.next_root_publication = lease
+            .next_root_publication
+            .checked_add(1)
+            .expect("lookup-root publication generation overflow");
+        let previous = lease.roots.insert(
+            self.root.clone(),
+            RootLeaseEntry {
+                observations: observed,
+                publication,
+            },
+        );
+        self.rollback = Some(PublishedLookupRootRollback {
+            previous,
+            publication,
+            previous_incarnations,
+            previous_incarnation_order,
+            previous_next_incarnation_generation,
+            previous_rederivations_after_eviction,
+            previous_supersession_evictions,
+            previous_next_root_publication,
+            expected_next_root_publication: lease.next_root_publication,
+        });
     }
 
     fn abort(&mut self) {
-        drop(self.observed.take());
+        let Some(rollback) = self.rollback.take() else {
+            drop(self.observed.take());
+            return;
+        };
+        let mut lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            lease.next_root_publication, rollback.expected_next_root_publication,
+            "a concurrently superseded lookup publication cannot be retried"
+        );
+        let current = lease
+            .roots
+            .get(&self.root)
+            .expect("an installed lookup root remains present until rollback");
+        assert_eq!(
+            current.publication, rollback.publication,
+            "lookup rollback cannot overwrite a newer root publication"
+        );
+        let installed = lease
+            .roots
+            .remove(&self.root)
+            .expect("the checked lookup publication remains installed");
+        if let Some(previous) = rollback.previous {
+            lease.roots.insert(self.root.clone(), previous);
+        }
+        lease.incarnations = rollback.previous_incarnations;
+        lease.incarnation_order = rollback.previous_incarnation_order;
+        lease.next_incarnation_generation = rollback.previous_next_incarnation_generation;
+        lease.rederivations_after_eviction = rollback.previous_rederivations_after_eviction;
+        lease.supersession_evictions = rollback.previous_supersession_evictions;
+        lease.next_root_publication = rollback.previous_next_root_publication;
+        self.observed = Some(installed.observations);
+    }
+}
+
+impl Drop for PublishedLookupRootHandoff {
+    fn drop(&mut self) {
+        let Some(rollback) = self.rollback.take() else {
+            return;
+        };
+        let evictions_before = self.runtime.metrics().evictions;
+        drop(rollback.previous);
+        let evictions = self.runtime.metrics().evictions - evictions_before;
+        let mut lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lease.supersession_evictions = lease.supersession_evictions.saturating_add(evictions);
     }
 }
 
@@ -918,10 +1033,142 @@ struct PublishedBodyClosureLookupHandoff {
     runtime: QueryRuntime,
     observed: Option<BTreeMap<String, ObservedLookupRoot>>,
     retire_absent: bool,
+    rollback: Option<PublishedBodyClosureLookupRollback>,
+}
+
+#[derive(Debug)]
+struct PublishedBodyClosureLookupRollback {
+    previous_roots: BTreeMap<String, RootLeaseEntry>,
+    installed: BTreeMap<String, u64>,
+    previous_incarnations: BTreeMap<Arc<str>, (u64, u64)>,
+    previous_incarnation_order: BTreeSet<(u64, Arc<str>)>,
+    previous_next_incarnation_generation: u64,
+    previous_rederivations_after_eviction: u64,
+    previous_supersession_evictions: u64,
+    previous_next_root_publication: u64,
+    expected_next_root_publication: u64,
+}
+
+#[derive(Debug, Default)]
+struct PublishedBodyClosureRoot {
+    lease: rue_query::RetainedPinSet,
+    reached: BTreeSet<crate::FunctionInstanceKey>,
+    additions: u64,
+    deletions: u64,
+}
+
+#[derive(Debug, Default)]
+struct PublishedBodyReachabilityRoot {
+    lease: rue_query::RetainedPinSet,
+}
+
+#[derive(Debug)]
+struct PublishedBodyReachabilityTerminalHandoff {
+    root: Arc<Mutex<PublishedBodyReachabilityRoot>>,
+    pending: Option<rue_query::RetainedPinSet>,
+    previous: Option<PublishedBodyReachabilityRoot>,
+    installed: bool,
+}
+
+impl rue_query::QueryAttemptHandoff for PublishedBodyReachabilityTerminalHandoff {
+    fn commit(&mut self) {
+        let pending = self
+            .pending
+            .take()
+            .expect("body-reachability terminal handoff commits at most once");
+        let mut root = self
+            .root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.previous = Some(std::mem::replace(
+            &mut *root,
+            PublishedBodyReachabilityRoot { lease: pending },
+        ));
+        self.installed = true;
+    }
+
+    fn abort(&mut self) {
+        if self.installed {
+            let previous = self
+                .previous
+                .take()
+                .expect("an installed reachability lease retains its predecessor");
+            let mut root = self
+                .root
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let installed = std::mem::replace(&mut *root, previous);
+            self.pending = Some(installed.lease);
+            self.installed = false;
+        } else {
+            drop(self.pending.take());
+        }
+    }
+}
+
+#[derive(Debug)]
+struct PublishedBodyClosureTerminalHandoff {
+    root: Arc<Mutex<PublishedBodyClosureRoot>>,
+    pending: Option<rue_query::RetainedPinSet>,
+    pending_reached: Option<BTreeSet<crate::FunctionInstanceKey>>,
+    previous: Option<PublishedBodyClosureRoot>,
+    installed: bool,
+}
+
+impl rue_query::QueryAttemptHandoff for PublishedBodyClosureTerminalHandoff {
+    fn commit(&mut self) {
+        let pending = self
+            .pending
+            .take()
+            .expect("body-closure terminal handoff commits at most once");
+        let pending_reached = self
+            .pending_reached
+            .take()
+            .expect("body-closure terminal handoff retains exact membership");
+        let mut root = self
+            .root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let additions = pending_reached.difference(&root.reached).count() as u64;
+        let deletions = root.reached.difference(&pending_reached).count() as u64;
+        let next = PublishedBodyClosureRoot {
+            lease: pending,
+            reached: pending_reached,
+            additions: root.additions.saturating_add(additions),
+            deletions: root.deletions.saturating_add(deletions),
+        };
+        let previous = std::mem::replace(&mut *root, next);
+        self.previous = Some(previous);
+        self.installed = true;
+    }
+
+    fn abort(&mut self) {
+        if self.installed {
+            let previous = self
+                .previous
+                .take()
+                .expect("an installed closure lease retains its predecessor");
+            let mut root = self
+                .root
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let installed = std::mem::replace(&mut *root, previous);
+            self.pending = Some(installed.lease);
+            self.pending_reached = Some(installed.reached);
+            self.installed = false;
+        } else {
+            drop(self.pending.take());
+            drop(self.pending_reached.take());
+        }
+    }
 }
 
 impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
     fn commit(&mut self) {
+        assert!(
+            self.rollback.is_none(),
+            "body-closure lookup handoff commits from pending"
+        );
         let observed = self
             .observed
             .take()
@@ -931,7 +1178,17 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
             .lease
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let evictions_before = self.runtime.metrics().evictions;
+        let mut rollback = PublishedBodyClosureLookupRollback {
+            previous_roots: BTreeMap::new(),
+            installed: BTreeMap::new(),
+            previous_incarnations: lease.incarnations.clone(),
+            previous_incarnation_order: lease.incarnation_order.clone(),
+            previous_next_incarnation_generation: lease.next_incarnation_generation,
+            previous_rederivations_after_eviction: lease.rederivations_after_eviction,
+            previous_supersession_evictions: lease.supersession_evictions,
+            previous_next_root_publication: lease.next_root_publication,
+            expected_next_root_publication: 0,
+        };
         for (root, observed) in observed {
             for (key, incarnation) in &observed.observed_keys {
                 let identity = key.display_identity();
@@ -942,23 +1199,99 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
                 }
                 lease.record_incarnation(identity, *incarnation);
             }
-            lease.roots.insert(
-                root,
+            let publication = lease.next_root_publication;
+            lease.next_root_publication = lease
+                .next_root_publication
+                .checked_add(1)
+                .expect("lookup-root publication generation overflow");
+            let previous = lease.roots.insert(
+                root.clone(),
                 RootLeaseEntry {
                     observations: observed,
+                    publication,
                 },
             );
+            if let Some(previous) = previous {
+                rollback.previous_roots.insert(root.clone(), previous);
+            }
+            rollback.installed.insert(root, publication);
         }
         if self.retire_absent {
-            lease
+            let retired = lease
                 .roots
-                .retain(|root, _| !root.starts_with("body:") || reached.contains(root));
+                .keys()
+                .filter(|root| root.starts_with("body:") && !reached.contains(*root))
+                .cloned()
+                .collect::<Vec<_>>();
+            for root in retired {
+                let previous = lease
+                    .roots
+                    .remove(&root)
+                    .expect("a selected retired lookup root remains present");
+                rollback.previous_roots.insert(root, previous);
+            }
         }
-        lease.supersession_evictions += self.runtime.metrics().evictions - evictions_before;
+        rollback.expected_next_root_publication = lease.next_root_publication;
+        self.rollback = Some(rollback);
     }
 
     fn abort(&mut self) {
-        drop(self.observed.take());
+        let Some(rollback) = self.rollback.take() else {
+            drop(self.observed.take());
+            return;
+        };
+        let mut lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            lease.next_root_publication, rollback.expected_next_root_publication,
+            "a concurrently superseded lookup publication cannot be retried"
+        );
+        let mut observed = BTreeMap::new();
+        for (root, publication) in &rollback.installed {
+            let current = lease
+                .roots
+                .get(root)
+                .expect("an installed lookup root remains present until rollback");
+            assert_eq!(
+                current.publication, *publication,
+                "lookup rollback cannot overwrite a newer root publication"
+            );
+        }
+        for root in rollback.installed.keys() {
+            let installed = lease
+                .roots
+                .remove(root)
+                .expect("the checked lookup publication remains installed");
+            observed.insert(root.clone(), installed.observations);
+        }
+        for (root, previous) in rollback.previous_roots {
+            lease.roots.insert(root, previous);
+        }
+        lease.incarnations = rollback.previous_incarnations;
+        lease.incarnation_order = rollback.previous_incarnation_order;
+        lease.next_incarnation_generation = rollback.previous_next_incarnation_generation;
+        lease.rederivations_after_eviction = rollback.previous_rederivations_after_eviction;
+        lease.supersession_evictions = rollback.previous_supersession_evictions;
+        lease.next_root_publication = rollback.previous_next_root_publication;
+        self.observed = Some(observed);
+    }
+}
+
+impl Drop for PublishedBodyClosureLookupHandoff {
+    fn drop(&mut self) {
+        let Some(rollback) = self.rollback.take() else {
+            return;
+        };
+        let evictions_before = self.runtime.metrics().evictions;
+        drop(rollback.previous_roots);
+        let evictions = self.runtime.metrics().evictions - evictions_before;
+        let mut lease = self
+            .lease
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        lease.supersession_evictions = lease.supersession_evictions.saturating_add(evictions);
     }
 }
 
@@ -7642,7 +7975,10 @@ fn resolve_parsed_semantic_signature(
 
 impl Default for RevisionedQueryDatabase {
     fn default() -> Self {
-        Self::with_declaration_memo_retention(DECLARATION_QUERY_MEMO_RETENTION)
+        Self::with_declaration_memo_retention_and_concurrency(
+            DECLARATION_QUERY_MEMO_RETENTION,
+            crate::query_concurrency(),
+        )
     }
 }
 
@@ -7650,8 +7986,24 @@ impl RevisionedQueryDatabase {
     /// Construct the database with an explicit declaration-keyed memo
     /// retention. Production uses [`DECLARATION_QUERY_MEMO_RETENTION`];
     /// eviction-lifecycle tests pass a small cap so exceeding it stays cheap.
+    #[cfg(test)]
     pub(crate) fn with_declaration_memo_retention(declaration_memo_retention: usize) -> Self {
-        let runtime = QueryRuntime::new(1);
+        Self::with_declaration_memo_retention_and_concurrency(declaration_memo_retention, 1)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_query_concurrency(query_concurrency: usize) -> Self {
+        Self::with_declaration_memo_retention_and_concurrency(
+            DECLARATION_QUERY_MEMO_RETENTION,
+            query_concurrency,
+        )
+    }
+
+    fn with_declaration_memo_retention_and_concurrency(
+        declaration_memo_retention: usize,
+        query_concurrency: usize,
+    ) -> Self {
+        let runtime = QueryRuntime::new(query_concurrency);
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
         #[cfg(test)]
         let test_import_store = Arc::new(Mutex::new(TestImportInputStore {
@@ -10779,6 +11131,10 @@ impl RevisionedQueryDatabase {
             .expect("the DeclarationSemanticsProjection family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
+        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
+        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
+        #[cfg(test)]
+        let inject_body_transaction_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let transactions_for_analysis_bundle = body_transactions.clone();
         let produced_for_analysis_bundle = body_produced_anonymous.clone();
         let canonical_for_analysis_bundle = canonical_bodies.clone();
@@ -10839,27 +11195,37 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the BodyAnalysisBundle family has one canonical name");
+        let transactions_for_body_references = body_transactions.clone();
+        let body_references = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.body-references",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::body_query::BodyReferences,
+                 right: &crate::body_query::BodyReferences| left == right,
+                move |context, _, key: &crate::body_query::BodyQueryKey| {
+                    let transaction =
+                        context.query_registered(&transactions_for_body_references, key.clone())?;
+                    let rue_query::QueryOutcome::Success(transaction) = transaction.outcome()
+                    else {
+                        unreachable!("BodyTransaction publishes typed values")
+                    };
+                    Ok(QueryOutput::success(transaction.references().clone()))
+                },
+            )
+            .expect("the BodyReferences family has one canonical name");
         let toolchain_for_body_closure = body_toolchain_demands.clone();
-        let bundles_for_body_closure = body_analysis_bundles.clone();
+        let transactions_for_body_reachability = body_transactions.clone();
+        let references_for_body_closure = body_references.clone();
+        let produced_for_body_reachability = body_produced_anonymous.clone();
         let inputs_for_body_closure = body_inputs.clone();
         let declarations_for_body_closure = declaration_semantics_projection.clone();
-        #[cfg(test)]
-        let anonymous_digest_forcing_for_body_closure =
-            body_closure_anonymous_digest_forcing.clone();
-        let body_closures = runtime
+        let body_reachability = runtime
             .family_with_equality_and_evaluator(
-                "compiler.body-closure",
+                "compiler.body-reachability",
                 BODY_CLOSURE_MEMO_RETENTION,
-                crate::body_query::body_closure_output_equal,
+                crate::body_query::body_reachability_output_equal,
                 move |context, _, key: &crate::body_query::BodyClosureQueryKey| {
-                    #[cfg(test)]
-                    {
-                        anonymous_digest_forcing_for_body_closure
-                            .lock()
-                            .expect("body-closure forced-digest state is not poisoned")
-                            .sealed = true;
-                    }
-                    debug_assert!(
+                    assert!(
                         key.modules.windows(2).all(|pair| pair[0] < pair[1])
                             && key.roots.windows(2).all(|pair| pair[0] < pair[1])
                     );
@@ -10881,8 +11247,8 @@ impl RevisionedQueryDatabase {
                             failure,
                         } => {
                             return Ok(QueryOutput::success(
-                                crate::body_query::BodyClosureOutput {
-                                    bodies: Arc::from([]),
+                                crate::body_query::BodyReachabilityOutput {
+                                    reached: Arc::from([]),
                                     scheduling_errors: Arc::from([]),
                                     fatal: Some(
                                         crate::body_query::BodyClosureFatal::DeclarationFailed {
@@ -10919,51 +11285,116 @@ impl RevisionedQueryDatabase {
                         .cloned()
                         .map(|root| (root, 0usize))
                         .collect::<BTreeMap<_, _>>();
-                    let mut bodies = Vec::new();
+                    let mut reached_body_keys = Vec::new();
                     let mut scheduling_errors = BTreeMap::new();
                     let mut fatal = None;
                     let mut parked_toolchain = None;
                     let mut produced_anonymous = BTreeMap::new();
-                    // This request/revision-owned registry is the aggregation
-                    // authority for stable anonymous symbols. Per-body semantic
-                    // epochs and durable pools cannot see identities published
-                    // by another registered body transaction.
-                    let mut anonymous_digest_owners = BTreeMap::new();
-                    let mut anonymous_digest_collision = None;
-                    let body_closure_anonymous_digest =
-                        |identity: &crate::AnonymousNominalKey| {
-                            #[cfg(test)]
-                            {
-                                let canonical = identity.with_canonical_producer();
-                                if let Some(digest) = anonymous_digest_forcing_for_body_closure
-                                    .lock()
-                                    .expect("body-closure forced-digest state is not poisoned")
-                                    .digests
-                                    .get(canonical.as_ref())
-                                    .copied()
+                    let mut prefetched_transactions = BTreeMap::new();
+                    loop {
+                        // Only the ordinary stable frontier is batched. An
+                        // anonymous producer priority chain stays on the exact
+                        // serial path below, preserving producer-before-consumer
+                        // semantics while ordinary call SCCs remain graph edges
+                        // in BodyReferences rather than recursive queries.
+                        if priority_pending.is_empty() && prefetched_transactions.is_empty() {
+                            context.record_work(rue_query::WorkItem::new(
+                                "reachability.frontier.scans",
+                                1,
+                            ));
+                            context.record_work(rue_query::WorkItem::new(
+                                "reachability.frontier.scan-keys",
+                                pending.len() as u64,
+                            ));
+                            let frontier = pending
+                                .iter()
+                                .filter(|instance| {
+                                        !visited.contains(*instance)
+                                        && !prefetched_transactions.contains_key(*instance)
+                                        && collect_instance_anonymous_nominals(instance)
+                                            .into_iter()
+                                            .all(|identity| match identity.producer {
+                                                crate::StableProducerId::Function(producer) => {
+                                                    visited.contains(producer.as_ref())
+                                                }
+                                                crate::StableProducerId::Definition(_) => true,
+                                            })
+                                        && (!matches!(
+                                            instance,
+                                            crate::FunctionInstanceKey::Specialization { .. }
+                                        ) || instance_depth
+                                            .get(*instance)
+                                            .copied()
+                                            .unwrap_or(0)
+                                            <= rue_air::specialize::MAX_SPECIALIZATION_ROUNDS)
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            if !frontier.is_empty() {
+                                let frontier_keys = frontier
+                                    .iter()
+                                    .cloned()
+                                    .map(|instance| crate::body_query::BodyQueryKey {
+                                        instance,
+                                        configuration: key.configuration.clone(),
+                                    })
+                                    .collect::<Vec<_>>();
+                                let demands = context.query_registered_batch(
+                                    &toolchain_for_body_closure,
+                                    frontier_keys.clone(),
+                                )?;
+                                let mut batch_modules = BTreeSet::new();
+                                let mut batch_requesters = BTreeSet::new();
+                                for demand in demands {
+                                    let rue_query::QueryOutcome::Success(demand) =
+                                        demand.outcome()
+                                    else {
+                                        unreachable!(
+                                            "BodyToolchainDemands publishes typed values"
+                                        )
+                                    };
+                                    let mut any_absent = false;
+                                    for module in demand.modules() {
+                                        if !present_trusted_modules.contains(module.logical_path()) {
+                                            batch_modules.insert(module.clone());
+                                            any_absent = true;
+                                        }
+                                    }
+                                    if any_absent
+                                        && let Some(requester) = demand.requester()
+                                    {
+                                        batch_requesters.insert(requester.clone());
+                                    }
+                                }
+                                if !batch_modules.is_empty() {
+                                    parked_toolchain =
+                                        Some(crate::ParkedToolchainModules::new(
+                                            batch_modules,
+                                            batch_requesters,
+                                        ));
+                                    break;
+                                }
+                                let transactions = context.query_registered_batch(
+                                    &transactions_for_body_reachability,
+                                    frontier_keys,
+                                )?;
+                                context.record_work(rue_query::WorkItem::new(
+                                    "reachability.frontier.keys",
+                                    frontier.len() as u64,
+                                ));
+                                for (instance, transaction) in
+                                    frontier.into_iter().zip(transactions)
                                 {
-                                    return digest;
+                                    prefetched_transactions.insert(instance, transaction);
                                 }
                             }
-                            compiler_anonymous_identity_digest(identity)
-                        };
-                    // Declaration analysis can materialize anonymous nominals
-                    // without a reached body transaction. Seed those exact keys
-                    // into the same closure-wide authority before scheduling any
-                    // body, so declaration/declaration and declaration/body
-                    // collisions cannot bypass reconciliation.
-                    for nominal in projection.anonymous_nominals.iter() {
-                        register_body_closure_anonymous_digest(
-                            &mut anonymous_digest_owners,
-                            &mut anonymous_digest_collision,
-                            body_closure_anonymous_digest(&nominal.identity),
-                            &nominal.identity,
-                        );
-                    }
+                        }
 
-                    while let Some(instance) =
-                        priority_pending.pop().or_else(|| pending.pop_first())
-                    {
+                        let Some(instance) =
+                            priority_pending.pop().or_else(|| pending.pop_first())
+                        else {
+                            break;
+                        };
                         context.check_canceled()?;
                         let current_depth = instance_depth.get(&instance).copied().unwrap_or(0);
                         let deferred_producers = collect_instance_anonymous_nominals(&instance)
@@ -11100,17 +11531,30 @@ impl RevisionedQueryDatabase {
                             break;
                         }
 
-                        let bundle_terminal = context
-                            .query_registered(&bundles_for_body_closure, body_key.clone())?;
-                        let rue_query::QueryOutcome::Success(bundle) = bundle_terminal.outcome()
+                        // The ordinary frontier prefetches the expensive
+                        // BodyTransaction computations. Control outcomes must
+                        // remain transaction-only (they publish no
+                        // BodyReferences terminal), so interpret the exact
+                        // transaction before projecting schedulable references.
+                        let transaction_terminal =
+                            if let Some(transaction) = prefetched_transactions.remove(&instance) {
+                                transaction
+                            } else {
+                                context.query_registered(
+                                    &transactions_for_body_reachability,
+                                    body_key.clone(),
+                                )?
+                            };
+                        let rue_query::QueryOutcome::Success(transaction) =
+                            transaction_terminal.outcome()
                         else {
-                            unreachable!("BodyAnalysisBundle publishes typed values")
+                            unreachable!("BodyTransaction publishes typed values")
                         };
                         let deterministic_failure = matches!(
-                            bundle.transaction,
+                            transaction,
                             crate::body_query::BodyTransaction::DeterministicFailure { .. }
                         );
-                        match &bundle.transaction {
+                        match transaction {
                             crate::body_query::BodyTransaction::Control(
                                 crate::body_query::BodyTransactionControl::DeferredAnonymousProducers(
                                     producers,
@@ -11195,10 +11639,16 @@ impl RevisionedQueryDatabase {
                             | crate::body_query::BodyTransaction::DeterministicFailure { .. } => {}
                         }
 
-                        bodies.push(crate::body_query::BodyClosureBody {
-                            key: body_key,
-                            bundle: bundle_terminal.clone(),
-                        });
+                        let references_terminal = context.query_registered(
+                            &references_for_body_closure,
+                            body_key.clone(),
+                        )?;
+                        let rue_query::QueryOutcome::Success(references) =
+                            references_terminal.outcome()
+                        else {
+                            unreachable!("BodyReferences publishes typed values")
+                        };
+                        reached_body_keys.push(body_key.clone());
                         // A deterministic body diagnostic is terminal for this
                         // body's dependents. Keep scheduling references that
                         // were successfully discovered before the diagnostic so
@@ -11207,27 +11657,33 @@ impl RevisionedQueryDatabase {
                         if deterministic_failure {
                             failed_instances.insert(instance.clone());
                         }
-                        if let Some(crate::body_query::ProducedAnonymous::ProducerFailed(failure)) =
-                            bundle.produced_anonymous.as_ref()
-                        {
-                            fatal =
-                                Some(crate::body_query::BodyClosureFatal::ProducerFailed {
-                                    instance,
-                                    failure: failure.clone(),
-                                });
-                            break;
-                        }
-                        if let Some(crate::body_query::ProducedAnonymous::Produced(produced)) =
-                            bundle.produced_anonymous.as_ref()
-                        {
-                            for nominal in produced.0.iter() {
-                                register_body_closure_anonymous_digest(
-                                    &mut anonymous_digest_owners,
-                                    &mut anonymous_digest_collision,
-                                    body_closure_anonymous_digest(&nominal.identity),
-                                    &nominal.identity,
-                                );
-                            }
+                        if matches!(
+                            transaction,
+                            crate::body_query::BodyTransaction::Success { .. }
+                        ) {
+                            let produced_terminal = context.query_registered(
+                                &produced_for_body_reachability,
+                                body_key.clone(),
+                            )?;
+                            let rue_query::QueryOutcome::Success(produced) =
+                                produced_terminal.outcome()
+                            else {
+                                unreachable!("BodyProducedAnonymous publishes typed values")
+                            };
+                            let crate::body_query::ProducedAnonymous::Produced(produced) = produced
+                            else {
+                                let crate::body_query::ProducedAnonymous::ProducerFailed(failure) =
+                                    produced
+                                else {
+                                    unreachable!()
+                                };
+                                fatal =
+                                    Some(crate::body_query::BodyClosureFatal::ProducerFailed {
+                                        instance,
+                                        failure: failure.clone(),
+                                    });
+                                break;
+                            };
                             produced_anonymous.extend(
                                 produced
                                     .0
@@ -11260,7 +11716,7 @@ impl RevisionedQueryDatabase {
                                 }
                             }
                         }
-                        for reference in bundle.transaction.references().0.iter() {
+                        for reference in references.0.iter() {
                             match reference {
                                 crate::body_query::BodyReference::Callable(callable) => {
                                     match closure_callable_has_body(
@@ -11310,46 +11766,18 @@ impl RevisionedQueryDatabase {
                         }
                     }
 
-                    // Existing semantic/control failures, scheduling errors,
-                    // and toolchain parking have precedence over the collision
-                    // summary regardless of which fact was discovered first.
-                    // Promote a collision only for an otherwise complete
-                    // closure; this keeps the observable outcome traversal- and
-                    // scheduling-order independent.
-                    if fatal.is_none()
-                        && scheduling_errors.is_empty()
-                        && parked_toolchain.is_none()
-                        && let Some((digest, first, second)) = anonymous_digest_collision
-                    {
-                        fatal = Some(
-                            crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
-                                digest,
-                                first,
-                                second,
-                            },
-                        );
-                    }
-                    bodies.sort_by(|left, right| left.key.instance.cmp(&right.key.instance));
+                    reached_body_keys
+                        .sort_by(|left, right| left.instance.cmp(&right.instance));
+                    let reached = reached_body_keys
+                        .iter()
+                        .map(|body| body.instance.clone())
+                        .collect::<Vec<_>>();
                     let scheduling_errors = scheduling_errors.into_iter().collect::<Vec<_>>();
                     let is_failure = !scheduling_errors.is_empty()
                         || fatal.is_some()
-                        || parked_toolchain.is_some()
-                        || bodies.iter().any(|body| {
-                            matches!(
-                                body.bundle.outcome(),
-                                rue_query::QueryOutcome::Success(
-                                    crate::body_query::BodyAnalysisBundle {
-                                        transaction:
-                                            crate::body_query::BodyTransaction::DeterministicFailure {
-                                                ..
-                                            },
-                                        ..
-                                    }
-                                )
-                            )
-                        });
-                    let output = crate::body_query::BodyClosureOutput {
-                        bodies: bodies.into(),
+                        || parked_toolchain.is_some();
+                    let output = crate::body_query::BodyReachabilityOutput {
+                        reached: reached.into(),
                         scheduling_errors: scheduling_errors.into(),
                         fatal,
                         parked_toolchain,
@@ -11361,11 +11789,203 @@ impl RevisionedQueryDatabase {
                     }))
                 },
             )
+            .expect("the BodyReachability family has one canonical name");
+        let reachability_for_membership = body_reachability.clone();
+        let body_closure_memberships = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.body-closure-membership",
+                BODY_QUERY_MEMO_RETENTION,
+                bool::eq,
+                move |context, _, key: &crate::body_query::BodyClosureMembershipKey| {
+                    let reachability = context
+                        .query_registered(&reachability_for_membership, key.closure.clone())?;
+                    let rue_query::QueryOutcome::Success(reachability) = reachability.outcome()
+                    else {
+                        unreachable!("BodyReachability publishes typed values")
+                    };
+                    Ok(QueryOutput::success(
+                        reachability.reached.binary_search(&key.instance).is_ok(),
+                    ))
+                },
+            )
+            .expect("the BodyClosureMembership family has one canonical name");
+        let reachability_for_closure = body_reachability.clone();
+        let memberships_for_closure = body_closure_memberships.clone();
+        let bundles_for_closure = body_analysis_bundles.clone();
+        let declarations_for_closure_aggregation = declaration_semantics_projection.clone();
+        #[cfg(test)]
+        let anonymous_digest_forcing_for_closure_aggregation =
+            body_closure_anonymous_digest_forcing.clone();
+        let body_closures = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.body-closure",
+                BODY_CLOSURE_MEMO_RETENTION,
+                crate::body_query::body_closure_output_equal,
+                move |context, _, key: &crate::body_query::BodyClosureQueryKey| {
+                    #[cfg(test)]
+                    {
+                        anonymous_digest_forcing_for_closure_aggregation
+                            .lock()
+                            .expect("body-closure forced-digest state is not poisoned")
+                            .sealed = true;
+                    }
+                    let reachability =
+                        context.query_registered(&reachability_for_closure, key.clone())?;
+                    let rue_query::QueryOutcome::Success(reachability) = reachability.outcome()
+                    else {
+                        unreachable!("BodyReachability publishes typed values")
+                    };
+                    let declarations = context.query_registered(
+                        &declarations_for_closure_aggregation,
+                        SemanticNucleusProjectionKey {
+                            modules: key.modules.clone(),
+                            configuration: key.configuration.clone(),
+                        },
+                    )?;
+                    let rue_query::QueryOutcome::Success(declarations) = declarations.outcome()
+                    else {
+                        unreachable!("DeclarationSemanticsProjection publishes typed values")
+                    };
+                    let mut anonymous_digest_owners = BTreeMap::new();
+                    let mut anonymous_digest_collision = None;
+                    let body_closure_anonymous_digest = |identity: &crate::AnonymousNominalKey| {
+                        #[cfg(test)]
+                        {
+                            let canonical = identity.with_canonical_producer();
+                            if let Some(digest) = anonymous_digest_forcing_for_closure_aggregation
+                                .lock()
+                                .expect("body-closure forced-digest state is not poisoned")
+                                .digests
+                                .get(canonical.as_ref())
+                                .copied()
+                            {
+                                return digest;
+                            }
+                        }
+                        compiler_anonymous_identity_digest(identity)
+                    };
+                    if let SemanticNucleusProjectionValue::Available(projection) = declarations {
+                        for nominal in projection.anonymous_nominals.iter() {
+                            register_body_closure_anonymous_digest(
+                                &mut anonymous_digest_owners,
+                                &mut anonymous_digest_collision,
+                                body_closure_anonymous_digest(&nominal.identity),
+                                &nominal.identity,
+                            );
+                        }
+                    }
+                    let membership_keys = reachability
+                        .reached
+                        .iter()
+                        .cloned()
+                        .map(|instance| crate::body_query::BodyClosureMembershipKey {
+                            closure: key.clone(),
+                            instance,
+                        })
+                        .collect::<Vec<_>>();
+                    for membership_key in membership_keys {
+                        let membership =
+                            context.query_registered(&memberships_for_closure, membership_key)?;
+                        debug_assert!(matches!(
+                            membership.outcome(),
+                            rue_query::QueryOutcome::Success(true)
+                        ));
+                    }
+                    let body_keys = reachability
+                        .reached
+                        .iter()
+                        .cloned()
+                        .map(|instance| crate::body_query::BodyQueryKey {
+                            instance,
+                            configuration: key.configuration.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    // Reachability has already produced these deep registered
+                    // cones through BodyReferences/BodyTransaction. Consume
+                    // the final bundles in this one endorsed task so validation
+                    // certificates are shared across bodies; a second batch
+                    // would isolate each proof and recursively revalidate the
+                    // same semantic cone N times.
+                    let mut bodies = Vec::with_capacity(body_keys.len());
+                    let mut has_deterministic_failure = false;
+                    let mut fatal = reachability.fatal.clone();
+                    for body_key in body_keys {
+                        let bundle =
+                            context.query_registered(&bundles_for_closure, body_key.clone())?;
+                        let rue_query::QueryOutcome::Success(bundle_value) = bundle.outcome()
+                        else {
+                            unreachable!("BodyAnalysisBundle publishes typed values")
+                        };
+                        has_deterministic_failure |= matches!(
+                            bundle_value.transaction,
+                            crate::body_query::BodyTransaction::DeterministicFailure { .. }
+                        );
+                        match bundle_value.produced_anonymous.as_ref() {
+                            Some(crate::body_query::ProducedAnonymous::ProducerFailed(failure)) => {
+                                fatal.get_or_insert_with(|| {
+                                    crate::body_query::BodyClosureFatal::ProducerFailed {
+                                        instance: body_key.instance.clone(),
+                                        failure: failure.clone(),
+                                    }
+                                });
+                            }
+                            Some(crate::body_query::ProducedAnonymous::Produced(produced)) => {
+                                for nominal in produced.0.iter() {
+                                    register_body_closure_anonymous_digest(
+                                        &mut anonymous_digest_owners,
+                                        &mut anonymous_digest_collision,
+                                        body_closure_anonymous_digest(&nominal.identity),
+                                        &nominal.identity,
+                                    );
+                                }
+                            }
+                            None => {}
+                        }
+                        bodies.push(crate::body_query::BodyClosureBody {
+                            key: body_key,
+                            bundle,
+                        });
+                    }
+                    if fatal.is_none()
+                        && reachability.scheduling_errors.is_empty()
+                        && reachability.parked_toolchain.is_none()
+                        && let Some((digest, first, second)) = anonymous_digest_collision
+                    {
+                        fatal = Some(
+                            crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
+                                digest,
+                                first,
+                                second,
+                            },
+                        );
+                    }
+                    let output = crate::body_query::BodyClosureOutput {
+                        reached: reachability.reached.clone(),
+                        bodies: bodies.into(),
+                        scheduling_errors: reachability.scheduling_errors.clone(),
+                        fatal,
+                        parked_toolchain: reachability.parked_toolchain.clone(),
+                    };
+                    let terminal_kind = if output.scheduling_errors.is_empty()
+                        && output.fatal.is_none()
+                        && output.parked_toolchain.is_none()
+                        && !has_deterministic_failure
+                    {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    Ok(QueryOutput::success(output).with_terminal_kind(terminal_kind))
+                },
+            )
             .expect("the BodyClosure family has one canonical name");
         let closures_for_publication = body_closures.clone();
+        let reachability_for_publication = body_reachability.clone();
         let names_for_closure_publication = lookup_names.clone();
         let imports_for_closure_publication = lookup_imports.clone();
         let lease_for_closure_publication = lookup_root_lease.clone();
+        let terminal_root_for_closure_publication = body_closure_root.clone();
+        let terminal_root_for_reachability_publication = body_reachability_root.clone();
         let runtime_for_closure_publication = runtime.clone();
         let body_closure_publications =
             runtime
@@ -11400,10 +12020,45 @@ impl RevisionedQueryDatabase {
                         let rue_query::QueryOutcome::Success(output) = closure.outcome() else {
                             unreachable!("BodyClosure publishes typed values")
                         };
-                        if output.fatal.is_none()
-                            && output.parked_toolchain.is_none()
+                        let well_formed_toolchain_park = output.parked_toolchain.is_some()
                             && output.scheduling_errors.is_empty()
-                        {
+                            && output.fatal.is_none()
+                            && output.bodies.iter().all(|body| {
+                                let rue_query::QueryOutcome::Success(bundle) =
+                                    body.bundle.outcome()
+                                else {
+                                    unreachable!("BodyAnalysisBundle publishes typed values")
+                                };
+                                !matches!(
+                                    &bundle.transaction,
+                                    crate::body_query::BodyTransaction::DeterministicFailure { .. }
+                                )
+                            });
+                        if closure.kind() == QueryTerminalKind::Success {
+                            context.register_attempt_handoff(PublishedBodyClosureTerminalHandoff {
+                                root: terminal_root_for_closure_publication.clone(),
+                                pending: Some(
+                                    context
+                                        .retain_observed_terminal_cone(&closure)
+                                        .expect(
+                                            "registered closure validation retains its exact dependency cone",
+                                        ),
+                                ),
+                                pending_reached: Some(output.reached.iter().cloned().collect()),
+                                previous: None,
+                                installed: false,
+                            });
+                            // Install the final exact closure cone before
+                            // releasing the acquisition-round reachability
+                            // root, so body protection transfers without a gap.
+                            context.register_attempt_handoff(
+                                PublishedBodyReachabilityTerminalHandoff {
+                                    root: terminal_root_for_reachability_publication.clone(),
+                                    pending: Some(rue_query::RetainedPinSet::new()),
+                                    previous: None,
+                                    installed: false,
+                                },
+                            );
                             let mut observed_lookup_roots = BTreeMap::new();
                             for body in output.bodies.iter() {
                                 let rue_query::QueryOutcome::Success(bundle) =
@@ -11450,7 +12105,38 @@ impl RevisionedQueryDatabase {
                                 runtime: runtime_for_closure_publication.clone(),
                                 observed: Some(observed_lookup_roots),
                                 retire_absent: true,
+                                rollback: None,
                             });
+                        } else if well_formed_toolchain_park {
+                            let reachability = context.query_registered(
+                                &reachability_for_publication,
+                                key.closure.clone(),
+                            )?;
+                            let rue_query::QueryOutcome::Success(reachability_output) =
+                                reachability.outcome()
+                            else {
+                                unreachable!("BodyReachability publishes typed values")
+                            };
+                            assert!(
+                                reachability_output.parked_toolchain.is_some()
+                                    && reachability_output.scheduling_errors.is_empty()
+                                    && reachability_output.fatal.is_none(),
+                                "a well-formed parked closure retains its exact reachability cone"
+                            );
+                            context.register_attempt_handoff(
+                                PublishedBodyReachabilityTerminalHandoff {
+                                    root: terminal_root_for_reachability_publication.clone(),
+                                    pending: Some(
+                                        context
+                                            .retain_observed_terminal_cone(&reachability)
+                                            .expect(
+                                                "registered reachability validation retains its exact dependency cone",
+                                            ),
+                                    ),
+                                    previous: None,
+                                    installed: false,
+                                },
+                            );
                         }
                         Ok(
                             QueryOutput::success(closure.clone())
@@ -11477,6 +12163,8 @@ impl RevisionedQueryDatabase {
                     provider_observation_meter: provider_observation_meter.clone(),
                     lookup_root_lease: lookup_root_lease.clone(),
                     runtime: runtime.clone(),
+                    #[cfg(test)]
+                    inject_body_transaction_failure: inject_body_transaction_failure.clone(),
                 })
                 .is_ok(),
             "BodyTransaction evaluator is installed once"
@@ -11507,16 +12195,11 @@ impl RevisionedQueryDatabase {
             body_transactions,
             canonical_bodies,
             body_analysis_bundles,
+            body_reachability,
             body_closures,
+            body_closure_memberships,
             body_closure_publications,
-            body_references: runtime
-                .family_with_equality(
-                    "compiler.body-references",
-                    BODY_QUERY_MEMO_RETENTION,
-                    |left: &crate::body_query::BodyReferences,
-                     right: &crate::body_query::BodyReferences| left == right,
-                )
-                .expect("the BodyReferences family has one canonical name"),
+            body_references,
             body_produced_anonymous,
             module_rirs,
             resolve_imports,
@@ -11548,6 +12231,10 @@ impl RevisionedQueryDatabase {
             lineage_additions: Vec::new(),
             provider_observation_meter,
             lookup_root_lease,
+            body_closure_root,
+            body_reachability_root,
+            #[cfg(test)]
+            inject_body_transaction_failure,
             #[cfg(test)]
             provider_probe: runtime
                 .family_with_equality(
@@ -11561,6 +12248,19 @@ impl RevisionedQueryDatabase {
 }
 
 impl RevisionedQueryDatabase {
+    #[cfg(test)]
+    pub(crate) fn inject_body_transaction_failure_for_test(
+        &self,
+    ) -> TestBodyTransactionFailureGuard {
+        use std::sync::atomic::Ordering::SeqCst;
+
+        assert!(
+            !self.inject_body_transaction_failure.swap(true, SeqCst),
+            "body transaction failure injection is not nestable"
+        );
+        TestBodyTransactionFailureGuard(self.inject_body_transaction_failure.clone())
+    }
+
     #[cfg(test)]
     fn force_body_closure_anonymous_digest_for_test(
         &self,
@@ -11947,6 +12647,8 @@ struct BodyTransactionEvaluator {
     provider_observation_meter: Arc<ProviderObservationCounters>,
     lookup_root_lease: Arc<Mutex<PublishedRootLookupLease>>,
     runtime: QueryRuntime,
+    #[cfg(test)]
+    inject_body_transaction_failure: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl BodyTransactionEvaluator {
@@ -12003,7 +12705,10 @@ impl BodyTransactionEvaluator {
         key: &crate::body_query::BodyQueryKey,
     ) -> Result<QueryOutput<crate::body_query::BodyTransaction>, QueryAbort> {
         #[cfg(test)]
-        if INJECT_BODY_TRANSACTION_FAILURE.with(std::cell::Cell::get) {
+        if self
+            .inject_body_transaction_failure
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
             return Ok(QueryOutput::success(
                 crate::body_query::BodyTransaction::DeterministicFailure {
                     diagnostic_basis: None,
@@ -13050,6 +13755,7 @@ impl BodyTransactionEvaluator {
                 runtime: self.runtime.clone(),
                 root: body_lookup_root_identity(key),
                 observed: Some(observed),
+                rollback: None,
             });
             let transaction = transaction.attach_provider_observations(
                 descriptors,
@@ -13286,6 +13992,42 @@ impl RevisionedQueryDatabase {
         })
     }
 
+    #[cfg(test)]
+    pub(crate) fn body_closure_membership_projection(
+        &self,
+        revision: Revision,
+        closure: crate::body_query::BodyClosureQueryKey,
+        instance: crate::FunctionInstanceKey,
+        cancellation: CancellationToken,
+    ) -> Result<Arc<rue_query::QueryTerminal<bool>>, QueryAbort> {
+        self.runtime
+            .request_registered(
+                &self.body_closure_memberships,
+                revision,
+                crate::body_query::BodyClosureMembershipKey { closure, instance },
+                cancellation,
+            )
+            .into_result()
+    }
+
+    #[cfg(test)]
+    fn body_closure_root_metrics(&self) -> (usize, u64, u64) {
+        let root = self
+            .body_closure_root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (root.lease.len(), root.additions, root.deletions)
+    }
+
+    #[cfg(test)]
+    fn body_reachability_root_len(&self) -> usize {
+        self.body_reachability_root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease
+            .len()
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn canonical_body_projection(
         &self,
@@ -13305,20 +14047,9 @@ impl RevisionedQueryDatabase {
         key: crate::body_query::BodyQueryKey,
         cancellation: CancellationToken,
     ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::BodyReferences>>, QueryAbort> {
-        let transactions = self.body_transactions.clone();
-        self.runtime.query(
-            &self.body_references,
-            revision,
-            key.clone(),
-            cancellation,
-            move |context| {
-                let transaction = context.query_registered(&transactions, key)?;
-                let rue_query::QueryOutcome::Success(transaction) = transaction.outcome() else {
-                    unreachable!("BodyTransaction publishes typed values")
-                };
-                Ok(QueryOutput::success(transaction.references().clone()))
-            },
-        )
+        self.runtime
+            .request_registered(&self.body_references, revision, key, cancellation)
+            .into_result()
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -19169,6 +19900,92 @@ mod tests {
         assert_eq!(lease.seen_incarnation("key-0"), Some(10_000));
         assert_eq!(lease.seen_incarnation("key-1"), None);
         assert_eq!(lease.seen_incarnation("newest"), Some(20_000));
+    }
+
+    #[test]
+    fn body_publication_three_callback_transaction_rolls_back_and_retries() {
+        let closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot {
+            additions: 7,
+            deletions: 3,
+            ..PublishedBodyClosureRoot::default()
+        }));
+        let reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
+        let lookup_lease = Arc::new(Mutex::new(PublishedRootLookupLease {
+            roots: BTreeMap::from([(
+                "body:previous".to_owned(),
+                RootLeaseEntry {
+                    observations: ObservedLookupRoot::new(),
+                    publication: 0,
+                },
+            )]),
+            next_root_publication: 1,
+            rederivations_after_eviction: 5,
+            supersession_evictions: 2,
+            ..PublishedRootLookupLease::default()
+        }));
+        let mut closure_handoff = PublishedBodyClosureTerminalHandoff {
+            root: closure_root.clone(),
+            pending: Some(rue_query::RetainedPinSet::new()),
+            pending_reached: Some(BTreeSet::new()),
+            previous: None,
+            installed: false,
+        };
+        let mut reachability_handoff = PublishedBodyReachabilityTerminalHandoff {
+            root: reachability_root,
+            pending: Some(rue_query::RetainedPinSet::new()),
+            previous: None,
+            installed: false,
+        };
+        let mut lookup_handoff = PublishedBodyClosureLookupHandoff {
+            lease: lookup_lease.clone(),
+            runtime: QueryRuntime::new(1),
+            observed: Some(BTreeMap::from([(
+                "body:successor".to_owned(),
+                ObservedLookupRoot::new(),
+            )])),
+            retire_absent: true,
+            rollback: None,
+        };
+
+        rue_query::QueryAttemptHandoff::commit(&mut closure_handoff);
+        rue_query::QueryAttemptHandoff::commit(&mut reachability_handoff);
+        rue_query::QueryAttemptHandoff::commit(&mut lookup_handoff);
+        {
+            let lease = lookup_lease.lock().unwrap();
+            assert!(lease.roots.contains_key("body:successor"));
+            assert!(!lease.roots.contains_key("body:previous"));
+        }
+
+        // This is the callback order used when cancellation is observed after
+        // the final publication callback, and equally models the attempted
+        // prefix unwound after a later callback panic.
+        rue_query::QueryAttemptHandoff::abort(&mut lookup_handoff);
+        rue_query::QueryAttemptHandoff::abort(&mut reachability_handoff);
+        rue_query::QueryAttemptHandoff::abort(&mut closure_handoff);
+        {
+            let closure = closure_root.lock().unwrap();
+            assert_eq!(closure.additions, 7);
+            assert_eq!(closure.deletions, 3);
+            let lease = lookup_lease.lock().unwrap();
+            assert!(lease.roots.contains_key("body:previous"));
+            assert!(!lease.roots.contains_key("body:successor"));
+            assert_eq!(lease.rederivations_after_eviction, 5);
+            assert_eq!(lease.supersession_evictions, 2);
+            assert_eq!(lease.next_root_publication, 1);
+        }
+
+        rue_query::QueryAttemptHandoff::commit(&mut closure_handoff);
+        rue_query::QueryAttemptHandoff::commit(&mut reachability_handoff);
+        rue_query::QueryAttemptHandoff::commit(&mut lookup_handoff);
+        assert!(closure_handoff.installed);
+        assert!(reachability_handoff.installed);
+        assert!(
+            lookup_lease
+                .lock()
+                .unwrap()
+                .roots
+                .contains_key("body:successor")
+        );
     }
 
     #[test]
@@ -31126,6 +31943,528 @@ fn main() -> i32 {
         assert!(!database.body_inputs.contains_retained_key(&key));
     }
 
+    fn closure_membership(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        closure: &crate::body_query::BodyClosureQueryKey,
+        instance: &crate::FunctionInstanceKey,
+    ) -> Arc<rue_query::QueryTerminal<bool>> {
+        database
+            .body_closure_membership_projection(
+                revision,
+                closure.clone(),
+                instance.clone(),
+                CancellationToken::new(),
+            )
+            .expect("body-closure membership publishes a typed terminal")
+    }
+
+    #[test]
+    fn body_closure_edge_addition_and_deletion_stamp_memberships_independently() {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let source = |main_body: &str| {
+            source_snapshot(
+                &[(
+                    1,
+                    "/main.rue",
+                    "main.rue",
+                    &format!(
+                        "fn leaf() -> i32 {{ 1 }}\n\
+                         fn stable() -> i32 {{ 2 }}\n\
+                         fn added() -> i32 {{ 3 }}\n\
+                         fn main() -> i32 {{ {main_body} }}\n"
+                    ),
+                )],
+                1,
+            )
+        };
+        let first_source = source("leaf() + stable()");
+        let added_source = source("leaf() + stable() + added()");
+        let deleted_source = source("stable() + added()");
+        let configuration = semantic_configuration();
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration,
+        };
+        let leaf = free_function_instance(&module, "leaf");
+        let stable = free_function_instance(&module, "stable");
+        let added = free_function_instance(&module, "added");
+        let mut database = RevisionedQueryDatabase::default();
+
+        let first_revision = revision_for(&mut database, &first_source);
+        let first = database
+            .body_closure(
+                first_revision,
+                closure_key.clone(),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let first_root_metrics = database.body_closure_root_metrics();
+        let first_leaf = closure_membership(&database, first_revision, &closure_key, &leaf);
+        let first_stable = closure_membership(&database, first_revision, &closure_key, &stable);
+        let first_added = closure_membership(&database, first_revision, &closure_key, &added);
+        assert_eq!(
+            first_leaf.outcome(),
+            &rue_query::QueryOutcome::Success(true)
+        );
+        assert_eq!(
+            first_stable.outcome(),
+            &rue_query::QueryOutcome::Success(true)
+        );
+        assert_eq!(
+            first_added.outcome(),
+            &rue_query::QueryOutcome::Success(false)
+        );
+
+        let added_revision = revision_for(&mut database, &added_source);
+        let added_closure = database
+            .body_closure(
+                added_revision,
+                closure_key.clone(),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let added_root_metrics = database.body_closure_root_metrics();
+        let second_leaf = closure_membership(&database, added_revision, &closure_key, &leaf);
+        let second_stable = closure_membership(&database, added_revision, &closure_key, &stable);
+        let second_added = closure_membership(&database, added_revision, &closure_key, &added);
+        assert_eq!(second_leaf.stamp(), first_leaf.stamp());
+        assert_eq!(second_stable.stamp(), first_stable.stamp());
+        assert_ne!(second_added.stamp(), first_added.stamp());
+
+        let deleted_revision = revision_for(&mut database, &deleted_source);
+        let deleted_closure = database
+            .body_closure(
+                deleted_revision,
+                closure_key.clone(),
+                CancellationToken::new(),
+            )
+            .unwrap();
+        let deleted_root_metrics = database.body_closure_root_metrics();
+        let third_leaf = closure_membership(&database, deleted_revision, &closure_key, &leaf);
+        let third_stable = closure_membership(&database, deleted_revision, &closure_key, &stable);
+        let third_added = closure_membership(&database, deleted_revision, &closure_key, &added);
+        assert_ne!(third_leaf.stamp(), second_leaf.stamp());
+        assert_eq!(
+            third_leaf.outcome(),
+            &rue_query::QueryOutcome::Success(false)
+        );
+        assert_eq!(third_stable.stamp(), second_stable.stamp());
+        assert_eq!(third_added.stamp(), second_added.stamp());
+
+        let reached = |request: &BodyClosureRequest| {
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            output.reached.to_vec()
+        };
+        assert_eq!(
+            reached(&first),
+            vec![
+                leaf.clone(),
+                free_function_instance(&module, "main"),
+                stable.clone(),
+            ]
+        );
+        assert_eq!(reached(&added_closure).len(), 4);
+        assert_eq!(
+            reached(&deleted_closure),
+            vec![
+                added.clone(),
+                free_function_instance(&module, "main"),
+                stable.clone(),
+            ]
+        );
+        assert_eq!(
+            (first_root_metrics.1, first_root_metrics.2),
+            (3, 0),
+            "the cold root accounts its exact reached membership as additions"
+        );
+        assert_eq!(
+            (added_root_metrics.1, added_root_metrics.2),
+            (4, 0),
+            "adding one call edge accounts one independent membership addition"
+        );
+        assert_eq!(
+            (deleted_root_metrics.1, deleted_root_metrics.2),
+            (4, 1),
+            "deleting one call edge accounts one independent membership deletion"
+        );
+    }
+
+    #[test]
+    fn body_closure_call_scc_is_a_finite_graph_not_a_query_cycle() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn a(value: i32) -> i32 { if value == 0 { 0 } else { b(value - 1) } }\n\
+                 fn b(value: i32) -> i32 { if value == 0 { 0 } else { a(value - 1) } }\n\
+                 fn main() -> i32 { a(2) }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(1);
+        let revision = revision_for(&mut database, &snapshot);
+        let closure = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("ordinary call SCCs terminate through visited graph membership");
+        let rue_query::QueryOutcome::Success(output) = closure.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_eq!(output.reached.len(), 3);
+        assert!(output.fatal.is_none());
+        assert!(output.scheduling_errors.is_empty());
+    }
+
+    #[test]
+    fn body_closure_one_and_many_workers_publish_identical_reached_work_and_diagnostics() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn a() -> i32 { 1 }\n\
+                 fn b() -> i32 { 2 }\n\
+                 fn c() -> i32 { 3 }\n\
+                 fn d() -> i32 { 4 }\n\
+                 fn main() -> i32 { a() + b() + c() + d() }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+        let run = |workers| {
+            let mut database = RevisionedQueryDatabase::with_query_concurrency(workers);
+            let revision = revision_for(&mut database, &snapshot);
+            let request = database
+                .body_closure(revision, key.clone(), CancellationToken::new())
+                .unwrap();
+            let work = request
+                .body_executions
+                .values()
+                .filter(|execution| **execution == rue_query::RequestExecution::Computed)
+                .count();
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            (
+                output.reached.to_vec(),
+                output.scheduling_errors.clone(),
+                output.fatal.clone(),
+                work,
+            )
+        };
+        assert_eq!(run(1), run(4));
+    }
+
+    #[test]
+    fn body_reachability_scans_each_prefetched_frontier_once() {
+        const CALLEES: usize = 16;
+        let mut text = (0..CALLEES)
+            .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+            .collect::<String>();
+        let expression = (0..CALLEES)
+            .map(|index| format!("f{index}()"))
+            .collect::<Vec<_>>()
+            .join(" + ");
+        text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        let attempt = database.runtime.request_registered(
+            &database.body_reachability,
+            revision,
+            crate::body_query::BodyClosureQueryKey {
+                modules: Arc::from([module.clone()]),
+                roots: Arc::from([free_function_instance(&module, "main")]),
+                configuration: semantic_configuration(),
+            },
+            CancellationToken::new(),
+        );
+        let terminal = attempt.terminal().expect("reachability publishes");
+        let rue_query::QueryOutcome::Success(output) = terminal.outcome() else {
+            unreachable!("BodyReachability publishes typed values")
+        };
+        assert_eq!(output.reached.len(), CALLEES + 1);
+        let work = |expected: &str| {
+            attempt
+                .work()
+                .iter()
+                .find_map(|(label, amount)| (label.as_ref() == expected).then_some(*amount))
+                .unwrap_or(0)
+        };
+        assert!(
+            work("reachability.frontier.scans") < output.reached.len() as u64
+                && work("reachability.frontier.scan-keys") <= output.reached.len() as u64 + 8,
+            "wide prefetched bodies must be consumed without a per-body pending-set rescan; \
+             got {} scans and {} scanned keys for {} reached bodies",
+            work("reachability.frontier.scans"),
+            work("reachability.frontier.scan-keys"),
+            output.reached.len(),
+        );
+    }
+
+    #[test]
+    fn injected_body_transaction_failure_runs_in_the_structured_frontier() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn first() -> i32 { 0 }\nfn second() -> i32 { 1 }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let roots = [
+            free_function_instance(&module, "first"),
+            free_function_instance(&module, "second"),
+        ];
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let revision = revision_for(&mut database, &snapshot);
+        let _injection = database.inject_body_transaction_failure_for_test();
+        let attempt = database.runtime.request_registered(
+            &database.body_reachability,
+            revision,
+            crate::body_query::BodyClosureQueryKey {
+                modules: Arc::from([module.clone()]),
+                roots: Arc::from(roots.clone()),
+                configuration: semantic_configuration(),
+            },
+            CancellationToken::new(),
+        );
+        let terminal = attempt
+            .terminal()
+            .expect("injected failure publishes reachability");
+        let rue_query::QueryOutcome::Success(output) = terminal.outcome() else {
+            unreachable!("BodyReachability publishes typed values")
+        };
+        assert_eq!(output.reached.len(), 2);
+        let work = |expected: &str| {
+            attempt
+                .work()
+                .iter()
+                .find_map(|(label, amount)| (label.as_ref() == expected).then_some(*amount))
+                .unwrap_or(0)
+        };
+        assert_eq!(
+            work("reachability.frontier.keys"),
+            2,
+            "failure injection remains visible in the production structured child"
+        );
+        assert!(
+            work("reachability.frontier.scans") >= 1,
+            "the injected attempt enters the ordinary frontier scanner"
+        );
+        for instance in roots {
+            let transaction = database.runtime.request_registered(
+                &database.body_transactions,
+                revision,
+                crate::body_query::BodyQueryKey {
+                    instance,
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            );
+            assert_eq!(
+                transaction.execution(),
+                rue_query::RequestExecution::Reused,
+                "each structured child publishes its injected transaction"
+            );
+            let terminal = transaction.terminal().expect("transaction publishes");
+            assert!(matches!(
+                terminal.outcome(),
+                rue_query::QueryOutcome::Success(
+                    crate::body_query::BodyTransaction::DeterministicFailure { .. }
+                )
+            ));
+        }
+    }
+
+    #[test]
+    fn body_closure_root_pins_reached_programs_past_the_history_floor_and_releases_deletions() {
+        const CALLEES: usize = 16;
+        let source = |reached_callees: usize| {
+            let mut text = (0..CALLEES)
+                .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+                .collect::<String>();
+            let expression = (0..reached_callees)
+                .map(|index| format!("f{index}()"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
+            source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1)
+        };
+        let full = source(CALLEES);
+        let reduced = source(CALLEES / 2);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+        let deleted_body_key = crate::body_query::BodyQueryKey {
+            instance: free_function_instance(&module, &format!("f{}", CALLEES - 1)),
+            configuration: semantic_configuration(),
+        };
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+
+        let full_revision = revision_for(&mut database, &full);
+        let cold = database
+            .body_closure(full_revision, closure_key.clone(), CancellationToken::new())
+            .unwrap();
+        let rue_query::QueryOutcome::Success(cold_output) = cold.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_eq!(cold_output.reached.len(), CALLEES + 1);
+        assert!(
+            database.body_transactions.retention().terminals > CALLEES,
+            "the exact published root must grow body retention past its {}-terminal history floor",
+            BODY_QUERY_MEMO_RETENTION
+        );
+        assert!(
+            database
+                .body_transactions
+                .contains_retained_key(&deleted_body_key)
+        );
+        let cold_root = database.body_closure_root_metrics();
+        assert_eq!((cold_root.1, cold_root.2), ((CALLEES + 1) as u64, 0));
+
+        let warm = database
+            .body_closure(full_revision, closure_key.clone(), CancellationToken::new())
+            .unwrap();
+        assert_eq!(database.body_closure_root_metrics(), cold_root);
+        assert_eq!(warm.body_executions.len(), CALLEES + 1);
+        assert!(
+            warm.body_executions
+                .values()
+                .all(|execution| *execution == rue_query::RequestExecution::Reused),
+            "a warm rooted closure must validate and reuse every reached body"
+        );
+
+        let reduced_revision = revision_for(&mut database, &reduced);
+        let canceled = CancellationToken::new();
+        canceled.cancel();
+        assert!(matches!(
+            database.body_closure(reduced_revision, closure_key.clone(), canceled),
+            Err(QueryAbort::Canceled)
+        ));
+        assert_eq!(
+            database.body_closure_root_metrics(),
+            cold_root,
+            "an aborted successor must roll back without replacing the published root"
+        );
+        let reduced_request = database
+            .body_closure(reduced_revision, closure_key, CancellationToken::new())
+            .unwrap();
+        let rue_query::QueryOutcome::Success(reduced_output) = reduced_request.terminal.outcome()
+        else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert_eq!(reduced_output.reached.len(), CALLEES / 2 + 1);
+        let reduced_root = database.body_closure_root_metrics();
+        assert_eq!(
+            (reduced_root.1, reduced_root.2),
+            ((CALLEES + 1) as u64, (CALLEES / 2) as u64)
+        );
+        assert!(
+            reduced_root.0 < cold_root.0,
+            "replacing the root must release body-specific leases for deleted membership"
+        );
+        assert!(
+            !database
+                .body_transactions
+                .contains_retained_key(&deleted_body_key),
+            "the deleted predecessor body terminal must become unpinned and evict, \
+             proving validation observations outside the successor cone are not rooted"
+        );
+    }
+
+    /// Focused, opt-in latency witness for RUE-1028. This is deliberately not a
+    /// threshold test: it prints independently timed cold, warm-validation, and
+    /// edge-deletion closure requests so release engineering can compare the
+    /// same corpus across commits without mixing setup or source construction
+    /// into the measured interval.
+    #[test]
+    #[ignore]
+    fn body_closure_cold_warm_deletion_latency_benchmark() {
+        const CALLEES: usize = 128;
+        let source = |reached_callees: usize| {
+            let mut text = (0..CALLEES)
+                .map(|index| format!("fn f{index}() -> i32 {{ {index} }}\n"))
+                .collect::<String>();
+            let expression = (0..reached_callees)
+                .map(|index| format!("f{index}()"))
+                .collect::<Vec<_>>()
+                .join(" + ");
+            text.push_str(&format!("fn main() -> i32 {{ {expression} }}\n"));
+            source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1)
+        };
+        let full = source(CALLEES);
+        let reduced = source(CALLEES / 2);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let full_revision = revision_for(&mut database, &full);
+
+        let cold_start = std::time::Instant::now();
+        let cold = database
+            .body_closure(full_revision, closure_key.clone(), CancellationToken::new())
+            .unwrap();
+        let cold_micros = cold_start.elapsed().as_micros();
+
+        let warm_start = std::time::Instant::now();
+        let warm = database
+            .body_closure(full_revision, closure_key.clone(), CancellationToken::new())
+            .unwrap();
+        let warm_micros = warm_start.elapsed().as_micros();
+
+        let reduced_revision = revision_for(&mut database, &reduced);
+        let deletion_start = std::time::Instant::now();
+        let deletion = database
+            .body_closure(reduced_revision, closure_key, CancellationToken::new())
+            .unwrap();
+        let deletion_micros = deletion_start.elapsed().as_micros();
+
+        let reached = |request: &BodyClosureRequest| {
+            let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+                unreachable!("BodyClosure publishes typed values")
+            };
+            output.reached.len()
+        };
+        assert_eq!(reached(&cold), CALLEES + 1);
+        assert_eq!(reached(&warm), CALLEES + 1);
+        assert_eq!(reached(&deletion), CALLEES / 2 + 1);
+        eprintln!(
+            "RUE-1028 body-closure latency: bodies={} workers=4 cold_us={} warm_us={} deletion_us={}",
+            CALLEES + 1,
+            cold_micros,
+            warm_micros,
+            deletion_micros
+        );
+    }
+
     fn assert_forced_body_closure_digest_collision(first_body: &str, second_body: &str) {
         let source = format!(
             "fn First() -> type {{ {first_body} }}\n\
@@ -31457,6 +32796,98 @@ fn main() -> i32 {
             output.fatal.is_none(),
             "an already observed collision must not leak past the higher-precedence park"
         );
+    }
+
+    #[test]
+    fn parked_toolchain_rounds_retain_and_reuse_the_exact_reachability_cone() {
+        const CALLEES: usize = 16;
+        let source = |parked: bool| {
+            let mut text = (0..CALLEES)
+                .map(|index| {
+                    let next = if index + 1 == CALLEES {
+                        "parked()".to_owned()
+                    } else {
+                        format!("f{}()", index + 1)
+                    };
+                    format!("fn f{index}() -> i32 {{ {next} }}\n")
+                })
+                .collect::<String>();
+            if parked {
+                text.push_str("fn parked() -> i32 { let _value = @parse_u32(\"1\"); 0 }\n");
+            } else {
+                text.push_str("fn parked() -> i32 { 0 }\n");
+            }
+            text.push_str("fn root() -> i32 { f0() }\n");
+            source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1)
+        };
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let body_keys = (0..CALLEES)
+            .map(|index| free_function_instance(&module, &format!("f{index}")))
+            .collect::<Vec<_>>();
+        let mut reached_instances = body_keys.clone();
+        reached_instances.push(free_function_instance(&module, "root"));
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "root")]),
+            configuration: semantic_configuration(),
+        };
+        let body_keys = reached_instances
+            .into_iter()
+            .map(|instance| crate::body_query::BodyQueryKey {
+                instance,
+                configuration: semantic_configuration(),
+            })
+            .collect::<Vec<_>>();
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+        let parked_revision = revision_for(&mut database, &source(true));
+
+        let cold = database
+            .body_closure(
+                parked_revision,
+                closure_key.clone(),
+                CancellationToken::new(),
+            )
+            .expect("the first acquisition round publishes a typed park");
+        let rue_query::QueryOutcome::Success(cold_output) = cold.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert!(cold_output.parked_toolchain.is_some());
+        assert_eq!(cold_output.bodies.len(), CALLEES + 1);
+        assert!(
+            database.body_reachability_root_len() > BODY_QUERY_MEMO_RETENTION,
+            "the parked exact cone must replace the bounded body history"
+        );
+
+        for round in 0..2 {
+            let warm = database
+                .body_closure(
+                    parked_revision,
+                    closure_key.clone(),
+                    CancellationToken::new(),
+                )
+                .expect("a later acquisition round reuses the parked cone");
+            for key in &body_keys {
+                assert_eq!(
+                    warm.execution_for(key),
+                    rue_query::RequestExecution::Reused,
+                    "parked acquisition round {round} must reuse {}",
+                    key.stable_identity()
+                );
+                assert!(warm.was_retained(key));
+            }
+        }
+
+        let success_revision = revision_for(&mut database, &source(false));
+        let success = database
+            .body_closure(success_revision, closure_key, CancellationToken::new())
+            .expect("the completed acquisition publishes the final closure");
+        assert_eq!(success.terminal.kind(), QueryTerminalKind::Success);
+        assert_eq!(
+            database.body_reachability_root_len(),
+            0,
+            "the final closure root takes over before the parked root releases"
+        );
+        assert!(database.body_closure_root_metrics().0 > 0);
     }
 
     fn anonymous_identity_for_digest_test(

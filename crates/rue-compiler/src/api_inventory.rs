@@ -1465,6 +1465,29 @@ fn removed_parallel_entry_points_cannot_return() {
 }
 
 #[test]
+fn compiler_parallelism_has_one_query_budget_and_no_peer_parallel_frontier() {
+    let root = include_str!("lib.rs");
+    let cfg = include_str!("queries.rs");
+    let backend = include_str!("backend.rs");
+    let database = include_str!("revisioned_query_database.rs");
+    assert!(
+        root.contains("QUERY_CONCURRENCY")
+            && root.contains("configure_thread_pool")
+            && database.contains("crate::query_concurrency()")
+            && database.contains("QueryRuntime::new(query_concurrency)"),
+        "compiler runtime configuration must feed the canonical query database budget"
+    );
+    for (module, source) in [("queries", cfg), ("backend", backend)] {
+        for forbidden in ["rayon", ".par_iter(", ".into_par_iter("] {
+            assert!(
+                !source.contains(forbidden),
+                "{module} reintroduced a process-global parallel frontier through {forbidden}"
+            );
+        }
+    }
+}
+
+#[test]
 fn orphaned_backend_inspection_exports_cannot_return() {
     let facade = include_str!("lib.rs");
     let backend = include_str!("backend.rs");

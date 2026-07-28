@@ -215,8 +215,8 @@ const VERSION: &str = rue_compiler::VERSION;
 /// Highest explicit `-j`/`--jobs` value accepted by the CLI.
 ///
 /// `0` still means auto-detect. A fixed generous ceiling catches accidental
-/// values like `-j 100000` before Rayon tries to spawn an impractical number
-/// of worker threads, while still leaving ample room above current CI and
+/// values like `-j 100000` before the compiler schedules an impractical number
+/// of workers, while still leaving ample room above current CI and
 /// workstation core counts.
 const MAX_EXPLICIT_JOBS: usize = 256;
 
@@ -1025,11 +1025,9 @@ fn main() {
         options.benchmark_json,
     );
 
-    // Configure Rayon's global thread pool ONCE, before dispatching to either
-    // the `--emit` path or the normal compile path. `build_global()` panics if
-    // called twice, so it lives here rather than inside a per-compilation entry
-    // point — the previous placement meant `--emit` ignored `-j`/`--jobs`
-    // entirely (RUE-352).
+    // Configure the compiler's shared structured-query budget before
+    // dispatching to either the `--emit` path or the normal compile path, so
+    // every driver path honors `-j`/`--jobs` (RUE-352).
     configure_thread_pool(options.jobs);
 
     // Discover and load @import-ed modules from disk, transitively. Sema

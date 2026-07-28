@@ -2,4 +2,7 @@ load("//crates:defs.bzl", "rue_crate")
 
 rue_crate(
     name = "rue-query",
+    deps = [
+        "//third-party:tracing",
+    ],
 )

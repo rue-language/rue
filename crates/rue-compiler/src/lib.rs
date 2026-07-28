@@ -266,11 +266,40 @@ pub(crate) use rue_linker::{
 };
 pub(crate) use rue_parser::Parser;
 
-/// Configure Rayon's global worker pool once, before issuing compiler queries.
+// Zero means no embedder/driver override has been installed yet. The first
+// session lazily snapshots host parallelism so constructing CompilerSession
+// directly retains the CLI's default behavior without a peer executor.
+static QUERY_CONCURRENCY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Configure the compiler's shared structured-query concurrency budget.
+///
+/// Per-function CFG and backend work is deliberately serialized until it is
+/// represented as registered query batches, leaving one canonical concurrency
+/// authority for compiler work.
 pub fn configure_thread_pool(jobs: usize) {
-    if jobs > 0 {
-        let _ = rayon::ThreadPoolBuilder::new()
-            .num_threads(jobs)
-            .build_global();
+    let jobs = if jobs == 0 {
+        std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1)
+    } else {
+        jobs
+    };
+    QUERY_CONCURRENCY.store(jobs, std::sync::atomic::Ordering::Release);
+}
+
+pub(crate) fn query_concurrency() -> usize {
+    let configured = QUERY_CONCURRENCY.load(std::sync::atomic::Ordering::Acquire);
+    if configured != 0 {
+        return configured;
     }
+    let detected = std::thread::available_parallelism()
+        .map(std::num::NonZeroUsize::get)
+        .unwrap_or(1);
+    let _ = QUERY_CONCURRENCY.compare_exchange(
+        0,
+        detected,
+        std::sync::atomic::Ordering::AcqRel,
+        std::sync::atomic::Ordering::Acquire,
+    );
+    QUERY_CONCURRENCY.load(std::sync::atomic::Ordering::Acquire)
 }
