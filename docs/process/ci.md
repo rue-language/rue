@@ -1,17 +1,64 @@
 # Required CI
 
-The `CI` workflow (`.github/workflows/ci.yml`) supplies the required pull-request
-and merge-group checks.
+The `CI` workflow (`.github/workflows/ci.yml`) supplies one stable required
+check: **CI success**. Branch protection should require that displayed context,
+not matrix children. The aggregate uses `if: always()` and fails unless every
+expected dependency has the event-appropriate result. Matrix jobs can
+therefore be reshaped without changing the protected context.
 
 ## Triggers
 
-`CI` and `Sanitizer` run on `pull_request` and `merge_group` only (plus
-`workflow_dispatch` for manual re-validation). There is deliberately no
-`push: [trunk]` trigger (RUE-1006): trunk only advances through the merge
-queue, and the merge_group run's checks are attached to the exact commit that
-lands, so a post-merge trunk run would re-test an identical tree. Do not
-re-add a push trigger to these workflows; `Benchmarks` keeps its push trigger
-because per-commit measurement on trunk is its purpose.
+`CI` runs on `pull_request` and `merge_group` (plus `workflow_dispatch` for
+manual re-validation). There is deliberately no `push: [trunk]` trigger
+(RUE-1006): trunk only advances through the merge queue, and the merge-group
+run's checks are attached to the exact commit that lands, so a post-merge
+trunk run would re-test an identical tree. Do not re-add a push trigger;
+`Benchmarks` keeps its push trigger because per-commit measurement on trunk is
+its purpose. Valgrind and ASan are part of this same CI dependency graph, so
+they cannot complete outside the aggregate gate. Manual CI dispatch retains
+the `large_program` selector for expanded Valgrind coverage.
+
+Pull-request runs provide early feedback and may intentionally deselect
+unaffected heavy corpus jobs. The merge-group run is authoritative: affected
+target selection expands to the full premerge corpus, and the merge-group-only
+remote-execution canary must succeed. On pull requests and manual dispatch,
+that canary is intentionally `skipped`; the aggregate accepts that one exact
+event-specific skip and rejects every other skipped, cancelled, or failed
+dependency.
+
+`scripts/ci-required-results.py` is the single expected-job inventory consumed
+by the aggregate evaluator and structural validator.
+`scripts/validate-ci-gate.py` pins the workflow jobs, aggregate `needs`, stable
+displayed name, event-specific remote-execution rule, sanitizer inclusion, and
+platform responsibility matrix. Its independent `CI contract` job has no
+dependencies, always runs, and itself feeds `CI success`. Removing or renaming
+a job without updating every reviewed contract edge therefore fails closed
+instead of silently shrinking coverage.
+
+## Platform responsibility matrix
+
+| Owner | Required responsibility |
+| --- | --- |
+| Linux x86-64 | Complete target-independent premerge suite, all CLI shards, specification corpus, scaling matrix, release smoke, reproducibility, lint/metadata gates, Valgrind, and ASan |
+| Linux ARM64 | Native compiler/linker build; compiler, codegen, linker, runtime/archive, runtime ABI, allocator, and target unit tests; every applicable `only_on` spec/CLI case; real ABI, linker, and filesystem CLI programs |
+| macOS ARM64 | The same native responsibilities on Mach-O/macOS, including host-conditional compiler/archive tests, every applicable `only_on` case, native linker/runtime execution, and output publication |
+| Linux cross-backend step | Explicit host-independent x86-64 and AArch64 compilation/encoding unit coverage |
+
+Linux ARM64 and macOS ARM64 deliberately do not repeat the broad unit suite or
+the specification corpus. Backend encoding logic is still tested explicitly
+for both architectures on Linux, while native ARM64 lanes prove the host ABI,
+object/linker path, runtime archive, syscalls, and platform behavior that
+cross-compilation cannot.
+
+The native lanes set `RUE_PLATFORM_CASE_SELECTION=native` through
+`scripts/run-native-platform-corpus.sh`. Both manifest-driven harnesses then
+register every case whose nonempty `only_on` list includes the current host;
+unscoped target-independent cases and automatic examples are not registered.
+This makes new platform-scoped cases self-enrolling. The native lanes also
+retain the explicit ABI, linker, and filesystem CLI filters because those
+suites contain native-execution cases with empty `only_on` lists. The CI
+contract pins both parts of this union, along with the host-conditional
+`rue-compiler-test` unit target.
 
 The build jobs use the shared BuildBuddy remote action cache when the
 `BUILDBUDDY_API_KEY` secret is available (merge_group runs; fork PRs build
@@ -52,9 +99,10 @@ Every first-party Buck test target carries exactly one execution-tier label:
 repository, crate, and toolchain tests; generated crate unit tests default to
 `premerge`. A test that belongs outside pre-merge must opt into `slow` or
 `stress` at its definition rather than returning success from a skipped body.
-The required Valgrind and ASan jobs are logical `premerge` coverage but remain
-explicit workflow jobs: Valgrind provisions an external runtime tool, while
-ASan requires a pinned nightly Cargo toolchain that Buck does not model.
+The required Valgrind and ASan jobs are logical `premerge` coverage and remain
+explicit jobs inside the CI aggregate: Valgrind provisions an external runtime
+tool, while ASan requires a pinned nightly Cargo toolchain that Buck does not
+model.
 
 `./buck2 bxl //test_tiers.bxl:validate` queries Buck's live first-party test
 graph and fails unless every target has exactly one tier. Required formatting
@@ -111,16 +159,14 @@ graph match exactly; a new dedicated target therefore cannot be silently
 dropped. The scaling matrix now runs only in its dedicated Linux job instead
 of once in each platform broad pass and then again in that job.
 
-The platform test lanes all retain broad target discovery. Every platform
-(linux-x64, linux-arm64, macOS) defers its two heaviest pre-merge corpora —
-`//:cli-tests` and `//:spec-tests` — to explicit
+The Linux premerge lane retains broad target discovery and defers its two
+heaviest corpora — `//:cli-tests` and `//:spec-tests` — to explicit Linux
 `platform-corpus` jobs so those corpora overlap the main lane instead of
-serializing behind it (RUE-1115). Each architecture therefore has matching
-`cli` and `spec` shards in the `platform-corpus` matrix, and
-those checks must be marked required in branch protection (a maintainer
-action). `test.sh` accepts that deferral only under `CI=true`, validates each
-target against Buck's live `rue_heavy_suite` query, and continues to audit
-every corpus target it owns. Local full suites never defer coverage.
+serializing behind it (RUE-1115). `test.sh` accepts that deferral only under
+`CI=true`, validates each target against Buck's live `rue_heavy_suite` query,
+and continues to audit every corpus target it owns. Local full suites never
+defer coverage. Native ARM64 lanes use the explicit responsibility matrix
+above instead of broad discovery.
 
 Caldera and Meridian are absent from the ordinary CLI corpus by explicit
 filters because their complete generated graphs are slow-tier workloads. The
@@ -164,15 +210,17 @@ scripts/generate-cli-shard-weights.py \
 ```
 
 Use `common=PATH` to refresh the cross-platform fallback and the default cost
-for newly discovered cases. The shards carry both `rue_heavy_suite` (so
+for newly discovered cases. Platform-specific historical samples remain useful
+for local sharding experiments even though required target-independent shards
+run on Linux. The shards carry both `rue_heavy_suite` (so
 `ci-heavy-suite` runs them and the broad pass skips them) and `rue_cli_shard`
 (so a local `./test.sh` full run executes the monolithic `//:cli-tests` once
 instead of every slice — `test.sh` subtracts the `rue_cli_shard` set from its
-heavy-suite discovery). Nothing else re-runs the slices on CI, so
+heavy-suite discovery). Nothing else re-runs the slices on required CI, so
 `//:cli-shard-coverage-validation` fails the build if the shard targets in
 `BUCK` and the `platform-corpus` matrix in `ci.yml` ever drift apart. Changing
-`CLI_TEST_SHARD_COUNT` therefore means updating the matrix (and branch
-protection) to match.
+`CLI_TEST_SHARD_COUNT` therefore means updating the matrix; the protected
+`CI success` context remains unchanged.
 
 ### Correctness hang guards and performance budgets
 
@@ -238,9 +286,10 @@ for every corpus as `RUN` or `DESELECTED (intentional)`, and each deselected job
 logs its own intentional-deselection line — so a legitimate selective skip is
 never confused with a silently dropped suite (RUE-924). The selectable set in
 `scripts/affected-targets` is the matrix gate's source of truth; an unknown
-target fails safe toward running. Coarser job-level gating (skipping
-the runner entirely) and caching the base graph dump keyed by trunk commit are
-possible follow-ups once a single `ci-success` aggregate check exists.
+target fails safe toward running. Because branch protection now consumes only
+`CI success`, later matrix reshaping or coarser job-level gating can proceed
+without changing the protected context. Caching the base graph dump keyed by
+trunk commit remains a possible follow-up.
 
 Major Buck commands run through `scripts/ci-timed`, which preserves output and
 the exact command exit status while appending wall time and aggregate

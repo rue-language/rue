@@ -83,6 +83,9 @@
 //! - `only_on = ["x86-64-linux", ...]`: run the case only on these hosts
 //!   (ignored elsewhere). For behavior that depends on the host platform,
 //!   e.g. whether `--target X` is a cross-compile or a native compile.
+//! - `RUE_PLATFORM_CASE_SELECTION=native`: register every `only_on` case
+//!   applicable to the current host and no target-independent cases. Required
+//!   native CI uses this declarative selection.
 //! - `differential_opt = true`: compile+run the case once per optimization
 //!   level (`-O0`/`-O1`/`-O2`/`-O3`) and assert identical exit code AND stdout
 //!   across all levels, catching optimizer miscompiles (RUE-236). The runner
@@ -118,9 +121,9 @@ use std::time::{Duration, Instant};
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
 use rue_target::{Arch, Target};
 use rue_test_runner::{
-    ExpectedFailureOutcome, KNOWN_TARGETS, ShardSelector, TestFailure, TestResult,
-    classify_expected_failure, compiler_command, find_dir, find_rue_binary, ice_message,
-    run_with_timeout, validate_nonempty_case_corpus,
+    ExpectedFailureOutcome, KNOWN_TARGETS, PlatformCaseSelection, ShardSelector, TestFailure,
+    TestResult, classify_expected_failure, compiler_command, find_dir, find_rue_binary,
+    ice_message, run_with_timeout, validate_nonempty_case_corpus,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2606,6 +2609,10 @@ fn main() {
         eprintln!("error: {error}");
         std::process::exit(2);
     });
+    let platform_selection = PlatformCaseSelection::from_env().unwrap_or_else(|error| {
+        eprintln!("error: {error}");
+        std::process::exit(2);
+    });
     if shard_selector.is_some() && case_tier != CliCaseTierSelection::Premerge {
         eprintln!(
             "error: RUE_CLI_TEST_SHARD requires RUE_CLI_CASE_TIER=premerge \
@@ -2649,27 +2656,29 @@ fn main() {
             std::process::exit(1);
         });
 
-    let discovered_names = corpus
+    let mut discovered_names = corpus
         .files
         .iter()
         .flat_map(|(_, file)| {
             file.cases
                 .iter()
-                .filter(|_| case_tier.includes(file.section.tier))
+                .filter(|case| {
+                    case_tier.includes(file.section.tier)
+                        && platform_selection.includes(&case.only_on)
+                })
                 .map(|case| format!("{}::{}", file.section.id, case.name))
         })
-        .chain(
-            examples
-                .iter()
-                .filter(|example| {
-                    let tier = automatic_contracts
-                        .get(&example.relative_path)
-                        .map_or(CliCaseTier::Premerge, |metadata| metadata.tier);
-                    case_tier.includes(tier)
-                })
-                .map(|example| example_test_name(&example.relative_path)),
-        )
         .collect::<Vec<_>>();
+    if platform_selection == PlatformCaseSelection::All {
+        discovered_names.extend(examples.iter().filter_map(|example| {
+            let tier = automatic_contracts
+                .get(&example.relative_path)
+                .map_or(CliCaseTier::Premerge, |metadata| metadata.tier);
+            case_tier
+                .includes(tier)
+                .then(|| example_test_name(&example.relative_path))
+        }));
+    }
     let selected_discovered = discovered_names.len();
     let shard = shard_selector.map(|selector| {
         let weights_path = std::env::var_os("RUE_CLI_SHARD_WEIGHTS").unwrap_or_else(|| {
@@ -2698,6 +2707,9 @@ fn main() {
         }
         let section_id = file.section.id.clone();
         for case in file.cases {
+            if !platform_selection.includes(&case.only_on) {
+                continue;
+            }
             let contract_name = case_contract_name(&file.section, &case);
             let contract = resolve_contract(&corpus.contracts, &timeout_profiles, contract_name);
             let heavyweight = contract.is_heavyweight();
@@ -2729,16 +2741,26 @@ fn main() {
     // RUE-48: compile+run every examples/**/*.rue through the real driver, so a
     // regression that breaks a shipped example (or an example referencing a
     // removed flag) can't slip past CI unnoticed.
-    tests.extend(example_trials(
-        examples,
-        &automatic_contracts,
-        &timeout_profiles,
-        case_tier,
-        &rue_binary,
-        &real_std,
-        shard.as_ref(),
-        &timings,
-    ));
+    if platform_selection == PlatformCaseSelection::All {
+        tests.extend(example_trials(
+            examples,
+            &automatic_contracts,
+            &timeout_profiles,
+            case_tier,
+            &rue_binary,
+            &real_std,
+            shard.as_ref(),
+            &timings,
+        ));
+    }
+
+    if tests.is_empty() {
+        eprintln!(
+            "error: platform case selection {platform_selection:?} selected no CLI cases on {}",
+            rue_test_runner::get_host_target()
+        );
+        std::process::exit(1);
+    }
 
     if let Some(shard) = &shard {
         eprintln!(

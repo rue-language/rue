@@ -4,7 +4,7 @@
 # binary under Valgrind's memcheck, failing if any program triggers a memory
 # error or a fatal signal.
 #
-# This is the local driver for the `sanitizer.yml` CI job (RUE-49). Run it from
+# This is the local driver for the Valgrind job in `ci.yml` (RUE-49). Run it from
 # anywhere in the repo:
 #
 #   scripts/run-sanitizer.sh                 # recursive examples + curated corpus

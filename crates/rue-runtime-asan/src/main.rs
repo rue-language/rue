@@ -2,7 +2,7 @@
 //!
 //! # Why this exists
 //!
-//! The valgrind memcheck sanitizer job (RUE-49, `.github/workflows/sanitizer.yml`)
+//! The Valgrind memcheck CI job (RUE-49, `.github/workflows/ci.yml`)
 //! runs compiled Rue programs under DBI and catches codegen / wild-pointer /
 //! stack / bad-syscall-buffer bugs. But memcheck hooks libc `malloc`/`free`,
 //! and Rue allocates directly inside `mmap`'d arenas without ever calling
