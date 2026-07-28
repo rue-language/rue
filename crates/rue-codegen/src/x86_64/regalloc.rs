@@ -14,13 +14,12 @@
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::liveness;
-#[cfg(test)]
 use super::mir::VReg;
 use super::mir::{Operand, Reg, X86Inst, X86Mir};
 use crate::alloc_dst;
 use crate::regalloc::{
     Allocation, AllocationContext, CoalesceCandidate, LivenessInfo, LoopInfo, RegAllocBackend,
-    RegAllocDebugInfo, RegAllocDriver, RewriteBuffer,
+    RegAllocDebugInfo, RegAllocDriver, RematerializeOp, RewriteBuffer,
 };
 
 /// Available registers for allocation.
@@ -1264,6 +1263,36 @@ impl RegAllocBackend for X86Backend {
         mir.instructions()
     }
 
+    fn defs(inst: &Self::Inst) -> Vec<VReg> {
+        liveness::defs(inst)
+    }
+
+    fn rematerialization(inst: &Self::Inst) -> Option<(VReg, RematerializeOp)> {
+        match inst {
+            X86Inst::MovRI32 {
+                dst: Operand::Virtual(dst),
+                imm,
+            } => Some((*dst, RematerializeOp::Const32(*imm))),
+            X86Inst::MovRI64 {
+                dst: Operand::Virtual(dst),
+                imm,
+            } => Some((*dst, RematerializeOp::Const64(*imm))),
+            X86Inst::StringConstPtr {
+                dst: Operand::Virtual(dst),
+                string_id,
+            } => Some((*dst, RematerializeOp::StringPtr(*string_id))),
+            X86Inst::StringConstLen {
+                dst: Operand::Virtual(dst),
+                string_id,
+            } => Some((*dst, RematerializeOp::StringLen(*string_id))),
+            X86Inst::StringConstCap {
+                dst: Operand::Virtual(dst),
+                string_id,
+            } => Some((*dst, RematerializeOp::StringCap(*string_id))),
+            _ => None,
+        }
+    }
+
     fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg> {
         liveness::analyze(mir)
     }
@@ -1332,7 +1361,18 @@ impl RegAllocBackend for X86Backend {
 #[cfg(test)]
 mod tests {
     use super::liveness;
-    use super::{Operand, Reg, RegAlloc, VReg, X86Inst, X86Mir};
+    use super::{ALLOCATABLE_REGS, Operand, Reg, RegAlloc, VReg, X86Inst, X86Mir};
+    use crate::regalloc::{Allocation, RematerializeOp};
+
+    fn define_loaded_values(mir: &mut X86Mir, vregs: &[VReg]) {
+        for (index, &vreg) in vregs.iter().enumerate() {
+            mir.push(X86Inst::MovRM {
+                dst: Operand::Virtual(vreg),
+                base: Reg::Rsi,
+                offset: (index as i32) * 8,
+            });
+        }
+    }
 
     #[test]
     fn test_simple_allocation() {
@@ -1521,13 +1561,7 @@ mod tests {
         // Create 6 vregs to force spilling (only 5 allocatable regs: R12-R15, Rbx)
         let vregs: Vec<VReg> = (0..6).map(|_| mir.alloc_vreg()).collect();
 
-        // Define all vregs
-        for (i, &vreg) in vregs.iter().enumerate() {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: i as i32,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
 
         // Use all vregs to keep them live
         for &vreg in &vregs {
@@ -1575,8 +1609,197 @@ mod tests {
             store_index
                 .checked_sub(1)
                 .and_then(|index| instructions.get(index)),
-            Some(X86Inst::MovRI32 { .. })
+            Some(X86Inst::MovRM { base: Reg::Rsi, .. })
         ));
+    }
+
+    #[test]
+    fn test_production_rematerializes_constants_and_strings_without_spills() {
+        let mut mir = X86Mir::new();
+        let vregs: Vec<VReg> = (0..7).map(|_| mir.alloc_vreg()).collect();
+
+        for (index, &vreg) in vregs[..5].iter().enumerate() {
+            mir.push(X86Inst::MovRI32 {
+                dst: Operand::Virtual(vreg),
+                imm: index as i32,
+            });
+        }
+        mir.push(X86Inst::StringConstPtr {
+            dst: Operand::Virtual(vregs[5]),
+            string_id: 7,
+        });
+        mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(vregs[6]),
+            imm: 99,
+        });
+        for &vreg in &vregs {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let baseline_liveness = liveness::analyze(&mir);
+        let baseline_loops = liveness::analyze_loops(&mir);
+        let (_, baseline_spills, _) = crate::regalloc::linear_scan_with_cost_model(
+            mir.vreg_count(),
+            &baseline_liveness,
+            ALLOCATABLE_REGS,
+            0,
+            &crate::regalloc::CostModel::default(),
+            &baseline_loops,
+        );
+        let (mir, num_spills, _, debug) = RegAlloc::new(mir, 0).allocate_with_debug().unwrap();
+
+        assert_eq!(baseline_spills, 2);
+        assert!(num_spills < baseline_spills);
+        assert_eq!(num_spills, 0, "rematerialized values need no frame slots");
+        assert!(debug.allocations.iter().any(|(_, allocation)| matches!(
+            allocation,
+            crate::regalloc::Allocation::Rematerialize(
+                crate::regalloc::RematerializeOp::StringPtr(7)
+            )
+        )));
+        assert!(debug.allocations.iter().any(|(_, allocation)| matches!(
+            allocation,
+            crate::regalloc::Allocation::Rematerialize(crate::regalloc::RematerializeOp::Const64(
+                99
+            ))
+        )));
+        assert!(!mir.instructions().iter().any(|inst| matches!(
+            inst,
+            X86Inst::MovMR { base: Reg::Rbp, .. } | X86Inst::MovRM { base: Reg::Rbp, .. }
+        )));
+    }
+
+    #[test]
+    fn test_rematerialization_recipe_survives_coalescing() {
+        let mut mir = X86Mir::new();
+        let loaded: Vec<VReg> = (0..ALLOCATABLE_REGS.len())
+            .map(|_| mir.alloc_vreg())
+            .collect();
+        let constant = mir.alloc_vreg();
+        let moved = mir.alloc_vreg();
+
+        define_loaded_values(&mut mir, &loaded);
+        mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(constant),
+            imm: 42,
+        });
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(moved),
+            src: Operand::Virtual(constant),
+        });
+        for &vreg in &loaded {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(moved),
+        });
+
+        let (mir, num_spills, _, debug) = RegAlloc::new(mir, 0).allocate_with_debug().unwrap();
+
+        assert_eq!(num_spills, 0);
+        assert!(debug.allocations.contains(&(
+            constant.index(),
+            Allocation::Rematerialize(RematerializeOp::Const64(42))
+        )));
+        assert!(mir.instructions().iter().any(|inst| matches!(
+            inst,
+            X86Inst::MovRI64 {
+                dst: Operand::Physical(Reg::Rax),
+                imm: 42
+            }
+        )));
+    }
+
+    #[test]
+    fn test_rematerialization_requires_identical_definitions() {
+        fn allocate(second_value: i64) -> (u32, Allocation<Reg>) {
+            let mut mir = X86Mir::new();
+            let loaded: Vec<VReg> = (0..ALLOCATABLE_REGS.len())
+                .map(|_| mir.alloc_vreg())
+                .collect();
+            let constant = mir.alloc_vreg();
+
+            define_loaded_values(&mut mir, &loaded);
+            mir.push(X86Inst::MovRI64 {
+                dst: Operand::Virtual(constant),
+                imm: 42,
+            });
+            mir.push(X86Inst::MovRI64 {
+                dst: Operand::Virtual(constant),
+                imm: second_value,
+            });
+            for &vreg in &loaded {
+                mir.push(X86Inst::MovRR {
+                    dst: Operand::Physical(Reg::Rdi),
+                    src: Operand::Virtual(vreg),
+                });
+            }
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(constant),
+            });
+
+            let (_, num_spills, _, debug) = RegAlloc::new(mir, 0).allocate_with_debug().unwrap();
+            let allocation = debug
+                .allocations
+                .iter()
+                .find_map(|(vreg, allocation)| (*vreg == constant.index()).then_some(*allocation))
+                .unwrap();
+            (num_spills, allocation)
+        }
+
+        assert_eq!(
+            allocate(42),
+            (0, Allocation::Rematerialize(RematerializeOp::Const64(42)))
+        );
+        assert!(matches!(allocate(43), (1, Allocation::Spill(_))));
+    }
+
+    #[test]
+    fn test_rematerialization_rejects_in_place_updates() {
+        let mut mir = X86Mir::new();
+        let loaded: Vec<VReg> = (0..ALLOCATABLE_REGS.len())
+            .map(|_| mir.alloc_vreg())
+            .collect();
+        let updated = mir.alloc_vreg();
+
+        define_loaded_values(&mut mir, &loaded);
+        mir.push(X86Inst::MovRI64 {
+            dst: Operand::Virtual(updated),
+            imm: 42,
+        });
+        mir.push(X86Inst::AddRI {
+            dst: Operand::Virtual(updated),
+            imm: 1,
+        });
+        for &vreg in &loaded {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(updated),
+        });
+
+        let (_, num_spills, _, debug) = RegAlloc::new(mir, 0).allocate_with_debug().unwrap();
+
+        assert_eq!(num_spills, 1);
+        assert!(
+            debug
+                .allocations
+                .iter()
+                .any(|(vreg, allocation)| *vreg == updated.index()
+                    && matches!(allocation, Allocation::Spill(_)))
+        );
     }
 
     #[test]
@@ -1662,12 +1885,7 @@ mod tests {
         let vregs: Vec<VReg> = (0..6).map(|_| mir.alloc_vreg()).collect();
         let loop_label = mir.alloc_label();
 
-        for (i, &vreg) in vregs.iter().enumerate() {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: i as i32,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
         mir.push(X86Inst::Label { id: loop_label });
         mir.push(X86Inst::AddRI {
             dst: Operand::Virtual(vregs[0]),
@@ -1743,12 +1961,7 @@ mod tests {
         // Create 10 vregs to force 5 spills
         let vregs: Vec<VReg> = (0..10).map(|_| mir.alloc_vreg()).collect();
 
-        for (i, &vreg) in vregs.iter().enumerate() {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: i as i32,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
 
         for &vreg in &vregs {
             mir.push(X86Inst::MovRR {
@@ -1803,13 +2016,8 @@ mod tests {
         let v4 = mir.alloc_vreg();
         let v5 = mir.alloc_vreg();
 
-        // Define and use all vregs
-        for vreg in [v0, v1, v2, v3, v4, v5] {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: 42,
-            });
-        }
+        // Define and use all vregs.
+        define_loaded_values(&mut mir, &[v0, v1, v2, v3, v4, v5]);
         for vreg in [v0, v1, v2, v3, v4, v5] {
             mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rdi),
@@ -1852,12 +2060,7 @@ mod tests {
         // Create 20 vregs (5 registers + 15 spills)
         let vregs: Vec<VReg> = (0..20).map(|_| mir.alloc_vreg()).collect();
 
-        for (i, &vreg) in vregs.iter().enumerate() {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: i as i32,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
 
         for &vreg in &vregs {
             mir.push(X86Inst::MovRR {
@@ -1899,12 +2102,7 @@ mod tests {
         // 6 vregs forces 1 spill
         let vregs: Vec<VReg> = (0..6).map(|_| mir.alloc_vreg()).collect();
 
-        for vreg in &vregs {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(*vreg),
-                imm: 1,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
         for vreg in &vregs {
             mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rdi),
@@ -1941,13 +2139,7 @@ mod tests {
         // Create enough vregs to force spilling
         let vregs: Vec<VReg> = (0..8).map(|_| mir.alloc_vreg()).collect();
 
-        // Initialize all
-        for (i, &vreg) in vregs.iter().enumerate() {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: i as i32,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
 
         // Add using potentially spilled operands
         mir.push(X86Inst::AddRR {
@@ -1980,12 +2172,7 @@ mod tests {
         let mut mir = X86Mir::new();
         let vregs: Vec<VReg> = (0..7).map(|_| mir.alloc_vreg()).collect();
 
-        for (i, &vreg) in vregs.iter().enumerate() {
-            mir.push(X86Inst::MovRI32 {
-                dst: Operand::Virtual(vreg),
-                imm: i as i32,
-            });
-        }
+        define_loaded_values(&mut mir, &vregs);
         mir.push(X86Inst::AddRR {
             dst: Operand::Virtual(vregs[6]),
             src: Operand::Virtual(vregs[5]),

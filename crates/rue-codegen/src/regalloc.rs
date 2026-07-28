@@ -943,6 +943,8 @@ pub trait RegAllocBackend {
 
     fn vreg_count(mir: &Self::Mir) -> u32;
     fn instructions(mir: &Self::Mir) -> &[Self::Inst];
+    fn defs(inst: &Self::Inst) -> Vec<VReg>;
+    fn rematerialization(inst: &Self::Inst) -> Option<(VReg, RematerializeOp)>;
     fn analyze(mir: &Self::Mir) -> LivenessInfo<Self::Reg>;
     fn analyze_with_debug(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo);
     fn analyze_loops(mir: &Self::Mir) -> LoopInfo;
@@ -959,6 +961,65 @@ pub trait RegAllocBackend {
         buffer: &mut RewriteBuffer<Self::Inst>,
         inst: Self::Inst,
     ) -> CompileResult<()>;
+}
+
+#[derive(Clone, Copy)]
+enum RematerializationState {
+    Unknown,
+    Eligible(RematerializeOp),
+    Ineligible,
+}
+
+/// Derive one conservative rematerialization recipe per coalesced live range.
+///
+/// Eliminated register-to-register moves do not count as definitions: their
+/// source and destination are the same coalesced value. Every remaining
+/// definition in the class must reproduce the same cheap value. This prevents
+/// rematerializing a register that is later updated in place or assigned
+/// different values along separate control-flow paths.
+fn rematerialization_info<B: RegAllocBackend>(
+    mir: &B::Mir,
+    coalesce_result: &CoalesceResult,
+) -> IndexMap<VReg, VRegInfo> {
+    let vreg_count = B::vreg_count(mir) as usize;
+    let mut states = IndexMap::with_capacity(vreg_count);
+    states.resize(vreg_count, RematerializationState::Unknown);
+
+    for (inst_idx, inst) in B::instructions(mir).iter().enumerate() {
+        if coalesce_result.is_eliminated(inst_idx) {
+            continue;
+        }
+
+        let candidate = B::rematerialization(inst);
+        for defined in B::defs(inst) {
+            let representative = coalesce_result.representative(defined);
+            let recipe = candidate
+                .filter(|(candidate_vreg, _)| *candidate_vreg == defined)
+                .map(|(_, recipe)| recipe);
+
+            states[representative] = match (states[representative], recipe) {
+                (RematerializationState::Ineligible, _) => RematerializationState::Ineligible,
+                (RematerializationState::Unknown, Some(recipe)) => {
+                    RematerializationState::Eligible(recipe)
+                }
+                (RematerializationState::Eligible(existing), Some(recipe))
+                    if existing == recipe =>
+                {
+                    RematerializationState::Eligible(existing)
+                }
+                _ => RematerializationState::Ineligible,
+            };
+        }
+    }
+
+    let mut info = IndexMap::with_capacity(vreg_count);
+    info.resize(vreg_count, VRegInfo::none());
+    for (vreg, state) in states.iter_enumerated() {
+        if let RematerializationState::Eligible(recipe) = state {
+            info[vreg] = VRegInfo::rematerializable(*recipe);
+        }
+    }
+    info
 }
 
 /// Read-only allocation state exposed to a target's instruction rewriter.
@@ -1036,6 +1097,7 @@ impl<I> RewriteBuffer<I> {
 pub struct RegAllocDriver<B: RegAllocBackend> {
     mir: B::Mir,
     allocation: IndexMap<VReg, Option<Allocation<B::Reg>>>,
+    vreg_info: IndexMap<VReg, VRegInfo>,
     liveness: LivenessInfo<B::Reg>,
     liveness_debug: Option<LivenessDebugInfo>,
     loop_info: LoopInfo,
@@ -1064,6 +1126,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         let loop_info = B::analyze_loops(&mir);
         let candidates = B::coalesce_candidates(B::instructions(&mir));
         let coalesce_result = coalesce(&candidates, &mut liveness);
+        let vreg_info = rematerialization_info::<B>(&mir, &coalesce_result);
 
         let mut allocation = IndexMap::with_capacity(vreg_count);
         allocation.resize(vreg_count, None);
@@ -1071,6 +1134,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         Self {
             mir,
             allocation,
+            vreg_info,
             liveness,
             liveness_debug,
             loop_info,
@@ -1147,13 +1211,15 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     }
 
     fn assign_registers(&mut self) {
-        let (allocation, num_spills, used_callee_saved) = linear_scan_with_cost_model(
+        let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
             B::vreg_count(&self.mir),
             &self.liveness,
             B::allocatable_regs(),
             self.existing_locals,
+            false,
             &CostModel::default(),
             &self.loop_info,
+            &self.vreg_info,
         );
         self.allocation = allocation;
         self.num_spills = num_spills;
@@ -1161,15 +1227,16 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     }
 
     fn assign_registers_with_debug(&mut self) -> RegAllocDebugInfo<B::Reg> {
-        let (allocation, num_spills, used_callee_saved, debug_info) =
-            linear_scan_with_cost_model_and_debug(
-                B::vreg_count(&self.mir),
-                &self.liveness,
-                B::allocatable_regs(),
-                self.existing_locals,
-                &CostModel::default(),
-                &self.loop_info,
-            );
+        let (allocation, num_spills, used_callee_saved, debug_info) = linear_scan_impl_with_remat(
+            B::vreg_count(&self.mir),
+            &self.liveness,
+            B::allocatable_regs(),
+            self.existing_locals,
+            true,
+            &CostModel::default(),
+            &self.loop_info,
+            &self.vreg_info,
+        );
         self.allocation = allocation;
         self.num_spills = num_spills;
         self.used_callee_saved = used_callee_saved;
@@ -1201,6 +1268,14 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
 
         for (idx, inst) in old_instructions.into_iter().enumerate() {
             if self.coalesce_result.is_eliminated(idx) {
+                continue;
+            }
+            if let Some((defined, recipe)) = B::rematerialization(&inst)
+                && matches!(
+                    context.allocation(defined),
+                    Some(Allocation::Rematerialize(selected)) if selected == recipe
+                )
+            {
                 continue;
             }
             let mut buffer = RewriteBuffer::new();
