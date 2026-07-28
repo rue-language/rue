@@ -2028,7 +2028,8 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                     .type_pool
                     .struct_metadata(id)
                     .expect("resolved declaration type names a registered struct identity");
-                (!def.is_builtin && !def.name.starts_with("__anon_struct_"))
+                // Membership, not the generated-name prefix (RUE-1050).
+                (!def.is_builtin && !self.anonymous_struct_ids.contains(&id))
                     .then_some((
                         def.file_id,
                         def.name,
@@ -2747,7 +2748,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                     .type_pool
                     .struct_metadata(id)
                     .expect("resolved declaration type names a registered struct identity");
-                if !def.is_builtin && !def.name.starts_with("__anon_struct_") {
+                // Membership, not the generated-name prefix (RUE-1050).
+                if !def.is_builtin && !self.anonymous_struct_ids.contains(&id) {
                     self.record_resolved_declaration_type_target(
                         def.file_id,
                         def.name,

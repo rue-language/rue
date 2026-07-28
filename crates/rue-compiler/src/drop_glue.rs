@@ -211,7 +211,8 @@ fn create_struct_drop_glue_function(
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
-        implicit_drop_source: if struct_def.name.starts_with("__anon_struct_") {
+        // Membership, not the generated-name prefix (RUE-1050).
+        implicit_drop_source: if type_pool.is_anonymous_struct(struct_id) {
             None
         } else {
             Some(rue_air::ImplicitDropDependencySourceEvent::NamedStruct {

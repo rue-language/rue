@@ -655,7 +655,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             .ok_or(F::UnmappedFunction)?;
         let method = self.interner.resolve(&method_name);
         let owner = self.type_pool.struct_def(struct_id);
-        if owner.name.starts_with("__anon_struct_") {
+        // Membership, not the generated-name prefix (RUE-1050).
+        if self.anonymous_struct_ids.contains(&struct_id) {
             return Err(F::AnonymousNominal);
         }
         self.stable_definition_token(
@@ -758,7 +759,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
             .type_pool
             .struct_metadata(id)
             .ok_or(F::UnsupportedType)?;
-        if def.name.starts_with("__anon_struct_") {
+        // Membership, not the generated-name prefix: `__anon_struct_N` is a
+        // legal source declaration and must still receive a named identity
+        // (RUE-1050).
+        if self.anonymous_struct_ids.contains(&id) {
             return Err(F::AnonymousNominal);
         }
         self.stable_definition_token(
@@ -771,7 +775,8 @@ impl<D: DeclarationPhase> Sema<'_, D> {
 
     pub(crate) fn enum_identity(&self, id: crate::EnumId) -> Result<SemanticDefinitionToken, F> {
         let def = self.type_pool.enum_metadata(id).ok_or(F::UnsupportedType)?;
-        if def.name.starts_with("__anon_enum_") {
+        // Membership, not the generated-name prefix (RUE-1050).
+        if self.anonymous_enum_ids.contains(&id) {
             return Err(F::AnonymousNominal);
         }
         self.stable_definition_token(

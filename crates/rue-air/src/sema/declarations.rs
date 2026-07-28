@@ -476,10 +476,11 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             .map(|(key, info)| (*key, *info))
             .collect::<Vec<_>>();
         for ((struct_id, method_name), info) in methods {
-            let owner = self.type_pool.struct_def(struct_id);
-            if owner.name.starts_with("__anon_struct_") {
+            // Membership, not the generated-name prefix (RUE-1050).
+            if self.anonymous_struct_ids.contains(&struct_id) {
                 continue;
             }
+            let owner = self.type_pool.struct_def(struct_id);
             let source_kind = if info.has_self {
                 Source::Method
             } else {
@@ -554,7 +555,8 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                     .type_pool
                     .struct_metadata(id)
                     .expect("declaration dependency names a registered struct identity");
-                if def.is_builtin || def.name.starts_with("__anon_struct_") {
+                // Membership, not the generated-name prefix (RUE-1050).
+                if def.is_builtin || self.anonymous_struct_ids.contains(&id) {
                     return;
                 }
                 Some((

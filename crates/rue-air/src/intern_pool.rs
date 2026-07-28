@@ -376,6 +376,21 @@ struct TypeInternPoolInner {
     containment_dirty: bool,
     containment_metrics: TypeContainmentMetrics,
 
+    /// Structs and enums the compiler generated for anonymous types, recorded
+    /// at creation and layered like `types`.
+    ///
+    /// `__anon_struct_N` / `__anon_enum_N` are legal source declarations — only
+    /// `__rue_*` and `_start` are reserved — so "was this generated?" is
+    /// membership here, never a name prefix (RUE-1050). This is the authority
+    /// for consumers below semantic analysis, which cannot see the sema-side
+    /// registry: CFG destructor discovery and drop glue.
+    ///
+    /// Symbol spelling still tests the prefix. It cannot read this registry
+    /// until the provider boundary carries the same marks, because durable
+    /// export re-derives identities from the rendered symbol; see RUE-1193.
+    anonymous_structs: HashSet<StructId>,
+    anonymous_enums: HashSet<EnumId>,
+
     /// Nominal struct lookup: (defining file, source name) -> canonical `Type`.
     struct_by_file_name: HashMap<(FileId, Spur), Type>,
 
@@ -470,6 +485,8 @@ impl TypeInternPoolInner {
             containment_facts: Vec::new(),
             containment_dirty: false,
             containment_metrics: TypeContainmentMetrics::default(),
+            anonymous_structs: HashSet::new(),
+            anonymous_enums: HashSet::new(),
             struct_by_file_name: HashMap::new(),
             enum_by_file_name: HashMap::new(),
             symbol_paths: Arc::default(),
@@ -625,6 +642,10 @@ impl TypeInternPoolInner {
         flat.array_map.extend(self.array_map.iter());
         flat.ptr_const_map.extend(self.ptr_const_map.iter());
         flat.ptr_mut_map.extend(self.ptr_mut_map.iter());
+        flat.anonymous_structs
+            .extend(self.anonymous_structs.iter().copied());
+        flat.anonymous_enums
+            .extend(self.anonymous_enums.iter().copied());
         flat.struct_by_file_name
             .extend(self.struct_by_file_name.iter());
         flat.enum_by_file_name.extend(self.enum_by_file_name.iter());
@@ -665,6 +686,10 @@ impl TypeInternPoolInner {
             containment_facts: Vec::new(),
             containment_dirty,
             containment_metrics: TypeContainmentMetrics::default(),
+            // Empty locally; `is_anonymous_*` consults the base for entries
+            // below `base_len`, matching how `types` is layered.
+            anonymous_structs: HashSet::new(),
+            anonymous_enums: HashSet::new(),
             struct_by_file_name: HashMap::new(),
             enum_by_file_name: HashMap::new(),
             symbol_paths: Arc::clone(&self.symbol_paths),
@@ -672,6 +697,25 @@ impl TypeInternPoolInner {
             lang_item_structs: Arc::clone(&self.lang_item_structs),
             repr_c_structs: Arc::clone(&self.repr_c_structs),
         }
+    }
+
+    /// Whether this struct was generated for an anonymous type, consulting the
+    /// shared base for entries below `base_len`.
+    fn is_anonymous_struct(&self, id: StructId) -> bool {
+        self.anonymous_structs.contains(&id)
+            || self
+                .base
+                .as_ref()
+                .is_some_and(|base| base.is_anonymous_struct(id))
+    }
+
+    /// Enum counterpart of [`Self::is_anonymous_struct`].
+    fn is_anonymous_enum(&self, id: EnumId) -> bool {
+        self.anonymous_enums.contains(&id)
+            || self
+                .base
+                .as_ref()
+                .is_some_and(|base| base.is_anonymous_enum(id))
     }
 
     fn next_pool_index(&self) -> u32 {
@@ -2439,6 +2483,34 @@ impl TypeInternPool {
             .struct_metadata(struct_id)
     }
 
+    /// Record that this struct was generated for an anonymous type.
+    ///
+    /// Called by anonymous-type creation, which is the only authority on
+    /// generated-ness: the `__anon_struct_N` spelling is a legal source name
+    /// and must never be used to infer it (RUE-1050).
+    pub fn mark_anonymous_struct(&self, struct_id: StructId) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        inner.anonymous_structs.insert(struct_id);
+    }
+
+    /// Enum counterpart of [`Self::mark_anonymous_struct`].
+    pub fn mark_anonymous_enum(&self, enum_id: EnumId) {
+        let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        inner.anonymous_enums.insert(enum_id);
+    }
+
+    /// Whether this struct was generated for an anonymous type.
+    pub fn is_anonymous_struct(&self, struct_id: StructId) -> bool {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.is_anonymous_struct(struct_id)
+    }
+
+    /// Whether this enum was generated for an anonymous type.
+    pub fn is_anonymous_enum(&self, enum_id: EnumId) -> bool {
+        let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
+        inner.is_anonymous_enum(enum_id)
+    }
+
     /// Return the stable standard-library identity carried by a nominal type.
     pub fn struct_lang_item(&self, struct_id: StructId) -> Option<LangItem> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
@@ -3077,6 +3149,16 @@ impl FrozenTypeInternPool {
 
     pub fn struct_lang_item(&self, id: StructId) -> Option<LangItem> {
         self.inner.struct_lang_items.get(&id).copied()
+    }
+
+    /// Whether this struct was generated for an anonymous type (RUE-1050).
+    pub fn is_anonymous_struct(&self, id: StructId) -> bool {
+        self.inner.is_anonymous_struct(id)
+    }
+
+    /// Whether this enum was generated for an anonymous type (RUE-1050).
+    pub fn is_anonymous_enum(&self, id: EnumId) -> bool {
+        self.inner.is_anonymous_enum(id)
     }
 
     pub fn lang_item_type(&self, item: LangItem) -> Option<Type> {

@@ -1053,8 +1053,8 @@ fn intern_named_callable_symbols(sema: &BodySema<'_>) {
         .methods
         .iter()
         .filter_map(|(&(struct_id, method), info)| {
-            let owner = sema.type_pool.struct_def(struct_id);
-            (!owner.name.starts_with("__anon_struct_")).then(|| {
+            // Membership, not the generated-name prefix (RUE-1050).
+            (!sema.anonymous_struct_ids.contains(&struct_id)).then(|| {
                 sema.method_symbol(struct_id, sema.interner.resolve(&method), info.has_self)
             })
         })
@@ -1496,7 +1496,10 @@ fn named_method_dependency_events(
     }
     for (callee_struct, callee_method) in referenced_methods {
         let owner_name = sema.type_pool.struct_def(*callee_struct).name.clone();
-        if owner_name.starts_with("__anon_struct_") {
+        // Membership, not the generated-name prefix: `__anon_struct_N` is a
+        // legal source declaration, and only `anonymous_struct_ids` knows which
+        // structs the compiler generated (RUE-1050).
+        if sema.anonymous_struct_ids.contains(callee_struct) {
             continue;
         }
         let info = sema
@@ -1574,7 +1577,10 @@ fn named_destructor_dependency_events(
     }
     for (callee_struct, callee_method) in referenced_methods {
         let owner_name = sema.type_pool.struct_def(*callee_struct).name.clone();
-        if owner_name.starts_with("__anon_struct_") {
+        // Membership, not the generated-name prefix: `__anon_struct_N` is a
+        // legal source declaration, and only `anonymous_struct_ids` knows which
+        // structs the compiler generated (RUE-1050).
+        if sema.anonymous_struct_ids.contains(callee_struct) {
             continue;
         }
         let info = sema
@@ -2226,8 +2232,10 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                 let type_name_str = struct_def.name.clone();
                 let method_name_str = sema.interner.resolve(&method_name).to_string();
 
-                // For anonymous structs, use the MethodInfo directly since there's no named StructDecl
-                if type_name_str.starts_with("__anon_struct_") {
+                // For anonymous structs, use the MethodInfo directly since there's no named StructDecl.
+                // Membership, not the generated-name prefix: a source struct may
+                // legally be called `__anon_struct_N` (RUE-1050).
+                if sema.anonymous_struct_ids.contains(&struct_id) {
                     sema.body_analysis_work.anonymous_method_record_lookups += 1;
                     let full_name =
                         sema.method_symbol(struct_id, &method_name_str, method_info.has_self);
