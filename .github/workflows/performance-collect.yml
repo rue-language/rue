@@ -1,0 +1,190 @@
+# Compiler-performance collection (ADR-0067 Phase 5, RUE-1188).
+#
+# Measures each platform's collection epoch on every trunk commit and appends
+# the raw run objects to the `performance-data-v1` orphan branch.
+#
+# Two properties this workflow exists to guarantee:
+#
+# Writes are serialized. `index.json` is read-modify-write, so two collectors
+# publishing at once would lose one of them. A single non-cancelling writer
+# group and one publish job give the branch exactly one writer at a time.
+#
+# Only raw observations are stored. Indexes, dispersion, chart data, and
+# summaries are rebuilt from these records at site build time and never written
+# here. Anything derived that landed on the branch would eventually disagree
+# with the records it came from, and the stored copy would be believed.
+name: Performance collection
+
+on:
+  push:
+    branches: [trunk]
+  workflow_dispatch:
+
+# Measurement jobs only read. The publish job re-declares the write it needs.
+permissions:
+  contents: read
+
+# Never cancel in progress. A cancelled measurement wastes a runner; a cancelled
+# publish can leave the branch describing a run object it does not contain.
+# Queueing is the point, not a limitation.
+concurrency:
+  group: performance-collection
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: x86_64-linux
+            image: ubuntu-24.04
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux
+            image: ubuntu-24.04
+          - os: macos-15
+            platform: aarch64-macos
+            image: macos-15
+    runs-on: ${{ matrix.os }}
+    name: measure (${{ matrix.platform }})
+    # macOS takes 99 samples of the startup probe by calibrated policy, and the
+    # corpus is expected to grow.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Select Xcode 16.2
+        if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the compiler and the runner
+        run: ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
+
+      - name: Measure
+        env:
+          # Declared, not detected: a run must never be able to claim quietly
+          # that it satisfied an environment policy it did not.
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p collected
+          RUE="$(scripts/rue-bin)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+
+          # Exit 3 is "written but not appendable". That is a real finding —
+          # usually a pin that no longer resolves — and the evidence is worth
+          # keeping, so the artifact still uploads and the publish job decides.
+          set +e
+          "$BENCH" \
+            --manifest performance/manifest.toml \
+            --platform "${{ matrix.platform }}" \
+            --epoch 2 \
+            --compiler "$RUE" \
+            --commit "${{ github.sha }}" \
+            --repo-root . \
+            --out "collected/${{ matrix.platform }}.json"
+          status=$?
+          set -e
+          echo "runner exit status: $status"
+          if [ "$status" -eq 2 ]; then
+            echo "::error::the runner could not produce a run object"
+            exit 1
+          fi
+          if [ "$status" -eq 3 ]; then
+            echo "::warning::run is not appendable; it will not be published"
+          fi
+          echo "status=$status" > "collected/${{ matrix.platform }}.status"
+
+      - name: Upload the run object
+        uses: actions/upload-artifact@v6
+        with:
+          name: run-${{ matrix.platform }}
+          path: collected/
+          retention-days: 30
+
+  publish:
+    needs: measure
+    # Runs even when a platform failed: a partial sweep still has valid runs
+    # worth storing, and a platform that is persistently broken should be
+    # visible in the data rather than absent from it.
+    if: always()
+    runs-on: ubuntu-24.04
+    name: publish
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download run objects
+        uses: actions/download-artifact@v6
+        with:
+          path: incoming
+          merge-multiple: true
+
+      - name: Append to performance-data-v1
+        env:
+          GIT_AUTHOR_NAME: rue-performance-collector
+          GIT_AUTHOR_EMAIL: noreply@github.com
+          GIT_COMMITTER_NAME: rue-performance-collector
+          GIT_COMMITTER_EMAIL: noreply@github.com
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          runs=(incoming/*.json)
+          if [ ${#runs[@]} -eq 0 ]; then
+            echo "no run objects were produced; nothing to publish"
+            exit 0
+          fi
+
+          # A worktree keeps the data branch entirely separate from the source
+          # checkout, so a stray source file can never be committed to it.
+          git fetch origin performance-data-v1 --depth=1 2>/dev/null || true
+          if git rev-parse --verify origin/performance-data-v1 >/dev/null 2>&1; then
+            git worktree add ../data origin/performance-data-v1
+            git -C ../data switch -c performance-data-v1 || \
+              git -C ../data switch performance-data-v1
+          else
+            # First run bootstraps the branch. Orphan, so it shares no history
+            # with trunk: the data is an independent artifact, not a fork of the
+            # source, and nothing on it should ever be diffed against a commit.
+            echo "bootstrapping the performance-data-v1 orphan branch"
+            git worktree add --detach ../data
+            git -C ../data checkout --orphan performance-data-v1
+            git -C ../data rm -rf . >/dev/null 2>&1 || true
+            mkdir -p ../data/runs
+            printf '{"runs":[],"schema_version":1}\n' > ../data/index.json
+          fi
+
+          mkdir -p ../data/runs
+          [ -f ../data/index.json ] || printf '{"runs":[],"schema_version":1}\n' > ../data/index.json
+
+          python3 scripts/publish-performance-runs.py \
+            --incoming incoming \
+            --data-root ../data
+
+          cd ../data
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "nothing new to publish"
+            exit 0
+          fi
+          git add -A
+          git commit -m "Collect performance runs for ${GITHUB_SHA:0:12}"
+          # Retried rather than forced: a lost update here silently drops
+          # someone else's run object.
+          for attempt in 1 2 3 4 5; do
+            if git push origin performance-data-v1; then
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt); rebasing onto the remote"
+            git fetch origin performance-data-v1
+            git rebase origin/performance-data-v1
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not publish after 5 attempts"
+          exit 1
