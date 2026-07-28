@@ -25,7 +25,9 @@
 //! fixpoint per loop. Values defined as header/body **block parameters** vary per
 //! iteration, so they are never invariant; an instruction using one is therefore
 //! not invariant either (its operand is defined inside the body and is not
-//! itself hoisted).
+//! itself hoisted). Discovery builds the candidate def-use graph once and
+//! propagates availability through a worklist, so dependency order in the CFG's
+//! block numbering cannot turn the analysis into repeated full-body scans.
 //!
 //! ### Memory reads — phase-2 conservatism
 //!
@@ -63,13 +65,13 @@
 //! already threaded — the invariant operands it keys on are as exposed as the
 //! earlier passes can make them — and **before** the final `dce`, which sweeps
 //! anything the moves orphan. It recomputes the dominator tree and loop forest
-//! from scratch (ADR-0054's recompute-per-pass rule) and, because a preheader
-//! insertion mutates block structure, recomputes again after each loop it
-//! changes rather than trusting a stale forest. Moving instructions between
-//! blocks does not change CFG edges or dominators, but preheader materialization
-//! does, so the conservative "recompute after any mutation" discipline is what
-//! this pass follows. An **irreducible** forest makes the pass a no-op: the
-//! analysis refuses to describe a multi-entry cycle, so there is nothing to hoist.
+//! from scratch (ADR-0054's recompute-per-pass rule). Moving instructions
+//! between existing blocks does not change CFG edges, dominators, or loop
+//! membership, so the same forest remains authoritative. Creating a dedicated
+//! preheader does change edges; only then does LICM stop consuming the current
+//! forest and recompute before continuing. An **irreducible** forest makes the
+//! pass a no-op: the analysis refuses to describe a multi-entry cycle, so there
+//! is nothing to hoist.
 //!
 //! Nested loops are processed **innermost first** (the forest's nesting orders
 //! them by body size): an op invariant for an inner loop hoists to the inner
@@ -79,7 +81,7 @@
 //! varying operand lives in the inner body, which is part of the outer body), so
 //! innermost-first never misses a hoist.
 
-use std::collections::HashSet;
+use std::collections::VecDeque;
 
 use rue_air::FrozenTypeInternPool;
 
@@ -91,15 +93,22 @@ use crate::{BlockId, Cfg, CfgInstData, CfgValue};
 
 /// Bounded-work counters for one LICM run (RUE-794 discipline).
 ///
-/// Every field is monotone and structurally bounded: each productive sweep moves
-/// at least one instruction permanently out of a loop body, so the number of
-/// sweeps — and hence `loops_analyzed` — is bounded by the total instruction
-/// count times loop-nesting depth, and `invariants_hoisted` by the instruction
-/// count.
+/// Every field is monotone and structurally bounded. One forest computation
+/// visits each loop until a dedicated preheader changes CFG edges. Within a loop,
+/// each instruction is classified once, each candidate dependency is recorded
+/// once, and each discovered invariant leaves the worklist once.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Stats {
+    /// Dominator-tree and loop-forest computations, including the initial one.
+    pub forest_computations: u64,
     /// Per-loop invariance analyses performed (one per loop visited in a sweep).
     pub loops_analyzed: u64,
+    /// Loop-body instructions tested for hoist eligibility.
+    pub instructions_examined: u64,
+    /// Def-use edges between hoist candidates in the same loop body.
+    pub candidate_dependencies: u64,
+    /// Invariant candidates removed from the discovery worklist.
+    pub worklist_pops: u64,
     /// Instructions moved into a preheader across all loops.
     pub invariants_hoisted: u64,
     /// Dedicated preheader blocks materialized (an existing unconditional
@@ -114,11 +123,11 @@ pub struct Stats {
 pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, CfgOptimizationError> {
     let mut stats = Stats::default();
 
-    // Recompute dominators + loops from scratch each sweep (ADR-0054). A sweep
-    // hoists from at most one loop, then breaks to recompute, because a
-    // preheader insertion mutates block structure and would invalidate the
-    // forest we are iterating.
+    // Recompute dominators + loops from scratch after each actual CFG-edge
+    // change (ADR-0054). Instruction-only motion leaves the forest valid, so
+    // one computation can serve every loop in that sweep.
     loop {
+        stats.forest_computations += 1;
         let dom = DominatorTree::compute(cfg);
         let forest = loops(cfg, &dom);
         // An irreducible forest carries no loops, so this is a natural no-op;
@@ -133,17 +142,16 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
         let mut order: Vec<LoopId> = (0..forest.len()).collect();
         order.sort_by_key(|&id| forest.get(id).body.len());
 
-        let mut changed = false;
+        let mut cfg_changed = false;
         for id in order {
             stats.loops_analyzed += 1;
-            if hoist_loop(cfg, forest.get(id), type_pool, &mut stats)? {
-                // Structure may have changed (a preheader was inserted); the
-                // forest is now stale. Recompute before touching another loop.
-                changed = true;
+            if hoist_loop(cfg, forest.get(id), type_pool, &mut stats)?.cfg_changed {
+                // A dedicated preheader changed edges, so the forest is stale.
+                cfg_changed = true;
                 break;
             }
         }
-        if !changed {
+        if !cfg_changed {
             break;
         }
     }
@@ -152,49 +160,95 @@ pub fn run(cfg: &mut Cfg, type_pool: &FrozenTypeInternPool) -> Result<Stats, Cfg
 }
 
 /// Hoist every trap-free invariant instruction out of `lp` into its preheader.
-/// Returns `true` if anything was hoisted (the caller must then recompute).
+/// Reports whether materializing the destination changed CFG edges.
+#[derive(Default)]
+struct HoistResult {
+    cfg_changed: bool,
+}
+
 fn hoist_loop(
     cfg: &mut Cfg,
     lp: &NaturalLoop,
     type_pool: &FrozenTypeInternPool,
     stats: &mut Stats,
-) -> Result<bool, CfgOptimizationError> {
+) -> Result<HoistResult, CfgOptimizationError> {
     let def_block = compute_def_blocks(cfg);
     // Phase-2 conservatism: any memory read is non-invariant when the loop body
     // contains any observable-effect op other than the storage markers.
     let body_has_effect = body_has_memory_effect(cfg, lp);
 
-    // Fixpoint: mark invariant instructions, appending them to `order` in
-    // discovery order so a hoisted operand always precedes its hoisted user.
-    let mut invariant: HashSet<CfgValue> = HashSet::new();
-    let mut order: Vec<CfgValue> = Vec::new();
-    loop {
-        let mut added = false;
-        for &block in &lp.body {
-            // Clone the id list so the CFG stays borrowable during the operand
-            // walk below.
-            let insts = cfg.get_block(block).insts.clone();
-            for value in insts {
-                if invariant.contains(&value) {
-                    continue;
-                }
-                if !is_hoist_candidate(cfg, value, body_has_effect) {
-                    continue;
-                }
-                if operands_available(cfg, value, lp, &def_block, &invariant) {
-                    invariant.insert(value);
-                    order.push(value);
-                    added = true;
-                }
+    // Classify each body instruction once. The classifier remains the sole
+    // authority for trap/effect eligibility; the worklist below only answers
+    // whether eligible operands become available at the preheader.
+    let value_count = cfg.value_count();
+    let mut in_loop = vec![false; cfg.block_count()];
+    let mut candidate = vec![false; value_count];
+    let mut candidate_values = Vec::new();
+    for &block in &lp.body {
+        in_loop[block.as_u32() as usize] = true;
+        for &value in &cfg.get_block(block).insts {
+            stats.instructions_examined += 1;
+            if is_hoist_candidate(cfg, value, body_has_effect) {
+                candidate[value.as_u32() as usize] = true;
+                candidate_values.push(value);
             }
         }
-        if !added {
-            break;
+    }
+
+    // Build the candidate def-use graph. A candidate is permanently blocked
+    // when any in-loop operand is not itself a candidate (including block
+    // parameters). Otherwise its pending count reaches zero as invariant
+    // operands leave the worklist.
+    let mut pending = vec![0usize; value_count];
+    let mut blocked = vec![false; value_count];
+    let mut dependents: Vec<Vec<CfgValue>> = vec![Vec::new(); value_count];
+    for &value in &candidate_values {
+        let value_idx = value.as_u32() as usize;
+        super::dce::visit_instruction_uses(cfg, value, |operand| {
+            let operand_idx = operand.as_u32() as usize;
+            if def_block[operand_idx].is_some_and(|block| in_loop[block.as_u32() as usize]) {
+                if candidate[operand_idx] {
+                    pending[value_idx] += 1;
+                    dependents[operand_idx].push(value);
+                    stats.candidate_dependencies += 1;
+                } else {
+                    blocked[value_idx] = true;
+                }
+            }
+        });
+    }
+
+    let mut worklist = VecDeque::new();
+    for &value in &candidate_values {
+        let idx = value.as_u32() as usize;
+        if !blocked[idx] && pending[idx] == 0 {
+            worklist.push_back(value);
+        }
+    }
+
+    // Dependency order falls out of the worklist: a user is enqueued only
+    // after every in-loop candidate operand has been discovered invariant.
+    let mut invariant = vec![false; value_count];
+    let mut order = Vec::new();
+    while let Some(value) = worklist.pop_front() {
+        let idx = value.as_u32() as usize;
+        invariant[idx] = true;
+        order.push(value);
+        stats.worklist_pops += 1;
+
+        for &user in &dependents[idx] {
+            let user_idx = user.as_u32() as usize;
+            pending[user_idx] = pending[user_idx]
+                .checked_sub(1)
+                .expect("each candidate dependency is resolved exactly once");
+            if pending[user_idx] == 0 && !blocked[user_idx] {
+                worklist.push_back(user);
+            }
         }
     }
 
     if order.is_empty() {
-        return Ok(false);
+        return Ok(HoistResult::default());
     }
 
     // Materialize the preheader once, then relocate each invariant instruction
@@ -202,22 +256,22 @@ fn hoist_loop(
     // can, inserting a block only when it must.
     let before = cfg.block_count();
     let ph = ensure_preheader(cfg, lp, type_pool)?;
-    if cfg.block_count() > before {
+    let cfg_changed = cfg.block_count() > before;
+    if cfg_changed {
         stats.preheaders_materialized += 1;
     }
 
-    let hoisted: HashSet<CfgValue> = order.iter().copied().collect();
     for &block in &lp.body {
         cfg.get_block_mut(block)
             .insts
-            .retain(|v| !hoisted.contains(v));
+            .retain(|value| !invariant[value.as_u32() as usize]);
     }
     for &value in &order {
         cfg.get_block_mut(ph).insts.push(value);
     }
 
     stats.invariants_hoisted += order.len() as u64;
-    Ok(true)
+    Ok(HoistResult { cfg_changed })
 }
 
 /// Whether `value` is eligible to hoist on its own merits, independent of its
@@ -255,35 +309,6 @@ fn is_hoist_candidate(cfg: &Cfg, value: CfgValue, body_has_effect: bool) -> bool
     }
 }
 
-/// Whether every operand of `value` is available at the preheader: defined
-/// outside the loop body (hence dominating the preheader) or itself already
-/// marked invariant (and so hoisted ahead of `value`).
-fn operands_available(
-    cfg: &Cfg,
-    value: CfgValue,
-    lp: &NaturalLoop,
-    def_block: &[Option<BlockId>],
-    invariant: &HashSet<CfgValue>,
-) -> bool {
-    let mut ok = true;
-    super::dce::visit_instruction_uses(cfg, value, |operand| {
-        match def_block[operand.as_u32() as usize] {
-            // Defined inside the body: available only if it is itself invariant
-            // (a header/body block param is defined in the body and never
-            // invariant, so an op reading one fails here — as intended).
-            Some(b) if lp.contains(b) => {
-                if !invariant.contains(&operand) {
-                    ok = false;
-                }
-            }
-            // Defined outside the body (or a detached value with no block): it
-            // dominates the header and therefore the preheader.
-            _ => {}
-        }
-    });
-    ok
-}
-
 /// Whether the loop body contains any observable-effect instruction other than
 /// the `StorageLive`/`StorageDead` markers — the gate that makes memory reads
 /// non-invariant this phase (ADR-0054 §3 conservatism).
@@ -302,7 +327,7 @@ fn body_has_memory_effect(cfg: &Cfg, lp: &NaturalLoop) -> bool {
 /// Map each `CfgValue` to the block that defines it (as a block parameter or as
 /// a block-attached instruction). Values with no defining block — detached or
 /// dead arena entries — map to `None` and are treated as available (outside the
-/// loop) by [`operands_available`].
+/// loop) by invariant discovery.
 fn compute_def_blocks(cfg: &Cfg) -> Vec<Option<BlockId>> {
     let mut def = vec![None; cfg.value_count()];
     for i in 0..cfg.block_count() {
@@ -762,23 +787,122 @@ mod tests {
     }
 
     #[test]
-    fn work_is_bounded() {
-        // A single loop with one hoistable op: the pass converges in a bounded
-        // number of sweeps. The productive sweep hoists the op and recomputes;
-        // the next sweep finds nothing and stops. So loops_analyzed stays small
-        // (one productive visit + one draining visit) and never spins.
+    fn reverse_ordered_dependency_chains_have_linear_work() {
+        // Block ids increase in the opposite direction from execution:
+        // header -> highest id -> ... -> lowest id -> header. Definitions
+        // therefore dominate their users, but the loop body's sorted block
+        // order presents every user before its invariant dependency. The old
+        // full-body fixpoint needed one complete rescan per chain link.
+        for len in [64usize, 128, 256] {
+            let mut cfg = make_cfg();
+            let entry = cfg.new_block();
+            cfg.entry = entry;
+            let header = cfg.new_block();
+            let exit = cfg.new_block();
+            let blocks: Vec<BlockId> = (0..len).map(|_| cfg.new_block()).collect();
+
+            let a = push(&mut cfg, entry, CfgInstData::Const(6), Type::I32);
+            let b = push(&mut cfg, entry, CfgInstData::Const(7), Type::I32);
+            let cond = bool_const(&mut cfg, entry);
+            cfg.set_terminator(entry, goto(header));
+            cfg.set_terminator(header, branch(cond, blocks[len - 1], exit));
+
+            let mut dependency = a;
+            let mut values = Vec::with_capacity(len);
+            for &block in blocks.iter().rev() {
+                dependency = push(
+                    &mut cfg,
+                    block,
+                    CfgInstData::BitXor(dependency, b),
+                    Type::I32,
+                );
+                values.push(dependency);
+            }
+            for index in (1..len).rev() {
+                cfg.set_terminator(blocks[index], goto(blocks[index - 1]));
+            }
+            cfg.set_terminator(blocks[0], goto(header));
+            cfg.set_terminator(exit, Terminator::Return { value: None });
+            cfg.verify().unwrap();
+
+            let stats = run(&mut cfg, &test_type_pool()).unwrap();
+            assert_eq!(stats.forest_computations, 1);
+            assert_eq!(stats.loops_analyzed, 1);
+            assert_eq!(stats.instructions_examined, len as u64);
+            assert_eq!(stats.candidate_dependencies, len as u64 - 1);
+            assert_eq!(stats.worklist_pops, len as u64);
+            assert_eq!(stats.invariants_hoisted, len as u64);
+            assert!(
+                values
+                    .iter()
+                    .all(|&value| block_of(&cfg, value) == Some(entry))
+            );
+            cfg.verify().unwrap();
+        }
+    }
+
+    #[test]
+    fn many_independent_invariants_have_linear_work() {
+        for len in [128usize, 256, 512] {
+            let mut s = single_loop();
+            for _ in 0..len {
+                push(&mut s.cfg, s.body, CfgInstData::BitXor(s.a, s.b), Type::I32);
+            }
+
+            let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
+            assert_eq!(stats.forest_computations, 1);
+            assert_eq!(stats.loops_analyzed, 1);
+            assert_eq!(stats.instructions_examined, len as u64);
+            assert_eq!(stats.candidate_dependencies, 0);
+            assert_eq!(stats.worklist_pops, len as u64);
+            assert_eq!(stats.invariants_hoisted, len as u64);
+            s.cfg.verify().unwrap();
+        }
+    }
+
+    #[test]
+    fn recomputes_forest_only_after_materializing_preheader() {
+        // Entry has a sibling successor, so it cannot serve as the loop
+        // preheader. Hoisting inserts one block and triggers exactly one
+        // structural recomputation.
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+
+        let a = push(&mut cfg, entry, CfgInstData::Const(6), Type::I32);
+        let b = push(&mut cfg, entry, CfgInstData::Const(7), Type::I32);
+        let cond = bool_const(&mut cfg, entry);
+        cfg.set_terminator(entry, branch(cond, header, exit));
+        cfg.set_terminator(header, branch(cond, body, exit));
+        let invariant = push(&mut cfg, body, CfgInstData::BitOr(a, b), Type::I32);
+        cfg.set_terminator(body, goto(header));
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+        cfg.verify().unwrap();
+
+        let stats = run(&mut cfg, &test_type_pool()).unwrap();
+        assert_eq!(stats.invariants_hoisted, 1);
+        assert_eq!(stats.preheaders_materialized, 1);
+        assert_eq!(stats.forest_computations, 2);
+        assert_ne!(block_of(&cfg, invariant), Some(body));
+        cfg.verify().unwrap();
+    }
+
+    #[test]
+    fn instruction_only_motion_does_not_recompute_the_forest() {
+        // A single loop with one hoistable op reuses its existing entry
+        // preheader. The worklist reaches the invariance fixed point in one
+        // analysis, and instruction motion changes no CFG edge.
         let mut s = single_loop();
         let _inv = push(&mut s.cfg, s.body, CfgInstData::BitOr(s.a, s.b), Type::I32);
 
         let stats = run(&mut s.cfg, &test_type_pool()).unwrap();
         assert_eq!(stats.invariants_hoisted, 1);
-        // One loop, so each sweep analyzes at most one loop; convergence takes
-        // two sweeps (hoist, then confirm-empty). Assert a tight bound so a
-        // regression into a non-terminating rescan trips the test.
-        assert!(
-            stats.loops_analyzed <= 2,
-            "loops_analyzed {} should be bounded (≤ 2 for one loop)",
-            stats.loops_analyzed
-        );
+        assert_eq!(stats.forest_computations, 1);
+        assert_eq!(stats.loops_analyzed, 1);
+        assert_eq!(stats.instructions_examined, 1);
+        assert_eq!(stats.worklist_pops, 1);
     }
 }
