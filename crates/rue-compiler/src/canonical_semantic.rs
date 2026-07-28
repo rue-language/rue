@@ -1122,7 +1122,7 @@ pub(crate) fn analyze_canonical_program_for_test_support(
         Vec::new(),
         Arc::from([]),
         crate::DurableBodyWork::default(),
-        info_span!("sema").entered(),
+        info_span!("sema", phase = "semantic_analysis").entered(),
         |bound, _candidates, _definitions, _merged| {
             bound
                 .analyze_all_bodies_for_test()
@@ -1450,7 +1450,7 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     reuse.durable_records_reused = durable.len();
     reuse.ordinary_declaration_resolutions_skipped = 1;
     drop(declaration_reuse_span);
-    let sema_span = info_span!("sema").entered();
+    let sema_span = info_span!("sema", phase = "semantic_analysis").entered();
     finish_canonical_analysis(
         input,
         merged,
@@ -3595,6 +3595,11 @@ fn finish_canonical_analysis_with(
     }
     stable_cfg_inputs.sort_by(|left, right| left.stable.function.cmp(&right.stable.function));
     drop(sema_span);
+    // CFG construction is a sibling of semantic-proper, not nested inside it:
+    // `sema_span` closes above before this begins. Published phases must not
+    // overlap, so this boundary is load-bearing rather than stylistic. The
+    // `cfg_and_optimization` phase marker lives on `cfg_construction` inside
+    // `build_functions_and_cfgs`.
     let cfg = build_functions_and_cfgs(
         sema_output,
         options.opt_level,

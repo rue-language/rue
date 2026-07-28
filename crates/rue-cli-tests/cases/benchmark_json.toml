@@ -4,6 +4,8 @@ name = "Benchmark JSON timing contract"
 description = """
 RUE-642 pins the honest inclusive-span schema and ensures a restrictive
 RUST_LOG filter affects log formatting without disabling timing collection.
+ADR-0067 adds the additive wall-clock partition alongside it, so this case
+also pins that both timing models are published and stay distinguishable.
 """
 
 [[case]]
@@ -13,8 +15,16 @@ args = ["--benchmark-json", "main.rue", "-o", "prog"]
 env = { RUST_LOG = "error" }
 exit_code = 42
 compile_stdout_contains = [
-  '"schema_version":2',
+  '"schema_version":3',
   '"timing_model":"inclusive_spans"',
+  # The additive partition, which is the only model that may be stacked. Its
+  # bands are integer nanoseconds summing exactly to compiler_root_ns.
+  '"phase_accounting":',
+  '"compiler_root_ns":',
+  '"mixed_parallel_ns":',
+  '"unattributed_ns":',
+  '"semantic_analysis":',
+  '"linking":',
   '"name":"compile"',
   '"root_invocations":1',
   '"name":"lexer"',
