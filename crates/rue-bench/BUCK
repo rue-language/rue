@@ -1,0 +1,16 @@
+load("//crates:defs.bzl", "rue_binary")
+
+# The ADR-0067 measurement runner. One binary replaces the removed shell runner
+# and Python package, and runs identically locally and in CI so any recorded run
+# is rerunnable under the protocol it recorded.
+rue_binary(
+    name = "rue-bench",
+    deps = [
+        "//crates/rue-perf-schema:rue-perf-schema",
+        "//third-party:libc",
+        "//third-party:serde",
+        "//third-party:serde_json",
+        "//third-party:sha2",
+        "//third-party:tempfile",
+    ],
+)

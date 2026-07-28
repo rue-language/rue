@@ -1,0 +1,60 @@
+# Compiler-performance suite and platform epochs (ADR-0067).
+#
+# Two layers. A `[[suite]]` pins the platform-independent logical contract:
+# which workloads exist, what program each one is, the phase taxonomy, and the
+# runner protocol. A `[[epoch]]` pins everything that varies per platform:
+# target and invocation, resolved content hashes, sampling policy, environment
+# policy, and the headline baseline.
+#
+# Changing what a workload *is* requires a new suite revision, and therefore new
+# epochs on every participating platform. Changing only one platform's sampling
+# creates a new epoch there alone. Both are deliberate, reviewable events.
+#
+# STATUS: the `local` epoch below exists so the runner can be exercised during
+# development. Its sampling counts are placeholders, not calibrated values, and
+# it declares no baseline. The published epochs — with counts, batching factors,
+# and the flagging multiplier established by the Phase 4 noise calibration —
+# arrive with suite revision 1's declaration in RUE-1188.
+#
+# Its `stdlib_hash` goes stale whenever the standard library changes, and a
+# local run then reports a pin mismatch and exits 3. That is the mechanism
+# working, not a bug: an epoch pins what was measured, so changing an input
+# means declaring a new epoch. Refresh the value from the mismatch the runner
+# prints. Whether a suite whose workloads never read `std` should pin `std` at
+# all is an open question for RUE-1188.
+
+[[suite]]
+revision = 1
+timing_schema_version = 1
+protocol_version = 1
+
+[[suite.workloads]]
+id = "startup"
+source = "performance/workloads/startup/main.rue"
+question = "What does a minimal fresh compilation cost end to end?"
+
+# A development epoch for local runs. Not a collection target: its environment
+# policy admits only `local`, so a hosted runner cannot append to it.
+[[epoch]]
+id = 1
+platform = "local"
+suite_revision = 1
+target = "x86_64-unknown-linux-gnu"
+args = []
+toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
+stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
+
+[epoch.workload_source_hashes]
+startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
+
+[epoch.environment]
+runner_label = "local"
+runner_image = "local"
+
+[epoch.sampling.startup]
+samples = 3
+batch_size = 5
+
+[epoch.flagging]
+k = 3.0
+window = 10

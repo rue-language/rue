@@ -1,0 +1,10 @@
+// The startup probe: the smallest complete compilation the suite measures.
+//
+// It answers "what does a fresh compiler process cost before it does any
+// interesting work" — process startup, driver setup, and the fixed cost of
+// reaching every phase at least once. Because it is very short, its epoch
+// pins a batching factor so timer resolution and per-process jitter do not
+// dominate the measurement.
+fn main() -> i32 {
+    return 0;
+}

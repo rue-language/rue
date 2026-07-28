@@ -151,6 +151,7 @@ Crate ownership, when locating changes:
 | `rue-error`, `rue-span` | diagnostics and source locations |
 | `rue-spec`, `rue-ui-tests`, `rue-cli-tests` | language and integration tests |
 | `rue-perf-schema` | compiler-performance measurement contract (ADR-0067) |
+| `rue-bench` | compiler-performance measurement runner (ADR-0067) |
 
 ## Testing strategy
 
