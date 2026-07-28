@@ -405,6 +405,15 @@ rue_sh_test(
 )
 
 rue_sh_test(
+    name = "shell-pipefail-pipeline-tool-tests",
+    test = "scripts/test-validate-shell-pipefail-pipelines.py",
+    resources = ["scripts/validate-shell-pipefail-pipelines.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
+rue_sh_test(
     name = "release-configuration-tool-tests",
     test = "scripts/test-release-configuration.py",
     env = {

@@ -30,7 +30,10 @@ esac
 [ -d "$repo_root/.jj" ] || exit 0
 
 bookmarks=$(cd "$repo_root" && jj log --no-graph -r @ -T 'bookmarks' 2>/dev/null) || exit 0
-if printf '%s' "$bookmarks" | grep -q 'push-'; then
+# Herestring, not a pipe: under `pipefail` a matching `grep -q` kills the
+# producer with EPIPE and the pipeline reports failure, so the guard would stop
+# blocking in exactly the case it exists to block (RUE-1155).
+if grep -q 'push-' <<<"$bookmarks"; then
   echo "BLOCKED by bookmark-guard: the working copy (@) is on pushed PR branch '$bookmarks'. Editing it would mutate a queued PR. Run jj new 'trunk()' (new work) or jj new <change> + jj squash (deliberate amend) first." >&2
   exit 2
 fi

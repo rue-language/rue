@@ -123,7 +123,9 @@ EOF
   chmod +x "$sb/fakebin/gh"
 
   run_script "$sb" jj-tidy
-  if calls "$sb" | grep -q 'git push .*--delete'; then
+  # Herestring, not a pipe: under `pipefail` a matching `grep -q` kills the
+  # producer with EPIPE and the assertion silently reads false (RUE-1155).
+  if grep -q 'git push .*--delete' <<<"$(calls "$sb")"; then
     check "jj-tidy: gh failure issues NO remote deletion" 1
   else
     check "jj-tidy: gh failure issues NO remote deletion" 0
@@ -158,13 +160,13 @@ EOF
   local del
   del="$(calls "$sb" | grep 'git push .*--delete' || true)"
   # push-aaa (ours, merged) must be deleted.
-  if printf '%s' "$del" | grep -q 'steveklabnik/push-aaa'; then
+  if grep -q 'steveklabnik/push-aaa' <<<"$del"; then
     check "jj-tidy: OUR merged branch is deleted" 0
   else
     check "jj-tidy: OUR merged branch is deleted" 1
   fi
   # push-bbb (other author, no merged/closed PR of ours) must NOT be deleted.
-  if printf '%s' "$del" | grep -q 'push-bbb'; then
+  if grep -q 'push-bbb' <<<"$del"; then
     check "jj-tidy: another author's branch is preserved" 1
   else
     check "jj-tidy: another author's branch is preserved" 0

@@ -42,7 +42,11 @@ if [ -d .claude/worktrees ]; then
       [ -d "$d" ] || continue
       d="${d%/}"
       abs="$(cd "$d" 2>/dev/null && pwd)" || continue
-      if ! printf '%s\n' "$active" | grep -qxF "$abs"; then
+      # Herestring, not a pipe: under `pipefail` a matching `grep -q` kills the
+      # producer with EPIPE and the pipeline reports failure. This test is
+      # negated and guards an `rm -rf`, so that inversion would delete a live
+      # worktree precisely because it IS active (RUE-1155).
+      if ! grep -qxF "$abs" <<<"$active"; then
         rm -rf "${d:?}" && echo "  removed orphaned worktree ${d##*/}"
       fi
     done

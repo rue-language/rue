@@ -77,7 +77,13 @@ while read -r TARGET ARTIFACT; do
     [ -s "$ARTIFACT" ] || continue
     # Strip ANSI colour codes so CI logs stay readable and grep is reliable.
     CLEANED="$(sed -E 's/\x1b\[[0-9;]*m//g' "$ARTIFACT")"
-    if printf '%s\n' "$CLEANED" | grep -qE '^error'; then
+    # Herestring, not a pipe: `grep -q` exits on its first match and closes the
+    # pipe, so a piped producer dies of EPIPE and `pipefail` reports *that*
+    # status for the whole pipeline. The `if` then reads false and the finding
+    # is discarded. The failure is inverted -- it only fires when grep DID match
+    # -- so a clean tree cannot distinguish this from a working gate (RUE-1155,
+    # the same construct RUE-1011 removed from scripts/test-wrapper-scripts.sh).
+    if grep -qE '^error' <<<"$CLEANED"; then
         FAILED=1
         echo "::group::clippy findings: $TARGET"
         printf '%s\n' "$CLEANED"

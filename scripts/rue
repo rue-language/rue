@@ -145,7 +145,10 @@ case "$cmd" in
         # runs nothing, so this stays cheap.
         list_rc=0
         list_out="$(./buck2 run "$target" -- "$@" --list 2>/dev/null)" || list_rc=$?
-        if [[ $list_rc -eq 0 ]] && ! printf '%s' "$list_out" | grep -qE ': (test|benchmark)$'; then
+        # Herestring, not a pipe: under `pipefail` a matching `grep -q` kills the
+        # producer with EPIPE, and this test is negated -- so a filter that DID
+        # select cases would be rejected as matching nothing (RUE-1155).
+        if [[ $list_rc -eq 0 ]] && ! grep -qE ': (test|benchmark)$' <<<"$list_out"; then
             echo "scripts/rue unit: no tests matched the given filter in $target" >&2
             exit 1
         fi
