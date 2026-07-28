@@ -72,6 +72,11 @@ pub struct Stats {
     pub switches_folded: u64,
     /// Edges retargeted around empty forwarding blocks.
     pub edges_threaded: u64,
+    /// Previously-unresolved forwarding blocks visited while resolving chains.
+    ///
+    /// Each visit performs constant-time indexed state checks, and every
+    /// forwarder transitions out of `Unseen` at most once.
+    pub forwarders_resolved: u64,
     /// Blocks absorbed into their unique predecessor.
     pub blocks_merged: u64,
 }
@@ -171,6 +176,70 @@ struct Edge {
     args: Vec<CfgValue>,
 }
 
+/// Indexed state for one forwarding block's eventual destination.
+#[derive(Clone, Copy, Default)]
+enum ForwardResolution {
+    #[default]
+    Unseen,
+    /// The block is on the resolver's current iterative DFS path.
+    Active,
+    /// The final forwarder whose edge reaches a non-forwarding block.
+    Complete(BlockId),
+    /// The block is in, or eventually enters, a forwarding cycle.
+    Cyclic,
+}
+
+/// Resolve one forwarder through a functional forwarding graph.
+///
+/// `Active` provides constant-time cycle detection keyed by `BlockId`.
+/// Completing a path memoizes every block on it, so each forwarder moves out
+/// of `Unseen` exactly once across the entire threading phase.
+fn resolve_forwarder(
+    forward_edge: &[Option<Edge>],
+    resolution: &mut [ForwardResolution],
+    start: BlockId,
+    stats: &mut Stats,
+) -> Option<BlockId> {
+    forward_edge[start.as_u32() as usize].as_ref()?;
+
+    let mut path: Vec<BlockId> = Vec::new();
+    let mut current = start;
+    loop {
+        let idx = current.as_u32() as usize;
+        match &resolution[idx] {
+            ForwardResolution::Complete(terminal) => {
+                let terminal = *terminal;
+                for block in path {
+                    resolution[block.as_u32() as usize] = ForwardResolution::Complete(terminal);
+                }
+                return Some(terminal);
+            }
+            ForwardResolution::Cyclic | ForwardResolution::Active => {
+                for block in path {
+                    resolution[block.as_u32() as usize] = ForwardResolution::Cyclic;
+                }
+                return None;
+            }
+            ForwardResolution::Unseen => {}
+        }
+
+        let edge = forward_edge[idx]
+            .as_ref()
+            .expect("the resolver only visits forwarding blocks");
+        resolution[idx] = ForwardResolution::Active;
+        path.push(current);
+        stats.forwarders_resolved += 1;
+
+        if forward_edge[edge.target.as_u32() as usize].is_none() {
+            for block in path {
+                resolution[block.as_u32() as usize] = ForwardResolution::Complete(current);
+            }
+            return Some(current);
+        }
+        current = edge.target;
+    }
+}
+
 /// Retarget edges that point at empty, parameterless forwarding blocks.
 fn thread_forwarders(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgEditError> {
     let reachable = dce::compute_reachable_blocks(cfg);
@@ -198,33 +267,9 @@ fn thread_forwarders(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgE
         })
         .collect();
 
-    // Resolve each forwarder to its ultimate destination with memoization,
-    // leaving forwarder cycles (empty infinite loops) alone. Every block is
-    // resolved at most once, so the whole phase is linear in blocks.
-    let mut resolved: Vec<Option<Edge>> = vec![None; cfg.block_count()];
-    let resolve = |resolved: &mut Vec<Option<Edge>>, start: BlockId| -> Option<Edge> {
-        forward_edge[start.as_u32() as usize].as_ref()?;
-        if let Some(edge) = &resolved[start.as_u32() as usize] {
-            return Some(edge.clone());
-        }
-        // Walk the chain, tracking visited forwarders to stop on cycles.
-        let mut chain = vec![start];
-        let mut edge = forward_edge[start.as_u32() as usize]
-            .as_ref()
-            .unwrap()
-            .clone();
-        while let Some(next) = &forward_edge[edge.target.as_u32() as usize] {
-            if chain.contains(&edge.target) {
-                break; // forwarder cycle: an empty infinite loop, keep as-is
-            }
-            chain.push(edge.target);
-            edge = next.clone();
-        }
-        for block in chain {
-            resolved[block.as_u32() as usize] = Some(edge.clone());
-        }
-        Some(edge)
-    };
+    // Resolve each forwarder to its ultimate destination with indexed
+    // visitation state. Cycles are memoized as cyclic and left unchanged.
+    let mut resolution = vec![ForwardResolution::Unseen; cfg.block_count()];
 
     for block_idx in 0..cfg.block_count() {
         let block_id = BlockId::from_raw(block_idx as u32);
@@ -238,10 +283,15 @@ fn thread_forwarders(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgE
                 if *target == block_id {
                     continue;
                 }
-                if let Some(edge) = resolve(&mut resolved, *target) {
+                if let Some(terminal) =
+                    resolve_forwarder(&forward_edge, &mut resolution, *target, stats)
+                {
+                    let edge = forward_edge[terminal.as_u32() as usize]
+                        .as_ref()
+                        .expect("a completed resolution names a forwarder");
                     // An edge into a parameterless block carries no args, so
                     // the forwarder chain's final args replace them whole.
-                    let args = cfg.push_goto_args(edge.args)?;
+                    let args = cfg.push_goto_args(edge.args.clone())?;
                     cfg.get_block_mut(block_id).terminator = Terminator::Goto {
                         target: edge.target,
                         args,
@@ -258,17 +308,20 @@ fn thread_forwarders(cfg: &mut Cfg, stats: &mut Stats) -> Result<(), crate::CfgE
             } => {
                 let cond = *cond;
                 let thread_side =
-                    |resolved: &mut Vec<Option<Edge>>, side: BlockId, stats: &mut Stats| {
-                        match resolve(resolved, side) {
-                            Some(edge) => {
+                    |resolution: &mut [ForwardResolution], side: BlockId, stats: &mut Stats| {
+                        match resolve_forwarder(&forward_edge, resolution, side, stats) {
+                            Some(terminal) => {
+                                let edge = forward_edge[terminal.as_u32() as usize]
+                                    .as_ref()
+                                    .expect("a completed resolution names a forwarder");
                                 stats.edges_threaded += 1;
-                                (edge.target, Some(edge.args))
+                                (edge.target, Some(edge.args.clone()))
                             }
                             None => (side, None),
                         }
                     };
-                let (new_then, forwarded_then) = thread_side(&mut resolved, *then_block, stats);
-                let (new_else, forwarded_else) = thread_side(&mut resolved, *else_block, stats);
+                let (new_then, forwarded_then) = thread_side(&mut resolution, *then_block, stats);
+                let (new_else, forwarded_else) = thread_side(&mut resolution, *else_block, stats);
                 if (new_then, new_else) != (*then_block, *else_block) {
                     let then_values =
                         forwarded_then.unwrap_or_else(|| cfg.then_args(then_args).to_vec());
@@ -447,6 +500,12 @@ mod tests {
     fn fold_only(cfg: &mut Cfg) -> Stats {
         let mut stats = Stats::default();
         fold_terminators(cfg, &mut stats).unwrap();
+        stats
+    }
+
+    fn thread_only(cfg: &mut Cfg) -> Stats {
+        let mut stats = Stats::default();
+        thread_forwarders(cfg, &mut stats).unwrap();
         stats
     }
 
@@ -761,17 +820,63 @@ mod tests {
             },
         );
 
-        run(&mut cfg).unwrap();
-        // Control still enters the a<->b cycle; whichever block entry now
-        // targets, it must be part of the cycle, and the cycle must persist.
-        let Terminator::Goto { target, .. } = cfg.get_block(cfg.entry).terminator else {
-            panic!("entry must still be a Goto");
-        };
-        assert!(target == a || target == b);
-        let Terminator::Goto { target: next, .. } = cfg.get_block(target).terminator else {
-            panic!("cycle block must still be a Goto");
-        };
-        assert!(next == a || next == b);
+        let stats = thread_only(&mut cfg);
+        // A path that enters a forwarding cycle is memoized as cyclic. None
+        // of its edges are retargeted, including the edge entering the cycle.
+        assert_eq!(stats.edges_threaded, 0);
+        assert_eq!(stats.forwarders_resolved, 2);
+        assert!(matches!(
+            cfg.get_block(cfg.entry).terminator,
+            Terminator::Goto { target, .. } if target == a
+        ));
+        assert!(matches!(
+            cfg.get_block(a).terminator,
+            Terminator::Goto { target, .. } if target == b
+        ));
+        assert!(matches!(
+            cfg.get_block(b).terminator,
+            Terminator::Goto { target, .. } if target == a
+        ));
+    }
+
+    #[test]
+    fn test_forwarder_resolution_work_is_linear() {
+        // This shape makes the old `chain.contains()` implementation perform
+        // 1 + 2 + ... + N membership comparisons while resolving entry's
+        // edge. Indexed visitation performs exactly one first visit per
+        // forwarding block.
+        for len in [128, 256, 512] {
+            let mut cfg = make_cfg();
+            let mut source = cfg.entry;
+            for _ in 0..len {
+                let forwarder = cfg.new_block();
+                cfg.set_terminator(
+                    source,
+                    Terminator::Goto {
+                        target: forwarder,
+                        args: crate::payload::CfgGotoArgs::EMPTY,
+                    },
+                );
+                source = forwarder;
+            }
+            let tail = cfg.new_block();
+            cfg.set_terminator(
+                source,
+                Terminator::Goto {
+                    target: tail,
+                    args: crate::payload::CfgGotoArgs::EMPTY,
+                },
+            );
+            ret_const(&mut cfg, tail, 0);
+
+            let stats = thread_only(&mut cfg);
+            assert_eq!(stats.forwarders_resolved, len);
+            assert_eq!(stats.edges_threaded, len as u64);
+            assert!(matches!(
+                cfg.get_block(cfg.entry).terminator,
+                Terminator::Goto { target, .. } if target == tail
+            ));
+        }
     }
 
     /// A goto chain of blocks that each carry an instruction merges into one
