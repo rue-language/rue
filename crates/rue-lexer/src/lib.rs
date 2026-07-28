@@ -11,6 +11,12 @@ pub use logos_lexer::LogosLexer as Lexer;
 pub use rue_span::FileId;
 use rue_span::Span;
 
+/// Maximum number of detailed lexer diagnostics retained for one source file.
+/// On the next error, lexing appends one
+/// [`rue_error::ErrorKind::LexerDiagnosticsOmitted`] summary and stops scanning
+/// that failed file. The compiler still advances to later source files.
+pub const LEXER_DIAGNOSTIC_BUDGET: usize = 100;
+
 /// Token kinds in the Rue language.
 ///
 /// This enum is `Copy` since all variants contain only small, copyable data:

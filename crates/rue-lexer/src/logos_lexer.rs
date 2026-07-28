@@ -588,7 +588,7 @@ pub enum LogosTokenKind {
     Question,
 }
 
-use crate::{Token, TokenKind};
+use crate::{LEXER_DIAGNOSTIC_BUDGET, Token, TokenKind};
 
 impl From<LogosTokenKind> for TokenKind {
     fn from(logos_kind: LogosTokenKind) -> Self {
@@ -850,6 +850,16 @@ impl<'a> LogosLexer<'a> {
                                     )
                                 }
                             };
+                            if errors.len() == LEXER_DIAGNOSTIC_BUDGET {
+                                errors.push(CompileError::new(
+                                    ErrorKind::LexerDiagnosticsOmitted {
+                                        limit: LEXER_DIAGNOSTIC_BUDGET,
+                                    },
+                                    rue_span,
+                                ));
+                                break;
+                            }
+
                             let mut error = CompileError::new(kind, rue_span);
                             if matches!(error.kind, ErrorKind::UnexpectedCharacter('\u{feff}')) {
                                 // A *leading* BOM is skipped before we get here
@@ -947,6 +957,45 @@ mod tests {
         let kinds: Vec<_> = errors.iter().map(|error| &error.kind).collect();
         assert!(matches!(kinds[0], ErrorKind::UnexpectedCharacter('$')));
         assert!(matches!(kinds[1], ErrorKind::UnexpectedCharacter('#')));
+    }
+
+    #[test]
+    fn test_logos_malformed_token_diagnostics_are_bounded() {
+        let source = "$".repeat(10_000);
+        let (errors, _interner) = LogosLexer::new(&source)
+            .tokenize_preserving_interner()
+            .expect_err("invalid characters should report");
+
+        assert_eq!(errors.len(), LEXER_DIAGNOSTIC_BUDGET + 1);
+        assert!(
+            errors
+                .iter()
+                .take(LEXER_DIAGNOSTIC_BUDGET)
+                .all(|error| matches!(error.kind, ErrorKind::UnexpectedCharacter('$')))
+        );
+        assert_eq!(
+            errors.as_slice()[LEXER_DIAGNOSTIC_BUDGET - 1]
+                .span()
+                .unwrap()
+                .start,
+            (LEXER_DIAGNOSTIC_BUDGET - 1) as u32
+        );
+
+        let summary = &errors.as_slice()[LEXER_DIAGNOSTIC_BUDGET];
+        assert_eq!(
+            summary.span().unwrap().start,
+            LEXER_DIAGNOSTIC_BUDGET as u32
+        );
+        assert_eq!(
+            summary.kind,
+            ErrorKind::LexerDiagnosticsOmitted {
+                limit: LEXER_DIAGNOSTIC_BUDGET
+            }
+        );
+        assert_eq!(
+            summary.to_string(),
+            "additional lexer diagnostics omitted after the first 100 errors"
+        );
     }
 
     #[test]

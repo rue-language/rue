@@ -170,6 +170,54 @@ mod tests {
     }
 
     #[test]
+    fn lexer_budget_is_per_file_and_later_files_are_still_lexed() {
+        fn malformed_tokens() -> String {
+            "$".repeat(rue_lexer::LEXER_DIAGNOSTIC_BUDGET + 25)
+        }
+
+        let first = malformed_tokens();
+        let second = malformed_tokens();
+        let snapshot = snapshot(&[
+            (10, "first.rue", &first),
+            (20, "good.rue", "fn good() {}"),
+            (30, "second.rue", &second),
+        ]);
+
+        let mut session = CompilerSession::new();
+        let update = session.update(&snapshot);
+        let work = update.work();
+        let errors = update.into_result().unwrap_err();
+        let summaries = errors
+            .iter()
+            .filter(|error| matches!(error.kind, ErrorKind::LexerDiagnosticsOmitted { .. }))
+            .collect::<Vec<_>>();
+
+        assert_eq!(errors.len(), 2 * (rue_lexer::LEXER_DIAGNOSTIC_BUDGET + 1));
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].span().unwrap().file_id, FileId::new(10));
+        assert_eq!(summaries[1].span().unwrap().file_id, FileId::new(30));
+        assert_eq!(work.syntax.lexer_invocations, 3);
+        assert_eq!(work.syntax.parser_invocations, 1);
+
+        let source_info = SourceInfo::new(&first, "first.rue");
+        let text = DiagnosticFormatter::with_color_choice(&source_info, ColorChoice::Never)
+            .format_error(summaries[0]);
+        assert!(
+            text.contains(
+                "[E0010]: additional lexer diagnostics omitted after the first 100 errors"
+            )
+        );
+
+        let json_formatter = JsonDiagnosticFormatter::new(&source_info);
+        let json = json_formatter.format_error(summaries[0]).to_json();
+        assert_eq!(json, json_formatter.format_error(summaries[0]).to_json());
+        assert!(json.contains("\"code\":\"E0010\""));
+        assert!(json.contains(
+            "\"message\":\"additional lexer diagnostics omitted after the first 100 errors\""
+        ));
+    }
+
+    #[test]
     fn returned_interner_survives_lex_and_parse_failures() {
         let lex_source = SourceView::new("lex.rue", "fn lex_name() { $ }", FileId::new(1));
         let FileParseOutcome {

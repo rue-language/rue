@@ -91,6 +91,9 @@ impl ErrorCode {
     pub const EMPTY_BASED_LITERAL: Self = Self(7);
     pub const INVALID_DIGIT_FOR_BASE: Self = Self(8);
     pub const MALFORMED_BYTE_LITERAL: Self = Self(9);
+    /// The per-file lexer diagnostic budget was exceeded. The detailed
+    /// diagnostics before this summary remain available.
+    pub const LEXER_DIAGNOSTICS_OMITTED: Self = Self(10);
 
     // ========================================================================
     // Parser errors (E0100-E0199)
@@ -1110,6 +1113,10 @@ pub enum ErrorKind {
     /// single ASCII byte (RUE-1042).
     #[error("{0}")]
     MalformedByteLiteral(String),
+    /// Summary emitted after lexing reaches its per-file diagnostic budget.
+    /// `limit` is the number of detailed diagnostics retained.
+    #[error("additional lexer diagnostics omitted after the first {limit} errors")]
+    LexerDiagnosticsOmitted { limit: usize },
 
     // Parser errors
     #[error("expected {expected}, found {found}")]
@@ -1780,6 +1787,7 @@ impl ErrorKind {
             ErrorKind::EmptyBasedLiteral { .. } => ErrorCode::EMPTY_BASED_LITERAL,
             ErrorKind::MalformedByteLiteral(_) => ErrorCode::MALFORMED_BYTE_LITERAL,
             ErrorKind::InvalidDigitForBase { .. } => ErrorCode::INVALID_DIGIT_FOR_BASE,
+            ErrorKind::LexerDiagnosticsOmitted { .. } => ErrorCode::LEXER_DIAGNOSTICS_OMITTED,
 
             // Parser errors (E0100-E0199)
             ErrorKind::UnexpectedToken { .. } => ErrorCode::UNEXPECTED_TOKEN,
@@ -3091,6 +3099,10 @@ mod tests {
         assert_eq!(
             ErrorKind::UnterminatedString.code(),
             ErrorCode::UNTERMINATED_STRING
+        );
+        assert_eq!(
+            ErrorKind::LexerDiagnosticsOmitted { limit: 100 }.code(),
+            ErrorCode::LEXER_DIAGNOSTICS_OMITTED
         );
     }
 
