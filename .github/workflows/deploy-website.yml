@@ -1,13 +1,18 @@
 name: Website
 
 on:
-  # Deploy post-merge on trunk only for website changes. Pull requests also
-  # build on specification changes because the spec is copied into the site.
+  # Deploy post-merge on trunk for changes to anything the site is built from.
+  # Pull requests also build on specification changes because the spec is
+  # copied into the site.
   push:
     branches: [trunk]
     paths:
       - 'website/**'
       - 'docs/spec/**'
+      # The performance dashboard derives from the manifest, so an epoch,
+      # sampling, or baseline declaration changes the published page even
+      # though no file under website/ moved.
+      - 'performance/**'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
   # spec edit that breaks the website build is caught before merge.
@@ -16,7 +21,17 @@ on:
     paths:
       - 'website/**'
       - 'docs/spec/**'
+      - 'performance/**'
       - '.github/workflows/deploy-website.yml'
+  # The dashboard's other input is the `performance-data-v1` branch, which is
+  # not part of this repository's source tree: no push to trunk can describe a
+  # new measurement, so no paths filter can notice one. Rebuilding when
+  # collection finishes is what keeps the published page current — without it
+  # the site only ever shows the data that existed the last time somebody
+  # happened to edit website/.
+  workflow_run:
+    workflows: ['Performance collection']
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -35,6 +50,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          # Performance tooltips name each measured commit by subject, resolved
+          # from local history at build time. The default shallow checkout has
+          # none of the measured commits, so every tooltip degrades to a bare
+          # hash — the documented fallback, firing here for no better reason
+          # than clone depth.
+          fetch-depth: 0
 
       - name: Setup dotslash
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
@@ -42,6 +64,9 @@ jobs:
       - name: Build website
         run: website/build.sh
 
+      # A `workflow_run` event reports the default branch as `github.ref`
+      # regardless of what the triggering run measured, so these trunk-only
+      # gates admit a collection-triggered rebuild without restating them.
       - name: Add CNAME
         if: github.ref == 'refs/heads/trunk'
         run: echo "rue-lang.dev" > website/public/CNAME
