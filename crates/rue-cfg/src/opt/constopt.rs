@@ -574,6 +574,25 @@ mod tests {
         push(cfg, CfgInstData::Load { slot: len - 1 }, Type::I64)
     }
 
+    fn build_wrapping_let_chain(cfg: &mut Cfg, len: u32) -> CfgValue {
+        let zero = push(cfg, CfgInstData::Const(0), Type::U64);
+        push(
+            cfg,
+            CfgInstData::Alloc {
+                slot: 0,
+                init: zero,
+            },
+            Type::UNIT,
+        );
+        for i in 1..len {
+            let prev = push(cfg, CfgInstData::Load { slot: i - 1 }, Type::U64);
+            let one = push(cfg, CfgInstData::Const(1), Type::U64);
+            let sum = push(cfg, CfgInstData::WrappingAdd(prev, one), Type::U64);
+            push(cfg, CfgInstData::Alloc { slot: i, init: sum }, Type::UNIT);
+        }
+        push(cfg, CfgInstData::Load { slot: len - 1 }, Type::U64)
+    }
+
     #[test]
     fn test_let_chain_fully_propagates() {
         // The RUE-794 workload: every binding's constant is exposed only by
@@ -616,6 +635,31 @@ mod tests {
             // Every Add folded and every Load was rewritten.
             assert_eq!(stats.folded, (len - 1) as u64);
             assert_eq!(stats.loads_rewritten, len as u64);
+        }
+    }
+
+    #[test]
+    fn test_wrapping_let_chain_work_is_linear() {
+        for len in [100, 200, 400] {
+            let mut cfg = make_cfg(len);
+            let last = build_wrapping_let_chain(&mut cfg, len);
+            cfg.set_terminator(cfg.entry, Terminator::Return { value: Some(last) });
+
+            let stats = run(&mut cfg);
+            let values = cfg.value_count() as u64;
+            assert!(
+                stats.fold_attempts <= 3 * values,
+                "wrapping chain len {}: {} fold attempts for {} values exceeds the sparse bound",
+                len,
+                stats.fold_attempts,
+                values
+            );
+            assert_eq!(stats.folded, (len - 1) as u64);
+            assert_eq!(stats.loads_rewritten, len as u64);
+            assert!(matches!(
+                cfg.get_inst(last).data,
+                CfgInstData::Const(v) if v == (len - 1) as u64
+            ));
         }
     }
 }

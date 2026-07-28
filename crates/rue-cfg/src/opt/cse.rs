@@ -19,10 +19,10 @@
 //!
 //! Only pure-by-value instructions whose result is a deterministic function of
 //! their SSA operands: `Const`, `BoolConst`, `StringConst`, the binary
-//! arithmetic/comparison/bitwise/shift ops, the unary `Neg`/`Not`/`BitNot`, and
-//! reads of a never-written parameter (see below). These read only SSA values,
-//! never memory, so there are no memory barriers to track. Deliberately NOT
-//! keyed:
+//! arithmetic (including wrapping arithmetic)/comparison/bitwise/shift ops, the
+//! unary `Neg`/`Not`/`BitNot`, and reads of a never-written parameter (see
+//! below). These read only SSA values, never memory, so there are no memory
+//! barriers to track. Deliberately NOT keyed:
 //!
 //! * `Load`/`PlaceRead` — read memory, which needs versioning to dedupe safely
 //!   (a store between two loads can change the result). Out of scope here.
@@ -65,10 +65,10 @@
 //! `c = a+b; d = a+b; e = c+1; f = d+1`, numbering `d` records `d -> c`, which
 //! makes `f`'s resolved key equal `e`'s. The result type is part of the key so
 //! same-shape ops that produce different types never merge. For the commutative
-//! ops only — `Add`, `Mul`, `Eq`, `Ne`, `BitAnd`, `BitOr`, `BitXor` — the two
-//! operand ids are sorted so `Add(a,b)` and `Add(b,a)` share a key.
-//! `Sub`/`Div`/`Mod`/`Shl`/`Shr` and the ordered comparisons are order-sensitive
-//! and keyed as written.
+//! ops only — `Add`, `Mul`, `WrappingAdd`, `WrappingMul`, `Eq`, `Ne`, `BitAnd`,
+//! `BitOr`, `BitXor` — the two operand ids are sorted so `Add(a,b)` and
+//! `Add(b,a)` share a key. `Sub`/`WrappingSub`/`Div`/`Mod`/`Shl`/`Shr` and the
+//! ordered comparisons are order-sensitive and keyed as written.
 //!
 //! ### Replacing a duplicate
 //!
@@ -174,6 +174,8 @@ fn key_of(
         CfgInstData::BitAnd(a, b) => commutative(4, r(a), r(b), ty),
         CfgInstData::BitOr(a, b) => commutative(5, r(a), r(b), ty),
         CfgInstData::BitXor(a, b) => commutative(6, r(a), r(b), ty),
+        CfgInstData::WrappingAdd(a, b) => commutative(19, r(a), r(b), ty),
+        CfgInstData::WrappingMul(a, b) => commutative(20, r(a), r(b), ty),
 
         // Order-sensitive binary ops: operands kept as written.
         CfgInstData::Sub(a, b) => VnKey::Binary(7, r(a), r(b), ty),
@@ -185,6 +187,7 @@ fn key_of(
         CfgInstData::Ge(a, b) => VnKey::Binary(13, r(a), r(b), ty),
         CfgInstData::Shl(a, b) => VnKey::Binary(14, r(a), r(b), ty),
         CfgInstData::Shr(a, b) => VnKey::Binary(15, r(a), r(b), ty),
+        CfgInstData::WrappingSub(a, b) => VnKey::Binary(21, r(a), r(b), ty),
 
         // Unary ops.
         CfgInstData::Neg(a) => VnKey::Unary(16, r(a), ty),
@@ -375,6 +378,45 @@ mod tests {
         assert!(matches!(
             cfg.get_block(cfg.entry).terminator,
             Terminator::Return { value: Some(v) } if v == add1
+        ));
+    }
+
+    #[test]
+    fn test_wrapping_arithmetic_dedupes_with_correct_commutativity() {
+        let mut cfg = make_cfg();
+        let a = push(&mut cfg, CfgInstData::Param { index: 0 }, Type::I32);
+        let b = push(&mut cfg, CfgInstData::Param { index: 1 }, Type::I32);
+        let add1 = push(&mut cfg, CfgInstData::WrappingAdd(a, b), Type::I32);
+        let add2 = push(&mut cfg, CfgInstData::WrappingAdd(b, a), Type::I32);
+        let mul1 = push(&mut cfg, CfgInstData::WrappingMul(a, b), Type::I32);
+        let mul2 = push(&mut cfg, CfgInstData::WrappingMul(b, a), Type::I32);
+        let sub1 = push(&mut cfg, CfgInstData::WrappingSub(a, b), Type::I32);
+        let sub2 = push(&mut cfg, CfgInstData::WrappingSub(a, b), Type::I32);
+        let reversed_sub = push(&mut cfg, CfgInstData::WrappingSub(b, a), Type::I32);
+        let result = push(&mut cfg, CfgInstData::Add(add2, sub2), Type::I32);
+        cfg.set_terminator(
+            cfg.entry,
+            Terminator::Return {
+                value: Some(result),
+            },
+        );
+
+        let stats = run(&mut cfg).unwrap();
+        assert_eq!(stats.duplicates_replaced, 3);
+        assert!(matches!(cfg.get_inst(add2).data, CfgInstData::Const(0)));
+        assert!(matches!(cfg.get_inst(mul2).data, CfgInstData::Const(0)));
+        assert!(matches!(cfg.get_inst(sub2).data, CfgInstData::Const(0)));
+        assert!(matches!(
+            cfg.get_inst(result).data,
+            CfgInstData::Add(x, y) if x == add1 && y == sub1
+        ));
+        assert!(matches!(
+            cfg.get_inst(mul1).data,
+            CfgInstData::WrappingMul(..)
+        ));
+        assert!(matches!(
+            cfg.get_inst(reversed_sub).data,
+            CfgInstData::WrappingSub(x, y) if x == b && y == a
         ));
     }
 
