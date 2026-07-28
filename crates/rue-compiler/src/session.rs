@@ -6493,7 +6493,8 @@ impl CompilerSession {
             .revisioned
             .current_semantic_revision()
             .expect("semantic preparation observes a published source/import revision");
-        let declaration_shells_span = tracing::info_span!("declaration_shells").entered();
+        let declaration_shells_span =
+            tracing::info_span!("declaration_shells", phase = "semantic_analysis").entered();
         let query_shells = {
             let _span = tracing::info_span!("declaration_shell_projection").entered();
             self.queries.revisioned.projected_declaration_shells(
@@ -6519,7 +6520,11 @@ impl CompilerSession {
         };
         drop(declaration_shells_span);
         let declaration_semantics = {
-            let _span = tracing::info_span!("declaration_semantics_projection").entered();
+            let _span = tracing::info_span!(
+                "declaration_semantics_projection",
+                phase = "semantic_analysis"
+            )
+            .entered();
             self.queries.revisioned.projected_declaration_semantics(
                 runtime_revision,
                 merged.ast(),
