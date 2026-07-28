@@ -34,8 +34,17 @@ echo "Deriving performance data..."
 PERF_DATA_ROOT="$(mktemp -d)"
 if git rev-parse --verify origin/performance-data-v1 >/dev/null 2>&1 \
    || git fetch origin performance-data-v1 --depth=50 >/dev/null 2>&1; then
-    git --work-tree="$PERF_DATA_ROOT" checkout origin/performance-data-v1 -- . 2>/dev/null || true
+    # Loud on purpose. An empty page is honest only when there is genuinely
+    # nothing collected; once the branch exists, failing to read it and
+    # publishing an empty dashboard would overwrite real measurements with a
+    # claim that none were taken.
+    if ! git --work-tree="$PERF_DATA_ROOT" checkout origin/performance-data-v1 -- . 2>/dev/null; then
+        git reset >/dev/null 2>&1 || true
+        echo "  error: performance-data-v1 exists but could not be read" >&2
+        exit 1
+    fi
     git reset >/dev/null 2>&1 || true
+    echo "  read $(find "$PERF_DATA_ROOT/runs" -name '*.json' 2>/dev/null | wc -l | tr -d ' ') run object(s)"
 else
     echo "  (no performance-data-v1 branch yet; the page will render empty)"
 fi
