@@ -13,8 +13,8 @@ pub use validate::KNOWN_DIRECTIVES;
 /// produced, the parser appends one
 /// [`rue_error::ErrorKind::ParserDiagnosticsOmitted`] summary.
 ///
-/// The budget is local to each [`Parser`] invocation. Lexer diagnostics come
-/// from the preceding lexer phase and are intentionally outside this budget.
+/// The budget is local to each [`Parser`] invocation. The preceding lexer phase
+/// uses its own independent per-file diagnostic budget.
 pub const PARSER_DIAGNOSTIC_BUDGET: usize = 100;
 
 pub use ast::{
