@@ -8,6 +8,8 @@ use logos::Logos;
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::{FileId, Span};
 
+use crate::MAX_SOURCE_BYTES;
+
 /// Preserve the existing one-token-per-four-bytes estimate for ordinary source
 /// files, but do not let sparse input turn source bytes into an equally
 /// unbounded token allocation. Sources up to 64 KiB retain the exact old
@@ -16,6 +18,19 @@ const MAX_INITIAL_TOKEN_CAPACITY: usize = 16 * 1024;
 
 fn initial_token_capacity(source_len: usize) -> usize {
     (source_len / 4).min(MAX_INITIAL_TOKEN_CAPACITY)
+}
+
+fn source_len_for_spans(file_id: FileId, len: usize) -> CompileResult<u32> {
+    u32::try_from(len).map_err(|_| {
+        CompileError::without_span(ErrorKind::CompilerResourceLimit(format!(
+            "source text for file ID {} is {len} bytes, exceeding the maximum supported length of {MAX_SOURCE_BYTES} bytes",
+            file_id.index()
+        )))
+    })
+}
+
+fn span_offset(offset: usize) -> u32 {
+    u32::try_from(offset).expect("lexer offsets fit after validating the source byte length")
 }
 
 /// Error type for lexing failures.
@@ -90,7 +105,7 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
         } else if c == '\\' {
             // Escape sequence. +1 for the opening quote: `consumed` counts
             // content bytes only, but the error offset is within the token.
-            let backslash_offset = consumed as u32 + 1;
+            let backslash_offset = span_offset(consumed) + 1;
             consumed += c.len_utf8();
             match chars.next() {
                 Some('\\') => {
@@ -245,7 +260,7 @@ fn parse_based_literal(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Result<u64
         let digit = c.to_digit(radix).ok_or(LexError::InvalidDigitForBase {
             digit: c,
             base,
-            offset: (2 + i) as u32,
+            offset: span_offset(2 + i),
         })?;
         value = value
             .checked_mul(u64::from(radix))
@@ -732,6 +747,11 @@ impl<'a> LogosLexer<'a> {
     pub fn tokenize_preserving_interner(
         self,
     ) -> Result<(Vec<Token>, ThreadedRodeo), (CompileErrors, ThreadedRodeo)> {
+        let source_len = match source_len_for_spans(self.file_id, self.source.len()) {
+            Ok(source_len) => source_len,
+            Err(error) => return Err((CompileErrors::from(error), self.interner)),
+        };
+
         // Keep the old density estimate for ordinary files, but cap the initial
         // allocation so sparse large sources do not reserve per-source memory.
         let mut tokens = Vec::with_capacity(initial_token_capacity(self.source.len()));
@@ -760,8 +780,8 @@ impl<'a> LogosLexer<'a> {
                                 kind: logos_kind.into(),
                                 span: Span::with_file(
                                     self.file_id,
-                                    span.start as u32,
-                                    span.end as u32,
+                                    span_offset(span.start),
+                                    span_offset(span.end),
                                 ),
                             });
                         }
@@ -773,16 +793,16 @@ impl<'a> LogosLexer<'a> {
                                     ErrorKind::InvalidInteger,
                                     Span::with_file(
                                         self.file_id,
-                                        span.start as u32,
-                                        span.end as u32,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
                                     ),
                                 ),
                                 LexError::UnexpectedCharacter => (
                                     ErrorKind::UnexpectedCharacter(error_char),
                                     Span::with_file(
                                         self.file_id,
-                                        span.start as u32,
-                                        span.end as u32,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
                                     ),
                                 ),
                                 LexError::InvalidStringEscape { offset, escape } => {
@@ -790,7 +810,7 @@ impl<'a> LogosLexer<'a> {
                                     // not the whole string-so-far — and report the
                                     // escape the scanner actually rejected, not
                                     // whichever backslash comes first. (RUE-133)
-                                    let esc_start = span.start as u32 + offset;
+                                    let esc_start = span_offset(span.start) + offset;
                                     (
                                         ErrorKind::InvalidStringEscape(escape),
                                         Span::with_file(
@@ -804,32 +824,32 @@ impl<'a> LogosLexer<'a> {
                                     ErrorKind::UnterminatedString,
                                     Span::with_file(
                                         self.file_id,
-                                        span.start as u32,
-                                        span.end as u32,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
                                     ),
                                 ),
                                 LexError::UppercaseBasePrefix { prefix } => (
                                     ErrorKind::UppercaseBasePrefix(prefix),
                                     Span::with_file(
                                         self.file_id,
-                                        span.start as u32,
-                                        span.end as u32,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
                                     ),
                                 ),
                                 LexError::EmptyBasedLiteral { base } => (
                                     ErrorKind::EmptyBasedLiteral { base },
                                     Span::with_file(
                                         self.file_id,
-                                        span.start as u32,
-                                        span.end as u32,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
                                     ),
                                 ),
                                 LexError::MalformedByteLiteral(message) => (
                                     ErrorKind::MalformedByteLiteral(message),
                                     Span::with_file(
                                         self.file_id,
-                                        span.start as u32,
-                                        span.end as u32,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
                                     ),
                                 ),
                                 LexError::InvalidDigitForBase {
@@ -839,7 +859,7 @@ impl<'a> LogosLexer<'a> {
                                 } => {
                                     // Point at the offending digit itself
                                     // (`0b2`'s `2`), not the whole literal.
-                                    let digit_start = span.start as u32 + offset;
+                                    let digit_start = span_offset(span.start) + offset;
                                     (
                                         ErrorKind::InvalidDigitForBase { digit, base },
                                         Span::with_file(
@@ -883,10 +903,9 @@ impl<'a> LogosLexer<'a> {
         }
 
         // Add EOF token (logos doesn't emit EOF)
-        let eof_pos = self.source.len() as u32;
         tokens.push(Token {
             kind: TokenKind::Eof,
-            span: Span::point_in_file(self.file_id, eof_pos),
+            span: Span::point_in_file(self.file_id, source_len),
         });
 
         // Extract the interner from the logos lexer
@@ -903,6 +922,25 @@ impl<'a> LogosLexer<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn source_span_limit_accepts_largest_representable_length() {
+        assert_eq!(
+            source_len_for_spans(FileId::new(12), MAX_SOURCE_BYTES).unwrap(),
+            u32::MAX
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn source_span_limit_rejects_first_unrepresentable_length() {
+        assert_eq!(
+            source_len_for_spans(FileId::new(12), MAX_SOURCE_BYTES + 1)
+                .unwrap_err()
+                .to_string(),
+            "compiler resource limit exceeded: source text for file ID 12 is 4294967296 bytes, exceeding the maximum supported length of 4294967295 bytes"
+        );
+    }
 
     /// Helper to get the string for a symbol from the interner.
     fn get_ident_str<'a>(kind: &TokenKind, interner: &'a ThreadedRodeo) -> Option<&'a str> {

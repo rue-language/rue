@@ -9,14 +9,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use rue_error::{CompileError, CompileResult, ErrorKind};
+pub use rue_lexer::MAX_SOURCE_BYTES;
 use rue_span::FileId;
 
 use crate::{
     ModuleId, ModuleRevision, SourceId, SourceMetadata, SourceRevision, SourceStore, SourceView,
 };
-
-/// Maximum source byte length representable by Rue's `u32` span offsets.
-pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
 
 /// An immutable, validated set of source texts and their metadata.
 ///
@@ -534,11 +532,13 @@ pub(crate) struct AppendedSource {
 
 fn validate_source_len(file_id: FileId, path: &str, len: usize) -> CompileResult<()> {
     if len > MAX_SOURCE_BYTES {
-        return Err(invalid_input(format!(
-            "source text for file ID {} ({path:?}) is {len} bytes, exceeding the maximum supported length of {} bytes",
-            file_id.index(),
-            MAX_SOURCE_BYTES
-        )));
+        return Err(CompileError::without_span(
+            ErrorKind::CompilerResourceLimit(format!(
+                "source text for file ID {} ({path:?}) is {len} bytes, exceeding the maximum supported length of {} bytes",
+                file_id.index(),
+                MAX_SOURCE_BYTES
+            )),
+        ));
     }
     Ok(())
 }
@@ -929,11 +929,12 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn rejects_source_lengths_that_spans_cannot_represent() {
+        validate_source_len(FileId::new(12), "large.rue", MAX_SOURCE_BYTES).unwrap();
         assert_eq!(
-            validate_source_len(FileId::new(12), "large.rue", u32::MAX as usize + 1)
+            validate_source_len(FileId::new(12), "large.rue", MAX_SOURCE_BYTES + 1)
                 .unwrap_err()
                 .to_string(),
-            "invalid compiler input: source text for file ID 12 (\"large.rue\") is 4294967296 bytes, exceeding the maximum supported length of 4294967295 bytes"
+            "compiler resource limit exceeded: source text for file ID 12 (\"large.rue\") is 4294967296 bytes, exceeding the maximum supported length of 4294967295 bytes"
         );
     }
 }

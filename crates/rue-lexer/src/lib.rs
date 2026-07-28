@@ -17,6 +17,9 @@ use rue_span::Span;
 /// that failed file. The compiler still advances to later source files.
 pub const LEXER_DIAGNOSTIC_BUDGET: usize = 100;
 
+/// Maximum source byte length representable by Rue's `u32` span offsets.
+pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
+
 /// Token kinds in the Rue language.
 ///
 /// This enum is `Copy` since all variants contain only small, copyable data:
