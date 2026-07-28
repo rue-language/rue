@@ -1,15 +1,121 @@
 {% extends "base.html" %}
 
+{#
+  The compiler-performance dashboard (ADR-0067 §11).
+
+  Everything here is rebuilt from raw observations at site build time; nothing
+  derived is stored alongside the records. The data arrives as
+  /performance-data.json, produced by `rue-bench derive`.
+
+  Two rules the markup enforces, because they are the easiest to break:
+
+  The index is dimensionless. It is never drawn on the same axis as, or stacked
+  with, milliseconds, and platform indexes are never compared with one another —
+  they have independent baselines.
+
+  Only the additive phase bands may be stacked. Inclusive spans nest and
+  overlap; they belong in a table, never in the stack.
+#}
+
+{% block title %}Compiler performance — {{ config.title }}{% endblock %}
+
 {% block content %}
-<section class="max-w-5xl mx-auto px-6 py-20">
-    <section class="field-report" style="max-width: 42rem; margin: 0 auto;">
-        <span class="plate-no">Performance</span>
-        <h1 style="font-family: var(--font-display); font-size: clamp(2.5rem, 8vw, 5rem); font-weight: 430; line-height: 1;">Coming soon</h1>
-        <p style="color: var(--color-muted); max-width: 32rem; margin-top: 1.25rem;">
-            Rue's performance reporting is being rebuilt from a clean slate.
-            Compiler instrumentation remains in place while the next public
-            measurement system is designed.
-        </p>
-    </section>
+<section class="max-w-5xl mx-auto px-6 py-16">
+  <span class="plate-no">Performance</span>
+  <h1 style="font-family: var(--font-display); font-size: clamp(2rem, 6vw, 3.5rem); font-weight: 430; line-height: 1.05;">
+    Compiler performance
+  </h1>
+
+  <noscript>
+    <p style="color: var(--color-muted); margin-top: 1rem;">
+      This page draws its charts in the browser. The measurements themselves are
+      available as <a href="/performance-data.json">raw JSON</a>.
+    </p>
+  </noscript>
+
+  <div id="perf-root" hidden>
+    <div style="margin-top: 1.5rem;">
+      <label for="perf-platform" style="color: var(--color-muted); font-size: 0.9rem;">Platform</label>
+      <select id="perf-platform" style="margin-left: 0.5rem; padding: 0.25rem 0.5rem;"></select>
+    </div>
+
+    <p id="perf-status" role="status" aria-live="polite"
+       style="margin-top: 1.25rem; font-size: 1.05rem; line-height: 1.6;"></p>
+    <p id="perf-health" role="alert" style="margin-top: 0.5rem; color: #b45309;" hidden></p>
+
+    <h2 style="margin-top: 2.5rem;">Headline index</h2>
+    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      The geometric mean of each workload's median against this epoch's baseline.
+      1.00 is the baseline; lower is faster. It is dimensionless — it answers
+      whether anything is moving, not how long a build takes. A move in one of
+      <em>n</em> workloads shifts it by roughly 1/<em>n</em> of its true size, so
+      the per-workload panels carry the full-size signal.
+    </p>
+    <figure style="margin-top: 0.75rem;">
+      <svg id="perf-index" role="img" width="100%" height="220" viewBox="0 0 900 220"
+           aria-labelledby="perf-index-caption"></svg>
+      <figcaption id="perf-index-caption" style="color: var(--color-muted); font-size: 0.85rem;"></figcaption>
+    </figure>
+
+    <h2 style="margin-top: 2.5rem;">Workloads</h2>
+    <div id="perf-multiples" role="list"
+         style="display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; margin-top: 0.75rem;"></div>
+
+    <h2 style="margin-top: 2.5rem;">Phase composition — <span id="perf-selected"></span></h2>
+    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      Absolute milliseconds by published phase. These bands are mutually
+      exclusive and sum exactly to compiler-root time, which is what makes
+      stacking them honest. <code>mixed_parallel</code> is time when more than
+      one phase was active; <code>unattributed</code> is compiler time no phase
+      describes. Both are findings, not rounding.
+    </p>
+    <figure style="margin-top: 0.75rem;">
+      <svg id="perf-phases" role="img" width="100%" height="260" viewBox="0 0 900 260"
+           tabindex="0" aria-labelledby="perf-phases-caption"></svg>
+      <figcaption id="perf-phases-caption" style="color: var(--color-muted); font-size: 0.85rem;"></figcaption>
+    </figure>
+    <div id="perf-composition" style="margin-top: 0.5rem;"></div>
+
+    <div id="perf-tooltip" role="status" aria-live="polite"
+         style="margin-top: 0.75rem; padding: 0.75rem 1rem; border: 1px solid #ccc; font-size: 0.9rem; line-height: 1.5;"></div>
+
+    <h2 style="margin-top: 2.5rem;">Field notes</h2>
+    <ul id="perf-notes" style="margin-top: 0.5rem; line-height: 1.7;"></ul>
+
+    <h2 style="margin-top: 2.5rem;">Disclosures</h2>
+    <details style="margin-top: 0.5rem;">
+      <summary>Driver overhead</summary>
+      <p style="color: var(--color-muted); max-width: 42rem;">
+        Process wall time outside compiler root: startup, output publication,
+        and other driver cost. Real time you wait for, deliberately outside the
+        phase stack.
+      </p>
+      <div id="perf-overhead"></div>
+    </details>
+    <details style="margin-top: 0.5rem;">
+      <summary>Memory and binary size</summary>
+      <div id="perf-other-metrics"></div>
+    </details>
+    <details style="margin-top: 0.5rem;">
+      <summary>Collection health</summary>
+      <div id="perf-rejected"></div>
+    </details>
+    <p style="margin-top: 1rem;">
+      <a href="/performance-data.json" download>Download the derived data</a> —
+      rebuilt from the raw run objects on the <code>performance-data-v1</code>
+      branch, which stores observations and nothing derived.
+    </p>
+  </div>
+
+  <div id="perf-empty" hidden style="margin-top: 2rem;">
+    <p style="color: var(--color-muted); max-width: 42rem;">
+      No measurements have been collected yet. The measurement system is in
+      place; this page fills in once collection has run on trunk and each epoch
+      has a baseline. A baseline must be the first complete, valid run at a
+      declared revision, so it cannot exist before one has been measured.
+    </p>
+  </div>
 </section>
+
+<script src="/performance.js" defer></script>
 {% endblock %}
