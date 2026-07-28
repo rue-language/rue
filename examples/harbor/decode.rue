@@ -517,8 +517,10 @@ fn parse_error_position(error: ParseError) -> u64 {
 pub fn source(text: StrBuf) -> model.Scenario {
     let mut scenario = model.new_scenario();
     match std.json.parse(text) {
-        std.result.Result(Json, ParseError).Ok(value) => parse_root(value, inout scenario),
-        std.result.Result(Json, ParseError).Err(error) => {
+        std.result.Result(std.json.Json, std.json.ParseError).Ok(value) => {
+            parse_root(value, inout scenario)
+        },
+        std.result.Result(std.json.Json, std.json.ParseError).Err(error) => {
             let at = parse_error_position(error);
             model.add_error(inout scenario, 100, "scenario", "invalid JSON at byte " + @to_string(at));
         },

@@ -42,6 +42,10 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "wildcard-payload-pattern.rue",
         "enum Maybe { None, Some(u64) } fn f(value: Maybe) -> u64 { match value { Maybe.Some(_) => 1, Maybe.None => 0 } }",
     ),
+    (
+        "qualified-type-arguments.rue",
+        "fn f(value: outer.Result(inner.Value, inner.Error)) { match value { outer.Result(inner.Value, inner.Error).Ok(v) => {} } }",
+    ),
 ];
 
 fn node(kind: &str, meta: &str, a: String, b: String, c: String, d: String) -> String {
