@@ -216,6 +216,13 @@ batch_size = 3
 k = 2.0
 window = 3
 
+# The first complete, valid run at a declared trunk revision, whose
+# per-workload medians define ratio 1.0 for this epoch. All three platforms
+# measured this same revision validly, so epoch 2 shares a baseline commit.
+[epoch.baseline]
+commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
+run = "4ae3eb4cf1e47277c30ae6c3002b6c84c651e35634424e874e2cca8219b25973"
+
 [[epoch]]
 id = 2
 platform = "aarch64-linux"
@@ -239,6 +246,11 @@ batch_size = 2
 [epoch.flagging]
 k = 2.0
 window = 3
+
+# The first complete, valid run at this epoch's declared revision (see above).
+[epoch.baseline]
+commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
+run = "b0bbb8dd1bbf4b617da6c9c642218ce8435e1f250fea060e5baf307555e8b9ad"
 
 [[epoch]]
 id = 2
@@ -266,3 +278,8 @@ batch_size = 4
 [epoch.flagging]
 k = 5.0
 window = 10
+
+# The first complete, valid run at this epoch's declared revision (see above).
+[epoch.baseline]
+commit = "31ff07f6bac131723f60c2a18af5505a8b442320"
+run = "ff0a3ab928b8e2e601604912404b9ed4b8140a27a2204300d5917143f533574b"
