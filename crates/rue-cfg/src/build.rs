@@ -2382,7 +2382,10 @@ impl<'a> CfgBuilder<'a> {
                 TypeKind::Struct(struct_id) => {
                     let def = self.type_pool.struct_def(struct_id);
                     if def.destructor.is_some() && !def.is_builtin {
-                        if def.name.starts_with("__anon_struct_") {
+                        // Membership, not the generated-name prefix: a source
+                        // struct may legally be called `__anon_struct_N`, and
+                        // its destructor is an ordinary named one (RUE-1050).
+                        if self.type_pool.is_anonymous_struct(struct_id) {
                             self.anonymous_destructor_dependency_incomplete = true;
                         } else {
                             self.implicit_named_destructors.insert(struct_id);

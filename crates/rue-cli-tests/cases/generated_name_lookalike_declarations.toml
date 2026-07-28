@@ -1,0 +1,101 @@
+# Source declarations that merely LOOK like the compiler's generated anonymous
+# types (RUE-1050). Only `__rue_*` and `_start` are reserved (RUE-125), so
+# `struct __anon_struct_5` is legal Rue and must be treated as the ordinary
+# named struct it is.
+#
+# Semantic analysis used to classify types by the generated-name PREFIX rather
+# than by identity, so a source declaration was mistaken for a generated
+# overlay. Method/destructor analysis then indexed the anonymous-type registry
+# with a named StructId and the canonical aggregate identity export refused to
+# issue a named identity, both surfacing as an E9000 ICE rather than a working
+# program.
+#
+# Generated names are `__anon_struct_{32 hex digits}`, so these short names
+# never collide with a real generated one by value -- classification is the
+# whole defect. Each case therefore declares the lookalike AND forces a genuine
+# generated anonymous type into the same program, so the two must be told apart
+# by identity rather than by spelling.
+
+[section]
+id = "cli.generated_name_lookalike_declarations"
+name = "Source declarations that look like generated anonymous types"
+description = "A legal __anon_struct_N/__anon_enum_N source declaration keeps named identity alongside real generated anonymous types (RUE-1050)."
+
+# Reproducer 1: method analysis. The lookalike's method and the generated
+# anonymous struct's method are both called, so both must resolve. 1 + 2 = 3.
+[[case]]
+name = "lookalike_struct_method_resolves_alongside_generated"
+description = "A source __anon_struct_N method is analyzed as a named method while a generated anonymous struct is live."
+files = [{ path = "main.rue", source = """
+struct __anon_struct_5 { x: i32, fn get(self) -> i32 { 1 } }
+fn A() -> type { struct { x: i32, fn get(self) -> i32 { 2 } } }
+fn main() -> i32 {
+    let n = __anon_struct_5 { x: 0 };
+    let T = A();
+    let a: T = T { x: 0 };
+    n.get() + a.get()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 3
+
+# Reproducer 2: canonical aggregate identity. The lookalike is declared but not
+# used, so only the generated anonymous type is exercised -- the export must
+# still issue a named identity for the declaration rather than refusing it.
+[[case]]
+name = "lookalike_struct_declaration_does_not_block_aggregate_identity"
+description = "A declared-but-unused source __anon_struct_N does not break canonical aggregate identity export."
+files = [{ path = "main.rue", source = """
+struct __anon_struct_6 { x: i32, fn get(self) -> i32 { 1 } }
+fn A() -> type { struct { x: i32, fn get(self) -> i32 { 2 } } }
+fn main() -> i32 {
+    let T = A();
+    let a: T = T { x: 0 };
+    a.get()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 2
+
+# The enum half of the same classifier. A source `__anon_enum_N` must keep its
+# named identity while a generated anonymous struct is live in the program.
+[[case]]
+name = "lookalike_enum_keeps_named_identity"
+description = "A source __anon_enum_N enum is classified by identity, not by its generated-looking name."
+files = [{ path = "main.rue", source = """
+enum __anon_enum_5 { A, B }
+fn S() -> type { struct { x: i32, fn get(self) -> i32 { 4 } } }
+fn main() -> i32 {
+    let e = __anon_enum_5.B;
+    let T = S();
+    let s: T = T { x: 0 };
+    match e {
+        __anon_enum_5.A => 0,
+        __anon_enum_5.B => s.get(),
+    }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 4
+
+# A destructor on the lookalike must be treated as a NAMED struct's destructor:
+# it participates in ordinary drop-source events and drop glue rather than being
+# routed down the generated-anonymous path.
+[[case]]
+name = "lookalike_struct_destructor_runs_as_named"
+description = "A drop fn on a source __anon_struct_N runs through the named-struct drop path."
+files = [{ path = "main.rue", source = """
+struct __anon_struct_7 { v: i32 }
+drop fn __anon_struct_7(self) { @dbg(self.v); }
+fn A() -> type { struct { x: i32, fn get(self) -> i32 { 2 } } }
+fn main() -> i32 {
+    let n = __anon_struct_7 { v: 9 };
+    let T = A();
+    let a: T = T { x: 0 };
+    @dbg(100);
+    a.get()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "100\n9\n"
+exit_code = 2

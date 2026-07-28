@@ -1013,6 +1013,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         }
         self.storage.generated_structs_mut().insert(name_spur, id);
         self.storage.anonymous_struct_ids_mut().insert(id);
+        // The pool is the authority for consumers below sema (symbol spelling,
+        // CFG destructor discovery, drop glue), which cannot see the sema-side
+        // registry (RUE-1050).
+        self.storage.body_type_pool().mark_anonymous_struct(id);
         let ty = Type::new_struct(id);
         self.storage
             .anonymous_struct_identities_mut()
@@ -1060,6 +1064,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         let (id, _) = self.storage.body_type_pool().register_enum(name_spur, def);
         self.storage.generated_enums_mut().insert(name_spur, id);
         self.storage.anonymous_enum_ids_mut().insert(id);
+        // See `find_or_create_anon_struct` (RUE-1050).
+        self.storage.body_type_pool().mark_anonymous_enum(id);
         let ty = Type::new_enum(id);
         self.storage
             .anonymous_enum_identities_mut()
