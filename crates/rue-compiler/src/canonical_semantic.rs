@@ -796,21 +796,6 @@ impl CanonicalSemanticOutput {
     pub fn body_named_dependencies(&self) -> &[BodyNamedDependencyEvent] {
         &self.body_named_dependencies
     }
-    pub fn named_method_dependencies(&self) -> &[NamedMethodDependencyEvent] {
-        &self.named_method_dependencies
-    }
-    pub fn non_generic_named_method_dependencies_complete(&self) -> bool {
-        self.non_generic_named_method_dependencies_complete
-    }
-    pub fn generic_named_method_dependencies_complete(&self) -> bool {
-        self.generic_named_method_dependencies_complete
-    }
-    pub fn named_destructor_dependencies(&self) -> &[NamedDestructorDependencyEvent] {
-        &self.named_destructor_dependencies
-    }
-    pub fn named_destructor_dependencies_complete(&self) -> bool {
-        self.named_destructor_dependencies_complete
-    }
     pub fn declaration_type_dependencies(&self) -> &[DeclarationTypeDependencyEvent] {
         &self.declaration_type_dependencies
     }

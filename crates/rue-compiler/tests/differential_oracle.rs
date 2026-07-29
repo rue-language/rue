@@ -355,15 +355,13 @@ fn observe_with_fault(
     let diagnostics = normalize_diagnostics(session.latest_diagnostics());
     let manifest = match session.unstable_dependency_baseline(&step.options, None) {
         Ok(manifest) => format!(
-            "input={:?};imports={:?};definitions={:?};fingerprints={:?};module-imports={:?};free={:?};methods={:?};destructors={:?};implicit={:?};decl-types={:?};call-heads={:?};builtins={:?};consts={:?};bodies={:?};blockers={:?};complete={}",
+            "input={:?};imports={:?};definitions={:?};fingerprints={:?};module-imports={:?};free={:?};implicit={:?};decl-types={:?};call-heads={:?};builtins={:?};consts={:?};bodies={:?};blockers={:?};complete={}",
             manifest.input(),
             manifest.imports(),
             manifest.definitions(),
             manifest.definition_fingerprints(),
             manifest.module_imports(),
             manifest.free_function_dependencies(),
-            manifest.named_method_dependencies(),
-            manifest.named_destructor_dependencies(),
             manifest.implicit_named_destructor_dependencies(),
             manifest.declaration_type_dependencies(),
             manifest.declaration_type_call_head_dependencies(),
