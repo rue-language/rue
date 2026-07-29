@@ -5,7 +5,17 @@ name: Cache probe
 # (on a repo that has the BUILDBUDDY_API_KEY secret). It builds the same release
 # target graph as CI, clears the local buck-out, and rebuilds. The workflow fails
 # unless the second build converts locally executed cold actions into cache hits.
+#
+# RUE-1165: it also runs on a schedule, so cache health is a standing signal
+# rather than something a human has to think to ask for. A silently degraded
+# cache does not turn any lane red — it just makes every lane slower — so
+# without a recurring cold-to-warm probe the regression is invisible until
+# someone notices CI got expensive.
 on:
+  schedule:
+    # Mondays 05:00 UTC, ahead of the working week and clear of the 06:00
+    # release suite so the two do not contend for the same runner pool.
+    - cron: '0 5 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -14,6 +24,10 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
+    # A cold build of the whole release graph plus a full rebuild is the point
+    # of the probe, not an anomaly; give it the same headroom as the scheduled
+    # release suite instead of the 6-hour default.
+    timeout-minutes: 120
     env:
       # A rerun gets a fresh namespace too, so its first build must be cold.
       CACHE_PROBE_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}

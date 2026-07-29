@@ -29,7 +29,20 @@ def _remote_cache_platform_impl(ctx):
                 remote_execution_properties = {
                     "EstimatedMemory": "4GB",
                     "OSFamily": "Linux",
-                    "container-image": "docker://gcr.io/flame-public/rbe-ubuntu22-04:latest",
+                    # Pinned by immutable OCI index digest (RUE-1165). The
+                    # merge-group canary's claim is "this compiler builds on the
+                    # worker we reviewed"; a republished moving tag would silently
+                    # change what that proves, and would turn an upstream image
+                    # change into a merge-queue failure with no local repro.
+                    # BuildBuddy publishes no versioned tag for this image, only
+                    # a moving stream, so the digest stands alone rather than
+                    # accompanying a reviewed release tag as the actionlint pin
+                    # does. //:required-ci-container-pin-validation rejects a
+                    # reference without a digest; the resolution and update
+                    # procedure is in docs/process/build-cache.md.
+                    #
+                    # gcr.io/flame-public/rbe-ubuntu22-04, resolved 2026-07-28.
+                    "container-image": "docker://gcr.io/flame-public/rbe-ubuntu22-04@sha256:0d84a80bb0fc36ba5381942adcf6493249594dcc9044845c617b78c9b621cae3",
                 },
                 remote_execution_use_case = "buck2-default",
                 remote_output_paths = "output_paths",
