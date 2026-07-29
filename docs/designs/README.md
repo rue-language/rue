@@ -228,6 +228,6 @@ The table is generated from ADR frontmatter. Run
 | [0063](0063-parallel-demand-driven-incremental-compilation.md) | Parallel demand-driven incremental compilation | Accepted | architecture, compiler, incremental, parallelism, codegen, linker, performance |
 | [0064](0064-c-ffi.md) | C FFI: a guaranteed target-C boundary for imports and exports | Accepted | ffi, abi, codegen, linker, types, semantics, unsafe, interop |
 | [0065](0065-floating-point.md) | Floating point: f32/f64, IEEE-754 semantics, and register classes | Accepted | types, semantics, codegen, numerics, abi |
-| [0066](0066-producer-nominal-anonymous-types-and-incremental-locality.md) | Producer-nominal anonymous types and incremental locality | Proposal | types, semantics, comptime, incremental, performance, parallelism |
+| [0066](0066-producer-nominal-anonymous-types-and-incremental-locality.md) | Producer-nominal anonymous types and incremental locality | Implemented | types, semantics, comptime, incremental, performance, parallelism |
 | [0067](0067-compiler-performance-measurement.md) | Compiler performance measurement, epochs, and dashboard | Proposal | tooling, ci, performance, website |
 <!-- ADR-INDEX:END -->
