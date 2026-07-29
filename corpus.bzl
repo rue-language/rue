@@ -134,6 +134,20 @@ def _corpus_action_impl(ctx: AnalysisContext) -> list[Provider]:
         # ordinary --prefer-local policy. It does not affect cache *reads* —
         # lookup still happens before a miss executes.
         local_only = True,
+        # RUE-1163: a corpus harness runs its own cases in parallel and spawns
+        # the compiler per case, so one of them can saturate the machine. Say so
+        # here and buck2's scheduler takes it from there — it will not start a
+        # second corpus alongside this one, but it will still overlap a corpus
+        # with unit tests and rustc compiles.
+        #
+        # This replaced a bash loop in test.sh that ran the corpora one at a time
+        # after the broad pass. That loop could only serialize what it knew
+        # about, only for callers that went through test.sh, and it serialized
+        # corpora against everything rather than against each other. Measured on
+        # this pair (oracle-diff-generated-smoke ~7s, reproducible-programs
+        # ~67s): 66.8s with no weight, both executing at once; 74.2s with the
+        # weight, one at a time.
+        weight_percentage = 100,
         # THE POINT OF THIS RULE. `genrule` computes
         #     cacheable = attrs.cacheable and (local_only or prefer_local)
         # and passes it as allow_cache_upload, where local_only/prefer_local are
