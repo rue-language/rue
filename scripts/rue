@@ -8,10 +8,10 @@
 #   scripts/rue exec prog.rue      Compile prog.rue to a temp file AND run it
 #   scripts/rue test [pattern]     Full suite (./test.sh), optional filter
 #   scripts/rue quick              Unit tests only (./quick-test.sh)
-#   scripts/rue premerge           Canonical required test tier
+#   scripts/rue premerge           Canonical required tier: clippy gate + tests
 #   scripts/rue slow               Canonical scheduled slow tier
 #   scripts/rue stress             Canonical opt-in stress tier
-#   scripts/rue all                Canonical union of every test tier
+#   scripts/rue all                Canonical union of every tier (incl. clippy)
 #   scripts/rue unit <crate> [args] One crate's Rust unit tests, case-filtered
 #                                  (crate name with or without the rue- prefix,
 #                                  or an explicit <crate>:<target>; forwards
@@ -95,6 +95,18 @@ case "$cmd" in
         if [[ $# -ne 0 ]]; then
             echo "usage: scripts/rue $cmd" >&2
             exit 2
+        fi
+        # Required CI gates on the workspace clippy pass (the `clippy` job runs
+        # ./clippy.sh) in addition to the premerge Buck tier, so the local
+        # premerge command must run both or a green run can still fail required
+        # CI on lint (RUE-1205). The gate lives here rather than in test.sh
+        # because CI's linux-premerge job invokes ./test.sh directly and has
+        # its own clippy job — test.sh running it too would double the work.
+        # Clippy goes first: it is much cheaper than the corpus suites, so lint
+        # findings surface before the long test run. slow and stress stay
+        # test-only; they are supersets of nothing outside their Buck labels.
+        if [[ "$cmd" == premerge || "$cmd" == all ]]; then
+            ./clippy.sh
         fi
         RUE_TEST_TIER="$cmd" ./test.sh
         ;;

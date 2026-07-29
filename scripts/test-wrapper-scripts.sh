@@ -271,7 +271,10 @@ test_rue_cli_examples_survive_case_chdir() {
 }
 
 # Canonical tier commands are intentionally thin: scripts/rue names the
-# selection while test.sh owns execution and reads Buck's tier metadata.
+# selection while test.sh owns execution and reads Buck's tier metadata. The
+# required tier additionally fronts the clippy gate (RUE-1205): required CI
+# runs ./clippy.sh as its own job next to the premerge Buck tier, so premerge
+# (and the union tier, all) must run both for local green to predict CI green.
 test_rue_named_test_tiers_delegate_to_testsh() {
   local sb; sb="$(make_rue_sandbox)"
   cat >"$sb/test.sh" <<'EOF'
@@ -279,15 +282,42 @@ test_rue_named_test_tiers_delegate_to_testsh() {
 printf '%s\n' "${RUE_TEST_TIER:-unset}" >>"$TIER_LOG"
 EOF
   chmod +x "$sb/test.sh"
+  cat >"$sb/clippy.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'clippy\n' >>"$TIER_LOG"
+exit "${FAKE_CLIPPY_EXIT:-0}"
+EOF
+  chmod +x "$sb/clippy.sh"
 
   local tier rc
   for tier in premerge slow stress all; do
     rc=0
+    : >"$sb/tiers.log"
     (cd "$sb/work" && TIER_LOG="$sb/tiers.log" "$sb/scripts/rue" "$tier") \
       >/dev/null 2>&1 || rc=$?
     check "scripts/rue $tier: delegates the named tier to test.sh" \
       "$([ "$rc" -eq 0 ] && grep -Fxq "$tier" <<<"$(tail -1 "$sb/tiers.log")" && echo 0 || echo 1)"
+    case "$tier" in
+      premerge|all)
+        check "scripts/rue $tier: runs the clippy gate before the tier" \
+          "$([ "$(head -1 "$sb/tiers.log")" = clippy ] && echo 0 || echo 1)"
+        ;;
+      *)
+        check "scripts/rue $tier: does not run the clippy gate" \
+          "$(! grep -Fxq clippy "$sb/tiers.log" && echo 0 || echo 1)"
+        ;;
+    esac
   done
+
+  # A clippy failure must fail the command and stop before the test tier runs.
+  rc=0
+  : >"$sb/tiers.log"
+  (cd "$sb/work" && TIER_LOG="$sb/tiers.log" FAKE_CLIPPY_EXIT=13 \
+    "$sb/scripts/rue" premerge) >/dev/null 2>&1 || rc=$?
+  check "scripts/rue premerge: clippy failure is propagated" \
+    "$([ "$rc" -eq 13 ] && echo 0 || echo 1)"
+  check "scripts/rue premerge: clippy failure stops the tier run" \
+    "$(! grep -Fxq premerge "$sb/tiers.log" && echo 0 || echo 1)"
 
   rc=0
   (cd "$sb/work" && TIER_LOG="$sb/tiers.log" "$sb/scripts/rue" slow unexpected) \
