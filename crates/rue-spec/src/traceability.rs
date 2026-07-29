@@ -54,7 +54,10 @@
 //! }
 //! ```
 
-use rue_test_runner::{discover_files, load_test_files};
+use rue_test_runner::{
+    CI_EXECUTED_TARGETS, PlatformResponsibility, classify_platform_responsibility, discover_files,
+    load_test_files, runs_on_required_ci,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -108,6 +111,10 @@ pub struct TestReference {
     /// Full test name in the format `section::case_name`
     /// (e.g., "lexical.comments::line_comment_after_code").
     pub test_name: String,
+    /// Lines of Rue source the case compiles. Used by the focused-case gate:
+    /// a normative rule whose only evidence is a large program is coverage on
+    /// paper, but nothing in the failure output points at the rule.
+    pub source_lines: usize,
 }
 
 /// A complete traceability report linking specification paragraphs to tests.
@@ -143,7 +150,49 @@ pub struct TraceabilityReport {
     /// normative rule (erasing its coverage requirement) — as nearly happened
     /// with 3.7:49 on 2026-07-04.
     pub duplicate_rule_ids: Vec<String>,
+    /// How many cases each lane is responsible for executing.
+    pub responsibility_census: ResponsibilityCensus,
+    /// Cases excluded from coverage because their `only_on` scope names no
+    /// platform any required CI lane executes. Each entry is
+    /// `(test_name, only_on)`. Reported so the exclusion is visible rather than
+    /// silent; a rule left uncovered by it fails the gate the ordinary way.
+    pub platform_unreachable_cases: Vec<(String, Vec<String>)>,
 }
+
+/// How the corpus divides across the lanes that execute it.
+///
+/// Reported so the platform split is a visible fact of every traceability run
+/// rather than an implicit property of the workflow file.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ResponsibilityCensus {
+    /// Target-independent cases, owned by the Linux-complete lane.
+    pub semantic: usize,
+    /// Cases that build and run a program for the executing host's target.
+    pub native: usize,
+    /// Cases pinning architecture-specific output for a declared `target`.
+    pub backend: usize,
+}
+
+impl ResponsibilityCensus {
+    fn record(&mut self, responsibility: PlatformResponsibility) {
+        match responsibility {
+            PlatformResponsibility::Semantic => self.semantic += 1,
+            PlatformResponsibility::Native => self.native += 1,
+            PlatformResponsibility::Backend => self.backend += 1,
+        }
+    }
+}
+
+/// The largest program a spec case may use and still count as *focused*
+/// evidence for a normative rule.
+///
+/// A rule whose only coverage is a large multi-feature program is covered on
+/// paper only: when it regresses, the failure names the program rather than the
+/// rule, and the case usually fails for one of the dozen other rules it also
+/// touches first. Large programs remain valuable as integration and slow-tier
+/// coverage — they just cannot be a normative rule's sole evidence (RUE-1161).
+/// The largest case in the corpus today is 28 lines.
+pub const FOCUSED_CASE_MAX_SOURCE_LINES: usize = 40;
 
 /// Normative paragraphs that currently have no *running* test, tracked as known
 /// gaps pending compiler-feature implementation.
@@ -294,14 +343,37 @@ impl TraceabilityReport {
             .collect()
     }
 
+    /// Normative paragraphs whose every covering case exceeds
+    /// [`FOCUSED_CASE_MAX_SOURCE_LINES`].
+    ///
+    /// Such a rule has coverage only through a large program. Each entry is
+    /// `(paragraph_id, smallest_covering_case, its_source_lines)`.
+    pub fn unfocused_normative_coverage(&self) -> Vec<(&String, &str, usize)> {
+        self.paragraphs
+            .values()
+            .filter(|para| Self::is_normative(para))
+            .filter_map(|para| {
+                let tests = self.coverage.get(&para.id)?;
+                let smallest = tests.iter().min_by_key(|test| test.source_lines)?;
+                (smallest.source_lines > FOCUSED_CASE_MAX_SOURCE_LINES).then_some((
+                    &para.id,
+                    smallest.test_name.as_str(),
+                    smallest.source_lines,
+                ))
+            })
+            .collect()
+    }
+
     /// Whether the traceability gate should fail: any *unexpected* uncovered
-    /// normative rule, any stale allowlist entry, any orphan reference, or any
-    /// duplicate rule id.
+    /// normative rule, any stale allowlist entry, any orphan reference, any
+    /// duplicate rule id, or any normative rule covered only through a large
+    /// program.
     pub fn gate_failing(&self) -> bool {
         !self.unexpected_uncovered_normative_paragraphs().is_empty()
             || !self.stale_known_uncovered().is_empty()
             || !self.orphan_references.is_empty()
             || !self.duplicate_rule_ids.is_empty()
+            || !self.unfocused_normative_coverage().is_empty()
     }
 
     /// Returns the coverage percentage for normative paragraphs (0.0 to 100.0).
@@ -475,6 +547,49 @@ impl TraceabilityReport {
             );
             for (test_name, ref_id) in &self.orphan_references {
                 println!("  {} references non-existent '{}'", test_name, ref_id);
+            }
+            println!();
+        }
+
+        // Which lane owns executing each part of the corpus.
+        let census = self.responsibility_census;
+        println!(
+            "Platform responsibility: {} semantic (Linux-complete lane), {} native \
+             (host execution), {} backend (declared target)",
+            census.semantic, census.native, census.backend
+        );
+        println!();
+
+        // Cases whose platform scope names no required CI lane. They still run
+        // for a developer on that host, but nothing in CI executes them, so
+        // they cannot stand as evidence that a rule holds.
+        if !self.platform_unreachable_cases.is_empty() {
+            println!(
+                "Cases not executed by any required CI lane ({}, not counted as coverage):",
+                self.platform_unreachable_cases.len()
+            );
+            for (test_name, only_on) in &self.platform_unreachable_cases {
+                println!(
+                    "  {} is only_on {:?}; required lanes run {:?}",
+                    test_name, only_on, CI_EXECUTED_TARGETS
+                );
+            }
+            println!();
+        }
+
+        // Normative rules whose only evidence is a large program.
+        let unfocused = self.unfocused_normative_coverage();
+        if !unfocused.is_empty() {
+            println!(
+                "Normative paragraphs covered only through large programs ({}):",
+                unfocused.len()
+            );
+            for (id, test_name, lines) in unfocused {
+                println!(
+                    "  {} smallest covering case '{}' is {} lines (budget {}) — add a \
+                     focused case; the large program stays as integration coverage",
+                    id, test_name, lines, FOCUSED_CASE_MAX_SOURCE_LINES
+                );
             }
             println!();
         }
@@ -760,21 +875,35 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
     }
 
     // Process test files
+    let mut platform_unreachable_cases = Vec::new();
+    let mut responsibility_census = ResponsibilityCensus::default();
     for (_, test_file) in &test_files {
         for case in &test_file.case {
             let test_name = format!("{}::{}", test_file.section.id, case.name);
+            // `load_test_files` has already rejected ambiguous cases, so every
+            // case here classifies.
+            if let Ok(responsibility) = classify_platform_responsibility(case) {
+                responsibility_census.record(responsibility);
+            }
+            let reachable = runs_on_required_ci(&case.only_on);
+            if !reachable && !case.spec.is_empty() {
+                platform_unreachable_cases.push((test_name.clone(), case.only_on.clone()));
+            }
             let counts_as_coverage =
-                !case.skip && (case.preview.is_none() || case.preview_should_pass);
+                !case.skip && (case.preview.is_none() || case.preview_should_pass) && reachable;
 
             for spec_ref in &case.spec {
                 if let Some(tests) = coverage.get_mut(spec_ref) {
                     // A skipped or preview-allowed-to-fail case never exercises
                     // the rule, so it must not mark the paragraph as covered
-                    // (RUE-132). Its reference is still valid, so it is not an
-                    // orphan — it simply doesn't contribute coverage.
+                    // (RUE-132). The same holds along the platform axis: a case
+                    // scoped to a host no required lane runs never executes in
+                    // CI (RUE-1161). Their references are still valid, so they
+                    // are not orphans — they simply contribute no coverage.
                     if counts_as_coverage {
                         tests.push(TestReference {
                             test_name: test_name.clone(),
+                            source_lines: case.source.lines().count(),
                         });
                     }
                 } else {
@@ -789,6 +918,8 @@ pub fn generate_report(spec_dir: &Path, cases_dir: &Path) -> Result<Traceability
         coverage,
         orphan_references,
         duplicate_rule_ids,
+        responsibility_census,
+        platform_unreachable_cases,
     })
 }
 
@@ -1024,6 +1155,7 @@ fn main() { }
             "1.1:1".to_string(),
             vec![TestReference {
                 test_name: "test::case1".to_string(),
+                source_lines: 1,
             }],
         );
         coverage.insert("1.1:2".to_string(), vec![]);
@@ -1033,6 +1165,8 @@ fn main() { }
             coverage,
             orphan_references: vec![],
             duplicate_rule_ids: vec![],
+            responsibility_census: ResponsibilityCensus::default(),
+            platform_unreachable_cases: vec![],
         };
 
         assert_eq!(report.covered_count(), 1);
@@ -1121,6 +1255,107 @@ exit_code = 0
     }
 
     #[test]
+    fn platform_unreachable_cases_do_not_count_as_coverage() {
+        // Two rules, each covered by exactly one platform-scoped case: one
+        // scoped to a host a required lane runs, one scoped only to Intel
+        // macOS, which nothing in required CI executes (RUE-1161).
+        let spec = r#"
+{{ rule(id="1.1:1", cat="normative") }}
+Covered by a case a required lane runs.
+
+{{ rule(id="1.1:2", cat="normative") }}
+Referenced only by a case no required lane runs.
+"#;
+        let cases = r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "on_a_required_lane"
+spec = ["1.1:1"]
+only_on = ["aarch64-macos"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+
+[[case]]
+name = "on_no_lane"
+spec = ["1.1:2"]
+only_on = ["x86-64-macos"]
+source = "fn main() -> i32 { 0 }"
+exit_code = 0
+"#;
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::write(spec_dir.path().join("s.md"), spec).unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(cases_dir.path().join("c.toml"), cases).unwrap();
+
+        let report = generate_report(spec_dir.path(), cases_dir.path()).unwrap();
+
+        assert!(!report.coverage["1.1:1"].is_empty(), "native lane covers");
+        assert!(
+            report.coverage["1.1:2"].is_empty(),
+            "a case no required lane executes must not count as coverage"
+        );
+        assert_eq!(
+            report.platform_unreachable_cases,
+            vec![(
+                "t.section::on_no_lane".to_string(),
+                vec!["x86-64-macos".to_string()]
+            )]
+        );
+        // The reference is valid, so it is reported as unreachable, not orphaned.
+        assert!(report.orphan_references.is_empty());
+    }
+
+    #[test]
+    fn large_programs_cannot_be_a_normative_rules_only_coverage() {
+        let spec = r#"
+{{ rule(id="1.1:1", cat="normative") }}
+Covered only by a large program.
+
+{{ rule(id="1.1:2", cat="normative") }}
+Covered by the same large program and a focused case.
+"#;
+        let body = "    let _x: i32 = 0;\n".repeat(FOCUSED_CASE_MAX_SOURCE_LINES + 1);
+        let cases = format!(
+            r#"
+[section]
+id = "t.section"
+name = "T"
+
+[[case]]
+name = "large_program"
+spec = ["1.1:1", "1.1:2"]
+source = """
+fn main() -> i32 {{
+{body}    0
+}}
+"""
+exit_code = 0
+
+[[case]]
+name = "focused"
+spec = ["1.1:2"]
+source = "fn main() -> i32 {{ 0 }}"
+exit_code = 0
+"#
+        );
+        let spec_dir = tempfile::tempdir().unwrap();
+        fs::write(spec_dir.path().join("s.md"), spec).unwrap();
+        let cases_dir = tempfile::tempdir().unwrap();
+        fs::write(cases_dir.path().join("c.toml"), cases).unwrap();
+
+        let report = generate_report(spec_dir.path(), cases_dir.path()).unwrap();
+
+        let unfocused = report.unfocused_normative_coverage();
+        assert_eq!(unfocused.len(), 1, "got {unfocused:?}");
+        assert_eq!(unfocused[0].0, "1.1:1");
+        assert_eq!(unfocused[0].1, "t.section::large_program");
+        assert!(report.gate_failing());
+    }
+
+    #[test]
     fn test_known_uncovered_allowlist_gates_correctly() {
         // Build a report seeding EVERY allowlisted rule as an uncovered
         // normative paragraph (mirroring production, where they all exist), plus
@@ -1140,6 +1375,7 @@ exit_code = 0
                 let tests = if covered {
                     vec![TestReference {
                         test_name: "t::c".to_string(),
+                        source_lines: 1,
                     }]
                 } else {
                     vec![]
@@ -1157,6 +1393,8 @@ exit_code = 0
                 coverage,
                 orphan_references: vec![],
                 duplicate_rule_ids: vec![],
+                responsibility_census: ResponsibilityCensus::default(),
+                platform_unreachable_cases: vec![],
             }
         }
 

@@ -10,10 +10,15 @@ SPEC = importlib.util.spec_from_file_location("validate_ci_gate", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 SOURCE = Path(os.environ["RUE_CI_WORKFLOW"])
+# Under Buck the crate source is a declared input; a direct run falls back to
+# the checkout path the validator resolves on its own.
+TEST_RUNNER_SOURCE = Path(
+    os.environ.get("RUE_TEST_RUNNER_SOURCE", MODULE.TEST_RUNNER_SOURCE)
+)
 
 
 class GateValidatorTests(unittest.TestCase):
-    def validate_text(self, text, native_runner=None):
+    def validate_text(self, text, native_runner=None, test_runner=None):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
             path.write_text(text)
@@ -23,10 +28,18 @@ class GateValidatorTests(unittest.TestCase):
                 if native_runner is not None
                 else MODULE.NATIVE_RUNNER_SCRIPT.read_text()
             )
-            return MODULE.validate(path, runner_path)
+            test_runner_path = Path(directory) / "lib.rs"
+            test_runner_path.write_text(
+                test_runner
+                if test_runner is not None
+                else TEST_RUNNER_SOURCE.read_text()
+            )
+            return MODULE.validate(path, runner_path, test_runner_path)
 
     def test_current_workflow_is_valid(self):
-        self.assertEqual(MODULE.validate(SOURCE), [])
+        self.assertEqual(
+            MODULE.validate(SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, TEST_RUNNER_SOURCE), []
+        )
 
     def test_removing_or_renaming_job_fails_inventory(self):
         source = SOURCE.read_text()
@@ -69,6 +82,34 @@ class GateValidatorTests(unittest.TestCase):
         self.assertIn("platform-corpus responsibility drift", "\n".join(
             self.validate_text(changed)
         ))
+
+    def test_declared_platform_matrix_matches_the_harness(self):
+        self.assertEqual(
+            sorted(MODULE.ci_executed_targets(TEST_RUNNER_SOURCE.read_text())),
+            sorted(MODULE.PLATFORM_LANES),
+        )
+
+    def test_platform_declared_ci_executed_without_a_lane_fails(self):
+        runner = TEST_RUNNER_SOURCE.read_text().replace(
+            '"aarch64-macos"]', '"aarch64-macos", "riscv64-linux"]', 1
+        )
+        errors = "\n".join(self.validate_text(SOURCE.read_text(), test_runner=runner))
+        self.assertIn("CI_EXECUTED_TARGETS drift", errors)
+        self.assertIn("riscv64-linux", errors)
+
+    def test_dropping_a_native_lane_fails_the_platform_matrix(self):
+        changed = SOURCE.read_text().replace("os: macos-15", "os: macos-14", 1)
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("aarch64-macos is declared CI-executed", errors)
+
+    def test_unreadable_platform_matrix_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "absent.rs"
+            errors = MODULE.validate(SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, missing)
+        self.assertTrue(
+            any("platform responsibility matrix unreadable" in error for error in errors),
+            errors,
+        )
 
 
 if __name__ == "__main__":

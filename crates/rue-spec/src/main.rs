@@ -14,9 +14,18 @@
 //! # Run all specification tests
 //! ./buck2 run //crates/rue-spec:rue-spec
 //!
-//! # Filter tests by pattern
+//! # Filter tests by pattern (matches `section::case` test names)
 //! ./buck2 run //crates/rue-spec:rue-spec -- "arithmetic"
+//!
+//! # Filter by specification section or paragraph
+//! ./buck2 run //crates/rue-spec:rue-spec -- 4.2
+//! ./buck2 run //crates/rue-spec:rue-spec -- --spec 4.2:5
 //! ```
+//!
+//! An argument shaped like a specification ID (`4.2`, `4.3a`, `4.2:5`), or one
+//! passed with `--spec`, selects the cases citing it rather than being matched
+//! against test names. A selector that matches no case is an error, not an
+//! empty pass.
 //!
 //! ## Traceability Reports
 //!
@@ -110,6 +119,98 @@ fn run_case_wrapper(
     run_test_case(case, rue_binary).map_err(|e| RunError::fail(e.to_string()))
 }
 
+/// libtest flags that consume the argument after them. A paragraph-shaped
+/// value belonging to one of these is that flag's value, not a selector.
+const VALUE_TAKING_FLAGS: &[&str] = &[
+    "--skip",
+    "--format",
+    "--test-threads",
+    "--logfile",
+    "--color",
+    "-Z",
+];
+
+/// Whether `argument` has the shape of a specification selector: a section
+/// (`4.2`, `4.3a`) or a single paragraph (`4.2:5`).
+///
+/// libtest filters match *test names* (`section.id::case_name`), which never
+/// contain paragraph IDs — so before RUE-1161 the documented
+/// `scripts/rue spec 4.2` silently selected zero cases and reported a pass.
+fn is_spec_selector(argument: &str) -> bool {
+    let (section, paragraph) = match argument.split_once(':') {
+        Some((section, paragraph)) => (section, Some(paragraph)),
+        None => (argument, None),
+    };
+    let Some((chapter, subsection)) = section.split_once('.') else {
+        return false;
+    };
+    let chapter_ok = !chapter.is_empty() && chapter.bytes().all(|b| b.is_ascii_digit());
+    let subsection_ok = !subsection.is_empty()
+        && subsection
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b.is_ascii_lowercase())
+        && subsection.starts_with(|c: char| c.is_ascii_digit());
+    let paragraph_ok =
+        paragraph.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    chapter_ok && subsection_ok && paragraph_ok
+}
+
+/// Whether a case citing `spec_ids` is selected by `selector`.
+///
+/// A bare section selector (`4.2`) matches every paragraph in that section; a
+/// full paragraph selector (`4.2:5`) matches only that paragraph.
+fn selector_matches(selector: &str, spec_ids: &[String]) -> bool {
+    if selector.contains(':') {
+        return spec_ids.iter().any(|id| id == selector);
+    }
+    spec_ids.iter().any(|id| {
+        id.split_once(':')
+            .is_some_and(|(section, _)| section == selector)
+    })
+}
+
+/// Split raw argv into specification selectors and the arguments the libtest
+/// harness should still parse.
+fn partition_spec_selectors(raw_args: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut selectors = Vec::new();
+    let mut harness_args = Vec::new();
+    let mut arguments = raw_args.iter();
+
+    if let Some(program) = arguments.next() {
+        harness_args.push(program.clone());
+    }
+
+    let mut previous: Option<&str> = None;
+    let mut expecting_selector = false;
+    for argument in arguments {
+        if expecting_selector {
+            selectors.push(argument.clone());
+            expecting_selector = false;
+            previous = None;
+            continue;
+        }
+        if argument == "--spec" {
+            expecting_selector = true;
+            continue;
+        }
+        if let Some(value) = argument.strip_prefix("--spec=") {
+            selectors.push(value.to_string());
+            previous = None;
+            continue;
+        }
+        let is_flag_value = previous.is_some_and(|flag| VALUE_TAKING_FLAGS.contains(&flag));
+        if !is_flag_value && is_spec_selector(argument) {
+            selectors.push(argument.clone());
+            previous = None;
+            continue;
+        }
+        previous = Some(argument.as_str());
+        harness_args.push(argument.clone());
+    }
+
+    (selectors, harness_args)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum PreviewDisposition {
     Ignore(String),
@@ -171,6 +272,8 @@ fn main() {
         return;
     }
 
+    let (spec_selectors, harness_args) = partition_spec_selectors(&raw_args);
+
     let platform_selection = PlatformCaseSelection::from_env().unwrap_or_else(|error| {
         eprintln!("error: {error}");
         std::process::exit(2);
@@ -204,6 +307,13 @@ fn main() {
             if !platform_selection.includes(&case.only_on) {
                 continue;
             }
+            if !spec_selectors.is_empty()
+                && !spec_selectors
+                    .iter()
+                    .any(|selector| selector_matches(selector, &case.spec))
+            {
+                continue;
+            }
             let test_name = format!("{}::{}", section_id, case.name);
             let skip = case.skip;
             let is_preview = case.preview.is_some();
@@ -231,10 +341,21 @@ fn main() {
     }
 
     if tests.is_empty() {
-        eprintln!(
-            "error: platform case selection {platform_selection:?} selected no spec cases on {}",
-            rue_test_runner::get_host_target()
-        );
+        if spec_selectors.is_empty() {
+            eprintln!(
+                "error: platform case selection {platform_selection:?} selected no spec cases on {}",
+                rue_test_runner::get_host_target()
+            );
+        } else {
+            // A filter that matches nothing must not report a pass: that is how
+            // a mistyped paragraph ID turns into false evidence that a rule is
+            // exercised (RUE-1161).
+            eprintln!(
+                "error: no spec case cites {} (selection {platform_selection:?} on {})",
+                spec_selectors.join(", "),
+                rue_test_runner::get_host_target()
+            );
+        }
         std::process::exit(1);
     }
 
@@ -245,13 +366,88 @@ fn main() {
     //
     // Preview tests with `preview_should_pass = true` fail normally,
     // providing real test output for implemented portions of preview features.
-    Harness::with_env().discover(tests).main();
+    Harness::with_args(harness_args).discover(tests).main();
 }
 
 #[cfg(test)]
 mod runner_tests {
     use super::*;
     use rue_test_runner::TestFailure;
+
+    fn selectors(args: &[&str]) -> Vec<String> {
+        let raw: Vec<String> = std::iter::once("rue-spec")
+            .chain(args.iter().copied())
+            .map(str::to_string)
+            .collect();
+        partition_spec_selectors(&raw).0
+    }
+
+    fn harness_args(args: &[&str]) -> Vec<String> {
+        let raw: Vec<String> = std::iter::once("rue-spec")
+            .chain(args.iter().copied())
+            .map(str::to_string)
+            .collect();
+        partition_spec_selectors(&raw).1
+    }
+
+    #[test]
+    fn spec_selector_shape_matches_section_and_paragraph_ids() {
+        assert!(is_spec_selector("4.2"));
+        assert!(is_spec_selector("4.3a"));
+        assert!(is_spec_selector("4.2:5"));
+        assert!(is_spec_selector("11.10:123"));
+
+        assert!(!is_spec_selector("arithmetic"));
+        assert!(!is_spec_selector("expressions.arithmetic"));
+        assert!(!is_spec_selector("--quiet"));
+        assert!(!is_spec_selector("4."));
+        assert!(!is_spec_selector("4.2:"));
+        assert!(!is_spec_selector("4.2:x"));
+    }
+
+    #[test]
+    fn paragraph_selectors_are_split_out_of_the_harness_arguments() {
+        assert_eq!(selectors(&["--quiet", "4.2"]), vec!["4.2".to_string()]);
+        assert_eq!(
+            harness_args(&["--quiet", "4.2"]),
+            vec!["rue-spec".to_string(), "--quiet".to_string()]
+        );
+
+        assert_eq!(selectors(&["--spec", "4.2:5"]), vec!["4.2:5".to_string()]);
+        assert_eq!(selectors(&["--spec=4.2:5"]), vec!["4.2:5".to_string()]);
+
+        // A name filter still reaches libtest untouched.
+        assert!(selectors(&["arithmetic"]).is_empty());
+        assert_eq!(
+            harness_args(&["arithmetic"]),
+            vec!["rue-spec".to_string(), "arithmetic".to_string()]
+        );
+
+        // A paragraph-shaped value belonging to a flag stays that flag's value.
+        assert!(selectors(&["--skip", "4.2"]).is_empty());
+        assert_eq!(
+            harness_args(&["--skip", "4.2"]),
+            vec![
+                "rue-spec".to_string(),
+                "--skip".to_string(),
+                "4.2".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn section_selectors_match_every_paragraph_in_the_section() {
+        let cited = vec!["4.2:5".to_string(), "9.1:2".to_string()];
+
+        assert!(selector_matches("4.2", &cited));
+        assert!(selector_matches("9.1", &cited));
+        assert!(selector_matches("4.2:5", &cited));
+
+        assert!(!selector_matches("4.2:6", &cited));
+        assert!(!selector_matches("4.20", &cited));
+        assert!(!selector_matches("4.1", &cited));
+        assert!(!selector_matches("4.2", &[]));
+    }
 
     #[test]
     fn preview_disposition_rejects_xpass_and_fatal_failure() {

@@ -596,7 +596,15 @@ rue_sh_test(
 rue_sh_test(
     name = "ci-gate-validation",
     test = "scripts/validate-ci-gate.py",
-    args = ["$(location :required-ci-workflows)/.github/workflows/ci.yml"],
+    args = [
+        "$(location :required-ci-workflows)/.github/workflows/ci.yml",
+        # RUE-1161: the harness's declared platform responsibility matrix is a
+        # real input, so a lane added to (or removed from) either side without
+        # the other fails here instead of silently crediting specification
+        # coverage to cases no lane executes.
+        "--test-runner-source",
+        "$(location //crates/rue-test-runner:platform-responsibility-source)/src/lib.rs",
+    ],
     resources = [
         "scripts/ci-required-results.py",
         "scripts/run-native-platform-corpus.sh",
@@ -614,6 +622,7 @@ rue_sh_test(
     env = {
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",
+        "RUE_TEST_RUNNER_SOURCE": "$(location //crates/rue-test-runner:platform-responsibility-source)/src/lib.rs",
     },
 )
 

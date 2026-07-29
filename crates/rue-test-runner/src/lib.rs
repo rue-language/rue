@@ -429,6 +429,40 @@ impl Case {
             || self.expected_stackframe.is_some()
     }
 
+    /// Whether verifying this case requires *running* the produced binary, as
+    /// opposed to only building it.
+    ///
+    /// `compile_only` stops at the executable, and the warning assertions are
+    /// compile-time. Only these assertions need a host that can execute the
+    /// case's target, which is what makes cross-compilation to a foreign
+    /// architecture legal for some cases and impossible for others.
+    pub fn requires_program_execution(&self) -> bool {
+        !self.compile_only
+            && (self.exit_code.is_some()
+                || self.expected_stdout.is_some()
+                || self.runtime_error.is_some()
+                || self.runtime_exit_code.is_some()
+                || self.stdin.is_some()
+                || self.stderr_contains.is_some())
+    }
+
+    /// The names of the backend-specific golden assertions this case sets, in
+    /// declaration order. Used to name the offending fields when a case pins
+    /// architecture-specific output without declaring its `target`.
+    pub fn target_specific_golden_ir_fields(&self) -> Vec<&'static str> {
+        [
+            ("expected_mir", self.expected_mir.is_some()),
+            ("expected_lowering", self.expected_lowering.is_some()),
+            ("expected_liveness", self.expected_liveness.is_some()),
+            ("expected_regalloc", self.expected_regalloc.is_some()),
+            ("expected_asm", self.expected_asm.is_some()),
+            ("expected_stackframe", self.expected_stackframe.is_some()),
+        ]
+        .into_iter()
+        .filter_map(|(field, present)| present.then_some(field))
+        .collect()
+    }
+
     /// Whether this case carries assertions that require actually compiling
     /// the program to a binary (and, unless `compile_only`, running it).
     ///
@@ -613,6 +647,190 @@ impl PlatformCaseSelection {
             Self::Native => !only_on.is_empty() && should_skip_for_platform(only_on).is_none(),
         }
     }
+}
+
+/// The platforms a required CI lane actually executes cases on.
+///
+/// This is the executable half of the platform responsibility matrix
+/// (RUE-1160/RUE-1161): `x86-64-linux` runs the complete target-independent
+/// corpus, and the two native lanes run every `only_on`-scoped case for their
+/// host. `x86-64-macos` is in [`KNOWN_TARGETS`] because a developer can run the
+/// suite on an Intel Mac, but no required lane does — a case scoped only to it
+/// executes nowhere in CI, so it must not be credited as specification coverage.
+///
+/// `scripts/validate-ci-gate.py` keeps this list and `.github/workflows/ci.yml`
+/// in lockstep, so adding a lane (or dropping one) cannot silently diverge from
+/// what the harness believes CI covers.
+pub const CI_EXECUTED_TARGETS: &[&str] = &["x86-64-linux", "aarch64-linux", "aarch64-macos"];
+
+/// The architecture component of a platform name in [`KNOWN_TARGETS`], i.e.
+/// everything before the trailing `-<os>` (`x86-64-linux` -> `x86-64`).
+///
+/// Returns `None` for a name that is not a known platform; callers reach this
+/// only after [`validate_only_on_targets`] has accepted the name.
+pub fn target_architecture(target: &str) -> Option<&str> {
+    if !KNOWN_TARGETS.contains(&target) {
+        return None;
+    }
+    target.rsplit_once('-').map(|(arch, _os)| arch)
+}
+
+/// Whether a case scoped by `only_on` executes on at least one platform that
+/// required CI runs.
+///
+/// An empty `only_on` means the case is target-independent and runs everywhere,
+/// including the Linux-complete lane.
+pub fn runs_on_required_ci(only_on: &[String]) -> bool {
+    only_on.is_empty()
+        || only_on
+            .iter()
+            .any(|platform| CI_EXECUTED_TARGETS.contains(&platform.as_str()))
+}
+
+/// Which lane is responsible for executing a case (RUE-1161).
+///
+/// The classification is structural — derived from the assertions a case
+/// actually makes — so it cannot drift from what the case does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformResponsibility {
+    /// Target-independent: diagnostics, semantic assertions, and golden IR up
+    /// to AIR/CFG. The Linux-complete lane owns these; running them again on
+    /// every native host would be three copies of one result.
+    Semantic,
+    /// Compiles and runs a real program for the host's native target. The
+    /// Linux-complete lane owns the unscoped ones; an `only_on` list hands the
+    /// case to the matching native lane as well.
+    Native,
+    /// Pins architecture-specific output for an explicitly declared `target`.
+    /// Cross-compiled emission is host-independent and stays on the
+    /// Linux-complete lane; a backend case that also *executes* belongs to the
+    /// native lane for its architecture.
+    Backend,
+}
+
+/// A case whose platform responsibility cannot be determined from its metadata.
+///
+/// Each variant describes a declaration that leaves it genuinely undecidable
+/// which architecture a case is about, or that asks a host to execute a program
+/// built for a different one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlatformResponsibilityAmbiguity {
+    /// Backend-specific golden output with no declared `target`: the expected
+    /// text is one architecture's, but nothing says which, so the case silently
+    /// pins whatever the compiler's default target happens to be.
+    UndeclaredArchitecture { fields: String },
+    /// A `target` whose architecture differs from a host in `only_on`. The case
+    /// claims two architectures at once.
+    ScopeArchitectureMismatch { target: String, platform: String },
+    /// A `target` combined with assertions that run the program, and no
+    /// `only_on` scope: the case builds for one architecture and then asks
+    /// whichever host is running the suite to execute the result.
+    UnscopedForeignExecution { target: String },
+}
+
+/// A [`PlatformResponsibilityAmbiguity`] located in a specific case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlatformResponsibilityError {
+    /// The name of the offending test case.
+    pub test_name: String,
+    /// The section ID the test belongs to.
+    pub section_id: String,
+    /// What makes the case's platform responsibility undecidable.
+    pub ambiguity: PlatformResponsibilityAmbiguity,
+}
+
+impl std::fmt::Display for PlatformResponsibilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "test '{}::{}' ", self.section_id, self.test_name)?;
+        match &self.ambiguity {
+            PlatformResponsibilityAmbiguity::UndeclaredArchitecture { fields } => write!(
+                f,
+                "asserts backend-specific golden output ({fields}) without declaring \
+                 `target`. That output belongs to one architecture; add \
+                 `target = \"<arch>-<os>\"` so the case declares which."
+            ),
+            PlatformResponsibilityAmbiguity::ScopeArchitectureMismatch { target, platform } => {
+                write!(
+                    f,
+                    "declares `target = \"{target}\"` but is scoped to `only_on` platform \
+                     '{platform}' of a different architecture. Scope the case to hosts of \
+                     its own architecture, or drop the mismatched entry."
+                )
+            }
+            PlatformResponsibilityAmbiguity::UnscopedForeignExecution { target } => write!(
+                f,
+                "declares `target = \"{target}\"` and asserts runtime behavior, but no \
+                 `only_on` scope. Whichever host runs the suite would be asked to execute a \
+                 program built for {target}. Add `only_on` listing the hosts of that \
+                 architecture, or use `compile_only` and keep it a cross-compilation case."
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PlatformResponsibilityError {}
+
+/// Classify which lane owns executing `case`, or explain why its platform
+/// responsibility is ambiguous.
+pub fn classify_platform_responsibility(
+    case: &Case,
+) -> Result<PlatformResponsibility, PlatformResponsibilityAmbiguity> {
+    let executes = case.has_execution_assertions();
+
+    if case.has_target_specific_golden_ir_assertions() && case.target.is_none() {
+        return Err(PlatformResponsibilityAmbiguity::UndeclaredArchitecture {
+            fields: case.target_specific_golden_ir_fields().join(", "),
+        });
+    }
+
+    let Some(target) = case.target.as_deref() else {
+        return Ok(if executes {
+            PlatformResponsibility::Native
+        } else {
+            PlatformResponsibility::Semantic
+        });
+    };
+
+    // An unknown `target` is the compiler driver's error to report, not a
+    // responsibility ambiguity; classification stays silent about it.
+    if let Some(target_arch) = target_architecture(target) {
+        for platform in &case.only_on {
+            if target_architecture(platform).is_some_and(|arch| arch != target_arch) {
+                return Err(PlatformResponsibilityAmbiguity::ScopeArchitectureMismatch {
+                    target: target.to_string(),
+                    platform: platform.clone(),
+                });
+            }
+        }
+    }
+
+    // Cross-compiling and stopping at the executable is host-independent; only
+    // running the result needs a host of the declared architecture.
+    if case.requires_program_execution() && case.only_on.is_empty() {
+        return Err(PlatformResponsibilityAmbiguity::UnscopedForeignExecution {
+            target: target.to_string(),
+        });
+    }
+
+    Ok(PlatformResponsibility::Backend)
+}
+
+/// Validate that every case in a file declares an unambiguous platform
+/// responsibility. Returns one error per offending case.
+pub fn validate_platform_responsibility(test_file: &TestFile) -> Vec<PlatformResponsibilityError> {
+    test_file
+        .case
+        .iter()
+        .filter_map(|case| {
+            classify_platform_responsibility(case)
+                .err()
+                .map(|ambiguity| PlatformResponsibilityError {
+                    test_name: case.name.clone(),
+                    section_id: test_file.section.id.clone(),
+                    ambiguity,
+                })
+        })
+        .collect()
 }
 
 /// Check if a test should be skipped based on `only_on` restrictions.
@@ -1635,6 +1853,7 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
     let mut stray_error_assertions: Vec<StrayErrorAssertionError> = Vec::new();
     let mut bare_compile_fail: Vec<BareCompileFailError> = Vec::new();
     let mut compile_fail_exit_codes: Vec<CompileFailExitCodeError> = Vec::new();
+    let mut platform_responsibility: Vec<PlatformResponsibilityError> = Vec::new();
 
     let toml_files = discover_files(cases_dir, "toml").map_err(|error| {
         format!(
@@ -1674,6 +1893,11 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
                 // Reject runtime exit-code assertions on cases that never
                 // produce or execute a program.
                 compile_fail_exit_codes.extend(validate_compile_fail_exit_codes(&spec));
+
+                // Reject cases whose platform responsibility is ambiguous: an
+                // architecture-specific expectation with no declared target, or
+                // a declared target a scoped host cannot execute (RUE-1161).
+                platform_responsibility.extend(validate_platform_responsibility(&spec));
 
                 // Build a relative path from cases_dir to create the identifier
                 // e.g., "expressions/match" for "cases/expressions/match.toml"
@@ -1747,6 +1971,19 @@ pub fn load_test_files(cases_dir: &Path) -> Result<Vec<(String, TestFile)>, Stri
             "{} `compile_fail` case(s) have no error assertion:\n  - {}",
             bare_compile_fail.len(),
             bare_compile_fail
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n  - ")
+        ));
+    }
+
+    // Report cases with an undecidable platform responsibility.
+    if !platform_responsibility.is_empty() {
+        return Err(format!(
+            "{} case(s) have an ambiguous platform responsibility:\n  - {}",
+            platform_responsibility.len(),
+            platform_responsibility
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
@@ -4236,6 +4473,192 @@ exit_code = 42
                 "test harness target whitelist is missing compiler target {target}"
             );
         }
+    }
+
+    #[test]
+    fn ci_executed_targets_are_known_platforms() {
+        for target in CI_EXECUTED_TARGETS {
+            assert!(
+                KNOWN_TARGETS.contains(target),
+                "CI-executed platform {target} is not a known target name"
+            );
+        }
+        // Every compiler target must be executed somewhere in required CI, or a
+        // backend's runtime behavior would only ever be cross-compiled.
+        for target in Target::all() {
+            assert!(
+                CI_EXECUTED_TARGETS.contains(&target.name()),
+                "compiler target {target} has no required CI lane executing its cases"
+            );
+        }
+    }
+
+    #[test]
+    fn required_ci_reachability_follows_the_platform_matrix() {
+        assert!(runs_on_required_ci(&[]), "unscoped cases run everywhere");
+        assert!(runs_on_required_ci(&["aarch64-macos".to_string()]));
+        assert!(runs_on_required_ci(&[
+            "x86-64-macos".to_string(),
+            "x86-64-linux".to_string(),
+        ]));
+        // Intel macOS is a legal host for a developer, but no required lane
+        // runs it, so a case scoped only to it executes nowhere in CI.
+        assert!(!runs_on_required_ci(&["x86-64-macos".to_string()]));
+    }
+
+    #[test]
+    fn target_architecture_splits_known_platform_names() {
+        assert_eq!(target_architecture("x86-64-linux"), Some("x86-64"));
+        assert_eq!(target_architecture("x86-64-macos"), Some("x86-64"));
+        assert_eq!(target_architecture("aarch64-macos"), Some("aarch64"));
+        assert_eq!(target_architecture("riscv64-linux"), None);
+    }
+
+    fn case_with(mutate: impl FnOnce(&mut Case)) -> Case {
+        let mut case = Case {
+            name: "case".to_string(),
+            source: "fn main() -> i32 { 0 }".to_string(),
+            ..Default::default()
+        };
+        mutate(&mut case);
+        case
+    }
+
+    #[test]
+    fn responsibility_classifies_target_independent_cases_as_semantic() {
+        let diagnostic = case_with(|case| {
+            case.compile_fail = true;
+            case.error_contains = ErrorContains(vec!["type mismatch".to_string()]);
+        });
+        assert_eq!(
+            classify_platform_responsibility(&diagnostic),
+            Ok(PlatformResponsibility::Semantic)
+        );
+
+        let golden_air = case_with(|case| case.expected_air = Some("air {}".to_string()));
+        assert_eq!(
+            classify_platform_responsibility(&golden_air),
+            Ok(PlatformResponsibility::Semantic)
+        );
+    }
+
+    #[test]
+    fn responsibility_classifies_executing_cases_as_native() {
+        let unscoped = case_with(|case| case.exit_code = Some(0));
+        assert_eq!(
+            classify_platform_responsibility(&unscoped),
+            Ok(PlatformResponsibility::Native)
+        );
+
+        let scoped = case_with(|case| {
+            case.exit_code = Some(0);
+            case.only_on = vec!["aarch64-macos".to_string()];
+        });
+        assert_eq!(
+            classify_platform_responsibility(&scoped),
+            Ok(PlatformResponsibility::Native)
+        );
+    }
+
+    #[test]
+    fn responsibility_classifies_declared_cross_compilation_as_backend() {
+        let emit_only = case_with(|case| {
+            case.target = Some("aarch64-linux".to_string());
+            case.expected_asm = Some("ret".to_string());
+        });
+        assert_eq!(
+            classify_platform_responsibility(&emit_only),
+            Ok(PlatformResponsibility::Backend)
+        );
+
+        // Cross-compiling without running the result is host-independent, so
+        // it needs no `only_on` scope.
+        let cross_compile_only = case_with(|case| {
+            case.target = Some("aarch64-linux".to_string());
+            case.compile_only = true;
+        });
+        assert_eq!(
+            classify_platform_responsibility(&cross_compile_only),
+            Ok(PlatformResponsibility::Backend)
+        );
+
+        let executed_on_its_own_arch = case_with(|case| {
+            case.target = Some("aarch64-linux".to_string());
+            case.exit_code = Some(0);
+            case.only_on = vec!["aarch64-linux".to_string(), "aarch64-macos".to_string()];
+        });
+        assert_eq!(
+            classify_platform_responsibility(&executed_on_its_own_arch),
+            Ok(PlatformResponsibility::Backend)
+        );
+    }
+
+    #[test]
+    fn responsibility_rejects_backend_golden_output_without_a_target() {
+        let ambiguous = case_with(|case| {
+            case.expected_asm = Some("ret".to_string());
+            case.expected_regalloc = Some("v0 -> x0".to_string());
+        });
+        assert_eq!(
+            classify_platform_responsibility(&ambiguous),
+            Err(PlatformResponsibilityAmbiguity::UndeclaredArchitecture {
+                fields: "expected_regalloc, expected_asm".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn responsibility_rejects_foreign_architecture_execution() {
+        let unscoped = case_with(|case| {
+            case.target = Some("aarch64-linux".to_string());
+            case.exit_code = Some(0);
+        });
+        assert_eq!(
+            classify_platform_responsibility(&unscoped),
+            Err(PlatformResponsibilityAmbiguity::UnscopedForeignExecution {
+                target: "aarch64-linux".to_string(),
+            })
+        );
+
+        let mismatched = case_with(|case| {
+            case.target = Some("aarch64-linux".to_string());
+            case.exit_code = Some(0);
+            case.only_on = vec!["x86-64-linux".to_string()];
+        });
+        assert_eq!(
+            classify_platform_responsibility(&mismatched),
+            Err(PlatformResponsibilityAmbiguity::ScopeArchitectureMismatch {
+                target: "aarch64-linux".to_string(),
+                platform: "x86-64-linux".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn load_rejects_ambiguous_platform_responsibility() {
+        let directory = tempfile::tempdir().expect("temporary cases directory");
+        std::fs::write(
+            directory.path().join("cases.toml"),
+            r#"
+[section]
+id = "test.section"
+name = "Test"
+
+[[case]]
+name = "undeclared_arch"
+source = "fn main() -> i32 { 0 }"
+expected_asm = "ret"
+"#,
+        )
+        .expect("write case file");
+
+        let error = load_test_files(directory.path()).expect_err("ambiguous case must not load");
+        assert!(
+            error.contains("ambiguous platform responsibility")
+                && error.contains("undeclared_arch")
+                && error.contains("expected_asm"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
