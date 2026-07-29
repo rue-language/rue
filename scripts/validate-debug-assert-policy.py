@@ -47,7 +47,7 @@ ALLOWANCES = {
     "crates/rue-compiler/src/artifact_views.rs": Allowance(7, "redundant typed-view owner and bounds checks"),
     "crates/rue-compiler/src/definition_snapshot.rs": Allowance(1, "redundant definition arena identity check"),
     "crates/rue-compiler/src/diagnostic_attempt_store.rs": Allowance(2, "redundant diagnostic retention accounting"),
-    "crates/rue-compiler/src/parsed_modules.rs": Allowance(2, "redundant source ownership checks"),
+    "crates/rue-compiler/src/parsed_modules.rs": Allowance(1, "redundant source ownership check"),
     "crates/rue-compiler/src/query_graph.rs": Allowance(3, "redundant query-node lifecycle checks"),
     "crates/rue-compiler/src/revisioned_query_database.rs": Allowance(
         2, "redundant memo-retention and canonical-root accounting"

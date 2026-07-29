@@ -2996,7 +2996,6 @@ mod tests {
             .program()
             .unwrap()
             .clone();
-        crate::parsed_modules::reset_parse_operation_entries();
         let closed = session
             .close_import_discovery(ImportObservationLedger::default())
             .unwrap();
@@ -3005,7 +3004,6 @@ mod tests {
         assert!(Arc::ptr_eq(session.published_owner().unwrap(), &staged));
         assert_eq!(closed.parse_work().syntax.lexer_invocations, 1);
         assert_eq!(closed.parse_work().syntax.parser_invocations, 1);
-        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert_eq!(
             session.work().last_parse,
             crate::ParsedModulesWork::default()
@@ -3014,7 +3012,6 @@ mod tests {
         let exact = session.update_for_presentation(&source);
         assert_eq!(exact.work().syntax.lexer_invocations, 0);
         assert_eq!(exact.work().syntax.parser_invocations, 0);
-        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert!(Arc::ptr_eq(exact.result_owner().unwrap(), &staged));
     }
 
@@ -3078,7 +3075,6 @@ mod tests {
             1
         );
 
-        crate::parsed_modules::reset_parse_operation_entries();
         session
             .stage_import_discovery(
                 &original,
@@ -3089,7 +3085,6 @@ mod tests {
             .unwrap();
         let changed_context = session.discovery_attempt().unwrap().parse_work();
         assert_eq!(changed_context, crate::ParsedModulesWork::default());
-        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
 
         session
             .stage_import_discovery(

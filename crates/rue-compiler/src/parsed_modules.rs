@@ -4,13 +4,8 @@
 //! universe, while [`ParsedProgram`] provides the sole parsed-program
 //! representation used by semantic compilation.
 
-#[cfg(test)]
-use std::collections::HashMap;
-use std::sync::Arc;
-
-#[cfg(test)]
-use std::cell::Cell;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 #[cfg(test)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -775,11 +770,9 @@ impl ParsedModule {
 pub struct ParsedModulesWork {
     /// Lexing and parsing performed for modules that could not be reused.
     pub syntax: SyntaxWork,
-    /// Previous program modules inserted into the point-lookup index.
-    pub previous_modules_indexed: usize,
     /// Snapshot modules classified by this assembly.
     pub modules_considered: usize,
-    /// Point lookups performed against the previous-module index.
+    /// Point lookups performed against the retained per-module parse queries.
     pub previous_module_lookups: usize,
     /// Entire ParsedModule Arcs retained unchanged.
     pub modules_reused: usize,
@@ -800,7 +793,6 @@ impl ParsedModulesWork {
         self.syntax.parser_invocations += other.syntax.parser_invocations;
         self.syntax.lexed_bytes += other.syntax.lexed_bytes;
         self.syntax.tokens += other.syntax.tokens;
-        self.previous_modules_indexed += other.previous_modules_indexed;
         self.modules_considered += other.modules_considered;
         self.previous_module_lookups += other.previous_module_lookups;
         self.modules_reused += other.modules_reused;
@@ -1045,104 +1037,6 @@ pub struct ParseInvalidationSummary {
     pub removed: Vec<ModuleId>,
 }
 
-/// Result and structural work from one canonical parse-session update.
-#[cfg(test)]
-#[derive(Debug)]
-pub struct CanonicalParseUpdate {
-    result: Result<Arc<ParsedProgram>, CompileErrors>,
-    work: ParsedModulesWork,
-    invalidation: ParseInvalidationSummary,
-}
-
-#[cfg(test)]
-impl CanonicalParseUpdate {
-    #[cfg(test)]
-    pub(crate) fn result(&self) -> Result<&Arc<ParsedProgram>, &CompileErrors> {
-        self.result.as_ref()
-    }
-
-    pub fn into_result(self) -> Result<Arc<ParsedProgram>, CompileErrors> {
-        self.result
-    }
-
-    pub fn work(&self) -> ParsedModulesWork {
-        self.work
-    }
-
-    pub fn invalidation(&self) -> &ParseInvalidationSummary {
-        &self.invalidation
-    }
-}
-
-/// Parse one snapshot against an explicit family-owned successful baseline.
-#[cfg(test)]
-pub(crate) fn parse_canonical_snapshot(
-    snapshot: &SourceSnapshot,
-    baseline: Option<&ParsedProgram>,
-) -> CanonicalParseUpdate {
-    parse_snapshot_in_order(snapshot, baseline)
-}
-
-#[cfg(test)]
-fn parse_snapshot_in_order(
-    snapshot: &SourceSnapshot,
-    baseline: Option<&ParsedProgram>,
-) -> CanonicalParseUpdate {
-    record_parse_operation_entry();
-    let invalidation = classify_invalidation(snapshot, baseline);
-    let outcome = parse_source_snapshot_modules_reusing_with_work(snapshot, baseline);
-    CanonicalParseUpdate {
-        result: outcome.result.map(Arc::new),
-        work: outcome.work,
-        invalidation,
-    }
-}
-
-/// Validate an externally produced exact-snapshot program without retaining it
-/// outside the typed parse family.
-#[cfg(test)]
-pub(crate) fn adopt_exact_parsed_program(
-    snapshot: &SourceSnapshot,
-    baseline: Option<&ParsedProgram>,
-    program: Arc<ParsedProgram>,
-    work: ParsedModulesWork,
-) -> CanonicalParseUpdate {
-    record_parse_operation_entry();
-    let invalidation = classify_invalidation(snapshot, baseline);
-    let result = if program.belongs_to_exact_snapshot(snapshot) {
-        Ok(program)
-    } else {
-        Err(CompileErrors::from(invalid_input(
-            "adopted parsed program belongs to a foreign source snapshot",
-        )))
-    };
-    CanonicalParseUpdate {
-        result,
-        work,
-        invalidation,
-    }
-}
-
-#[cfg(test)]
-thread_local! {
-    static PARSE_OPERATION_ENTRIES: Cell<usize> = const { Cell::new(0) };
-}
-
-#[cfg(test)]
-fn record_parse_operation_entry() {
-    PARSE_OPERATION_ENTRIES.with(|entries| entries.set(entries.get() + 1));
-}
-
-#[cfg(test)]
-pub(crate) fn reset_parse_operation_entries() {
-    PARSE_OPERATION_ENTRIES.with(|entries| entries.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn parse_operation_entries() -> usize {
-    PARSE_OPERATION_ENTRIES.with(Cell::get)
-}
-
 /// Invalidation classification for a strictly-additive trusted successor
 /// (RUE-1112): relative to its committed predecessor exactly the appended
 /// modules are added — nothing is removed, rebound, or reparsed — so only the
@@ -1211,44 +1105,18 @@ pub(crate) fn classify_invalidation(
     summary
 }
 
-#[cfg(test)]
-pub(crate) struct ParsedModulesOutcome {
-    pub(crate) result: Result<ParsedProgram, CompileErrors>,
-    pub(crate) work: ParsedModulesWork,
-}
-
-/// Parse every snapshot module independently and assemble canonical artifacts.
+/// Parse one snapshot through the canonical session parse query.
+///
+/// Tests that only need a parsed program for a snapshot get it the way
+/// production does: a fresh [`CompilerSession`](crate::CompilerSession) update.
+/// There is no second whole-program assembly to keep in agreement.
 #[cfg(test)]
 pub(crate) fn parse_source_snapshot_modules(
     snapshot: &SourceSnapshot,
-) -> Result<ParsedProgram, CompileErrors> {
-    parse_source_snapshot_modules_reusing(snapshot, None).map(|(program, _)| program)
-}
-
-/// Reuse exact syntax payloads while preserving canonical ModuleId diagnostic order.
-///
-/// Previous modules are indexed once by FileId. Hash-map iteration never
-/// drives parsing, diagnostics, or artifact order; every snapshot module is
-/// visited in canonical ModuleId order and performs at most one point lookup.
-/// Caller-ordered syntax diagnostics are handled by the explicit AST
-/// presentation adapter rather than another parsed-program representation.
-#[cfg(test)]
-pub(crate) fn parse_source_snapshot_modules_reusing(
-    snapshot: &SourceSnapshot,
-    previous: Option<&ParsedProgram>,
-) -> Result<(ParsedProgram, ParsedModulesWork), CompileErrors> {
-    let outcome = parse_source_snapshot_modules_reusing_with_work(snapshot, previous);
-    outcome.result.map(|program| (program, outcome.work))
-}
-
-/// Parse one stable module and return the exact syntax work performed.
-#[cfg(test)]
-pub(crate) fn parse_source_snapshot_module_with_stats(
-    snapshot: &SourceSnapshot,
-    module: &ModuleId,
-) -> Result<(Arc<ParsedModule>, SyntaxWork), CompileErrors> {
-    let (result, work) = parse_source_snapshot_module(snapshot, module);
-    result.map(|module| (module, work))
+) -> Result<Arc<ParsedProgram>, CompileErrors> {
+    crate::CompilerSession::new()
+        .update(snapshot)
+        .into_owner_result()
 }
 
 pub(crate) fn parse_source_snapshot_module(
@@ -1312,81 +1180,6 @@ fn parse_snapshot_file(
         .map_err(CompileErrors::from)
     });
     (result, work)
-}
-
-#[cfg(test)]
-fn parse_source_snapshot_modules_reusing_with_work(
-    snapshot: &SourceSnapshot,
-    previous: Option<&ParsedProgram>,
-) -> ParsedModulesOutcome {
-    let mut file_ids = snapshot.metadata().file_ids().collect::<Vec<_>>();
-    file_ids.sort_by(|left, right| {
-        snapshot
-            .module_id(*left)
-            .unwrap()
-            .cmp(snapshot.module_id(*right).unwrap())
-    });
-    let mut modules = Vec::with_capacity(file_ids.len());
-    let mut errors = CompileErrors::new();
-    let previous_by_file = previous
-        .map(|program| {
-            program
-                .modules()
-                .iter()
-                .map(|module| (module.file_id(), module))
-                .collect::<HashMap<_, _>>()
-        })
-        .unwrap_or_default();
-    let mut work = ParsedModulesWork {
-        previous_modules_indexed: previous_by_file.len(),
-        ..ParsedModulesWork::default()
-    };
-    for file_id in file_ids {
-        work.modules_considered += 1;
-        work.previous_module_lookups += usize::from(previous.is_some());
-        let module_id = snapshot.module_id(file_id).expect("snapshot membership");
-        let source_id = snapshot.source_id(file_id).expect("snapshot membership");
-        let physical_path = snapshot.metadata().physical_path(file_id).unwrap();
-        let previous_module = previous_by_file.get(&file_id).copied();
-        let exact = previous_module.filter(|module| {
-            module.module_id() == module_id
-                && module.source_id() == source_id
-                && module.physical_path() == physical_path
-        });
-        let result = if let Some(module) = exact {
-            work.modules_reused += 1;
-            Ok(module.clone())
-        } else if let Some(payload) = previous_module
-            .filter(|module| module.source_id() == source_id)
-            .map(|module| module.payload.clone())
-        {
-            work.modules_rebound += 1;
-            Ok(bind_payload(snapshot, file_id, payload))
-        } else {
-            work.modules_reparsed += 1;
-            let (result, file_work) = parse_snapshot_file(snapshot, file_id);
-            work.syntax.lexer_invocations += file_work.lexer_invocations;
-            work.syntax.parser_invocations += file_work.parser_invocations;
-            work.syntax.lexed_bytes += file_work.lexed_bytes;
-            work.syntax.tokens += file_work.tokens;
-            result
-        };
-        match result {
-            Ok(module) => modules.push(module),
-            Err(file_errors) => errors.extend(file_errors),
-        }
-    }
-    let result = if errors.is_empty() {
-        ParsedProgram::new(snapshot.source_revision().root().clone(), modules)
-            .map_err(CompileErrors::from)
-    } else {
-        Err(errors)
-    };
-    debug_assert_eq!(
-        work.modules_considered,
-        work.modules_reused + work.modules_rebound + work.modules_reparsed
-    );
-    ParsedModulesOutcome { result, work }
 }
 
 fn build_module(
@@ -2706,7 +2499,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor, SourceMetadata,
+        CompilerSession, ModuleResolutionInput, ModuleResolutionInputs, SemanticInputDescriptor,
+        SourceMetadata,
     };
 
     fn declaration_facts(source: &str) -> Vec<DeclarationShellFact> {
@@ -2856,10 +2650,10 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             ],
             20,
         );
-        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
-        assert_eq!(outcome.work.syntax.lexer_invocations, 2);
-        assert_eq!(outcome.work.syntax.parser_invocations, 2);
-        let program = outcome.result.unwrap();
+        let update = CompilerSession::new().update(&snapshot);
+        assert_eq!(update.work().syntax.lexer_invocations, 2);
+        assert_eq!(update.work().syntax.parser_invocations, 2);
+        let program = update.into_owner_result().unwrap();
         assert_eq!(
             program
                 .modules()
@@ -2945,9 +2739,9 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             ],
             7,
         );
-        let outcome = parse_source_snapshot_modules_reusing_with_work(&snapshot, None);
-        let work = outcome.work;
-        let first = outcome.result.unwrap();
+        let update = CompilerSession::new().update(&snapshot);
+        let work = update.work();
+        let first = update.into_owner_result().unwrap();
         let modules = first.modules().to_vec();
         let second = ParsedProgram::new(first.root().clone(), modules.clone()).unwrap();
         assert_eq!(first.source_revision(), second.source_revision());
@@ -2995,59 +2789,93 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
         assert_eq!(work.modules_reparsed, 2);
     }
 
+    /// Module identity keys the canonical parse query, so a module whose
+    /// content is unchanged keeps its syntax payload across a relocation and
+    /// only its cheap envelope is rebuilt.
     #[test]
-    fn relocation_and_logical_rename_rebind_without_parsing() {
+    fn relocation_rebinds_without_parsing() {
+        let mut session = CompilerSession::new();
         let first = snapshot(
             &[(
                 7,
                 "/old/main.rue",
-                "old-name.rue",
+                "main.rue",
                 "fn main() { @import(\"dep.rue\"); }",
             )],
             7,
         );
-        let (first, initial) = parse_source_snapshot_modules_reusing(&first, None).unwrap();
-        assert_eq!(initial.modules_reparsed, 1);
+        let update = session.update(&first);
+        assert_eq!(update.work().modules_reparsed, 1);
+        let first = update.into_owner_result().unwrap();
         let payload = first.modules()[0].payload_ptr();
 
         let moved = snapshot(
             &[(
                 7,
                 "/new/main.rue",
-                "new-name.rue",
+                "main.rue",
                 "fn main() { @import(\"dep.rue\"); }",
             )],
             7,
         );
-        let (moved, work) = parse_source_snapshot_modules_reusing(&moved, Some(&first)).unwrap();
+        let update = session.update(&moved);
+        let work = update.work();
         assert_eq!(work.syntax, SyntaxWork::default());
         assert_eq!(work.modules_reused, 0);
         assert_eq!(work.modules_rebound, 1);
         assert_eq!(work.modules_reparsed, 0);
-        assert_eq!(work.previous_modules_indexed, 1);
         assert_eq!(work.modules_considered, 1);
         assert_eq!(work.previous_module_lookups, 1);
+        let moved = update.into_owner_result().unwrap();
         assert_eq!(payload, moved.modules()[0].payload_ptr());
         assert_eq!(moved.modules()[0].physical_path(), "/new/main.rue");
-        assert_eq!(moved.modules()[0].module_id().as_str(), "new-name.rue");
+        assert_eq!(moved.modules()[0].module_id().as_str(), "main.rue");
         assert_eq!(
             moved.modules()[0].imports()[0].importer(),
             moved.modules()[0].module_id()
         );
     }
 
+    /// A logical rename is a different module, so it is parsed rather than
+    /// rebound even when the bytes are identical.
     #[test]
-    fn file_id_epoch_change_reparses_equal_source() {
-        let first = snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
-        let first = parse_source_snapshot_modules(&first).unwrap();
-        let changed = snapshot(&[(9, "/main.rue", "main.rue", "fn main() {}")], 9);
-        let (changed, work) =
-            parse_source_snapshot_modules_reusing(&changed, Some(&first)).unwrap();
-        assert_eq!(work.modules_reparsed, 1);
+    fn logical_rename_parses_the_renamed_module() {
+        let mut session = CompilerSession::new();
+        let first = snapshot(&[(7, "/main.rue", "old-name.rue", "fn main() {}")], 7);
+        session.update(&first).into_owner_result().unwrap();
+
+        let renamed = snapshot(&[(7, "/main.rue", "new-name.rue", "fn main() {}")], 7);
+        let update = session.update(&renamed);
+        let work = update.work();
         assert_eq!(work.modules_considered, 1);
-        assert_eq!(work.syntax.lexer_invocations, 1);
+        assert_eq!(work.modules_reparsed, 1);
         assert_eq!(work.syntax.parser_invocations, 1);
-        assert_ne!(
+        assert_eq!(
+            update.invalidation().added,
+            [ModuleId::from_logical_path("new-name.rue").unwrap()]
+        );
+        assert_eq!(
+            update.invalidation().removed,
+            [ModuleId::from_logical_path("old-name.rue").unwrap()]
+        );
+    }
+
+    /// A FileId epoch change leaves module identity and content alone, so the
+    /// canonical query is reused and only the envelope is rebound.
+    #[test]
+    fn file_id_epoch_change_rebinds_equal_source() {
+        let mut session = CompilerSession::new();
+        let first = snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
+        let first = session.update(&first).into_owner_result().unwrap();
+        let changed = snapshot(&[(9, "/main.rue", "main.rue", "fn main() {}")], 9);
+        let update = session.update(&changed);
+        let work = update.work();
+        assert_eq!(work.modules_considered, 1);
+        assert_eq!(work.modules_rebound, 1);
+        assert_eq!(work.modules_reparsed, 0);
+        assert_eq!(work.syntax, SyntaxWork::default());
+        let changed = update.into_owner_result().unwrap();
+        assert_eq!(
             first.modules()[0].payload_ptr(),
             changed.modules()[0].payload_ptr()
         );
@@ -3074,14 +2902,16 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             let metadata = SourceMetadata::new(FileId::new(1), physical, logical).unwrap();
             SourceSnapshot::new(metadata, contents).unwrap()
         }
+        let mut session = CompilerSession::new();
         let first_snapshot = large(false);
-        let first = parse_source_snapshot_modules(&first_snapshot).unwrap();
+        let first = session.update(&first_snapshot).into_owner_result().unwrap();
         let edited = large(true);
-        let (second, work) = parse_source_snapshot_modules_reusing(&edited, Some(&first)).unwrap();
+        let update = session.update(&edited);
+        let work = update.work();
+        let second = update.into_owner_result().unwrap();
         assert_eq!(work.modules_reused, 128);
         assert_eq!(work.modules_rebound, 0);
         assert_eq!(work.modules_reparsed, 1);
-        assert_eq!(work.previous_modules_indexed, 129);
         assert_eq!(work.modules_considered, 129);
         assert_eq!(work.previous_module_lookups, 129);
         assert_eq!(
@@ -3111,7 +2941,8 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             ],
             2,
         );
-        let previous = parse_source_snapshot_modules(&good).unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&good).into_owner_result().unwrap();
         let broken = snapshot(
             &[
                 (1, "/z.rue", "z.rue", "fn zed( {"),
@@ -3119,7 +2950,7 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             ],
             2,
         );
-        let errors = parse_source_snapshot_modules_reusing(&broken, Some(&previous)).unwrap_err();
+        let errors = session.update(&broken).into_owner_result().unwrap_err();
         assert_eq!(errors.len(), 1);
         assert_eq!(
             errors.iter().next().unwrap().span().unwrap().file_id,
@@ -3133,8 +2964,10 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             ],
             2,
         );
-        let errors =
-            parse_source_snapshot_modules_reusing(&both_broken, Some(&previous)).unwrap_err();
+        let errors = session
+            .update(&both_broken)
+            .into_owner_result()
+            .unwrap_err();
         let order = errors
             .iter()
             .map(|error| error.span().unwrap().file_id)
@@ -3187,7 +3020,8 @@ fn type_factory() -> type { struct { fn hidden(self) {} } }
             .unwrap()
             .clone();
         let main_id = ModuleId::from_logical_path("main.rue").unwrap();
-        let (new_main, work) = parse_source_snapshot_module_with_stats(&edited, &main_id).unwrap();
+        let (new_main, work) = parse_source_snapshot_module(&edited, &main_id);
+        let new_main = new_main.unwrap();
         assert_eq!(work.lexer_invocations, 1);
         assert_eq!(work.parser_invocations, 1);
         assert_ne!(old_main.revision(), new_main.revision());
@@ -3310,9 +3144,8 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn explicit_parse_baseline_reuses_exact_arcs_and_publishes_send_sync_result() {
+    fn repeated_session_update_reuses_exact_arcs_and_publishes_send_sync_result() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<CanonicalParseUpdate>();
         assert_send_sync::<ParseInvalidationSummary>();
         assert_send_sync::<ParsedProgram>();
 
@@ -3323,20 +3156,17 @@ fn main() -> i32 {
             ],
             7,
         );
-        let first = parse_canonical_snapshot(&source, None)
-            .into_result()
-            .unwrap();
-        let second_update = parse_canonical_snapshot(&source, Some(&first));
+        let mut session = CompilerSession::new();
+        let first = session.update(&source).into_owner_result().unwrap();
+        let second_update = session.update(&source);
         let work = second_update.work();
-        let second = second_update.into_result().unwrap();
+        let second = second_update.into_owner_result().unwrap();
 
-        assert_eq!(work.previous_modules_indexed, 2);
-        assert_eq!(work.previous_module_lookups, 2);
-        assert_eq!(work.modules_reused, 2);
-        assert_eq!(work.modules_reparsed, 0);
-        assert_eq!(work.syntax.parser_invocations, 0);
-        assert_eq!(work.source_text_clones, 0);
-        assert_eq!(work.source_bytes_rehashed, 0);
+        // Re-updating the same snapshot reselects the published parse terminal
+        // outright, so the whole program — not just each module — is retained
+        // and no structural work is performed at all.
+        assert_eq!(work, ParsedModulesWork::default());
+        assert!(Arc::ptr_eq(&first, &second));
         for (left, right) in first.modules().iter().zip(second.modules()) {
             assert!(Arc::ptr_eq(left, right));
         }
@@ -3361,7 +3191,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn explicit_parse_baseline_one_edit_among_128_parses_once() {
+    fn session_update_one_edit_among_128_parses_once() {
         let make = |edited: bool| {
             let physical = (0..128)
                 .map(|index| (FileId::new(index), format!("/p/m{index}.rue")))
@@ -3384,13 +3214,11 @@ fn main() -> i32 {
             )
             .unwrap()
         };
-        let baseline = parse_canonical_snapshot(&make(false), None)
-            .into_result()
-            .unwrap();
-        let update = parse_canonical_snapshot(&make(true), Some(&baseline));
+        let mut session = CompilerSession::new();
+        session.update(&make(false)).into_owner_result().unwrap();
+        let update = session.update(&make(true));
         let work = update.work();
 
-        assert_eq!(work.previous_modules_indexed, 128);
         assert_eq!(work.previous_module_lookups, 128);
         assert_eq!(work.modules_reused, 127);
         assert_eq!(work.modules_reparsed, 1);
@@ -3401,7 +3229,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn explicit_parse_baseline_distinguishes_relocation_file_ids_and_stable_renames() {
+    fn session_update_distinguishes_relocation_file_ids_and_stable_renames() {
         let base = snapshot(
             &[
                 (1, "/old/a.rue", "a.rue", "fn a() {}"),
@@ -3423,13 +3251,16 @@ fn main() -> i32 {
             ],
             11,
         );
-        let base = parse_canonical_snapshot(&base, None).into_result().unwrap();
-        let moved = parse_canonical_snapshot(&relocated, Some(&base));
+        let mut session = CompilerSession::new();
+        session.update(&base).into_owner_result().unwrap();
+        let moved = session.update(&relocated);
         assert_eq!(moved.work().modules_rebound, 2);
         assert_eq!(moved.invalidation().payload_rebound.len(), 2);
-        let moved = moved.into_result().unwrap();
-        let ids = parse_canonical_snapshot(&reassigned, Some(&moved));
-        assert_eq!(ids.work().modules_reparsed, 2);
+        moved.into_owner_result().unwrap();
+        // Only the FileId epoch moves, so module identity and content keep the
+        // canonical parse query cached and only the envelopes are rebound.
+        let ids = session.update(&reassigned);
+        assert_eq!(ids.work().modules_rebound, 2);
         assert_eq!(ids.invalidation().reparsed.len(), 2);
 
         let renamed = snapshot(
@@ -3439,10 +3270,9 @@ fn main() -> i32 {
             ],
             11,
         );
-        let ids = ids.into_result().unwrap();
-        let update = parse_canonical_snapshot(&renamed, Some(&ids));
-        assert_eq!(update.work().modules_rebound, 1);
-        assert_eq!(update.work().modules_reparsed, 1);
+        ids.into_owner_result().unwrap();
+        let update = session.update(&renamed);
+        assert_eq!(update.work().modules_reparsed, 2);
         assert_eq!(update.invalidation().added.len(), 2);
         assert_eq!(update.invalidation().removed.len(), 2);
         assert!(update.invalidation().payload_rebound.is_empty());
@@ -3474,19 +3304,22 @@ fn main() -> i32 {
             ],
             1,
         );
-        let baseline = parse_canonical_snapshot(&good, None).into_result().unwrap();
-        let failed = parse_canonical_snapshot(&broken, Some(&baseline));
-        assert!(failed.result().is_err());
+        let mut session = CompilerSession::new();
+        session.update(&good).into_owner_result().unwrap();
+        let failed = session.update(&broken);
+        assert!(failed.result_owner().is_err());
         assert_eq!(failed.work().modules_reused, 2);
 
-        let recovered = parse_canonical_snapshot(&recovered, Some(&baseline));
+        let recovered = session.update(&recovered);
         assert_eq!(recovered.work().modules_reused, 2);
         assert_eq!(recovered.work().modules_reparsed, 1);
-        recovered.into_result().unwrap();
+        recovered.into_owner_result().unwrap();
     }
 
+    /// Two independent sessions parsing the same broken snapshot publish the
+    /// same diagnostics in the same canonical order.
     #[test]
-    fn stateless_parse_keeps_canonical_error_order() {
+    fn independent_sessions_keep_canonical_error_order() {
         let broken = snapshot(
             &[
                 (9, "/z.rue", "z.rue", "fn z( {"),
@@ -3494,27 +3327,21 @@ fn main() -> i32 {
             ],
             2,
         );
-        let update = parse_canonical_snapshot(&broken, None);
-        let direct = parse_source_snapshot_modules(&broken).unwrap_err();
-        assert_eq!(
-            error_fingerprint(update.result().unwrap_err()),
-            error_fingerprint(&direct)
-        );
+        let first = parse_source_snapshot_modules(&broken).unwrap_err();
+        let second = parse_source_snapshot_modules(&broken).unwrap_err();
+        assert_eq!(error_fingerprint(&first), error_fingerprint(&second));
     }
 
+    /// Exact-snapshot membership is physical, not just revision-deep: a
+    /// relocated snapshot shares the source revision but does not own the
+    /// program parsed from the original locations.
     #[test]
-    fn exact_adoption_rejects_relocated_snapshot() {
+    fn exact_snapshot_membership_rejects_relocated_snapshot() {
         let original = snapshot(&[(1, "/a.rue", "a.rue", "fn a() {}")], 1);
         let relocated = snapshot(&[(9, "/moved/a.rue", "a.rue", "fn a() {}")], 9);
         assert_eq!(original.source_revision(), relocated.source_revision());
-        let parsed = Arc::new(parse_source_snapshot_modules(&original).unwrap());
-        let work = ParsedModulesWork {
-            modules_considered: 1,
-            modules_reparsed: 1,
-            ..ParsedModulesWork::default()
-        };
-        let update = adopt_exact_parsed_program(&relocated, None, parsed, work);
-        assert!(update.result().is_err());
-        assert_eq!(update.work(), work);
+        let parsed = parse_source_snapshot_modules(&original).unwrap();
+        assert!(parsed.belongs_to_exact_snapshot(&original));
+        assert!(!parsed.belongs_to_exact_snapshot(&relocated));
     }
 }
