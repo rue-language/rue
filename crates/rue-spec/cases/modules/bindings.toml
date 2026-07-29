@@ -111,6 +111,73 @@ aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
 compile_fail = true
 error_contains = "type mismatch"
 
+# A module is not the unit value either: where `()` is the expected type, a
+# module expression is a type mismatch like any other (10.4:6).
+
+[[case]]
+name = "module_as_unit_tail_expression_error"
+spec = ["10.4:6"]
+description = "A module as the tail expression of a unit-typed block is E0206, not the unit value"
+source = """
+fn sink() {
+    let math = @import("math");
+    math
+}
+fn main() -> i32 { sink(); 0 }
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+compile_fail = true
+error_contains = ["E0206", "expected ()", "found <module>"]
+
+[[case]]
+name = "module_as_unit_argument_error"
+spec = ["10.4:6"]
+description = "Passing a module where a `()` parameter is expected is E0206"
+source = """
+fn sink(x: ()) -> i32 { 0 }
+fn main() -> i32 {
+    let math = @import("math");
+    sink(math)
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+compile_fail = true
+error_contains = ["E0206", "expected ()", "found <module>"]
+
+# =============================================================================
+# Module expressions in statement position (10.4:7)
+# =============================================================================
+# No type is expected in statement position, so the module is discarded without
+# being materialized. This is not a module *value* — see 10.4:6.
+
+[[case]]
+name = "module_expression_statement_discarded"
+spec = ["10.4:7"]
+description = "A bare module expression statement is accepted and discarded"
+source = """
+fn main() -> i32 {
+    let math = @import("math");
+    math;
+    math.add(1, 2)
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+exit_code = 3
+
+[[case]]
+name = "module_block_statement_discarded"
+spec = ["10.4:7"]
+description = "A block statement whose tail is a module expression is accepted and discarded"
+source = """
+fn main() -> i32 {
+    let math = @import("math");
+    { math };
+    math.add(2, 3)
+}
+"""
+aux_files = { "math.rue" = "pub fn add(a: i32, b: i32) -> i32 { a + b }" }
+exit_code = 5
+
 # =============================================================================
 # Per-file scoping of module bindings (10.4:8) — RUE-113
 # =============================================================================

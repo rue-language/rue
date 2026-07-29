@@ -191,11 +191,55 @@ error_contains = "cannot be known at compile time"
 
 [[case]]
 name = "comptime_cannot_call_function"
-spec = ["4.14:4"]
+spec = ["4.14:4", "4.14:28"]
+description = "A call to a function with runtime parameters is not comptime-evaluable inside a comptime block"
 source = """
 fn add(a: i32, b: i32) -> i32 { a + b }
 fn main() -> i32 {
     comptime { add(1, 2) }
+}
+"""
+compile_fail = true
+error_contains = "cannot be known at compile time"
+
+# A fully-comptime call (4.14:28) is comptime-evaluable inside a comptime block
+# too, not only in a comptime-argument position. These three cases pin the
+# agreement between the general restriction (4.14:4) and the call rule (4.14:28).
+
+[[case]]
+name = "comptime_block_calls_fully_comptime_fn"
+spec = ["4.14:4", "4.14:28"]
+description = "A fully-comptime call is permitted inside a comptime block"
+source = """
+fn inc(comptime n: i32) -> i32 { n + 1 }
+fn main() -> i32 {
+    comptime { inc(4) }
+}
+"""
+exit_code = 5
+
+[[case]]
+name = "comptime_block_calls_nested_fully_comptime"
+spec = ["4.14:4", "4.14:28"]
+description = "Fully-comptime calls nest inside a comptime block: the inner call is a comptime-evaluable argument"
+source = """
+fn inc(comptime n: i32) -> i32 { n + 1 }
+fn dbl(comptime n: i32) -> i32 { n * 2 }
+fn main() -> i32 {
+    comptime { dbl(inc(4)) }
+}
+"""
+exit_code = 10
+
+[[case]]
+name = "comptime_block_call_rejects_runtime_argument"
+spec = ["4.14:4", "4.14:28"]
+description = "An all-comptime function called with a runtime argument is still not comptime-evaluable"
+source = """
+fn inc(comptime n: i32) -> i32 { n + 1 }
+fn main() -> i32 {
+    let x = 10;
+    comptime { inc(x) }
 }
 """
 compile_fail = true
