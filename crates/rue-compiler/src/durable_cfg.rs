@@ -1,13 +1,159 @@
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use lasso::{Key, Spur};
 use rue_air::{AirInstData, AnalyzedFunction, SemanticImportType, Type, TypeKind};
 use rue_span::Span;
 
-use crate::{DurableAirInstData, DurableOrdinaryBodyPayload};
+use crate::DurableAirInstData;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
+
+fn canonical_nominal(value: &crate::NominalInstanceKey) -> CanonicalType {
+    match value {
+        crate::NominalInstanceKey::Builtin { kind, name } => CanonicalType::BuiltinNominal {
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+            name: name.clone(),
+        },
+        crate::NominalInstanceKey::Named(definition) => CanonicalType::Nominal(definition.clone()),
+        crate::NominalInstanceKey::Anonymous(identity) => {
+            CanonicalType::AnonymousNominal(identity.clone())
+        }
+    }
+}
+
+fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
+    use rue_air::SemanticBodyInstKind as K;
+    match data {
+        AirInstData::Const(..) => K::Const,
+        AirInstData::BoolConst(..) => K::BoolConst,
+        AirInstData::StringConst(..) => K::StringConst,
+        AirInstData::UnitConst => K::UnitConst,
+        AirInstData::TypeConst(..) => K::TypeConst,
+        AirInstData::Add(..) => K::Add,
+        AirInstData::Sub(..) => K::Sub,
+        AirInstData::Mul(..) => K::Mul,
+        AirInstData::WrappingAdd(..) => K::WrappingAdd,
+        AirInstData::WrappingSub(..) => K::WrappingSub,
+        AirInstData::WrappingMul(..) => K::WrappingMul,
+        AirInstData::Div(..) => K::Div,
+        AirInstData::Mod(..) => K::Mod,
+        AirInstData::Eq(..) => K::Eq,
+        AirInstData::Ne(..) => K::Ne,
+        AirInstData::Lt(..) => K::Lt,
+        AirInstData::Gt(..) => K::Gt,
+        AirInstData::Le(..) => K::Le,
+        AirInstData::Ge(..) => K::Ge,
+        AirInstData::And(..) => K::And,
+        AirInstData::Or(..) => K::Or,
+        AirInstData::BitAnd(..) => K::BitAnd,
+        AirInstData::BitOr(..) => K::BitOr,
+        AirInstData::BitXor(..) => K::BitXor,
+        AirInstData::Shl(..) => K::Shl,
+        AirInstData::Shr(..) => K::Shr,
+        AirInstData::Neg(..) => K::Neg,
+        AirInstData::Not(..) => K::Not,
+        AirInstData::BitNot(..) => K::BitNot,
+        AirInstData::Branch { .. } => K::Branch,
+        AirInstData::Loop { .. } => K::Loop,
+        AirInstData::InfiniteLoop { .. } => K::InfiniteLoop,
+        AirInstData::Match { .. } => K::Match,
+        AirInstData::Break => K::Break,
+        AirInstData::Continue => K::Continue,
+        AirInstData::Alloc { .. } => K::Alloc,
+        AirInstData::Load { .. } => K::Load,
+        AirInstData::Store { .. } => K::Store,
+        AirInstData::ParamStore { .. } => K::ParamStore,
+        AirInstData::Ret(..) => K::Ret,
+        AirInstData::Call {
+            runtime: Some(_), ..
+        } => K::RuntimeCall,
+        AirInstData::Call { runtime: None, .. } => K::Call,
+        AirInstData::CallGeneric { .. } => K::CallGeneric,
+        AirInstData::Intrinsic { .. } => K::Intrinsic,
+        AirInstData::Param { .. } => K::Param,
+        AirInstData::Block { .. } => K::Block,
+        AirInstData::StructInit { .. } => K::StructInit,
+        AirInstData::ArrayInit { .. } => K::ArrayInit,
+        AirInstData::PlaceRead { .. } => K::PlaceRead,
+        AirInstData::PlaceWrite { .. } => K::PlaceWrite,
+        AirInstData::EnumVariant { .. } => K::EnumVariant,
+        AirInstData::EnumPayloadGet { .. } => K::EnumPayloadGet,
+        AirInstData::IntCast { .. } => K::IntCast,
+        AirInstData::Drop { .. } => K::Drop,
+        AirInstData::StorageLive { .. } => K::StorageLive,
+        AirInstData::StorageDead { .. } => K::StorageDead,
+        AirInstData::MarkMoved { .. } => K::MarkMoved,
+    }
+}
+
+pub(crate) fn canonical_type_from_live(
+    ty: Type,
+    pool: &rue_air::FrozenTypeInternPool,
+    aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+) -> Result<CanonicalType, CfgDomainFailure> {
+    use rue_air::TypeKind as K;
+    Ok(match ty.kind() {
+        K::I8 => CanonicalType::I8,
+        K::I16 => CanonicalType::I16,
+        K::I32 => CanonicalType::I32,
+        K::I64 => CanonicalType::I64,
+        K::U8 => CanonicalType::U8,
+        K::U16 => CanonicalType::U16,
+        K::U32 => CanonicalType::U32,
+        K::U64 => CanonicalType::U64,
+        K::Bool => CanonicalType::Bool,
+        K::Unit => CanonicalType::Unit,
+        K::Never => CanonicalType::Never,
+        K::ComptimeType => CanonicalType::ComptimeType,
+        K::Array(id) => {
+            let (element, len) = pool.array_def(id);
+            CanonicalType::Array {
+                element: Box::new(canonical_type_from_live(element, pool, aggregates)?),
+                len,
+            }
+        }
+        K::PtrConst(id) => CanonicalType::PtrConst(Box::new(canonical_type_from_live(
+            pool.ptr_const_def(id),
+            pool,
+            aggregates,
+        )?)),
+        K::PtrMut(id) => CanonicalType::PtrMut(Box::new(canonical_type_from_live(
+            pool.ptr_mut_def(id),
+            pool,
+            aggregates,
+        )?)),
+        K::Struct(_) | K::Enum(_) => {
+            let stable = aggregates.get(&ty).ok_or(CfgDomainFailure::Missing)?;
+            match stable {
+                crate::TypeInstanceKey::BuiltinNominal { kind, name } => {
+                    CanonicalType::BuiltinNominal {
+                        kind: match kind {
+                            crate::AnonymousNominalKind::Struct => {
+                                rue_air::SemanticImportNominalKind::Struct
+                            }
+                            crate::AnonymousNominalKind::Enum => {
+                                rue_air::SemanticImportNominalKind::Enum
+                            }
+                        },
+                        name: name.clone(),
+                    }
+                }
+                crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition)) => {
+                    CanonicalType::Nominal(definition.clone())
+                }
+                crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) => {
+                    CanonicalType::AnonymousNominal(identity.clone())
+                }
+                _ => return Err(CfgDomainFailure::Shape),
+            }
+        }
+        K::Module(_) | K::Error => return Err(CfgDomainFailure::Unsupported),
+    })
+}
 
 fn deduplicate_type_mappings(
     mappings: Vec<(Type, CanonicalType)>,
@@ -27,249 +173,58 @@ fn deduplicate_type_mappings(
     Ok(unique)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct StableCfgInput {
-    pub function: crate::FunctionInstanceKey,
-    pub body: DurableOrdinaryBodyPayload,
-    pub type_inputs: Arc<[crate::StableDefinitionInputFingerprint]>,
-}
-
-/// Request-local location and live-name projection for a stable CFG input.
-/// Neither field participates in red/green equality or retained artifacts.
-#[derive(Debug, Clone)]
-pub(crate) struct CurrentCfgInput {
-    pub stable: StableCfgInput,
-    pub body_span: Span,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LayoutDependencyFailure {
-    MissingDefinition,
-    AmbiguousDefinition,
-    MissingNominal,
-    AmbiguousNominal,
-}
-
-pub(crate) fn body_type_dependencies(
-    body: &DurableOrdinaryBodyPayload,
-) -> BTreeSet<crate::StableDefinitionKey> {
-    fn visit(value: &CanonicalType, keys: &mut BTreeSet<crate::StableDefinitionKey>) {
-        match value {
-            SemanticImportType::Nominal(key) => {
-                keys.insert(key.clone());
-            }
-            SemanticImportType::AnonymousNominal(identity) => {
-                let keys = std::cell::RefCell::new(keys);
-                identity
-                    .try_map_identities(
-                        &|key| {
-                            keys.borrow_mut().insert(key.clone());
-                            Ok::<_, std::convert::Infallible>(key.clone())
-                        },
-                        &|module| Ok::<_, std::convert::Infallible>(module.clone()),
-                    )
-                    .expect("anonymous dependency traversal is infallible");
-            }
-            SemanticImportType::Array { element, .. } => visit(element, keys),
-            _ => {}
-        }
-    }
-    fn nominal(
-        value: &rue_air::NominalInstanceKey<crate::StableDefinitionKey, crate::ModuleId>,
-        keys: &mut BTreeSet<crate::StableDefinitionKey>,
-    ) {
-        let keys = std::cell::RefCell::new(keys);
-        match value {
-            rue_air::NominalInstanceKey::Builtin { .. } => {}
-            rue_air::NominalInstanceKey::Named(key) => {
-                keys.borrow_mut().insert(key.clone());
-            }
-            rue_air::NominalInstanceKey::Anonymous(identity) => {
-                identity
-                    .try_map_identities(
-                        &|key| {
-                            keys.borrow_mut().insert(key.clone());
-                            Ok::<_, std::convert::Infallible>(key.clone())
-                        },
-                        &|module| Ok::<_, std::convert::Infallible>(module.clone()),
-                    )
-                    .expect("anonymous nominal dependency traversal is infallible");
-            }
-        }
-    }
-    let mut keys = BTreeSet::new();
-    visit(&body.return_type, &mut keys);
-    for instruction in body.instructions.iter() {
-        visit(&instruction.ty, &mut keys);
-    }
-    for place in body.places.iter() {
-        visit(&place.base_type, &mut keys);
-        for projection in place.projections.iter() {
-            match projection {
-                crate::DurableProjection::Field { struct_key, .. } => {
-                    nominal(struct_key, &mut keys);
-                }
-                crate::DurableProjection::Index { array_type, .. } => visit(array_type, &mut keys),
-            }
-        }
-    }
-    for (_, ty) in body.param_drops.iter() {
-        visit(ty, &mut keys);
-    }
-    for instruction in body.instructions.iter() {
-        match &instruction.data {
-            DurableAirInstData::TypeConst(ty) | DurableAirInstData::IntCast { from_ty: ty, .. } => {
-                visit(ty, &mut keys)
-            }
-            DurableAirInstData::StructInit { struct_key, .. } => {
-                nominal(struct_key, &mut keys);
-            }
-            DurableAirInstData::EnumVariant { enum_key, .. }
-            | DurableAirInstData::EnumPayloadGet { enum_key, .. } => {
-                nominal(enum_key, &mut keys);
-            }
-            _ => {}
-        }
-        if let DurableAirInstData::Intrinsic { name, args, .. } = &instruction.data
-            && matches!(name.as_ref(), "ptr_read" | "ptr_write" | "ptr_offset")
-        {
-            for arg in args.iter() {
-                if let Some(argument) = body.instructions.get(arg.value as usize) {
-                    match &argument.ty {
-                        SemanticImportType::PtrConst(pointee)
-                        | SemanticImportType::PtrMut(pointee) => visit(pointee, &mut keys),
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    keys
-}
-
-pub(crate) fn transitive_body_type_dependencies(
-    body: &DurableOrdinaryBodyPayload,
-    pool: &rue_air::FrozenTypeInternPool,
-    definitions: &crate::BoundDefinitionSet,
-) -> Result<BTreeSet<crate::StableDefinitionKey>, LayoutDependencyFailure> {
-    let mut keys = body_type_dependencies(body);
-    let mut pending = keys.iter().cloned().collect::<Vec<_>>();
-    let stable_key = |file: rue_span::FileId, name: &str, kind| {
-        let matches = definitions
-            .definitions()
-            .iter()
-            .filter(|record| {
-                record.stable_key().kind() == kind
-                    && record.stable_key().name() == name
-                    && record.declaration_span().file_id == file
-            })
-            .take(2)
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [record] => Ok(record.stable_key().clone()),
-            [] => Err(LayoutDependencyFailure::MissingDefinition),
-            _ => Err(LayoutDependencyFailure::AmbiguousDefinition),
-        }
-    };
-    while let Some(key) = pending.pop() {
-        let record = definitions
-            .definition_by_key(&key)
-            .ok_or(LayoutDependencyFailure::MissingDefinition)?;
-        let file = record.declaration_span().file_id;
-        let mut nested = Vec::new();
-        match key.kind() {
-            crate::StableDefinitionKind::Struct => {
-                let ids = pool
-                    .all_struct_ids()
-                    .into_iter()
-                    .filter(|id| {
-                        let def = pool.struct_def(*id);
-                        def.file_id == file && def.name == key.name()
-                    })
-                    .take(2)
-                    .collect::<Vec<_>>();
-                let [id] = ids.as_slice() else {
-                    return Err(if ids.is_empty() {
-                        LayoutDependencyFailure::MissingNominal
-                    } else {
-                        LayoutDependencyFailure::AmbiguousNominal
-                    });
-                };
-                nested.extend(pool.struct_def(*id).fields.iter().map(|field| field.ty));
-            }
-            crate::StableDefinitionKind::Enum => {
-                let ids = pool
-                    .all_enum_ids()
-                    .into_iter()
-                    .filter(|id| {
-                        let def = pool.enum_def(*id);
-                        def.file_id == file && def.name == key.name()
-                    })
-                    .take(2)
-                    .collect::<Vec<_>>();
-                let [id] = ids.as_slice() else {
-                    return Err(if ids.is_empty() {
-                        LayoutDependencyFailure::MissingNominal
-                    } else {
-                        LayoutDependencyFailure::AmbiguousNominal
-                    });
-                };
-                let def = pool.enum_def(*id);
-                for index in 0..def.variant_count() {
-                    nested.extend_from_slice(def.variant_payload(index));
-                }
-            }
-            _ => {}
-        }
-        while let Some(ty) = nested.pop() {
-            let found = match ty.kind() {
-                TypeKind::Struct(id) => {
-                    let def = pool.struct_def(id);
-                    (!def.is_builtin)
-                        .then(|| {
-                            stable_key(def.file_id, &def.name, crate::StableDefinitionKind::Struct)
-                        })
-                        .transpose()?
-                }
-                TypeKind::Enum(id) => {
-                    let def = pool.enum_def(id);
-                    Some(stable_key(
-                        def.file_id,
-                        &def.name,
-                        crate::StableDefinitionKind::Enum,
-                    )?)
-                }
-                TypeKind::Array(id) => {
-                    nested.push(pool.array_def(id).0);
-                    None
-                }
-                TypeKind::PtrConst(_) | TypeKind::PtrMut(_) => None,
-                _ => None,
-            };
-            if let Some(found) = found.filter(|found| keys.insert(found.clone())) {
-                pending.push(found);
-            }
-        }
-    }
-    Ok(keys)
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum StableCfgSymbol {
     Callable(rue_air::FunctionInstanceKey<crate::StableDefinitionKey, crate::ModuleId>),
+    #[allow(dead_code)]
     Specialization(
         rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, crate::ModuleId>,
     ),
+    Runtime(Arc<str>),
     Intrinsic(Arc<str>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StableCfgSpan {
+    Relative { start: i64, end: i64 },
+    Absolute(Span),
+}
+
+impl StableCfgSpan {
+    fn new(span: Span, body_span: Span) -> Self {
+        if span.file_id == body_span.file_id {
+            Self::Relative {
+                start: i64::from(span.start) - i64::from(body_span.start),
+                end: i64::from(span.end) - i64::from(body_span.start),
+            }
+        } else {
+            Self::Absolute(span)
+        }
+    }
+
+    fn relocate(self, body_span: Span) -> Result<Span, CfgDomainFailure> {
+        match self {
+            Self::Relative { start, end } => Ok(Span {
+                file_id: body_span.file_id,
+                start: u32::try_from(i64::from(body_span.start) + start)
+                    .map_err(|_| CfgDomainFailure::Shape)?,
+                end: u32::try_from(i64::from(body_span.start) + end)
+                    .map_err(|_| CfgDomainFailure::Shape)?,
+            }),
+            Self::Absolute(span) => Ok(span),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CfgDomainProjection {
+    body_span: Span,
     types: Vec<(Type, CanonicalType)>,
     strings: Vec<(u32, Arc<str>)>,
     atoms: Vec<rue_air::SemanticBodyLocalAtom<crate::StableDefinitionKey, crate::ModuleId>>,
-    spans: Vec<(Span, crate::DurableBodyAnchor)>,
+    spans: Vec<(Span, StableCfgSpan)>,
     symbols: Vec<(Spur, StableCfgSymbol)>,
+    incomplete_epoch: Option<Arc<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,38 +232,236 @@ pub(crate) enum CfgDomainFailure {
     Shape,
     Unsupported,
     Missing,
+    MissingLiveType(Type),
+    MissingStableType,
+    MissingSymbol,
+    MissingString,
     Edit(rue_cfg::CfgEditError),
 }
 
 impl CfgDomainProjection {
+    #[cfg(test)]
+    pub(crate) fn force_import_failure_for_test(&mut self) {
+        self.incomplete_epoch = Some(Arc::new(()));
+    }
+
+    pub(crate) fn same_live_domain(&self, other: &Self) -> bool {
+        let complete_or_same_epoch = match (&self.incomplete_epoch, &other.incomplete_epoch) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        };
+        complete_or_same_epoch
+            && self.body_span == other.body_span
+            && self.types == other.types
+            && self.strings == other.strings
+            && self.atoms == other.atoms
+            && self.spans == other.spans
+            && self.symbols == other.symbols
+    }
+
+    pub(crate) fn same_optimized_memo_domain(&self, other: &Self) -> bool {
+        match (&self.incomplete_epoch, &other.incomplete_epoch) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn optimized_memo_domain_hash(&self) -> usize {
+        self.incomplete_epoch
+            .as_ref()
+            .map_or(0, |epoch| Arc::as_ptr(epoch) as usize)
+    }
+
+    /// Build the relocation domain for one canonical analyzed function without
+    /// consulting a program-wide CFG cache. Every live type, symbol, string,
+    /// local atom, and span is paired with its stable record-local identity.
+    pub(crate) fn from_canonical_function(
+        function: &AnalyzedFunction,
+        stable_identity: &crate::FunctionInstanceKey,
+        body_span: Span,
+        strings: &[String],
+        interner: &lasso::ThreadedRodeo,
+        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
+        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
+    ) -> Result<Self, CfgDomainFailure> {
+        let mut types = vec![
+            (
+                function.air.return_type(),
+                stable_type(function.air.return_type())?,
+            ),
+            (Type::UNIT, CanonicalType::Unit),
+        ];
+        let mut stable_strings = Vec::new();
+        let mut spans = Vec::new();
+        let mut symbols = Vec::new();
+        let mut atoms = Vec::with_capacity(function.local_atoms.len());
+        for atom in &function.local_atoms {
+            if atom.identity.producer != function.identity
+                || strings.get(atom.dense_id as usize).map(String::as_str)
+                    != Some(atom.content.as_ref())
+            {
+                return Err(CfgDomainFailure::Shape);
+            }
+            atoms.push(rue_air::SemanticBodyLocalAtom {
+                identity: crate::LocalAtomId {
+                    producer: stable_identity.clone(),
+                    kind: atom.identity.kind,
+                    anchor: atom.identity.anchor.clone(),
+                },
+                content: atom.content.clone(),
+            });
+        }
+        for (_, instruction) in function.air.iter() {
+            types.push((instruction.ty, stable_type(instruction.ty)?));
+            spans.push((
+                instruction.span,
+                StableCfgSpan::new(instruction.span, body_span),
+            ));
+            match &instruction.data {
+                AirInstData::StringConst(index) => {
+                    stable_strings.push((
+                        *index,
+                        strings
+                            .get(*index as usize)
+                            .ok_or(CfgDomainFailure::Shape)?
+                            .as_str()
+                            .into(),
+                    ));
+                }
+                AirInstData::IntCast { from_ty, .. } => {
+                    types.push((*from_ty, stable_type(*from_ty)?));
+                }
+                AirInstData::Call { name, .. } => {
+                    let symbol = stable_callable(*name)
+                        .map(StableCfgSymbol::Callable)
+                        .unwrap_or_else(|| {
+                            StableCfgSymbol::Intrinsic(Arc::from(interner.resolve(name)))
+                        });
+                    symbols.push((*name, symbol));
+                }
+                AirInstData::Intrinsic { name, .. } => {
+                    symbols.push((
+                        *name,
+                        StableCfgSymbol::Intrinsic(Arc::from(interner.resolve(name))),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        for place in function.air.places() {
+            types.push((place.base_type, stable_type(place.base_type)?));
+            for projection in function.air.get_place_projections(place) {
+                match projection {
+                    rue_air::AirProjection::Field { struct_id, .. } => {
+                        let ty = Type::new_struct(*struct_id);
+                        types.push((ty, stable_type(ty)?));
+                    }
+                    rue_air::AirProjection::Index { array_type, .. } => {
+                        types.push((*array_type, stable_type(*array_type)?));
+                    }
+                }
+            }
+        }
+        for (_, ty) in function.air.param_drops() {
+            types.push((*ty, stable_type(*ty)?));
+        }
+        let types = deduplicate_type_mappings(types)?;
+        stable_strings.sort_by_key(|(index, _)| *index);
+        stable_strings.dedup();
+        spans.sort_by_key(|(span, _)| (span.file_id.index(), span.start, span.end));
+        spans.dedup();
+        symbols.sort_by(|left, right| {
+            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
+        });
+        symbols.dedup_by(|left, right| left.0 == right.0 && left.1 == right.1);
+        if symbols.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(CfgDomainFailure::Shape);
+        }
+        atoms.sort_by(|left, right| {
+            (&left.identity, &left.content).cmp(&(&right.identity, &right.content))
+        });
+        Ok(Self {
+            body_span,
+            types,
+            strings: stable_strings,
+            atoms,
+            spans,
+            symbols,
+            incomplete_epoch: None,
+        })
+    }
+
+    pub(crate) fn stable_types(&self) -> impl Iterator<Item = &CanonicalType> {
+        self.types.iter().map(|(_, stable)| stable)
+    }
+
+    pub(crate) fn stable_callables(&self) -> impl Iterator<Item = crate::FunctionInstanceKey> + '_ {
+        self.symbols.iter().filter_map(|(_, symbol)| match symbol {
+            StableCfgSymbol::Callable(callable) => Some(callable.clone()),
+            StableCfgSymbol::Specialization(identity) => {
+                crate::semantic_identity::function_instance_from_specialization(identity)
+            }
+            StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => None,
+        })
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn remap_span(
+        old: &Self,
+        new: &Self,
+        span: Span,
+        new_body_span: Span,
+    ) -> Result<Span, CfgDomainFailure> {
+        let anchor = old
+            .spans
+            .iter()
+            .find(|(candidate, _)| *candidate == span)
+            .map(|(_, anchor)| anchor)
+            .ok_or(CfgDomainFailure::Missing)?;
+        if !new.spans.iter().any(|(_, candidate)| candidate == anchor) {
+            return Err(CfgDomainFailure::Missing);
+        }
+        anchor.relocate(new_body_span)
+    }
+
+    #[allow(dead_code)]
     pub fn validate_cfg(&self, cfg: &rue_cfg::Cfg, span: Span) -> Result<(), CfgDomainFailure> {
         Self::import_cfg(self, self, cfg, span).map(|_| ())
     }
     pub fn from_body(
         function: &AnalyzedFunction,
-        input: &StableCfgInput,
+        stable_function: &crate::FunctionInstanceKey,
+        body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
         body_span: Span,
         strings: &[String],
+        type_pool: &rue_air::FrozenTypeInternPool,
+        interner: &lasso::ThreadedRodeo,
+        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
+        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
     ) -> Result<Self, CfgDomainFailure> {
-        if function.air.instructions().len() != input.body.instructions.len() {
+        if function.air.instructions().len() != body.instructions.len() {
             return Err(CfgDomainFailure::Shape);
         }
-        let mut types = vec![(function.air.return_type(), input.body.return_type.clone())];
+        let mut types = vec![
+            (function.air.return_type(), body.return_type.clone()),
+            (Type::UNIT, CanonicalType::Unit),
+        ];
         let mut stable_strings = Vec::new();
         let mut spans = Vec::new();
         let mut symbols = Vec::new();
-        if function.local_atoms.len() != input.body.local_atoms.len() {
+        if function.local_atoms.len() != body.local_atoms.len() {
             return Err(CfgDomainFailure::Shape);
         }
         if function
             .local_atoms
             .iter()
             .any(|atom| atom.identity.producer != function.identity)
-            || input
-                .body
+            || body
                 .local_atoms
                 .iter()
-                .any(|atom| atom.identity.producer != input.function)
+                .any(|atom| atom.identity.producer != *stable_function)
         {
             return Err(CfgDomainFailure::Shape);
         }
@@ -328,8 +481,7 @@ impl CfgDomainProjection {
                 ))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let mut stable_atoms = input
-            .body
+        let mut stable_atoms = body
             .local_atoms
             .iter()
             .map(|atom| {
@@ -346,25 +498,20 @@ impl CfgDomainProjection {
         {
             return Err(CfgDomainFailure::Shape);
         }
-        for ((_, current), durable) in function.air.iter().zip(input.body.instructions.iter()) {
-            types.push((current.ty, durable.ty.clone()));
-            if current.span.file_id != body_span.file_id
-                || current.span.start < body_span.start
-                || current.span.end > body_span.end
+        for ((_, current), durable) in function.air.iter().zip(body.instructions.iter()) {
+            let current_kind = live_instruction_kind(&current.data);
+            let durable_kind = durable.data.kind();
+            if current_kind != durable_kind
+                && !(current_kind == rue_air::SemanticBodyInstKind::Call
+                    && durable_kind == rue_air::SemanticBodyInstKind::CallSpecialized)
             {
-                return Err(CfgDomainFailure::Unsupported);
+                return Err(CfgDomainFailure::Shape);
             }
-            spans.push((
-                current.span,
-                crate::DurableBodyAnchor {
-                    start: current.span.start - body_span.start,
-                    end: current.span.end - body_span.start,
-                },
-            ));
+            types.push((current.ty, durable.ty.clone()));
+            spans.push((current.span, StableCfgSpan::new(current.span, body_span)));
             match (&current.data, &durable.data) {
                 (AirInstData::StringConst(old), DurableAirInstData::StringConst(local)) => {
-                    let value = input
-                        .body
+                    let value = body
                         .strings
                         .get(*local as usize)
                         .ok_or(CfgDomainFailure::Shape)?;
@@ -373,45 +520,190 @@ impl CfgDomainProjection {
                     }
                     stable_strings.push((*old, value.clone()));
                 }
+                (AirInstData::TypeConst(current), DurableAirInstData::TypeConst(stable)) => {
+                    types.push((*current, stable.clone()))
+                }
                 (
                     AirInstData::IntCast { from_ty, .. },
                     DurableAirInstData::IntCast {
                         from_ty: stable, ..
                     },
                 ) => types.push((*from_ty, stable.clone())),
-                (AirInstData::Call { name, .. }, DurableAirInstData::Call { function, .. }) => {
-                    symbols.push((*name, StableCfgSymbol::Callable(function.clone())))
-                }
                 (
-                    AirInstData::Call { name, .. },
+                    AirInstData::Call {
+                        runtime: None,
+                        name,
+                        ..
+                    },
+                    DurableAirInstData::Call { function, .. },
+                ) => symbols.push((*name, StableCfgSymbol::Callable(function.clone()))),
+                (
+                    AirInstData::Call {
+                        runtime: None,
+                        name,
+                        ..
+                    },
                     DurableAirInstData::CallSpecialized { identity, .. },
                 ) => symbols.push((*name, StableCfgSymbol::Specialization(identity.clone()))),
                 (
-                    AirInstData::Intrinsic { name, .. },
-                    DurableAirInstData::Intrinsic { name: stable, .. },
-                ) => symbols.push((*name, StableCfgSymbol::Intrinsic(stable.clone()))),
-                _ => {}
+                    AirInstData::Call {
+                        runtime: Some(current),
+                        name,
+                        ..
+                    },
+                    DurableAirInstData::RuntimeCall {
+                        runtime: stable, ..
+                    },
+                ) if current == stable
+                    && interner.resolve(name) == current.helper().helper().symbol =>
+                {
+                    symbols.push((
+                        *name,
+                        StableCfgSymbol::Runtime(Arc::from(stable.helper().helper().symbol)),
+                    ));
+                }
+                (
+                    AirInstData::Intrinsic { runtime, name, .. },
+                    DurableAirInstData::Intrinsic {
+                        runtime: stable_runtime,
+                        name: stable,
+                        ..
+                    },
+                ) if runtime == stable_runtime && interner.resolve(name) == stable.as_ref() => {
+                    symbols.push((*name, StableCfgSymbol::Intrinsic(stable.clone())));
+                }
+                (
+                    AirInstData::StructInit { struct_id, .. },
+                    DurableAirInstData::StructInit { struct_key, .. },
+                ) => types.push((Type::new_struct(*struct_id), canonical_nominal(struct_key))),
+                (
+                    AirInstData::EnumVariant { enum_id, .. },
+                    DurableAirInstData::EnumVariant { enum_key, .. },
+                )
+                | (
+                    AirInstData::EnumPayloadGet { enum_id, .. },
+                    DurableAirInstData::EnumPayloadGet { enum_key, .. },
+                ) => types.push((Type::new_enum(*enum_id), canonical_nominal(enum_key))),
+                (
+                    AirInstData::Match { arms, .. },
+                    DurableAirInstData::Match { arms: stable, .. },
+                ) => {
+                    let current = function.air.get_match_arms(arms).collect::<Vec<_>>();
+                    if current.len() != stable.len() {
+                        return Err(CfgDomainFailure::Shape);
+                    }
+                    for ((pattern, _), stable) in current.into_iter().zip(stable.iter()) {
+                        match (pattern, &stable.pattern) {
+                            (
+                                rue_air::AirPattern::EnumVariant { enum_id, .. },
+                                rue_air::SemanticBodyPattern::EnumVariant { enum_key, .. },
+                            ) => types.push((Type::new_enum(enum_id), canonical_nominal(enum_key))),
+                            (rue_air::AirPattern::EnumVariant { .. }, _)
+                            | (_, rue_air::SemanticBodyPattern::EnumVariant { .. }) => {
+                                return Err(CfgDomainFailure::Shape);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ if current_kind == durable_kind => {}
+                _ => return Err(CfgDomainFailure::Shape),
             }
         }
-        for (current, stable) in function.air.places().iter().zip(input.body.places.iter()) {
+        for (current, stable) in function.air.places().iter().zip(body.places.iter()) {
             types.push((current.base_type, stable.base_type.clone()));
             let current_projections = function.air.get_place_projections(current);
             if current_projections.len() != stable.projections.len() {
                 return Err(CfgDomainFailure::Shape);
             }
             for (current, stable) in current_projections.iter().zip(stable.projections.iter()) {
-                if let (
-                    rue_air::AirProjection::Index { array_type, .. },
-                    crate::DurableProjection::Index {
-                        array_type: stable, ..
-                    },
-                ) = (current, stable)
-                {
-                    types.push((*array_type, stable.clone()));
+                match (current, stable) {
+                    (
+                        rue_air::AirProjection::Field { struct_id, .. },
+                        crate::DurableProjection::Field { struct_key, .. },
+                    ) => types.push((Type::new_struct(*struct_id), canonical_nominal(struct_key))),
+                    (
+                        rue_air::AirProjection::Index { array_type, .. },
+                        crate::DurableProjection::Index {
+                            array_type: stable, ..
+                        },
+                    ) => types.push((*array_type, stable.clone())),
+                    _ => return Err(CfgDomainFailure::Shape),
                 }
             }
         }
-        let types = deduplicate_type_mappings(types)?;
+        if function.air.param_drops().len() != body.param_drops.len() {
+            return Err(CfgDomainFailure::Shape);
+        }
+        for ((current_slot, current), (stable_slot, stable)) in function
+            .air
+            .param_drops()
+            .iter()
+            .zip(body.param_drops.iter())
+        {
+            if current_slot != stable_slot {
+                return Err(CfgDomainFailure::Shape);
+            }
+            types.push((*current, stable.clone()));
+        }
+        // CFG cleanup elaboration recursively reads aggregate fields, variant
+        // payloads, arrays, and destructor symbols. Close the live type domain
+        // over those facts so every emitted CFG handle can be relocated.
+        let mut types = deduplicate_type_mappings(types)?;
+        let mut pending = types
+            .iter()
+            .map(|(current, _)| *current)
+            .collect::<Vec<_>>();
+        let mut visited = std::collections::HashSet::new();
+        let mut incomplete = false;
+        while let Some(current) = pending.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            let children = match current.kind() {
+                TypeKind::Struct(id) => {
+                    let definition = type_pool.struct_def(id);
+                    if let Some(name) = &definition.destructor {
+                        let symbol = interner.get_or_intern(name);
+                        if let Some(callable) = stable_callable(symbol) {
+                            symbols.push((symbol, StableCfgSymbol::Callable(callable)));
+                        } else {
+                            incomplete = true;
+                        }
+                    }
+                    definition
+                        .fields
+                        .iter()
+                        .map(|field| field.ty)
+                        .collect::<Vec<_>>()
+                }
+                TypeKind::Enum(id) => type_pool
+                    .enum_def(id)
+                    .variant_payloads
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .collect(),
+                TypeKind::Array(id) => vec![type_pool.array_def(id).0],
+                _ => Vec::new(),
+            };
+            for child in children {
+                if visited.contains(&child) {
+                    continue;
+                }
+                if !types.iter().any(|(current, _)| *current == child) {
+                    match stable_type(child) {
+                        Ok(stable) => types.push((child, stable)),
+                        Err(CfgDomainFailure::Missing | CfgDomainFailure::Unsupported) => {
+                            incomplete = true;
+                            continue;
+                        }
+                        Err(failure) => return Err(failure),
+                    }
+                }
+                pending.push(child);
+            }
+        }
         stable_strings.sort_by_key(|(index, _)| *index);
         stable_strings.dedup();
         spans.sort_by_key(|(span, _)| (span.file_id.index(), span.start, span.end));
@@ -423,16 +715,18 @@ impl CfgDomainProjection {
         if symbols.windows(2).any(|pair| pair[0].0 == pair[1].0) {
             return Err(CfgDomainFailure::Shape);
         }
-        let mut atoms = input.body.local_atoms.to_vec();
+        let mut atoms = body.local_atoms.to_vec();
         atoms.sort_by(|left, right| {
             (&left.identity, &left.content).cmp(&(&right.identity, &right.content))
         });
         Ok(Self {
+            body_span,
             types,
             strings: stable_strings,
             atoms,
             spans,
             symbols,
+            incomplete_epoch: incomplete.then(|| Arc::new(())),
         })
     }
 
@@ -441,14 +735,14 @@ impl CfgDomainProjection {
             .iter()
             .find(|(current, _)| *current == value)
             .map(|(_, stable)| stable.clone())
-            .ok_or(CfgDomainFailure::Missing)
+            .ok_or(CfgDomainFailure::MissingLiveType(value))
     }
     fn current_type(&self, value: &CanonicalType) -> Result<Type, CfgDomainFailure> {
         self.types
             .iter()
             .find(|(_, stable)| stable == value)
             .map(|(current, _)| *current)
-            .ok_or(CfgDomainFailure::Missing)
+            .ok_or(CfgDomainFailure::MissingStableType)
     }
     fn stable_nominal(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
         self.stable_type(value)
@@ -463,6 +757,9 @@ impl CfgDomainProjection {
         cfg: &rue_cfg::Cfg,
         new_span: Span,
     ) -> Result<rue_cfg::CfgEditor, CfgDomainFailure> {
+        if old.incomplete_epoch.is_some() || new.incomplete_epoch.is_some() {
+            return Err(CfgDomainFailure::Missing);
+        }
         if old.atoms != new.atoms {
             return Err(CfgDomainFailure::Shape);
         }
@@ -488,12 +785,12 @@ impl CfgDomainProjection {
                     .iter()
                     .find(|(symbol, _)| *symbol == value)
                     .map(|(_, value)| value)
-                    .ok_or(CfgDomainFailure::Missing)?;
+                    .ok_or(CfgDomainFailure::MissingSymbol)?;
                 new.symbols
                     .iter()
                     .find(|(_, identity)| identity == stable)
                     .map(|(symbol, _)| *symbol)
-                    .ok_or(CfgDomainFailure::Missing)
+                    .ok_or(CfgDomainFailure::MissingSymbol)
             },
             |value| {
                 let stable = old
@@ -501,25 +798,21 @@ impl CfgDomainProjection {
                     .iter()
                     .find(|(index, _)| *index == value)
                     .map(|(_, value)| value)
-                    .ok_or(CfgDomainFailure::Missing)?;
+                    .ok_or(CfgDomainFailure::MissingString)?;
                 new.strings
                     .iter()
                     .find(|(_, value)| value == stable)
                     .map(|(index, _)| *index)
-                    .ok_or(CfgDomainFailure::Missing)
+                    .ok_or(CfgDomainFailure::MissingString)
             },
             |value| {
                 let anchor = old
                     .spans
                     .iter()
                     .find(|(span, _)| *span == value)
-                    .map(|(_, anchor)| anchor)
-                    .ok_or(CfgDomainFailure::Missing)?;
-                Ok(Span {
-                    file_id: new_span.file_id,
-                    start: new_span.start + anchor.start,
-                    end: new_span.start + anchor.end,
-                })
+                    .map(|(_, anchor)| *anchor)
+                    .unwrap_or_else(|| StableCfgSpan::new(value, old.body_span));
+                anchor.relocate(new_span)
             },
         )
         .map_err(|error| match error {
@@ -535,17 +828,23 @@ mod tests {
     use lasso::Key;
     use rue_cfg::{Cfg, CfgInstData};
 
-    fn projection(symbol: Spur) -> CfgDomainProjection {
+    fn projection_with(symbol: Spur, stable: StableCfgSymbol) -> CfgDomainProjection {
         CfgDomainProjection {
+            body_span: Span::new(4, 5),
             types: vec![(Type::I32, SemanticImportType::I32)],
             strings: Vec::new(),
             atoms: Vec::new(),
             spans: vec![(
                 Span::new(4, 5),
-                crate::DurableBodyAnchor { start: 0, end: 1 },
+                StableCfgSpan::Relative { start: 0, end: 1 },
             )],
-            symbols: vec![(symbol, StableCfgSymbol::Intrinsic(Arc::from("stable")))],
+            symbols: vec![(symbol, stable)],
+            incomplete_epoch: None,
         }
+    }
+
+    fn projection(symbol: Spur) -> CfgDomainProjection {
+        projection_with(symbol, StableCfgSymbol::Intrinsic(Arc::from("stable")))
     }
 
     #[test]
@@ -596,10 +895,32 @@ mod tests {
         missing.symbols.clear();
         assert!(matches!(
             CfgDomainProjection::import_cfg(&projection(old), &missing, &cfg, Span::new(40, 50)),
-            Err(CfgDomainFailure::Missing)
+            Err(CfgDomainFailure::MissingSymbol)
         ));
         assert!(
             matches!(cfg.get_inst(rue_cfg::CfgValue::from_raw(0)).data, CfgInstData::Call { name, .. } if name == old)
+        );
+    }
+
+    #[test]
+    fn runtime_call_symbol_import_uses_stable_runtime_identity() {
+        let old = Spur::try_from_usize(5).unwrap();
+        let new = Spur::try_from_usize(29).unwrap();
+        let stable = StableCfgSymbol::Runtime(Arc::from("__rue_to_string"));
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        let block = cfg.new_block();
+        cfg.append_call(block, None, old, [], Type::I32, Span::new(4, 5))
+            .unwrap();
+
+        let imported = CfgDomainProjection::import_cfg(
+            &projection_with(old, stable.clone()),
+            &projection_with(new, stable),
+            &cfg,
+            Span::new(40, 50),
+        )
+        .unwrap();
+        assert!(
+            matches!(imported.get_inst(rue_cfg::CfgValue::from_raw(0)).data, CfgInstData::Call { name, .. } if name == new)
         );
     }
 }

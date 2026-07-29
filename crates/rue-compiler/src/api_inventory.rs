@@ -14,6 +14,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_lower", include_str!("canonical_lower.rs")),
     ("canonical_merge", include_str!("canonical_merge.rs")),
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
+    ("cfg_query", include_str!("cfg_query.rs")),
     (
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),

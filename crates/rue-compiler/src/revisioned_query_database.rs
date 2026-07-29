@@ -564,6 +564,9 @@ pub(crate) struct RevisionedQueryDatabase {
     call_abis: QueryFamily<crate::type_queries::CallAbiQueryKey, crate::type_queries::CallAbiValue>,
     #[allow(dead_code)]
     drop_glues: QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::DropGlueValue>,
+    #[allow(dead_code)]
+    cfgs: QueryFamily<crate::cfg_query::CfgQueryKey, crate::cfg_query::CfgValue>,
+    optimized_cfgs: QueryFamily<crate::cfg_query::OptimizedCfgQueryKey, crate::cfg_query::CfgValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     /// Per-`(module, import-path)` binding-resolution family. Registered query
     /// machinery for the exact provider boundary. Production body import
@@ -12781,6 +12784,38 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the DropGlue family has one canonical name");
+        let layouts_for_cfg = layouts.clone();
+        let type_facts_for_cfg = type_facts.clone();
+        let drop_glues_for_cfg = drop_glues.clone();
+        let call_abis_for_cfg = call_abis.clone();
+        let cfgs = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.cfg",
+                BODY_QUERY_MEMO_RETENTION,
+                crate::cfg_query::cfg_value_equal,
+                move |context, _, key: &crate::cfg_query::CfgQueryKey| {
+                    crate::cfg_query::evaluate_cfg(
+                        context,
+                        &layouts_for_cfg,
+                        &type_facts_for_cfg,
+                        &drop_glues_for_cfg,
+                        &call_abis_for_cfg,
+                        key,
+                    )
+                },
+            )
+            .expect("the Cfg family has one canonical name");
+        let cfgs_for_optimization = cfgs.clone();
+        let optimized_cfgs = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.optimized-cfg",
+                BODY_QUERY_MEMO_RETENTION,
+                crate::cfg_query::cfg_value_equal,
+                move |context, _, key: &crate::cfg_query::OptimizedCfgQueryKey| {
+                    crate::cfg_query::evaluate_optimized_cfg(context, &cfgs_for_optimization, key)
+                },
+            )
+            .expect("the OptimizedCfg family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
@@ -13960,6 +13995,8 @@ impl RevisionedQueryDatabase {
             layouts,
             call_abis,
             drop_glues,
+            cfgs,
+            optimized_cfgs,
             lookup_names,
             lookup_imports,
             #[cfg(test)]
@@ -14234,6 +14271,124 @@ impl RevisionedQueryDatabase {
                 }
             })
             .or_else(|| self.current_parse_revision())
+    }
+
+    pub(crate) fn optimized_cfg(
+        &self,
+        revision: Revision,
+        function: crate::FunctionInstanceKey,
+        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+        semantic_input: crate::cfg_query::CfgSemanticInput,
+        live: Arc<crate::cfg_query::CfgLiveInput>,
+        opt_level: rue_cfg::OptLevel,
+        cancellation: CancellationToken,
+    ) -> Result<
+        (
+            crate::cfg_query::CfgQueryKey,
+            rue_query::QueryRequestAttempt<crate::cfg_query::CfgValue>,
+        ),
+        QueryAbort,
+    > {
+        let mut layout_dependencies = BTreeSet::new();
+        let mut drop_dependencies = BTreeSet::new();
+        for ty in live.domains.stable_types() {
+            crate::cfg_query::collect_type_dependencies(ty, &mut layout_dependencies);
+            crate::cfg_query::collect_drop_type_dependency(ty, &mut drop_dependencies);
+        }
+        let layout_keys = layout_dependencies
+            .into_iter()
+            .map(|ty| crate::type_queries::TypeQueryKey {
+                ty,
+                configuration: configuration.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut layout_values = Vec::with_capacity(layout_keys.len());
+        for key in layout_keys {
+            let attempt = self.runtime.request_registered(
+                &self.layouts,
+                revision,
+                key.clone(),
+                cancellation.clone(),
+            );
+            let terminal = attempt.into_result()?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("Layout publishes typed values")
+            };
+            layout_values.push((key, value.clone()));
+        }
+        let drop_keys = drop_dependencies
+            .into_iter()
+            .map(|ty| crate::type_queries::TypeQueryKey {
+                ty,
+                configuration: configuration.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut type_fact_values = Vec::with_capacity(drop_keys.len());
+        let mut drop_glue_values = Vec::with_capacity(drop_keys.len());
+        for key in drop_keys {
+            let attempt = self.runtime.request_registered(
+                &self.type_facts,
+                revision,
+                key.clone(),
+                cancellation.clone(),
+            );
+            let terminal = attempt.into_result()?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("TypeFacts publishes typed values")
+            };
+            type_fact_values.push((key.clone(), value.clone()));
+            let attempt = self.runtime.request_registered(
+                &self.drop_glues,
+                revision,
+                key.clone(),
+                cancellation.clone(),
+            );
+            let terminal = attempt.into_result()?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("DropGlue publishes typed values")
+            };
+            drop_glue_values.push((key, value.clone()));
+        }
+        let mut callables = live.domains.stable_callables().collect::<BTreeSet<_>>();
+        callables.insert(function.clone());
+        let call_abi_keys = callables
+            .into_iter()
+            .map(|callable| crate::type_queries::CallAbiQueryKey {
+                callable,
+                configuration: configuration.clone(),
+            })
+            .collect::<Vec<_>>();
+        let mut call_abi_values = Vec::with_capacity(call_abi_keys.len());
+        for key in call_abi_keys {
+            let attempt = self.runtime.request_registered(
+                &self.call_abis,
+                revision,
+                key.clone(),
+                cancellation.clone(),
+            );
+            let terminal = attempt.into_result()?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("CallAbi publishes typed values")
+            };
+            call_abi_values.push((key, value.clone()));
+        }
+        let cfg = crate::cfg_query::CfgQueryKey::new(
+            function,
+            configuration,
+            semantic_input,
+            layout_values.into(),
+            type_fact_values.into(),
+            drop_glue_values.into(),
+            call_abi_values.into(),
+            live,
+        );
+        let attempt = self.runtime.request_registered(
+            &self.optimized_cfgs,
+            revision,
+            crate::cfg_query::OptimizedCfgQueryKey::new(cfg.clone(), opt_level),
+            cancellation,
+        );
+        Ok((cfg, attempt))
     }
 
     /// Publish an immutable, revisioned import authority for lower-layer

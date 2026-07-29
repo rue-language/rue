@@ -530,7 +530,7 @@ pub fn semantic_parity_snapshot(view: &crate::SemanticView) -> SemanticParitySna
 /// Raw owner-crate state for the in-tree CFG differential model. This is an
 /// explicitly unstable consuming bridge; ordinary compiler clients use views.
 pub struct OracleSemanticState {
-    pub interner: lasso::ThreadedRodeo,
+    pub interner: Arc<lasso::ThreadedRodeo>,
     pub functions: Vec<UnstableSemanticFunction>,
     pub type_pool: rue_air::FrozenTypeInternPool,
     pub strings: Vec<String>,
@@ -539,7 +539,7 @@ pub struct OracleSemanticState {
 
 /// Raw function state for in-tree differential and storage-profile tooling.
 pub struct UnstableSemanticFunction {
-    pub analyzed: rue_air::AnalyzedFunction,
+    pub analyzed: Arc<rue_air::AnalyzedFunction>,
     pub cfg: rue_cfg::ValidatedCfg,
 }
 

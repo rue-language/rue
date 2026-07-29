@@ -37,7 +37,8 @@ pub(crate) fn test_cfg(source: &str) -> MultiErrorResult<CompileState> {
     let (_, symbols) = rir.into_parts();
     let (functions, type_pool, strings, warnings) = semantic.into_parts();
     Ok(CompileState {
-        interner: symbols.into_interner(),
+        interner: std::sync::Arc::try_unwrap(symbols.into_interner())
+            .expect("test frontend uniquely owns its semantic symbol interner"),
         functions,
         type_pool,
         strings,

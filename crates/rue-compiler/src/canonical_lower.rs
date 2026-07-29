@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::ops::Range;
+use std::sync::Arc;
 
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
@@ -79,7 +80,8 @@ impl ModuleRirOutput {
         let rir = ValidatedRir::finish(editor, &validation).map_err(|error| error.to_string())?;
         Ok(rue_air::BodyRirBundle::new(
             rir,
-            self.symbols.into_interner(),
+            Arc::try_unwrap(self.symbols.into_interner())
+                .expect("module RIR owns its semantic symbol interner"),
         ))
     }
 }

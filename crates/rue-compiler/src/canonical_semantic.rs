@@ -56,12 +56,13 @@ use crate::{
     bound_definitions::{
         configure_canonical_sema, issue_bound_definitions, issue_shell_definitions,
     },
-    build_functions_and_cfgs,
+    queries::collect_function_cfg_queries,
 };
 
 #[cfg(test)]
 thread_local! {
     static INJECT_CFG_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static INJECT_CFG_IMPORT_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_DECLARATION_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_AUTHORITATIVE_KEY_MISMATCH: Cell<bool> = const { Cell::new(false) };
 }
@@ -83,6 +84,30 @@ pub(crate) fn with_test_cfg_failure_injection<T>(run: impl FnOnce() -> T) -> T {
     });
     let _reset = Reset;
     run()
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_cfg_import_failure_injection<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_CFG_IMPORT_FAILURE.with(|enabled| enabled.set(false));
+        }
+    }
+
+    INJECT_CFG_IMPORT_FAILURE.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "CFG import failure injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
+}
+
+#[cfg(test)]
+pub(crate) fn take_test_cfg_import_failure() -> bool {
+    INJECT_CFG_IMPORT_FAILURE.with(|enabled| enabled.replace(false))
 }
 
 #[cfg(test)]
@@ -592,7 +617,6 @@ pub struct CanonicalSemanticOutput {
     implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
     implicit_named_destructor_dependencies_complete: bool,
     body_references: BTreeMap<crate::FunctionInstanceKey, crate::body_query::BodyReferences>,
-    durable_cfgs: Arc<[crate::queries::DurableCfgArtifact]>,
 }
 
 impl CanonicalSemanticOutput {
@@ -847,9 +871,6 @@ impl CanonicalSemanticOutput {
     pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
         self.implicit_named_destructor_dependencies_complete
     }
-    pub(crate) fn durable_cfgs(&self) -> &Arc<[crate::queries::DurableCfgArtifact]> {
-        &self.durable_cfgs
-    }
     /// Stable definition identities when requested for this run.
     #[cfg(test)]
     pub(crate) fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
@@ -905,10 +926,12 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     body_candidates: Vec<PreparedDurableBodyCandidate>,
     specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
-    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     body_work: crate::DurableBodyWork,
+    cfg_queries: &crate::revisioned_query_database::RevisionedQueryDatabase,
+    revision: rue_query::Revision,
+    cancellation: rue_query::CancellationToken,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     // Rebinding the durable declaration records and rebuilding the query
     // dependency edges runs before whole-program analysis opens `sema`. It is
@@ -1220,11 +1243,13 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         body_candidates,
         specialized_body_candidates,
         anonymous_body_candidates,
-        durable_cfg_candidates,
         demanded_drop_glue,
         demanded_drop_glue_plans,
         body_work,
         sema_span,
+        cfg_queries,
+        revision,
+        cancellation,
     )
 }
 
@@ -1519,11 +1544,13 @@ fn finish_canonical_analysis(
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
-    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
+    cfg_queries: &crate::revisioned_query_database::RevisionedQueryDatabase,
+    revision: rue_query::Revision,
+    cancellation: rue_query::CancellationToken,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     finish_canonical_analysis_with(
         input,
@@ -1538,11 +1565,13 @@ fn finish_canonical_analysis(
         durable_body_candidates,
         durable_specialized_body_candidates,
         durable_anonymous_body_candidates,
-        durable_cfg_candidates,
         demanded_drop_glue,
         demanded_drop_glue_plans,
         durable_body_reuse_work,
         sema_span,
+        cfg_queries,
+        revision,
+        cancellation,
         |bound, candidates, definitions, merged| {
             bound
                 .compose_queried_bodies(
@@ -1571,11 +1600,13 @@ fn finish_canonical_analysis_with(
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
-    durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
     demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     mut durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
+    cfg_queries: &crate::revisioned_query_database::RevisionedQueryDatabase,
+    revision: rue_query::Revision,
+    cancellation: rue_query::CancellationToken,
     analyze_bodies: impl FnOnce(
         rue_air::BoundSema<'_>,
         Vec<rue_air::SemanticQueriedBodyCandidate<crate::StableDefinitionKey, crate::ModuleId>>,
@@ -1778,29 +1809,11 @@ fn finish_canonical_analysis_with(
     );
     let queried_cfg_bodies = queried_candidates
         .iter()
-        .filter_map(|candidate| {
-            let owner =
-                crate::revisioned_query_database::function_definition_key(&candidate.identity)?
-                    .clone();
-            let record = authoritative_definitions.definition_by_key(&owner)?;
-            let expected_inputs = crate::session::stable_definition_input_fingerprint(
-                merged.definitions().source_snapshot(),
-                record,
-            )
-            .ok()?;
-            Some((
+        .map(|candidate| {
+            (
                 candidate.identity.clone(),
-                (
-                    candidate.body_span,
-                    crate::DurableOrdinaryBodyPayload {
-                        schema_version: crate::durable_body::DURABLE_ORDINARY_BODY_SCHEMA_VERSION,
-                        semantic_schema_version: crate::DURABLE_SEMANTIC_SCHEMA_VERSION,
-                        owner,
-                        expected_inputs,
-                        body: candidate.body.clone(),
-                    },
-                ),
-            ))
+                (candidate.body_span, candidate.body.clone()),
+            )
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     let composition = analyze_bodies(
@@ -2022,6 +2035,43 @@ fn finish_canonical_analysis_with(
                 },
             )
         })?;
+    let stable_drop_glue_plans = demanded_drop_glue_plans
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let stable_aggregate_types = sema_output
+        .aggregate_types_by_identity
+        .iter()
+        .map(|(issued, live)| {
+            let callable = rue_air::FunctionInstanceKey::DropGlue(Box::new(issued.clone()));
+            let stable =
+                project_function_instance_key(&callable, merged, &authoritative_definitions)?;
+            let crate::FunctionInstanceKey::DropGlue(stable) = stable else {
+                unreachable!("drop-glue projection preserves its callable kind")
+            };
+            Ok::<_, rue_air::SemanticStableResolutionFailure>((*live, *stable))
+        })
+        .collect::<Result<std::collections::HashMap<_, _>, _>>()
+        .map_err(|failure| {
+            CanonicalSemanticFailure::new(
+                CanonicalSemanticFailurePhase::BodyAnalysis,
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "failed to project reached aggregate type identity: {failure:?}"
+                    )),
+                )),
+                CanonicalSemanticWork {
+                    declaration_index,
+                    binding,
+                    manifest: manifest_work,
+                    bound_definitions: Some(authoritative_definitions.work()),
+                    body_analysis,
+                    durable_bodies: durable_body_work,
+                    declaration_reuse,
+                    ..CanonicalSemanticWork::default()
+                },
+            )
+        })?;
     let issued_callable_identities = sema_output
         .functions
         .iter()
@@ -2072,59 +2122,37 @@ fn finish_canonical_analysis_with(
                     .map(|(body_span, body)| (*body_span, body.clone(), function_key.clone()))
             });
         if let Some((body_span, body, function_key)) = selected {
-            let Ok(type_dependencies) = crate::durable_cfg::transitive_body_type_dependencies(
-                &body,
-                &sema_output.type_pool,
-                &authoritative_definitions,
-            ) else {
-                continue;
-            };
-            let type_inputs = type_dependencies
-                .into_iter()
-                .map(|key| {
-                    authoritative_definitions
-                        .definition_by_key(&key)
-                        .ok_or(())
-                        .and_then(|record| {
-                            crate::session::stable_definition_input_fingerprint(
-                                merged.definitions().source_snapshot(),
-                                record,
-                            )
-                            .map_err(|_| ())
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .ok();
-            let Some(type_inputs) = type_inputs else {
-                continue;
-            };
-            stable_cfg_inputs.push(crate::durable_cfg::CurrentCfgInput {
-                stable: crate::durable_cfg::StableCfgInput {
-                    function: function_key,
-                    body,
-                    type_inputs: type_inputs.into(),
-                },
+            stable_cfg_inputs.push(crate::cfg_query::CfgBodyInput {
+                function: function_key,
+                body,
                 body_span,
             });
         }
     }
-    stable_cfg_inputs.sort_by(|left, right| left.stable.function.cmp(&right.stable.function));
+    stable_cfg_inputs.sort_by(|left, right| left.function.cmp(&right.function));
     drop(sema_span);
     // CFG construction is a sibling of semantic-proper, not nested inside it:
     // `sema_span` closes above before this begins. Published phases must not
     // overlap, so this boundary is load-bearing rather than stylistic. The
     // `cfg_and_optimization` phase marker lives on `cfg_construction` inside
-    // `build_functions_and_cfgs`.
-    let cfg = build_functions_and_cfgs(
+    // `collect_function_cfg_queries`.
+    let cfg = collect_function_cfg_queries(
         sema_output,
         &demanded_issued_drop_glue,
         &demanded_issued_drop_glue_plans,
+        &stable_drop_glue_plans,
         options.opt_level,
-        options.target,
-        rir.semantic_symbols().interner(),
-        &durable_cfg_candidates,
+        rir.semantic_symbols().shared_interner(),
         &stable_cfg_inputs,
+        stable_aggregate_types,
         &projected_callable_identities,
+        cfg_queries,
+        revision,
+        crate::semantic_query_nucleus::SemanticQueryConfiguration {
+            target: options.target,
+            preview_features: crate::StablePreviewFeatures::new(&options.preview_features),
+        },
+        cancellation,
     )
     .map_err(|failure| {
         let work = CanonicalSemanticWork {
@@ -2231,7 +2259,6 @@ fn finish_canonical_analysis_with(
         implicit_named_destructor_dependencies_complete: cfg
             .implicit_named_destructor_dependencies_complete,
         body_references: BTreeMap::new(),
-        durable_cfgs: cfg.durable_cfgs,
     })
 }
 

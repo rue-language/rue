@@ -71,6 +71,7 @@ use rue_compiler::{
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
+use std::sync::Arc;
 
 struct CompileState {
     interner: ThreadedRodeo,
@@ -126,7 +127,8 @@ fn query_cfg_state_from_session(
     let state = rue_compiler::unstable::into_oracle_semantic_state(semantic)
         .expect("one-shot oracle session uniquely owns its frontend artifacts");
     Ok(CompileState {
-        interner: state.interner,
+        interner: Arc::try_unwrap(state.interner)
+            .expect("one-shot oracle uniquely owns its semantic symbol interner"),
         functions: state
             .functions
             .into_iter()

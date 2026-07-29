@@ -41,7 +41,7 @@ pub struct SemanticTranslationWork {
 #[derive(Debug)]
 pub struct SemanticSymbolUniverse {
     admitted_modules: Arc<[Arc<crate::parsed_modules::ParsedModule>]>,
-    interner: ThreadedRodeo,
+    interner: Arc<ThreadedRodeo>,
     provenance: Arc<SemanticSymbolProvenance>,
     local_symbol_resolutions: AtomicUsize,
     semantic_intern_attempts: AtomicUsize,
@@ -49,8 +49,12 @@ pub struct SemanticSymbolUniverse {
 }
 
 impl SemanticSymbolUniverse {
-    pub(crate) fn into_interner(self) -> ThreadedRodeo {
+    pub(crate) fn into_interner(self) -> Arc<ThreadedRodeo> {
         self.interner
+    }
+
+    pub(crate) fn shared_interner(&self) -> Arc<ThreadedRodeo> {
+        self.interner.clone()
     }
 
     /// Start a destination universe for one canonical program traversal.
@@ -68,7 +72,7 @@ impl SemanticSymbolUniverse {
     pub(crate) fn from_modules(modules: &[Arc<crate::parsed_modules::ParsedModule>]) -> Self {
         let universe = Self {
             admitted_modules: modules.to_vec().into(),
-            interner: ThreadedRodeo::new(),
+            interner: Arc::new(ThreadedRodeo::new()),
             provenance: Arc::new(SemanticSymbolProvenance),
             local_symbol_resolutions: AtomicUsize::new(0),
             semantic_intern_attempts: AtomicUsize::new(0),

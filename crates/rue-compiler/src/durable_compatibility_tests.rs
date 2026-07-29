@@ -27,7 +27,6 @@ const REVIEWED_SEMANTIC_SCHEMA: DurableSemanticSchemaVersion = DurableSemanticSc
 // (RUE-1128); the payload-free 9/8 shapes fail closed to ordinary analysis.
 const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 10;
 const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 9;
-const REVIEWED_CFG_SCHEMA: u32 = 4;
 const REVIEWED_BODY_KINDS: usize = 58;
 const REVIEWED_TYPE_KINDS: usize = 21;
 const REVIEWED_CONST_KINDS: usize = 6;
@@ -106,10 +105,6 @@ fn reviewed_schema_versions_and_old_new_policy_are_explicit() {
     assert_eq!(
         DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
         REVIEWED_SPECIALIZED_BODY_SCHEMA
-    );
-    assert_eq!(
-        crate::queries::DURABLE_CFG_SCHEMA_VERSION,
-        REVIEWED_CFG_SCHEMA
     );
     assert_eq!(SEMANTIC_BODY_INST_KINDS.len(), REVIEWED_BODY_KINDS);
     assert_eq!(SEMANTIC_IMPORT_TYPE_KINDS.len(), REVIEWED_TYPE_KINDS);

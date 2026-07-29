@@ -509,11 +509,6 @@ fn assert_warm_fresh_parity(
                 "{label}: durable specialized bodies diverged"
             );
             assert_eq!(
-                format!("{:?}", warm.durable_cfgs()),
-                format!("{:?}", fresh.durable_cfgs()),
-                "{label}: durable CFG artifacts diverged"
-            );
-            assert_eq!(
                 format!("{:?}", warm.warnings()),
                 format!("{:?}", fresh.warnings()),
                 "{label}: ordered semantic warnings diverged"

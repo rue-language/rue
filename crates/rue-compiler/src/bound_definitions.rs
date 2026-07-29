@@ -724,43 +724,12 @@ pub(crate) fn compare_canonical_durable_declaration_install(
     let installed_bodies = installed.analyze_all_bodies_for_test();
     match (ordinary_bodies, installed_bodies) {
         (Ok(ordinary), Ok(installed)) => {
-            let ordinary_glue = std::collections::BTreeSet::new();
-            let installed_glue = std::collections::BTreeSet::new();
-            let glue_plans = std::collections::BTreeMap::new();
-            let ordinary_identities =
-                crate::queries::synthetic_projected_function_identities(&ordinary);
-            let installed_identities =
-                crate::queries::synthetic_projected_function_identities(&installed);
-            let ordinary = crate::build_functions_and_cfgs(
-                ordinary,
-                &ordinary_glue,
-                &glue_plans,
-                crate::OptLevel::default(),
-                crate::Target::host().unwrap(),
-                rir.semantic_symbols().interner(),
-                &[],
-                &[],
-                &ordinary_identities,
-            )
-            .map_err(|failure| failure.errors)?;
-            let installed = crate::build_functions_and_cfgs(
-                installed,
-                &installed_glue,
-                &glue_plans,
-                crate::OptLevel::default(),
-                crate::Target::host().unwrap(),
-                rir.semantic_symbols().interner(),
-                &[],
-                &[],
-                &installed_identities,
-            )
-            .map_err(|failure| failure.errors)?;
             if format!("{:?}", ordinary.functions) != format!("{:?}", installed.functions)
                 || format!("{:?}", ordinary.warnings) != format!("{:?}", installed.warnings)
                 || ordinary.strings != installed.strings
             {
                 return Err(CompileErrors::from(invalid(
-                    "projected durable install changed body, CFG, or diagnostic artifacts",
+                    "projected durable install changed body or diagnostic artifacts",
                 )));
             }
         }
