@@ -89,6 +89,8 @@ def validate(ci_path: Path, native_runner_path: Path = NATIVE_RUNNER_SCRIPT) -> 
         errors.append("ci-contract must not depend on another CI job")
     if "scripts/validate-ci-gate.py .github/workflows/ci.yml" not in contract:
         errors.append("ci-contract no longer runs the structural validator")
+    if "scripts/validate-tier-ci-selectors.py" not in contract:
+        errors.append("ci-contract no longer proves every test tier is CI-selected")
 
     remote = jobs.get("remote-execution", "")
     if "    if: github.event_name == 'merge_group'\n" not in remote:
@@ -145,6 +147,8 @@ def validate(ci_path: Path, native_runner_path: Path = NATIVE_RUNNER_SCRIPT) -> 
         "linux-x64-cli-shard-2",
         "linux-x64-cli-shard-3",
         "linux-x64-spec",
+        "linux-x64-oracle-diff",
+        "linux-x64-oracle-diff-spec",
     }
     if check_names != expected_checks:
         errors.append(

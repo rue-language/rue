@@ -72,6 +72,8 @@ SELECTABLE_CORPUS=(
     //:cli-tests-shard-2
     //:cli-tests-shard-3
     //:spec-tests
+    //crates/rue-oracle-diff:oracle-diff-test
+    //crates/rue-oracle-diff:oracle-diff-spec-test
 )
 
 # Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.

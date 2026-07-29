@@ -459,6 +459,49 @@ rue_sh_test(
     },
 )
 
+# RUE-1117: the declared inputs of the tier CI-selector gate. The tier
+# vocabulary and every workflow that is registered as deliberately selecting a
+# tier are inputs, so an edit to any of them re-runs the gate.
+filegroup(
+    name = "tier-ci-selector-inputs",
+    srcs = [
+        ".github/workflows/ci.yml",
+        ".github/workflows/release.yml",
+        "test_defs.bzl",
+        "test_tiers.bxl",
+    ],
+)
+
+# RUE-1117: `//test_tiers.bxl:validate` proves every test target owns exactly one
+# tier; it cannot prove any CI job runs that tier. This gate requires each tier
+# to be selected by a *named* job, so a target moved into a tier nothing selects
+# fails the build instead of quietly leaving required CI — the way the
+# RUE-205/RUE-204 codegen differential did.
+rue_sh_test(
+    name = "tier-ci-selector-validation",
+    test = "scripts/validate-tier-ci-selectors.py",
+    args = [
+        "--test-defs",
+        "$(location :tier-ci-selector-inputs)/test_defs.bzl",
+        "--test-tiers-bxl",
+        "$(location :tier-ci-selector-inputs)/test_tiers.bxl",
+        "--workflow",
+        "$(location :tier-ci-selector-inputs)/.github/workflows/ci.yml",
+        "--workflow",
+        "$(location :tier-ci-selector-inputs)/.github/workflows/release.yml",
+    ],
+)
+
+rue_sh_test(
+    name = "tier-ci-selector-tool-tests",
+    test = "scripts/test-validate-tier-ci-selectors.py",
+    resources = ["scripts/validate-tier-ci-selectors.py"],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_TIER_VALIDATION_ROOT": "$(location :tier-ci-selector-inputs)",
+    },
+)
+
 rue_sh_test(
     name = "ci-required-results-tool-tests",
     test = "scripts/test-ci-required-results.py",

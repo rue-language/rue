@@ -430,6 +430,25 @@ jobs:
             target: //:spec-tests
             name: spec
             check_name: linux-x64-spec
+          # RUE-1117: the RUE-205/RUE-204 codegen differential — every runnable
+          # CLI and spec case executed through the reference interpreter and
+          # compared against the compiler's own result. It is the check that
+          # catches codegen diverging from the language's semantics, so it
+          # belongs on the pre-merge critical path rather than in the nightly
+          # release sweep, where a divergence surfaces up to a day late,
+          # attributed to a schedule rather than to the PR that caused it, and
+          # only in release configuration. Both corpora are target-independent,
+          # so one linux-x64 lane each is the whole platform requirement.
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //crates/rue-oracle-diff:oracle-diff-test
+            name: oracle-diff
+            check_name: linux-x64-oracle-diff
+          - os: ubuntu-latest
+            cache_name: linux-x64
+            target: //crates/rue-oracle-diff:oracle-diff-spec-test
+            name: oracle-diff-spec
+            check_name: linux-x64-oracle-diff-spec
     runs-on: ${{ matrix.os }}
     name: test (${{ matrix.check_name }})
     steps:
@@ -632,6 +651,18 @@ jobs:
       - uses: actions/checkout@v6
       - name: Validate aggregate gate and platform responsibilities
         run: scripts/validate-ci-gate.py .github/workflows/ci.yml
+
+      # RUE-1117: `//:tier-ci-selector-validation` also runs this in the premerge
+      # Buck pass. Repeating it here needs no toolchain and keeps the structural
+      # answer to "does any job actually run this tier?" next to the rest of the
+      # CI contract, independent of whether the Buck lane got that far.
+      - name: Validate deliberate CI selection of every test tier
+        run: >-
+          scripts/validate-tier-ci-selectors.py
+          --test-defs test_defs.bzl
+          --test-tiers-bxl test_tiers.bxl
+          --workflow .github/workflows/ci.yml
+          --workflow .github/workflows/release.yml
 
   # The only stable branch-protection context. Matrix children may be reshaped
   # without changing this displayed name. The evaluator rejects missing,

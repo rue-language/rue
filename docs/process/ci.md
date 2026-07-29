@@ -131,9 +131,29 @@ Required CI sets `RUE_TEST_TIER=premerge`; `scripts/rue all` exercises the
 complete union, while the scheduled release workflow gives the dedicated
 large-program targets their own compile-once jobs.
 
+A tier label says when a target runs, not that anything runs it. `validate`
+above cannot see CI, so a target moved into a tier no job selects keeps a valid
+label while its coverage leaves the merge queue — which is what happened to the
+codegen differential (RUE-1117). `scripts/validate-tier-ci-selectors.py`
+(`//:tier-ci-selector-validation`, and repeated in the toolchain-free
+`CI contract` job) closes that gap: every tier must be selected by a *named* CI
+job, registered in the script against the literal selection it relies on.
+
+An unfiltered `//...` run is deliberately not accepted as a selector. The
+nightly release sweep runs every tier by accident of not filtering, so it keeps
+reporting coverage through the very edit that strands a tier, and it names no
+owner. The gate is tier-granular; per-target coverage stays with each suite's
+own inventory gate (the RUE-924 audit in `test.sh`,
+`//:cli-shard-coverage-validation`).
+
 The exhaustive CLI- and specification-oracle differential harnesses are
-`slow`: premerge retains the fixed generated oracle smoke corpus as its bounded
-codegen canary. CLI corpus sections may likewise declare `tier = "slow"`.
+`slow`, and are the slow tier's pre-merge selector: `platform-corpus` runs
+`//crates/rue-oracle-diff:oracle-diff-test` and `:oracle-diff-spec-test` in two
+concurrent linux-x64 lanes (RUE-1117). Both corpora are target-independent, so
+one lane each is the whole platform requirement — the nightly release sweep is
+release-configuration coverage on top, not the primary signal. Premerge retains
+the fixed generated oracle smoke corpus as its bounded codegen canary.
+CLI corpus sections may likewise declare `tier = "slow"`.
 Automatic examples have the same declarative tier field.
 `//:cli-tests-slow` owns those real cases. Mosaic's shipped-program smoke and
 17 exhaustive behavior cases are slow, so the four required CLI shards do not
