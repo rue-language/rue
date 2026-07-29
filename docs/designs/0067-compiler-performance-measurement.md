@@ -349,6 +349,14 @@ commit, and commits-since-last-measurement when runs were skipped. Clicking
 pins the tooltip and links to the commit. Tooltip content is
 keyboard-reachable and exposed to assistive technology.
 
+Investigating a flagged movement happens outside the dashboard. Inclusive
+spans and `--time-passes` locate compiler phases; questions about the output
+binary itself — size composition, generated-code behavior — use the
+symbolized build workflow in `docs/process/profiling.md` (RUE-1173), because
+default internal-linker executables deliberately carry no symbol table.
+Measured series keep the epoch's pinned invocation; symbolized builds are
+investigation builds, never appended observations.
+
 ## Implementation Phases
 
 - [ ] **Phase 1: Measurement schema** - RUE-1184. Suite revisions, platform

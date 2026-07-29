@@ -1,0 +1,78 @@
+# Symbolized profiling builds (RUE-1173, docs/process/profiling.md).
+#
+# The supported workflow for producing an executable a native profiler can
+# attribute by function is an explicit system-linker build: `--linker cc`.
+# Rue's per-function objects each define their function's stable semantic
+# symbol (`__rue_sem_v1_...`, with the module path and source name hex-framed
+# inside it), and a system linker carries those symbols into the executable's
+# symbol table. The default internal linker deliberately emits a minimal
+# image with no section table and no symbols.
+#
+# These cases are the executable form of the profiling doc's two claims:
+# the documented workflow produces per-function symbols, and the default
+# build does not. If either linker path changes shape, update
+# docs/process/profiling.md together with the failing case.
+
+[section]
+id = "cli.profiling"
+name = "Symbolized profiling builds"
+description = "The `--linker cc` workflow keeps function symbols for native profilers; default internal-linker output is unsymbolized."
+
+# Runs natively on every CI host (x86-64 Linux, AArch64 Linux, AArch64 macOS):
+# no `--target`, so each host both links via its own `cc` driver and executes
+# the result. `686f745f6c6f6f70` is the hex framing of `hot_loop` inside the
+# stable semantic symbol, so the assertion proves a *user function* symbol
+# survived, not merely runtime symbols.
+[[case]]
+name = "system_linker_build_keeps_function_symbols"
+description = "A `--linker cc` build's symbol table names user functions (stable semantic symbols), the entry point, and runtime helpers."
+requires_system_linker = true
+files = [{ path = "main.rue", source = """
+fn hot_loop(n: i32) -> i32 {
+    let mut total = 0;
+    let mut i = 0;
+    while i < n {
+        total += i;
+        i += 1;
+    }
+    total
+}
+
+fn main() -> i32 {
+    if hot_loop(100) == 4950 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "--linker", "cc", "-o", "prog"]
+symbols_contain = [
+    "__rue_sem_v1_",
+    "686f745f6c6f6f70",
+    "main",
+    "__rue_exit",
+]
+exit_code = 0
+
+# The motivating fact for the workflow: the default internal-linker build is
+# deliberately minimal and carries no symbol table. If the internal linker
+# gains symbol emission, this case fails loudly — update the profiling doc's
+# limitations and this pin together.
+[[case]]
+name = "internal_linker_build_is_unsymbolized"
+description = "Default internal-linker output has no symbol table entries; profilers cannot attribute functions in it."
+files = [{ path = "main.rue", source = """
+fn hot_loop(n: i32) -> i32 {
+    let mut total = 0;
+    let mut i = 0;
+    while i < n {
+        total += i;
+        i += 1;
+    }
+    total
+}
+
+fn main() -> i32 {
+    if hot_loop(100) == 4950 { 0 } else { 1 }
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+no_symbol_table = true
+exit_code = 0

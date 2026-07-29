@@ -29,6 +29,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | Review | [code-review.md](code-review.md) | `/code-review` | Check quality before committing |
 | Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
 | - | [ci.md](ci.md) | - | Maintain required CI and its pinned tools |
+| - | [profiling.md](profiling.md) | - | Build symbolized executables for native profiling |
 | - | [compiler-facade.md](compiler-facade.md) | - | Review compiler API and tooling-view changes |
 | - | [tutorial.md](tutorial.md) | - | Maintain tutorial outline, style, and snippet checks |
 | - | [issue-tracking.md](issue-tracking.md) | Linear MCP tools | Track work with Linear |
