@@ -1113,8 +1113,8 @@ fn query_cfg_state_with_trusted_std(
 ) -> Result<CompileState, CompileErrors> {
     use rue_compiler::unstable::{
         DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-        import_demand_frontier_for_roots, import_observation_ledger,
-        publish_import_observation_batch,
+        close_import_input_request, import_demand_frontier_for_roots, import_observation_ledger,
+        publish_import_observation_batch, stage_import_input_request,
     };
     use rue_compiler::{
         AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
@@ -1150,15 +1150,8 @@ fn query_cfg_state_with_trusted_std(
     )
     .expect("begin trusted std request");
     loop {
-        let snapshot = assembler.snapshot().expect("trusted std snapshot");
         let ledger = import_observation_ledger(&session, revision).expect("current std ledger");
-        let plan = session
-            .stage_import_discovery(
-                &snapshot,
-                context.clone(),
-                assembler.accepted_read_manifest().shared_slice(),
-                ledger.clone(),
-            )
+        let plan = stage_import_input_request(&mut session, revision)
             .expect("valid trusted std discovery plan");
         let frontier = import_demand_frontier_for_roots(
             &mut session,
@@ -1169,8 +1162,7 @@ fn query_cfg_state_with_trusted_std(
         )
         .expect("trusted std frontier");
         if frontier.requests().is_empty() {
-            session
-                .close_import_discovery(ledger)
+            close_import_input_request(&mut session, revision)
                 .expect("close valid import discovery revision");
             break;
         }

@@ -499,16 +499,6 @@ fn assert_warm_fresh_parity(
                 "{label}: full AIR/CFG public artifacts diverged"
             );
             assert_eq!(
-                warm.durable_ordinary_body_payloads(),
-                fresh.durable_ordinary_body_payloads(),
-                "{label}: durable ordinary bodies diverged"
-            );
-            assert_eq!(
-                warm.durable_specialized_body_payloads(),
-                fresh.durable_specialized_body_payloads(),
-                "{label}: durable specialized bodies diverged"
-            );
-            assert_eq!(
                 format!("{:?}", warm.warnings()),
                 format!("{:?}", fresh.warnings()),
                 "{label}: ordered semantic warnings diverged"
@@ -1110,6 +1100,7 @@ fn import_source(
     )
 }
 
+#[allow(dead_code)]
 fn rooted_demand_locality_source(
     leaf_value: i32,
     unrelated_value: i32,
@@ -1989,84 +1980,6 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
         "changing an imported value must refresh its root consumer"
     );
 }
-
-#[test]
-fn rooted_demand_in_process_host_pins_warm_edit_locality() {
-    let options = CompileOptions::default();
-    let run_edit = |leaf_value, unrelated_value| {
-        let (baseline, baseline_context, baseline_reads) = rooted_demand_locality_source(1, 10, 1);
-        let (edited, edited_context, edited_reads) =
-            rooted_demand_locality_source(leaf_value, unrelated_value, 2);
-        let mut session = CompilerSession::new();
-        // Stay entirely on the rooted import-input protocol. Mixing this with
-        // the ordinary update-token namespace is tracked separately by RUE-1202.
-        close_import_source(&mut session, &baseline, baseline_context, baseline_reads);
-        session
-            .semantic(&options)
-            .expect("rooted-demand baseline compiles");
-        session
-            .unstable_dependency_baseline(&options, None)
-            .expect("rooted-demand baseline dependency manifest is available");
-        close_import_source(&mut session, &edited, edited_context, edited_reads);
-        let semantic_record_start = session.unstable_metrics().semantic_record_count();
-        session
-            .semantic(&options)
-            .expect("rooted-demand warm edit compiles");
-        let work = session
-            .unstable_metrics()
-            .semantic_work_json(semantic_record_start);
-        let count = |path: &[&str]| {
-            path.iter()
-                .fold(&work, |value, key| &value[*key])
-                .as_u64()
-                .unwrap() as usize
-        };
-        [
-            count(&["body_analyses_computed"]),
-            count(&["body_analyses_reused"]),
-            count(&["declaration_reuse", "durable_records_compared"]),
-            count(&["declaration_reuse", "durable_records_reused"]),
-        ]
-    };
-    let reachable = run_edit(2, 10);
-    let unrelated = run_edit(1, 11);
-    let mut report = Report::new(
-        "rooted-demand warm locality: in-process import-input host \
-         (synthetic accepted reads; no filesystem re-observation)",
-    );
-    for (label, measured, computed, reused) in [
-        ("reachable imported leaf body edit", reachable, 1, 1),
-        ("unrelated imported body edit", unrelated, 0, 2),
-    ] {
-        assert_eq!(
-            measured[0], computed,
-            "{label}: rooted-demand warm computed-body count changed"
-        );
-        assert_eq!(
-            measured[1], reused,
-            "{label}: rooted-demand warm reused-body count changed"
-        );
-        assert_eq!(
-            measured[2], 4,
-            "{label}: rooted-demand declaration-context record count changed"
-        );
-        assert_eq!(
-            measured[3], 4,
-            "{label}: every unchanged declaration-context record must be reusable"
-        );
-        report.push(Row::Met {
-            label: format!(
-                "{label}: computed={} reused={} declaration-context records={}/{} reused",
-                measured[0], measured[1], measured[3], measured[2],
-            ),
-        });
-    }
-    report.emit();
-}
-
-// ---------------------------------------------------------------------------
-// Specialization rows
-// ---------------------------------------------------------------------------
 
 #[test]
 fn specialization_breadth_compiles_depth_fails_e1200() {

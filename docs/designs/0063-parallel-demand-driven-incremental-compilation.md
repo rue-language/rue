@@ -9,10 +9,10 @@ accepted: 2026-07-18
 implemented:
 spec-sections: []
 superseded-by:
-supersedes: [0045, 0053]
+supersedes: [0045, 0050, 0053]
 amends: [0051]
 amended-by: [0066]
-relates: ["ADR-0050", "ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", "RUE-812", "RUE-1021", "RUE-1022", "RUE-1023", "RUE-1024", "RUE-1025", "RUE-1026", "RUE-1027", "RUE-1028", "RUE-1029", "RUE-1030", "RUE-1031", "RUE-1032", "RUE-1033", "RUE-1137"]
+relates: ["ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", "RUE-812", "RUE-1021", "RUE-1022", "RUE-1023", "RUE-1024", "RUE-1025", "RUE-1026", "RUE-1027", "RUE-1028", "RUE-1029", "RUE-1030", "RUE-1031", "RUE-1032", "RUE-1033", "RUE-1137", "RUE-1210"]
 ---
 
 # ADR-0063: Parallel demand-driven incremental compilation
@@ -749,17 +749,17 @@ Tracked in Linear under the RUE-648 epic. The dependency order is:
   SCCs; move existing Rayon CFG/backend parallelism onto the shared budget; and
   prove progress plus one-worker/many-worker equivalence. — RUE-1028 (blocked by
   RUE-1027)
-- [ ] **Phase 8: Type/layout/ABI/drop queries.** Replace full-pool scans and
+- [x] **Phase 8: Type/layout/ABI/drop queries.** Replace full-pool scans and
   destructor roots with demand-driven facts, layouts, call ABI, and glue. —
   RUE-1029 (blocked by RUE-1028)
-- [ ] **Phase 9: CFG and optimization queries.** Publish per-function
+- [x] **Phase 9: CFG and optimization queries.** Publish per-function
   unoptimized and optimized CFG artifacts with precise layout, warning, string,
   symbol, and interprocedural dependencies. — RUE-1030 (blocked by RUE-1029)
-- [ ] **Phase 10: MIR and `CodegenUnit` queries.** Query both native backends per
+- [x] **Phase 10: MIR and `CodegenUnit` queries.** Query both native backends per
   reached function, normalize link atoms, migrate all backend presentation to
   the canonical path, and retain only justified backend boundaries. — RUE-1031
   (blocked by RUE-1030)
-- [ ] **Phase 11: `ProgramImagePlan` and fresh-link adapter.** Aggregate stable
+- [x] **Phase 11: `ProgramImagePlan` and fresh-link adapter.** Aggregate stable
   typed units, project the current per-function objects, invoke the existing
   fresh internal/system linker paths, and establish the delta/fingerprint
   contract for follow-up direct and incremental internal linking. — RUE-1032
@@ -770,6 +770,13 @@ Tracked in Linear under the RUE-648 epic. The dependency order is:
   compatibility shim and peer cache state, enforce memory budgets, and publish
   warm edit-to-codegen and edit-to-runnable baselines. — RUE-1033 (blocked by
   RUE-1032)
+
+  The selected-state compatibility layer and peer cache state are deleted, but
+  this phase remains open until the maintainers choose the initial retained-byte
+  and dependency-lease budgets for the representative-project gate. Existing
+  per-family terminal counts safely evict unprotected terminals and report
+  protected-root pressure, but they are not a cross-family byte policy and must
+  not be presented as one. RUE-1210 tracks that decision and enforcement work.
 
 Each family migrates through the compatibility shim one at a time and must pass
 the cold-versus-reused differential oracle before the next family moves. Each

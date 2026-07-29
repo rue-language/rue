@@ -30,12 +30,12 @@ pub(crate) fn test_air(source: &str) -> MultiErrorResult<AirOutput> {
 pub(crate) fn test_cfg(source: &str) -> MultiErrorResult<CompileState> {
     let snapshot = SourceSnapshot::single("<test>", source).map_err(CompileErrors::from)?;
     let (rir, semantic, _) = test_frontend_snapshot(&snapshot, &CompileOptions::default())?;
-    let rir =
-        std::sync::Arc::try_unwrap(rir).expect("test session uniquely owns its RIR after return");
     let semantic = std::sync::Arc::try_unwrap(semantic)
         .expect("test session uniquely owns its semantic output after return");
-    let (_, symbols) = rir.into_parts();
     let (functions, type_pool, strings, warnings) = semantic.into_parts();
+    let rir =
+        std::sync::Arc::try_unwrap(rir).expect("test session uniquely owns its RIR after return");
+    let (_, symbols) = rir.into_parts();
     Ok(CompileState {
         interner: {
             use lasso::Key;
@@ -125,8 +125,9 @@ pub(crate) fn test_frontend_snapshot(
 )> {
     let mut session = CompilerSession::new();
     publish_test_snapshot(&mut session, snapshot)?;
-    let rir = session.canonical_rir()?;
+    let _rir = session.canonical_rir()?;
     let semantic = session.canonical_semantic(options)?;
+    let rir = semantic.rir_owner().clone();
     let work = session.work().clone();
     drop(session);
     Ok((rir, semantic, work))

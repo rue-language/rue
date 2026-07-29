@@ -66,6 +66,7 @@ pub(crate) struct ImportDiagnosticInputDescriptor {
 }
 
 impl ImportDiagnosticInputDescriptor {
+    #[cfg(test)]
     pub(crate) fn source_revision(&self) -> &SourceRevision {
         &self.source
     }
@@ -232,15 +233,22 @@ impl DiagnosticAttemptStore {
     }
 
     pub(crate) fn select_snapshot(&mut self, snapshot: &Arc<FrontendDiagnosticSnapshot>) -> bool {
-        let Some(id) = self
+        let id = self
             .entries
             .iter()
             .find(|entry| Arc::ptr_eq(entry.snapshot(), snapshot))
             .map(|entry| entry.id)
-        else {
-            return false;
-        };
+            .unwrap_or_else(|| {
+                use std::sync::atomic::{AtomicU64, Ordering};
+
+                static NEXT_ID: AtomicU64 = AtomicU64::new(1 << 63);
+                self.push(Arc::new(SnapshotDiagnosticAttempt {
+                    id: crate::session::AttemptId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+                    snapshot: snapshot.clone(),
+                }))
+            });
         self.select_id(id);
+        self.evict();
         true
     }
 
@@ -330,25 +338,17 @@ impl DiagnosticAttemptStore {
 
     #[cfg(test)]
     pub(crate) fn select_test_snapshot(&mut self, snapshot: Arc<FrontendDiagnosticSnapshot>) {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1 << 63);
-        self.select(Arc::new(TestDiagnosticAttempt {
-            id: crate::session::AttemptId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
-            snapshot,
-        }));
+        self.select_snapshot(&snapshot);
     }
 }
 
-#[cfg(test)]
 #[derive(Debug)]
-struct TestDiagnosticAttempt {
+struct SnapshotDiagnosticAttempt {
     id: crate::session::AttemptId,
     snapshot: Arc<FrontendDiagnosticSnapshot>,
 }
 
-#[cfg(test)]
-impl AttemptView for TestDiagnosticAttempt {
+impl AttemptView for SnapshotDiagnosticAttempt {
     fn id(&self) -> crate::session::AttemptId {
         self.id
     }
@@ -364,9 +364,6 @@ impl AttemptView for TestDiagnosticAttempt {
     }
     fn origin_id(&self) -> crate::session::AttemptId {
         self.id
-    }
-    fn dependencies(&self) -> &[crate::query_graph::ObservedDependency] {
-        &[]
     }
     fn work(&self) -> &crate::session::QueryStructuralWork {
         &crate::session::QueryStructuralWork::None
@@ -434,9 +431,6 @@ mod tests {
         }
         fn origin_id(&self) -> crate::session::AttemptId {
             self.id
-        }
-        fn dependencies(&self) -> &[crate::query_graph::ObservedDependency] {
-            &[]
         }
         fn work(&self) -> &crate::session::QueryStructuralWork {
             &crate::session::QueryStructuralWork::None

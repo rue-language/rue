@@ -365,26 +365,6 @@ fn presentation_file_order_rejects_unknown_duplicate_and_incomplete_inputs() {
 }
 
 #[test]
-fn dependency_baselines_cannot_cross_session_ownership() {
-    let snapshot = SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
-    let options = CompileOptions::default();
-    let mut first = CompilerSession::new();
-    let mut second = CompilerSession::new();
-    first.update(&snapshot).into_result().unwrap();
-    second.update(&snapshot).into_result().unwrap();
-    let first_baseline = first.unstable_dependency_baseline(&options, None).unwrap();
-    let second_baseline = second.unstable_dependency_baseline(&options, None).unwrap();
-    let before = first.unstable_metrics().invalidation_plans();
-
-    assert!(
-        first
-            .unstable_invalidation_metrics(&first_baseline, &second_baseline)
-            .is_err()
-    );
-    assert_eq!(first.unstable_metrics().invalidation_plans(), before);
-}
-
-#[test]
 fn oracle_consumption_accepts_only_the_semantic_views_embedded_rir_owner() {
     let bridge: fn(Arc<SemanticView>) -> Result<OracleSemanticState, &'static str> =
         into_oracle_semantic_state;

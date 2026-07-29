@@ -394,6 +394,7 @@ impl DefinitionSnapshot {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn shards(&self) -> &[Arc<DefinitionShard>] {
         &self.shards
     }

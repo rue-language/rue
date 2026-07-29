@@ -1,17 +1,26 @@
 ---
 id: 0050
 title: Stable semantic dependency manifests
-status: accepted
+status: superseded
 tags: [compiler, incremental, tooling]
 feature-flag: null
 created: 2026-07-12
 accepted: 2026-07-13
 implemented: 2026-07-14
 spec-sections: []
-superseded-by:
+superseded-by: 0063
 ---
 
 # Stable semantic dependency manifests
+
+## Status
+
+Superseded by [ADR-0063](0063-parallel-demand-driven-incremental-compilation.md)
+on 2026-07-29. The stable-identity and fail-closed dependency principles remain
+binding, but ADR-0063 replaces the whole-program manifest, invalidation planner,
+and last-successful durable body/CFG caches with canonical per-key revisioned
+queries. The design below records the retired architecture and is not a
+description of the current `CompilerSession` API.
 
 ## Decision
 

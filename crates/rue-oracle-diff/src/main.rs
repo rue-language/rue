@@ -49,7 +49,8 @@ mod trap;
 
 use rue_compiler::unstable::{
     DiscoverySourceAssembler, ImportDemandMode, begin_import_input_request,
-    import_demand_frontier_for_roots, import_observation_ledger, publish_import_observation_batch,
+    close_import_input_request, import_demand_frontier_for_roots, import_observation_ledger,
+    publish_import_observation_batch, stage_import_input_request,
 };
 use rue_compiler::{
     AcceptedImportSource, CompilerSession, FileMetadataFingerprint, ImportDiscoveryContext,
@@ -703,16 +704,9 @@ fn run_source_with_real_std(
     .map_err(|error| error.to_string())?;
 
     loop {
-        let snapshot = assembler.snapshot().map_err(|error| error.to_string())?;
         let ledger =
             import_observation_ledger(&session, revision).map_err(|error| error.to_string())?;
-        let plan = session
-            .stage_import_discovery(
-                &snapshot,
-                context.clone(),
-                assembler.accepted_read_manifest().shared_slice(),
-                ledger.clone(),
-            )
+        let plan = stage_import_input_request(&mut session, revision)
             .map_err(|errors| format!("{errors:#?}"))?;
         let frontier = import_demand_frontier_for_roots(
             &mut session,
@@ -723,8 +717,7 @@ fn run_source_with_real_std(
         )
         .map_err(|error| error.to_string())?;
         if frontier.requests().is_empty() {
-            session
-                .close_import_discovery(ledger)
+            close_import_input_request(&mut session, revision)
                 .map_err(|errors| format!("{errors:#?}"))?;
             return Ok(run_session_with_preview_features(session, preview_features));
         }

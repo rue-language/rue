@@ -12,9 +12,6 @@ stable|CompilerSession|artifact-query|embedders|import_graph|pub fn import_graph
 stable|CompilerSession|artifact-query|embedders|published|pub fn published(&self)->Option<crate::SyntaxView>
 stable|CompilerSession|artifact-query|embedders|rir|pub fn rir(&mut self)->Result<Arc<crate::RirView>,CompileErrors>
 stable|CompilerSession|artifact-query|embedders|semantic|pub fn semantic(&mut self,options:&CompileOptions,)->Result<Arc<crate::SemanticView>,CompileErrors>
-stable|CompilerSession|compatibility-boundary|legacy-embedders|close_import_discovery|#[cfg(not(test))]pub fn close_import_discovery(&mut self,ledger:crate::ImportObservationLedger,)->Result<Arc<crate::ImportDiscoveryView>,CompileErrors>
-stable|CompilerSession|compatibility-boundary|legacy-embedders|import_discovery_plan|pub fn import_discovery_plan(&self,context:crate::ImportDiscoveryContext,)->crate::CompileResult<crate::ImportDiscoveryPlan>
-stable|CompilerSession|compatibility-boundary|legacy-embedders|stage_import_discovery|pub fn stage_import_discovery(&mut self,snapshot:&SourceSnapshot,context:crate::ImportDiscoveryContext,accepted_reads:Arc<[crate::AcceptedReadManifestEntry]>,carried_ledger:crate::ImportObservationLedger,)->Result<crate::ImportDiscoveryPlan,CompileErrors>
 stable|CompilerSession|diagnostic-query|embedders|last_good_semantic_diagnostics|pub fn last_good_semantic_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|diagnostic-query|embedders|latest_diagnostics|pub fn latest_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
 stable|CompilerSession|diagnostic-query|embedders|latest_successful_diagnostics|pub fn latest_successful_diagnostics(&self)->Option<&Arc<FrontendDiagnosticSnapshot>>
@@ -101,8 +98,6 @@ stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|
 stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|ParkedToolchainModules|pub use toolchain_module_demand::ParkedToolchainModules
 stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|STRBUF_MODULE_LOGICAL_PATH|pub use toolchain_module_demand::STRBUF_MODULE_LOGICAL_PATH
 stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|TrustedToolchainModuleDemand|pub use toolchain_module_demand::TrustedToolchainModuleDemand
-unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_dependency_baseline|pub fn unstable_dependency_baseline(&mut self,options:&CompileOptions,std_dir:Option<&str>,)->Result<Arc<crate::unstable::DependencyBaseline>,CompileErrors>
-unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_invalidation_metrics|pub fn unstable_invalidation_metrics(&mut self,previous:&crate::unstable::DependencyBaseline,current:&crate::unstable::DependencyBaseline,)->Result<crate::unstable::InvalidationMetrics,CompileErrors>
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_metrics|pub fn unstable_metrics(&self)->crate::unstable::MetricsSnapshot
 unstable|CompilerSession|debug-tooling|in-tree-tooling|unstable_present|pub fn unstable_present(&mut self,request:PresentationRequest<'_>,)->Result<PresentationOutput,crate::CompileErrors>
 unstable|CompilerSessionUpdate|debug-tooling|in-tree-tooling|unstable_metrics|pub fn unstable_metrics(&self)->crate::unstable::ParseMetrics

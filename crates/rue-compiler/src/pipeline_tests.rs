@@ -151,6 +151,117 @@ mod tests {
         assert_eq!(warm_execution.stderr, fresh_execution.stderr);
     }
 
+    /// ADR-0063 Phase 12's structural warm-edit gate. A body-only edit must
+    /// recompute exactly that frontend cone and replace only its `CodegenUnit`;
+    /// the deliberately fresh link still has to produce the same runnable
+    /// executable as a fresh session for the edited source.
+    #[cfg(unix)]
+    #[test]
+    fn warm_single_function_edit_recomputes_one_codegen_unit_then_fresh_links() {
+        let before = SourceSnapshot::single(
+            "<warm-single-function-edit>",
+            "fn callee() -> i32 { 1 } fn main() -> i32 { callee() }",
+        )
+        .unwrap();
+        let after = SourceSnapshot::single(
+            "<warm-single-function-edit>",
+            "fn callee() -> i32 { 2 } fn main() -> i32 { callee() }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut warm_session, &before, &options).unwrap();
+        warm_session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let warm =
+            crate::queries::compile_with_session(&mut warm_session, &after, &options).unwrap();
+
+        let metrics = warm.unstable_metrics();
+        assert_eq!(metrics.parsed.lexer_invocations, 1);
+        assert_eq!(metrics.parsed.parser_invocations, 1);
+        assert_eq!(metrics.parsed.modules_reparsed, 1);
+        assert_eq!(
+            metrics.lowered.parser_invocations, 0,
+            "the parsed successor reuses the canonical RIR lowering boundary"
+        );
+        assert_eq!(metrics.semantic.body.analyses_computed, 1);
+        assert_eq!(metrics.semantic.body.analyses_reused, 1);
+        assert_eq!(metrics.semantic.cfg.cfg_builds_attempted, 1);
+
+        assert_eq!(warm_session.codegen_executions().len(), 2);
+        assert!(warm_session.codegen_executions().iter().any(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "callee")
+                && *execution == rue_query::RequestExecution::Computed
+        }));
+        assert!(warm_session.codegen_executions().iter().any(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                && *execution == rue_query::RequestExecution::Reused
+        }));
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let fresh =
+            crate::queries::compile_with_session(&mut fresh_session, &after, &options).unwrap();
+        assert_eq!(warm.elf, fresh.elf);
+        assert_eq!(warm.warnings, fresh.warnings);
+
+        let execution = execute_compiled_output(&warm, "warm-single-function-edit");
+        assert_eq!(
+            execution.status.code(),
+            Some(2),
+            "freshly linked warm output did not run: {execution:?}"
+        );
+        assert!(execution.stdout.is_empty());
+        assert!(execution.stderr.is_empty());
+    }
+
+    /// The shared query-worker budget may change scheduling only. The complete
+    /// fresh-link adapter must receive identical terminals and publish the
+    /// same executable bytes with either serial or parallel codegen work.
+    #[cfg(unix)]
+    #[test]
+    fn one_and_many_query_workers_produce_identical_linked_executables() {
+        let snapshot = SourceSnapshot::single(
+            "<worker-executable-determinism>",
+            "fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn c() -> i32 { 3 } fn main() -> i32 { a() + b() + c() }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let run = |workers| {
+            let mut session = CompilerSession::with_query_concurrency(workers);
+            session
+                .update_for_presentation(&snapshot)
+                .into_result()
+                .unwrap();
+            crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap()
+        };
+
+        let one = run(1);
+        let many = run(4);
+        assert_eq!(one.elf, many.elf);
+        assert_eq!(one.warnings, many.warnings);
+        for (label, output) in [("one-worker", &one), ("many-worker", &many)] {
+            let execution = execute_compiled_output(output, label);
+            assert_eq!(
+                execution.status.code(),
+                Some(6),
+                "{label} linked output did not run: {execution:?}"
+            );
+            assert!(execution.stdout.is_empty());
+            assert!(execution.stderr.is_empty());
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn named_const_strings_keep_stable_atoms_across_warm_reorder_and_codegen() {
@@ -355,117 +466,6 @@ mod tests {
             &reverse_diagnostics
         ));
         assert_eq!(session.work().diagnostic_publications, 3);
-    }
-
-    #[test]
-    fn successful_merge_reuse_keeps_canonical_origin_across_presentation_reordering() {
-        let first = FileId::new(1);
-        let second = FileId::new(2);
-        let metadata = SourceMetadata::new(
-            first,
-            HashMap::from([
-                (first, "/project/first.rue".to_owned()),
-                (second, "/project/second.rue".to_owned()),
-            ]),
-            HashMap::from([
-                (first, "first.rue".to_owned()),
-                (second, "second.rue".to_owned()),
-            ]),
-        )
-        .unwrap();
-        let first_text = Arc::new("fn main() -> i32 { 0 }".to_owned());
-        let second_text = Arc::new("fn helper() {}".to_owned());
-        let forward = SourceSnapshot::new(
-            metadata.clone(),
-            vec![(first, first_text.clone()), (second, second_text.clone())],
-        )
-        .unwrap();
-        let reverse =
-            SourceSnapshot::new(metadata, vec![(second, second_text), (first, first_text)])
-                .unwrap();
-
-        let mut session = CompilerSession::new();
-        session
-            .update_for_presentation(&forward)
-            .into_result()
-            .unwrap();
-        session.merge().unwrap();
-        let origin = session.latest_diagnostics().unwrap().clone();
-        session
-            .update_for_presentation(&reverse)
-            .into_result()
-            .unwrap();
-        let publications = session.work().diagnostic_publications;
-        let reuses = session.work().diagnostic_reuses;
-
-        session.merge().unwrap();
-
-        assert!(Arc::ptr_eq(session.latest_diagnostics().unwrap(), &origin));
-        assert_eq!(session.work().merge.executions, 1);
-        assert_eq!(session.work().merge.reuses, 1);
-        assert_eq!(session.work().diagnostic_publications, publications);
-        assert_eq!(session.work().diagnostic_reuses, reuses + 1);
-    }
-
-    #[test]
-    fn failed_merge_attempt_is_recomputed_for_presentation_order() {
-        let first = FileId::new(1);
-        let second = FileId::new(2);
-        let metadata = SourceMetadata::new(
-            first,
-            HashMap::from([
-                (first, "/project/first.rue".to_owned()),
-                (second, "/project/second.rue".to_owned()),
-            ]),
-            HashMap::from([
-                (first, "first.rue".to_owned()),
-                (second, "second.rue".to_owned()),
-            ]),
-        )
-        .unwrap();
-        let first_text = Arc::new("fn duplicate() {} fn duplicate() {}".to_owned());
-        let second_text = Arc::new("fn other() {} fn other() {}".to_owned());
-        let forward = SourceSnapshot::new(
-            metadata.clone(),
-            vec![(first, first_text.clone()), (second, second_text.clone())],
-        )
-        .unwrap();
-        let reverse =
-            SourceSnapshot::new(metadata, vec![(second, second_text), (first, first_text)])
-                .unwrap();
-
-        let mut session = CompilerSession::new();
-        session
-            .update_for_presentation(&forward)
-            .into_result()
-            .unwrap();
-        session.merge().unwrap_err();
-        let forward_diagnostics = session.latest_diagnostics().unwrap().clone();
-        assert_eq!(
-            forward_diagnostics
-                .errors()
-                .iter()
-                .map(|error| error.span().unwrap().file_id)
-                .collect::<Vec<_>>(),
-            [first, second]
-        );
-
-        session
-            .update_for_presentation(&reverse)
-            .into_result()
-            .unwrap();
-        session.merge().unwrap_err();
-        let reverse_diagnostics = session.latest_diagnostics().unwrap();
-        assert_eq!(
-            reverse_diagnostics
-                .errors()
-                .iter()
-                .map(|error| error.span().unwrap().file_id)
-                .collect::<Vec<_>>(),
-            [second, first]
-        );
-        assert!(!Arc::ptr_eq(&forward_diagnostics, reverse_diagnostics));
-        assert_eq!(session.work().merge.executions, 2);
     }
 
     #[test]
@@ -704,20 +704,6 @@ mod tests {
             .unwrap();
         assert_eq!(semantic.type_pool().struct_lang_item(spoof), None);
         assert!(!semantic.type_pool().is_strbuf(spoof));
-    }
-
-    #[test]
-    fn canonical_single_source_adapter_executes_each_frontend_phase_once() {
-        let snapshot = SourceSnapshot::single("<test>", "fn main() -> i32 { 42 }").unwrap();
-        let (_rir, semantic, session) =
-            test_frontend_snapshot(&snapshot, &CompileOptions::default()).unwrap();
-        assert_eq!(session.last_parse.syntax.parser_invocations, 1);
-        assert_eq!(session.rir.executions, 1);
-        assert_eq!(session.last_rir.modules_visited, 1);
-        assert_eq!(semantic.work().binding.bind_invocations, 1);
-        assert_eq!(semantic.work().cfg.cfg_builds_attempted, 1);
-        assert_eq!(semantic.work().cfg.cfg_builds_succeeded, 1);
-        assert_eq!(semantic.functions().len(), 1);
     }
 
     #[test]

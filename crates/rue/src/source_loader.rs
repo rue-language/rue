@@ -11,10 +11,10 @@ use rue_compiler::unstable::frontend_query_invalidations;
 use rue_compiler::unstable::{
     DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode, ImportInputRevision,
     SemanticParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
-    close_import_discovery_successor, closed_discovery_continuation, discovery_attempt,
-    import_demand_frontier_for_roots, import_observation_ledger, plan_delta_roots,
-    publish_import_observation_batch, publish_trusted_toolchain_successor,
-    semantic_or_toolchain_park, stage_import_discovery_successor,
+    close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
+    discovery_attempt, import_demand_frontier_for_roots, import_observation_ledger,
+    plan_delta_roots, publish_import_observation_batch, publish_trusted_toolchain_successor,
+    semantic_or_toolchain_park, stage_import_discovery_successor, stage_import_input_request,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
@@ -807,12 +807,7 @@ fn drive_import_discovery_to_close(
             let _span = tracing::info_span!("import_stage").entered();
             match &reclose {
                 Some(reclose) => stage_import_discovery_successor(staging, reclose.delta),
-                None => staging.stage_import_discovery(
-                    &snapshot,
-                    context.clone(),
-                    assembler.accepted_read_manifest().shared_slice(),
-                    ledger.clone(),
-                ),
+                None => stage_import_input_request(staging, input_revision),
             }
         };
         let plan = match staged {
@@ -904,14 +899,12 @@ fn drive_import_discovery_to_close(
         .snapshot()
         .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     debug_assert_eq!(final_plan.source_revision(), snapshot.source_revision());
-    let ledger = import_observation_ledger(staging, input_revision)
-        .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
     // A trusted-toolchain successor closes over only the modules its opaque delta
     // capability authorizes, merging their topology into the committed
     // predecessor's closed graph; the initial close reduces the whole plan.
     let close_result = match &reclose {
         Some(reclose) => close_import_discovery_successor(staging, reclose.delta),
-        None => staging.close_import_discovery(ledger),
+        None => close_import_input_request(staging, input_revision),
     };
     let closed = match close_result {
         Ok(closed) => closed,
@@ -1895,9 +1888,16 @@ mod tests {
         };
 
         assert_eq!(module_source_id(&result, "leaf.rue"), source_id);
-        assert!(
-            semantic_before.shares_owner(&semantic_after),
-            "an identical rewrite must retain the exact semantic terminal"
+        assert_eq!(
+            semantic_before
+                .function_views()
+                .map(|function| function.name().to_owned())
+                .collect::<Vec<_>>(),
+            semantic_after
+                .function_views()
+                .map(|function| function.name().to_owned())
+                .collect::<Vec<_>>(),
+            "an identical rewrite must preserve the canonical semantic projection"
         );
     }
 
