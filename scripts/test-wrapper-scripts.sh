@@ -835,14 +835,6 @@ EOF
   check "ci-heavy-suite: labeled target with a result succeeds" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
-  # //:cli-tests-slow is the one CLI corpus RUE-1118 does not convert, so it is
-  # also the only one that still takes a declarative executor timeout.
-  : >"$sb/calls.log"
-  rc=0
-  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-slow FAKE_CALL_LOG="$sb/calls.log" ./ci-heavy-suite //:cli-tests-slow) >/dev/null 2>&1 || rc=$?
-  check "ci-heavy-suite: slow CLI corpus receives the declarative executor timeout" \
-    "$([ "$rc" -eq 0 ] && grep -Fxq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls.log" && echo 0 || echo 1)"
-
   # RUE-1159 flake detection only means anything if each repetition executes, so
   # a repetition run must defeat the corpus action's cache.
   : >"$sb/calls.log"
@@ -851,20 +843,26 @@ EOF
   check "ci-heavy-suite: a correctness repetition runs cache-free" \
     "$([ "$rc" -eq 0 ] && grep -Fq -- '--no-remote-cache' "$sb/calls.log" && grep -Fq 'RUE_CORRECTNESS_REPETITION=2' "$sb/calls.log" && echo 0 || echo 1)"
 
-  # RUE-1118: ci-heavy-suite no longer carries per-target executor timeouts for
-  # the converted corpora. Each runs as a cacheable build action and the test
-  # executor only asserts its stamp, so the outer bound belongs on the action —
-  # it is each suite's timeout_seconds in BUCK. A stray `--timeout` here would
-  # bound the wrong thing (a sub-second stamp check) and read as if the corpus
-  # were still bounded, so pin that every target is invoked identically and bare.
+  # RUE-1118/RUE-1163: ci-heavy-suite carries no per-target executor timeouts at
+  # all. Every corpus runs as a cacheable build action and the test executor
+  # only asserts its stamp, so the outer bound belongs on the action — it is
+  # each suite's timeout_seconds in BUCK. A stray `--timeout` here would bound
+  # the wrong thing (a sub-second stamp check) and read as if the corpus were
+  # still bounded, so pin that every target is invoked identically and bare.
+  # This is the whole per-target contract now: the script has no `case` on the
+  # target, so a new corpus needs no edit here.
   local heavy_target
   for heavy_target in \
     //:cli-tests \
     //:cli-tests-shard-1 \
+    //:cli-tests-slow \
     //:spec-tests \
     //:ui-tests \
+    //:frontend-diff-test \
     //:oracle-diff-generated-smoke \
     //:reproducible-programs \
+    //crates/rue-oracle-diff:oracle-diff-test \
+    //crates/rue-oracle-diff:oracle-diff-spec-test \
     //:tutorial-snippet-tests; do
     : >"$sb/calls.log"
     rc=0
@@ -1046,7 +1044,7 @@ EOF
       RUE_FULL_SUITE_LOCK_HELD=1 FAKE_SLOW_SUITES="$slow" FAKE_HEAVY_SUITES="$all" \
       FAKE_PASS_TARGETS="$slow" FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: slow selection audits its real CLI corpus target" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && grep -Fq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls.log" && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_slow' "$sb/calls.log" && grep -Fxq 'test //:cli-tests-slow' "$sb/calls.log" && echo 0 || echo 1)"
   # RUE-1117: a slow run that omits the codegen differential is the same
   # false-green as an omitted CLI corpus, and must fail rather than tally.
   rc=0

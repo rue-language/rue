@@ -28,13 +28,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# RUE-1118: the converted corpora run as cacheable build actions, and the test
-# executor only asserts the action's stamp — a sub-second check whatever the
-# corpus costs. An executor `--timeout` would therefore bound the wrong thing;
+# RUE-1118/RUE-1163: every corpus now runs as a cacheable build action, and the
+# test executor only asserts the action's stamp — a sub-second check whatever
+# the corpus costs. An executor `--timeout` would bound the wrong thing, so
 # each suite's timeout_seconds in BUCK bounds the action that does the work.
-# //:cli-tests-slow is NOT converted, so it keeps the declarative policy from
-# RUE-1159. The per-case budgets in execution_contracts.toml remain the honest
-# gates for both.
+# The per-case budgets in execution_contracts.toml remain the honest gates.
 test_args=("$target")
 
 # RUE-1158 shard weights. The measurements are a declared output of the corpus
@@ -45,17 +43,6 @@ timings=""
 if [[ "$target" == //:cli-tests-shard-* ]]; then
     timings="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-cli-case-timings.jsonl"
 fi
-
-case "$target" in
-    //:cli-tests-slow)
-        timeout_tool="${RUE_CLI_TIMEOUT_POLICY_TOOL:-scripts/cli-timeout-policy.py}"
-        timeout="$("$timeout_tool" \
-            --policy "${RUE_CLI_TIMEOUT_POLICY:-crates/rue-cli-tests/cases/execution_contracts.toml}" \
-            --weights "${RUE_CLI_SHARD_WEIGHTS:-crates/rue-cli-tests/shard-weights.json}" \
-            --target "$target")" || exit $?
-        test_args+=(-- --timeout "$timeout")
-        ;;
-esac
 
 # RUE-1159 repeats a shard to expose flakes, which only works if each repetition
 # actually executes. A cached corpus action would serve repetitions 2..N from the

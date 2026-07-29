@@ -39,6 +39,9 @@ load(":corpus.bzl", "cached_corpus_suite")
 sh_binary(
     name = "corpus-action",
     main = "scripts/corpus-action",
+    # RUE-1163: corpora outside the root package (the RUE-205/RUE-204 oracle
+    # differentials) run through the same wrapper.
+    visibility = ["PUBLIC"],
 )
 
 sh_binary(
@@ -250,15 +253,23 @@ cached_corpus_suite(
 # Exhaustive behavior for declarative `tier = "slow"` CLI sections. This is a
 # separate real Buck target, not a skipped body: standard/full local runs and
 # scheduled release coverage execute it, while required premerge shards do not.
-rue_sh_test(
+# RUE-1163: the last corpus still carrying a test-executor timeout. Its bound
+# came from `scripts/cli-timeout-policy.py` invoked at run time inside
+# scripts/ci-heavy-suite; for this target the tool returns a fixed slow-suite
+# guard rather than a weight-derived value, so stating it here loses no
+# derivation and removes the last per-target branch from that script. The
+# per-case budgets in execution_contracts.toml remain the honest gates.
+cached_corpus_suite(
     name = "cli-tests-slow",
     tier = "slow",
     labels = ["rue_heavy_suite"],
-    test = "//crates/rue-cli-tests:rue-cli-tests",
+    harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = ["--quiet"],
     env = dict(_CLI_TEST_BASE_ENV.items() + [
         ("RUE_CLI_CASE_TIER", "slow"),
     ]),
+    absolutize = _CLI_TEST_ABSOLUTIZE,
+    timeout_seconds = 7200,
 )
 
 # Required release coverage is deliberately bounded: compile the real driver
@@ -371,22 +382,41 @@ CLI_TEST_SHARD_COUNT = 4
 # RUE-1083: `examples/` is a declared input because this suite now also checks a
 # real maintained program (rill) for byte-stable output, not just the
 # purpose-built fixture. An edit under examples/ must therefore re-run it.
-rue_sh_test(
-    # RUE-1118: still a plain sh_test, so it re-runs on every invocation. Its
-    # harness is a shell script rather than a target, and unlike the corpus
-    # harnesses it reads repository paths directly rather than through declared
-    # env inputs — the input contract cached_corpus_suite depends on has to be
-    # established before caching this one would be sound rather than a false
-    # pass. It is also off the merge queue's critical path.
+#
+# RUE-1163: converted to a cached action. RUE-1118 left it out on the grounds
+# that it "reads repository paths directly rather than through declared env
+# inputs"; that is no longer true of the current script, which guards all four
+# of its inputs with `${VAR:?}` and reads nothing else from the checkout. Its
+# only relative path (`../sources.manifest`) resolves inside the temporary copy
+# of RUE_REPRO_FIXTURE.
+#
+# Caching a suite whose subject IS determinism deserves a note: a cache hit
+# replays a proof rather than re-running it, so a compiler that became
+# nondeterministic only intermittently would not be caught by a replayed run.
+# That is the same bargain every corpus here takes, and RUE-1159's repetition
+# workflow — which exists for exactly that class — already runs cache-free.
+sh_binary(
+    name = "reproducible-programs-harness",
+    main = "scripts/test-reproducible-output.sh",
+)
+
+cached_corpus_suite(
     name = "reproducible-programs",
     labels = ["rue_heavy_suite"],
-    test = "scripts/test-reproducible-output.sh",
+    harness = ":reproducible-programs-harness",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
         "RUE_REPRO_FIXTURE": "$(location :reproducibility-fixture)/reproducibility/fixture",
         "RUE_STD_DIR": "$(location :std)/std",
     },
+    absolutize = [
+        "RUE_BINARY",
+        "RUE_EXAMPLES_DIR",
+        "RUE_REPRO_FIXTURE",
+        "RUE_STD_DIR",
+    ],
+    timeout_seconds = 1800,
 )
 
 # The independent stage-1 frontend differential: compile `examples/ruelex` with
@@ -401,15 +431,26 @@ rue_sh_test(
 # and inside the broad `--exclude rue_heavy_suite` pass, contending with every
 # other test on the runner. Heavy-labeled at the root, it runs alone through
 # scripts/ci-heavy-suite like every peer corpus harness.
-rue_sh_test(
+# RUE-1163: converted to a cached action. Every path this harness reads arrives
+# through a declared env input (`RUE_BINARY`, `RUE_FRONTEND_DIFF_CORPUS`,
+# `RUE_STD_PATH`); the source-relative fallbacks in its `main` apply only when a
+# variable is unset, which cannot happen here. The corpus filegroup enumerates
+# its members explicitly, so a new corpus file changes the action's digest.
+cached_corpus_suite(
     name = "frontend-diff-test",
     labels = ["rue_heavy_suite"],
-    test = "//crates/rue-frontend-diff:rue-frontend-diff",
+    harness = "//crates/rue-frontend-diff:rue-frontend-diff",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_FRONTEND_DIFF_CORPUS": "$(location :frontend-diff-corpus)",
         "RUE_STD_PATH": "$(location :std)/std",
     },
+    absolutize = [
+        "RUE_BINARY",
+        "RUE_FRONTEND_DIFF_CORPUS",
+        "RUE_STD_PATH",
+    ],
+    timeout_seconds = 900,
 )
 
 # A fixed generated differential corpus in every full test run. The generator
@@ -417,19 +458,32 @@ rue_sh_test(
 # shape; this target then compiles and runs those programs through both the
 # reference oracle and native codegen. It lives at the root so full/no-argument
 # `test.sh` and CI include it while `quick-test.sh` remains unit-only.
-rue_sh_test(
-    # RUE-1118: still a plain sh_test, for the same reason as
-    # //:reproducible-programs above.
+sh_binary(
+    name = "oracle-diff-generated-smoke-harness",
+    main = "scripts/oracle-diff-generated-smoke.sh",
+)
+
+# RUE-1163: a cached action. Both binaries arrive through declared `$(exe_target
+# ...)` inputs and the script reads nothing else; the seed range is fixed, so
+# the run is a pure function of its inputs. Caching also stops the fixed
+# two-second per-child budget from being re-rolled on every invocation — a
+# timeout-only flake under parallel load no longer recurs once the tree has
+# passed (AGENTS.md documents that failure mode).
+cached_corpus_suite(
     name = "oracle-diff-generated-smoke",
     labels = ["rue_heavy_suite"],
-    test = "scripts/oracle-diff-generated-smoke.sh",
+    harness = ":oracle-diff-generated-smoke-harness",
     env = {
         "RUE_BINARY": "$(exe_target //crates/rue:rue)",
         "RUE_ORACLE_DIFF_BINARY": "$(exe_target //crates/rue-oracle-diff:rue-oracle-diff)",
     },
+    absolutize = [
+        "RUE_BINARY",
+        "RUE_ORACLE_DIFF_BINARY",
+    ],
     # Preserve enough outer margin for the harness to print all structured
     # findings even if every compiler and native phase consumes its 2s budget.
-    test_rule_timeout_ms = 600000,
+    timeout_seconds = 600,
 )
 
 rue_sh_test(
