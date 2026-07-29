@@ -29,7 +29,14 @@
 //! when the prologue hasn't been added yet. We verify that the body of the function
 //! maintains alignment assuming the prologue left RSP aligned.
 //!
-//! The prologue's alignment is correct by construction (see `emit_prologue` in emit.rs).
+//! The prologue's alignment is correct by construction (see `emit_prologue` in
+//! emit.rs), and the starting-depth assumption is guaranteed to apply wherever
+//! it matters: alignment is only checked at `call` instructions, any function
+//! containing a call is planned as `FramePointer::Established`
+//! (`codegen_pipeline::plan_frame_pointer`), and the emitter emits the
+//! prologue for every established frame — even one with zero slots and no
+//! callee-saved registers (RUE-1195). A function the emitter leaves without a
+//! prologue is a frameless leaf, which contains no call for this pass to check.
 
 use super::mir::{LabelId, Operand, Reg, X86Inst, X86Mir};
 use crate::stack_verify::{self, StackVerifyAdapter};

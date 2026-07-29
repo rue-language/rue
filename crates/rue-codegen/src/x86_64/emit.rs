@@ -268,12 +268,18 @@ pub struct Emitter<'a> {
     has_frame_pointer: bool,
     /// Whether frame planning classified this function as a frameless leaf.
     /// Distinct from `has_frame_pointer`, which is also false for a synthetic
-    /// emitter built with no frame facts at all.
+    /// emitter that explicitly opted out of frame emission.
     frameless: bool,
     /// An RBP-relative operand reached a function planned as frameless. That is
     /// an internal inconsistency, reported after emission rather than silently
     /// encoded against a frame pointer that was never established.
     frameless_frame_reference: bool,
+    /// Explicit opt-out of prologue/epilogue emission: the instruction stream
+    /// is emitted bare. Synthetic single-instruction encoding tests and the
+    /// emitter fuzz harnesses assert exact byte output and opt out here; the
+    /// production pipeline never does — it supplies a frame layout, and a
+    /// planned frame is always emitted (RUE-1195).
+    frame_opt_out: bool,
     /// Canonical checked layout supplied by the production pipeline.
     frame_layout: Option<crate::frame_layout::FrameLayout>,
     /// Byte offset where the current instruction started (for recording).
@@ -328,11 +334,24 @@ impl<'a> Emitter<'a> {
             has_frame_pointer: false,
             frameless: false,
             frameless_frame_reference: false,
+            frame_opt_out: false,
             frame_layout: None,
             inst_start: 0,
             emit_asm: false,
             param_homing: Vec::new(),
         }
+    }
+
+    /// Opt out of prologue/epilogue emission entirely and emit the instruction
+    /// stream bare.
+    ///
+    /// For synthetic single-instruction encoding tests and fuzz harnesses that
+    /// assert exact byte output. A function that makes a call must never opt
+    /// out: it needs the prologue's call-boundary stack alignment (RUE-1195).
+    /// The production pipeline always supplies a checked frame layout instead.
+    pub fn without_frame(mut self) -> Self {
+        self.frame_opt_out = true;
+        self
     }
 
     /// Supply the per-source-parameter prologue homing plan (RUE-1005). Without
@@ -485,16 +504,19 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // A frame pointer exists to address frame slots; an eligible frameless
-        // leaf has none, so its prologue is at most the callee-saved pushes and
-        // it never establishes RBP (RUE-1171).
-        self.frameless = self.frame().frame_pointer() == crate::frame_layout::FramePointer::Omitted;
-        self.has_frame_pointer = !self.frameless
-            && (self.num_locals > 0
-                || self.num_params > 0
-                || self.has_sret
-                || !self.callee_saved.is_empty());
-        self.has_frame = self.has_frame_pointer || !self.callee_saved.is_empty();
+        // Frame planning is authoritative: an eligible frameless leaf
+        // (`FramePointer::Omitted`) gets at most the callee-saved pushes and
+        // never establishes RBP (RUE-1171); every other function gets the full
+        // prologue, even with zero frame slots and no callee-saved registers —
+        // a calling function still needs `push rbp` to leave RSP 16-byte
+        // aligned at its call sites (RUE-1195). Synthetic encoding tests that
+        // want bare instruction bytes opt out explicitly via `without_frame`.
+        if !self.frame_opt_out {
+            self.frameless =
+                self.frame().frame_pointer() == crate::frame_layout::FramePointer::Omitted;
+            self.has_frame_pointer = !self.frameless;
+            self.has_frame = self.has_frame_pointer || !self.callee_saved.is_empty();
+        }
         if self.has_frame {
             self.emit_prologue();
         }
@@ -3002,7 +3024,11 @@ mod tests {
     fn emit_single(inst: X86Inst) -> Vec<u8> {
         let mut mir = X86Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap().0
+        Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap()
+            .0
     }
 
     #[test]
@@ -3130,7 +3156,10 @@ mod tests {
         });
         mir.push(X86Inst::Syscall);
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // 41 BA 2A 00 00 00  mov r10d, 42
         // 4C 89 D7           mov rdi, r10
@@ -3155,7 +3184,10 @@ mod tests {
         let symbol_id = mir.intern_symbol("__rue_exit");
         mir.push(X86Inst::CallRel { symbol_id });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // call rel32 -> E8 00 00 00 00
         assert_eq!(code, vec![0xE8, 0x00, 0x00, 0x00, 0x00]);
@@ -3470,11 +3502,54 @@ mod tests {
     }
 
     #[test]
-    fn test_no_prologue_no_locals() {
-        // With 0 locals, no prologue should be emitted
+    fn test_without_frame_emits_no_prologue() {
+        // The explicit opt-out — not zero slot counts — is what suppresses the
+        // frame for synthetic encoding tests (RUE-1195).
         let mir = X86Mir::new();
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
         assert!(code.is_empty());
+    }
+
+    #[test]
+    fn test_zero_slot_calling_function_gets_full_frame() {
+        // A function that makes a call needs the prologue even with no frame
+        // slots and no callee-saved registers: `push rbp` is what leaves RSP
+        // 16-byte aligned at the call site (RUE-1195).
+        let mut mir = X86Mir::new();
+        let symbol_id = mir.intern_symbol("callee");
+        mir.push(X86Inst::CallRel { symbol_id });
+        mir.push(X86Inst::Ret);
+
+        let expected = vec![
+            0x55, // push rbp            (prologue; RSP now 16-byte aligned)
+            0x48, 0x89, 0xE5, // mov rbp, rsp
+            0xE8, 0x00, 0x00, 0x00, 0x00, // call callee
+            0x48, 0x8D, 0x65, 0x00, // lea rsp, [rbp+0]  (epilogue)
+            0x5D, // pop rbp
+            0xC3, // ret
+        ];
+
+        // The pipeline path: frame planning classified the function as
+        // FramePointer::Established (zero slots, non-leaf).
+        let layout = crate::frame_layout::FrameLayout::try_new(
+            crate::frame_layout::SavedRegScheme::X86_64,
+            0,
+            0,
+        )
+        .unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .with_frame_layout(layout)
+            .emit()
+            .unwrap();
+        assert_eq!(code, expected);
+
+        // A synthetic emitter without an explicit opt-out gets the same frame:
+        // zero slot counts alone no longer suppress the prologue.
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        assert_eq!(code, expected);
     }
 
     #[test]
@@ -4194,7 +4269,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jmp rel32 -> E9 xx xx xx xx (displacement = 5)
         assert_eq!(code[0], 0xE9);
@@ -4216,7 +4294,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jz rel32 -> 0F 84 xx xx xx xx (displacement = 5)
         assert_eq!(code[0], 0x0F);
@@ -4239,7 +4320,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jnz rel32 -> 0F 85 xx xx xx xx (displacement = 5)
         assert_eq!(code[0], 0x0F);
@@ -4256,7 +4340,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jo rel32 -> 0F 80 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x80, 0x00, 0x00, 0x00, 0x00]);
@@ -4272,7 +4359,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jno rel32 -> 0F 81 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x81, 0x00, 0x00, 0x00, 0x00]);
@@ -4288,7 +4378,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jb rel32 -> 0F 82 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x82, 0x00, 0x00, 0x00, 0x00]);
@@ -4304,7 +4397,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jae rel32 -> 0F 83 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x83, 0x00, 0x00, 0x00, 0x00]);
@@ -4320,7 +4416,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jbe rel32 -> 0F 86 00 00 00 00
         assert_eq!(&code[0..6], &[0x0F, 0x86, 0x00, 0x00, 0x00, 0x00]);
@@ -4360,7 +4459,10 @@ mod tests {
             string_id: 0,
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &strings).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &strings)
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // mov rax, 5 -> 48 B8 05 00 00 00 00 00 00 00
         assert_eq!(
@@ -4428,7 +4530,10 @@ mod tests {
             dst: Operand::Physical(Reg::Rax),
             imm: 42,
         });
-        let (code, _relocations) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _relocations) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
         // Code should be generated
         assert!(!code.is_empty());
     }
@@ -4441,7 +4546,10 @@ mod tests {
             dst: Operand::Physical(Reg::Rax),
             imm: 42,
         });
-        let emitted = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit_all().unwrap();
+        let emitted = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit_all()
+            .unwrap();
         // Instructions should be populated with asm text
         assert!(!emitted.instructions.is_empty());
         // Should contain the mov instruction
@@ -4804,7 +4912,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jge rel32 -> 0F 8D 00 00 00 00 (rel8 opcode 0x7D + 0x10 = 0x8D)
         assert_eq!(&code[0..6], &[0x0F, 0x8D, 0x00, 0x00, 0x00, 0x00]);
@@ -4820,7 +4931,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // jle rel32 -> 0F 8E 00 00 00 00 (rel8 opcode 0x7E + 0x10 = 0x8E)
         assert_eq!(&code[0..6], &[0x0F, 0x8E, 0x00, 0x00, 0x00, 0x00]);
