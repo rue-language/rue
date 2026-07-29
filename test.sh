@@ -75,14 +75,6 @@ if [[ -x scripts/provision-build-cache ]]; then
     scripts/provision-build-cache auto
 fi
 
-# A no-filter run is the host-wide full suite. Serialize it across independent
-# Buck project roots before starting any build work; filtered runs stay free to
-# run concurrently. The environment marker prevents recursion after the lock
-# wrapper re-enters this script.
-if [[ $# -eq 0 ]] && [[ "${RUE_FULL_SUITE_LOCK_HELD:-}" != 1 ]]; then
-    exec ./scripts/with-full-suite-lock env RUE_FULL_SUITE_LOCK_HELD=1 "$0"
-fi
-
 # Always print the result sentinel, even on an early `set -e` exit, so a piped
 # or captured run is self-describing (RUE-579).
 print_test_suite_result() {
@@ -100,68 +92,36 @@ if [[ $# -eq 0 ]]; then
     # owned, or a named tier has no real members.
     ./buck2 bxl //test_tiers.bxl:validate
 
-    # RUE-1163: heavy-suite membership is computed once, by Buck. This used to
-    # be two `buck2 uquery` invocations whose results were filtered and
-    # cross-checked in bash, duplicating the tier vocabulary the BXL already
-    # owns. The selector subtracts the CLI shards (a local full run executes the
-    # monolithic //:cli-tests once rather than re-running every 1/N slice) and,
-    # on required CI, the corpora that have their own platform job.
-    heavy_selector_args=(--tier "$test_tier" --exclude_label rue_cli_shard)
-    if [[ "${CI:-}" == "true" ]]; then
-        heavy_selector_args+=(--exclude_label rue_ci_dedicated_lane)
-    fi
-    # Not piped into the loop: a BXL failure (an unknown tier, a stale
-    # exclusion, an unowned target) must abort under `set -e` rather than
-    # produce an empty selection that silently runs no corpus at all.
-    heavy_selection="$(./buck2 bxl //test_tiers.bxl:heavy_suites -- "${heavy_selector_args[@]}")"
-    HEAVY_SUITES=()
-    while IFS= read -r suite; do
-        [[ -n "$suite" ]] || continue
-        HEAVY_SUITES+=("$suite")
-    done <<<"$heavy_selection"
-    if [[ ${#HEAVY_SUITES[@]} -eq 0 && "$test_tier" != stress ]]; then
-        echo "error: Buck selected no heavy suites for tier $test_tier" >&2
-        exit 1
-    fi
-
-    tier_label=""
-    if [[ "$test_tier" != standard && "$test_tier" != all ]]; then
-        tier_label="rue_test_tier_$test_tier"
-    fi
-
-    # The worst status across the broad pass and every heavy suite is what this
-    # script reports (RUE-579: the exit code is authoritative).
+    # RUE-1163: one invocation. Selection is label filters that buck2 evaluates,
+    # and scheduling is buck2's — each corpus action declares that it needs the
+    # whole machine (see corpus.bzl), so two corpora never run at once while a
+    # corpus still overlaps unit tests and compiles.
     #
-    # RUE-1163 retired the RUE-924 log audit that used to live here. It tee'd
-    # every invocation into one file and grepped for a `<Status>: root<target>`
-    # line per hand-maintained required-corpus entry, because a `//...` pattern
-    # could silently narrow and a suite that never ran could not fail. Neither
-    # premise survives: every corpus is now named explicitly from Buck's own
-    # membership (an unknown target is a Buck error, not a missing log line),
-    # and every corpus is a build action whose stamp the test asserts, so buck2
-    # exiting 0 for a named target means that corpus passed. Shell no longer
-    # parses output to decide whether the suite really ran.
-    overall_status=0
-    set +e
-    echo "Running $test_tier unit tests and lightweight repository checks..."
-    broad_test_args=(//... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute)
+    # What used to be here: a BXL query for heavy-suite membership, a bash loop
+    # running each corpus alone through scripts/ci-heavy-suite, and worst-status
+    # aggregation across N invocations. The loop existed to keep the opaque
+    # harnesses from contending for the runner; they are declared actions now,
+    # so the scheduler does that better than a sequence could — it can overlap a
+    # corpus with everything that is not another corpus.
+    #
+    # The CLI shards are excluded because they are scheduling alternatives for
+    # the monolithic //:cli-tests, not additional coverage: running both would
+    # execute the same cases five times.
+    test_args=(//... toolchains//... --always-exclude --ignore-tests-attribute --exclude rue_cli_shard)
     if [[ "$test_tier" == standard ]]; then
-        broad_test_args+=(--exclude rue_test_tier_stress)
-    elif [[ -n "$tier_label" ]]; then
-        broad_test_args+=(--include "$tier_label")
+        test_args+=(--exclude rue_test_tier_stress)
+    elif [[ "$test_tier" != all ]]; then
+        test_args+=(--include "rue_test_tier_$test_tier")
     fi
-    ./buck2 test "${broad_test_args[@]}"
-    step_status=$?
-    [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
-    for suite in "${HEAVY_SUITES[@]}"; do
-        echo "Running heavy suite $suite..."
-        ./scripts/ci-heavy-suite "$suite"
-        step_status=$?
-        [[ "$step_status" -ne 0 && "$overall_status" -eq 0 ]] && overall_status=$step_status
-    done
-    set -e
+    # Required CI gives these corpora their own platform-corpus job; the label
+    # is the only place that set is written down (scripts/validate-ci-gate.py
+    # fails if a labeled corpus has no job).
+    if [[ "${CI:-}" == "true" ]]; then
+        test_args+=(--exclude rue_ci_dedicated_lane)
+    fi
 
-    exit "$overall_status"
+    echo "Running the $test_tier tier..."
+    ./buck2 test "${test_args[@]}"
 else
     # Unit tests live under //crates/...; the suite sh_tests are at the repo
     # root, so this scope keeps them out of the unfiltered step below.

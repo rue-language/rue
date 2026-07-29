@@ -91,83 +91,6 @@ def _select(ctx, tiers):
 
     ctx.output.print("\n".join(sorted(selected)))
 
-_HEAVY_LABEL = "rue_heavy_suite"
-
-def _tier_labels(tier):
-    """The tier labels a selection name covers.
-
-    `standard` is the no-argument local default: everything except the opt-in
-    stress tier. `all` is the complete union.
-    """
-    if tier == "all":
-        return _TEST_TIER_LABELS
-    if tier == "standard":
-        return [label for label in _TEST_TIER_LABELS if label != "rue_test_tier_stress"]
-    label = "rue_test_tier_" + tier
-    if label not in _TEST_TIER_LABELS:
-        fail("unknown Rue test tier '{}'".format(tier))
-    return [label]
-
-def _heavy_suites(ctx):
-    """Every heavy corpus in the requested tier, as an ordered target list.
-
-    RUE-1163: this is the one place heavy-suite membership is computed. It used
-    to be duplicated in test.sh as a pair of `buck2 uquery` invocations whose
-    results were filtered, cross-checked, and audited in bash; the shell now
-    consumes this list and reports Buck's exit codes rather than re-deriving
-    what should have run and grepping a log to find out whether it did.
-
-    Args (via `--`):
-        tier: premerge | slow | stress | all | standard.
-        exclude_label: labels to subtract. `rue_cli_shard` is how a local full
-            run executes the monolithic //:cli-tests once instead of re-running
-            every 1/N slice.
-        exclude_target: specific targets a caller schedules elsewhere (required
-            CI gives the biggest corpora their own platform jobs). Every name
-            must be in the tier's heavy set, so a stale or misspelled exclusion
-            fails here instead of silently shrinking the corpus.
-    """
-    tiers = _tier_labels(ctx.cli_args.tier)
-    excluded_labels = ctx.cli_args.exclude_label or []
-
-    # Buck spells targets in this cell `root//:name`; every caller (CI matrices,
-    # scripts/ci-heavy-suite, this repository's docs) spells them `//:name`.
-    # Normalize here so the shell never has to strip a prefix to compare two
-    # spellings of the same target.
-    requested_exclusions = [
-        target[len("root"):] if target.startswith("root//") else target
-        for target in ctx.cli_args.exclude_target or []
-    ]
-
-    selected = []
-    for test in _owned_tests(ctx):
-        labels = test.get_attr("labels")
-        if _HEAVY_LABEL not in labels:
-            continue
-        if [label for label in excluded_labels if label in labels]:
-            continue
-        target_tiers = _target_tiers(test)
-        if len(target_tiers) == 1 and target_tiers[0] in tiers:
-            name = "{}".format(test.label)
-            selected.append(name[len("root"):] if name.startswith("root//") else name)
-
-    unknown = [
-        target
-        for target in requested_exclusions
-        if target not in selected
-    ]
-    if unknown:
-        fail(
-            "excluded target(s) are not heavy suites in tier {}: {}\nheavy suites are:\n{}".format(
-                ctx.cli_args.tier,
-                ", ".join(sorted(unknown)),
-                "\n".join(sorted(selected)),
-            ),
-        )
-
-    remaining = [target for target in selected if target not in requested_exclusions]
-    ctx.output.print("\n".join(sorted(remaining)))
-
 def _premerge(ctx):
     _select(ctx, ["rue_test_tier_premerge"])
 
@@ -203,13 +126,4 @@ stress = bxl_main(
 all = bxl_main(
     impl = _all,
     cli_args = {},
-)
-
-heavy_suites = bxl_main(
-    impl = _heavy_suites,
-    cli_args = {
-        "exclude_label": cli_args.option(cli_args.list(cli_args.string())),
-        "exclude_target": cli_args.option(cli_args.list(cli_args.string())),
-        "tier": cli_args.string(),
-    },
 )

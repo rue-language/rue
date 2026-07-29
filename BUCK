@@ -936,7 +936,6 @@ filegroup(
         "scripts/rue",
         "scripts/rue-bin",
         "scripts/provision-build-cache",
-        "scripts/with-full-suite-lock",
         "scripts/run-large-example.sh",
         "scripts/run-sanitizer.sh",
         "test.sh",
@@ -978,7 +977,6 @@ filegroup(
         "scripts/ci-heavy-suite",
         "scripts/cli-timeout-policy.py",
         "scripts/provision-build-cache",
-        "scripts/with-full-suite-lock",
         "test.sh",
     ],
 )

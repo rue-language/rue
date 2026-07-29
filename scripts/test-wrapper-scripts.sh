@@ -954,143 +954,73 @@ EOF
 # CLI-case failures CI later caught).
 # ===========================================================================
 
-# RUE-1163: test.sh's unfiltered path delegates to Buck. Heavy-suite membership
-# comes from //test_tiers.bxl:heavy_suites, each selected corpus is run as a
-# NAMED target, and buck2's exit code is the verdict. These checks pin that
-# delegation — the tier and exclusion flags handed to the selector, and the
-# targets run afterwards — rather than the log-grepping audit and env-var
-# deferral protocol they replaced.
+# RUE-1163: an unfiltered test.sh run is one `buck2 test` invocation. Selection
+# is label filters buck2 evaluates; scheduling is buck2's, because each corpus
+# action declares it needs the whole machine. These checks pin the filters and
+# the exit-code contract — there is no membership query, no per-corpus loop, and
+# no status aggregation left to test.
 test_testsh_delegates_selection_to_buck() {
   local sb; sb="$(mktemp -d)"
   mkdir -p "$sb/scripts"
   cp "$SRC_ROOT/test.sh" "$sb/test.sh"
-  cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
-  chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite"
+  chmod +x "$sb/test.sh"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
-if [ "$1" = "bxl" ]; then
-  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
-  case "$2" in
-    *:validate) printf 'Rue test tiers valid\n'; exit 0 ;;
-  esac
-  # A stale exclusion or unknown tier fails in BXL, and must abort test.sh
-  # rather than yield an empty selection that runs no corpus.
-  if [ "${FAKE_BXL_EXIT:-0}" != 0 ]; then
-    printf 'error: fail: excluded target(s) are not heavy suites\n' >&2
-    exit "$FAKE_BXL_EXIT"
-  fi
-  tier=""
-  for a in "$@"; do
-    case "$prev" in --tier) tier="$a" ;; esac
-    prev="$a"
-  done
-  case " $* " in
-    *" --exclude_label rue_ci_dedicated_lane "*) dedicated=1 ;;
-    *) dedicated=0 ;;
-  esac
-  for t in ${FAKE_HEAVY_SUITES:-}; do
-    case " ${FAKE_SLOW_SUITES:-} " in
-      *" $t "*) [ "$tier" = slow ] || [ "$tier" = standard ] || [ "$tier" = all ] || continue ;;
-      *) [ "$tier" = slow ] && continue ;;
-    esac
-    if [ "$dedicated" = 1 ]; then
-      case " ${FAKE_DEDICATED_LANE:-} " in *" $t "*) continue ;; esac
-    fi
-    printf '%s\n' "$t"
-  done
-  exit 0
-fi
+if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+if [ "$1" = "bxl" ]; then printf 'Rue test tiers valid\n'; exit 0; fi
 if [ "$1" = "test" ]; then
-  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
-  tgt="$2"
-  if [ "$tgt" = "//..." ]; then
-    printf 'Tests finished: Pass 1. Fail 0. Skip 0.\n'
-    exit "${FAKE_BUCK_EXIT:-0}"
-  fi
-  for t in ${FAKE_FAIL_TARGETS:-}; do
-    if [ "$t" = "$tgt" ]; then printf 'Fail: root%s (0.1s)\n' "$t"; exit 1; fi
-  done
-  printf 'Pass: root%s (0.1s)\n' "$tgt"
-  exit 0
+  printf 'Tests finished: Pass 1. Fail 0. Skip 0.\n'
+  exit "${FAKE_BUCK_EXIT:-0}"
 fi
 exit 90
 EOF
   chmod +x "$sb/buck2"
 
-  local slow="//:cli-tests-slow //crates/rue-oracle-diff:oracle-diff-test //crates/rue-oracle-diff:oracle-diff-spec-test"
-  local all="//:cli-tests $slow //:spec-tests //:ui-tests //:oracle-diff-generated-smoke //:reproducible-programs //:frontend-diff-test"
-  local base="RUE_FULL_SUITE_LOCK_HELD=1"
   local rc=0 out
-
-  # (1) A green selection runs every named corpus and reports success.
-  : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && env $base FAKE_SLOW_SUITES="$slow" FAKE_HEAVY_SUITES="$all" \
-      FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  : >"$sb/calls.log"
+  out="$(cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: unfiltered run reports success" \
     "$([ "$rc" -eq 0 ] && grep -Fxq '=== TEST SUITE: PASSED ===' <<< "$out" && echo 0 || echo 1)"
-  check "test.sh: heavy membership comes from the Buck selector" \
-    "$(grep -Fq 'bxl //test_tiers.bxl:heavy_suites' "$sb/calls.log" && echo 0 || echo 1)"
-  check "test.sh: the CLI shards are subtracted from a local full run" \
-    "$(grep -Fq -- '--exclude_label rue_cli_shard' "$sb/calls.log" && echo 0 || echo 1)"
-  check "test.sh: every selected corpus is run as a named target" \
-    "$([ "$(grep -Ec '^test //[a-z0-9/-]*:[a-z0-9-]+$' "$sb/calls.log")" -eq 9 ] && echo 0 || echo 1)"
-  check "test.sh: the broad pass still excludes heavy suites" \
-    "$(grep -Fq -- '--exclude rue_heavy_suite' "$sb/calls.log" && echo 0 || echo 1)"
-
-  # (2) The tier reaches the selector rather than being re-derived in shell.
-  : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && env $base RUE_TEST_TIER=premerge FAKE_SLOW_SUITES="$slow" \
-      FAKE_HEAVY_SUITES="$all" FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
-  check "test.sh: premerge selection asks Buck for the premerge tier" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--tier premerge' "$sb/calls.log" \
-      && grep -Fq -- '--include rue_test_tier_premerge' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: the tier-ownership gate runs before anything executes" \
+    "$(grep -Fq 'bxl //test_tiers.bxl:validate' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: the whole run is a single buck2 test invocation" \
+    "$([ "$(grep -c '^test ' "$sb/calls.log")" -eq 1 ] && echo 0 || echo 1)"
+  check "test.sh: discovery stays broad" \
+    "$(grep -Fq 'test //... toolchains//...' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: the CLI shards are excluded so the corpus runs once" \
+    "$(grep -Fq -- '--exclude rue_cli_shard' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: heavy corpora are no longer excluded from the run" \
+    "$(! grep -Fq -- '--exclude rue_heavy_suite' "$sb/calls.log" && echo 0 || echo 1)"
+  check "test.sh: the standard tier leaves out opt-in stress tests" \
+    "$(grep -Fq -- '--exclude rue_test_tier_stress' "$sb/calls.log" && echo 0 || echo 1)"
 
   : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && env $base RUE_TEST_TIER=slow FAKE_SLOW_SUITES="$slow" \
-      FAKE_HEAVY_SUITES="$all" FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
-  check "test.sh: slow selection runs its real corpus targets" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--tier slow' "$sb/calls.log" \
-      && grep -Fxq 'test //:cli-tests-slow' "$sb/calls.log" \
-      && grep -Fxq 'test //crates/rue-oracle-diff:oracle-diff-test' "$sb/calls.log" && echo 0 || echo 1)"
+  out="$(cd "$sb" && RUE_TEST_TIER=premerge FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: a named tier becomes a Buck label filter" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--include rue_test_tier_premerge' "$sb/calls.log" && echo 0 || echo 1)"
 
-  # (3) A failing corpus fails the run. This is the whole completeness contract
-  #     now: exit codes, not a grep for a result line.
-  rc=0
-  out="$(cd "$sb" && env $base FAKE_SLOW_SUITES="$slow" FAKE_HEAVY_SUITES="$all" \
-      FAKE_FAIL_TARGETS='//:spec-tests' ./test.sh 2>&1)" || rc=$?
-  check "test.sh: a failing corpus fails the run" \
-    "$([ "$rc" -ne 0 ] && grep -Fq '=== TEST SUITE: FAILED' <<<"$out" && echo 0 || echo 1)"
-
-  # (4) A selector failure — a stale exclusion, an unknown tier, an unowned
-  #     target — aborts instead of running an empty corpus.
-  rc=0
-  out="$(cd "$sb" && env $base FAKE_SLOW_SUITES="$slow" FAKE_HEAVY_SUITES="$all" \
-      FAKE_BXL_EXIT=1 ./test.sh 2>&1)" || rc=$?
-  check "test.sh: a failed Buck selection aborts the run" \
-    "$([ "$rc" -ne 0 ] && ! grep -Fq '=== TEST SUITE: PASSED ===' <<<"$out" && echo 0 || echo 1)"
-
-  # (5) An empty selection is a failure, not a silent no-op success.
-  rc=0
-  out="$(cd "$sb" && env $base FAKE_HEAVY_SUITES= ./test.sh 2>&1)" || rc=$?
-  check "test.sh: an empty heavy selection fails closed" \
-    "$([ "$rc" -ne 0 ] && grep -Fq 'selected no heavy suites' <<<"$out" && echo 0 || echo 1)"
-
-  # (6) RUE-1163: required CI subtracts the corpora that own a platform-corpus
-  #     job by LABEL, not by an environment variable naming them. A local run
-  #     must still cover them.
   : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && env $base CI=true FAKE_SLOW_SUITES="$slow" FAKE_HEAVY_SUITES="$all" \
-      FAKE_DEDICATED_LANE='//:cli-tests //:spec-tests' FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  out="$(cd "$sb" && RUE_TEST_TIER=all FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  check "test.sh: the union tier filters no tier out" \
+    "$([ "$rc" -eq 0 ] && ! grep -Eq -- '--(include|exclude) rue_test_tier_' "$sb/calls.log" && echo 0 || echo 1)"
+
+  # Required CI gives these corpora their own platform-corpus job; a local run
+  # must still cover them.
+  : >"$sb/calls.log"; rc=0
+  out="$(cd "$sb" && CI=true FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: required CI subtracts the dedicated-lane label" \
-    "$([ "$rc" -eq 0 ] && grep -Fq -- '--exclude_label rue_ci_dedicated_lane' "$sb/calls.log" \
-      && ! grep -Fxq 'test //:cli-tests' "$sb/calls.log" && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--exclude rue_ci_dedicated_lane' "$sb/calls.log" && echo 0 || echo 1)"
 
   : >"$sb/calls.log"; rc=0
-  out="$(cd "$sb" && env $base FAKE_SLOW_SUITES="$slow" FAKE_HEAVY_SUITES="$all" \
-      FAKE_DEDICATED_LANE='//:cli-tests //:spec-tests' FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
+  out="$(cd "$sb" && FAKE_CALL_LOG="$sb/calls.log" ./test.sh 2>&1)" || rc=$?
   check "test.sh: a local run still covers the dedicated-lane corpora" \
-    "$([ "$rc" -eq 0 ] && ! grep -Fq -- '--exclude_label rue_ci_dedicated_lane' "$sb/calls.log" \
-      && grep -Fxq 'test //:cli-tests' "$sb/calls.log" && echo 0 || echo 1)"
+    "$([ "$rc" -eq 0 ] && ! grep -Fq -- '--exclude rue_ci_dedicated_lane' "$sb/calls.log" && echo 0 || echo 1)"
+
+  # The exit code is the verdict, and the sentinel agrees with it (RUE-579).
+  rc=0
+  out="$(cd "$sb" && FAKE_BUCK_EXIT=1 ./test.sh 2>&1)" || rc=$?
+  check "test.sh: a failing run fails and says so" \
+    "$([ "$rc" -ne 0 ] && grep -Fq '=== TEST SUITE: FAILED' <<<"$out" && echo 0 || echo 1)"
 
   rm -rf "$sb"
 }

@@ -164,85 +164,12 @@ EOF
     rm -rf "$sb"
 }
 
-test_lock_recovers_stale_holder() {
-    local sb lock rc=0
-    sb="$(mktemp -d)"; lock="$sb/full.lock"
-    mkdir -m 700 "$lock"
-    printf 'pid=99999999\ntoken=dead\nrepo=gone\n' >"$lock/owner"
-    RUE_FULL_SUITE_LOCK_DIR="$lock" RUE_FULL_SUITE_LOCK_POLL_SECONDS=1 \
-        "$SRC_ROOT/scripts/with-full-suite-lock" sh -c ": >'$sb/ran'" >/dev/null 2>&1 || rc=$?
-    check "lock: a dead holder is recovered" \
-        "$([ "$rc" -eq 0 ] && [[ -f "$sb/ran" ]] && [[ ! -e "$lock" ]] && echo 0 || echo 1)"
-    rm -rf "$sb"
-}
-
-test_lock_recovers_uninitialized_orphan() {
-    local sb lock rc=0
-    sb="$(mktemp -d)"; lock="$sb/full.lock"
-    mkdir -m 700 "$lock"
-    RUE_FULL_SUITE_LOCK_DIR="$lock" RUE_FULL_SUITE_LOCK_INIT_GRACE_SECONDS=0 \
-        "$SRC_ROOT/scripts/with-full-suite-lock" sh -c ": >'$sb/ran'" >/dev/null 2>&1 || rc=$?
-    check "lock: an orphan without owner metadata is recovered" \
-        "$([ "$rc" -eq 0 ] && [[ -f "$sb/ran" ]] && [[ ! -e "$lock" ]] && echo 0 || echo 1)"
-    rm -rf "$sb"
-}
-
-test_lock_interrupt_releases() {
-    local sb lock holder
-    sb="$(mktemp -d)"; lock="$sb/full.lock"
-    cat >"$sb/wait" <<'EOF'
-#!/usr/bin/env bash
-trap 'exit 0' TERM INT
-: >"$READY"
-while true; do sleep 1; done
-EOF
-    chmod +x "$sb/wait"
-    READY="$sb/ready" RUE_FULL_SUITE_LOCK_DIR="$lock" \
-        "$SRC_ROOT/scripts/with-full-suite-lock" "$sb/wait" >/dev/null 2>&1 &
-    holder=$!
-    for _ in {1..100}; do [[ -e "$sb/ready" ]] && break; sleep 0.02; done
-    kill -TERM "$holder"
-    wait "$holder" 2>/dev/null || true
-    check "lock: interruption releases ownership" "$([[ ! -e "$lock" ]] && echo 0 || echo 1)"
-    rm -rf "$sb"
-}
-
-test_lock_serializes_and_reports_once() {
-    local sb lock first second
-    sb="$(mktemp -d)"; lock="$sb/full.lock"
-    cat >"$sb/hold" <<'EOF'
-#!/usr/bin/env bash
-: >"$READY"
-while [[ ! -e "$RELEASE" ]]; do sleep 0.05; done
-EOF
-    chmod +x "$sb/hold"
-    READY="$sb/ready" RELEASE="$sb/release" RUE_FULL_SUITE_LOCK_DIR="$lock" \
-        "$SRC_ROOT/scripts/with-full-suite-lock" "$sb/hold" >"$sb/first.out" 2>&1 &
-    first=$!
-    for _ in {1..100}; do [[ -e "$sb/ready" ]] && break; sleep 0.02; done
-
-    RUE_FULL_SUITE_LOCK_DIR="$lock" RUE_FULL_SUITE_LOCK_POLL_SECONDS=1 \
-        RUE_FULL_SUITE_LOCK_NOTICE_SECONDS=60 \
-        "$SRC_ROOT/scripts/with-full-suite-lock" sh -c ": >'$sb/second-ran'" >"$sb/second.out" 2>&1 &
-    second=$!
-    sleep 0.1
-    check "lock: a second full suite cannot overlap" "$([[ ! -e "$sb/second-ran" ]] && echo 0 || echo 1)"
-    : >"$sb/release"
-    wait "$first" || true
-    wait "$second" || true
-    check "lock: waiter runs after release" "$([[ -e "$sb/second-ran" ]] && echo 0 || echo 1)"
-    check "lock: waiting is observable without noisy polling" \
-        "$([ "$(grep -c 'waiting...' "$sb/second.out" 2>/dev/null || true)" -eq 1 ] && echo 0 || echo 1)"
-    rm -rf "$sb"
-}
-
 test_full_suite_orchestration() {
     local sb out rc=0
     sb="$(mktemp -d)"
     mkdir -p "$sb/scripts"
     cp "$SRC_ROOT/test.sh" "$sb/test.sh"
     cp "$SRC_ROOT/scripts/ci-heavy-suite" "$sb/scripts/ci-heavy-suite"
-    cp "$SRC_ROOT/scripts/with-full-suite-lock" "$sb/scripts/with-full-suite-lock"
     cat >"$sb/scripts/cli-timeout-policy.py" <<'EOF'
 #!/usr/bin/env bash
 target=""
@@ -260,8 +187,7 @@ case "$target" in
     *) exit 2 ;;
 esac
 EOF
-    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" \
-        "$sb/scripts/cli-timeout-policy.py" "$sb/scripts/with-full-suite-lock"
+    chmod +x "$sb/test.sh" "$sb/scripts/ci-heavy-suite" "$sb/scripts/cli-timeout-policy.py"
     cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$BUCK_LOG"
@@ -270,18 +196,6 @@ if [[ "${1:-}" == "bxl" ]]; then
     # label uquery filtered in bash.
     case "${2:-}" in
         *:validate) printf 'Rue test tiers valid\n' ;;
-        *:heavy_suites)
-            printf '%s\n' \
-                //:cli-tests \
-                //:cli-tests-slow \
-                //crates/rue-oracle-diff:oracle-diff-test \
-                //crates/rue-oracle-diff:oracle-diff-spec-test \
-                //:frontend-diff-test \
-                //:oracle-diff-generated-smoke \
-                //:reproducible-programs \
-                //:spec-tests \
-                //:ui-tests
-            ;;
     esac
 elif [[ "${1:-}" == "test" ]]; then
     printf 'Pass: %s (0.0s)\n' "${2:-}"
@@ -291,44 +205,32 @@ EOF
     # The required macOS job sets this variable for its outer test.sh. Keep
     # this fixture's baseline full-suite contract independent of that caller
     # environment; deferral behavior has its own focused tests.
-    out="$(BUCK_LOG="$sb/calls" \
-        RUE_FULL_SUITE_LOCK_DIR="$sb/lock" "$sb/test.sh" 2>&1)" || rc=$?
+    out="$(BUCK_LOG="$sb/calls" "$sb/test.sh" 2>&1)" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         printf '%s\n' "$out" >&2
     fi
     check "suite: unfiltered orchestration succeeds" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
-    check "suite: broad discovery excludes opaque heavy tests" \
-        "$(grep -Fxq 'test //... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute --exclude rue_test_tier_stress' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: heavy targets come from the canonical Buck selector" \
-        "$(grep -Fq 'bxl //test_tiers.bxl:heavy_suites' "$sb/calls" && echo 0 || echo 1)"
-    # RUE-1118/RUE-1163: every corpus is now invoked bare. Each runs as a
-    # cacheable build action and the test executor only asserts its stamp, so an
-    # executor timeout here would bound a sub-second check while reading as if
-    # the corpus were still bounded; the real outer bound is each suite's
-    # timeout_seconds in BUCK. No corpus is exempt any more, so this asserts the
-    # absence of an executor timeout on every one of them rather than naming the
-    # converted subset.
+    # RUE-1163: the full suite is one buck2 invocation. Selection is label
+    # filters buck2 evaluates; scheduling is buck2's, because each corpus action
+    # declares it needs the whole machine (corpus.bzl). The bash loop that ran
+    # each corpus alone, and the host-wide lock that serialized full suites
+    # across worktrees, are both gone.
+    check "suite: the run is a single buck2 test invocation" \
+        "$([ "$(grep -c '^test ' "$sb/calls")" -eq 1 ] && echo 0 || echo 1)"
+    check "suite: discovery stays broad" \
+        "$(grep -Fq 'test //... toolchains//...' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: heavy corpora are included rather than excluded" \
+        "$(! grep -Fq -- '--exclude rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: the CLI shards do not re-run the corpus" \
+        "$(grep -Fq -- '--exclude rue_cli_shard' "$sb/calls" && echo 0 || echo 1)"
     check "suite: no corpus receives an executor timeout" \
-        "$([ "$(grep -Ec -- '^test //(crates/[a-z-]+)?:[a-z0-9-]+ -- --timeout' "$sb/calls")" -eq 0 ] && echo 0 || echo 1)"
-    check "suite: every heavy target is invoked bare, exactly once" \
-        "$([ "$(grep -Ec '^test //:(cli-tests|cli-tests-slow|spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs|frontend-diff-test)$' "$sb/calls")" -eq 7 ] && echo 0 || echo 1)"
-    # RUE-1117: the codegen differentials are heavy suites in their owning
-    # crate package, so a local full run executes them one at a time too.
-    check "suite: crate-package heavy suites are executed individually" \
-        "$([ "$(grep -Ec '^test //crates/rue-oracle-diff:oracle-diff(-spec)?-test$' "$sb/calls")" -eq 2 ] && echo 0 || echo 1)"
-    check "suite: no concurrent heavy label sweep occurs" \
-        "$(! grep -Fq -- '--include rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: host lock is released" "$([[ ! -e "$sb/lock" ]] && echo 0 || echo 1)"
+        "$([ "$(grep -Ec -- '^test .* --timeout' "$sb/calls")" -eq 0 ] && echo 0 || echo 1)"
     rm -rf "$sb"
 }
 
 test_cache_provisioning
 test_buck_wrapper_prefers_local_cache_misses
 test_buck_wrapper_auto_provisions
-test_lock_recovers_stale_holder
-test_lock_recovers_uninitialized_orphan
-test_lock_interrupt_releases
-test_lock_serializes_and_reports_once
 test_full_suite_orchestration
 
 echo "--------------------------------------------------"
