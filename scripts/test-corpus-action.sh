@@ -88,6 +88,34 @@ t_absolutize() {
     rm -rf "$dir"
 }
 
+# RUE-1158's case-timings variable names a declared *output*, so the file does
+# not exist when the harness starts. It must still absolutize — the harness
+# creates it after the compiler has moved cwd into a case temp directory, so a
+# relative value would write the measurements somewhere else and the action
+# would fail its declared output.
+t_absolutize_declared_output() {
+    local dir status observed
+    dir="$(sandbox)"
+    mkdir -p "$dir/out"
+    printf '#!/usr/bin/env bash\nprintf "%%s" "$RUE_CLI_CASE_TIMINGS" > "$OBSERVED"\n: > "$RUE_CLI_CASE_TIMINGS"\nexit 0\n' >"$dir/harness"
+    chmod +x "$dir/harness"
+    (
+        cd "$dir" &&
+            OBSERVED="$dir/observed" \
+                RUE_CLI_CASE_TIMINGS="out/case-timings.jsonl" \
+                RUE_CORPUS_ABSOLUTIZE="RUE_CLI_CASE_TIMINGS" \
+                "$CORPUS_ACTION" "$dir/stamp.txt" ./harness >/dev/null 2>&1
+    )
+    status=$?
+    observed="$(cat "$dir/observed" 2>/dev/null)"
+    check "not-yet-created output absolutizes" "0" "$status"
+    check "declared output path reaches the harness absolute" \
+        "$(cd "$dir/out" && pwd)/case-timings.jsonl" "$observed"
+    check "harness wrote through the absolutized output path" \
+        "yes" "$([ -e "$dir/out/case-timings.jsonl" ] && echo yes || echo no)"
+    rm -rf "$dir"
+}
+
 # An unset variable named in RUE_CORPUS_ABSOLUTIZE is a BUCK wiring bug. Failing
 # closed matters more than usual here: continuing would let the harness fall back
 # to its own relative default and pass against the wrong corpus.
@@ -157,6 +185,7 @@ t_usage() {
 t_success
 t_failure_writes_no_stamp
 t_absolutize
+t_absolutize_declared_output
 t_missing_absolutize_target_fails
 t_plumbing_is_hidden
 t_timeout

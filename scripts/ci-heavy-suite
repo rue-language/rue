@@ -36,7 +36,16 @@ trap cleanup EXIT
 # RUE-1159. The per-case budgets in execution_contracts.toml remain the honest
 # gates for both.
 test_args=("$target")
+
+# RUE-1158 shard weights. The measurements are a declared output of the corpus
+# action (`:NAME-action[timings]`), not an executor `--env` path, so they are
+# stored in the cache entry alongside the stamp and materialize on a hit too.
+# Copy them to the stable path ci.yml's upload step expects, after the run.
 timings=""
+if [[ "$target" == //:cli-tests-shard-* ]]; then
+    timings="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-cli-case-timings.jsonl"
+fi
+
 case "$target" in
     //:cli-tests-slow)
         timeout_tool="${RUE_CLI_TIMEOUT_POLICY_TOOL:-scripts/cli-timeout-policy.py}"
@@ -60,22 +69,27 @@ fi
 
 ./buck2 test "${test_args[@]}" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
-if [[ -n "$timings" && -s "$timings" ]]; then
-    timing_cases="$(grep -c '"event":"rue_cli_case_timing"' "$timings")"
-    echo "cli-tests: measured $timing_cases cases in $timings"
-fi
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
+fi
+
+if [[ -n "$timings" ]]; then
+    # The sh_test only asserts the stamp, so the timings output is not
+    # materialized by the test run. Ask for it explicitly; this is a cache
+    # lookup on the action that just ran, never a re-execution of the corpus.
+    if produced="$(./buck2 build --show-simple-output "${target}-action[timings]" 2>/dev/null)" \
+        && [[ -n "$produced" && -f "$produced" ]]; then
+        cp "$produced" "$timings"
+        timing_cases="$(grep -c '"event":"rue_cli_case_timing"' "$timings" || true)"
+        echo "cli-tests: measured $timing_cases cases in $timings"
+    else
+        # Not fatal: the artifact upload is `if-no-files-found: ignore`, and the
+        # suite's own Buck result below remains the required signal.
+        echo "cli-tests: no case timings produced for $target" >&2
+    fi
 fi
 
 if ! grep -qE "(Pass|Fail|Skip|Timeout|Fatal|Omit|Flaky): root${target} " "$log"; then
     echo "error: explicit CI shard produced no result for $target" >&2
     exit 1
-fi
-
-if [[ -n "$timings" && ! -s "$timings" ]]; then
-    # A remotely cached Buck test result does not replay the test process's
-    # out-of-sandbox metrics file. That is a legitimate zero-execution run,
-    # not a corpus omission; the explicit Buck result above remains required.
-    echo "cli-tests: measured 0 cases (cached result or unavailable timings)"
 fi

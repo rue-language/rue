@@ -235,6 +235,19 @@ Two consequences are worth knowing before changing a corpus target:
    plain genrule therefore never uploads here, and the first merge_group run of
    RUE-1118 re-executed every corpus on a tree byte-identical to the one the PR
    run had just built. The rule sets `allow_cache_upload = True` explicitly.
+4. **A measurement the corpus produces must be a declared output, not a path
+   handed in.** RUE-1158 rebalances the CLI shards from per-case timings, which
+   `ci-heavy-suite` used to collect by passing `--env RUE_CLI_CASE_TIMINGS=` to
+   the test executor. Neither half of that survives the conversion: the harness
+   now runs inside the action, where an executor `--env` never reaches it, and
+   the path was a per-run `mktemp`/`RUNNER_TEMP` value, which would change the
+   action's digest on every run and defeat the caching entirely. The timings are
+   a second declared output (`cached_corpus_suite(case_timings = True)`, exposed
+   as `:NAME-action[timings]`), so they are stored with the stamp and
+   materialize on a cache hit. `ci-heavy-suite` fetches that sub-target after the
+   run and copies it to the path `ci.yml` uploads. The general rule: anything a
+   corpus *produces* that outlives the run belongs in the action's outputs, or it
+   silently stops existing the moment the suite starts being cache-served.
 
 ### Reading whether a corpus was cache-served
 
@@ -244,7 +257,10 @@ that line as evidence of anything.** Two signals actually answer the question:
 
 - `Commands: N (cached: C, remote: R, local: L)` — the corpus is one action, so a
   cache-served suite adds to `cached` and a re-executed one adds to `local`. The
-  pre-RUE-1118 baseline for a CLI shard was 465 commands; it is 466 now.
+  pre-RUE-1118 baseline for a CLI shard was 465 commands; it is 466 now. A
+  shard's `cli-tests: measured N cases` line answers it too: the timings are an
+  output of that same action, so `N` is the case count of whichever run produced
+  the cache entry, not proof that this run executed anything.
 - the job's wall time, which is unambiguous.
 
 This matters because the two failure modes look identical in the test output. A

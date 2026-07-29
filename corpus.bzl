@@ -35,7 +35,8 @@ def cached_corpus_suite(
         absolutize = [],
         labels = [],
         tier = "premerge",
-        timeout_seconds = None):
+        timeout_seconds = None,
+        case_timings = False):
     """Define a corpus suite whose expensive run is a cacheable build action.
 
     Args:
@@ -57,6 +58,15 @@ def cached_corpus_suite(
         timeout_seconds: outer bound replacing the test executor's timeout, which
             a build action does not get. The per-case budgets in
             execution_contracts.toml remain the honest gates.
+        case_timings: emit RUE-1158's per-case measurements as a declared
+            *output* of the action, exposed as the `[timings]` sub-target. It
+            must be an output rather than an `--env` path: the harness now runs
+            inside the action, where a test-executor `--env` never reaches it,
+            and a per-run mktemp path would change the action's digest on every
+            run and defeat the caching this rule exists for. As an output it is
+            stored with the stamp and materialized on a cache hit, so
+            shard-weights.json keeps refreshing on replayed runs rather than
+            only when a corpus actually executes.
     """
     for key in absolutize:
         if key not in env:
@@ -69,6 +79,7 @@ def cached_corpus_suite(
         corpus_env = env,
         absolutize = absolutize,
         timeout_seconds = timeout_seconds,
+        case_timings = case_timings,
     )
 
     native.sh_test(
@@ -82,7 +93,29 @@ def _corpus_action_impl(ctx: AnalysisContext) -> list[Provider]:
     stamp = ctx.actions.declare_output("stamp.txt")
 
     action_env = dict(ctx.attrs.corpus_env.items())
-    action_env["RUE_CORPUS_ABSOLUTIZE"] = " ".join(ctx.attrs.absolutize)
+    absolutize = list(ctx.attrs.absolutize)
+
+    # RUE-1158's per-case measurements. This is an action *output*, not an
+    # `--env` path: the harness runs inside the action now, so a test-executor
+    # --env never reaches it, and the old per-run mktemp/RUNNER_TEMP path would
+    # change the action's digest on every run and defeat the caching entirely.
+    # Declared as an output it travels with the stamp in the cache entry, so a
+    # replayed merge_group run materializes the timings the PR run measured and
+    # shard-weights.json keeps refreshing on cached runs.
+    #
+    # The path is derived from the target name, so it is stable across runs and
+    # digest-neutral. It is absolutized for the same reason every other corpus
+    # path is: the harness File::create()s it after the compiler has already
+    # moved cwd into a case temp directory.
+    timings = None
+    extra_outputs = []
+    if ctx.attrs.case_timings:
+        timings = ctx.actions.declare_output("case-timings.jsonl")
+        action_env["RUE_CLI_CASE_TIMINGS"] = cmd_args(timings.as_output())
+        absolutize.append("RUE_CLI_CASE_TIMINGS")
+        extra_outputs.append(timings)
+
+    action_env["RUE_CORPUS_ABSOLUTIZE"] = " ".join(absolutize)
     if ctx.attrs.timeout_seconds != None:
         action_env["RUE_CORPUS_TIMEOUT_SECONDS"] = str(ctx.attrs.timeout_seconds)
 
@@ -114,7 +147,17 @@ def _corpus_action_impl(ctx: AnalysisContext) -> list[Provider]:
         allow_cache_upload = True,
     )
 
-    return [DefaultInfo(default_output = stamp)]
+    sub_targets = {}
+    if timings != None:
+        sub_targets["timings"] = [DefaultInfo(default_output = timings)]
+
+    # The stamp stays the default output: `//:NAME`'s sh_test asserts it, and a
+    # corpus's result is the pass, not the measurement.
+    return [DefaultInfo(
+        default_output = stamp,
+        other_outputs = extra_outputs,
+        sub_targets = sub_targets,
+    )]
 
 _corpus_action = rule(
     impl = _corpus_action_impl,
@@ -123,6 +166,7 @@ _corpus_action = rule(
         # and registers what they name as inputs of the action — which is what
         # keys the cache entry, and what the input contract above is about.
         "absolutize": attrs.list(attrs.string(), default = []),
+        "case_timings": attrs.bool(default = False),
         "corpus_env": attrs.dict(attrs.string(), attrs.arg(), default = {}),
         "harness": attrs.dep(providers = [RunInfo]),
         "harness_args": attrs.list(attrs.string(), default = []),
