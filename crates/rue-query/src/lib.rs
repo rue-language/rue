@@ -1515,6 +1515,12 @@ pub struct RuntimeMetrics {
     /// family raises this by one, not by N; this counter is what makes that
     /// linearity observable to tests.
     pub retention_enforcements: u64,
+    /// Retention-queue entries examined by enforcement passes.
+    ///
+    /// Unlike `retention_enforcements`, this measures the work inside a pass.
+    /// Publish-side batching keeps this linear when a live protected closure
+    /// grows past its configured soft floor.
+    pub retention_scan_entries: u64,
     /// Peak simultaneously executing query bodies.
     pub peak_active_bodies: u64,
     /// Terminals currently protected by rooted-request observation leases.
@@ -1564,6 +1570,7 @@ struct Metrics {
     retained_terminals: AtomicU64,
     retention_growth: AtomicU64,
     retention_enforcements: AtomicU64,
+    retention_scan_entries: AtomicU64,
     active_bodies: AtomicU64,
     peak_active_bodies: AtomicU64,
     active_task_leases: AtomicU64,
@@ -1590,6 +1597,7 @@ impl Metrics {
             retained_terminals: self.retained_terminals.load(Ordering::Relaxed),
             retention_growth: self.retention_growth.load(Ordering::Relaxed),
             retention_enforcements: self.retention_enforcements.load(Ordering::Relaxed),
+            retention_scan_entries: self.retention_scan_entries.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
             active_task_leases: self.active_task_leases.load(Ordering::Relaxed),
             peak_task_leases: self.peak_task_leases.load(Ordering::Relaxed),
@@ -2058,6 +2066,7 @@ impl QueryRuntime {
                 nodes: Mutex::new(HashMap::new()),
                 retention: Mutex::new(VecDeque::new()),
                 retained_count: AtomicUsize::new(0),
+                next_publish_sweep: AtomicUsize::new(retention_limit.saturating_add(1)),
                 retained_nodes: AtomicUsize::new(0),
                 retained_revisions: Mutex::new(BTreeMap::new()),
             }),
@@ -2652,6 +2661,12 @@ struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     nodes: Mutex<HashMap<K, Arc<Node<K, V>>>>,
     retention: Mutex<VecDeque<RetentionEntry<K, V>>>,
     retained_count: AtomicUsize,
+    /// Retained-count watermark for the next publish-side sweep. A pass that
+    /// finds only protected entries doubles this watermark, so growing a live
+    /// closure examines O(N) entries in total rather than rescanning every
+    /// prefix. Releases still force an immediate pass because they can make an
+    /// existing terminal newly evictable.
+    next_publish_sweep: AtomicUsize,
     retained_nodes: AtomicUsize,
     retained_revisions: Mutex<BTreeMap<Revision, usize>>,
 }
@@ -3770,8 +3785,36 @@ where
             self.lease_observed_pin(task, pin);
         }
         node.wait.notify_all();
-        self.enforce_retention();
+        if lease {
+            self.enforce_retention_after_publish();
+        } else {
+            // A validation-only publication has no birth lease. It can be
+            // evicted immediately, so preserve eager enforcement for it.
+            self.enforce_retention();
+        }
         terminal
+    }
+
+    fn enforce_retention_after_publish(&self) {
+        let retained = self.inner.retained_count.load(Ordering::Acquire);
+        loop {
+            let threshold = self.inner.next_publish_sweep.load(Ordering::Acquire);
+            if retained < threshold {
+                return;
+            }
+            // Claim this watermark before taking the retention lock. Concurrent
+            // publishers skip while this pass is pending; the pass installs the
+            // next watermark from the count it observes at completion.
+            if self
+                .inner
+                .next_publish_sweep
+                .compare_exchange(threshold, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                self.enforce_retention();
+                return;
+            }
+        }
     }
 
     fn enforce_retention(&self) {
@@ -3790,6 +3833,10 @@ where
             // to be kept — the latter is recorded as growth pressure below.
             remaining -= 1;
             let entry = retention.pop_front().expect("retention scan is nonempty");
+            self.core
+                .metrics
+                .retention_scan_entries
+                .fetch_add(1, Ordering::Relaxed);
             let Some(node) = entry.node.upgrade() else {
                 continue;
             };
@@ -3850,12 +3897,21 @@ where
         // The pass could not reach the configured bound: every remaining
         // candidate was a protected root the live closure still needs. Grow and
         // record the pressure event rather than evict a required terminal.
-        if self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit {
+        let retained = self.inner.retained_count.load(Ordering::Relaxed);
+        if retained > self.inner.retention_limit {
             self.core
                 .metrics
                 .retention_growth
                 .fetch_add(1, Ordering::Relaxed);
         }
+        let next_publish_sweep = if retained > self.inner.retention_limit {
+            retained.saturating_mul(2).max(retained.saturating_add(1))
+        } else {
+            self.inner.retention_limit.saturating_add(1)
+        };
+        self.inner
+            .next_publish_sweep
+            .store(next_publish_sweep, Ordering::Release);
         drop(retention);
         for handoffs in evicted_handoffs {
             handoffs.abort();
@@ -4057,7 +4113,7 @@ where
             node: Arc::downgrade(node),
             attempt: attempt_id,
         });
-        self.enforce_retention();
+        self.enforce_retention_after_publish();
         Ok(endorsed_pin)
     }
 
@@ -12125,6 +12181,75 @@ mod tests {
         assert!(Arc::ptr_eq(&reused, &produced));
         assert_eq!(computes.load(Ordering::SeqCst), 1);
         drop(selection);
+    }
+
+    // Growing one live protected family is linear, not quadratic: geometric
+    // publication watermarks examine each retained prefix only a constant number
+    // of times, while the final forced release still converges to the floor.
+    #[test]
+    fn protected_publish_retention_work_is_linear_at_two_sizes() {
+        fn scan_work(bodies: u64) -> u64 {
+            let runtime = QueryRuntime::new(1);
+            publish_empty(&runtime, [revision(1)]);
+            let family = runtime
+                .family::<Slot, u64>(format!("publish-scan-{bodies}"), 1)
+                .unwrap();
+            let driver = runtime
+                .family::<Key, u64>(format!("publish-scan-driver-{bodies}"), 1)
+                .unwrap();
+            let measured = Arc::new(AtomicU64::new(0));
+            let measured_slot = measured.clone();
+            let metrics_runtime = runtime.clone();
+            let published = family.clone();
+
+            runtime
+                .query(
+                    &driver,
+                    revision(1),
+                    Key("root"),
+                    CancellationToken::new(),
+                    move |context| {
+                        let before = metrics_runtime.metrics().retention_scan_entries;
+                        for i in 0..bodies {
+                            context
+                                .query(&published, Slot(i), move |_| Ok(QueryOutput::success(i)))?;
+                        }
+                        let after = metrics_runtime.metrics().retention_scan_entries;
+                        measured_slot.store(after - before, Ordering::SeqCst);
+                        Ok(QueryOutput::success(bodies))
+                    },
+                )
+                .unwrap();
+
+            assert!(
+                runtime.metrics().retention_growth > 0,
+                "the live request grew past the family's soft floor"
+            );
+            assert_eq!(
+                family.retention().terminals,
+                family.retention().terminal_limit,
+                "the forced release-side pass still converges to the floor"
+            );
+            measured.load(Ordering::SeqCst)
+        }
+
+        const SMALL: u64 = 64;
+        const LARGE: u64 = 128;
+        let small = scan_work(SMALL);
+        let large = scan_work(LARGE);
+
+        assert!(
+            small <= 2 * SMALL,
+            "geometric publish sweeps examine at most a linear prefix: {small}"
+        );
+        assert!(
+            large <= 2 * LARGE,
+            "geometric publish sweeps examine at most a linear prefix: {large}"
+        );
+        assert!(
+            large <= 2 * small + 2,
+            "doubling the protected closure must not square scan work: {small} -> {large}"
+        );
     }
 
     // Releasing a large task lease set is linear, not quadratic: a request whose
