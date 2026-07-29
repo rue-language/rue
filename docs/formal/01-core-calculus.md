@@ -863,6 +863,56 @@ carries only the moves performed by the by-value arguments. Because the core is
 fully monomorphic (§1), `g` names a single concrete signature: there is no
 overload or generic instantiation to resolve at the call.
 
+**Accessor calls (ADR-0062, preview).** A *read accessor* is a method of the
+form
+
+```
+  A.f : fn ( borrow self : A, x1:T1, ..., xk:Tk ) -> borrow T { e_guard ; yield p_y }
+```
+
+whose body is well-formed iff every non-diverging exit is the single trailing
+`yield` of a place `p_y` rooted at the receiver parameter — a projection chain
+`self.f…[e]…` (possibly through a nested accessor call), whose guards `e_guard`
+either diverge (trap, `@panic`) or fall through, with an empty post-`yield`
+continuation. Value parameters are by-value (prose `6.6:4`–`6.6:7`). A call
+produces a **borrowed place**, not a value:
+
+```
+  Γ;Σ;Λ ⊢ receiver place p ⇒ A     fully-owned(Σ, p)
+  for each i, threading Σ left-to-right (Σ0 = Σ):
+      Γ;Σ_{i-1};Λ ⊢ e_i ⇒ Ti ⊣ Σi                       -- by-value guard inputs, §4.2
+  A.f is a well-formed read accessor with element type T
+  add (root(p), shared) to Λ_expr    -- extent: the enclosing FULL EXPRESSION, not the call
+  Λ_expr ∪ Λ_call of every call in that extent is CONSISTENT   (law of exclusivity, §5.4)
+  ─────────────────────────────────────────────────────────────────────── (Accessor-Call)
+  Γ;Σ;Λ ⊢ p.f(e1, ..., ek) ⇒ borrowed-place T ⊣ Σk
+```
+
+The result is usable in **place contexts only**: it may be read (a `Copy`-shaped
+read; reading out an owning value would mint a second owner and is rejected —
+the same argument as the RUE-651 `get` gate), projected further, passed as a
+`borrow` argument, or compared (§5.4's compare loan). It may **not** be
+returned, stored, bound by a `let`, or captured in an aggregate — each escape
+would let the loan outlive its extent (prose `6.6:9`–`6.6:11`). Unlike `(Call)`'s
+loans, which are discharged at the call, the accessor loan joins the enclosing
+full expression's loan set `Λ_expr` — the same extent generalization the §5.4
+equality-compare paragraph anticipates — so an exclusive use of `root(p)`
+anywhere in that extent is inconsistent (`use(v.get_ref(i), g(inout v))` is the
+canonical rejection). This is the first construct that makes the dormant
+"loaned in Λ" premises of §5.1/§5.2 observable within a single judgment; no new
+§7 theorem shapes are introduced — the result's extent is bounded by its
+expression, so second-classness, view-intact, loan-extent-nesting, and
+handle-uniqueness quantify over it unchanged.
+
+Dynamically an accessor call is not a `(D-Call)`: the call reduces **by the
+accessor's inlined body** — the guards run in the caller (and may trap, §6.12)
+and the redex is then replaced by the projected place itself, `(ℓ, π·π_y)` for
+a user accessor over §6.9's by-ref place plumbing (a library accessor over the
+allocation store would yield `view⟨A | o, k⟩`, §6.13.2 — deferred to the std
+phase, RUE-1017). No call frame is pushed and no calling convention for
+"returning a place" exists; that absence is the RUE-1012 forward-compatibility
+contract.
+
 ---
 
 ## 6. Dynamic semantics (small-step)
@@ -1930,6 +1980,7 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §4.1/§5.4 equality borrows its operands | 4.3:3f |
 | §5.5 match / enum elim + intro | 6.3:17, 3.8:33 (destructure), 4.7 (match) |
 | §5.8 leaf/operator/aggregate/call statics | 4.1:2/5/7, 4.2:1/6/14, 4.3:1/2/5/6, 4.3a:3/4, 4.4:2, 3.6:5/6/15/16, 3.5:1/2, 4.10:3/4/5/7, 6.1:36 |
+| §5.8 (Accessor-Call) + accessor body WF (preview, ADR-0062) | 6.6:2–6.6:12 |
 | §5.6 enum drop (active payload) | 6.3:20 |
 | §4.3 expression/return value | 4.5:3 (→ value, not just type), 6.1:4/5, 4.9:1/7 |
 | §5.2 assignment / reinit | 3.8:55/56, 3.8:72, 3.8:77 |

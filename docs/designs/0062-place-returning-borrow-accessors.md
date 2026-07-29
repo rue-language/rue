@@ -3,7 +3,7 @@ id: 0062
 title: "Place-returning borrow accessors: projection reads of owned elements"
 status: accepted
 tags: [ownership, borrows, collections, accessors, stdlib, formal-semantics]
-feature-flag: borrow-accessors
+feature-flag: borrow_accessors
 created: 2026-07-18
 accepted: 2026-07-18
 implemented:

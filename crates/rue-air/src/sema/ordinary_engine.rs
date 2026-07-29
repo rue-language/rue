@@ -2142,6 +2142,75 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // per-instruction `yield`/`return`/`?` analysis against the trailing
         // reference recorded here.
         if is_accessor {
+            // Declaration shape (ADR-0062 phase 1), re-checked at the engine
+            // so it holds on every host that analyzes the body: the receiver
+            // is a shared `borrow self`, and value parameters are plain
+            // by-value guard inputs. The epoch declaration collector reports
+            // the same errors earlier when it runs.
+            let body_span = self.body_rir_ref().get(body).span;
+            let self_sym_check = self.storage.body_interner().get_or_intern("self");
+            match params
+                .iter()
+                .find(|(name, _, _, _)| *name == self_sym_check)
+            {
+                Some((_, _, RirParamMode::Borrow, _)) => {}
+                Some((_, _, RirParamMode::Inout, _)) => {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorRequiresBorrowSelf {
+                            found: "an `inout self` receiver".to_string(),
+                        },
+                        body_span,
+                    )
+                    .with_note(
+                        "mutable accessors (`inout self` -> exclusive result) are a later phase (RUE-1016)",
+                    ));
+                }
+                Some(_) => {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorRequiresBorrowSelf {
+                            found: "a by-value `self` receiver".to_string(),
+                        },
+                        body_span,
+                    ));
+                }
+                None => {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorRequiresBorrowSelf {
+                            found: "a function with no receiver".to_string(),
+                        },
+                        body_span,
+                    ));
+                }
+            }
+            for (name, _, mode, is_comptime) in params.iter() {
+                if *name == self_sym_check {
+                    continue;
+                }
+                if *is_comptime {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorParamModeUnsupported {
+                            mode: "`comptime`".to_string(),
+                        },
+                        body_span,
+                    ));
+                }
+                if *mode != RirParamMode::Normal {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorParamModeUnsupported {
+                            mode: format!(
+                                "`{}`",
+                                match mode {
+                                    RirParamMode::Inout => "inout",
+                                    RirParamMode::Borrow => "borrow",
+                                    RirParamMode::Normal => unreachable!(),
+                                }
+                            ),
+                        },
+                        body_span,
+                    ));
+                }
+            }
+
             // A single-statement body lowers to the instruction itself; a
             // multi-statement body lowers to a block whose last instruction
             // is the trailing exit.

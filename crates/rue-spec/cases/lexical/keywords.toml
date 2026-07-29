@@ -72,6 +72,13 @@ source = "fn main() -> i32 { let return = 1; 0 }"
 compile_fail = true
 
 [[case]]
+name = "keyword_yield_reserved"
+error_contains = "[E0100]"
+spec = ["2.4:1", "2.4:2"]
+source = "fn main() -> i32 { let yield = 1; 0 }"
+compile_fail = true
+
+[[case]]
 name = "keyword_break_reserved"
 error_contains = "[E0100]"
 spec = ["2.4:1", "2.4:2"]

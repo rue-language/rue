@@ -1,0 +1,367 @@
+# Borrow accessors (ADR-0062 phases 0-1, RUE-662), behind the
+# `borrow_accessors` preview.
+#
+# Coverage note (RUE-662 ruling, 2026-07-29): declaration- and body-level
+# rules are enforced today and carry `preview_should_pass = true`, as does the
+# guard-trap dynamics case (the guard observably traps whether or not the call
+# is inlined). The remaining call-site rules (6.6:8-6.6:11) are implemented in
+# the semantic engine but do not yet fire through the incremental driver, whose
+# per-body RIR pruning cannot see accessor callee bodies; they become
+# enforceable with the RUE-662 epoch-eligibility scaffold (after RUE-1033) and
+# are tracked as known-uncovered until their cases flip to
+# `preview_should_pass = true`.
+
+[section]
+id = "items.borrow-accessors"
+spec_chapter = "6.6"
+name = "Borrow Accessors"
+description = "Place-returning read accessors: `fn (borrow self, ...) -> borrow T` with a trailing-yield body (ADR-0062)."
+
+[[case]]
+name = "accessor_declaration_parses_and_compiles"
+spec = ["6.6:1", "6.6:2"]
+description = "The S2 surface: an ordinary fn with `-> borrow T` and a trailing-yield body is accepted under the preview."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    @allow(unused_function)
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 {
+            @panic("index out of bounds");
+        }
+        yield self.cells[i];
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [1, 2, 3, 4] };
+    if g.cells[0] == 1 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "accessor_requires_preview_gate"
+spec = ["6.6:3"]
+description = "Using the accessor form without --preview borrow_accessors is E1100."
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E1100", "borrow_accessors"]
+
+[[case]]
+name = "accessor_requires_borrow_self"
+spec = ["6.6:4"]
+description = "An `inout self` accessor is rejected: phase 1 accessors are shared projections (E0257)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn xr(inout self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let mut p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0257", "requires a `borrow self` receiver"]
+
+[[case]]
+name = "accessor_params_are_by_value"
+spec = ["6.6:5"]
+description = "A `borrow`-mode accessor parameter is rejected (E0260)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self, borrow k: i64) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let k = 2;
+    if p.xr(borrow k) == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0260", "must be by-value"]
+
+[[case]]
+name = "accessor_body_requires_trailing_yield"
+spec = ["6.6:6"]
+description = "An accessor body whose final statement is not a yield is rejected (E0254)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        self.x
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0254", "single trailing `yield`"]
+
+[[case]]
+name = "yield_outside_accessor_rejected"
+spec = ["6.6:6"]
+description = "A `yield` outside an accessor body is rejected (E0256)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+fn main() -> i32 {
+    yield 1;
+}
+"""
+compile_fail = true
+error_contains = ["E0256", "only valid inside the body of a `-> borrow` accessor"]
+
+[[case]]
+name = "accessor_yield_must_root_at_receiver"
+spec = ["6.6:7"]
+description = "Yielding a place not rooted at `self` is rejected (E0255)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self, other: i64) -> borrow i64 {
+        yield other;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr(2) == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0255", "place rooted at `self`"]
+
+# ---------------------------------------------------------------------------
+# Call-site semantics: implemented in the semantic engine (see the rue-air
+# unit suite), enforceable through the driver once the RUE-662 eligibility
+# scaffold lands. Until then these run as preview-allowed-to-fail.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "accessor_read_executes_in_place"
+spec = ["6.6:8", "6.6:12"]
+description = "A guarded accessor call reads the projected element in place; guards run at the call site."
+preview = "borrow_accessors"
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 {
+            @panic("index out of bounds");
+        }
+        yield self.cells[i];
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [10, 20, 30, 40] };
+    let sum = g.at(0) + g.at(3);
+    @dbg(sum);
+    if sum == 50 { 0 } else { 1 }
+}
+"""
+expected_stdout = "50\n"
+exit_code = 0
+
+[[case]]
+name = "accessor_guard_traps_out_of_bounds"
+spec = ["6.6:12"]
+description = "The accessor's guard panics at the call site for an out-of-bounds index."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 {
+            @panic("index out of bounds");
+        }
+        yield self.cells[i];
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [10, 20, 30, 40] };
+    if g.at(9) == 0 { 0 } else { 1 }
+}
+"""
+runtime_error = "index out of bounds"
+
+[[case]]
+name = "accessor_result_cannot_be_returned"
+spec = ["6.6:9"]
+description = "Returning an accessor result escapes its full expression (E0250)."
+preview = "borrow_accessors"
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn read(borrow p: P) -> i64 {
+    return p.xr();
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if read(borrow p) == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0250", "cannot return an accessor result"]
+
+[[case]]
+name = "accessor_result_cannot_be_let_bound"
+spec = ["6.6:9"]
+description = "A plain `let` binding of an accessor result escapes its full expression (E0252)."
+preview = "borrow_accessors"
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let b = p.xr();
+    if b == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0252", "cannot bind an accessor result with `let`"]
+
+[[case]]
+name = "accessor_result_cannot_be_stored"
+spec = ["6.6:9"]
+description = "Assigning an accessor result into storage escapes its full expression (E0251)."
+preview = "borrow_accessors"
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let mut slot = 0;
+    slot = p.xr();
+    if slot == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0251", "cannot store an accessor result"]
+
+[[case]]
+name = "accessor_result_cannot_be_captured"
+spec = ["6.6:9"]
+description = "Capturing an accessor result in an array literal escapes its full expression (E0253)."
+preview = "borrow_accessors"
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let a = [p.xr()];
+    if a[0] == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0253", "cannot capture an accessor result"]
+
+[[case]]
+name = "accessor_loan_conflicts_with_inout"
+spec = ["6.6:10"]
+description = "An exclusive use of the borrowed root in the same full expression violates exclusivity (E0259)."
+preview = "borrow_accessors"
+source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        yield self.cells[i];
+    }
+}
+fn using(a: i64, b: i64) -> i64 { a + b }
+fn bump(inout g: Grid) -> i64 {
+    g.cells[0] = 9;
+    0
+}
+fn main() -> i32 {
+    let mut g = Grid { cells: [1, 2, 3, 4] };
+    using(g.at(0), bump(inout g));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["E0259", "while an accessor result borrows it"]
+
+[[case]]
+name = "accessor_result_drop_glue_read_rejected"
+spec = ["6.6:11"]
+description = "Reading an owning (drop-glue) value out of an accessor result by value is rejected (E0258)."
+preview = "borrow_accessors"
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+struct Named {
+    name: StrBuf,
+
+    fn name_ref(borrow self) -> borrow StrBuf {
+        yield self.name;
+    }
+}
+fn take(s: StrBuf) -> u64 { s.len() }
+fn main() -> i32 {
+    let mut s = StrBuf.new();
+    s.push_str("hi");
+    let n = Named { name: s };
+    if take(n.name_ref()) == 2 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0258"]
