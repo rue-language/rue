@@ -127,6 +127,62 @@ def timeout_for_target(
     raise ValueError(f"no CLI timeout policy for target {target}")
 
 
+# RUE-1163: the corpus actions' outer bounds, as spelled in the root BUCK file.
+# A corpus runs as a build action now, which gets no test-executor timeout, so
+# `timeout_seconds` is the only thing that stops a wedged harness — and it must
+# not cut inside the declarative correctness deadline this tool derives. Nothing
+# connected the two until this check: RUE-1118 gave //:cli-tests a 1800s action
+# bound while the policy allowed 3600s, so a healthy run could be killed.
+BUCK_TIMEOUT_PATTERNS = {
+    "//:cli-tests": re.compile(r"^_CLI_TESTS_TIMEOUT_SECONDS = (\d+)$", re.MULTILINE),
+    "//:cli-tests-shard-0": re.compile(
+        r"^_CLI_SHARD_TIMEOUT_SECONDS = (\d+)$", re.MULTILINE
+    ),
+    "//:cli-tests-slow": re.compile(
+        r'name = "cli-tests-slow".*?timeout_seconds = (\d+)', re.DOTALL
+    ),
+}
+
+
+def buck_timeouts(buck_path: Path) -> dict[str, int]:
+    """The action bounds the root BUCK file declares, keyed by target."""
+    text = buck_path.read_text()
+    found = {}
+    for target, pattern in BUCK_TIMEOUT_PATTERNS.items():
+        match = pattern.search(text)
+        if not match:
+            raise ValueError(f"{buck_path}: no action timeout found for {target}")
+        found[target] = int(match.group(1))
+    return found
+
+
+def check_buck_timeouts(
+    buck_path: Path, weights_path: Path, policy: dict[str, int]
+) -> list[str]:
+    """Report action bounds that cut inside the derived correctness deadline.
+
+    Every platform in the weights file is checked, because the BUCK value is one
+    static number while the derived deadline is per-platform: a bound that is
+    generous on the fastest runner and short on the slowest is still a bound
+    that kills healthy runs.
+    """
+    platforms = sorted(json.loads(weights_path.read_text()).get("platforms", {}))
+    errors = []
+    for target, declared_seconds in buck_timeouts(buck_path).items():
+        for platform_name in platforms:
+            required_ms, _ = timeout_for_target(
+                target, weights_path, platform_name, policy
+            )
+            required_seconds = math.ceil(required_ms / 1000)
+            if declared_seconds < required_seconds:
+                errors.append(
+                    f"{target}: BUCK bounds the corpus action at {declared_seconds}s, "
+                    f"inside the {required_seconds}s correctness deadline the policy "
+                    f"derives for {platform_name}. A healthy run would be killed."
+                )
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -139,10 +195,24 @@ def main() -> int:
     )
     parser.add_argument("--platform", default=host_platform())
     parser.add_argument("--target")
+    parser.add_argument(
+        "--buck",
+        type=Path,
+        help="root BUCK file whose corpus action bounds must cover the "
+        "derived correctness deadlines",
+    )
     args = parser.parse_args()
     try:
         _, policy = load_policy(args.policy)
         if args.target is None:
+            if args.buck is not None:
+                errors = check_buck_timeouts(args.buck, args.weights, policy)
+                if errors:
+                    for error in errors:
+                        print(f"error: {error}", file=sys.stderr)
+                    return 1
+                print("CLI timeout policy valid; corpus action bounds cover it")
+                return 0
             print("CLI timeout policy valid")
             return 0
         timeout_ms, expected_ms = timeout_for_target(

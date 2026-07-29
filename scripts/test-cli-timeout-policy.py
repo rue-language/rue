@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib.util
+import json
 import os
 import tempfile
 import tomllib
@@ -84,6 +85,61 @@ compile_timeout_ms=10
             path.write_text(text)
             with self.assertRaisesRegex(ValueError, "raw deadlines are forbidden"):
                 MODULE.load_policy(path)
+
+
+class BuckActionBoundTests(unittest.TestCase):
+    """RUE-1163: the BUCK action bounds must cover the derived deadlines."""
+
+    POLICY = {
+        "expected_cost_multiplier_percent": 100,
+        "fixed_headroom_ms": 0,
+        "minimum_shard_timeout_ms": 1000,
+        "minimum_monolith_timeout_ms": 2000,
+        "minimum_slow_suite_timeout_ms": 3000,
+    }
+
+    def fixture(self, directory, cli_seconds):
+        weights = Path(directory) / "shard-weights.json"
+        weights.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "default_ms": 1,
+                    "common": {"a": 1000, "b": 1000},
+                    "platforms": {"linux-x64": {}},
+                }
+            )
+        )
+        buck = Path(directory) / "BUCK"
+        buck.write_text(
+            f"_CLI_TESTS_TIMEOUT_SECONDS = {cli_seconds}\n"
+            "_CLI_SHARD_TIMEOUT_SECONDS = 9999\n"
+            'cached_corpus_suite(\n    name = "cli-tests-slow",\n'
+            "    timeout_seconds = 9999,\n)\n"
+        )
+        return buck, weights
+
+    def test_bound_covering_the_deadline_passes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            buck, weights = self.fixture(directory, 9999)
+            self.assertEqual(
+                MODULE.check_buck_timeouts(buck, weights, self.POLICY), []
+            )
+
+    def test_bound_inside_the_deadline_is_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            buck, weights = self.fixture(directory, 1)
+            errors = MODULE.check_buck_timeouts(buck, weights, self.POLICY)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn("//:cli-tests", errors[0])
+            self.assertIn("A healthy run would be killed", errors[0])
+
+    def test_missing_bound_is_an_error_not_a_silent_pass(self):
+        with tempfile.TemporaryDirectory() as directory:
+            buck, weights = self.fixture(directory, 9999)
+            buck.write_text("# no timeouts here\n")
+            with self.assertRaisesRegex(ValueError, "no action timeout found"):
+                MODULE.check_buck_timeouts(buck, weights, self.POLICY)
 
 
 if __name__ == "__main__":
