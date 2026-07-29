@@ -14484,25 +14484,15 @@ impl RevisionedQueryDatabase {
         // ADR-0063 §2.1). The API still has no carried-ledger input that could
         // be mistaken for freshness authority.
         //
-        // MISSING SOUNDNESS GUARD — implement RUE-1148 before any host reads
-        // sources from disk across requests.
-        //
         // Carrying the token forward asserts that inputs this request did not
-        // re-observe are unchanged. Nothing here verifies that. ADR-0063 §2.1
-        // requires a Tier B re-observation sweep over the previous rooted
-        // closure's accepted-read set — stat, re-read and re-hash on metadata
-        // mismatch, republish only on content-digest change, and never trust an
-        // mtime inside the filesystem's indistinguishable window of now.
-        //
-        // That sweep does not exist yet. It is unobservable today because no
-        // host re-reads the filesystem between requests: the CLI opens exactly
-        // one request per invocation (`crates/rue/src/source_loader.rs`, before
-        // its frontier loop), in-process hosts supply their own snapshots, and
-        // nothing is retained across processes. A watch mode, LSP, or daemon
-        // breaks every one of those assumptions and must not ship first.
-        //
-        // The session-bench fixtures cannot catch this: they edit through the
-        // session API and never write out of band, so they pass either way.
+        // re-observe are unchanged. The compiler cannot verify that assertion
+        // because ADR-0051 forbids it from touching the filesystem. Filesystem
+        // hosts must establish Tier B authority before this call by sweeping the
+        // previous rooted closure's accepted-read set. The CLI host implements
+        // that request-start contract in `source_loader::reload_from_filesystem`
+        // (RUE-1148): metadata matches reuse cached bytes, mismatches and
+        // too-recent mtimes hash content, and only a digest change replaces the
+        // source leaf. In-memory hosts already publish their explicit snapshots.
         self.publish_import_view(
             snapshot,
             context,

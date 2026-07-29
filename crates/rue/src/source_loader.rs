@@ -4,6 +4,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
 use rue_compiler::unstable::frontend_query_invalidations;
@@ -269,10 +270,135 @@ fn same_file_observation(left: &fs::Metadata, right: &fs::Metadata) -> bool {
         && left.is_file() == right.is_file()
 }
 
+// Cover the coarsest timestamp granularity still common on supported hosts
+// (notably FAT's two-second modification times). Hashing is conservative; a
+// shorter window can make two same-instant rewrites indistinguishable.
+const FILESYSTEM_TIMESTAMP_WINDOW: Duration = Duration::from_secs(2);
+
+fn metadata_requires_content_hash(
+    previous_identity: PhysicalFileIdentity,
+    previous_fingerprint: FileMetadataFingerprint,
+    current: &fs::Metadata,
+    now: SystemTime,
+) -> bool {
+    if physical_file_identity(current) != previous_identity
+        || file_metadata_fingerprint(current) != previous_fingerprint
+    {
+        return true;
+    }
+
+    let Some(safe_before) = now.checked_sub(FILESYSTEM_TIMESTAMP_WINDOW) else {
+        return true;
+    };
+    match current.modified() {
+        Ok(modified) => modified >= safe_before,
+        Err(_) => true,
+    }
+}
+
+fn cached_source_for_module(
+    snapshot: &SourceSnapshot,
+    module: &rue_compiler::ModuleId,
+) -> Option<Arc<String>> {
+    snapshot.files().find_map(|source| {
+        (snapshot.module_id(source.file_id) == Some(module))
+            .then(|| snapshot.shared_source_text(source.file_id))
+            .flatten()
+    })
+}
+
+fn accepted_source_from_read(
+    entry: &rue_compiler::AcceptedReadManifestEntry,
+    read: StableRead,
+    cached_source: Arc<String>,
+) -> Result<AcceptedImportSource, SourceLoadError> {
+    let observed = AcceptedImportSource::new(
+        Arc::from(entry.requested_path()),
+        Arc::from(entry.canonical_path()),
+        read.identity,
+        read.fingerprint,
+        Arc::new(read.source),
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    let source = if observed.content_fingerprint() == entry.content_fingerprint() {
+        cached_source
+    } else {
+        observed.source().clone()
+    };
+    AcceptedImportSource::new(
+        Arc::from(entry.requested_path()),
+        Arc::from(entry.canonical_path()),
+        read.identity,
+        read.fingerprint,
+        source,
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))
+}
+
+fn reobserve_accepted_reads(
+    snapshot: &SourceSnapshot,
+    manifest: &AcceptedReadManifest,
+    source_manifest: Option<&SourceManifest>,
+) -> Result<HashMap<String, AcceptedImportSource>, SourceLoadError> {
+    let now = SystemTime::now();
+    let mut observed = HashMap::with_capacity(manifest.len());
+    for entry in manifest.iter() {
+        let cached_source =
+            cached_source_for_module(snapshot, entry.module()).ok_or_else(|| {
+                SourceLoadError::Message(format!(
+                    "Error: accepted read for {} has no cached source",
+                    entry.module()
+                ))
+            })?;
+        let path = Path::new(entry.canonical_path());
+        if source_manifest.is_some_and(|policy| {
+            !policy.declares_path_without_probe(Path::new(entry.requested_path()))
+                || !policy.allows_canonical(path)
+        }) {
+            continue;
+        }
+        let metadata = match fs::metadata(path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        let accepted = if metadata_requires_content_hash(
+            entry.metadata_identity(),
+            entry.metadata_fingerprint(),
+            &metadata,
+            now,
+        ) {
+            let read = match stable_read_to_string(path) {
+                Ok(read) => read,
+                Err(_) => continue,
+            };
+            accepted_source_from_read(entry, read, cached_source)?
+        } else {
+            AcceptedImportSource::new(
+                Arc::from(entry.requested_path()),
+                Arc::from(entry.canonical_path()),
+                entry.metadata_identity(),
+                entry.metadata_fingerprint(),
+                cached_source,
+            )
+            .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?
+        };
+        observed.insert(entry.requested_path().to_owned(), accepted);
+    }
+    Ok(observed)
+}
+
 fn execute_import_request(
     request: ImportDiscoveryRequest,
     source_manifest: Option<&SourceManifest>,
+    reobserved_reads: Option<&HashMap<String, AcceptedImportSource>>,
 ) -> ImportObservation {
+    if let Some(source) = reobserved_reads
+        .and_then(|reads| reads.get(request.requested_path()))
+        .cloned()
+    {
+        return ImportObservation::accepted(request, source)
+            .expect("re-observed source matches its compiler request");
+    }
     let candidate = Path::new(request.requested_path());
     if source_manifest.is_some_and(|manifest| !manifest.declares_path_without_probe(candidate)) {
         return ImportObservation::failure(request, ImportObservationStatus::DeniedLexical)
@@ -630,23 +756,16 @@ fn drive_import_discovery_to_close(
     staging: &mut CompilerSession,
     context: &ImportDiscoveryContext,
     source_manifest: Option<&SourceManifest>,
+    reobserved_reads: Option<&HashMap<String, AcceptedImportSource>>,
     continuation: Option<ImportInputRevision>,
     reclose: Option<ReClose<'_>>,
 ) -> Result<ClosedDiscovery, SourceLoadError> {
-    // Exactly one import-input request is opened per invocation, here, before
-    // the frontier loop below. Rounds inside that loop publish overlay
+    // Exactly one import-input request is opened per external request, here,
+    // before the frontier loop below. Rounds inside that loop publish overlay
     // successors which inherit this request's compatibility token, so the whole
-    // discovery of one program observes one filesystem regime.
-    //
-    // That single-request shape is load-bearing for soundness, not just tidy.
-    // Since RUE-1137 a successor request under an unchanged regime reuses its
-    // predecessor's retained terminals, which asserts that inputs it did not
-    // re-observe are unchanged. Nothing verifies that assertion yet — the Tier B
-    // re-observation sweep required by ADR-0063 §2.1 is unimplemented.
-    //
-    // So: do not add a second request per process, and do not make this driver
-    // long-lived or filesystem-watching, until RUE-1148 lands. A `--watch` mode
-    // or LSP host belongs behind that issue, not in front of it.
+    // discovery of one program observes one filesystem regime. A long-lived
+    // filesystem host must populate `reobserved_reads` from the previous rooted
+    // closure before entering this function.
     let mut input_revision = match continuation {
         Some(revision) => revision,
         None => {
@@ -740,7 +859,7 @@ fn drive_import_discovery_to_close(
             .requests()
             .iter()
             .cloned()
-            .map(|request| execute_import_request(request, source_manifest))
+            .map(|request| execute_import_request(request, source_manifest, reobserved_reads))
             .collect::<Vec<_>>();
         // In a trusted-toolchain re-close every frontier request resolves an
         // `@import` edge owned by an appended leaf or a leaf newly discovered from
@@ -906,6 +1025,7 @@ pub(crate) fn discover_and_load_imports(
         source_manifest.as_ref(),
         None,
         None,
+        None,
     )?;
 
     Ok(ImportDiscoveryResult {
@@ -921,6 +1041,99 @@ pub(crate) fn discover_and_load_imports(
         source_manifest,
         witness: close.witness,
     })
+}
+
+// The command-line driver is intentionally one-shot today. Keep this host
+// entrypoint compiled in non-test builds so a long-lived caller can begin its
+// next request without reimplementing the filesystem soundness boundary.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn reload_from_filesystem(
+    result: &mut ImportDiscoveryResult,
+) -> Result<(), SourceLoadError> {
+    let source_manifest = result
+        .source_manifest
+        .as_ref()
+        .map(|manifest| SourceManifest::load(manifest.path.to_string_lossy().as_ref()))
+        .transpose()
+        .map_err(SourceLoadError::Message)?;
+    validate_manifest_allows_source(
+        source_manifest.as_ref(),
+        result.resolution.root_path.to_string_lossy().as_ref(),
+        "root",
+    )
+    .map_err(SourceLoadError::Message)?;
+    let policy_revision = source_manifest
+        .as_ref()
+        .map(SourceManifest::policy_revision)
+        .unwrap_or_else(|| "unrestricted".into());
+    let context = ImportDiscoveryContext::new(
+        result.resolution.context.epoch(),
+        result.resolution.context.project_root(),
+        result.resolution.context.std_root(),
+        policy_revision,
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    let reobserved = reobserve_accepted_reads(
+        &result.source_snapshot,
+        &result.read_manifest,
+        source_manifest.as_ref(),
+    )?;
+    let root_module = result.source_snapshot.source_revision().root();
+    let root_entry = result
+        .read_manifest
+        .iter()
+        .find(|entry| entry.module() == root_module)
+        .expect("a closed read manifest contains its root");
+    let root = reobserved.get(root_entry.requested_path()).ok_or_else(|| {
+        SourceLoadError::Message(format!(
+            "Error reading {}: source is no longer readable",
+            root_entry.requested_path()
+        ))
+    })?;
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        root.requested_path(),
+        root.canonical_path(),
+        root.metadata_identity(),
+        root.metadata_fingerprint(),
+        root.source().clone(),
+    )
+    .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+    for source in reobserved.values() {
+        if source.requested_path() != root.requested_path() {
+            assembler
+                .add_explicit(
+                    source.requested_path(),
+                    source.canonical_path(),
+                    source.metadata_identity(),
+                    source.metadata_fingerprint(),
+                    source.source().clone(),
+                )
+                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
+        }
+    }
+
+    let close = drive_import_discovery_to_close(
+        &mut assembler,
+        &mut result.session,
+        &context,
+        source_manifest.as_ref(),
+        Some(&reobserved),
+        None,
+        None,
+    )?;
+    result.source_snapshot = close.snapshot;
+    result.read_manifest = assembler.accepted_read_manifest();
+    result.revision = close.closed;
+    result.assembler = assembler;
+    result.witness = close.witness;
+    result.resolution.context = context;
+    result.source_manifest = source_manifest;
+    #[cfg(test)]
+    {
+        result.input_revision = close.input_revision;
+    }
+    Ok(())
 }
 
 /// Bounded rounds for reached-body trusted-toolchain acquisition. Each satisfied
@@ -1021,6 +1234,7 @@ pub(crate) fn acquire_reached_toolchain_modules(
                     &mut result.session,
                     &result.resolution.context,
                     result.source_manifest.as_ref(),
+                    None,
                     Some(delta.revision()),
                     Some(ReClose { delta: &delta }),
                 )
@@ -1638,6 +1852,118 @@ mod tests {
         let result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
         assert_eq!(result.input_revision.frontier_round(), 3);
         assert_eq!(result.read_manifest.len(), 4);
+    }
+
+    fn module_source_id(
+        result: &ImportDiscoveryResult,
+        logical_path: &str,
+    ) -> rue_compiler::SourceId {
+        result
+            .source_snapshot
+            .source_revision()
+            .modules()
+            .iter()
+            .find(|module| module.module.as_str() == logical_path)
+            .expect("test module is present")
+            .source
+            .clone()
+    }
+
+    #[test]
+    fn tier_b_sweep_reuses_an_identical_out_of_band_rewrite() {
+        let dir = TestDir::new("tier-b-identical");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf_source = "pub fn value() -> i32 { 1 }";
+        let leaf = dir.write("leaf.rue", leaf_source);
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let source_id = module_source_id(&result, "leaf.rue");
+        let SemanticParkOutcome::Ready(semantic_before) =
+            semantic_or_toolchain_park(&mut result.session, &CompileOptions::default())
+        else {
+            panic!("the valid fixture must complete semantic analysis");
+        };
+
+        fs::write(&leaf, leaf_source).unwrap();
+        reload_from_filesystem(&mut result).unwrap();
+        let SemanticParkOutcome::Ready(semantic_after) =
+            semantic_or_toolchain_park(&mut result.session, &CompileOptions::default())
+        else {
+            panic!("the identical rewrite must complete semantic analysis");
+        };
+
+        assert_eq!(module_source_id(&result, "leaf.rue"), source_id);
+        assert!(
+            semantic_before.shares_owner(&semantic_after),
+            "an identical rewrite must retain the exact semantic terminal"
+        );
+    }
+
+    #[test]
+    fn tier_b_sweep_detects_a_changed_out_of_band_rewrite() {
+        let dir = TestDir::new("tier-b-changed");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        let leaf = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let mut result = discover_and_load_imports(main.to_str().unwrap(), None, None).unwrap();
+        let source_id = module_source_id(&result, "leaf.rue");
+
+        // Same-length bytes make size useless, and this write happens inside the
+        // timestamp window in which an unchanged mtime cannot establish order.
+        fs::write(&leaf, "pub fn value() -> i32 { 2 }").unwrap();
+        reload_from_filesystem(&mut result).unwrap();
+
+        assert_ne!(module_source_id(&result, "leaf.rue"), source_id);
+        assert!(
+            result
+                .source_snapshot
+                .files()
+                .any(|source| source.source.contains("value() -> i32 { 2 }"))
+        );
+    }
+
+    #[test]
+    fn too_recent_mtime_forces_hashing_even_when_metadata_matches() {
+        let dir = TestDir::new("tier-b-recent-mtime");
+        let path = dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let metadata = fs::metadata(path).unwrap();
+        let modified = metadata.modified().unwrap();
+
+        assert!(metadata_requires_content_hash(
+            physical_file_identity(&metadata),
+            file_metadata_fingerprint(&metadata),
+            &metadata,
+            modified,
+        ));
+    }
+
+    #[test]
+    fn tier_b_reload_reloads_read_policy_and_fails_closed() {
+        let dir = TestDir::new("tier-b-policy");
+        let main = dir.write(
+            "main.rue",
+            r#"const leaf = @import("leaf.rue"); fn main() -> i32 { leaf.value() }"#,
+        );
+        dir.write("leaf.rue", "pub fn value() -> i32 { 1 }");
+        let manifest_path = dir.write("sources.manifest", "main.rue\nleaf.rue\n");
+        let manifest = SourceManifest::load(manifest_path.to_str().unwrap()).unwrap();
+        let mut result =
+            discover_and_load_imports(main.to_str().unwrap(), Some(manifest), None).unwrap();
+
+        fs::write(&manifest_path, "main.rue\n").unwrap();
+        match reload_from_filesystem(&mut result) {
+            Err(SourceLoadError::Compiler { errors, .. }) => {
+                let rendered = errors.to_string();
+                assert!(rendered.contains("source manifest"), "{rendered}");
+                assert!(rendered.contains("leaf.rue"), "{rendered}");
+            }
+            Err(other) => panic!("policy change escaped typed diagnostics: {other:?}"),
+            Ok(()) => panic!("policy change reused a now-denied read"),
+        }
     }
 
     #[test]

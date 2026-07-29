@@ -257,11 +257,12 @@ change makes prior terminals ineligible for validation but forces no eviction;
 they age out under existing bounded retention, so a watcher restart does not
 produce a retention cliff.
 
-**Implementation status.** The compatibility token and absent-leaf invalidation
-are implemented. **The Tier B sweep is not.** Nothing currently retains
-terminals across a filesystem re-read the compiler did not itself perform, so no
-present host is affected; a long-lived filesystem-reading host must not ship
-before the sweep exists.
+**Implementation status.** The compatibility token, absent-leaf invalidation,
+and the default Tier B sweep are implemented. The CLI source loader re-observes
+the previous rooted closure before starting a successor filesystem request,
+reuses cached bytes only after a trustworthy metadata match, and hashes
+metadata mismatches or too-recent mtimes. Tier A watcher proofs remain a later
+latency optimization.
 
 ### 3. Query identity, computation, and publication
 
