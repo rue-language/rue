@@ -1779,8 +1779,6 @@ mod tests {
         assert_eq!(work.semantic.cfg.cfg_builds_failed, 0);
         let session_work = &frontend.session_work;
         assert_eq!(session_work.updates(), 1);
-        assert_eq!(session_work.merge().executions, 1);
-        assert_eq!(session_work.rir().executions, 1);
         assert_eq!(session_work.semantic().executions, 1);
 
         let mut presentation_session = CompilerSession::new();

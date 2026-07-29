@@ -421,6 +421,7 @@ impl ResolvedProgramRevision {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn imports(&self) -> &CanonicalImportGraph {
         &self.imports
     }
@@ -439,11 +440,13 @@ impl ResolvedCodegenRevision {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn program(&self) -> &ResolvedProgramRevision {
         &self.program
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn opt_level(&self) -> StableOptLevel {
         self.opt_level
     }

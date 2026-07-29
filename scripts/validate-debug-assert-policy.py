@@ -48,15 +48,13 @@ ALLOWANCES = {
     "crates/rue-compiler/src/definition_snapshot.rs": Allowance(1, "redundant definition arena identity check"),
     "crates/rue-compiler/src/diagnostic_attempt_store.rs": Allowance(2, "redundant diagnostic retention accounting"),
     "crates/rue-compiler/src/parsed_modules.rs": Allowance(1, "redundant source ownership check"),
-    "crates/rue-compiler/src/query_graph.rs": Allowance(3, "redundant query-node lifecycle checks"),
     "crates/rue-compiler/src/revisioned_query_database.rs": Allowance(
         2, "redundant memo-retention and canonical-root accounting"
     ),
     "crates/rue-compiler/src/semantic_query_nucleus.rs": Allowance(1, "redundant semantic query category check"),
-    "crates/rue-compiler/src/session.rs": Allowance(7, "redundant canonical-session phase and provenance checks"),
+    "crates/rue-compiler/src/session.rs": Allowance(6, "redundant canonical-session phase and provenance checks"),
     "crates/rue-compiler/src/source_identity.rs": Allowance(4, "redundant normalized-path representation checks"),
     "crates/rue-compiler/src/source_snapshot.rs": Allowance(1, "redundant source arena identity check"),
-    "crates/rue-compiler/src/typed_query_store.rs": Allowance(1, "redundant typed-query key check"),
     "crates/rue-error/src/lib.rs": Allowance(1, "redundant diagnostic rendering bounds check"),
     "crates/rue-oracle/src/lib.rs": Allowance(2, "oracle harness bookkeeping checks, not compiler correctness gates"),
     "crates/rue-parser/src/parser/shared.rs": Allowance(2, "redundant parser entry preconditions"),

@@ -218,11 +218,9 @@ impl BoundDefinitionRecord {
     pub fn declaration_span(&self) -> Span {
         self.declaration_span
     }
+    #[cfg(test)]
     pub fn visibility(&self) -> Option<Visibility> {
         self.visibility
-    }
-    pub(crate) fn input_partition(&self) -> BoundDefinitionInputPartition {
-        self.input_partition.clone()
     }
     pub(crate) fn body_span(&self) -> Option<Span> {
         match self.input_partition {
@@ -250,6 +248,7 @@ pub struct BoundDefinitionSet {
     source_revision: SourceRevision,
     issuer: Arc<DefinitionIssuer>,
     definitions: Arc<[BoundDefinitionRecord]>,
+    #[allow(dead_code)]
     manifest_work: SemanticBindingManifestWork,
     work: BoundDefinitionWork,
 }
@@ -321,6 +320,7 @@ impl BoundDefinitionSet {
         projected
     }
 
+    #[allow(dead_code)]
     pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
         self.source_revision == other.source_revision
             && self.manifest_work == other.manifest_work
@@ -345,6 +345,7 @@ impl BoundDefinitionSet {
         &self.definitions
     }
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn manifest_work(&self) -> SemanticBindingManifestWork {
         self.manifest_work
     }
@@ -488,6 +489,7 @@ impl BoundDefinitionSet {
             .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
     }
 
+    #[cfg(test)]
     pub(crate) fn key_for_body_token(
         &self,
         token: rue_air::BodyOwnerToken,
@@ -496,6 +498,7 @@ impl BoundDefinitionSet {
             .map(BoundDefinitionRecord::stable_key)
     }
 
+    #[cfg(test)]
     pub(crate) fn definition_for_body_token(
         &self,
         token: rue_air::BodyOwnerToken,

@@ -1245,10 +1245,10 @@ mod tests {
             "missing compile -> compile_pipeline in batch edges: {compile_edges:?}"
         );
         for edge in [
-            ("compile_pipeline", "declaration_shells"),
+            ("semantic_astgen", "declaration_shells"),
             ("declaration_shells", "declaration_shell_prepare"),
             ("declaration_shell_prepare", "rir_declaration_index"),
-            ("compile_pipeline", "sema"),
+            ("semantic_astgen", "sema"),
             // Query-native codegen units publish their backend subphases
             // directly beneath the pipeline aggregate. They must not escape
             // to query-root timing spans or revive a peer codegen coordinator.

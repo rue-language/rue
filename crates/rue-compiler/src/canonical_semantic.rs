@@ -1,14 +1,9 @@
 //! One-pass canonical declaration binding, body analysis, and CFG lowering.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use rue_air::{
-    AnalyzedBodyOwnerEvent, BodyAnalysisWork, BodyNamedDependencyEvent, DeclarationBindingWork,
-    DeclarationBuiltinTypeCallHeadDependencyEvent, DeclarationTypeCallHeadDependencyEvent,
-    DeclarationTypeDependencyEvent, NamedConstDependencyEvent, NamedDestructorDependencyEvent,
-    NamedMethodDependencyEvent, OrdinaryFreeFunctionDependencyEvent, RirDeclarationIndexWork,
-    SemanticBindingManifestWork, SpecializedFreeFunctionDependencyEvent,
-    SpecializedFreeFunctionOrigin,
+    BodyAnalysisWork, DeclarationBindingWork, RirDeclarationIndexWork, SemanticBindingManifestWork,
 };
 use tracing::info_span;
 
@@ -68,6 +63,7 @@ thread_local! {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn with_test_cfg_failure_injection<T>(run: impl FnOnce() -> T) -> T {
     struct Reset;
     impl Drop for Reset {
@@ -111,6 +107,7 @@ pub(crate) fn take_test_cfg_import_failure() -> bool {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn with_test_declaration_failure_injection<T>(run: impl FnOnce() -> T) -> T {
     struct Reset;
     impl Drop for Reset {
@@ -130,6 +127,7 @@ pub(crate) fn with_test_declaration_failure_injection<T>(run: impl FnOnce() -> T
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub(crate) fn with_test_authoritative_key_mismatch<T>(run: impl FnOnce() -> T) -> T {
     struct Reset;
     impl Drop for Reset {
@@ -462,8 +460,6 @@ impl CanonicalSemanticWork {
             query.ordinary_body_exports_succeeded + query.specialized_body_exports_succeeded;
         durable.export_rejections +=
             query.ordinary_body_exports_rejected + query.specialized_body_exports_rejected;
-        durable.conversion_attempts += query.bodies_succeeded;
-        durable.conversion_completions += query.bodies_succeeded;
         durable.instructions_exported += query.ordinary_body_export_instructions_emitted
             + query.specialized_body_export_instructions_emitted;
         durable.places_exported += query.ordinary_body_export_places_emitted
@@ -574,6 +570,10 @@ fn declaration_stage_work(
 #[derive(Debug)]
 pub struct CanonicalSemanticOutput {
     input: CodegenInputDescriptor,
+    /// The exact RIR terminal whose symbol universe indexes this semantic
+    /// output. This is part of the canonical semantic artifact rather than a
+    /// session-selected side cache.
+    rir: Arc<crate::CanonicalRirOutput>,
     functions: Vec<FunctionWithCfg>,
     type_pool: FrozenTypeInternPool,
     strings: Vec<String>,
@@ -584,33 +584,7 @@ pub struct CanonicalSemanticOutput {
     /// issuer identity crosses this retention boundary.
     anonymous_nominal_associations: Arc<[crate::AnonymousNominalKey]>,
     body_owner_issuer: BoundDefinitionSet,
-    durable_ordinary_body_payloads: Arc<[crate::DurableOrdinaryBodyPayload]>,
-    durable_specialized_body_payloads: Arc<[crate::DurableSpecializedBodyPayload]>,
     work: CanonicalSemanticWork,
-    analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
-    body_named_dependencies: Vec<BodyNamedDependencyEvent>,
-    ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
-    ordinary_free_function_dependencies_complete: bool,
-    specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
-    specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
-    specialized_free_function_dependencies_complete: bool,
-    named_method_dependencies: Vec<NamedMethodDependencyEvent>,
-    non_generic_named_method_dependencies_complete: bool,
-    generic_named_method_dependencies_complete: bool,
-    named_destructor_dependencies: Vec<NamedDestructorDependencyEvent>,
-    named_destructor_dependencies_complete: bool,
-    declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
-    declaration_type_dependencies_complete: bool,
-    declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
-    declaration_type_call_head_dependencies_complete: bool,
-    declaration_builtin_type_call_head_dependencies:
-        Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
-    supported_type_call_heads_complete: bool,
-    named_const_dependencies: Vec<NamedConstDependencyEvent>,
-    named_value_const_dependencies_complete: bool,
-    implicit_named_destructor_dependencies: Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
-    implicit_named_destructor_dependencies_complete: bool,
-    body_references: BTreeMap<crate::FunctionInstanceKey, crate::body_query::BodyReferences>,
 }
 
 impl CanonicalSemanticOutput {
@@ -656,89 +630,10 @@ impl CanonicalSemanticOutput {
         );
         record!("strings", &self.strings);
         record!("warnings", &self.warnings);
-        record!("analyzed_body_owners", &self.analyzed_body_owners);
-        record!("body_named_dependencies", &self.body_named_dependencies);
-        record!(
-            "ordinary_free_function_dependencies",
-            &self.ordinary_free_function_dependencies
-        );
-        record!(
-            "specialized_free_function_origins",
-            &self.specialized_free_function_origins
-        );
-        record!(
-            "specialized_free_function_dependencies",
-            &self.specialized_free_function_dependencies
-        );
-        record!(
-            "ordinary_free_function_dependencies_complete",
-            self.ordinary_free_function_dependencies_complete
-        );
-        record!(
-            "specialized_free_function_dependencies_complete",
-            self.specialized_free_function_dependencies_complete
-        );
-        record!("named_method_dependencies", &self.named_method_dependencies);
-        record!(
-            "non_generic_named_method_dependencies_complete",
-            self.non_generic_named_method_dependencies_complete
-        );
-        record!(
-            "generic_named_method_dependencies_complete",
-            self.generic_named_method_dependencies_complete
-        );
-        record!(
-            "named_destructor_dependencies",
-            &self.named_destructor_dependencies
-        );
-        record!(
-            "named_destructor_dependencies_complete",
-            self.named_destructor_dependencies_complete
-        );
-        record!(
-            "declaration_type_dependencies",
-            &self.declaration_type_dependencies
-        );
-        record!(
-            "declaration_type_dependencies_complete",
-            self.declaration_type_dependencies_complete
-        );
-        record!(
-            "declaration_type_call_head_dependencies",
-            &self.declaration_type_call_head_dependencies
-        );
-        record!(
-            "declaration_type_call_head_dependencies_complete",
-            self.declaration_type_call_head_dependencies_complete
-        );
-        record!(
-            "declaration_builtin_type_call_head_dependencies",
-            &self.declaration_builtin_type_call_head_dependencies
-        );
-        record!(
-            "supported_type_call_heads_complete",
-            self.supported_type_call_heads_complete
-        );
-        record!("named_const_dependencies", &self.named_const_dependencies);
-        record!(
-            "named_value_const_dependencies_complete",
-            self.named_value_const_dependencies_complete
-        );
-        record!(
-            "implicit_named_destructor_dependencies",
-            &self.implicit_named_destructor_dependencies
-        );
-        record!(
-            "implicit_named_destructor_dependencies_complete",
-            self.implicit_named_destructor_dependencies_complete
-        );
-        record!(
-            "durable_artifact_status",
-            self.unstable_durable_artifact_status()
-        );
         crate::unstable::SemanticParitySnapshot::new(details)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -750,9 +645,30 @@ impl CanonicalSemanticOutput {
         (self.functions, self.type_pool, self.strings, self.warnings)
     }
 
+    pub(crate) fn into_parts_with_rir(
+        self,
+    ) -> (
+        Arc<crate::CanonicalRirOutput>,
+        Vec<FunctionWithCfg>,
+        FrozenTypeInternPool,
+        Vec<String>,
+        Vec<CompileWarning>,
+    ) {
+        (
+            self.rir,
+            self.functions,
+            self.type_pool,
+            self.strings,
+            self.warnings,
+        )
+    }
+
     /// Exact semantic and optimization identity of this output.
     pub(crate) fn input(&self) -> &CodegenInputDescriptor {
         &self.input
+    }
+    pub(crate) fn rir_owner(&self) -> &Arc<crate::CanonicalRirOutput> {
+        &self.rir
     }
     /// Debug-only identity projection for differential and benchmark tooling.
     pub(crate) fn unstable_input_debug(&self) -> String {
@@ -778,79 +694,8 @@ impl CanonicalSemanticOutput {
     pub(crate) fn accrue_body_query_work(&mut self, query: BodyAnalysisWork) {
         self.work.accrue_body_query_work(query);
     }
-    pub(crate) fn install_body_references(
-        &mut self,
-        references: BTreeMap<crate::FunctionInstanceKey, crate::body_query::BodyReferences>,
-    ) {
-        self.body_references = references;
-    }
-    pub(crate) fn body_references(
-        &self,
-        function: &crate::FunctionInstanceKey,
-    ) -> Option<&crate::body_query::BodyReferences> {
-        self.body_references.get(function)
-    }
-    pub fn analyzed_body_owners(&self) -> &[AnalyzedBodyOwnerEvent] {
-        &self.analyzed_body_owners
-    }
-    pub fn body_named_dependencies(&self) -> &[BodyNamedDependencyEvent] {
-        &self.body_named_dependencies
-    }
-    pub fn declaration_type_dependencies(&self) -> &[DeclarationTypeDependencyEvent] {
-        &self.declaration_type_dependencies
-    }
-    pub fn declaration_type_dependencies_complete(&self) -> bool {
-        self.declaration_type_dependencies_complete
-    }
-    pub fn declaration_type_call_head_dependencies(
-        &self,
-    ) -> &[DeclarationTypeCallHeadDependencyEvent] {
-        &self.declaration_type_call_head_dependencies
-    }
-    pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
-        self.declaration_type_call_head_dependencies_complete
-    }
-    pub fn declaration_builtin_type_call_head_dependencies(
-        &self,
-    ) -> &[DeclarationBuiltinTypeCallHeadDependencyEvent] {
-        &self.declaration_builtin_type_call_head_dependencies
-    }
-    pub fn supported_type_call_heads_complete(&self) -> bool {
-        self.supported_type_call_heads_complete
-    }
-    pub fn named_const_dependencies(&self) -> &[NamedConstDependencyEvent] {
-        &self.named_const_dependencies
-    }
-    pub fn named_value_const_dependencies_complete(&self) -> bool {
-        self.named_value_const_dependencies_complete
-    }
-    pub fn implicit_named_destructor_dependencies(
-        &self,
-    ) -> &[rue_air::ImplicitNamedDestructorDependencyEvent] {
-        &self.implicit_named_destructor_dependencies
-    }
-    pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
-        self.implicit_named_destructor_dependencies_complete
-    }
     pub(crate) fn body_owner_issuer(&self) -> &BoundDefinitionSet {
         &self.body_owner_issuer
-    }
-    pub(crate) fn durable_ordinary_body_payloads(&self) -> &[crate::DurableOrdinaryBodyPayload] {
-        &self.durable_ordinary_body_payloads
-    }
-
-    #[cfg(test)]
-    pub(crate) fn durable_specialized_body_payloads(
-        &self,
-    ) -> &[crate::DurableSpecializedBodyPayload] {
-        &self.durable_specialized_body_payloads
-    }
-
-    /// Explicitly unstable equality status for durable-cache instrumentation.
-    pub(crate) fn unstable_durable_artifact_status(
-        &self,
-    ) -> crate::unstable::DurableArtifactStatus {
-        crate::unstable::DurableArtifactStatus::from_debug(&self.durable_specialized_body_payloads)
     }
     /// Structural work performed by the request that computed this output.
     /// An exact-cycle caller may receive a memoized output without executing a
@@ -871,7 +716,7 @@ impl CanonicalSemanticOutput {
 /// must never revive the removed ordinary declaration resolver.
 pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
+    rir: Arc<CanonicalRirOutput>,
     options: &CompileOptions,
     _imports: &CanonicalImportGraph,
     prepared: CanonicalPreparedDeclarations<'_>,
@@ -1487,7 +1332,7 @@ struct CanonicalBodyCompositionFailure {
 fn finish_canonical_analysis(
     input: CodegenInputDescriptor,
     merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
+    rir: Arc<CanonicalRirOutput>,
     options: &CompileOptions,
     declaration_index: RirDeclarationIndexWork,
     bound: rue_air::BoundSema<'_>,
@@ -1541,7 +1386,7 @@ fn finish_canonical_analysis(
 fn finish_canonical_analysis_with(
     input: CodegenInputDescriptor,
     merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
+    rir: Arc<CanonicalRirOutput>,
     options: &CompileOptions,
     declaration_index: RirDeclarationIndexWork,
     bound: rue_air::BoundSema<'_>,
@@ -1800,32 +1645,15 @@ fn finish_canonical_analysis_with(
     durable_body_reuse_work.reused_bodies += body_analysis.ordinary_bodies_reused;
     durable_body_reuse_work.skipped_body_analyses += body_analysis.ordinary_body_analyses_skipped;
     fold_body_import_work(&mut durable_body_reuse_work, body_analysis);
-    let mut durable_body_work = crate::DurableBodyWork {
+    let durable_body_work = crate::DurableBodyWork {
         export_attempts: body_analysis.ordinary_body_exports_attempted,
         export_successes: body_analysis.ordinary_body_exports_succeeded,
         export_rejections: body_analysis.ordinary_body_exports_rejected,
-        last_export_failure: body_analysis
-            .last_ordinary_body_export_failure
-            .or(body_analysis.last_specialized_body_export_failure),
         instructions_exported: body_analysis.ordinary_body_export_instructions_emitted,
         places_exported: body_analysis.ordinary_body_export_places_emitted,
         strings_exported: body_analysis.ordinary_body_export_strings_emitted,
         ..durable_body_reuse_work
     };
-    let durable_ordinary_body_payloads = crate::convert_semantic_body_exports(
-        &sema_output.ordinary_body_exports,
-        merged,
-        &authoritative_definitions,
-        &mut durable_body_work,
-    )
-    .unwrap_or_else(|_| Arc::from([]));
-    let durable_specialized_body_payloads = crate::convert_semantic_specialized_body_exports(
-        &sema_output.specialized_body_exports,
-        merged,
-        &authoritative_definitions,
-        &mut durable_body_work,
-    )
-    .unwrap_or_else(|_| Arc::from([]));
     let anonymous_nominal_associations = sema_output
         .anonymous_nominal_identities_by_type
         .values()
@@ -1861,37 +1689,6 @@ fn finish_canonical_analysis_with(
     anonymous_nominal_associations.sort();
     let anonymous_nominal_associations: Arc<[crate::AnonymousNominalKey]> =
         anonymous_nominal_associations.into();
-    let analyzed_body_owners = sema_output.analyzed_body_owners.clone();
-    let body_named_dependencies = sema_output.body_named_dependencies.clone();
-    let ordinary_free_function_dependencies =
-        sema_output.ordinary_free_function_dependencies.clone();
-    let ordinary_free_function_dependencies_complete =
-        sema_output.ordinary_free_function_dependencies_complete;
-    let specialized_free_function_origins = sema_output.specialized_free_function_origins.clone();
-    let specialized_free_function_dependencies =
-        sema_output.specialized_free_function_dependencies.clone();
-    let specialized_free_function_dependencies_complete =
-        sema_output.specialized_free_function_dependencies_complete;
-    let named_method_dependencies = sema_output.named_method_dependencies.clone();
-    let non_generic_named_method_dependencies_complete =
-        sema_output.non_generic_named_method_dependencies_complete;
-    let generic_named_method_dependencies_complete =
-        sema_output.generic_named_method_dependencies_complete;
-    let named_destructor_dependencies = sema_output.named_destructor_dependencies.clone();
-    let named_destructor_dependencies_complete = sema_output.named_destructor_dependencies_complete;
-    let declaration_type_dependencies = sema_output.declaration_type_dependencies.clone();
-    let declaration_type_dependencies_complete = sema_output.declaration_type_dependencies_complete;
-    let declaration_type_call_head_dependencies =
-        sema_output.declaration_type_call_head_dependencies.clone();
-    let declaration_type_call_head_dependencies_complete =
-        sema_output.declaration_type_call_head_dependencies_complete;
-    let declaration_builtin_type_call_head_dependencies = sema_output
-        .declaration_builtin_type_call_head_dependencies
-        .clone();
-    let supported_type_call_heads_complete = sema_output.supported_type_call_heads_complete;
-    let named_const_dependencies = sema_output.named_const_dependencies.clone();
-    let named_value_const_dependencies_complete =
-        sema_output.named_value_const_dependencies_complete;
     let issue_type = |stable: &crate::TypeInstanceKey| {
         stable.try_map_identities(
             &|definition| authoritative_definitions.semantic_token_for_key(definition),
@@ -2118,15 +1915,6 @@ fn finish_canonical_analysis_with(
     // runs outside both `sema` and `cfg_construction`, so it needs its own leaf
     // for the pipeline residual to stay honest (RUE-786).
     let _finalization_span = info_span!("semantic_finalization").entered();
-    let durable_specialized_body_payloads =
-        crate::durable_body::attach_specialized_implicit_drop_dependencies(
-            durable_specialized_body_payloads,
-            &cfg.implicit_named_destructor_dependencies,
-            merged,
-            &authoritative_definitions,
-            &mut durable_body_work,
-        )
-        .unwrap_or_else(|_| Arc::from([]));
     let mut warnings = cfg.warnings;
     warnings.sort_by(|left, right| {
         let key = |warning: &CompileWarning| {
@@ -2164,39 +1952,14 @@ fn finish_canonical_analysis_with(
     };
     Ok(CanonicalSemanticOutput {
         input,
+        rir,
         functions: cfg.functions,
         type_pool: cfg.type_pool,
         strings: cfg.strings,
         warnings,
         anonymous_nominal_associations,
         body_owner_issuer: authoritative_definitions,
-        durable_ordinary_body_payloads,
-        durable_specialized_body_payloads,
         work,
-        analyzed_body_owners,
-        body_named_dependencies,
-        ordinary_free_function_dependencies,
-        ordinary_free_function_dependencies_complete,
-        specialized_free_function_origins,
-        specialized_free_function_dependencies,
-        specialized_free_function_dependencies_complete,
-        named_method_dependencies,
-        non_generic_named_method_dependencies_complete,
-        generic_named_method_dependencies_complete,
-        named_destructor_dependencies,
-        named_destructor_dependencies_complete,
-        declaration_type_dependencies,
-        declaration_type_dependencies_complete,
-        declaration_type_call_head_dependencies,
-        declaration_type_call_head_dependencies_complete,
-        declaration_builtin_type_call_head_dependencies,
-        supported_type_call_heads_complete,
-        named_const_dependencies,
-        named_value_const_dependencies_complete,
-        implicit_named_destructor_dependencies: cfg.implicit_named_destructor_dependencies,
-        implicit_named_destructor_dependencies_complete: cfg
-            .implicit_named_destructor_dependencies_complete,
-        body_references: BTreeMap::new(),
     })
 }
 
@@ -2332,7 +2095,7 @@ mod tests {
             session.update(snapshot).into_result().unwrap();
         }
         let output = session.canonical_semantic(options).unwrap();
-        let rir = session.selected_semantic_rir_owner().unwrap();
+        let rir = output.rir_owner().clone();
         (output, rir)
     }
 
@@ -2591,155 +2354,6 @@ mod tests {
         assert_eq!(many.body_analysis.reachable_declaration_rir_visits, 0);
         assert!(many.binding.input_rir_instructions > one.binding.input_rir_instructions);
         assert!(many.binding.indexed_free_functions > one.binding.indexed_free_functions);
-    }
-
-    fn named_method_capture_with_irrelevant_declarations(
-        count: usize,
-    ) -> (Arc<CanonicalSemanticOutput>, Arc<CanonicalRirOutput>) {
-        let mut source = String::from(
-            "fn helper() -> i32 { 1 } struct Value { fn run(borrow self) -> i32 { helper() } } fn main() -> i32 { let value = Value {}; value.run() }",
-        );
-        for index in 0..count {
-            source.push_str(&format!(" fn irrelevant{index}() -> i32 {{ {index} }}"));
-        }
-        let snapshot = snapshot(&[(1, "/main.rue", "main.rue", &source)], 1);
-        canonical(&snapshot, &CompileOptions::default())
-    }
-
-    #[test]
-    fn named_method_capture_is_unchanged_by_irrelevant_declarations() {
-        let (one, one_rir) = named_method_capture_with_irrelevant_declarations(1);
-        let (many, many_rir) = named_method_capture_with_irrelevant_declarations(128);
-        assert_eq!(
-            function_fingerprint(one.functions(), one_rir.semantic_symbols().interner()),
-            function_fingerprint(many.functions(), many_rir.semantic_symbols().interner())
-        );
-
-        for output in [&one, &many] {
-            let method = output
-                .functions()
-                .iter()
-                .find(|function| {
-                    matches!(
-                        &function.semantic_identity,
-                        crate::FunctionInstanceKey::Definition(definition)
-                            if definition.kind() == crate::StableDefinitionKind::Method
-                                && definition.name() == "run"
-                                && definition.owner().is_some_and(|owner| owner.name() == "Value")
-                    )
-                })
-                .expect("reachable named method must be a production body");
-            let references = output
-                .body_references(&method.semantic_identity)
-                .expect("production body must retain its exact references");
-            assert!(references.0.iter().any(|reference| matches!(
-                reference,
-                crate::body_query::BodyReference::Callable(
-                    crate::FunctionInstanceKey::Definition(definition)
-                ) if definition.name() == "helper"
-            )));
-        }
-    }
-
-    #[test]
-    fn comptime_named_methods_are_single_runtime_bodies_not_specializations() {
-        let source = snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "fn helper() -> i32 { 1 } struct Value { fn choose(borrow self, comptime n: i32) -> i32 { helper() + n } } fn main() -> i32 { let value = Value {}; value.choose(1) + value.choose(2) }",
-            )],
-            1,
-        );
-        let (output, _) = canonical(&source, &CompileOptions::default());
-        assert_eq!(
-            output
-                .functions()
-                .iter()
-                .filter(|function| matches!(
-                    &function.semantic_identity,
-                    crate::FunctionInstanceKey::Definition(definition)
-                        if definition.kind() == crate::StableDefinitionKind::Method
-                            && definition.name() == "choose"
-                            && definition.owner().is_some_and(|owner| owner.name() == "Value")
-                ))
-                .count(),
-            1,
-            "{:#?}",
-            output
-                .functions()
-                .iter()
-                .map(|function| &function.semantic_identity)
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            output.functions().iter().all(|function| !matches!(
-                &function.semantic_identity,
-                crate::FunctionInstanceKey::Specialization { base, .. }
-                    if function_base_definition(base).is_some_and(|definition| {
-                        definition.kind() == crate::StableDefinitionKind::Method
-                            && definition.name() == "choose"
-                    })
-            )),
-            "comptime named-method arguments do not create runtime bodies"
-        );
-        let method = output
-            .functions()
-            .iter()
-            .find(|function| {
-                function_base_definition(&function.semantic_identity).is_some_and(|definition| {
-                    definition.kind() == crate::StableDefinitionKind::Method
-                        && definition.name() == "choose"
-                })
-            })
-            .unwrap();
-        let method_references = output.body_references(&method.semantic_identity).unwrap();
-        assert!(
-            method_references.0.iter().any(|reference| matches!(
-                reference,
-                crate::body_query::BodyReference::Callable(identity)
-                    if function_base_definition(identity)
-                        .is_some_and(|definition| definition.name() == "helper")
-            )),
-            "the retained named-method body must close over its transitive helper"
-        );
-        assert!(
-            output.functions().iter().any(|function| {
-                matches!(
-                    &function.semantic_identity,
-                    crate::FunctionInstanceKey::Definition(definition)
-                        if definition.kind() == crate::StableDefinitionKind::Function
-                            && definition.name() == "helper"
-                )
-            }),
-            "the transitive helper must be composed into production output"
-        );
-        let main = output
-            .functions()
-            .iter()
-            .find(|function| {
-                function_base_definition(&function.semantic_identity)
-                    .is_some_and(|definition| definition.name() == "main")
-            })
-            .unwrap();
-        let references = output.body_references(&main.semantic_identity).unwrap();
-        assert_eq!(
-            references
-                .0
-                .iter()
-                .filter(|reference| matches!(
-                    reference,
-                    crate::body_query::BodyReference::Callable(identity)
-                        if function_base_definition(identity).is_some_and(|definition| {
-                            definition.kind() == crate::StableDefinitionKind::Method
-                                && definition.name() == "choose"
-                        })
-                ))
-                .count(),
-            1,
-            "both calls share the named method's one exact body reference"
-        );
     }
 
     #[test]

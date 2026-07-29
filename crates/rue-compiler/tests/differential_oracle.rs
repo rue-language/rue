@@ -13,11 +13,11 @@ use std::{collections::HashMap, fmt::Write as _, sync::Arc};
 use rue_cfg::OptLevel;
 use rue_compiler::unstable::{
     DifferentialOracleFault, DiscoverySourceAssembler, ImportDemandMode, PresentationRequest,
-    PresentationStage, begin_import_input_request, discovery_attempt,
+    PresentationStage, begin_import_input_request, close_import_input_request, discovery_attempt,
     import_demand_frontier_for_roots, import_discovery_accepted_reads_debug,
     import_discovery_graph_input_debug, import_discovery_observation_ledger_debug,
-    import_observation_ledger, inject_stale_query_for_oracle, oracle_executable,
-    publish_import_observation_batch, semantic_input_debug,
+    inject_stale_query_for_oracle, oracle_executable, publish_import_observation_batch,
+    semantic_input_debug, stage_import_input_request,
 };
 use rue_compiler::{
     AcceptedImportSource, CompileOptions, CompilerSession, FileMetadataFingerprint,
@@ -52,7 +52,6 @@ struct Observation {
     semantic_hash: String,
     executable_hash: String,
     identities: String,
-    manifest: String,
     imports: String,
 }
 
@@ -145,13 +144,7 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
     )
     .unwrap();
     loop {
-        let ledger = import_observation_ledger(session, revision).unwrap();
-        let plan = match session.stage_import_discovery(
-            &step.snapshot,
-            discovery.context.clone(),
-            discovery.accepted_reads.shared_slice(),
-            ledger.clone(),
-        ) {
+        let plan = match stage_import_input_request(session, revision) {
             Ok(plan) => plan,
             Err(errors) => return format!("stage-error:{errors:?}"),
         };
@@ -164,7 +157,7 @@ fn close_discovery(session: &mut CompilerSession, step: &Step) -> String {
         )
         .unwrap();
         if frontier.requests().is_empty() {
-            return match session.close_import_discovery(ledger) {
+            return match close_import_input_request(session, revision) {
                 Ok(artifact) => render_import_discovery(&artifact),
                 Err(errors) => format!("close-error:{errors:?}"),
             };
@@ -350,29 +343,7 @@ fn observe_with_fault(
             DifferentialOracleFault::Diagnostic
         ));
     }
-    // Capture the semantic request's selected batch before the manifest query
-    // performs its own supporting diagnostic work.
     let diagnostics = normalize_diagnostics(session.latest_diagnostics());
-    let manifest = match session.unstable_dependency_baseline(&step.options, None) {
-        Ok(manifest) => format!(
-            "input={:?};imports={:?};definitions={:?};fingerprints={:?};module-imports={:?};free={:?};implicit={:?};decl-types={:?};call-heads={:?};builtins={:?};consts={:?};bodies={:?};blockers={:?};complete={}",
-            manifest.input(),
-            manifest.imports(),
-            manifest.definitions(),
-            manifest.definition_fingerprints(),
-            manifest.module_imports(),
-            manifest.free_function_dependencies(),
-            manifest.implicit_named_destructor_dependencies(),
-            manifest.declaration_type_dependencies(),
-            manifest.declaration_type_call_head_dependencies(),
-            manifest.builtin_type_call_head_inputs(),
-            manifest.named_const_dependencies(),
-            manifest.body_dependencies(),
-            manifest.dependency_blockers(),
-            manifest.semantic_dependency_graph_complete(),
-        ),
-        Err(errors) => format!("error:{errors:?}"),
-    };
     if fault == Some(DifferentialOracleFault::Import) {
         assert!(inject_stale_query_for_oracle(
             session,
@@ -389,7 +360,6 @@ fn observe_with_fault(
         semantic_hash,
         executable_hash,
         identities,
-        manifest,
         imports,
     }
 }
@@ -414,7 +384,6 @@ fn differing_fields(left: &Observation, right: &Observation) -> Vec<&'static str
             "executable-hash",
         ),
         (left.identities != right.identities, "stable-identities"),
-        (left.manifest != right.manifest, "dependency-manifest"),
         (left.imports != right.imports, "import-discovery"),
     ]
     .into_iter()
@@ -640,17 +609,6 @@ fn corpus() -> Vec<Step> {
 fn bounded_corpus_matches_stepwise_fresh_sessions() {
     let corpus = corpus();
     assert_equivalent(&corpus);
-    let incomplete = corpus
-        .iter()
-        .find(|step| step.name == "incomplete-manifest")
-        .unwrap();
-    let mut fresh = CompilerSession::new();
-    assert!(
-        observe(&mut fresh, incomplete)
-            .manifest
-            .contains("complete=false")
-    );
-
     let glue = corpus
         .iter()
         .find(|step| step.name == "query-native-drop-glue")
@@ -668,7 +626,7 @@ fn bounded_corpus_matches_stepwise_fresh_sessions() {
 }
 
 #[test]
-fn option_leaves_reuse_source_terminals_and_restore_exact_semantic_variants() {
+fn option_variants_produce_independent_canonical_semantic_outputs() {
     let source = snapshot(
         &[(
             7,
@@ -697,16 +655,16 @@ fn option_leaves_reuse_source_terminals_and_restore_exact_semantic_variants() {
         preview_features: PreviewFeatures::from([PreviewFeature::TestInfra]),
         ..default.clone()
     };
-    session.semantic(&target).unwrap();
-    session.semantic(&optimized).unwrap();
-    session.semantic(&preview).unwrap();
-
-    assert_eq!(session.unstable_metrics().merge().executions, 1);
-    assert_eq!(session.unstable_metrics().rir().executions, 1);
-    assert_eq!(session.unstable_metrics().semantic().executions, 4);
-    assert!(first.shares_owner(&session.semantic(&default).unwrap()));
-    assert_eq!(session.unstable_metrics().semantic().executions, 4);
-    assert_eq!(session.unstable_metrics().semantic().reuses, 1);
+    let variants = [
+        first,
+        session.semantic(&target).unwrap(),
+        session.semantic(&optimized).unwrap(),
+        session.semantic(&preview).unwrap(),
+    ];
+    for semantic in variants {
+        assert_eq!(semantic.function_views().next().unwrap().name(), "helper");
+        assert_eq!(semantic.function_views().nth(1).unwrap().name(), "main");
+    }
 }
 
 #[test]
@@ -748,7 +706,6 @@ fn failure_recovery_and_bounded_eviction_match_fresh_sessions() {
     }
     let metrics = session.unstable_metrics();
     assert!(metrics.retention().diagnostic_entries < steps.len());
-    assert!(metrics.retention().invalidation_plans < steps.len());
 }
 
 #[test]

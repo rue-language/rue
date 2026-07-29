@@ -5,7 +5,6 @@
 //! installed into a session or used as query keys.
 
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
@@ -43,6 +42,17 @@ pub fn import_demand_frontier_for_roots(
     session.import_demand_frontier_for_roots(revision, plan, mode, roots)
 }
 
+/// Stages the exact input revision currently owned by the compiler.
+///
+/// The host supplies only the opaque revision returned by
+/// [`begin_import_input_request`] or [`publish_import_observation_batch`].
+pub fn stage_import_input_request(
+    session: &mut crate::CompilerSession,
+    revision: ImportInputRevision,
+) -> Result<crate::ImportDiscoveryPlan, crate::CompileErrors> {
+    session.stage_import_input_request(revision)
+}
+
 /// The demand roots for a trusted-toolchain successor plan's delta occurrences
 /// alone (RUE-1112). Derived directly from the plan's delta segment, so the host
 /// roots its re-close frontier without materializing or filtering the merged
@@ -66,6 +76,15 @@ pub fn import_observation_ledger(
     revision: ImportInputRevision,
 ) -> crate::CompileResult<crate::ImportObservationLedger> {
     session.import_observation_ledger(revision)
+}
+
+/// Closes the exact compiler-published input revision after its rooted
+/// frontier is exhausted.
+pub fn close_import_input_request(
+    session: &mut crate::CompilerSession,
+    revision: ImportInputRevision,
+) -> Result<Arc<crate::ImportDiscoveryView>, crate::CompileErrors> {
+    session.close_import_input_request(revision)
 }
 
 /// Stage a strictly-additive trusted-toolchain successor (RUE-1112). The staged
@@ -505,10 +524,6 @@ pub fn semantic_input_debug(view: &crate::SemanticView) -> String {
     view.owner().unstable_input_debug()
 }
 
-pub fn semantic_durable_artifact_status(view: &crate::SemanticView) -> DurableArtifactStatus {
-    view.owner().unstable_durable_artifact_status()
-}
-
 /// Exact, owned semantic-state projection used by in-tree cold-vs-reused
 /// differential tooling. Its contents and formatting are deliberately
 /// unstable and are not an artifact that can be fed back into the compiler.
@@ -548,12 +563,13 @@ pub fn into_oracle_semantic_state(
 ) -> Result<OracleSemanticState, &'static str> {
     let semantic = Arc::try_unwrap(semantic).map_err(|_| "semantic view is still shared")?;
     let (semantic_owner, rir_owner) = semantic.into_owners();
-    let rir_owner = Arc::try_unwrap(rir_owner).map_err(|_| "RIR owner is still shared")?;
+    drop(rir_owner);
     let semantic_owner =
         Arc::try_unwrap(semantic_owner).map_err(|_| "semantic owner is still shared")?;
+    let (rir_owner, functions, type_pool, strings, _) = semantic_owner.into_parts_with_rir();
+    let rir_owner = Arc::try_unwrap(rir_owner).map_err(|_| "RIR owner is still shared")?;
     let rir_payload_storage_stats = rir_owner.rir().payload_storage_stats();
     let (_, symbols) = rir_owner.into_parts();
-    let (functions, type_pool, strings, _) = semantic_owner.into_parts();
     Ok(OracleSemanticState {
         interner: symbols.into_interner(),
         functions: functions
@@ -669,9 +685,7 @@ impl crate::CompilerSession {
             }
             stage => {
                 let semantic = self.canonical_semantic(request.options)?;
-                let rir = self
-                    .selected_semantic_rir_owner()
-                    .expect("successful semantic query retains canonical RIR");
+                let rir = semantic.rir_owner().clone();
                 let interner = rir.semantic_symbols().interner();
                 let backend_request = match stage {
                     PresentationStage::Lowering => Some(rue_codegen::BackendArtifactRequest {
@@ -1150,145 +1164,6 @@ mod codegen_unit_tests {
     }
 }
 
-/// Opaque equality status for session-owned durable artifacts.
-///
-/// The fingerprint is instrumentation, not a cache key or durable schema. It
-/// deliberately has no import/install operation.
-#[derive(Clone, PartialEq, Eq)]
-pub struct DurableArtifactStatus {
-    count: usize,
-    fingerprint: [u8; 32],
-}
-
-impl std::fmt::Debug for DurableArtifactStatus {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("DurableArtifactStatus")
-            .field("count", &self.count)
-            .finish_non_exhaustive()
-    }
-}
-
-/// Owned dependency-manifest counters. No manifest records or cache payloads
-/// are retained by this snapshot.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DependencyManifestMetrics {
-    pub body_owner_events_translated: usize,
-    pub body_named_events_translated: usize,
-    pub body_dependency_records_built: usize,
-    pub extra_rir_instructions_visited: usize,
-    pub durable_bodies: DurableBodyMetrics,
-}
-
-/// Durable-body reuse counters without the durable cache records themselves.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
-pub struct DurableBodyMetrics {
-    pub candidate_comparisons: usize,
-    pub candidate_fallbacks: usize,
-    pub specialized_mapping_attempts: usize,
-    pub specialized_mapping_successes: usize,
-    pub specialized_mapping_failures: usize,
-    pub export_attempts: usize,
-    pub export_successes: usize,
-    pub export_rejections: usize,
-    pub instructions_exported: usize,
-    pub places_exported: usize,
-    pub strings_exported: usize,
-    pub conversion_attempts: usize,
-    pub conversion_completions: usize,
-    pub conversion_failures: usize,
-    pub stable_key_joins: usize,
-    pub finalization_attempts: usize,
-    pub finalization_completions: usize,
-    pub finalization_failures: usize,
-    pub projection_attempts: usize,
-    pub projection_completions: usize,
-    pub projection_failures: usize,
-    pub instructions_projected: usize,
-    pub places_projected: usize,
-    pub strings_projected: usize,
-    pub import_attempts: usize,
-    pub import_successes: usize,
-    pub import_failures: usize,
-    pub installed_instructions: usize,
-    pub installed_places: usize,
-    pub installed_strings: usize,
-    pub atomic_discards: usize,
-    pub reused_bodies: usize,
-    pub skipped_body_analyses: usize,
-}
-
-impl From<crate::DurableBodyWork> for DurableBodyMetrics {
-    fn from(work: crate::DurableBodyWork) -> Self {
-        Self {
-            candidate_comparisons: work.candidate_comparisons,
-            candidate_fallbacks: work.candidate_fallbacks,
-            specialized_mapping_attempts: work.specialized_mapping_attempts,
-            specialized_mapping_successes: work.specialized_mapping_successes,
-            specialized_mapping_failures: work.specialized_mapping_failures,
-            export_attempts: work.export_attempts,
-            export_successes: work.export_successes,
-            export_rejections: work.export_rejections,
-            instructions_exported: work.instructions_exported,
-            places_exported: work.places_exported,
-            strings_exported: work.strings_exported,
-            conversion_attempts: work.conversion_attempts,
-            conversion_completions: work.conversion_completions,
-            conversion_failures: work.conversion_failures,
-            stable_key_joins: work.stable_key_joins,
-            finalization_attempts: work.finalization_attempts,
-            finalization_completions: work.finalization_completions,
-            finalization_failures: work.finalization_failures,
-            projection_attempts: work.projection_attempts,
-            projection_completions: work.projection_completions,
-            projection_failures: work.projection_failures,
-            instructions_projected: work.instructions_projected,
-            places_projected: work.places_projected,
-            strings_projected: work.strings_projected,
-            import_attempts: work.import_attempts,
-            import_successes: work.import_successes,
-            import_failures: work.import_failures,
-            installed_instructions: work.installed_instructions,
-            installed_places: work.installed_places,
-            installed_strings: work.installed_strings,
-            atomic_discards: work.atomic_discards,
-            reused_bodies: work.reused_bodies,
-            skipped_body_analyses: work.skipped_body_analyses,
-        }
-    }
-}
-
-impl DependencyManifestMetrics {
-    pub(crate) fn from_work(work: crate::session::SemanticDependencyManifestWork) -> Self {
-        let durable = work.durable_bodies;
-        Self {
-            body_owner_events_translated: work.body_owner_events_translated,
-            body_named_events_translated: work.body_named_events_translated,
-            body_dependency_records_built: work.body_dependency_records_built,
-            extra_rir_instructions_visited: work.extra_rir_instructions_visited,
-            durable_bodies: durable.into(),
-        }
-    }
-}
-
-impl DurableArtifactStatus {
-    pub fn count(&self) -> usize {
-        self.count
-    }
-
-    pub(crate) fn from_debug<T: std::fmt::Debug>(artifacts: &[T]) -> Self {
-        let mut hasher = Sha256::new();
-        for artifact in artifacts {
-            hasher.update(format!("{artifact:?}").as_bytes());
-            hasher.update([0]);
-        }
-        Self {
-            count: artifacts.len(),
-            fingerprint: hasher.finalize().into(),
-        }
-    }
-}
-
 /// Query lifecycle counters contained in [`MetricsSnapshot`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryMetrics {
@@ -1313,8 +1188,6 @@ pub struct RetentionMetrics {
     pub diagnostic_entries: usize,
     pub diagnostic_source_attempts: usize,
     pub diagnostic_source_bytes: usize,
-    pub dependency_manifests: usize,
-    pub invalidation_plans: usize,
 }
 
 /// Merge counters used by the in-tree benchmark.
@@ -1488,12 +1361,6 @@ impl MetricsSnapshot {
     pub fn definitions(&self) -> QueryMetrics {
         self.inner.definitions.into()
     }
-    pub fn dependency_manifests(&self) -> QueryMetrics {
-        self.inner.dependency_manifests.into()
-    }
-    pub fn invalidation_plans(&self) -> QueryMetrics {
-        self.inner.invalidation_plans.into()
-    }
     pub fn downstream_invalidations(&self) -> usize {
         self.inner.downstream_invalidations
     }
@@ -1548,8 +1415,6 @@ impl MetricsSnapshot {
             diagnostic_entries: self.inner.retention.diagnostic_entries,
             diagnostic_source_attempts: self.inner.retention.diagnostic_source_attempts,
             diagnostic_source_bytes: self.inner.retention.diagnostic_source_bytes,
-            dependency_manifests: self.inner.retention.dependency_manifests,
-            invalidation_plans: self.inner.retention.invalidation_plans,
         }
     }
     pub fn semantic_work_json(&self, from: usize) -> Value {
@@ -1600,30 +1465,13 @@ fn semantic_work_json(work: &crate::session::CompilerSessionWork, from: usize) -
         "specialized_bodies_succeeded": records.iter().map(|record| record.work.body_analysis.specialized_bodies_succeeded).sum::<usize>(),
         "specialized_bodies_failed": records.iter().map(|record| record.work.body_analysis.specialized_bodies_failed).sum::<usize>(),
         "durable_bodies": {
-            "candidate_comparisons": records.iter().map(|record| record.work.durable_bodies.candidate_comparisons).sum::<usize>(),
             "candidate_fallbacks": records.iter().map(|record| record.work.durable_bodies.candidate_fallbacks).sum::<usize>(),
-            "specialized_mapping_attempts": records.iter().map(|record| record.work.durable_bodies.specialized_mapping_attempts).sum::<usize>(),
-            "specialized_mapping_successes": records.iter().map(|record| record.work.durable_bodies.specialized_mapping_successes).sum::<usize>(),
-            "specialized_mapping_failures": records.iter().map(|record| record.work.durable_bodies.specialized_mapping_failures).sum::<usize>(),
             "export_attempts": records.iter().map(|record| record.work.durable_bodies.export_attempts).sum::<usize>(),
             "export_successes": records.iter().map(|record| record.work.durable_bodies.export_successes).sum::<usize>(),
             "export_rejections": records.iter().map(|record| record.work.durable_bodies.export_rejections).sum::<usize>(),
             "instructions_exported": records.iter().map(|record| record.work.durable_bodies.instructions_exported).sum::<usize>(),
             "places_exported": records.iter().map(|record| record.work.durable_bodies.places_exported).sum::<usize>(),
             "strings_exported": records.iter().map(|record| record.work.durable_bodies.strings_exported).sum::<usize>(),
-            "conversion_attempts": records.iter().map(|record| record.work.durable_bodies.conversion_attempts).sum::<usize>(),
-            "conversion_completions": records.iter().map(|record| record.work.durable_bodies.conversion_completions).sum::<usize>(),
-            "conversion_failures": records.iter().map(|record| record.work.durable_bodies.conversion_failures).sum::<usize>(),
-            "finalization_attempts": records.iter().map(|record| record.work.durable_bodies.finalization_attempts).sum::<usize>(),
-            "finalization_completions": records.iter().map(|record| record.work.durable_bodies.finalization_completions).sum::<usize>(),
-            "finalization_failures": records.iter().map(|record| record.work.durable_bodies.finalization_failures).sum::<usize>(),
-            "stable_key_joins": records.iter().map(|record| record.work.durable_bodies.stable_key_joins).sum::<usize>(),
-            "projection_attempts": records.iter().map(|record| record.work.durable_bodies.projection_attempts).sum::<usize>(),
-            "projection_completions": records.iter().map(|record| record.work.durable_bodies.projection_completions).sum::<usize>(),
-            "projection_failures": records.iter().map(|record| record.work.durable_bodies.projection_failures).sum::<usize>(),
-            "instructions_projected": records.iter().map(|record| record.work.durable_bodies.instructions_projected).sum::<usize>(),
-            "places_projected": records.iter().map(|record| record.work.durable_bodies.places_projected).sum::<usize>(),
-            "strings_projected": records.iter().map(|record| record.work.durable_bodies.strings_projected).sum::<usize>(),
             "import_attempts": records.iter().map(|record| record.work.durable_bodies.import_attempts).sum::<usize>(),
             "import_successes": records.iter().map(|record| record.work.durable_bodies.import_successes).sum::<usize>(),
             "import_failures": records.iter().map(|record| record.work.durable_bodies.import_failures).sum::<usize>(),
@@ -1713,286 +1561,4 @@ pub enum DifferentialOracleFault {
     Semantic,
     Diagnostic,
     Import,
-}
-
-/// Opaque dependency baseline used only by unstable invalidation benchmarks.
-#[derive(Debug, Clone)]
-pub struct DependencyBaseline {
-    pub(crate) inner: std::sync::Arc<crate::SemanticDependencyInputManifest>,
-    owner: Arc<()>,
-}
-
-impl DependencyBaseline {
-    pub(crate) fn new(
-        inner: std::sync::Arc<crate::SemanticDependencyInputManifest>,
-        owner: Arc<()>,
-    ) -> Self {
-        Self { inner, owner }
-    }
-    pub(crate) fn belongs_to(&self, owner: &Arc<()>) -> bool {
-        Arc::ptr_eq(&self.owner, owner)
-    }
-    pub fn unstable_metrics(&self) -> DependencyManifestMetrics {
-        self.inner.unstable_metrics()
-    }
-    pub fn unstable_durable_artifact_status(&self) -> DurableArtifactStatus {
-        self.inner.unstable_durable_artifact_status()
-    }
-    pub fn input(&self) -> String {
-        format!("{:?}", self.inner.input())
-    }
-    pub fn imports(&self) -> String {
-        format!("{:?}", self.inner.imports())
-    }
-    pub fn definitions(&self) -> String {
-        format!("{:?}", self.inner.definitions())
-    }
-    pub fn definition_fingerprints(&self) -> String {
-        format!("{:?}", self.inner.definition_fingerprints())
-    }
-    pub fn module_imports(&self) -> String {
-        format!("{:?}", self.inner.module_imports())
-    }
-    pub fn free_function_dependencies(&self) -> String {
-        format!("{:?}", self.inner.free_function_dependencies())
-    }
-    pub fn implicit_named_destructor_dependencies(&self) -> String {
-        format!("{:?}", self.inner.implicit_named_destructor_dependencies())
-    }
-    pub fn declaration_type_dependencies(&self) -> String {
-        format!("{:?}", self.inner.declaration_type_dependencies())
-    }
-    pub fn declaration_type_call_head_dependencies(&self) -> String {
-        format!("{:?}", self.inner.declaration_type_call_head_dependencies())
-    }
-    pub fn builtin_type_call_head_inputs(&self) -> String {
-        format!("{:?}", self.inner.builtin_type_call_head_inputs())
-    }
-    pub fn named_const_dependencies(&self) -> String {
-        format!("{:?}", self.inner.named_const_dependencies())
-    }
-    pub fn body_dependencies(&self) -> String {
-        format!("{:?}", self.inner.body_dependencies())
-    }
-    pub fn body_dependency_blockers(&self) -> String {
-        format!("{:?}", self.inner.body_dependency_blockers())
-    }
-    pub fn dependency_blockers(&self) -> String {
-        format!("{:?}", self.inner.dependency_blockers())
-    }
-    pub fn free_function_caller_dependencies_complete(&self) -> bool {
-        self.inner.free_function_caller_dependencies_complete()
-    }
-    pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
-        self.inner.implicit_named_destructor_dependencies_complete()
-    }
-    pub fn declaration_type_dependencies_complete(&self) -> bool {
-        self.inner.declaration_type_dependencies_complete()
-    }
-    pub fn declaration_type_call_head_dependencies_complete(&self) -> bool {
-        self.inner
-            .declaration_type_call_head_dependencies_complete()
-    }
-    pub fn supported_type_call_heads_complete(&self) -> bool {
-        self.inner.supported_type_call_heads_complete()
-    }
-    pub fn named_value_const_dependencies_complete(&self) -> bool {
-        self.inner.named_value_const_dependencies_complete()
-    }
-    pub fn semantic_dependency_graph_complete(&self) -> bool {
-        self.inner.semantic_dependency_graph_complete()
-    }
-    pub fn definition_universe_complete(&self) -> bool {
-        self.inner.definition_universe_complete()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DependencySurface {
-    BodyOwner,
-    FreeFunctionCall,
-    GenericNamedMethodCall,
-    ImplicitNamedDestructor,
-    DeclarationType,
-    DeclarationTypeCallHead,
-    SupportedTypeCallHead,
-    NamedValueConst,
-}
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DependencyIncompleteReason {
-    AnonymousBodyOwnerUnavailable,
-    CallerEndpointUnavailable,
-    GenericSubstitutionIdentityUnavailable,
-    AnonymousDropOwnerUnavailable,
-    ResolvedTypeIdentityUnavailable,
-    TypeCallHeadIdentityUnavailable,
-    UnsupportedDynamicTypeCallHead,
-    ConstEndpointUnavailable,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DependencyBlocker {
-    owner: Option<String>,
-    surface: DependencySurface,
-    reason: DependencyIncompleteReason,
-}
-impl DependencyBlocker {
-    pub fn owner(&self) -> Option<&str> {
-        self.owner.as_deref()
-    }
-    pub fn surface(&self) -> DependencySurface {
-        self.surface
-    }
-    pub fn reason(&self) -> DependencyIncompleteReason {
-        self.reason
-    }
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum FullInvalidationReason {
-    RootChanged,
-    ModuleImportsChanged,
-    TargetChanged,
-    PreviewFeaturesChanged,
-    IncompleteDefinitionUniverse,
-    IncompleteDependencyGraph(std::sync::Arc<[DependencyBlocker]>),
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InvalidationScope {
-    Full {
-        reasons: std::sync::Arc<[FullInvalidationReason]>,
-    },
-    Incremental,
-}
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct InvalidationWorkMetrics {
-    pub definition_fingerprints_compared: usize,
-    pub dependency_edges_visited: usize,
-    pub reverse_closure_nodes_visited: usize,
-    pub extra_rir_instructions_visited: usize,
-}
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidationMetrics {
-    scope: InvalidationScope,
-    added: Vec<()>,
-    removed: Vec<()>,
-    changed: Vec<()>,
-    invalidated: Vec<()>,
-    reusable: Vec<()>,
-    work: InvalidationWorkMetrics,
-}
-impl InvalidationMetrics {
-    pub(crate) fn from_plan(plan: &crate::SemanticInvalidationPlan) -> Self {
-        fn surface(value: crate::SemanticDependencySurface) -> DependencySurface {
-            use crate::SemanticDependencySurface as S;
-            match value {
-                S::BodyOwner => DependencySurface::BodyOwner,
-                S::FreeFunctionCall => DependencySurface::FreeFunctionCall,
-                S::GenericNamedMethodCall => DependencySurface::GenericNamedMethodCall,
-                S::ImplicitNamedDestructor => DependencySurface::ImplicitNamedDestructor,
-                S::DeclarationType => DependencySurface::DeclarationType,
-                S::DeclarationTypeCallHead => DependencySurface::DeclarationTypeCallHead,
-                S::SupportedTypeCallHead => DependencySurface::SupportedTypeCallHead,
-                S::NamedValueConst => DependencySurface::NamedValueConst,
-            }
-        }
-        fn reason(value: crate::SemanticDependencyIncompleteReason) -> DependencyIncompleteReason {
-            use crate::SemanticDependencyIncompleteReason as R;
-            match value {
-                R::AnonymousBodyOwnerUnavailable => {
-                    DependencyIncompleteReason::AnonymousBodyOwnerUnavailable
-                }
-                R::CallerEndpointUnavailable => {
-                    DependencyIncompleteReason::CallerEndpointUnavailable
-                }
-                R::GenericSubstitutionIdentityUnavailable => {
-                    DependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
-                }
-                R::AnonymousDropOwnerUnavailable => {
-                    DependencyIncompleteReason::AnonymousDropOwnerUnavailable
-                }
-                R::ResolvedTypeIdentityUnavailable => {
-                    DependencyIncompleteReason::ResolvedTypeIdentityUnavailable
-                }
-                R::TypeCallHeadIdentityUnavailable => {
-                    DependencyIncompleteReason::TypeCallHeadIdentityUnavailable
-                }
-                R::UnsupportedDynamicTypeCallHead => {
-                    DependencyIncompleteReason::UnsupportedDynamicTypeCallHead
-                }
-                R::ConstEndpointUnavailable => DependencyIncompleteReason::ConstEndpointUnavailable,
-            }
-        }
-        let scope = match plan.scope() {
-            crate::SemanticInvalidationScope::Incremental => InvalidationScope::Incremental,
-            crate::SemanticInvalidationScope::Full { reasons } => InvalidationScope::Full {
-                reasons: reasons
-                    .iter()
-                    .map(|value| match value {
-                        crate::SemanticFullInvalidationReason::RootChanged => {
-                            FullInvalidationReason::RootChanged
-                        }
-                        crate::SemanticFullInvalidationReason::ModuleImportsChanged => {
-                            FullInvalidationReason::ModuleImportsChanged
-                        }
-                        crate::SemanticFullInvalidationReason::TargetChanged => {
-                            FullInvalidationReason::TargetChanged
-                        }
-                        crate::SemanticFullInvalidationReason::PreviewFeaturesChanged => {
-                            FullInvalidationReason::PreviewFeaturesChanged
-                        }
-                        crate::SemanticFullInvalidationReason::IncompleteDefinitionUniverse => {
-                            FullInvalidationReason::IncompleteDefinitionUniverse
-                        }
-                        crate::SemanticFullInvalidationReason::IncompleteDependencyGraph(
-                            blockers,
-                        ) => FullInvalidationReason::IncompleteDependencyGraph(
-                            blockers
-                                .iter()
-                                .map(|b| DependencyBlocker {
-                                    owner: b.owner().map(|o| o.name().to_owned()),
-                                    surface: surface(b.surface()),
-                                    reason: reason(b.reason()),
-                                })
-                                .collect(),
-                        ),
-                    })
-                    .collect(),
-            },
-        };
-        let work = plan.work();
-        Self {
-            scope,
-            added: vec![(); plan.added().len()],
-            removed: vec![(); plan.removed().len()],
-            changed: vec![(); plan.changed().len()],
-            invalidated: vec![(); plan.invalidated().len()],
-            reusable: vec![(); plan.reusable().len()],
-            work: InvalidationWorkMetrics {
-                definition_fingerprints_compared: work.definition_fingerprints_compared,
-                dependency_edges_visited: work.dependency_edges_visited,
-                reverse_closure_nodes_visited: work.reverse_closure_nodes_visited,
-                extra_rir_instructions_visited: work.extra_rir_instructions_visited,
-            },
-        }
-    }
-    pub fn scope(&self) -> &InvalidationScope {
-        &self.scope
-    }
-    pub fn added(&self) -> &[()] {
-        &self.added
-    }
-    pub fn removed(&self) -> &[()] {
-        &self.removed
-    }
-    pub fn changed(&self) -> &[()] {
-        &self.changed
-    }
-    pub fn invalidated(&self) -> &[()] {
-        &self.invalidated
-    }
-    pub fn reusable(&self) -> &[()] {
-        &self.reusable
-    }
-    pub fn work(&self) -> InvalidationWorkMetrics {
-        self.work
-    }
 }

@@ -43,7 +43,6 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("program_image_plan", include_str!("program_image_plan.rs")),
     ("queries", include_str!("queries.rs")),
-    ("query_graph", include_str!("query_graph.rs")),
     (
         "revisioned_query_database",
         include_str!("revisioned_query_database.rs"),
@@ -300,29 +299,6 @@ const RUE_866_INTERNAL_VOCABULARY: &[&str] = &[
     "ResolvedCodegenRevision",
     "ResolvedLinkRevision",
     "ResolvedProgramRevision",
-    "SemanticDependencyBlocker",
-    "SemanticDependencyIncompleteReason",
-    "SemanticDependencyInputManifest",
-    "SemanticDependencyManifestWork",
-    "SemanticDependencySurface",
-    "SemanticFullInvalidationReason",
-    "SemanticInvalidationPlan",
-    "SemanticInvalidationScope",
-    "SemanticInvalidationWork",
-    "StableBodyDependencyInputRecord",
-    "StableBuiltinTypeCallHeadInput",
-    "StableDeclarationTypeCallHeadDependency",
-    "StableDeclarationTypeDependency",
-    "StableDefinitionFingerprint",
-    "StableDefinitionFingerprintPrecision",
-    "StableDefinitionInputFingerprint",
-    "StableFreeFunctionDependency",
-    "StableModuleImportDependency",
-    "StableNamedConstDependency",
-    "StableNamedConstDependencyTarget",
-    "StableNamedDestructorDependency",
-    "StableNamedMethodDependency",
-    "StableNamedMethodDependencyTarget",
     "CodegenInputDescriptor",
     "LinkInputDescriptor",
     "SemanticInputDescriptor",
@@ -344,36 +320,14 @@ const RUE_866_INTERNAL_VOCABULARY: &[&str] = &[
 ];
 
 const RUE_867_DURABLE_VOCABULARY: &[&str] = &[
-    "DURABLE_ORDINARY_BODY_SCHEMA_VERSION",
-    "DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION",
-    "DurableAirInst",
     "DurableAirInstData",
-    "DurableAirRef",
-    "DurableBodyAnchor",
-    "DurableBodyConversionFailure",
-    "DurableBodyProjectionFailure",
     "DurableBodyWork",
-    "DurableCallArg",
-    "DurableMatchArm",
-    "DurableOrdinaryBody",
-    "DurableOrdinaryBodyPayload",
-    "DurablePattern",
-    "DurablePlace",
-    "DurablePlaceRef",
     "DurableProjection",
-    "DurableSpecializedBody",
-    "DurableSpecializedBodyPayload",
-    "convert_semantic_specialized_body_exports",
-    "DURABLE_SEMANTIC_SCHEMA_VERSION",
     "DurableConstValue",
     "DurableDeclarationPayload",
     "DurableDeclarationSemantic",
-    "DurableParameterMode",
-    "DurableSemanticImportEpoch",
-    "DurableSemanticParameter",
     "DurableSemanticProjectionFailure",
     "DurableSemanticProjectionWork",
-    "DurableSemanticSchemaVersion",
     "DurableType",
 ];
 
@@ -1132,7 +1086,6 @@ fn facade_stays_small_and_session_centered() {
         .map(|(name, _)| *name)
         .chain([
             "api_inventory",
-            "durable_compatibility_tests",
             "integration_tests",
             "pipeline_tests",
             "producer_nominal_acceptance_tests",
@@ -1196,7 +1149,7 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
         panic!("reviewed body query item is balanced")
     }
     let body = include_str!("body_query.rs");
-    let key = item(body, "struct BodyQueryKey");
+    let key = item(body, "pub(crate) struct BodyQueryKey");
     assert!(key.contains("instance: crate::FunctionInstanceKey"));
     assert!(
         key.contains("configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration")
@@ -1214,7 +1167,7 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
         );
     }
 
-    let transaction = item(body, "enum BodyTransaction {");
+    let transaction = item(body, "pub(crate) enum BodyTransaction {");
     assert!(transaction.contains("Success"));
     assert!(transaction.contains("DeterministicFailure"));
     assert!(!transaction.contains("Canceled"));
@@ -1231,7 +1184,10 @@ fn per_body_query_boundary_is_stable_independent_and_cache_free() {
             "missing independent family {family}"
         );
     }
-    let semantic_entry = item(include_str!("session.rs"), "struct SemanticCacheEntry");
+    let semantic_entry = item(
+        include_str!("canonical_semantic.rs"),
+        "pub struct CanonicalSemanticOutput",
+    );
     assert!(!semantic_entry.contains("successful_body_cache"));
     let body_transaction = source_between_exact_boundaries(
         runtime,
@@ -1695,8 +1651,6 @@ fn durable_cache_schema_cannot_return_to_the_public_facade() {
     assert!(!facade.contains("pub mod durable_semantics;"));
 
     let session = include_str!("session.rs");
-    let manifest_public =
-        public_signatures(inherent_impl(session, "SemanticDependencyInputManifest"));
     let semantic_public = public_signatures(inherent_impl(
         include_str!("canonical_semantic.rs"),
         "CanonicalSemanticOutput",
@@ -1706,7 +1660,7 @@ fn durable_cache_schema_cannot_return_to_the_public_facade() {
         "durable_ordinary_bodies",
     ] {
         assert!(
-            !manifest_public.contains(&format!("pub fn {raw_accessor}"))
+            !session.contains(raw_accessor)
                 && !semantic_public.contains(&format!("pub fn {raw_accessor}")),
             "raw durable schema accessor returned to a public signature: {raw_accessor}"
         );
@@ -1741,7 +1695,7 @@ fn query_attempts_have_one_family_owned_representation() {
 }
 
 #[test]
-fn revisioned_parse_family_has_no_peer_legacy_authority() {
+fn revisioned_parse_family_is_runtime_registered_without_a_selection_wrapper() {
     let session = include_str!("session.rs");
     let runtime = include_str!("revisioned_query_database.rs");
     for removed in [
@@ -1758,7 +1712,11 @@ fn revisioned_parse_family_has_no_peer_legacy_authority() {
     }
     assert!(session.contains(".source_revision(&source, snapshot)"));
     assert!(session.contains("revisioned.select_parse(&attempt)"));
-    assert!(runtime.contains("parse: RevisionedFamily<super::session::ParseQuery>"));
+    assert!(!runtime.contains("RevisionedFamily"));
+    assert!(!runtime.contains("selected_state_shim"));
+    assert!(runtime.contains("parse: QueryFamily<"));
+    assert!(runtime.contains("parse_selection: QuerySelection<"));
+    assert!(runtime.contains("content_addressed_family_with_equality("));
 }
 
 #[test]
@@ -2369,17 +2327,19 @@ fn canonical_semantic_body_has_no_compiler_owned_peer_algebra() {
             "compiler-owned canonical body mirror returned: {removed}"
         );
     }
-    assert!(
-        durable_body
-            .contains("pub body: rue_air::SemanticBody<StableDefinitionKey, crate::ModuleId>"),
-        "durable envelope must retain rue-air's canonical body algebra directly"
-    );
-    assert!(
-        durable_body.contains(
-            "rue_air::SemanticSpecializationIdentity<StableDefinitionKey, crate::ModuleId>"
-        ),
-        "specialized envelopes must retain rue-air's canonical identity directly"
-    );
+    assert!(durable_body.contains("pub type DurableProjection"));
+    assert!(durable_body.contains("pub type DurableAirInstData"));
+    for removed in [
+        "DurableOrdinaryBodyPayload",
+        "DurableSpecializedBodyPayload",
+        "convert_semantic_body_exports",
+        "convert_semantic_specialized_body_exports",
+    ] {
+        assert!(
+            !durable_body.contains(removed),
+            "removed peer body-export payload returned: {removed}"
+        );
+    }
 }
 
 #[test]

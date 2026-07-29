@@ -228,17 +228,10 @@ impl ImportDiscoveryRequest {
     }
 }
 
-// RUE-1033 DELETION/REPLACEMENT GATE: retire the entire legacy supported
-// host-driven import path together once a freshness- and speculation-safe
-// replacement is stable. Its exact public bypass surface is inventoried by
-// `legacy_import_authority_is_one_explicit_compatibility_boundary`.
-
 /// Result of one host transaction. Denial and absence are intentionally
 /// distinct from an accepted source read.
 ///
-/// Public construction participates in the legacy RUE-1033 compatibility
-/// boundary. New consumers must use the unstable begin/frontier/publish
-/// protocol and construct statuses only for requests emitted by its frontier.
+/// Hosts construct statuses only for requests emitted by a compiler frontier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ImportObservationStatus {
     Absent,
@@ -318,8 +311,7 @@ impl ImportObservationStatus {
 
 /// Accepted source bytes paired with their transaction observation.
 ///
-/// Public construction participates in the legacy RUE-1033 compatibility
-/// boundary and is not independently freshness- or speculation-safe.
+/// Source evidence for a compiler-emitted frontier request.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AcceptedImportSource {
     requested_path: Arc<str>,
@@ -331,11 +323,7 @@ pub struct AcceptedImportSource {
 }
 
 impl AcceptedImportSource {
-    /// Construct legacy host-observed source evidence.
-    ///
-    /// This constructor is part of the RUE-1033 compatibility boundary. New
-    /// consumers may use it only while answering a request emitted by the
-    /// unstable canonical frontier protocol.
+    /// Construct host-observed source evidence for a frontier request.
     pub fn new(
         requested_path: impl Into<Arc<str>>,
         canonical_path: impl Into<Arc<str>>,
@@ -383,10 +371,7 @@ pub struct ImportObservation {
 }
 
 impl ImportObservation {
-    /// Construct a legacy absence observation.
-    ///
-    /// This is part of the RUE-1033 compatibility boundary and carries no
-    /// independent freshness authority.
+    /// Construct an absence observation for a frontier request.
     pub fn absent(request: ImportDiscoveryRequest) -> Self {
         Self {
             request,
@@ -394,10 +379,7 @@ impl ImportObservation {
             accepted_source: None,
         }
     }
-    /// Construct a legacy accepted-source observation.
-    ///
-    /// This is part of the RUE-1033 compatibility boundary and carries no
-    /// independent freshness authority.
+    /// Construct an accepted-source observation for a frontier request.
     pub fn accepted(
         request: ImportDiscoveryRequest,
         source: AcceptedImportSource,
@@ -418,10 +400,7 @@ impl ImportObservation {
             accepted_source: Some(source),
         })
     }
-    /// Construct a legacy terminal-failure observation.
-    ///
-    /// This is part of the RUE-1033 compatibility boundary and carries no
-    /// independent freshness authority.
+    /// Construct a terminal-failure observation for a frontier request.
     pub fn failure(
         request: ImportDiscoveryRequest,
         status: ImportObservationStatus,
@@ -468,10 +447,6 @@ impl ImportObservation {
 
 /// Deterministically ordered observations from one immutable epoch.
 ///
-/// Public `Default` construction and mutation are retained only for the
-/// RUE-1033 legacy compatibility boundary. A freely constructed ledger is not
-/// freshness- or speculation-safe and must not seed a new canonical request.
-///
 /// The ledger is a persistent structure (RUE-1112): frozen segments are shared
 /// by `Arc` across clones, and entries recorded since the value was cloned live
 /// in a private head. Cloning therefore costs O(entries recorded since the
@@ -502,11 +477,7 @@ struct ImportObservationSegment {
 const LEDGER_COMPACTION_DEPTH: usize = 16;
 
 impl ImportObservationLedger {
-    /// Record legacy host evidence.
-    ///
-    /// This mutator is part of the RUE-1033 compatibility boundary. New
-    /// consumers publish compiler-ordered batches through the unstable
-    /// canonical protocol instead.
+    /// Record one host observation while publishing a compiler-ordered batch.
     pub fn record(&mut self, observation: ImportObservation) -> CompileResult<()> {
         let request = observation.request.clone();
         if let Some(previous) = self.get(&request) {
@@ -923,11 +894,7 @@ impl ImportDiscoveryPlan {
                 .map(|group| group[0].occurrence().clone()),
         )
     }
-    /// Expose legacy host-driven candidate groups.
-    ///
-    /// This bypass is retained only for the RUE-1033 compatibility boundary.
-    /// It is not freshness- or speculation-safe; new consumers must request a
-    /// compiler-produced frontier through the unstable canonical protocol.
+    /// Ordered candidate groups retained by the compiler-owned plan.
     pub fn groups(&self) -> &[Arc<[ImportDiscoveryRequest]>] {
         self.groups.as_slice()
     }
@@ -1528,7 +1495,7 @@ struct AssembledSource {
 pub struct AcceptedReadManifest {
     entries: crate::shared_segments::SharedSegments<AcceptedReadManifestEntry>,
     /// Lazily materialized merged slice for consumers that need `Arc<[T]>`
-    /// (the RUE-1033 stable staging boundary and retained artifacts).
+    /// (the compiler-owned staging boundary and retained artifacts).
     merged: std::sync::OnceLock<Arc<[AcceptedReadManifestEntry]>>,
 }
 
@@ -1578,9 +1545,7 @@ impl AcceptedReadManifest {
         }
     }
 
-    /// Wrap a complete shared slice, sharing it without copying when it is
-    /// already in canonical module order (the compatibility boundary makes no
-    /// ordering promise, so an unordered slice is canonicalized by copy).
+    #[cfg(test)]
     pub(crate) fn from_shared(entries: Arc<[AcceptedReadManifestEntry]>) -> Self {
         if !entries.is_sorted_by(|a, b| accepted_read_order(a, b) != std::cmp::Ordering::Greater) {
             return Self::from_entries(entries.to_vec());

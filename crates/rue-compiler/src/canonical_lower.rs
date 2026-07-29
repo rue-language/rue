@@ -107,6 +107,7 @@ pub struct CanonicalRirPresentationOrder {
 }
 
 impl CanonicalRirOutput {
+    #[allow(dead_code)]
     pub(crate) fn structurally_eq(&self, other: &Self) -> bool {
         self.source_revision == other.source_revision
             && RirPrinter::new(&self.rir, self.symbols.interner()).to_string()

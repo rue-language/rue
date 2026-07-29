@@ -4,8 +4,8 @@
 //! record shape while moving key identity, execution, immutable attempts,
 //! dependency recording, and current/last-good publication into `rue-query`.
 //! It is a migration boundary, not a peer database. RUE-1033 / ADR-0063 Phase
-//! 12 deletes this selected-state-shaped shim after every family calls the
-//! runtime directly.
+//! 12 registers each family directly with the runtime; native selection roots
+//! retain the current and last-good terminals.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::rc::Rc;
@@ -120,281 +120,6 @@ fn record_equal<F: TypedQueryFamily>(left: &F::Record, right: &F::Record) -> boo
         && F::diagnostics_equal(left, right)
 }
 
-pub(crate) struct RevisionedFamily<F>
-where
-    F: TypedQueryFamily + 'static,
-    F::Key: 'static,
-    F::Record: 'static,
-{
-    runtime: QueryRuntime,
-    family: QueryFamily<CompatibilityKey<F::Key>, F::Record>,
-    selection: QuerySelection<CompatibilityKey<F::Key>, F::Record>,
-}
-
-impl<F> std::fmt::Debug for RevisionedFamily<F>
-where
-    F: TypedQueryFamily + 'static,
-    F::Key: 'static,
-    F::Record: 'static,
-{
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("RevisionedFamily")
-            .field("family", &self.family)
-            .finish_non_exhaustive()
-    }
-}
-
-impl<F> RevisionedFamily<F>
-where
-    F: TypedQueryFamily + 'static,
-    F::Key: 'static,
-    F::Record: 'static,
-{
-    #[cfg(test)]
-    pub(crate) fn new(runtime: &QueryRuntime, name: &'static str) -> Self {
-        let family = runtime
-            .family_with_equality(name, F::MAX_TERMINALS, record_equal::<F>)
-            .expect("compiler query families have unique stable names");
-        let selection = family.selection();
-        Self {
-            runtime: runtime.clone(),
-            family,
-            selection,
-        }
-    }
-
-    /// A family registered CONTENT-ADDRESSED (RUE-1112): its records are pure
-    /// functions of their keys alone, which is the sole minting authority for
-    /// the exact-terminal adoption capability
-    /// ([`rue_query::QueryFamily::adoptable_terminal`]). The parse family
-    /// qualifies: an ordinary key is the exact source content, table order,
-    /// and presentation; a successor key pins the published immutable lineage
-    /// plus its exact appended segment.
-    pub(crate) fn new_content_addressed(runtime: &QueryRuntime, name: &'static str) -> Self {
-        let family = runtime
-            .content_addressed_family_with_equality(name, F::MAX_TERMINALS, record_equal::<F>)
-            .expect("compiler query families have unique stable names");
-        let selection = family.selection();
-        Self {
-            runtime: runtime.clone(),
-            family,
-            selection,
-        }
-    }
-
-    fn key(&mut self, key: F::Key) -> CompatibilityKey<F::Key> {
-        CompatibilityKey { key }
-    }
-
-    /// The runtime family handle, for a computing query that declares a
-    /// dependency on one of this family's terminals (RUE-1112): requesting a
-    /// key through it records a real dependency edge, so red/green validation
-    /// and leases flow through the terminal.
-    pub(crate) fn family_handle(&self) -> QueryFamily<CompatibilityKey<F::Key>, F::Record> {
-        self.family.clone()
-    }
-
-    /// The currently selected terminal, for identity assertions.
-    #[cfg(test)]
-    pub(crate) fn selected_terminal(&self) -> Option<Arc<rue_query::QueryTerminal<F::Record>>> {
-        self.selection.current().cloned()
-    }
-
-    /// The last good terminal itself — the exact capability a successor
-    /// computation records as its predecessor dependency (RUE-1112).
-    pub(crate) fn last_good_terminal(&self) -> Option<&Arc<rue_query::QueryTerminal<F::Record>>> {
-        self.selection.last_good()
-    }
-
-    pub(crate) fn prepare(&mut self, key: F::Key) -> PreparedRevisionedQuery<F> {
-        PreparedRevisionedQuery {
-            runtime: self.runtime.clone(),
-            family: self.family.clone(),
-            key: self.key(key),
-        }
-    }
-
-    pub(crate) fn select(&mut self, attempt: &QueryRequestAttempt<F::Record>) {
-        if attempt.execution() == RequestExecution::Aborted {
-            self.selection.clear_current();
-        }
-        if let Some(terminal) = attempt.terminal() {
-            self.selection
-                .publish(terminal)
-                .expect("selected terminal belongs to its compiler family");
-            // The selection root now protects the terminal. End the attempt's
-            // bridge lease at once: this attempt is about to be ledgered
-            // (`attempt_view`) and kept for up to 256 completed requests, and a
-            // lingering bridge pin would retain the terminal for that whole life.
-            // Releasing only after `publish` established the successor keeps
-            // protection continuous — the terminal is never left unpinned.
-            attempt.release_result_lease();
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn request(
-        &mut self,
-        revision: Revision,
-        key: F::Key,
-        compute: impl FnOnce(&rue_query::QueryContext) -> Result<F::Record, QueryAbort>,
-    ) -> Arc<QueryRequestAttempt<F::Record>> {
-        let key = self.key(key);
-        let attempt = Arc::new(self.runtime.request(
-            &self.family,
-            revision,
-            key,
-            CancellationToken::new(),
-            |context| {
-                let record = compute(context)?;
-                assert!(
-                    F::record_is_consistent(&record),
-                    "typed query record key does not match its terminal artifact revision"
-                );
-                let kind = match F::terminal_kind(&record) {
-                    TerminalKind::Success => QueryTerminalKind::Success,
-                    TerminalKind::Failure => QueryTerminalKind::Failure,
-                };
-                Ok(QueryOutput::success(record).with_terminal_kind(kind))
-            },
-        ));
-        self.select(&attempt);
-        attempt
-    }
-
-    pub(crate) fn attempt_view(
-        &mut self,
-        id: AttemptId,
-        attempt: Arc<QueryRequestAttempt<F::Record>>,
-        work: QueryStructuralWork,
-    ) -> Arc<dyn AttemptView> {
-        let origin = AttemptId(attempt.origin_request_id());
-        let runtime_observations = attempt
-            .dependencies()
-            .iter()
-            .cloned()
-            .map(RuntimeObservation::Dependency)
-            .chain(
-                attempt
-                    .inputs()
-                    .iter()
-                    .cloned()
-                    .map(RuntimeObservation::Input),
-            )
-            .collect::<Vec<_>>()
-            .into();
-        let runtime_work = attempt.work().to_vec().into();
-        Arc::new(RuntimeAttemptView::<F> {
-            id,
-            origin,
-            attempt,
-            work,
-            runtime_observations,
-            runtime_work,
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn current_record(&self) -> Option<&F::Record> {
-        let terminal = self.selection.current()?;
-        match terminal.outcome() {
-            rue_query::QueryOutcome::Success(record) => Some(record),
-            rue_query::QueryOutcome::Failure(_) => unreachable!("compiler families retain records"),
-        }
-    }
-
-    pub(crate) fn last_good_record(&self) -> Option<&F::Record> {
-        let terminal = self.selection.last_good()?;
-        match terminal.outcome() {
-            rue_query::QueryOutcome::Success(record) => Some(record),
-            rue_query::QueryOutcome::Failure(_) => unreachable!("compiler families retain records"),
-        }
-    }
-
-    pub(crate) fn retention(&self) -> rue_query::FamilyRetention {
-        self.family.retention()
-    }
-
-    pub(crate) fn protected_count(&self) -> usize {
-        match (self.selection.current(), self.selection.last_good()) {
-            (Some(current), Some(last_good)) if Arc::ptr_eq(current, last_good) => 1,
-            (Some(_), Some(_)) => 2,
-            (Some(_), None) | (None, Some(_)) => 1,
-            (None, None) => 0,
-        }
-    }
-
-    pub(crate) fn origin_attempt_ids(&self) -> impl Iterator<Item = AttemptId> + '_ {
-        let mut origins = self
-            .family
-            .retained_origin_request_ids()
-            .into_iter()
-            .map(AttemptId)
-            .collect::<std::collections::BTreeSet<_>>();
-        origins.extend(
-            [self.selection.current(), self.selection.last_good()]
-                .into_iter()
-                .flatten()
-                .map(|terminal| AttemptId(terminal.origin_request_id())),
-        );
-        origins.into_iter()
-    }
-
-    pub(crate) fn retained_aborted_len(&self) -> usize {
-        // Runtime aborts are owned by the diagnostic/metrics attempt index;
-        // this family retains no separate aborted-attempt history.
-        0
-    }
-
-    fn any_retained_key(&self, predicate: impl FnMut(&F::Key) -> bool) -> bool {
-        let mut predicate = predicate;
-        self.family.any_retained_key(|key| predicate(&key.key))
-    }
-}
-
-pub(crate) struct PreparedRevisionedQuery<F>
-where
-    F: TypedQueryFamily + 'static,
-    F::Key: 'static,
-    F::Record: 'static,
-{
-    runtime: QueryRuntime,
-    family: QueryFamily<CompatibilityKey<F::Key>, F::Record>,
-    key: CompatibilityKey<F::Key>,
-}
-
-impl<F> PreparedRevisionedQuery<F>
-where
-    F: TypedQueryFamily + 'static,
-    F::Key: 'static,
-    F::Record: 'static,
-{
-    pub(crate) fn execute(
-        self,
-        revision: Revision,
-        origin: AttemptId,
-        compute: impl FnOnce(&rue_query::QueryContext) -> Result<F::Record, QueryAbort>,
-    ) -> Arc<QueryRequestAttempt<F::Record>> {
-        Arc::new(self.runtime.request_with_origin(
-            &self.family,
-            revision,
-            self.key,
-            CancellationToken::new(),
-            Some(origin.0),
-            |context| {
-                let record = compute(context)?;
-                assert!(F::record_is_consistent(&record));
-                let kind = match F::terminal_kind(&record) {
-                    TerminalKind::Success => QueryTerminalKind::Success,
-                    TerminalKind::Failure => QueryTerminalKind::Failure,
-                };
-                Ok(QueryOutput::success(record).with_terminal_kind(kind))
-            },
-        ))
-    }
-}
-
 #[derive(Debug)]
 struct RuntimeAttemptView<F: TypedQueryFamily> {
     id: AttemptId,
@@ -446,10 +171,6 @@ where
         self.origin
     }
 
-    fn dependencies(&self) -> &[crate::query_graph::ObservedDependency] {
-        &[]
-    }
-
     fn runtime_observations(&self) -> &[RuntimeObservation] {
         &self.runtime_observations
     }
@@ -476,7 +197,6 @@ where
     }
 }
 
-#[derive(Debug)]
 pub(crate) struct RevisionedQueryDatabase {
     runtime: QueryRuntime,
     next_revision: u64,
@@ -677,7 +397,25 @@ pub(crate) struct RevisionedQueryDatabase {
     /// `dependencies()`.
     #[cfg(test)]
     provider_probe: QueryFamily<ProviderProbeKey, ProviderProbeValue>,
-    pub(crate) parse: RevisionedFamily<super::session::ParseQuery>,
+    parse: QueryFamily<
+        CompatibilityKey<super::session::ParseQueryKey>,
+        super::session::ParseQueryRecord,
+    >,
+    parse_selection: QuerySelection<
+        CompatibilityKey<super::session::ParseQueryKey>,
+        super::session::ParseQueryRecord,
+    >,
+}
+
+impl std::fmt::Debug for RevisionedQueryDatabase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RevisionedQueryDatabase")
+            .field("next_revision", &self.next_revision)
+            .field("next_source_stamp", &self.next_source_stamp)
+            .field("parse_retention", &self.parse.retention())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Cumulative provider-op observation counters, one per §4 fact family. The
@@ -13970,8 +13708,17 @@ impl RevisionedQueryDatabase {
                 .is_ok(),
             "BodyTransaction evaluator is installed once"
         );
+        let parse = runtime
+            .content_addressed_family_with_equality(
+                "compiler.parse",
+                super::session::ParseQuery::MAX_TERMINALS,
+                record_equal::<super::session::ParseQuery>,
+            )
+            .expect("the Parse family has one canonical name");
+        let parse_selection = parse.selection();
         Self {
-            parse: RevisionedFamily::new_content_addressed(&runtime, "compiler.parse"),
+            parse,
+            parse_selection,
             runtime: runtime.clone(),
             next_revision: 1,
             next_source_stamp: 1,
@@ -14267,11 +14014,74 @@ impl RevisionedQueryDatabase {
     }
 
     pub(crate) fn current_parse_revision(&self) -> Option<Revision> {
-        let terminal = self.parse.selection.current()?;
+        let terminal = self.parse_selection.current()?;
         let rue_query::QueryOutcome::Success(record) = terminal.outcome() else {
             unreachable!("Parse publishes typed records")
         };
         Some(record.runtime_revision())
+    }
+
+    /// The runtime family handle, for successor parsing to observe an exact
+    /// adopted predecessor terminal.
+    pub(crate) fn parse_family(
+        &self,
+    ) -> QueryFamily<
+        CompatibilityKey<super::session::ParseQueryKey>,
+        super::session::ParseQueryRecord,
+    > {
+        self.parse.clone()
+    }
+
+    /// The currently selected parse terminal, for identity assertions.
+    #[cfg(test)]
+    pub(crate) fn selected_parse_terminal(
+        &self,
+    ) -> Option<Arc<rue_query::QueryTerminal<super::session::ParseQueryRecord>>> {
+        self.parse_selection.current().cloned()
+    }
+
+    /// The exact last-good parse terminal retained by the runtime selection
+    /// root. Successor parsing adopts this terminal as a true runtime edge.
+    pub(crate) fn last_good_parse_terminal(
+        &self,
+    ) -> Option<&Arc<rue_query::QueryTerminal<super::session::ParseQueryRecord>>> {
+        self.parse_selection.last_good()
+    }
+
+    pub(crate) fn last_good_parse_record(&self) -> Option<&super::session::ParseQueryRecord> {
+        let terminal = self.parse_selection.last_good()?;
+        match terminal.outcome() {
+            rue_query::QueryOutcome::Success(record) => Some(record),
+            rue_query::QueryOutcome::Failure(_) => None,
+        }
+    }
+
+    pub(crate) fn request_parse(
+        &self,
+        revision: Revision,
+        origin: AttemptId,
+        key: super::session::ParseQueryKey,
+        compute: impl FnOnce(&QueryContext) -> Result<super::session::ParseQueryRecord, QueryAbort>,
+    ) -> Arc<QueryRequestAttempt<super::session::ParseQueryRecord>> {
+        Arc::new(self.runtime.request_with_origin(
+            &self.parse,
+            revision,
+            CompatibilityKey { key },
+            CancellationToken::new(),
+            Some(origin.0),
+            |context| {
+                let record = compute(context)?;
+                assert!(
+                    super::session::ParseQuery::record_is_consistent(&record),
+                    "parse record key does not match its terminal artifact revision"
+                );
+                let kind = match super::session::ParseQuery::terminal_kind(&record) {
+                    TerminalKind::Success => QueryTerminalKind::Success,
+                    TerminalKind::Failure => QueryTerminalKind::Failure,
+                };
+                Ok(QueryOutput::success(record).with_terminal_kind(kind))
+            },
+        ))
     }
 
     /// Revision pin for semantic work. Import discovery republishes the exact
@@ -17730,22 +17540,98 @@ impl RevisionedQueryDatabase {
         &mut self,
         attempt: &QueryRequestAttempt<super::session::ParseQueryRecord>,
     ) {
-        self.parse.select(attempt);
+        if attempt.execution() == RequestExecution::Aborted {
+            self.parse_selection.clear_current();
+        }
+        if let Some(terminal) = attempt.terminal() {
+            self.parse_selection
+                .publish(terminal)
+                .expect("selected terminal belongs to the Parse family");
+            // Publication establishes the runtime selection root before the
+            // request bridge lease ends, so the terminal stays protected while
+            // the diagnostic attempt index retains this request.
+            attempt.release_result_lease();
+        }
         // Exact source stamps live exactly as long as a parse memo key (or the
         // current request before selection). They are never independently FIFO
         // evicted while a terminal can still observe the stamp.
         self.source_stamps.retain(|(source, _)| {
             self.parse
-                .any_retained_key(|key| key.pinned_source() == Some(source))
+                .any_retained_key(|key| key.key.pinned_source() == Some(source))
         });
         debug_assert!(self.source_stamps.len() <= self.parse.retention().memo_nodes);
     }
 
+    pub(crate) fn parse_attempt_view(
+        &self,
+        id: AttemptId,
+        attempt: Arc<QueryRequestAttempt<super::session::ParseQueryRecord>>,
+        work: QueryStructuralWork,
+    ) -> Arc<dyn AttemptView> {
+        let origin = AttemptId(attempt.origin_request_id());
+        let runtime_observations = attempt
+            .dependencies()
+            .iter()
+            .cloned()
+            .map(RuntimeObservation::Dependency)
+            .chain(
+                attempt
+                    .inputs()
+                    .iter()
+                    .cloned()
+                    .map(RuntimeObservation::Input),
+            )
+            .collect::<Vec<_>>()
+            .into();
+        let runtime_work = attempt.work().to_vec().into();
+        Arc::new(RuntimeAttemptView::<super::session::ParseQuery> {
+            id,
+            origin,
+            attempt,
+            work,
+            runtime_observations,
+            runtime_work,
+        })
+    }
+
+    pub(crate) fn parse_origin_attempt_ids(&self) -> impl Iterator<Item = AttemptId> + '_ {
+        let mut origins = self
+            .parse
+            .retained_origin_request_ids()
+            .into_iter()
+            .map(AttemptId)
+            .collect::<BTreeSet<_>>();
+        origins.extend(
+            [
+                self.parse_selection.current(),
+                self.parse_selection.last_good(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|terminal| AttemptId(terminal.origin_request_id())),
+        );
+        origins.into_iter()
+    }
+
+    pub(crate) fn parse_retained_aborted_len(&self) -> usize {
+        // Abort history belongs to the diagnostic/metrics attempt index.
+        0
+    }
+
     pub(crate) fn parse_retention(&self) -> crate::typed_query_store::QueryStoreRetention {
         let retention = self.parse.retention();
+        let protected = match (
+            self.parse_selection.current(),
+            self.parse_selection.last_good(),
+        ) {
+            (Some(current), Some(last_good)) if Arc::ptr_eq(current, last_good) => 1,
+            (Some(_), Some(_)) => 2,
+            (Some(_), None) | (None, Some(_)) => 1,
+            (None, None) => 0,
+        };
         crate::typed_query_store::QueryStoreRetention {
             retained: retention.terminals,
-            protected: self.parse.protected_count(),
+            protected,
             pinned: 0,
             tombstones: 0,
             evictions: self.runtime.metrics().evictions as usize,
@@ -27499,50 +27385,6 @@ fn main() -> i32 {
         assert_eq!(execution(&recovered), RequestExecution::Computed);
     }
 
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-    struct Key(&'static str);
-
-    #[derive(Debug, Clone)]
-    struct Record {
-        key: Key,
-        value: u64,
-        diagnostic_payload: u64,
-        failed: bool,
-    }
-
-    #[derive(Debug)]
-    struct Family;
-
-    impl TypedQueryFamily for Family {
-        type Key = Key;
-        type Record = Record;
-        const MAX_TERMINALS: usize = 4;
-
-        fn key(record: &Self::Record) -> &Self::Key {
-            &record.key
-        }
-
-        fn terminal_kind(record: &Self::Record) -> TerminalKind {
-            if record.failed {
-                TerminalKind::Failure
-            } else {
-                TerminalKind::Success
-            }
-        }
-
-        fn outcome_equal(left: &Self::Record, right: &Self::Record) -> bool {
-            left.value == right.value
-        }
-
-        fn diagnostics_equal(left: &Self::Record, right: &Self::Record) -> bool {
-            left.diagnostic_payload == right.diagnostic_payload
-        }
-
-        fn record_is_consistent(record: &Self::Record) -> bool {
-            !record.key.0.is_empty()
-        }
-    }
-
     #[test]
     fn wide_root_imports_form_one_exact_compiler_frontier() {
         let source = r#"
@@ -28079,217 +27921,6 @@ fn main() -> i32 {
                 .collect::<BTreeSet<_>>(),
             first_paths
         );
-    }
-
-    #[test]
-    fn selected_state_shim_uses_runtime_attempts_and_last_good_publication() {
-        let runtime = QueryRuntime::new(1);
-        let input = InputIdentity::new("test", "leaf");
-        let first_revision = Revision::new(1, 1);
-        let second_revision = Revision::new(2, 2);
-        runtime
-            .publish_revision(first_revision, [(input.clone(), 1)])
-            .unwrap();
-        runtime
-            .publish_revision(second_revision, [(input.clone(), 2)])
-            .unwrap();
-        let mut family = RevisionedFamily::<Family>::new(&runtime, "compiler.test-family");
-
-        let computed = family.request(first_revision, Key("key"), |context| {
-            context.input(input.clone())?;
-            Ok(Record {
-                key: Key("key"),
-                value: 7,
-                diagnostic_payload: 11,
-                failed: false,
-            })
-        });
-        assert_eq!(execution(&computed), RequestExecution::Computed);
-        assert_eq!(computed.inputs().len(), 1);
-
-        let reused = family.request(first_revision, Key("key"), |_| {
-            panic!("the exact keyed terminal must be runtime-reused")
-        });
-        assert_eq!(execution(&reused), RequestExecution::Reused);
-        assert!(reused.work().is_empty());
-
-        let failed = family.request(second_revision, Key("key"), |context| {
-            context.input(input)?;
-            Ok(Record {
-                key: Key("key"),
-                value: 9,
-                diagnostic_payload: 12,
-                failed: true,
-            })
-        });
-        assert_eq!(
-            failed.terminal().unwrap().kind(),
-            QueryTerminalKind::Failure
-        );
-        assert!(family.current_record().unwrap().failed);
-        assert_eq!(family.last_good_record().unwrap().value, 7);
-
-        let aborted = family.request(second_revision, Key("abort"), |_| Err(QueryAbort::Canceled));
-        assert_eq!(execution(&aborted), RequestExecution::Aborted);
-        assert!(family.current_record().is_none());
-        assert_eq!(family.last_good_record().unwrap().value, 7);
-
-        let recovered = family.request(second_revision, Key("recovered"), |context| {
-            context.input(InputIdentity::new("test", "leaf"))?;
-            Ok(Record {
-                key: Key("recovered"),
-                value: 10,
-                diagnostic_payload: 13,
-                failed: false,
-            })
-        });
-        assert_eq!(execution(&recovered), RequestExecution::Computed);
-        assert_eq!(family.current_record().unwrap().value, 10);
-        assert_eq!(family.last_good_record().unwrap().value, 10);
-        assert_eq!(family.retention().memo_nodes, 2);
-    }
-
-    #[test]
-    fn aborted_attempt_view_projects_runtime_work_without_forging_typed_work() {
-        let runtime = QueryRuntime::new(1);
-        let input = InputIdentity::new("test", "prefix");
-        let revision = Revision::new(10, 1);
-        runtime
-            .publish_revision(revision, [(input.clone(), 3)])
-            .unwrap();
-        let mut family = RevisionedFamily::<Family>::new(&runtime, "compiler.abort-prefix");
-        let prepared = family.prepare(Key("prefix"));
-        let attempt = prepared.execute(revision, AttemptId(77), |context| {
-            context.input(input)?;
-            context.record_work(rue_query::WorkItem::new("runtime-prefix", 2));
-            Err(QueryAbort::Canceled)
-        });
-        family.select(&attempt);
-        let structural = QueryStructuralWork::Parse(crate::ParsedModulesWork {
-            modules_considered: 1,
-            ..crate::ParsedModulesWork::default()
-        });
-        let view = family.attempt_view(AttemptId(77), attempt.clone(), structural.clone());
-        assert_eq!(view.origin_id(), AttemptId(77));
-        assert_eq!(
-            view.outcome(),
-            AttemptOutcomeKind::Aborted(AbortedQueryReason::Canceled)
-        );
-        assert!(view.dependencies().is_empty());
-        assert_eq!(view.runtime_observations().len(), 1);
-        assert!(matches!(
-            &view.runtime_observations()[0],
-            RuntimeObservation::Input(input) if input.stamp == 3
-        ));
-        assert_eq!(view.work(), &QueryStructuralWork::None);
-        assert_eq!(
-            view.runtime_work(),
-            &[(Arc::<str>::from("runtime-prefix"), 2)]
-        );
-        assert_eq!(attempt.work(), &[(Arc::<str>::from("runtime-prefix"), 2)]);
-        assert_eq!(family.retained_aborted_len(), 0);
-    }
-
-    #[test]
-    fn runtime_frozen_origin_survives_reuse_without_a_peer_registry() {
-        let runtime = QueryRuntime::new(1);
-        let revision = Revision::new(11, 1);
-        runtime.publish_revision(revision, []).unwrap();
-        let mut family = RevisionedFamily::<Family>::new(&runtime, "compiler.origin");
-        let computed = family
-            .prepare(Key("origin"))
-            .execute(revision, AttemptId(41), |_| {
-                Ok(Record {
-                    key: Key("origin"),
-                    value: 1,
-                    diagnostic_payload: 1,
-                    failed: false,
-                })
-            });
-        family.select(&computed);
-        assert_eq!(computed.origin_request_id(), 41);
-        let reused = family
-            .prepare(Key("origin"))
-            .execute(revision, AttemptId(42), |_| {
-                panic!("retained terminal must be reused")
-            });
-        assert_eq!(reused.execution(), RequestExecution::Reused);
-        assert_eq!(reused.origin_request_id(), 41);
-        let view = family.attempt_view(AttemptId(42), reused, QueryStructuralWork::None);
-        assert_eq!(view.origin_id(), AttemptId(41));
-        assert_eq!(
-            family.origin_attempt_ids().collect::<Vec<_>>(),
-            vec![AttemptId(41)]
-        );
-    }
-
-    // Selecting a result ends the attempt-carried bridge lease immediately, so a
-    // completed attempt retained in the session ledger no longer pins its
-    // terminal. Without the release the ledgered attempt would keep the terminal
-    // retained for the record's whole life, defeating the retention cap.
-    #[test]
-    fn selecting_a_result_releases_the_attempt_bridge_lease_before_ledgering() {
-        let runtime = QueryRuntime::new(1);
-        let revision = Revision::new(20, 1);
-        runtime.publish_revision(revision, []).unwrap();
-        let mut family = RevisionedFamily::<Family>::new(&runtime, "compiler.bridge-release");
-
-        // Produce and select a result, then hold the attempt alive for the rest
-        // of the test — mimicking the bounded attempt ledger retaining it.
-        let bridged = family
-            .prepare(Key("bridged"))
-            .execute(revision, AttemptId(1), |_| {
-                Ok(Record {
-                    key: Key("bridged"),
-                    value: 1,
-                    diagnostic_payload: 1,
-                    failed: false,
-                })
-            });
-        family.select(&bridged);
-
-        // Move the selection to a succession of other results. The bridged
-        // terminal is no longer selection-protected; if `select` released its
-        // bridge lease, it is now wholly unprotected even though `bridged` lives.
-        for (offset, name) in ["f0", "f1", "f2", "f3", "f4", "f5"].into_iter().enumerate() {
-            let value = 100 + offset as u64;
-            let filler = family.prepare(Key(name)).execute(
-                revision,
-                AttemptId(10 + offset as u64),
-                move |_| {
-                    Ok(Record {
-                        key: Key(name),
-                        value,
-                        diagnostic_payload: 1,
-                        failed: false,
-                    })
-                },
-            );
-            family.select(&filler);
-        }
-
-        // The bridged terminal was evicted under the cap: a fresh request
-        // recomputes it. Under the pre-fix bridge leak the still-alive ledgered
-        // attempt would keep pinning it and this request would reuse instead.
-        let recomputed = family
-            .prepare(Key("bridged"))
-            .execute(revision, AttemptId(99), |_| {
-                Ok(Record {
-                    key: Key("bridged"),
-                    value: 1,
-                    diagnostic_payload: 1,
-                    failed: false,
-                })
-            });
-        assert_eq!(
-            recomputed.execution(),
-            RequestExecution::Computed,
-            "a selected result's bridge lease must end at selection, not at attempt drop"
-        );
-
-        // The bridged attempt was alive throughout: the release was driven by
-        // selection, not by the attempt dropping.
-        assert!(bridged.terminal().is_some());
     }
 
     // -----------------------------------------------------------------------

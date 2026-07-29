@@ -164,9 +164,6 @@ pub(crate) struct CfgFrontendOutput {
     pub(crate) strings: Vec<String>,
     /// Warnings collected during semantic analysis and CFG construction.
     pub(crate) warnings: Vec<CompileWarning>,
-    pub(crate) implicit_named_destructor_dependencies:
-        Vec<rue_air::ImplicitNamedDestructorDependencyEvent>,
-    pub(crate) implicit_named_destructor_dependencies_complete: bool,
     pub(crate) work: canonical_semantic::CfgConstructionWork,
 }
 
@@ -672,8 +669,6 @@ pub(crate) fn collect_function_cfg_queries(
         .collect();
 
     let mut functions = Vec::with_capacity(results.len());
-    let mut implicit_named_destructor_dependencies = Vec::new();
-    let mut implicit_named_destructor_dependencies_complete = true;
     let mut first_errors = None;
     for result in results {
         let (output, function_work) = match result {
@@ -707,19 +702,14 @@ pub(crate) fn collect_function_cfg_queries(
         work.cfg_export_attempts += function_work.cfg_export_attempts;
         work.cfg_export_successes += function_work.cfg_export_successes;
         work.cfg_export_rejections += function_work.cfg_export_rejections;
-        if let Some((func, func_warnings, mut implicit_edges, complete)) = output {
+        if let Some((func, func_warnings, _, _)) = output {
             functions.push(func);
             warnings.extend(func_warnings);
-            implicit_named_destructor_dependencies.append(&mut implicit_edges);
-            implicit_named_destructor_dependencies_complete &= complete;
         }
     }
     if let Some(errors) = first_errors {
         return Err(CfgConstructionFailure { errors, work });
     }
-    implicit_named_destructor_dependencies.sort();
-    implicit_named_destructor_dependencies.dedup();
-
     info!(
         function_count = functions.len(),
         "CFG construction complete"
@@ -730,8 +720,6 @@ pub(crate) fn collect_function_cfg_queries(
         type_pool,
         strings,
         warnings,
-        implicit_named_destructor_dependencies,
-        implicit_named_destructor_dependencies_complete,
         work,
     })
 }
@@ -869,11 +857,10 @@ pub(crate) fn pre_link_object_bytes_with_session(
     options: &CompileOptions,
 ) -> MultiErrorResult<usize> {
     let _span = info_span!("compile_pipeline_pre_link").entered();
-    let rir = {
-        let _span = info_span!("semantic_astgen", phase = "program_construction").entered();
-        session.canonical_rir()?
-    };
+    let _rir_span = info_span!("semantic_astgen", phase = "program_construction").entered();
     let semantic = session.canonical_semantic(options)?;
+    drop(_rir_span);
+    let rir = semantic.rir_owner();
     let foreign_symbols =
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
@@ -920,11 +907,10 @@ pub(crate) fn compile_with_session(
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let _span = info_span!("compile_pipeline").entered();
 
-    let rir = {
-        let _span = info_span!("semantic_astgen", phase = "program_construction").entered();
-        session.canonical_rir()?
-    };
+    let _rir_span = info_span!("semantic_astgen", phase = "program_construction").entered();
     let semantic = session.canonical_semantic(options)?;
+    drop(_rir_span);
+    let rir = semantic.rir_owner();
     let session_work = session.work().clone();
     let foreign_symbols =
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());

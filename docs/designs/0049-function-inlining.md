@@ -170,6 +170,12 @@ inlining would simply make every caller *uncacheable*. §4 designs the fix.
 
 ### The semantic dependency manifest (ADR-0050) — what it is and is not
 
+> **Historical architecture:** ADR-0063 superseded ADR-0050 and removed the
+> whole-program manifest and `semantic_invalidation_plan`. An inlining
+> implementation must express these dependencies through the canonical per-key
+> body-reference/query graph. The discussion below explains the distinction
+> that motivated this design; its named APIs and source locations are retired.
+
 The dependency-derived invalidation machinery is **ADR-0050 (Stable semantic
 dependency manifests)**, with session support in
 `crates/rue-compiler/src/session.rs`:

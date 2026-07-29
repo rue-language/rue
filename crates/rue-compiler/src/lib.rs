@@ -57,7 +57,6 @@ mod linking;
 mod parsed_modules;
 mod program_image_plan;
 mod queries;
-mod query_graph;
 mod revisioned_query_database;
 mod semantic_identity;
 mod semantic_query_nucleus;
@@ -86,8 +85,6 @@ mod producer_nominal_acceptance_tests;
 
 #[cfg(test)]
 mod api_inventory;
-#[cfg(test)]
-mod durable_compatibility_tests;
 #[cfg(test)]
 mod integration_tests;
 #[cfg(test)]
@@ -174,16 +171,8 @@ pub(crate) use semantic_symbols::SemanticTranslationWork;
 #[allow(unused_imports)]
 pub(crate) use session::{
     CompilerSessionWork, DefinitionQueryRecord, FRONTEND_DIAGNOSTIC_RETENTION_LIMIT,
-    FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT, FrontendQueryWork, FrontendRetentionMetrics,
-    ImportDiscoveryRevisionArtifact, ImportDiscoveryRevisionStatus, ImportGraphInputDescriptor,
-    SemanticDependencyBlocker, SemanticDependencyIncompleteReason, SemanticDependencyInputManifest,
-    SemanticDependencyManifestWork, SemanticDependencySurface, SemanticFullInvalidationReason,
-    SemanticInvalidationPlan, SemanticInvalidationScope, SemanticInvalidationWork,
-    SemanticQueryRecord, StableBodyDependencyInputRecord, StableBuiltinTypeCallHeadInput,
-    StableDeclarationTypeCallHeadDependency, StableDeclarationTypeDependency,
-    StableDefinitionFingerprint, StableDefinitionFingerprintPrecision,
-    StableDefinitionInputFingerprint, StableFreeFunctionDependency, StableModuleImportDependency,
-    StableNamedConstDependency, StableNamedConstDependencyTarget,
+    FrontendQueryWork, FrontendRetentionMetrics, ImportDiscoveryRevisionArtifact,
+    ImportDiscoveryRevisionStatus, ImportGraphInputDescriptor, SemanticQueryRecord,
 };
 #[cfg(test)]
 pub(crate) use source_identity::LinkInputDescriptor;
@@ -197,8 +186,7 @@ pub(crate) use source_identity::{
 #[cfg(test)]
 pub(crate) use body_query::{BodyTransaction, transaction_equal};
 pub(crate) use bound_definitions::{
-    BoundDefinitionRecord, BoundDefinitionSet, StableDefinitionKey, StableDefinitionKind,
-    StableDefinitionNamespace,
+    BoundDefinitionSet, StableDefinitionKey, StableDefinitionKind, StableDefinitionNamespace,
 };
 pub(crate) use canonical_lower::CanonicalRirOutput;
 pub(crate) use canonical_merge::CanonicalMergedProgram;
@@ -207,25 +195,14 @@ pub(crate) use definition_snapshot::{
     DefinitionKind, DefinitionNameKey, DefinitionNamespace, DefinitionOccurrenceId,
     DefinitionRecord, DefinitionSnapshot,
 };
-#[cfg(test)]
-pub(crate) use durable_body::{
-    DURABLE_ORDINARY_BODY_SCHEMA_VERSION, DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION,
-    DurableBodyProjectionFailure,
-};
-pub(crate) use durable_body::{
-    DurableAirInstData, DurableOrdinaryBody, DurableOrdinaryBodyPayload, DurableProjection,
-    DurableSpecializedBodyPayload, convert_semantic_specialized_body_exports,
-};
+pub(crate) use durable_body::{DurableAirInstData, DurableProjection};
 #[cfg(test)]
 pub(crate) use durable_semantics::DurableDeclarationPayload;
-pub(crate) use durable_semantics::{
-    DURABLE_SEMANTIC_SCHEMA_VERSION, DurableDeclarationSemantic, DurableSemanticSchemaVersion,
-};
+pub(crate) use durable_semantics::DurableDeclarationSemantic;
 pub(crate) use durable_semantics::{DurableConstValue, DurableType};
 #[cfg(test)]
 pub(crate) use durable_semantics::{
-    DurableParameterMode, DurableSemanticParameter, DurableSemanticProjectionFailure,
-    DurableSemanticProjectionWork,
+    DurableSemanticProjectionFailure, DurableSemanticProjectionWork,
 };
 
 // Small foundational types callers need to configure or inspect the facade.
@@ -243,10 +220,7 @@ pub(crate) use rue_span::Span;
 pub use rue_target::{Arch, Target};
 
 // Internal phase vocabulary. These are intentionally not part of the facade.
-pub(crate) use durable_body::{convert_semantic_body_exports, finalize_durable_ordinary_bodies};
-pub(crate) use durable_semantics::{
-    import_durable_declaration_semantics, project_durable_declaration_semantics,
-};
+pub(crate) use durable_semantics::project_durable_declaration_semantics;
 pub(crate) use import_graph::{validate_additive_successor, validate_canonical_import_graph};
 #[cfg(test)]
 pub(crate) use linking::{parse_runtime_archive, validate_runtime};
