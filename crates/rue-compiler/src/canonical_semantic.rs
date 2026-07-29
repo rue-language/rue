@@ -2235,10 +2235,9 @@ mod tests {
         BodyOwnerTokenWork, CanonicalSemanticOutput, CanonicalSemanticWork,
         analyze_canonical_program_for_test_support,
     };
-    use crate::parsed_modules::parse_source_snapshot_modules;
     use crate::{
         CanonicalRirOutput, CompileOptions, FunctionWithCfg, PreviewFeatures, SourceMetadata,
-        SourceSnapshot, Target, lower_canonical_rir, merge_parsed_modules,
+        SourceSnapshot, Target,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -2263,9 +2262,9 @@ mod tests {
 
     fn assert_token_preparation_preserves_source_errors(source: &str) {
         let source = snapshot(&[(1, "/main.rue", "main.rue", source)], 1);
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&source).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let options = CompileOptions::default();
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
 
@@ -2280,7 +2279,7 @@ mod tests {
             Ok(_) => panic!("test input must fail ordinary declaration binding"),
         };
         let canonical =
-            analyze_canonical_program_for_test_support(&merged, &rir, &options, &imports, false)
+            analyze_canonical_program_for_test_support(merged, rir, &options, &imports, false)
                 .unwrap_err();
         let messages = |errors: crate::CompileErrors| {
             errors.iter().map(ToString::to_string).collect::<Vec<_>>()
@@ -2305,13 +2304,13 @@ mod tests {
     )]
     fn canonical_sema_cannot_invoke_raw_declaration_discovery() {
         let source = snapshot(&[(1, "/main.rue", "main.rue", "fn main() {}")], 1);
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&source).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         crate::bound_definitions::configure_canonical_sema(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
@@ -2325,15 +2324,18 @@ mod tests {
         snapshot: &SourceSnapshot,
         options: &CompileOptions,
         ids: bool,
-    ) -> (CanonicalSemanticOutput, CanonicalRirOutput) {
-        let parsed = parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+    ) -> (CanonicalSemanticOutput, std::sync::Arc<CanonicalRirOutput>) {
+        let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
         let imports = crate::test_support::test_import_graph(snapshot).unwrap();
-        let output =
-            analyze_canonical_program_for_test_support(&merged, &rir, options, &imports, ids)
-                .unwrap();
-        (output, rir)
+        let output = analyze_canonical_program_for_test_support(
+            &stages.merged,
+            &stages.rir,
+            options,
+            &imports,
+            ids,
+        )
+        .unwrap();
+        (output, stages.rir)
     }
 
     fn function_fingerprint(

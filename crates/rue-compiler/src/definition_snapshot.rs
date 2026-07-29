@@ -193,24 +193,6 @@ struct DefinitionShardRecord {
 }
 
 impl DefinitionShard {
-    #[cfg(test)]
-    fn matches(&self, module: &crate::parsed_modules::ParsedModule) -> bool {
-        self.file_id == module.file_id()
-            && self.records.len() == module.definitions().candidates().len()
-            && self
-                .records
-                .iter()
-                .zip(module.definitions().candidates())
-                .all(|(record, candidate)| {
-                    record.namespace == candidate.namespace()
-                        && record.kind == candidate.kind()
-                        && record.visibility == candidate.visibility()
-                        && record.name.as_ref() == candidate.name()
-                        && record.name_span == candidate.name_span()
-                        && record.declaration_span == candidate.declaration_span()
-                })
-    }
-
     fn matches_index(
         &self,
         module: &crate::parsed_modules::ParsedModule,
@@ -279,124 +261,6 @@ pub struct DefinitionSnapshot {
 }
 
 impl DefinitionSnapshot {
-    /// Build durable definition candidates from self-contained parsed modules.
-    ///
-    /// Names are already owned values in each module's definition index; this
-    /// path performs no interner lookup, AST traversal, or source-byte hashing.
-    #[cfg(test)]
-    pub fn from_parsed_modules(
-        program: &crate::parsed_modules::ParsedProgram,
-    ) -> CompileResult<Self> {
-        Self::from_parsed_modules_reusing(program, None).map(|(snapshot, _)| snapshot)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_parsed_modules_reusing(
-        program: &crate::parsed_modules::ParsedProgram,
-        previous: Option<&Self>,
-    ) -> CompileResult<(Self, DefinitionShardWork)> {
-        let _span = info_span!(
-            "definition_snapshot_modules",
-            module_count = program.modules().len()
-        )
-        .entered();
-        let source_snapshot = SourceSnapshot::from_parsed_modules(program)?;
-        let mut modules = Vec::with_capacity(program.modules().len());
-        let mut work = DefinitionShardWork {
-            shards_indexed: previous.map_or(0, |snapshot| snapshot.shards.len()),
-            ..DefinitionShardWork::default()
-        };
-        let mut shards = Vec::with_capacity(program.modules().len());
-        let definition_count = program
-            .modules()
-            .iter()
-            .map(|module| module.definitions().candidates().len())
-            .sum();
-        let mut definitions_by_name =
-            HashMap::<DefinitionNameKey, Vec<DefinitionId>>::with_capacity(definition_count);
-
-        for (module_index, module) in program.modules().iter().enumerate() {
-            let candidate_records = || {
-                module
-                    .definitions()
-                    .candidates()
-                    .iter()
-                    .map(|candidate| DefinitionShardRecord {
-                        namespace: candidate.namespace(),
-                        kind: candidate.kind(),
-                        visibility: candidate.visibility(),
-                        name: Arc::from(candidate.name()),
-                        name_span: candidate.name_span(),
-                        declaration_span: candidate.declaration_span(),
-                    })
-                    .collect::<Vec<_>>()
-            };
-            let shard = previous
-                .and_then(|snapshot| {
-                    snapshot
-                        .shards
-                        .binary_search_by(|shard| shard.key.cmp(module.module_id()))
-                        .ok()
-                        .map(|index| snapshot.shards[index].clone())
-                })
-                .filter(|shard| shard.matches(module));
-            let shard = if let Some(shard) = shard {
-                work.shards_reused += 1;
-                shard
-            } else {
-                work.shards_rebuilt += 1;
-                Arc::new(DefinitionShard {
-                    key: module.module_id().clone(),
-                    file_id: module.file_id(),
-                    records: candidate_records().into(),
-                })
-            };
-            let mut definitions = Vec::with_capacity(shard.records.len());
-            for (definition_index, candidate) in shard.records.iter().enumerate() {
-                let id = DefinitionId {
-                    module_index,
-                    definition_index,
-                };
-                let name_key = DefinitionNameKey::new(
-                    module.module_id().clone(),
-                    candidate.namespace,
-                    &candidate.name,
-                );
-                definitions_by_name
-                    .entry(name_key.clone())
-                    .or_default()
-                    .push(id);
-                definitions.push(DefinitionRecord {
-                    id,
-                    name_key,
-                    kind: candidate.kind,
-                    visibility: candidate.visibility,
-                    file_id: module.file_id(),
-                    name_span: candidate.name_span,
-                    declaration_span: candidate.declaration_span,
-                });
-            }
-            modules.push(ModuleDefinition {
-                key: module.module_id().clone(),
-                file_id: module.file_id(),
-                definitions,
-            });
-            shards.push(shard);
-        }
-
-        Ok((
-            Self {
-                source_snapshot,
-                #[cfg(test)]
-                root_module: program.root().clone(),
-                modules,
-                definitions_by_name,
-                shards: shards.into(),
-            },
-            work,
-        ))
-    }
-
     pub(crate) fn from_module_indexes_reusing(
         program: &crate::parsed_modules::ParsedProgram,
         indexes: &[crate::revisioned_query_database::ProjectedModuleIndex],
@@ -713,7 +577,6 @@ fn invalid_input(message: impl Into<String>) -> CompileError {
 mod tests {
     use super::*;
     use crate::SourceMetadata;
-    use crate::parsed_modules::parse_source_snapshot_modules;
 
     fn source_snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
@@ -735,10 +598,14 @@ mod tests {
         .unwrap()
     }
 
+    /// The canonical definition snapshot for a fixture, taken from the merge
+    /// query production uses rather than a second assembly.
     fn build(entries: &[(u32, &str, &str, &str)], root: u32) -> DefinitionSnapshot {
         let source = source_snapshot(entries, root);
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        DefinitionSnapshot::from_parsed_modules(&parsed).unwrap()
+        crate::test_support::test_merged_program(&source)
+            .unwrap()
+            .definitions()
+            .clone()
     }
 
     fn durable_projection(
@@ -863,8 +730,8 @@ mod tests {
             1,
         );
         let original = source.shared_source_text(FileId::new(1)).unwrap();
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let definitions = DefinitionSnapshot::from_parsed_modules(&parsed).unwrap();
+        let merged = crate::test_support::test_merged_program(&source).unwrap();
+        let definitions = merged.definitions();
         let retained = definitions
             .source_snapshot()
             .shared_source_text(FileId::new(1))
@@ -877,44 +744,6 @@ mod tests {
                 .module(&ModuleId::from_logical_path("empty.rue").unwrap())
                 .unwrap()
                 .is_empty()
-        );
-    }
-
-    #[test]
-    fn duplicate_and_cross_kind_candidates_keep_unique_occurrences() {
-        let snapshot = build(
-            &[(
-                1,
-                "/root.rue",
-                "root.rue",
-                "fn shared() {} fn shared() {} struct shared {} const shared: i32 = 1;",
-            )],
-            1,
-        );
-        let definitions = snapshot.definitions().collect::<Vec<_>>();
-
-        assert_eq!(definitions.len(), 4);
-        assert!(
-            definitions
-                .windows(2)
-                .all(|pair| { pair[0].name_key() == pair[1].name_key() })
-        );
-        assert!(
-            definitions
-                .windows(2)
-                .all(|pair| pair[0].id() != pair[1].id())
-        );
-        assert_eq!(
-            snapshot
-                .definitions_named(definitions[0].name_key())
-                .map(DefinitionRecord::kind)
-                .collect::<Vec<_>>(),
-            [
-                DefinitionKind::Function,
-                DefinitionKind::Function,
-                DefinitionKind::Struct,
-                DefinitionKind::Const,
-            ],
         );
     }
 

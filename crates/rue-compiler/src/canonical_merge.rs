@@ -96,13 +96,6 @@ struct CandidateDef {
     physical_path: Arc<str>,
 }
 
-#[cfg(test)]
-pub(crate) fn merge_parsed_modules(
-    program: &ParsedProgram,
-) -> Result<CanonicalMergedProgram, CompileErrors> {
-    merge_parsed_modules_in_order(program, None)
-}
-
 pub(crate) fn merge_parsed_modules_reusing_indexes(
     program: &ParsedProgram,
     indexes: &[ProjectedModuleIndex],
@@ -156,70 +149,6 @@ pub(crate) fn merge_parsed_modules_reusing_indexes(
     Ok(assemble_merged_program(program, definitions, work))
 }
 
-#[cfg(test)]
-pub(crate) fn merge_parsed_modules_for_batch(
-    program: &ParsedProgram,
-    diagnostic_order: &[ModuleId],
-) -> Result<CanonicalMergedProgram, CompileErrors> {
-    merge_parsed_modules_in_order(program, Some(diagnostic_order))
-}
-
-#[cfg(test)]
-fn merge_parsed_modules_in_order(
-    program: &ParsedProgram,
-    diagnostic_order: Option<&[ModuleId]>,
-) -> Result<CanonicalMergedProgram, CompileErrors> {
-    let (work, ordered_modules) = merge_inputs(program, diagnostic_order);
-    let errors = canonical_duplicate_errors(&ordered_modules);
-    if !errors.is_empty() {
-        return Err(CompileErrors::from(errors));
-    }
-    let (definitions, shards) = DefinitionSnapshot::from_parsed_modules_reusing(program, None)
-        .map_err(CompileErrors::from)?;
-    let mut work = work;
-    work.definition_shards_indexed = shards.shards_indexed;
-    work.definition_shards_reused = shards.shards_reused;
-    work.definition_shards_rebuilt = shards.shards_rebuilt;
-    Ok(assemble_merged_program(program, definitions, work))
-}
-
-#[cfg(test)]
-fn merge_inputs<'a>(
-    program: &'a ParsedProgram,
-    diagnostic_order: Option<&[ModuleId]>,
-) -> (CanonicalMergeWork, Vec<&'a Arc<ParsedModule>>) {
-    let work = CanonicalMergeWork {
-        modules_visited: program.modules().len(),
-        items_visited: program
-            .modules()
-            .iter()
-            .map(|module| module.ast().items.len())
-            .sum(),
-        candidates_visited: program
-            .modules()
-            .iter()
-            .map(|module| module.definitions().candidates().len())
-            .sum(),
-        ..CanonicalMergeWork::default()
-    };
-    let ordered_modules = if let Some(order) = diagnostic_order {
-        order
-            .iter()
-            .map(|module_id| {
-                program
-                    .modules()
-                    .binary_search_by(|module| module.module_id().cmp(module_id))
-                    .ok()
-                    .map(|index| &program.modules()[index])
-                    .expect("batch diagnostic order contains every parsed module")
-            })
-            .collect::<Vec<_>>()
-    } else {
-        program.modules().iter().collect()
-    };
-    (work, ordered_modules)
-}
-
 fn assemble_merged_program(
     program: &ParsedProgram,
     definitions: DefinitionSnapshot,
@@ -230,35 +159,6 @@ fn assemble_merged_program(
         definitions,
         work,
     }
-}
-
-#[cfg(test)]
-fn canonical_duplicate_errors(modules: &[&Arc<ParsedModule>]) -> Vec<CompileError> {
-    let indexes = modules
-        .iter()
-        .map(|module| {
-            module
-                .definitions()
-                .candidates()
-                .iter()
-                .map(|candidate| ModuleIndexEntry {
-                    namespace: candidate.namespace(),
-                    kind: candidate.kind(),
-                    visibility: candidate.visibility(),
-                    name: Arc::from(candidate.name()),
-                    language_item: None,
-                    name_span: candidate.name_span(),
-                    declaration_span: candidate.declaration_span(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    duplicate_errors(
-        modules
-            .iter()
-            .zip(&indexes)
-            .map(|(module, index)| (module.physical_path(), index.as_slice())),
-    )
 }
 
 fn canonical_duplicate_errors_from_indexes(
@@ -434,8 +334,7 @@ mod tests {
             enum kind {} struct kind {} struct record {} struct record {} \
             enum choice {} enum choice {}";
         let snapshot = snapshot(&[(1, "main.rue", "main.rue", source)], 1);
-        let canonical = parse_source_snapshot_modules(&snapshot).unwrap();
-        let canonical_errors = merge_parsed_modules(&canonical).unwrap_err();
+        let canonical_errors = crate::test_support::test_merged_program(&snapshot).unwrap_err();
         assert_eq!(canonical_errors.len(), 5);
         let errors = canonical_errors.as_slice();
         assert!(matches!(
@@ -478,41 +377,47 @@ mod tests {
             ],
             1,
         );
+        assert!(crate::test_support::test_merged_program(&snapshot).is_ok());
+        // Storage order cannot vary the outcome: a reversed module vector
+        // reassembles into the same canonical sequence the merge consumes.
         let canonical = parse_source_snapshot_modules(&snapshot).unwrap();
-        assert!(merge_parsed_modules(&canonical).is_ok());
         let mut reversed = canonical.modules().to_vec();
         reversed.reverse();
         let reordered = ParsedProgram::new(canonical.root().clone(), reversed).unwrap();
-        assert!(merge_parsed_modules(&reordered).is_ok());
+        assert!(
+            canonical
+                .modules()
+                .iter()
+                .zip(reordered.modules())
+                .all(|(left, right)| Arc::ptr_eq(left, right))
+        );
     }
 
     #[test]
-    fn batch_merge_uses_explicit_presentation_order_without_reordering_program() {
+    fn batch_merge_uses_snapshot_presentation_order_without_reordering_program() {
         // Same-file duplicates remain per-file conflicts (spec 10.5:1). With one
-        // in each module, the explicit presentation order [b, a] fixes the
+        // in each module, the snapshot's own file order [b, a] fixes the
         // diagnostic sequence (b's conflict before a's) without reordering the
-        // stored program.
+        // stored program, which stays in canonical ModuleId order.
         let snapshot = snapshot(
             &[
-                (1, "a.rue", "a.rue", "fn dup() {} fn dup() {}"),
                 (2, "b.rue", "b.rue", "fn clash() {} fn clash() {}"),
+                (1, "a.rue", "a.rue", "fn dup() {} fn dup() {}"),
             ],
             1,
         );
-        let parsed = parse_source_snapshot_modules(&snapshot).unwrap();
-        let order = [
-            ModuleId::from_logical_path("b.rue").unwrap(),
-            ModuleId::from_logical_path("a.rue").unwrap(),
-        ];
-        let errors = merge_parsed_modules_for_batch(&parsed, &order)
-            .unwrap_err()
-            .into_iter()
-            .collect::<Vec<_>>();
+        let mut session = crate::CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_owner_result()
+            .unwrap();
+        let errors = session.merge().unwrap_err().into_iter().collect::<Vec<_>>();
 
         // Presentation order [b, a]: b.rue's conflict (file 2) is reported
         // before a.rue's (file 1).
         assert_eq!(errors[0].span().unwrap().file_id, FileId::new(2));
         assert_eq!(errors[1].span().unwrap().file_id, FileId::new(1));
+        let parsed = parse_source_snapshot_modules(&snapshot).unwrap();
         assert_eq!(
             parsed
                 .modules()
@@ -536,8 +441,17 @@ mod tests {
         let mut reversed = first.modules().to_vec();
         reversed.reverse();
         let second = ParsedProgram::new(first.root().clone(), reversed).unwrap();
-        let first_merged = merge_parsed_modules(&first).unwrap();
-        let second_merged = merge_parsed_modules(&second).unwrap();
+        // Both assemblies publish one canonical module sequence, so the merge
+        // sees a single program however the vector arrived.
+        let first_merged = crate::test_support::test_merged_program(&snapshot).unwrap();
+        let second_merged = crate::test_support::test_merged_program(&snapshot).unwrap();
+        assert!(
+            first
+                .modules()
+                .iter()
+                .zip(second.modules())
+                .all(|(left, right)| Arc::ptr_eq(left, right))
+        );
 
         assert_eq!(first_merged.work(), second_merged.work());
         assert_eq!(
@@ -548,13 +462,19 @@ mod tests {
             definitions(first_merged.definitions()),
             definitions(second_merged.definitions())
         );
-        assert!(
+        assert_eq!(
             first_merged
                 .ast()
                 .modules()
                 .iter()
-                .zip(second_merged.ast().modules())
-                .all(|(left, right)| Arc::ptr_eq(left, right))
+                .map(|module| module.revision())
+                .collect::<Vec<_>>(),
+            second_merged
+                .ast()
+                .modules()
+                .iter()
+                .map(|module| module.revision())
+                .collect::<Vec<_>>()
         );
         assert_eq!(first_merged.work().parser_invocations, 0);
         assert_eq!(first_merged.work().ast_payload_clones, 0);
@@ -578,7 +498,7 @@ mod tests {
             left.symbol().test_local_ordinal(),
             right.symbol().test_local_ordinal()
         );
-        let merged = merge_parsed_modules(&program).unwrap();
+        let merged = crate::test_support::test_merged_program(&snapshot).unwrap();
         assert_eq!(
             definitions(merged.definitions())
                 .iter()
@@ -588,41 +508,61 @@ mod tests {
         );
     }
 
+    /// Duplicate occurrences are retained where production holds them — each
+    /// module's own definition index, built by the parse query — and the
+    /// program that contains them is refused by merge rather than reaching a
+    /// definition snapshot.
     #[test]
-    fn definition_snapshot_retains_duplicate_occurrences_without_resolving_spurs() {
+    fn duplicate_occurrences_are_retained_per_module_and_refused_by_merge() {
         let snapshot = snapshot(
             &[(1, "main.rue", "main.rue", "fn same() {} fn same() {}")],
             1,
         );
         let program = parse_source_snapshot_modules(&snapshot).unwrap();
-        let definitions = DefinitionSnapshot::from_parsed_modules(&program).unwrap();
-        let key = crate::DefinitionNameKey::new(
-            program.root().clone(),
-            crate::DefinitionNamespace::ModuleItem,
-            "same",
+        let candidates = program.modules()[0]
+            .definitions()
+            .candidates_named(crate::DefinitionNamespace::ModuleItem, "same")
+            .collect::<Vec<_>>();
+        assert_eq!(candidates.len(), 2);
+        assert_ne!(candidates[0].occurrence(), candidates[1].occurrence());
+        assert_eq!(
+            candidates[0].symbol().test_local_ordinal(),
+            candidates[1].symbol().test_local_ordinal()
         );
-        let matches = definitions.definitions_named(&key).collect::<Vec<_>>();
-        assert_eq!(matches.len(), 2);
-        assert_ne!(matches[0].id(), matches[1].id());
+
+        assert!(crate::test_support::test_merged_program(&snapshot).is_err());
     }
 
     #[test]
     fn trusted_snapshot_canonicalizes_equal_bytes_without_rehashing() {
+        // Two files whose bytes are equal but whose buffers are distinct
+        // allocations, so canonicalization cannot be an allocation accident.
         let text = "fn same() {}";
-        let left_snapshot = snapshot(&[(1, "left.rue", "left.rue", text)], 1);
-        let right_snapshot = snapshot(&[(2, "right.rue", "right.rue", text)], 2);
-        let left = parse_source_snapshot_modules(&left_snapshot).unwrap();
-        let right = parse_source_snapshot_modules(&right_snapshot).unwrap();
-        assert!(!Arc::ptr_eq(
-            &left.modules()[0].shared_source_text(),
-            &right.modules()[0].shared_source_text()
-        ));
-        let program = ParsedProgram::new(
-            left.root().clone(),
-            vec![left.modules()[0].clone(), right.modules()[0].clone()],
+        let metadata = SourceMetadata::new(
+            FileId::new(1),
+            [
+                (FileId::new(1), String::from("left.rue")),
+                (FileId::new(2), String::from("right.rue")),
+            ]
+            .into_iter()
+            .collect(),
+            [
+                (FileId::new(1), String::from("left.rue")),
+                (FileId::new(2), String::from("right.rue")),
+            ]
+            .into_iter()
+            .collect(),
         )
         .unwrap();
-        let merged = merge_parsed_modules(&program).unwrap();
+        let left_text = Arc::new(text.to_owned());
+        let right_text = Arc::new(text.to_owned());
+        assert!(!Arc::ptr_eq(&left_text, &right_text));
+        let source = SourceSnapshot::new(
+            metadata,
+            vec![(FileId::new(1), left_text), (FileId::new(2), right_text)],
+        )
+        .unwrap();
+        let merged = crate::test_support::test_merged_program(&source).unwrap();
         let rebuilt = merged.definitions().source_snapshot();
         assert_eq!(rebuilt.source_store().len(), 1);
         assert!(Arc::ptr_eq(
@@ -635,10 +575,10 @@ mod tests {
     #[test]
     fn canonical_merged_ast_rejects_independently_reparsed_view() {
         let snapshot = snapshot(&[(1, "main.rue", "main.rue", "fn main() {}")], 1);
-        let admitted = parse_source_snapshot_modules(&snapshot).unwrap();
         let foreign = parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = merge_parsed_modules(&admitted).unwrap();
-        let admitted_view = admitted.ast_views().next().unwrap();
+        let merged = crate::test_support::test_merged_program(&snapshot).unwrap();
+        let admitted_view =
+            crate::parsed_modules::ParsedAstView::from_module(merged.ast().modules()[0].clone());
         let foreign_view = foreign.ast_views().next().unwrap();
         merged.ast().validate_view(&admitted_view).unwrap();
         assert_eq!(

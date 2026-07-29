@@ -1190,8 +1190,7 @@ mod tests {
     use rue_span::FileId;
 
     use super::*;
-    use crate::parsed_modules::parse_source_snapshot_modules;
-    use crate::{SourceMetadata, SourceSnapshot, lower_canonical_rir, merge_parsed_modules};
+    use crate::{SourceMetadata, SourceSnapshot};
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
@@ -1214,11 +1213,10 @@ mod tests {
     }
 
     fn bind(snapshot: &SourceSnapshot) -> BoundDefinitionSet {
-        let parsed = parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
-        bind_canonical_definitions(&merged, &rir, PreviewFeatures::new(), Target::default())
-            .unwrap()
+        let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
+        bind_canonical_definitions(merged, rir, PreviewFeatures::new(), Target::default()).unwrap()
     }
 
     fn export(
@@ -1228,13 +1226,13 @@ mod tests {
         Arc<[crate::DurableDeclarationSemantic]>,
         rue_air::SemanticDeclarationExportWork,
     ) {
-        let parsed = parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         bind_canonical_declaration_semantics(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
@@ -1252,12 +1250,12 @@ mod tests {
     fn compare(
         snapshot: &SourceSnapshot,
     ) -> (crate::DurableSemanticProjectionWork, DeclarationBindingWork) {
-        let parsed = parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         compare_canonical_durable_declaration_install(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
         )
@@ -1316,14 +1314,14 @@ mod tests {
         }
 
         let (_, old_durable, _) = export(&first);
-        let parsed = parse_source_snapshot_modules(&relocated).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&relocated).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let current_definitions = bind(&relocated);
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
@@ -1331,7 +1329,7 @@ mod tests {
         .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (projected, work) = crate::project_durable_declaration_semantics(
-            &merged,
+            merged,
             &current_definitions,
             &shell_records,
             &old_durable,
@@ -1365,13 +1363,13 @@ mod tests {
             .collect::<Vec<_>>();
         let input = snapshot(&borrowed, 1);
         let (definitions, durable, _) = export(&input);
-        let parsed = parse_source_snapshot_modules(&input).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
@@ -1379,7 +1377,7 @@ mod tests {
         .unwrap();
         let shell_records = shells.declaration_shells().cloned().collect::<Vec<_>>();
         let (projected, projection) = crate::project_durable_declaration_semantics(
-            &merged,
+            merged,
             &definitions,
             &shell_records,
             &durable,
@@ -1398,13 +1396,13 @@ mod tests {
     fn duplicate_projection_input_fails_before_shells_are_consumed() {
         let input = snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
         let (definitions, durable, _) = export(&input);
-        let parsed = parse_source_snapshot_modules(&input).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let shells = crate::canonical_semantic::query_owned_declaration_shells_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
@@ -1419,7 +1417,7 @@ mod tests {
 
         assert_eq!(
             crate::project_durable_declaration_semantics(
-                &merged,
+                merged,
                 &definitions,
                 &shell_records,
                 &duplicated,
@@ -1428,7 +1426,7 @@ mod tests {
             crate::DurableSemanticProjectionFailure::DuplicateDefinition
         );
         let (projected, _) = crate::project_durable_declaration_semantics(
-            &merged,
+            merged,
             &definitions,
             &shell_records,
             &durable,
@@ -1449,12 +1447,12 @@ mod tests {
             )],
             1,
         );
-        let parsed = parse_source_snapshot_modules(&input).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         compare_canonical_durable_declaration_install(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
         )
@@ -1462,8 +1460,8 @@ mod tests {
         // A fresh oracle epoch remains valid after the query-owned install.
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             PreviewFeatures::new(),
             Target::default(),
             &imports,
@@ -1574,8 +1572,7 @@ mod tests {
             ],
             0,
         );
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
+        let merged = crate::test_support::test_merged_program(&source).unwrap();
         let rue_air::SemanticExportType::Module(logical_identity) =
             rue_air::SemanticExportType::Module(Arc::from("lib.rue"))
         else {
@@ -1676,8 +1673,12 @@ mod tests {
         assert_eq!(first.work(), second.work());
     }
 
+    /// `AmbiguousSyntaxOccurrence` is defensive: merge refuses a program with
+    /// duplicate names, so a definition snapshot never carries two records for
+    /// one name key. The reachable join outcomes are asserted here; the
+    /// duplicate program is asserted to be refused instead of joined.
     #[test]
-    fn snapshot_to_durable_join_reports_missing_ambiguous_and_duplicate_outcomes_by_type() {
+    fn snapshot_to_durable_join_reports_missing_and_duplicate_outcomes_by_type() {
         let input = snapshot(
             &[(
                 1,
@@ -1687,19 +1688,22 @@ mod tests {
             )],
             1,
         );
-        let parsed = parse_source_snapshot_modules(&input).unwrap();
-        let definitions = crate::DefinitionSnapshot::from_parsed_modules(&parsed).unwrap();
-        let repeated = crate::DefinitionNameKey::new(
+        assert!(crate::test_support::test_merged_program(&input).is_err());
+
+        let merged = crate::test_support::test_merged_program(&snapshot(
+            &[(1, "/main.rue", "main.rue", "fn once() {}")],
+            1,
+        ))
+        .unwrap();
+        let definitions = merged.definitions();
+        let once = crate::DefinitionNameKey::new(
             crate::ModuleId::from_logical_path("main.rue").unwrap(),
             DefinitionNamespace::ModuleItem,
-            "repeated",
+            "once",
         );
+        join_syntax_occurrence(definitions, &once, DefinitionKind::Function).unwrap();
         assert_eq!(
-            join_syntax_occurrence(&definitions, &repeated, DefinitionKind::Function).unwrap_err(),
-            DefinitionIdentityJoinFailure::AmbiguousSyntaxOccurrence
-        );
-        assert_eq!(
-            join_syntax_occurrence(&definitions, &repeated, DefinitionKind::Struct).unwrap_err(),
+            join_syntax_occurrence(definitions, &once, DefinitionKind::Struct).unwrap_err(),
             DefinitionIdentityJoinFailure::MissingSyntaxOccurrence
         );
 
@@ -1805,24 +1809,23 @@ mod tests {
             )],
             1,
         );
-        let parsed = parse_source_snapshot_modules(&collision).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let rir = lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&collision).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         assert!(
-            bind_canonical_definitions(&merged, &rir, PreviewFeatures::new(), Target::default())
+            bind_canonical_definitions(merged, rir, PreviewFeatures::new(), Target::default())
                 .is_err()
         );
 
         let source = snapshot(&[(2, "/main.rue", "main.rue", "fn main() {}")], 2);
-        let first = parse_source_snapshot_modules(&source).unwrap();
-        let second = parse_source_snapshot_modules(&source).unwrap();
-        let first = merge_parsed_modules(&first).unwrap();
-        let second = merge_parsed_modules(&second).unwrap();
-        let foreign_rir = lower_canonical_rir(&second).unwrap();
+        let first = crate::test_support::test_frontend_stages(&source).unwrap();
+        let second = crate::test_support::test_frontend_stages(&source).unwrap();
+        let first = &first.merged;
+        let foreign_rir = &second.rir;
         assert!(
             bind_canonical_definitions(
-                &first,
-                &foreign_rir,
+                first,
+                foreign_rir,
                 PreviewFeatures::new(),
                 Target::default()
             )
