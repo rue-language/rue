@@ -878,18 +878,19 @@ pub(crate) fn pre_link_object_bytes_with_session(
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
         crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-    let products = session.codegen_products(
+    let units = session.codegen_units(
         &semantic,
         &foreign_symbols,
         options,
         rue_codegen::BackendArtifactRequest::default(),
     )?;
-    let objects = crate::backend::generate_pre_link_objects_from_products(
+    let image = crate::program_image_plan::ProgramImage::new(
+        units,
         semantic.functions(),
-        products,
         options,
         &export_symbols,
     )?;
+    let objects = image.fresh_objects(options)?;
     Ok(objects.iter().map(|object| object.len()).sum())
 }
 
@@ -929,19 +930,19 @@ pub(crate) fn compile_with_session(
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
         crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-    let products = session.codegen_products(
+    let units = session.codegen_units(
         &semantic,
         &foreign_symbols,
         options,
         rue_codegen::BackendArtifactRequest::default(),
     )?;
-    let mut output = crate::backend::compile_backend_products(
+    let image = crate::program_image_plan::ProgramImage::new(
+        units,
         semantic.functions(),
-        products,
         options,
-        semantic.warnings(),
         &export_symbols,
     )?;
+    let mut output = image.fresh_link(options, semantic.warnings())?;
     output.source_stats = SourceStats {
         files: snapshot.len(),
         bytes: total_source_bytes,

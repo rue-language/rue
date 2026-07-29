@@ -55,6 +55,7 @@ mod import_discovery;
 mod import_graph;
 mod linking;
 mod parsed_modules;
+mod program_image_plan;
 mod queries;
 mod query_graph;
 mod revisioned_query_database;

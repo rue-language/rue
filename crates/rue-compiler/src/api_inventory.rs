@@ -41,6 +41,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("import_graph", include_str!("import_graph.rs")),
     ("linking", include_str!("linking.rs")),
     ("parsed_modules", include_str!("parsed_modules.rs")),
+    ("program_image_plan", include_str!("program_image_plan.rs")),
     ("queries", include_str!("queries.rs")),
     ("query_graph", include_str!("query_graph.rs")),
     (

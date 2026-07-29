@@ -174,12 +174,41 @@ pub(crate) fn generate_pre_link_objects(
 
 /// Object/link projection of canonical `CodegenUnit` terminals. This owns no
 /// lowering or emission; callers have already collected the shared units.
+#[cfg(test)]
 pub(crate) fn generate_pre_link_objects_from_products(
     functions: &[FunctionWithCfg],
     products: Vec<FunctionBackendProduct>,
     options: &CompileOptions,
     export_symbols: &[String],
 ) -> MultiErrorResult<Vec<Vec<u8>>> {
+    validate_backend_functions(functions)?;
+    let mut object_files = products
+        .into_iter()
+        .map(|product| project_backend_object(product, options.target))
+        .collect::<CompileResult<Vec<_>>>()
+        .map_err(CompileErrors::from)?;
+    info!(
+        function_count = functions.len(),
+        object_bytes = object_files.iter().map(Vec::len).sum::<usize>(),
+        "codegen complete"
+    );
+
+    // Emit a C-ABI entry thunk object for every `pub extern "C" fn` export
+    // (ADR-0064 P4). The native body was already generated above under its
+    // mangled symbol; the thunk adds the unmangled global C entry point.
+    object_files.extend(generate_export_thunk_objects(
+        functions,
+        options,
+        export_symbols,
+    ));
+
+    Ok(object_files)
+}
+
+/// Validate the function/symbol projection at the object-generation boundary.
+/// The program-image adapter uses the same check before it serializes the
+/// shared `CodegenUnit` terminals.
+pub(crate) fn validate_backend_functions(functions: &[FunctionWithCfg]) -> MultiErrorResult<()> {
     if !functions.iter().any(|function| {
         matches!(
             function.symbol,
@@ -207,27 +236,7 @@ pub(crate) fn generate_pre_link_objects_from_products(
             }
         }
     }
-    let mut object_files = products
-        .into_iter()
-        .map(|product| project_backend_object(product, options.target))
-        .collect::<CompileResult<Vec<_>>>()
-        .map_err(CompileErrors::from)?;
-    info!(
-        function_count = functions.len(),
-        object_bytes = object_files.iter().map(Vec::len).sum::<usize>(),
-        "codegen complete"
-    );
-
-    // Emit a C-ABI entry thunk object for every `pub extern "C" fn` export
-    // (ADR-0064 P4). The native body was already generated above under its
-    // mangled symbol; the thunk adds the unmangled global C entry point.
-    object_files.extend(generate_export_thunk_objects(
-        functions,
-        options,
-        export_symbols,
-    ));
-
-    Ok(object_files)
+    Ok(())
 }
 
 /// Run the production per-function backend pipeline, optionally retaining
@@ -352,6 +361,7 @@ pub(crate) fn project_backend_object(
 }
 
 /// Link canonical codegen units through the ordinary one-shot adapter.
+#[cfg(test)]
 pub(crate) fn compile_backend_products(
     functions: &[FunctionWithCfg],
     products: Vec<FunctionBackendProduct>,
@@ -380,7 +390,7 @@ pub(crate) fn compile_backend_products(
 /// gated to register-resident scalars/pointers in semantic analysis
 /// (`ExportSignatureUnsupported`), so the entry block's parameters are exactly
 /// the argument-register scalars the thunk marshals.
-fn generate_export_thunk_objects(
+pub(crate) fn generate_export_thunk_objects(
     functions: &[FunctionWithCfg],
     options: &CompileOptions,
     export_symbols: &[String],
@@ -475,8 +485,12 @@ pub(crate) fn validate_production_call_relocations(
 }
 
 // ============================================================================
-use tracing::{info, info_span};
+use tracing::info_span;
 
+#[cfg(test)]
+use tracing::info;
+
+#[cfg(test)]
 use crate::linking::{link_internal_with_warnings, link_system_with_warnings};
 use crate::*;
 
