@@ -49,12 +49,12 @@ fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysi
 use std::cell::Cell;
 
 use crate::{
-    BoundDefinitionSet, BoundDefinitionWork, CanonicalImportGraph, CanonicalMergedProgram,
-    CanonicalRirOutput, CodegenInputDescriptor, CompileOptions, CompileWarning,
-    DurableDeclarationSemantic, FrozenTypeInternPool, FunctionWithCfg, MultiErrorResult,
-    SemanticInputDescriptor,
+    BoundDefinitionSet, CanonicalImportGraph, CanonicalMergedProgram, CanonicalRirOutput,
+    CodegenInputDescriptor, CompileOptions, CompileWarning, DurableDeclarationSemantic,
+    FrozenTypeInternPool, FunctionWithCfg, MultiErrorResult, SemanticInputDescriptor,
     bound_definitions::{
-        configure_canonical_sema, issue_bound_definitions, issue_shell_definitions,
+        BoundDefinitionWork, configure_canonical_sema, issue_bound_definitions,
+        issue_shell_definitions,
     },
     queries::collect_function_cfg_queries,
 };
@@ -239,7 +239,6 @@ pub(crate) fn prepare_query_declaration_shells<'a>(
                     SemanticBindingManifestWork::default(),
                     BodyOwnerTokenWork::default(),
                     BodyAnalysisWork::default(),
-                    false,
                     declaration_reuse,
                 ),
             )
@@ -256,7 +255,6 @@ pub(crate) fn prepare_query_declaration_shells<'a>(
                     SemanticBindingManifestWork::default(),
                     BodyOwnerTokenWork::default(),
                     BodyAnalysisWork::default(),
-                    false,
                     declaration_reuse,
                 ),
             ));
@@ -401,8 +399,8 @@ pub struct CanonicalSemanticWork {
     pub binding: DeclarationBindingWork,
     /// Authoritative binding-manifest traversal used to validate body tokens.
     pub manifest: SemanticBindingManifestWork,
-    /// Public stable-ID issuance work, absent when IDs were not requested.
     pub bound_definitions: Option<BoundDefinitionWork>,
+    /// Public stable-ID issuance work, absent when IDs were not requested.
     /// Exact work performed to make AIR body ownership authoritative.
     pub body_owner_tokens: BodyOwnerTokenWork,
     /// Demand-driven function-body analysis work.
@@ -412,7 +410,6 @@ pub struct CanonicalSemanticWork {
     /// Drop-glue, CFG construction, and optimization work.
     pub cfg: CfgConstructionWork,
     /// Whether this request asked for stable source definition IDs.
-    pub stable_ids_requested: bool,
     pub declaration_reuse: CanonicalDeclarationReuseWork,
 }
 
@@ -560,7 +557,6 @@ fn declaration_stage_work(
     manifest: SemanticBindingManifestWork,
     body_owner_tokens: BodyOwnerTokenWork,
     body_analysis: BodyAnalysisWork,
-    stable_ids_requested: bool,
     declaration_reuse: CanonicalDeclarationReuseWork,
 ) -> CanonicalSemanticWork {
     CanonicalSemanticWork {
@@ -569,7 +565,6 @@ fn declaration_stage_work(
         manifest,
         body_owner_tokens,
         body_analysis,
-        stable_ids_requested,
         declaration_reuse,
         ..CanonicalSemanticWork::default()
     }
@@ -584,7 +579,6 @@ pub struct CanonicalSemanticOutput {
     strings: Vec<String>,
     warnings: Vec<CompileWarning>,
     #[cfg_attr(not(test), allow(dead_code))]
-    bound_definitions: Option<BoundDefinitionSet>,
     /// Request-independent anonymous nominal identities. The AIR issuer tokens
     /// have already been projected through `body_owner_issuer`; no live pool or
     /// issuer identity crosses this retention boundary.
@@ -656,7 +650,6 @@ impl CanonicalSemanticOutput {
         record!("input", &self.input);
         record!("functions", &self.functions);
         record!("type_pool", type_pool);
-        record!("bound_definitions", &self.bound_definitions);
         record!(
             "anonymous_nominal_associations",
             &self.anonymous_nominal_associations
@@ -797,28 +790,11 @@ impl CanonicalSemanticOutput {
     ) -> Option<&crate::body_query::BodyReferences> {
         self.body_references.get(function)
     }
-    pub fn ordinary_free_function_dependencies(&self) -> &[OrdinaryFreeFunctionDependencyEvent] {
-        &self.ordinary_free_function_dependencies
-    }
     pub fn analyzed_body_owners(&self) -> &[AnalyzedBodyOwnerEvent] {
         &self.analyzed_body_owners
     }
     pub fn body_named_dependencies(&self) -> &[BodyNamedDependencyEvent] {
         &self.body_named_dependencies
-    }
-    pub fn ordinary_free_function_dependencies_complete(&self) -> bool {
-        self.ordinary_free_function_dependencies_complete
-    }
-    pub fn specialized_free_function_origins(&self) -> &[SpecializedFreeFunctionOrigin] {
-        &self.specialized_free_function_origins
-    }
-    pub fn specialized_free_function_dependencies(
-        &self,
-    ) -> &[SpecializedFreeFunctionDependencyEvent] {
-        &self.specialized_free_function_dependencies
-    }
-    pub fn specialized_free_function_dependencies_complete(&self) -> bool {
-        self.specialized_free_function_dependencies_complete
     }
     pub fn named_method_dependencies(&self) -> &[NamedMethodDependencyEvent] {
         &self.named_method_dependencies
@@ -870,11 +846,6 @@ impl CanonicalSemanticOutput {
     }
     pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
         self.implicit_named_destructor_dependencies_complete
-    }
-    /// Stable definition identities when requested for this run.
-    #[cfg(test)]
-    pub(crate) fn bound_definitions(&self) -> Option<&BoundDefinitionSet> {
-        self.bound_definitions.as_ref()
     }
     pub(crate) fn body_owner_issuer(&self) -> &BoundDefinitionSet {
         &self.body_owner_issuer
@@ -991,7 +962,6 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                 SemanticBindingManifestWork::default(),
                 BodyOwnerTokenWork::default(),
                 BodyAnalysisWork::default(),
-                false,
                 reuse,
             ),
         )
@@ -1027,7 +997,6 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                     SemanticBindingManifestWork::default(),
                     BodyOwnerTokenWork::default(),
                     BodyAnalysisWork::default(),
-                    false,
                     reuse,
                 ),
             )
@@ -1235,7 +1204,6 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         merged,
         rir,
         options,
-        false,
         declaration_index,
         bound,
         selected_definitions,
@@ -1536,7 +1504,6 @@ fn finish_canonical_analysis(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     options: &CompileOptions,
-    request_stable_ids: bool,
     declaration_index: RirDeclarationIndexWork,
     bound: rue_air::BoundSema<'_>,
     provisional_definitions: BoundDefinitionSet,
@@ -1557,7 +1524,6 @@ fn finish_canonical_analysis(
         merged,
         rir,
         options,
-        request_stable_ids,
         declaration_index,
         bound,
         provisional_definitions,
@@ -1592,7 +1558,6 @@ fn finish_canonical_analysis_with(
     merged: &CanonicalMergedProgram,
     rir: &CanonicalRirOutput,
     options: &CompileOptions,
-    request_stable_ids: bool,
     declaration_index: RirDeclarationIndexWork,
     bound: rue_air::BoundSema<'_>,
     provisional_definitions: BoundDefinitionSet,
@@ -1623,7 +1588,6 @@ fn finish_canonical_analysis_with(
                 rue_error::ErrorKind::InternalError("test declaration failure injection".into()),
             )),
             declaration_index,
-            request_stable_ids,
             declaration_reuse,
             BodyOwnerTokenWork::default(),
         ));
@@ -1641,7 +1605,6 @@ fn finish_canonical_analysis_with(
                 bound,
                 crate::CompileErrors::from(preparation_error),
                 declaration_index,
-                request_stable_ids,
                 declaration_reuse,
                 BodyOwnerTokenWork::default(),
             ));
@@ -1700,7 +1663,6 @@ fn finish_canonical_analysis_with(
             bound,
             preparation_error,
             declaration_index,
-            request_stable_ids,
             declaration_reuse,
             BodyOwnerTokenWork {
                 provisional_slots: provisional_keys.len(),
@@ -1713,7 +1675,6 @@ fn finish_canonical_analysis_with(
         ));
     }
     let manifest_work = manifest.work();
-    let bound_definitions = request_stable_ids.then(|| authoritative_definitions.clone());
     let endpoints = authoritative_definitions.body_owner_endpoints();
     let body_owner_tokens = BodyOwnerTokenWork {
         provisional_slots: provisional_keys.len(),
@@ -1738,7 +1699,6 @@ fn finish_canonical_analysis_with(
                 manifest_work,
                 failed_tokens,
                 BodyAnalysisWork::default(),
-                request_stable_ids,
                 declaration_reuse,
             ),
         )
@@ -1761,7 +1721,6 @@ fn finish_canonical_analysis_with(
                     manifest_work,
                     body_owner_tokens,
                     BodyAnalysisWork::default(),
-                    request_stable_ids,
                     declaration_reuse,
                 ),
             )
@@ -1834,12 +1793,11 @@ fn finish_canonical_analysis_with(
                 declaration_index,
                 binding,
                 manifest: manifest_work,
-                bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+                bound_definitions: None,
                 body_owner_tokens,
                 body_analysis: failure.work,
                 durable_bodies: failed_durable_body_work,
                 cfg: CfgConstructionWork::default(),
-                stable_ids_requested: request_stable_ids,
                 declaration_reuse,
             };
             return Err(CanonicalSemanticFailure::new(
@@ -1895,12 +1853,11 @@ fn finish_canonical_analysis_with(
                 declaration_index,
                 binding,
                 manifest: manifest_work,
-                bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+                bound_definitions: None,
                 body_owner_tokens,
                 body_analysis,
                 durable_bodies: durable_body_work,
                 cfg: CfgConstructionWork::default(),
-                stable_ids_requested: request_stable_ids,
                 declaration_reuse,
             };
             return Err(CanonicalSemanticFailure::new(
@@ -2102,13 +2059,12 @@ fn finish_canonical_analysis_with(
                     declaration_index,
                     binding,
                     manifest: manifest_work,
-                    bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+                    bound_definitions: None,
                     body_owner_tokens,
                     body_analysis,
                     durable_bodies: durable_body_work,
                     cfg: CfgConstructionWork::default(),
-                    stable_ids_requested: request_stable_ids,
-                    declaration_reuse,
+                        declaration_reuse,
                 },
             )
         })?;
@@ -2159,12 +2115,11 @@ fn finish_canonical_analysis_with(
             declaration_index,
             binding,
             manifest: manifest_work,
-            bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+            bound_definitions: None,
             body_owner_tokens,
             body_analysis,
             durable_bodies: durable_body_work,
             cfg: failure.work,
-            stable_ids_requested: request_stable_ids,
             declaration_reuse,
         };
         CanonicalSemanticFailure::new(
@@ -2215,12 +2170,11 @@ fn finish_canonical_analysis_with(
         declaration_index,
         binding,
         manifest: manifest_work,
-        bound_definitions: bound_definitions.as_ref().map(BoundDefinitionSet::work),
+        bound_definitions: Some(authoritative_definitions.work()),
         body_owner_tokens,
         body_analysis,
         durable_bodies: durable_body_work,
         cfg: cfg.work,
-        stable_ids_requested: request_stable_ids,
         declaration_reuse,
     };
     Ok(CanonicalSemanticOutput {
@@ -2229,7 +2183,6 @@ fn finish_canonical_analysis_with(
         type_pool: cfg.type_pool,
         strings: cfg.strings,
         warnings,
-        bound_definitions,
         anonymous_nominal_associations,
         body_owner_issuer: authoritative_definitions,
         durable_ordinary_body_payloads,
@@ -2270,7 +2223,6 @@ fn recover_declaration_failure(
     bound: rue_air::BoundSema<'_>,
     preparation_error: crate::CompileErrors,
     declaration_index: RirDeclarationIndexWork,
-    stable_ids_requested: bool,
     declaration_reuse: CanonicalDeclarationReuseWork,
     body_owner_tokens: BodyOwnerTokenWork,
 ) -> CanonicalSemanticFailure {
@@ -2284,7 +2236,6 @@ fn recover_declaration_failure(
             manifest,
             body_owner_tokens,
             BodyAnalysisWork::default(),
-            stable_ids_requested,
             declaration_reuse,
         ),
     )
@@ -2626,7 +2577,6 @@ mod tests {
         assert!(canonical.warnings().is_empty());
         assert_eq!(canonical.work().binding.bind_invocations, 1);
         assert_eq!(canonical.work().manifest.build_invocations, 1);
-        assert!(canonical.bound_definitions().is_none());
     }
 
     fn irrelevant_declarations(count: usize) -> CanonicalSemanticWork {

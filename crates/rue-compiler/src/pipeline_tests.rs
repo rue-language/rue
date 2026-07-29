@@ -926,8 +926,7 @@ mod tests {
         );
         assert_eq!(work.semantic.cfg.cfg_builds_attempted, 2);
         assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 2);
-        assert!(!work.semantic.stable_ids_requested);
-        assert!(work.semantic.bound_definitions.is_none());
+        assert!(work.semantic.bound_definitions.is_some());
     }
 
     #[test]
