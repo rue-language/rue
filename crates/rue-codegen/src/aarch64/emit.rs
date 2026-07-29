@@ -56,6 +56,27 @@
 //!
 //! For values that cannot be encoded as logical immediates, we materialize the constant
 //! in a scratch register (X9) using MOVZ/MOVK and then use the register-register form.
+//!
+//! # Frameless Leaves
+//!
+//! The usual prologue saves the FP/LR pair, sets X29 to the new frame pointer,
+//! pushes the callee-saved registers in pairs, and reserves the slot region. A
+//! leaf function with no frame slots at all — no locals, no register-allocator
+//! spills, no homed parameters, no sret pointer cell — and no calls needs none
+//! of that, so frame planning omits its frame pointer (RUE-1171) and its
+//! prologue shrinks to the callee-saved pushes:
+//!
+//! ```asm
+//! str x19, [sp, #-16]!     ; Save callee-saved registers (if any were used)
+//! ...                      ; body: no FP-relative operand can exist
+//! ldr x19, [sp], #16
+//! ret
+//! ```
+//!
+//! The FP/LR save can be dropped only because the function makes no call: X30
+//! still holds this function's return address when `ret` executes. The decision
+//! is made once, by `codegen_pipeline::plan_frame_pointer`, and reaches this
+//! module as the frame layout's [`crate::frame_layout::FramePointer`].
 
 use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
@@ -369,8 +390,20 @@ pub struct Emitter<'a> {
     has_sret: bool,
     /// Callee-saved registers that need to be preserved.
     callee_saved: Vec<Reg>,
-    /// Whether a stack frame was emitted (prologue was executed).
+    /// Whether a prologue was emitted, and so an epilogue must be too.
     has_frame: bool,
+    /// Whether the prologue established X29 as a frame pointer (and saved the
+    /// FP/LR pair). False for an eligible frameless leaf, whose prologue is at
+    /// most the callee-saved pushes (RUE-1171).
+    has_frame_pointer: bool,
+    /// Whether frame planning classified this function as a frameless leaf.
+    /// Distinct from `has_frame_pointer`, which is also false for a synthetic
+    /// emitter built with no frame facts at all.
+    frameless: bool,
+    /// An FP-relative operand reached a function planned as frameless. That is
+    /// an internal inconsistency, reported after emission rather than silently
+    /// encoded against a frame pointer that was never established.
+    frameless_frame_reference: bool,
     /// Canonical checked layout supplied by the production pipeline.
     frame_layout: Option<crate::frame_layout::FrameLayout>,
     /// String constants (for StringConstPtr/StringConstLen)
@@ -418,6 +451,9 @@ impl<'a> Emitter<'a> {
             has_sret: false,
             callee_saved: callee_saved.to_vec(),
             has_frame: false,
+            has_frame_pointer: false,
+            frameless: false,
+            frameless_frame_reference: false,
             frame_layout: None,
             strings,
             inst_start: 0,
@@ -510,12 +546,36 @@ impl<'a> Emitter<'a> {
     /// adjusts negative FP-relative offsets to skip past the callee-saved area.
     ///
     /// Positive offsets (stack arguments) are left unchanged.
-    fn adjust_fp_offset(&self, base: Reg, offset: i32) -> i32 {
-        if base == Reg::Fp && offset < 0 {
+    ///
+    /// This is the single funnel every FP-based operand passes through, so it
+    /// is also where a frameless function is checked against actually naming a
+    /// frame location (RUE-1171).
+    fn adjust_fp_offset(&mut self, base: Reg, offset: i32) -> i32 {
+        if base != Reg::Fp {
+            return offset;
+        }
+        if self.frameless {
+            self.frameless_frame_reference = true;
+        }
+        if offset < 0 {
             offset - self.callee_saved_stack_size()
         } else {
             offset
         }
+    }
+
+    /// The canonical frame layout for this function, falling back to a framed
+    /// layout derived from the slot counts when no pipeline layout was supplied
+    /// (a directly constructed emitter in a synthetic test).
+    fn frame(&self) -> crate::frame_layout::FrameLayout {
+        self.frame_layout.unwrap_or_else(|| {
+            crate::frame_layout::FrameLayout::try_new(
+                crate::frame_layout::SavedRegScheme::Aarch64,
+                self.callee_saved.len(),
+                self.num_locals + self.num_params + self.has_sret as u32,
+            )
+            .expect("emitter frame must fit the checked function-frame budget")
+        })
     }
 
     // ==================== Main emit entry point ====================
@@ -566,17 +626,30 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        if self.num_locals > 0
-            || self.num_params > 0
-            || self.has_sret
-            || !self.callee_saved.is_empty()
-        {
-            self.has_frame = true;
+        // A frame pointer exists to address frame slots; an eligible frameless
+        // leaf has none, so its prologue is at most the callee-saved pushes and
+        // it neither establishes X29 nor saves the FP/LR pair (RUE-1171).
+        self.frameless = self.frame().frame_pointer() == crate::frame_layout::FramePointer::Omitted;
+        self.has_frame_pointer = !self.frameless
+            && (self.num_locals > 0
+                || self.num_params > 0
+                || self.has_sret
+                || !self.callee_saved.is_empty());
+        self.has_frame = self.has_frame_pointer || !self.callee_saved.is_empty();
+        if self.has_frame {
             self.emit_prologue();
         }
 
         for inst in self.mir.iter() {
             self.emit_inst(inst);
+        }
+
+        if self.frameless_frame_reference {
+            return Err(CompileError::without_span(ErrorKind::InternalCodegenError(
+                "frame planning omitted the frame pointer but an FP-relative \
+                 operand was emitted"
+                    .to_string(),
+            )));
         }
 
         self.apply_fixups()
@@ -586,15 +659,17 @@ impl<'a> Emitter<'a> {
     fn emit_prologue(&mut self) {
         self.record_comment("prologue");
 
-        // stp x29, x30, [sp, #-16]!   ; Save FP and LR
-        self.begin_inst();
-        self.emit_stp_pre(Reg::Fp, Reg::Lr, -16);
-        end_inst!(self, "stp x29, x30, [sp, #-16]!");
+        if self.has_frame_pointer {
+            // stp x29, x30, [sp, #-16]!   ; Save FP and LR
+            self.begin_inst();
+            self.emit_stp_pre(Reg::Fp, Reg::Lr, -16);
+            end_inst!(self, "stp x29, x30, [sp, #-16]!");
 
-        // mov x29, sp                 ; Set up frame pointer
-        self.begin_inst();
-        self.emit_mov_rr(Reg::Fp, Reg::Sp);
-        end_inst!(self, "mov x29, sp");
+            // mov x29, sp                 ; Set up frame pointer
+            self.begin_inst();
+            self.emit_mov_rr(Reg::Fp, Reg::Sp);
+            end_inst!(self, "mov x29, sp");
+        }
 
         // Save callee-saved registers in pairs.
         // Each STP/STR pre-index instruction decrements SP by 16 bytes.
@@ -624,16 +699,11 @@ impl<'a> Emitter<'a> {
         // (stack-passed args are copied into the frame param area below so
         // the body can address every param slot uniformly), and the incoming
         // sret pointer slot, if any.
+        //
+        // A frameless leaf has no slots at all, so nothing is reserved here.
         let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
         if total_slots > 0 {
-            let frame = self.frame_layout.unwrap_or_else(|| {
-                crate::frame_layout::FrameLayout::try_new(
-                    crate::frame_layout::SavedRegScheme::Aarch64,
-                    self.callee_saved.len(),
-                    total_slots,
-                )
-                .expect("emitter frame must fit the checked function-frame budget")
-            });
+            let frame = self.frame();
             let stack_size = frame.frame_size() as i32 - frame.saved_area_bytes();
             if stack_size > 0 {
                 self.begin_inst();
@@ -1456,15 +1526,7 @@ impl<'a> Emitter<'a> {
         if self.num_locals > 0 || self.num_params > 0 || self.has_sret {
             // Must mirror the prologue's allocation exactly: locals + ALL
             // params + the sret pointer slot.
-            let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
-            let frame = self.frame_layout.unwrap_or_else(|| {
-                crate::frame_layout::FrameLayout::try_new(
-                    crate::frame_layout::SavedRegScheme::Aarch64,
-                    self.callee_saved.len(),
-                    total_slots,
-                )
-                .expect("emitter frame must fit the checked function-frame budget")
-            });
+            let frame = self.frame();
             let stack_size = frame.frame_size() as i32 - frame.saved_area_bytes();
             if stack_size > 0 {
                 self.begin_inst();
@@ -1500,9 +1562,14 @@ impl<'a> Emitter<'a> {
         }
 
         // ldp x29, x30, [sp], #16     ; Restore FP and LR
-        self.begin_inst();
-        self.emit_ldp_post(Reg::Fp, Reg::Lr, 16);
-        end_inst!(self, "ldp x29, x30, [sp], #16");
+        //
+        // A frameless leaf never saved them: it makes no call, so LR still
+        // holds this function's return address.
+        if self.has_frame_pointer {
+            self.begin_inst();
+            self.emit_ldp_post(Reg::Fp, Reg::Lr, 16);
+            end_inst!(self, "ldp x29, x30, [sp], #16");
+        }
     }
 
     /// Apply pending fixups for forward branches.

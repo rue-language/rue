@@ -101,6 +101,7 @@ fn prepare_backend_with_artifacts(
         },
         schedule::schedule,
         verify::verify_stack_alignment,
+        X86Mir::is_leaf,
     )
 }
 

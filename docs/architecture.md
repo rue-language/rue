@@ -28,7 +28,11 @@ The `stackframe` view reports each frame's byte-based layout — per-slot offset
 and sizes, callee-saved registers, and the 16-byte-aligned total — from the
 single frame-layout authority (`rue-codegen`'s `frame_layout`, RUE-975), the
 same byte product both backends' prologue/epilogue and spill allocators consume,
-rather than re-deriving `slot * 8` arithmetic per backend. Physical stack layout
+rather than re-deriving `slot * 8` arithmetic per backend. That authority also
+records whether the function establishes a frame pointer at all: a leaf with no
+frame slots and no calls needs neither a frame pointer nor a slot region, so its
+prologue is at most the callee-saved pushes and the view reports its saved
+registers relative to the entry stack pointer (RUE-1171). Physical stack layout
 is one representation produced by the ADR-0052 canonical layout authority; the
 internal value decomposition stays slot-shaped, so under the default layout the
 reported offsets are unchanged.

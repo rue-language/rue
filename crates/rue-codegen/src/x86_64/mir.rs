@@ -1004,6 +1004,19 @@ impl X86Mir {
         self.instructions.iter()
     }
 
+    /// Whether this function calls nothing — the eligibility precondition for
+    /// a frameless prologue (RUE-1171).
+    ///
+    /// `syscall` does not count: it neither pushes a return address (so it
+    /// imposes no call-boundary alignment) nor clobbers a register the
+    /// prologue would otherwise preserve.
+    pub fn is_leaf(&self) -> bool {
+        !self
+            .instructions
+            .iter()
+            .any(|inst| matches!(inst, X86Inst::CallRel { .. }))
+    }
+
     /// Consume the MIR and return its instructions.
     pub fn into_instructions(self) -> Vec<X86Inst> {
         self.instructions

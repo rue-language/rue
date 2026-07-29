@@ -1315,6 +1315,18 @@ impl Aarch64Mir {
         self.instructions.iter()
     }
 
+    /// Whether this function calls nothing — the eligibility precondition for
+    /// a frameless prologue (RUE-1171).
+    ///
+    /// `svc` does not count: a supervisor call returns through ELR, so it
+    /// leaves the link register the FP/LR save would have preserved intact.
+    pub fn is_leaf(&self) -> bool {
+        !self
+            .instructions
+            .iter()
+            .any(|inst| matches!(inst, Aarch64Inst::Bl { .. }))
+    }
+
     /// Consume the MIR and return its instructions.
     pub fn into_instructions(self) -> Vec<Aarch64Inst> {
         self.instructions

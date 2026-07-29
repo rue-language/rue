@@ -114,6 +114,10 @@ pub struct StackFrameInfo {
     pub frame_size: usize,
     /// Required alignment in bytes.
     pub alignment: usize,
+    /// Whether the function establishes a frame pointer. A frameless leaf
+    /// (RUE-1171) has none, so its saved-register offsets are reported relative
+    /// to the stack pointer on entry rather than to a frame pointer.
+    pub uses_frame_pointer: bool,
     /// All stack slots (locals, spills, callee-saved, params).
     pub slots: Vec<StackSlot>,
     /// Argument passing locations.
@@ -126,15 +130,25 @@ pub struct StackFrameInfo {
 
 impl std::fmt::Display for StackFrameInfo {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let fp_name = match self.target.arch() {
-            Arch::X86_64 => "rbp",
-            Arch::Aarch64 => "fp",
+        // A frameless leaf has no frame pointer to report against; its saved
+        // registers sit directly below the stack pointer as it was on entry,
+        // at the same offsets the framed layout would have used (RUE-1171).
+        let fp_name = if !self.uses_frame_pointer {
+            "sp"
+        } else {
+            match self.target.arch() {
+                Arch::X86_64 => "rbp",
+                Arch::Aarch64 => "fp",
+            }
         };
 
         writeln!(f, "=== Stack Frame ({}) ===", self.function_name)?;
         writeln!(f)?;
         writeln!(f, "Frame size: {} bytes", self.frame_size)?;
         writeln!(f, "Alignment: {} bytes", self.alignment)?;
+        if !self.uses_frame_pointer {
+            writeln!(f, "Frame pointer: none (frameless leaf)")?;
+        }
         writeln!(f)?;
 
         // Group slots by kind
@@ -297,6 +311,10 @@ fn generate_x86_64_stack_frame(
     use crate::frame_layout::frame_cell_bytes;
     let frame = prepared.frame_layout;
     let stack_size = frame.frame_size() as i32;
+    // An eligible frameless leaf establishes no RBP; its saved registers sit
+    // below the entry stack pointer at the offsets computed below (RUE-1171).
+    let uses_frame_pointer =
+        frame.frame_pointer() == crate::frame_layout::FramePointer::Established;
 
     let mut slots = Vec::new();
 
@@ -399,7 +417,8 @@ fn generate_x86_64_stack_frame(
     Ok(StackFrameInfo {
         function_name: function_name.to_string(),
         frame_size: stack_size as usize,
-        alignment: 16,
+        alignment: frame.alignment() as usize,
+        uses_frame_pointer,
         slots,
         arguments,
         return_location,
@@ -437,6 +456,10 @@ fn generate_aarch64_stack_frame(
     // (the prologue copies stack-passed args into the frame param area).
     let frame = prepared.frame_layout;
     let frame_size = frame.frame_size() as usize;
+    // An eligible frameless leaf establishes no FP and saves no FP/LR pair; its
+    // callee-saved pairs sit below the entry stack pointer (RUE-1171).
+    let uses_frame_pointer =
+        frame.frame_pointer() == crate::frame_layout::FramePointer::Established;
 
     // Every FP-relative location below is derived from the same frame-layout
     // authority the emitter uses (RUE-774), so the reported slots match the
@@ -568,7 +591,8 @@ fn generate_aarch64_stack_frame(
     Ok(StackFrameInfo {
         function_name: function_name.to_string(),
         frame_size,
-        alignment: 16,
+        alignment: frame.alignment() as usize,
+        uses_frame_pointer,
         slots,
         arguments,
         return_location,
@@ -617,8 +641,22 @@ mod tests {
         let info = generate_stack_frame_info(&cfg, "test", &type_pool, &interner, target).unwrap();
 
         assert_eq!(info.function_name, "test");
-        assert_eq!(info.alignment, 16);
         assert!(!info.return_location.registers.is_empty());
+        // `return 42` is a leaf with no locals, parameters, spills, or sret
+        // pointer, so it gets no frame pointer and no slot region: the frame is
+        // just the callee-saved push the allocator needed (RUE-1171).
+        assert!(!info.uses_frame_pointer);
+        assert_eq!(info.alignment, 8);
+        assert!(
+            info.slots
+                .iter()
+                .all(|slot| slot.kind == StackSlotKind::CalleeSaved),
+            "a frameless leaf reports no slot-region cells: {:?}",
+            info.slots
+        );
+        let output = info.to_string();
+        assert!(output.contains("Frame pointer: none (frameless leaf)"));
+        assert!(output.contains("Layout (sp-relative):"));
     }
 
     #[test]
@@ -627,6 +665,7 @@ mod tests {
             function_name: "main".to_string(),
             frame_size: 32,
             alignment: 16,
+            uses_frame_pointer: true,
             slots: vec![
                 StackSlot {
                     name: Some("saved rbx".to_string()),
@@ -662,6 +701,127 @@ mod tests {
         assert!(output.contains("saved rbx"));
         assert!(output.contains("rdi"));
         assert!(output.contains("rax"));
+    }
+
+    /// Assembly and reported layout for `name` on `target`, from the same
+    /// production backend the compiler runs.
+    fn frame_projection(source: &str, name: &str, target: Target) -> (String, StackFrameInfo) {
+        let (cfg, type_pool, interner) = compile_named_fn(source, name);
+        let request = crate::BackendArtifactRequest {
+            asm: true,
+            ..Default::default()
+        };
+        let product = match target.arch() {
+            Arch::X86_64 => crate::x86_64::generate_product_with_symbols_and_atoms(
+                &cfg,
+                &type_pool,
+                &[],
+                &interner,
+                crate::MachineSymbolResolver::default(),
+                &[],
+                request,
+            ),
+            Arch::Aarch64 => crate::aarch64::generate_product_with_symbols_and_atoms(
+                &cfg,
+                &type_pool,
+                &[],
+                &interner,
+                target,
+                crate::MachineSymbolResolver::default(),
+                &[],
+                request,
+            ),
+        }
+        .expect("backend generation should succeed");
+        let info = generate_stack_frame_info(&cfg, name, &type_pool, &interner, target)
+            .expect("stack frame projection should succeed");
+        (product.artifacts.asm.expect("assembly projection"), info)
+    }
+
+    /// RUE-1171: a leaf function with no locals, spills, homed parameters, sret
+    /// pointer, calls, or stack arguments emits no frame allocation and no
+    /// frame-pointer setup on either backend. Adding one real frame consumer —
+    /// here a homed parameter — restores the full prologue and epilogue. The
+    /// reported stack frame agrees with the emitted code in both cases.
+    #[test]
+    fn frameless_leaves_elide_the_frame_and_one_consumer_restores_it() {
+        let source = "\
+fn frameless() -> i32 {
+    7
+}
+
+fn framed(n: i32) -> i32 {
+    n
+}
+
+fn main() -> i32 {
+    frameless() + framed(1)
+}
+";
+
+        // Frame-pointer setup and slot allocation, per backend. These are the
+        // exact mnemonics the prologue/epilogue emit.
+        let frame_markers = |target: Target| -> &'static [&'static str] {
+            match target.arch() {
+                Arch::X86_64 => &["push rbp", "mov rbp, rsp", "pop rbp", "lea rsp, [rbp"],
+                Arch::Aarch64 => &["stp x29, x30", "mov x29, sp", "ldp x29, x30"],
+            }
+        };
+
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            let (asm, info) = frame_projection(source, "frameless", target);
+            for marker in frame_markers(target) {
+                assert!(
+                    !asm.contains(marker),
+                    "frameless leaf still emits `{marker}` on {target:?}:\n{asm}"
+                );
+            }
+            assert!(
+                !asm.contains("sub rsp") && !asm.contains("sub sp, sp"),
+                "frameless leaf still allocates a frame on {target:?}:\n{asm}"
+            );
+            // Only the callee-saved registers the allocator actually used are
+            // saved, and the reported frame is exactly those pushes.
+            assert!(!info.uses_frame_pointer);
+            assert!(
+                info.slots
+                    .iter()
+                    .all(|slot| slot.kind == StackSlotKind::CalleeSaved),
+                "frameless leaf reports slot-region cells on {target:?}: {:?}",
+                info.slots
+            );
+            let scheme = match target.arch() {
+                Arch::X86_64 => crate::frame_layout::SavedRegScheme::X86_64,
+                Arch::Aarch64 => crate::frame_layout::SavedRegScheme::Aarch64,
+            };
+            let saved_bytes = scheme.callee_saved_bytes(saved_register_count(&info));
+            assert_eq!(
+                info.frame_size, saved_bytes as usize,
+                "reported frame on {target:?} must be exactly the callee-saved pushes"
+            );
+
+            let (asm, info) = frame_projection(source, "framed", target);
+            for marker in frame_markers(target) {
+                assert!(
+                    asm.contains(marker),
+                    "one homed parameter must restore `{marker}` on {target:?}:\n{asm}"
+                );
+            }
+            assert!(info.uses_frame_pointer);
+            assert!(
+                info.slots
+                    .iter()
+                    .any(|slot| slot.kind == StackSlotKind::Parameter),
+                "the restored frame must report its parameter slot on {target:?}"
+            );
+        }
+    }
+
+    fn saved_register_count(info: &StackFrameInfo) -> usize {
+        info.slots
+            .iter()
+            .filter(|slot| slot.kind == StackSlotKind::CalleeSaved)
+            .count()
     }
 
     /// Compile a Rue function to a validated CFG for the codegen tests.

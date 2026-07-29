@@ -73,6 +73,26 @@
 //! ret                                  ; Return to caller
 //! ```
 //!
+//! ## Frameless Leaves
+//!
+//! The frame above exists to hold frame slots. A leaf function with none — no
+//! locals, no register-allocator spills, no homed parameters, no sret pointer
+//! cell — and no calls has nothing to store and no call boundary to align, so
+//! frame planning omits its frame pointer entirely (RUE-1171). Its prologue and
+//! epilogue are at most the callee-saved pushes and their matching pops:
+//!
+//! ```asm
+//! push r12                 ; Save callee-saved registers (if any were used)
+//! ...                      ; body: no RBP-relative operand can exist
+//! pop r12
+//! ret
+//! ```
+//!
+//! Calls are excluded because `call` requires 16-byte-aligned RSP, which the
+//! slot region's rounding is what establishes. The decision is made once, by
+//! `codegen_pipeline::plan_frame_pointer`, and reaches this module as the
+//! frame layout's [`crate::frame_layout::FramePointer`].
+//!
 //! ## Key Invariants
 //!
 //! 1. **RBP-relative stack arguments**: Stack arguments (7th ABI slot and beyond)
@@ -88,6 +108,8 @@
 //!
 //! 3. **16-byte stack alignment**: RSP is aligned to 16 bytes after the prologue.
 //!    The alignment calculation accounts for the number of callee-saved pushes.
+//!    A frameless leaf is the one exception, and it makes no calls, so there is
+//!    no call boundary that could observe the difference.
 //!
 //! 4. **Callee-saved registers**: R12-R15 and RBX are callee-saved per System V AMD64 ABI.
 //!    Register allocation determines which are actually used and need saving.
@@ -238,8 +260,20 @@ pub struct Emitter<'a> {
     callee_saved: Vec<Reg>,
     /// String table (indexed by string_id in StringConstPtr/StringConstLen).
     strings: &'a [String],
-    /// Whether a stack frame was emitted (prologue was executed).
+    /// Whether a prologue was emitted, and so an epilogue must be too.
     has_frame: bool,
+    /// Whether the prologue established RBP as a frame pointer. False for an
+    /// eligible frameless leaf, whose prologue is at most the callee-saved
+    /// pushes (RUE-1171).
+    has_frame_pointer: bool,
+    /// Whether frame planning classified this function as a frameless leaf.
+    /// Distinct from `has_frame_pointer`, which is also false for a synthetic
+    /// emitter built with no frame facts at all.
+    frameless: bool,
+    /// An RBP-relative operand reached a function planned as frameless. That is
+    /// an internal inconsistency, reported after emission rather than silently
+    /// encoded against a frame pointer that was never established.
+    frameless_frame_reference: bool,
     /// Canonical checked layout supplied by the production pipeline.
     frame_layout: Option<crate::frame_layout::FrameLayout>,
     /// Byte offset where the current instruction started (for recording).
@@ -291,6 +325,9 @@ impl<'a> Emitter<'a> {
             callee_saved: callee_saved.to_vec(),
             strings,
             has_frame: false,
+            has_frame_pointer: false,
+            frameless: false,
+            frameless_frame_reference: false,
             frame_layout: None,
             inst_start: 0,
             emit_asm: false,
@@ -367,12 +404,36 @@ impl<'a> Emitter<'a> {
     ///
     /// Positive offsets (stack arguments) are left unchanged since they're above
     /// the saved RBP and return address.
-    fn adjust_fp_offset(&self, base: Reg, offset: i32) -> i32 {
-        if base == Reg::Rbp && offset < 0 {
+    ///
+    /// This is the single funnel every RBP-based operand passes through, so it
+    /// is also where a frameless function is checked against actually naming a
+    /// frame location (RUE-1171).
+    fn adjust_fp_offset(&mut self, base: Reg, offset: i32) -> i32 {
+        if base != Reg::Rbp {
+            return offset;
+        }
+        if self.frameless {
+            self.frameless_frame_reference = true;
+        }
+        if offset < 0 {
             offset - self.callee_saved_size()
         } else {
             offset
         }
+    }
+
+    /// The canonical frame layout for this function, falling back to a framed
+    /// layout derived from the slot counts when no pipeline layout was supplied
+    /// (a directly constructed emitter in a synthetic test).
+    fn frame(&self) -> crate::frame_layout::FrameLayout {
+        self.frame_layout.unwrap_or_else(|| {
+            crate::frame_layout::FrameLayout::try_new(
+                crate::frame_layout::SavedRegScheme::X86_64,
+                self.callee_saved.len(),
+                self.num_locals + self.num_params + self.has_sret as u32,
+            )
+            .expect("emitter frame must fit the checked function-frame budget")
+        })
     }
 
     // ==================== Main emit entry point ====================
@@ -424,19 +485,32 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // Emit function prologue if we have local variables, parameters,
-        // an sret pointer to save, or callee-saved regs
-        if self.num_locals > 0
-            || self.num_params > 0
-            || self.has_sret
-            || !self.callee_saved.is_empty()
-        {
-            self.has_frame = true;
+        // A frame pointer exists to address frame slots; an eligible frameless
+        // leaf has none, so its prologue is at most the callee-saved pushes and
+        // it never establishes RBP (RUE-1171).
+        self.frameless = self.frame().frame_pointer() == crate::frame_layout::FramePointer::Omitted;
+        self.has_frame_pointer = !self.frameless
+            && (self.num_locals > 0
+                || self.num_params > 0
+                || self.has_sret
+                || !self.callee_saved.is_empty());
+        self.has_frame = self.has_frame_pointer || !self.callee_saved.is_empty();
+        if self.has_frame {
             self.emit_prologue();
         }
 
         for inst in self.mir.iter() {
             self.emit_inst(inst);
+        }
+        if self.frameless_frame_reference {
+            return Err(ice_error!(
+                "frameless function references the frame pointer",
+                phase: "codegen/emit",
+                details: {
+                    "reason" => "frame planning omitted the frame pointer but an \
+                                 RBP-relative operand was emitted"
+                }
+            ));
         }
         self.apply_fixups()
     }
@@ -489,17 +563,19 @@ impl<'a> Emitter<'a> {
     fn emit_prologue(&mut self) {
         self.record_comment("prologue");
 
-        // push rbp: 55
-        self.begin_inst();
-        self.code.push(0x55);
-        end_inst!(self, "push rbp");
+        if self.has_frame_pointer {
+            // push rbp: 55
+            self.begin_inst();
+            self.code.push(0x55);
+            end_inst!(self, "push rbp");
 
-        // mov rbp, rsp: 48 89 E5
-        self.begin_inst();
-        self.code.push(0x48);
-        self.code.push(0x89);
-        self.code.push(0xE5);
-        end_inst!(self, "mov rbp, rsp");
+            // mov rbp, rsp: 48 89 E5
+            self.begin_inst();
+            self.code.push(0x48);
+            self.code.push(0x89);
+            self.code.push(0xE5);
+            end_inst!(self, "mov rbp, rsp");
+        }
 
         // Save callee-saved registers AFTER rbp setup
         // This ensures stack args are at fixed offsets from rbp
@@ -518,15 +594,10 @@ impl<'a> Emitter<'a> {
         // - one slot for the incoming sret pointer, if any
         // Each slot is one frame cell; the total (including callee-saved
         // pushes) is 16-byte aligned by the frame-layout authority.
-        let total_slots = self.num_locals + self.num_params + self.has_sret as u32;
-        let frame = self.frame_layout.unwrap_or_else(|| {
-            crate::frame_layout::FrameLayout::try_new(
-                crate::frame_layout::SavedRegScheme::X86_64,
-                self.callee_saved.len(),
-                total_slots,
-            )
-            .expect("emitter frame must fit the checked function-frame budget")
-        });
+        //
+        // A frameless leaf has no slots at all, so this is zero and no `sub
+        // rsp` is emitted: there is no call boundary left to align for.
+        let frame = self.frame();
         let stack_size = frame.frame_size() as i32 - frame.saved_area_bytes();
 
         if stack_size > 0 {
@@ -620,13 +691,11 @@ impl<'a> Emitter<'a> {
     fn emit_epilogue(&mut self) {
         self.record_comment("epilogue");
 
-        // Point RSP at the callee-saved area (skip locals and alignment padding)
+        // Point RSP at the callee-saved area (skip locals and alignment
+        // padding). A frameless leaf allocated neither, and has no RBP to
+        // recompute RSP from: the pops below already sit at RSP.
         let size = self.callee_saved_size();
-        if !self.callee_saved.is_empty()
-            || self.num_locals > 0
-            || self.num_params > 0
-            || self.has_sret
-        {
+        if self.has_frame_pointer {
             self.begin_inst();
             self.emit_lea_rsp_rbp_offset(-size);
             end_inst!(self, "lea rsp, [rbp{}]", format_offset(-size));
@@ -641,9 +710,11 @@ impl<'a> Emitter<'a> {
         }
 
         // Pop rbp to restore caller's frame pointer
-        self.begin_inst();
-        self.emit_pop(Reg::Rbp);
-        end_inst!(self, "pop rbp");
+        if self.has_frame_pointer {
+            self.begin_inst();
+            self.emit_pop(Reg::Rbp);
+            end_inst!(self, "pop rbp");
+        }
     }
 
     /// Apply all fixups for forward jumps.
