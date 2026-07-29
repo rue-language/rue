@@ -116,6 +116,11 @@ REQUIRED_PREMERGE_CORPUS_HARNESSES=(
 
 REQUIRED_SLOW_CORPUS_HARNESSES=(
     //:cli-tests-slow
+    # The RUE-205/RUE-204 codegen differential. Both corpora run every runnable
+    # case through the reference interpreter, so a silent omission here hides
+    # exactly the miscompilation class the audit exists for (RUE-1117).
+    //crates/rue-oracle-diff:oracle-diff-test
+    //crates/rue-oracle-diff:oracle-diff-spec-test
 )
 
 if [[ $# -eq 0 ]]; then

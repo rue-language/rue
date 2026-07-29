@@ -51,7 +51,11 @@ rue_binary(
 rue_sh_test(
     name = "oracle-diff-test",
     tier = "slow",
-    labels = ["rue_not_quick"],
+    # RUE-1117: `rue_heavy_suite` gives the differential the same execution
+    # contract as the other opaque corpus harnesses — its own CI lane through
+    # `scripts/ci-heavy-suite` (which fails closed if Buck reports no result for
+    # it), and exclusion from any broad pass that would otherwise absorb it.
+    labels = ["rue_not_quick", "rue_heavy_suite"],
     test = ":rue-oracle-diff",
     env = {
         "RUE_ORACLE_DIFF_CASES": "$(location //crates/rue-cli-tests:cases)/cases",
@@ -68,7 +72,7 @@ rue_sh_test(
 rue_sh_test(
     name = "oracle-diff-spec-test",
     tier = "slow",
-    labels = ["rue_not_quick"],
+    labels = ["rue_not_quick", "rue_heavy_suite"],
     test = ":rue-oracle-diff",
     args = ["spec"],
     env = {

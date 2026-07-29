@@ -2,8 +2,13 @@
 # Run one explicitly assigned CI heavy suite and fail if Buck omits its result.
 set -uo pipefail
 
-if [[ $# -ne 1 || "$1" != //:* ]]; then
-    echo "usage: scripts/ci-heavy-suite //:TARGET" >&2
+# Heavy suites live at the repository root (//:cli-tests) and, since RUE-1117,
+# in owning crate packages (//crates/rue-oracle-diff:oracle-diff-test). The
+# `rue_heavy_suite` label below — not the package path — is what decides whether
+# a target may run here, so this check only rejects a spelling Buck cannot
+# resolve to a single target in this cell.
+if [[ $# -ne 1 || "$1" != //*:* ]]; then
+    echo "usage: scripts/ci-heavy-suite //PACKAGE:TARGET" >&2
     exit 2
 fi
 target="$1"

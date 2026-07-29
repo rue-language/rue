@@ -274,6 +274,8 @@ if [[ "${1:-}" == "uquery" ]]; then
         printf '%s\n' \
             root//:cli-tests \
             root//:cli-tests-slow \
+            root//crates/rue-oracle-diff:oracle-diff-test \
+            root//crates/rue-oracle-diff:oracle-diff-spec-test \
             root//:frontend-diff-test \
             root//:oracle-diff-generated-smoke \
             root//:reproducible-programs \
@@ -289,7 +291,7 @@ elif [[ "${1:-}" == "test" ]]; then
         printf 'Pass: root//:tutorial-snippet-tests (0.0s)\n'
         printf 'Pass: root//:large-example-caldera-canary (0.0s)\n'
         printf 'Pass: root//:large-example-meridian-canary (0.0s)\n'
-    elif [[ "${2:-}" == //:* ]]; then
+    elif [[ "${2:-}" == //*:* ]]; then
         printf 'Pass: root%s (0.0s)\n' "${2:-}"
     else
         printf 'Pass: %s (0.0s)\n' "${2:-}"
@@ -316,6 +318,10 @@ EOF
         "$(grep -Fxq 'test //:cli-tests-slow -- --timeout 7200' "$sb/calls" && echo 0 || echo 1)"
     check "suite: every other heavy target uses the default executor timeout" \
         "$([ "$(grep -Ec '^test //:(spec-tests|ui-tests|oracle-diff-generated-smoke|reproducible-programs|frontend-diff-test)$' "$sb/calls")" -eq 5 ] && echo 0 || echo 1)"
+    # RUE-1117: the codegen differentials are heavy suites in their owning
+    # crate package, so a local full run executes them one at a time too.
+    check "suite: crate-package heavy suites are executed individually" \
+        "$([ "$(grep -Ec '^test //crates/rue-oracle-diff:oracle-diff(-spec)?-test$' "$sb/calls")" -eq 2 ] && echo 0 || echo 1)"
     check "suite: no concurrent heavy label sweep occurs" \
         "$(! grep -Fq -- '--include rue_heavy_suite' "$sb/calls" && echo 0 || echo 1)"
     check "suite: host lock is released" "$([[ ! -e "$sb/lock" ]] && echo 0 || echo 1)"
