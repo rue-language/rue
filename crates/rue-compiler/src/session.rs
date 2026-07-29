@@ -5984,6 +5984,25 @@ impl CompilerSession {
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::backend::FunctionBackendProduct>, crate::CompileErrors> {
+        Ok(self
+            .codegen_units(semantic, foreign_symbols, options, request)?
+            .into_iter()
+            .map(|collected| collected.unit.backend_product())
+            .collect())
+    }
+
+    /// Collect reached canonical codegen terminals without immediately
+    /// collapsing them into the historical backend-product representation.
+    /// Object and link consumers aggregate this exact result in a
+    /// `ProgramImagePlan`; presentation consumers may still use the thin
+    /// `codegen_products` projection above.
+    pub(crate) fn codegen_units(
+        &mut self,
+        semantic: &crate::CanonicalSemanticOutput,
+        foreign_symbols: &[String],
+        options: &crate::CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+    ) -> Result<Vec<crate::codegen_query::CollectedCodegenUnit>, crate::CompileErrors> {
         let revision = self
             .queries
             .revisioned
@@ -6007,7 +6026,7 @@ impl CompilerSession {
             .expect("semantic output retains the exact RIR interner")
             .semantic_symbols()
             .shared_interner();
-        let mut products = Vec::with_capacity(semantic.functions().len());
+        let mut units = Vec::with_capacity(semantic.functions().len());
         #[cfg(test)]
         self.codegen_executions.clear();
         for function in semantic.functions() {
@@ -6048,14 +6067,17 @@ impl CompilerSession {
             };
             match unit {
                 crate::codegen_query::CodegenUnitValue::Available(unit) => {
-                    products.push(unit.backend_product());
+                    units.push(crate::codegen_query::CollectedCodegenUnit {
+                        function: function.clone(),
+                        unit: unit.clone(),
+                    });
                 }
                 crate::codegen_query::CodegenUnitValue::Failure(errors) => {
                     return Err(errors.clone());
                 }
             }
         }
-        Ok(products)
+        Ok(units)
     }
 
     #[cfg(test)]

@@ -188,6 +188,16 @@ pub(crate) struct CodegenUnit {
     pub(crate) presentation: Arc<str>,
 }
 
+/// A reached canonical terminal together with the function record that owns
+/// its stable identity.  The record is intentionally kept beside the terminal
+/// until the image adapter projects it to an object: it avoids making object
+/// generation rediscover or re-run codegen work.
+#[derive(Clone)]
+pub(crate) struct CollectedCodegenUnit {
+    pub(crate) function: crate::FunctionWithCfg,
+    pub(crate) unit: Arc<CodegenUnit>,
+}
+
 /// Typed codegen terminal. Backend and relocation validation failures remain
 /// ordinary compiler diagnostics rather than escaping the query runtime.
 #[derive(Debug, Clone)]
