@@ -338,7 +338,7 @@ impl FuzzTarget for EmitterTarget {
         }
 
         // Try to emit the instructions - should not panic
-        let emitter = X86Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        let emitter = X86Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
         let _ = emitter.emit();
     }
 }
@@ -530,7 +530,7 @@ impl FuzzTarget for EmitterAarch64Target {
             mir.push(inst);
         }
 
-        let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
         let _ = emitter.emit();
     }
 }
@@ -688,7 +688,7 @@ impl FuzzTarget for EmitterSequenceTarget {
         mir.push(X86Inst::Ret);
 
         // Try to emit - should handle any valid label/jump combination
-        let emitter = X86Emitter::new(&mir, 0, 0, 0, &[], &[]);
+        let emitter = X86Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
         let _ = emitter.emit();
     }
 }
@@ -1050,7 +1050,7 @@ impl FuzzTarget for EmitterSequenceAarch64Target {
         }
         let build = aarch64_seq::build_sequence(input);
 
-        let emitter = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[]);
+        let emitter = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[]).without_frame();
         let (code, _relocations) = match emitter.emit() {
             Ok(result) => result,
             // A graceful ICE (e.g. an out-of-range displacement) is a normal
@@ -1061,7 +1061,7 @@ impl FuzzTarget for EmitterSequenceAarch64Target {
         aarch64_seq::validate(&build, &code);
 
         // The assembly-recording path must produce identical final bytes.
-        let recording = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[]);
+        let recording = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[]).without_frame();
         if let Ok(emitted) = recording.emit_all() {
             assert_eq!(
                 emitted.to_bytes(),
@@ -1342,10 +1342,12 @@ mod tests {
     /// produce identical bytes. Returns the emitted code.
     fn emit_and_validate(build: &SequenceBuild) -> Vec<u8> {
         let (code, _) = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+            .without_frame()
             .emit()
             .expect("in-range sequence should emit");
         aarch64_seq::validate(build, &code);
         let recorded = Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+            .without_frame()
             .emit_all()
             .expect("in-range sequence should emit_all");
         assert_eq!(
@@ -1358,6 +1360,7 @@ mod tests {
 
     fn emit_is_err(build: &SequenceBuild) -> bool {
         Aarch64Emitter::new(&build.mir, 0, 0, 0, &[], &[])
+            .without_frame()
             .emit()
             .is_err()
     }
@@ -1616,14 +1619,14 @@ mod codegen_proptest_tests {
         fn emitter_never_panics_on_instruction(inst in codegen_generators::arb_x86_inst_physical()) {
             let mut mir = X86Mir::new();
             mir.push(inst);
-            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
         /// The emitter should never panic on any valid MIR.
         #[test]
         fn emitter_never_panics_on_mir(mir in codegen_generators::arb_x86_mir(20, 3)) {
-            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
@@ -1644,7 +1647,7 @@ mod codegen_proptest_tests {
             mir.push(X86Inst::MovRI32 { dst: op1, imm });
             mir.push(X86Inst::CmpRR { src1: op1, src2: op2 });
 
-            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
@@ -1656,7 +1659,7 @@ mod codegen_proptest_tests {
 
             mir.push(X86Inst::MovRI64 { dst, imm: imm64 });
 
-            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
@@ -1676,7 +1679,7 @@ mod codegen_proptest_tests {
             mir.push(X86Inst::Shr32RI { dst, imm: shift % 32 });
             mir.push(X86Inst::Sar32RI { dst, imm: shift % 32 });
 
-            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
@@ -1685,14 +1688,14 @@ mod codegen_proptest_tests {
         fn emitter_aarch64_never_panics_on_instruction(inst in codegen_generators::arb_aarch64_inst_physical()) {
             let mut mir = Aarch64Mir::new();
             mir.push(inst);
-            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
         /// The AArch64 emitter should never panic on generated physical MIR.
         #[test]
         fn emitter_aarch64_never_panics_on_mir(mir in codegen_generators::arb_aarch64_mir(20)) {
-            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
@@ -1702,7 +1705,7 @@ mod codegen_proptest_tests {
         fn emitter_aarch64_sequence_never_panics_on_mir(
             mir in codegen_generators::arb_aarch64_branch_mir(20, 3)
         ) {
-            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
 
@@ -1724,7 +1727,7 @@ mod codegen_proptest_tests {
             mir.push(Aarch64Inst::SubImm { dst: op1, src: op2, imm });
             mir.push(Aarch64Inst::CmpRR { src1: op1, src2: op2 });
 
-            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
     }

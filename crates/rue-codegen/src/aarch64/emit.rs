@@ -398,12 +398,18 @@ pub struct Emitter<'a> {
     has_frame_pointer: bool,
     /// Whether frame planning classified this function as a frameless leaf.
     /// Distinct from `has_frame_pointer`, which is also false for a synthetic
-    /// emitter built with no frame facts at all.
+    /// emitter that explicitly opted out of frame emission.
     frameless: bool,
     /// An FP-relative operand reached a function planned as frameless. That is
     /// an internal inconsistency, reported after emission rather than silently
     /// encoded against a frame pointer that was never established.
     frameless_frame_reference: bool,
+    /// Explicit opt-out of prologue/epilogue emission: the instruction stream
+    /// is emitted bare. Synthetic single-instruction encoding tests and the
+    /// emitter fuzz harnesses assert exact byte output and opt out here; the
+    /// production pipeline never does — it supplies a frame layout, and a
+    /// planned frame is always emitted (RUE-1195).
+    frame_opt_out: bool,
     /// Canonical checked layout supplied by the production pipeline.
     frame_layout: Option<crate::frame_layout::FrameLayout>,
     /// String constants (for StringConstPtr/StringConstLen)
@@ -454,12 +460,26 @@ impl<'a> Emitter<'a> {
             has_frame_pointer: false,
             frameless: false,
             frameless_frame_reference: false,
+            frame_opt_out: false,
             frame_layout: None,
             strings,
             inst_start: 0,
             emit_asm: false,
             param_homing: Vec::new(),
         }
+    }
+
+    /// Opt out of prologue/epilogue emission entirely and emit the instruction
+    /// stream bare.
+    ///
+    /// For synthetic single-instruction encoding tests and fuzz harnesses that
+    /// assert exact byte output. A function that makes a call must never opt
+    /// out: it needs the prologue's FP/LR save to preserve the link register
+    /// across `bl` (RUE-1195). The production pipeline always supplies a
+    /// checked frame layout instead.
+    pub fn without_frame(mut self) -> Self {
+        self.frame_opt_out = true;
+        self
     }
 
     /// Supply the per-source-parameter prologue homing plan (RUE-1005). Without
@@ -626,16 +646,20 @@ impl<'a> Emitter<'a> {
             }
         }
 
-        // A frame pointer exists to address frame slots; an eligible frameless
-        // leaf has none, so its prologue is at most the callee-saved pushes and
-        // it neither establishes X29 nor saves the FP/LR pair (RUE-1171).
-        self.frameless = self.frame().frame_pointer() == crate::frame_layout::FramePointer::Omitted;
-        self.has_frame_pointer = !self.frameless
-            && (self.num_locals > 0
-                || self.num_params > 0
-                || self.has_sret
-                || !self.callee_saved.is_empty());
-        self.has_frame = self.has_frame_pointer || !self.callee_saved.is_empty();
+        // Frame planning is authoritative: an eligible frameless leaf
+        // (`FramePointer::Omitted`) gets at most the callee-saved pushes and
+        // neither establishes X29 nor saves the FP/LR pair (RUE-1171); every
+        // other function gets the full prologue, even with zero frame slots
+        // and no callee-saved registers — a calling function still needs the
+        // FP/LR save so `bl` does not clobber its return address (RUE-1195).
+        // Synthetic encoding tests that want bare instruction bytes opt out
+        // explicitly via `without_frame`.
+        if !self.frame_opt_out {
+            self.frameless =
+                self.frame().frame_pointer() == crate::frame_layout::FramePointer::Omitted;
+            self.has_frame_pointer = !self.frameless;
+            self.has_frame = self.has_frame_pointer || !self.callee_saved.is_empty();
+        }
         if self.has_frame {
             self.emit_prologue();
         }
@@ -2583,7 +2607,11 @@ mod tests {
     fn emit_single(inst: Aarch64Inst) -> Vec<u8> {
         let mut mir = Aarch64Mir::new();
         mir.push(inst);
-        Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap().0
+        Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap()
+            .0
     }
 
     // --- Move instructions ---
@@ -3269,7 +3297,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // b forward -> 0x14000002 (offset = 2 instructions = 8 bytes / 4)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -3288,7 +3319,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // b.eq -> 0x54000000 + condition (eq = 0)
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -3306,7 +3340,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // cbz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -3325,7 +3362,10 @@ mod tests {
             id: LabelId::new(0),
         });
 
-        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // cbnz x0, label
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -3340,7 +3380,10 @@ mod tests {
         let symbol_id = mir.intern_symbol("test_func");
         mir.push(Aarch64Inst::Bl { symbol_id });
 
-        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
 
         // bl -> 0x94000000
         let inst = u32::from_le_bytes(code[0..4].try_into().unwrap());
@@ -3355,6 +3398,63 @@ mod tests {
             "Should be Call26 relocation"
         );
         assert_eq!(relocs[0].addend, 0, "Addend should be 0");
+    }
+
+    #[test]
+    fn test_without_frame_emits_no_prologue() {
+        // The explicit opt-out — not zero slot counts — is what suppresses the
+        // frame for synthetic encoding tests (RUE-1195).
+        let mir = Aarch64Mir::new();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
+        assert!(code.is_empty());
+    }
+
+    #[test]
+    fn test_zero_slot_calling_function_gets_full_frame() {
+        // A function that makes a call needs the prologue even with no frame
+        // slots and no callee-saved registers: `bl` overwrites X30, so without
+        // the FP/LR save its `ret` would branch to the callee's return address
+        // (RUE-1195).
+        let mut mir = Aarch64Mir::new();
+        let symbol_id = mir.intern_symbol("callee");
+        mir.push(Aarch64Inst::Bl { symbol_id });
+        mir.push(Aarch64Inst::Ret);
+
+        let expected: Vec<u32> = vec![
+            0xA9BF7BFD, // stp x29, x30, [sp, #-16]!  (prologue: LR saved)
+            0x910003FD, // mov x29, sp
+            0x94000000, // bl callee
+            0xA8C17BFD, // ldp x29, x30, [sp], #16    (epilogue: LR restored)
+            0xD65F03C0, // ret
+        ];
+
+        let words = |code: &[u8]| -> Vec<u32> {
+            code.chunks_exact(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect()
+        };
+
+        // The pipeline path: frame planning classified the function as
+        // FramePointer::Established (zero slots, non-leaf).
+        let layout = crate::frame_layout::FrameLayout::try_new(
+            crate::frame_layout::SavedRegScheme::Aarch64,
+            0,
+            0,
+        )
+        .unwrap();
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .with_frame_layout(layout)
+            .emit()
+            .unwrap();
+        assert_eq!(words(&code), expected);
+
+        // A synthetic emitter without an explicit opt-out gets the same frame:
+        // zero slot counts alone no longer suppress the prologue.
+        let (code, _) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        assert_eq!(words(&code), expected);
     }
 
     // --- Stack operations ---
@@ -3437,7 +3537,10 @@ mod tests {
             dst: Operand::Physical(Reg::X0),
             imm: 42,
         });
-        let (code, _relocations) = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit().unwrap();
+        let (code, _relocations) = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit()
+            .unwrap();
         // Code should be generated
         assert!(!code.is_empty());
     }
@@ -3450,7 +3553,10 @@ mod tests {
             dst: Operand::Physical(Reg::X0),
             imm: 42,
         });
-        let emitted = Emitter::new(&mir, 0, 0, 0, &[], &[]).emit_all().unwrap();
+        let emitted = Emitter::new(&mir, 0, 0, 0, &[], &[])
+            .without_frame()
+            .emit_all()
+            .unwrap();
         // Instructions should be populated with asm text
         assert!(!emitted.instructions.is_empty());
         // Should contain the mov instruction

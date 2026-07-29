@@ -620,7 +620,7 @@ mod tests {
             }
 
             // Emission must not panic (a graceful ICE Err is acceptable).
-            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]);
+            let emitter = Aarch64Emitter::new(&mir, 0, 0, 0, &[], &[]).without_frame();
             let _ = emitter.emit();
         }
     }
