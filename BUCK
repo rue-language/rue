@@ -300,6 +300,12 @@ CLI_TEST_SHARD_COUNT = 4
         ]),
         absolutize = _CLI_TEST_ABSOLUTIZE,
         timeout_seconds = _CLI_SHARD_TIMEOUT_SECONDS,
+        # RUE-1158 rebalances the shards from measured per-case cost. The
+        # measurements are a declared output of the action rather than an
+        # executor --env path, so a cache hit replays the timings that produced
+        # the tree instead of leaving shard-weights.json to refresh only when a
+        # shard actually executes. See cached_corpus_suite's case_timings doc.
+        case_timings = True,
     )
     for _shard in range(CLI_TEST_SHARD_COUNT)
 ]

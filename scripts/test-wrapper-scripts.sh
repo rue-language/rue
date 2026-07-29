@@ -813,16 +813,18 @@ if [ "$1" = "bxl" ]; then
 fi
 if [ "$1" = "test" ]; then
   if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
-  for arg in "$@"; do
-    case "$arg" in
-      RUE_CLI_CASE_TIMINGS=*)
-        timing_path="${arg#RUE_CLI_CASE_TIMINGS=}"
-        printf '%s\n' '{"event":"rue_cli_case_timing","name":"fake","elapsed_s":0.1}' >"$timing_path"
-        ;;
-    esac
-  done
   if [ "${FAKE_OMIT:-0}" != 1 ]; then printf 'Pass: root%s (0.1s)\n' "$2"; fi
   exit "${FAKE_EXIT:-0}"
+fi
+# RUE-1118: case timings are a declared output of the corpus action, fetched
+# after the run rather than handed in as an executor --env path.
+if [ "$1" = "build" ]; then
+  if [ -n "${FAKE_CALL_LOG:-}" ]; then printf '%s\n' "$*" >>"$FAKE_CALL_LOG"; fi
+  if [ "${FAKE_NO_TIMINGS:-0}" = 1 ]; then exit 1; fi
+  out="$PWD/fake-case-timings.jsonl"
+  printf '%s\n' '{"event":"rue_cli_case_timing","name":"fake","elapsed_s":0.1}' >"$out"
+  printf '%s\n' "$out"
+  exit 0
 fi
 exit 90
 EOF
@@ -870,6 +872,41 @@ EOF
     check "ci-heavy-suite: $heavy_target is invoked without an executor timeout" \
       "$([ "$rc" -eq 0 ] && grep -Fxq "test $heavy_target" "$sb/calls.log" && echo 0 || echo 1)"
   done
+
+  # RUE-1158 under RUE-1118: per-case timings are a declared output of the
+  # corpus action, so they are stored in the cache entry and materialize on a
+  # hit too. ci-heavy-suite fetches the [timings] sub-target after the run and
+  # copies it to the stable path ci.yml's upload step reads, rather than handing
+  # the harness a per-run mktemp path that would change the digest every run.
+  : >"$sb/calls.log"
+  rc=0
+  local timings_dir="$sb/runner-temp"
+  mkdir -p "$timings_dir"
+  (cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_CALL_LOG="$sb/calls.log" \
+    RUNNER_TEMP="$timings_dir" ./ci-heavy-suite //:cli-tests-shard-1) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: a shard fetches timings from the action output" \
+    "$([ "$rc" -eq 0 ] && grep -Fq -- '--show-simple-output //:cli-tests-shard-1-action[timings]' "$sb/calls.log" && echo 0 || echo 1)"
+  check "ci-heavy-suite: shard timings reach the upload path" \
+    "$(grep -Fq '"event":"rue_cli_case_timing"' "$timings_dir/rue-cli-case-timings.jsonl" 2>/dev/null && echo 0 || echo 1)"
+  check "ci-heavy-suite: no per-run timings path is handed to the executor" \
+    "$(! grep -Fq 'RUE_CLI_CASE_TIMINGS=' "$sb/calls.log" && echo 0 || echo 1)"
+
+  # An unsharded corpus emits no case timings, so it must not ask for them.
+  : >"$sb/calls.log"
+  rc=0
+  (cd "$sb" && FAKE_LABELED_TARGET=//:spec-tests FAKE_CALL_LOG="$sb/calls.log" \
+    RUNNER_TEMP="$timings_dir" ./ci-heavy-suite //:spec-tests) >/dev/null 2>&1 || rc=$?
+  check "ci-heavy-suite: a non-shard corpus requests no timings" \
+    "$([ "$rc" -eq 0 ] && ! grep -Fq 'timings' "$sb/calls.log" && echo 0 || echo 1)"
+
+  # The artifact upload is if-no-files-found:ignore and the suite's own Buck
+  # result is the required signal, so an absent timings output must not fail the
+  # lane — it must only say so.
+  rc=0
+  out="$(cd "$sb" && FAKE_LABELED_TARGET=//:cli-tests-shard-1 FAKE_NO_TIMINGS=1 \
+    RUNNER_TEMP="$timings_dir" ./ci-heavy-suite //:cli-tests-shard-1 2>&1)" || rc=$?
+  check "ci-heavy-suite: a missing timings output is reported, not fatal" \
+    "$([ "$rc" -eq 0 ] && grep -Fq 'no case timings produced' <<<"$out" && echo 0 || echo 1)"
 
   # RUE-1117: heavy suites are no longer only root-package targets. The label,
   # not the package path, decides what may run here.
