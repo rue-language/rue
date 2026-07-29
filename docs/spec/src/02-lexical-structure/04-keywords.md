@@ -48,6 +48,7 @@ The following words are keywords and cannot be used as identifiers:
 | `unchecked` | Unchecked function modifier |
 | `ptr` | Pointer type constructor (`ptr const T` / `ptr mut T`) |
 | `extern` | Foreign declaration block (`extern "C" { … }`, ADR-0064) |
+| `yield` | Accessor body exit (`-> borrow T` accessors, ADR-0062) |
 
 ## Type Names
 

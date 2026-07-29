@@ -31,7 +31,11 @@ intrinsic_arg  = type | expression ;
 
 (* Functions *)
 function       = directives [ "pub" ] [ "unchecked" ]
-                 "fn" IDENT "(" [ params ] ")" [ "->" type ] "{" block "}" ;
+                 "fn" IDENT "(" [ params ] ")" [ result ] "{" block "}" ;
+result         = "->" [ "borrow" ] type ;   (* "borrow" marks a place-returning
+                                               accessor (ADR-0062, preview);
+                                               legal only on `borrow self`
+                                               methods — a legality rule *)
 params         = param { "," param } [ "," ] ;
 param          = [ param_mode ] IDENT ":" type ;
 param_mode     = "comptime" | "inout" | "borrow" ;
@@ -44,7 +48,7 @@ struct_fields  = struct_field { "," struct_field } [ "," ] ;
 struct_field   = IDENT ":" type ;
 method         = directives "fn" IDENT
                  "(" [ [ "inout" | "borrow" | "mut" ] "self" [ "," params ] | params ] ")"
-                 [ "->" type ] "{" block "}" ;
+                 [ result ] "{" block "}" ;
 
 (* Enums *)
 enum_def       = [ "pub" ] "enum" IDENT "{" [ enum_variants ] "}" ;
@@ -67,6 +71,12 @@ compound_op    = "+=" | "-=" | "*=" | "/=" | "%="
 expr_stmt      = expression ";"
                | control_flow_expr
                | block_expr ;          (* block-like expressions need no semicolon *)
+yield_expr     = "yield" expression ;  (* the trailing exit of an accessor body
+                                          (ADR-0062, preview); parsed as an
+                                          expression form, valid only as the
+                                          single trailing statement of a
+                                          `-> borrow` accessor body — a
+                                          legality rule *)
 
 (* Place expressions: a variable — or `self`, inside a method — followed by
    zero or more field/index projections. Used as assignment targets. Assigning
