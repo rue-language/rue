@@ -10,6 +10,32 @@ from pathlib import Path
 
 RESULTS_SCRIPT = Path(__file__).with_name("ci-required-results.py")
 NATIVE_RUNNER_SCRIPT = Path(__file__).with_name("run-native-platform-corpus.sh")
+TEST_RUNNER_SOURCE = (
+    Path(__file__).resolve().parents[1] / "crates/rue-test-runner/src/lib.rs"
+)
+
+# RUE-1161: the platform each entry of the harness's CI_EXECUTED_TARGETS claims
+# a required lane for, and the workflow text that proves that lane exists. The
+# harness refuses to credit specification coverage to a case scoped to a
+# platform outside this list, so a lane removed from ci.yml without updating the
+# constant would silently keep crediting cases nothing runs.
+PLATFORM_LANES = {
+    "x86-64-linux": ("linux-premerge", "runs-on: ubuntu-latest"),
+    "aarch64-linux": ("native-platforms", "os: ubuntu-24.04-arm"),
+    "aarch64-macos": ("native-platforms", "os: macos-15"),
+}
+
+CI_EXECUTED_TARGETS_RE = re.compile(
+    r"pub const CI_EXECUTED_TARGETS: &\[&str\] = &\[(?P<body>.*?)\];", re.DOTALL
+)
+
+
+def ci_executed_targets(runner_source: str) -> list[str]:
+    """The platform names the shared test harness believes required CI runs."""
+    match = CI_EXECUTED_TARGETS_RE.search(runner_source)
+    if not match:
+        raise ValueError("CI_EXECUTED_TARGETS not found in the test-runner source")
+    return re.findall(r'"([^"]+)"', match.group("body"))
 SPEC = importlib.util.spec_from_file_location("ci_required_results", RESULTS_SCRIPT)
 RESULTS = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -42,7 +68,11 @@ def list_needs(block: str) -> set[str]:
     return set(re.findall(rf"^      - ({ACTION_ID})$", match.group(1), re.MULTILINE))
 
 
-def validate(ci_path: Path, native_runner_path: Path = NATIVE_RUNNER_SCRIPT) -> list[str]:
+def validate(
+    ci_path: Path,
+    native_runner_path: Path = NATIVE_RUNNER_SCRIPT,
+    test_runner_path: Path = TEST_RUNNER_SOURCE,
+) -> list[str]:
     workflow = ci_path.read_text()
     native_runner = native_runner_path.read_text()
     errors: list[str] = []
@@ -158,6 +188,31 @@ def validate(ci_path: Path, native_runner_path: Path = NATIVE_RUNNER_SCRIPT) -> 
             + ", ".join(sorted(check_names))
         )
 
+    # RUE-1161: the harness's platform responsibility matrix must name exactly
+    # the platforms required CI executes cases on.
+    try:
+        declared = ci_executed_targets(test_runner_path.read_text())
+    except (OSError, ValueError) as error:
+        errors.append(f"platform responsibility matrix unreadable: {error}")
+    else:
+        if set(declared) != set(PLATFORM_LANES):
+            errors.append(
+                "CI_EXECUTED_TARGETS drift: harness declares "
+                + ", ".join(sorted(declared))
+                + "; workflow lanes cover "
+                + ", ".join(sorted(PLATFORM_LANES))
+            )
+        for platform in declared:
+            lane = PLATFORM_LANES.get(platform)
+            if lane is None:
+                continue
+            job, marker = lane
+            if marker not in jobs.get(job, ""):
+                errors.append(
+                    f"platform {platform} is declared CI-executed but job {job} "
+                    f"no longer contains {marker!r}"
+                )
+
     for sanitizer in ("valgrind", "asan"):
         block = jobs.get(sanitizer, "")
         if "runs-on: ubuntu-latest" not in block:
@@ -173,8 +228,14 @@ def validate(ci_path: Path, native_runner_path: Path = NATIVE_RUNNER_SCRIPT) -> 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("workflow", type=Path)
+    parser.add_argument(
+        "--test-runner-source",
+        type=Path,
+        default=TEST_RUNNER_SOURCE,
+        help="rue-test-runner source declaring the platform responsibility matrix",
+    )
     args = parser.parse_args()
-    errors = validate(args.workflow)
+    errors = validate(args.workflow, NATIVE_RUNNER_SCRIPT, args.test_runner_source)
     if errors:
         for error in errors:
             print(f"error: {error}")

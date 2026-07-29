@@ -1,5 +1,14 @@
 load("//crates:defs.bzl", "rue_crate")
 
+# The declared platform responsibility matrix (CI_EXECUTED_TARGETS) lives here,
+# so the CI-gate validator reads this source as an input and fails when the
+# matrix and the workflow's lanes drift apart (RUE-1161).
+filegroup(
+    name = "platform-responsibility-source",
+    srcs = ["src/lib.rs"],
+    visibility = ["PUBLIC"],
+)
+
 rue_crate(
     name = "rue-test-runner",
     deps = [

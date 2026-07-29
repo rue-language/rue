@@ -102,6 +102,70 @@ The `spec` field links tests to specification paragraphs using the format `{chap
 - `3.1:1` - Chapter 3, Section 1, Paragraph 1
 - `4.2:5` - Chapter 4, Section 2, Paragraph 5
 
+#### Filtering by Specification Paragraph
+
+An argument shaped like a specification ID selects the cases citing it, instead
+of being matched against test names (`section.id::case_name`):
+
+```bash
+scripts/rue spec 4.2       # every case citing a paragraph in section 4.2
+scripts/rue spec 4.2:5     # only the cases citing paragraph 4.2:5
+scripts/rue spec --spec 4.2:5   # explicit form
+scripts/rue spec arithmetic     # ordinary libtest name filter, unchanged
+```
+
+A selector that matches no case exits non-zero. A filter that silently selects
+nothing is how a mistyped paragraph ID becomes false evidence that a rule is
+exercised.
+
+### Platform Responsibility
+
+Each case declares, structurally, which lane is responsible for executing it:
+
+| Responsibility | What the case asserts | Who runs it |
+| --- | --- | --- |
+| Semantic | diagnostics, semantics, and target-independent golden IR (tokens/AST/RIR/AIR/CFG) | the Linux-complete lane |
+| Native | compiles and runs a real program for the host's target | the Linux-complete lane, plus the native lane of every `only_on` host |
+| Backend | architecture-specific golden output for a declared `target` | the Linux-complete lane when it only emits; the matching native lane when it also executes |
+
+The classification is derived from the assertions a case makes, so it cannot
+drift from what the case does. Loading the corpus **rejects** a case whose
+platform responsibility is ambiguous:
+
+- backend-specific golden output (`expected_mir`, `expected_lowering`,
+  `expected_liveness`, `expected_regalloc`, `expected_asm`,
+  `expected_stackframe`) with no declared `target` — the expectation belongs to
+  one architecture, but nothing says which;
+- a `target` whose architecture differs from an `only_on` host;
+- a `target` combined with execution assertions and no `only_on` scope, which
+  would ask whichever host runs the suite to execute a foreign-architecture
+  program.
+
+Because `//:spec-traceability` loads the whole corpus, that gate is where an
+ambiguous case surfaces first — a cheap, standalone required check.
+
+#### `only_on` and CI reachability
+
+`only_on` scopes a case to specific hosts. Required CI executes
+`x86-64-linux` (complete lane), `aarch64-linux`, and `aarch64-macos`
+(native lanes) — the list in `rue_test_runner::CI_EXECUTED_TARGETS`, which
+`scripts/validate-ci-gate.py` keeps in lockstep with `.github/workflows/ci.yml`.
+
+`x86-64-macos` is a legal host name so the suite runs on an Intel Mac, but no
+required lane is one. A case scoped only to platforms outside the matrix
+therefore **does not count as specification coverage**: it still runs for a
+developer on that host, but nothing in CI executes it, so it cannot stand as
+evidence that a rule holds. The traceability report lists every such case.
+
+#### Focused coverage
+
+A normative rule's coverage must include at least one *focused* case — at most
+`FOCUSED_CASE_MAX_SOURCE_LINES` (40) lines of source. A rule whose only evidence
+is a large multi-feature program is covered on paper only: when it regresses,
+the failure names the program rather than the rule. Large programs remain
+valuable as integration and slow-tier coverage; they just cannot be a rule's
+sole evidence.
+
 
 ### Language Specification
 
@@ -181,6 +245,14 @@ The traceability check is run as the `//:spec-traceability` Buck target and is
 included in `./test.sh` and `./buck2 test //...`. It fails if:
 - Any spec paragraph has no covering test (coverage < 100%)
 - Any test references a non-existent spec paragraph ID
+- Any normative rule is covered only through a large program (see
+  "Focused coverage" above)
+- Any case declares an ambiguous platform responsibility (see
+  "Platform Responsibility" above)
+
+A case only contributes coverage when it actually runs: skipped cases,
+preview cases allowed to fail, and cases scoped to platforms no required CI lane
+executes are all reported but not credited.
 
 
 ## Fuzz testing
