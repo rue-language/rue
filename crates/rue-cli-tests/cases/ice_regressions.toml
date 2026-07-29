@@ -402,3 +402,22 @@ fn main() -> i32 { id(i34, 42) }
 compile_fail = true
 error_contains = ["E0206", "type mismatch"]
 compile_stderr_not_contains = ["internal compiler error", "did not publish a terminal"]
+
+[[case]]
+name = "unknown_return_type_in_comptime_produced_struct_reports_diagnostic"
+description = "GitHub #1930: a method of a comptime-produced anonymous struct whose return type is an unknown name (`Self` misspelled) left the producing specialization without a terminal, so `Box(u64)` stayed a bare `type` and the body query ICEd with E9000. Now a clean E0413."
+files = [{ path = "main.rue", source = """
+fn Box(comptime T: type) -> type {
+    struct {
+        v: T,
+        fn make(x: T) -> Sef { Self { v: x } }
+    }
+}
+fn main() -> i32 {
+    let b = Box(u64).make(8);
+    if b.v == 8 { 42 } else { 1 }
+}
+""" }]
+compile_fail = true
+error_contains = ["E0413", "no method named 'make'"]
+compile_stderr_not_contains = ["internal compiler error", "did not publish a terminal"]
