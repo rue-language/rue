@@ -15,6 +15,7 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("canonical_merge", include_str!("canonical_merge.rs")),
     ("canonical_semantic", include_str!("canonical_semantic.rs")),
     ("cfg_query", include_str!("cfg_query.rs")),
+    ("codegen_query", include_str!("codegen_query.rs")),
     (
         "declaration_candidate",
         include_str!("declaration_candidate.rs"),
@@ -1518,8 +1519,8 @@ fn orphaned_backend_inspection_exports_cannot_return() {
         );
     }
     assert!(
-        code_identifiers(unstable).contains(&"generate_backend_products"),
-        "unstable presentation must project the canonical production backend product"
+        code_identifiers(unstable).contains(&"codegen_products"),
+        "unstable presentation must project the canonical CodegenUnit terminal"
     );
 }
 

@@ -37,8 +37,17 @@ pub(crate) fn test_cfg(source: &str) -> MultiErrorResult<CompileState> {
     let (_, symbols) = rir.into_parts();
     let (functions, type_pool, strings, warnings) = semantic.into_parts();
     Ok(CompileState {
-        interner: std::sync::Arc::try_unwrap(symbols.into_interner())
-            .expect("test frontend uniquely owns its semantic symbol interner"),
+        interner: {
+            use lasso::Key;
+            let source = symbols.into_interner();
+            let rebuilt = ThreadedRodeo::default();
+            for index in 0..source.len() {
+                let spur = lasso::Spur::try_from_usize(index)
+                    .expect("semantic interner spur index is representable");
+                rebuilt.get_or_intern(source.resolve(&spur));
+            }
+            rebuilt
+        },
         functions,
         type_pool,
         strings,
