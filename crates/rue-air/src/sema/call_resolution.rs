@@ -5,16 +5,14 @@
 //! declaration analyzer implements the same vocabulary for declaration work.
 //!
 //! Where the analyzer selects a winner across *several* candidate reads — the
-//! reachability classifier's free-function-then-named-method order, and the
 //! static call-reference resolver's const-alias-then-local order — that
-//! selection lives in the provider-generic free functions below
-//! ([`classify_static_call`], [`resolve_static_call_reference`]) rather than in
-//! the impl, so every fact host replays the exact
-//! same candidate order, short-circuits, and first-match-wins tie-breaks
-//! (RUE-1091 risk R1). Winner-picking that a single epoch accessor already
-//! performs internally (`method_info`'s anonymous-then-named fallback, the
-//! callable-symbol single-candidate check) stays inside that point query,
-//! matching the `body_endpoint` convention.
+//! selection lives in the provider-generic free function below
+//! ([`resolve_static_call_reference`]) rather than in the impl, so every fact
+//! host replays the exact same candidate order, short-circuits, and
+//! first-match-wins tie-breaks (RUE-1091 risk R1). Winner-picking that a
+//! single epoch accessor already performs internally (`method_info`'s
+//! anonymous-then-named fallback) stays inside that point query, matching the
+//! `body_endpoint` convention.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -71,19 +69,6 @@ pub(crate) trait CallResolutionFacts {
     /// anonymous table then the named table. Mirrors `Sema::method_info`.
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
 
-    /// The *named* method/associated-function info for `(struct, name)`,
-    /// consulting only the named table. Mirrors a direct `methods.get`, so it
-    /// deliberately does not fall back to the anonymous table the way
-    /// [`Self::method_info`] does.
-
-    /// The unique named `(struct, method, info)` a callable symbol resolves to,
-    /// or `None` when the symbol is absent or ambiguous. Mirrors
-    /// `Sema::named_method_by_callable_symbol`.
-    fn named_method_by_callable_symbol(
-        &self,
-        name: Spur,
-    ) -> Option<(StructId, Spur, MethodCallInfo)>;
-
     /// The named-method RIR declaration for the durable-available
     /// `(owner_file, owner_type_name, method_name)` preimage. Mirrors
     /// `structs_by_file_name.get` followed by `named_method_declarations.get`.
@@ -109,10 +94,6 @@ pub(super) trait CallResolutionFactSource {
     fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
-    fn call_named_method_by_callable_symbol(
-        &self,
-        name: Spur,
-    ) -> Option<(StructId, Spur, MethodCallInfo)>;
     fn call_named_method_declaration(
         &self,
         file: FileId,
@@ -159,14 +140,6 @@ impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
         self.method_info((struct_id, name))
             .copied()
             .map(MethodCallInfo::from_body)
-    }
-
-    fn call_named_method_by_callable_symbol(
-        &self,
-        name: Spur,
-    ) -> Option<(StructId, Spur, MethodCallInfo)> {
-        self.named_method_by_callable_symbol(name)
-            .map(|(struct_id, method, info)| (struct_id, method, MethodCallInfo::from_body(*info)))
     }
 
     fn call_named_method_declaration(
@@ -224,44 +197,12 @@ impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFac
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.host.call_method_info(struct_id, name)
     }
-    fn named_method_by_callable_symbol(
-        &self,
-        name: Spur,
-    ) -> Option<(StructId, Spur, MethodCallInfo)> {
-        self.host.call_named_method_by_callable_symbol(name)
-    }
     fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
         self.host.call_named_method_declaration(file, ty, method)
     }
     fn module_def(&self, module_id: ModuleId) -> ModuleDef {
         self.host.call_module_def(module_id)
     }
-}
-
-/// The reachability classification of a statically discovered call name.
-pub(in crate::sema) enum StaticCallReference {
-    /// The name is a free function.
-    Free(Spur),
-    /// The name is the callable symbol of the unique `(struct, method)`.
-    Method(StructId, Spur),
-}
-
-/// Classify a discovered call name as a free function or a unique named method,
-/// preferring the free function. The provider-generic form of the inline
-/// classifier in `imported_body_references`: a free-function candidate
-/// wins over a named-method candidate (first-match-wins), and the named-method
-/// read is skipped entirely when the free-function membership check succeeds.
-pub(in crate::sema) fn classify_static_call<P: CallResolutionFacts>(
-    facts: &P,
-    name: Spur,
-) -> Option<StaticCallReference> {
-    if facts.function_contains(name) {
-        return Some(StaticCallReference::Free(name));
-    }
-    if let Some((struct_id, method, _)) = facts.named_method_by_callable_symbol(name) {
-        return Some(StaticCallReference::Method(struct_id, method));
-    }
-    None
 }
 
 /// Resolve a statically discovered call name to the free-function symbol it
@@ -303,8 +244,8 @@ pub(in crate::sema) fn resolve_static_call_reference<P: CallResolutionFacts>(
 // This surface is public because rue-compiler supplies the concrete durable
 // signature source behind the opaque provider boundary. Every method here is a
 // thin pool consult, provider point query, or RIR-index handle fill, with no resolution
-// LOGIC of its own (selection stays in [`classify_static_call`] /
-// [`resolve_static_call_reference`], the provider-generic free functions above).
+// LOGIC of its own (selection stays in [`resolve_static_call_reference`], the
+// provider-generic free function above).
 // ---------------------------------------------------------------------------
 
 /// The call-resolution ProviderFacts driver: answers the family-1C facts from a
@@ -563,19 +504,6 @@ where
         self.rir
             .rir_index()
             .named_method_declaration(owner_file, owner_sym, method_sym)
-    }
-
-    /// Reverse a rendered callable symbol to its `(receiver, method)` through
-    /// the provider boundary. Answers `None` for a bare (unqualified, `$`-less)
-    /// symbol — a builtin / language-item / anonymous owner whose defining module
-    /// the boundary cannot recover — exactly as the epoch's callable index
-    /// answers `Some` for such a symbol. That intentional epoch=`Some` /
-    /// provider=`None` divergence is explicit in parity tests.
-    pub fn callable_symbol_receiver(
-        &self,
-        symbol: &str,
-    ) -> Option<(P::ReceiverType, std::sync::Arc<str>)> {
-        self.provider.callable_symbol_method(symbol)
     }
 
     /// (C) Whether a source name resolves to a declared free function in `module`

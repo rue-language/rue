@@ -960,6 +960,16 @@ pub struct SemanticBodyWarningSuggestion {
     pub applicability: rue_error::Applicability,
 }
 
+/// One `(receiver, method)` reference recorded when body analysis selected the
+/// method winner and rendered its callable symbol for `Call` emission. The
+/// recorded set is the reachability truth for imported bodies, so no consumer
+/// ever reverses a rendered callable symbol back into a method key (RUE-1128).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticBodyMethodReference<K, M> {
+    pub receiver: NominalInstanceKey<K, M>,
+    pub method: Arc<str>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticBody<K, M> {
     pub return_type: SemanticImportType<K, M>,
@@ -975,6 +985,10 @@ pub struct SemanticBody<K, M> {
     pub param_writable: Arc<[bool]>,
     pub allow_unreachable_code: bool,
     pub warnings: Arc<[SemanticBodyWarning]>,
+    /// Method references recorded at resolution time, ordered by the
+    /// content-canonical `(receiver symbol, method name)` render so equal
+    /// recorded sets serialize identically across sessions and revisions.
+    pub method_references: Arc<[SemanticBodyMethodReference<K, M>]>,
 }
 
 impl<K, M> SemanticBody<K, M> {
@@ -1074,6 +1088,30 @@ impl<K, M> SemanticBody<K, M> {
             param_writable: self.param_writable.clone(),
             allow_unreachable_code: self.allow_unreachable_code,
             warnings: self.warnings.clone(),
+            method_references: self
+                .method_references
+                .iter()
+                .map(|reference| {
+                    Ok(SemanticBodyMethodReference {
+                        receiver: match &reference.receiver {
+                            NominalInstanceKey::Builtin { kind, name } => {
+                                NominalInstanceKey::Builtin {
+                                    kind: *kind,
+                                    name: name.clone(),
+                                }
+                            }
+                            NominalInstanceKey::Named(value) => {
+                                NominalInstanceKey::Named(key(value)?)
+                            }
+                            NominalInstanceKey::Anonymous(value) => NominalInstanceKey::Anonymous(
+                                value.try_map_identities(key, module)?,
+                            ),
+                        },
+                        method: reference.method.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, E>>()?
+                .into(),
         })
     }
 }
@@ -1088,6 +1126,11 @@ pub struct SemanticImportedBody<K, M> {
     pub param_modes: ParamSlotModes,
     pub allow_unreachable_code: bool,
     pub warnings: Arc<[rue_error::CompileWarning]>,
+    /// The body's recorded method references projected into the importing
+    /// session's live `(receiver, method)` keys. Import hosts that resolve
+    /// nominals (the staged-body importer) populate this; validation-only
+    /// hosts leave it empty because no reachability consumer reads it there.
+    pub method_references: std::collections::HashSet<(crate::StructId, lasso::Spur)>,
 }
 
 #[derive(Debug, Clone)]

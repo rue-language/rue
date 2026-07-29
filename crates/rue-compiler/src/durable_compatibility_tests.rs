@@ -23,8 +23,10 @@ const REVIEWED_SEMANTIC_SCHEMA: DurableSemanticSchemaVersion = DurableSemanticSc
     // Epoch 6: slice identity includes the resolved element type.
     implementation_epoch: 6,
 };
-const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 9;
-const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 8;
+// 10/9: the body algebra gained the recorded method-reference payload
+// (RUE-1128); the payload-free 9/8 shapes fail closed to ordinary analysis.
+const REVIEWED_ORDINARY_BODY_SCHEMA: u32 = 10;
+const REVIEWED_SPECIALIZED_BODY_SCHEMA: u32 = 9;
 const REVIEWED_CFG_SCHEMA: u32 = 4;
 const REVIEWED_BODY_KINDS: usize = 58;
 const REVIEWED_TYPE_KINDS: usize = 21;
@@ -89,6 +91,7 @@ fn body_payload(data: D<StableDefinitionKey, ModuleId>) -> DurableOrdinaryBodyPa
             param_writable: Arc::from([]),
             allow_unreachable_code: false,
             warnings: Arc::from([]),
+            method_references: Arc::from([]),
         },
     }
 }
@@ -162,6 +165,25 @@ fn reviewed_schema_versions_and_old_new_policy_are_explicit() {
         assert_eq!(work.projection_failures, 1);
         assert_eq!(work.projection_completions, 0);
     }
+}
+
+#[test]
+fn pre_method_reference_payload_bodies_fail_closed_to_ordinary_analysis() {
+    // A retained candidate from the payload-free shape (schema 9, before the
+    // recorded method-reference payload landed) must never project into the
+    // current shape with a silently empty recorded reference set; the stale
+    // schema is rejected wholesale so the body falls back to ordinary
+    // analysis.
+    let mut payload = body_payload(D::UnitConst);
+    payload.schema_version = 9;
+    let mut work = DurableBodyWork::default();
+    assert_eq!(
+        payload.project_semantic_body(&mut work),
+        Err(DurableBodyProjectionFailure::SchemaVersionMismatch)
+    );
+    assert_eq!(work.projection_attempts, 1);
+    assert_eq!(work.projection_failures, 1);
+    assert_eq!(work.projection_completions, 0);
 }
 
 #[test]

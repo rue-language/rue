@@ -96,6 +96,9 @@ struct CompletedExport {
     warning_free: bool,
     dependencies: Vec<crate::SemanticDefinitionToken>,
     dependency_boundary_complete: bool,
+    /// The body's recorded `(receiver, method)` references, retained for the
+    /// durable export payload after reachability consumes the discovered set.
+    method_references: HashSet<(StructId, Spur)>,
 }
 
 struct SpecializedBody {
@@ -278,6 +281,7 @@ impl Specializer {
                         &specialized_calls,
                         &candidate.dependencies,
                         candidate.dependency_boundary_complete,
+                        &candidate.method_references,
                     ) {
                         Ok(export) => {
                             sema.body_analysis_work.specialized_body_exports_succeeded += 1;
@@ -370,7 +374,7 @@ impl Specializer {
                             sema.body_analysis_work.specialized_bodies_reused += 1;
                             sema.body_analysis_work.specialized_body_analyses_skipped += 1;
                             let (referenced_functions, referenced_methods) =
-                                crate::sema::analysis::imported_body_references(sema, &imported.air);
+                                crate::sema::analysis::imported_body_references(sema, &imported);
                             Some(SpecializedBody {
                                 function: AnalyzedFunction {
                                     identity: function_identity.clone(),
@@ -494,6 +498,7 @@ impl Specializer {
                 discovered
                     .functions
                     .extend(specialized.referenced_functions);
+                let method_references = specialized.referenced_methods.clone();
                 discovered.methods.extend(specialized.referenced_methods);
 
                 // Surface warnings from the specialized body, once per (kind,
@@ -522,6 +527,7 @@ impl Specializer {
                     warning_free,
                     dependencies,
                     dependency_boundary_complete,
+                    method_references,
                 });
             }
         }

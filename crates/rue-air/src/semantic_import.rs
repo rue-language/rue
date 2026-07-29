@@ -937,6 +937,7 @@ where
             ),
             allow_unreachable_code: body.allow_unreachable_code,
             warnings: Arc::from(warnings),
+            method_references: std::collections::HashSet::new(),
         })
     }
     pub fn new(
@@ -2183,6 +2184,7 @@ mod tests {
             param_writable: Arc::new([]),
             allow_unreachable_code: false,
             warnings: Arc::new([]),
+            method_references: Arc::new([]),
         }
     }
 

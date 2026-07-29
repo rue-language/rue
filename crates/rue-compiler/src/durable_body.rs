@@ -16,8 +16,11 @@ use crate::{
     StableDefinitionKey, StableDefinitionKind,
 };
 
-pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 9;
-pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 8;
+// Version 10/9: the body algebra gained the recorded method-reference payload
+// (RUE-1128). Retained artifacts from the payload-free shape fail closed to
+// ordinary analysis instead of misprojecting an empty reference set.
+pub const DURABLE_ORDINARY_BODY_SCHEMA_VERSION: u32 = 10;
+pub const DURABLE_SPECIALIZED_BODY_SCHEMA_VERSION: u32 = 9;
 
 /// Durable specialization of AIR's canonical body algebra. These aliases keep
 /// compiler consumers explicit about the stable identity domain.
@@ -1173,6 +1176,7 @@ mod tests {
                 param_writable: Arc::from([]),
                 allow_unreachable_code: false,
                 warnings: Arc::from([]),
+                method_references: Arc::from([]),
             },
         }
     }
