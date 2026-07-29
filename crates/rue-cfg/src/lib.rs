@@ -20,6 +20,7 @@
 mod api_inventory;
 mod build;
 mod dominators;
+mod inline;
 mod inst;
 pub mod opt;
 mod payload;
@@ -28,6 +29,7 @@ mod verify;
 use rue_error::{CompileError, CompileWarning};
 
 pub use build::CfgBuilder;
+pub use inline::{CfgInlineError, inline_call};
 pub use inst::{
     BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,
     CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgPayloadStorageStats,
