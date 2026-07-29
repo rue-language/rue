@@ -183,8 +183,7 @@ pub(crate) use session::{
     StableDeclarationTypeCallHeadDependency, StableDeclarationTypeDependency,
     StableDefinitionFingerprint, StableDefinitionFingerprintPrecision,
     StableDefinitionInputFingerprint, StableFreeFunctionDependency, StableModuleImportDependency,
-    StableNamedConstDependency, StableNamedConstDependencyTarget, StableNamedDestructorDependency,
-    StableNamedMethodDependency, StableNamedMethodDependencyTarget,
+    StableNamedConstDependency, StableNamedConstDependencyTarget,
 };
 #[cfg(test)]
 pub(crate) use source_identity::LinkInputDescriptor;

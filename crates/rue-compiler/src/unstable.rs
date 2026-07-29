@@ -1756,12 +1756,6 @@ impl DependencyBaseline {
     pub fn free_function_dependencies(&self) -> String {
         format!("{:?}", self.inner.free_function_dependencies())
     }
-    pub fn named_method_dependencies(&self) -> String {
-        format!("{:?}", self.inner.named_method_dependencies())
-    }
-    pub fn named_destructor_dependencies(&self) -> String {
-        format!("{:?}", self.inner.named_destructor_dependencies())
-    }
     pub fn implicit_named_destructor_dependencies(&self) -> String {
         format!("{:?}", self.inner.implicit_named_destructor_dependencies())
     }
@@ -1788,15 +1782,6 @@ impl DependencyBaseline {
     }
     pub fn free_function_caller_dependencies_complete(&self) -> bool {
         self.inner.free_function_caller_dependencies_complete()
-    }
-    pub fn non_generic_named_method_dependencies_complete(&self) -> bool {
-        self.inner.non_generic_named_method_dependencies_complete()
-    }
-    pub fn generic_named_method_dependencies_complete(&self) -> bool {
-        self.inner.generic_named_method_dependencies_complete()
-    }
-    pub fn named_destructor_dependencies_complete(&self) -> bool {
-        self.inner.named_destructor_dependencies_complete()
     }
     pub fn implicit_named_destructor_dependencies_complete(&self) -> bool {
         self.inner.implicit_named_destructor_dependencies_complete()
@@ -1826,9 +1811,7 @@ impl DependencyBaseline {
 pub enum DependencySurface {
     BodyOwner,
     FreeFunctionCall,
-    NonGenericNamedMethodCall,
     GenericNamedMethodCall,
-    NamedDestructorCall,
     ImplicitNamedDestructor,
     DeclarationType,
     DeclarationTypeCallHead,
@@ -1840,7 +1823,6 @@ pub enum DependencyIncompleteReason {
     AnonymousBodyOwnerUnavailable,
     CallerEndpointUnavailable,
     GenericSubstitutionIdentityUnavailable,
-    DestructorEndpointUnavailable,
     AnonymousDropOwnerUnavailable,
     ResolvedTypeIdentityUnavailable,
     TypeCallHeadIdentityUnavailable,
@@ -1904,9 +1886,7 @@ impl InvalidationMetrics {
             match value {
                 S::BodyOwner => DependencySurface::BodyOwner,
                 S::FreeFunctionCall => DependencySurface::FreeFunctionCall,
-                S::NonGenericNamedMethodCall => DependencySurface::NonGenericNamedMethodCall,
                 S::GenericNamedMethodCall => DependencySurface::GenericNamedMethodCall,
-                S::NamedDestructorCall => DependencySurface::NamedDestructorCall,
                 S::ImplicitNamedDestructor => DependencySurface::ImplicitNamedDestructor,
                 S::DeclarationType => DependencySurface::DeclarationType,
                 S::DeclarationTypeCallHead => DependencySurface::DeclarationTypeCallHead,
@@ -1925,9 +1905,6 @@ impl InvalidationMetrics {
                 }
                 R::GenericSubstitutionIdentityUnavailable => {
                     DependencyIncompleteReason::GenericSubstitutionIdentityUnavailable
-                }
-                R::DestructorEndpointUnavailable => {
-                    DependencyIncompleteReason::DestructorEndpointUnavailable
                 }
                 R::AnonymousDropOwnerUnavailable => {
                     DependencyIncompleteReason::AnonymousDropOwnerUnavailable

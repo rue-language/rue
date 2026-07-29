@@ -511,8 +511,6 @@ pub const FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT: usize = 8;
 pub struct SemanticDependencyManifestWork {
     pub definition_records_visited: usize,
     pub import_records_visited: usize,
-    pub named_method_events_translated: usize,
-    pub named_destructor_events_translated: usize,
     pub declaration_type_events_translated: usize,
     pub declaration_type_call_head_events_translated: usize,
     pub builtin_type_call_head_inputs_translated: usize,
@@ -529,24 +527,6 @@ pub struct SemanticDependencyManifestWork {
 pub struct StableFreeFunctionDependency {
     pub caller: StableDefinitionKey,
     pub callee: StableDefinitionKey,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum StableNamedMethodDependencyTarget {
-    FreeFunction(StableDefinitionKey),
-    NamedMethod(StableDefinitionKey),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StableNamedMethodDependency {
-    pub caller: StableDefinitionKey,
-    pub target: StableNamedMethodDependencyTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StableNamedDestructorDependency {
-    pub caller: StableDefinitionKey,
-    pub target: StableNamedMethodDependencyTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -679,9 +659,7 @@ pub enum StableModuleImportDependency {
 pub enum SemanticDependencySurface {
     BodyOwner,
     FreeFunctionCall,
-    NonGenericNamedMethodCall,
     GenericNamedMethodCall,
-    NamedDestructorCall,
     ImplicitNamedDestructor,
     DeclarationType,
     DeclarationTypeCallHead,
@@ -695,7 +673,6 @@ pub enum SemanticDependencyIncompleteReason {
     AnonymousBodyOwnerUnavailable,
     CallerEndpointUnavailable,
     GenericSubstitutionIdentityUnavailable,
-    DestructorEndpointUnavailable,
     AnonymousDropOwnerUnavailable,
     ResolvedTypeIdentityUnavailable,
     TypeCallHeadIdentityUnavailable,
@@ -814,9 +791,7 @@ impl SemanticDependencyGraphState {
             match blocker.surface {
                 SemanticDependencySurface::BodyOwner
                 | SemanticDependencySurface::FreeFunctionCall
-                | SemanticDependencySurface::NonGenericNamedMethodCall
                 | SemanticDependencySurface::GenericNamedMethodCall
-                | SemanticDependencySurface::NamedDestructorCall
                 | SemanticDependencySurface::ImplicitNamedDestructor
                 | SemanticDependencySurface::DeclarationType
                 | SemanticDependencySurface::DeclarationTypeCallHead
@@ -865,8 +840,6 @@ pub struct SemanticDependencyInputManifest {
     definition_fingerprints: Arc<[StableDefinitionInputFingerprint]>,
     module_imports: Arc<[StableModuleImportDependency]>,
     free_function_dependencies: Arc<[StableFreeFunctionDependency]>,
-    named_method_dependencies: Arc<[StableNamedMethodDependency]>,
-    named_destructor_dependencies: Arc<[StableNamedDestructorDependency]>,
     implicit_named_destructor_dependencies: Arc<[StableImplicitNamedDestructorDependency]>,
     declaration_type_dependencies: Arc<[StableDeclarationTypeDependency]>,
     declaration_type_call_head_dependencies: Arc<[StableDeclarationTypeCallHeadDependency]>,
@@ -907,11 +880,6 @@ impl std::fmt::Debug for SemanticDependencyInputManifest {
             .field(
                 "free_function_dependencies",
                 &self.free_function_dependencies,
-            )
-            .field("named_method_dependencies", &self.named_method_dependencies)
-            .field(
-                "named_destructor_dependencies",
-                &self.named_destructor_dependencies,
             )
             .field(
                 "implicit_named_destructor_dependencies",
@@ -964,21 +932,6 @@ impl SemanticDependencyInputManifest {
     }
     pub fn free_function_caller_dependencies_complete(&self) -> bool {
         self.surface_complete(SemanticDependencySurface::FreeFunctionCall)
-    }
-    pub fn named_method_dependencies(&self) -> &[StableNamedMethodDependency] {
-        &self.named_method_dependencies
-    }
-    pub fn non_generic_named_method_dependencies_complete(&self) -> bool {
-        self.surface_complete(SemanticDependencySurface::NonGenericNamedMethodCall)
-    }
-    pub fn generic_named_method_dependencies_complete(&self) -> bool {
-        self.surface_complete(SemanticDependencySurface::GenericNamedMethodCall)
-    }
-    pub fn named_destructor_dependencies(&self) -> &[StableNamedDestructorDependency] {
-        &self.named_destructor_dependencies
-    }
-    pub fn named_destructor_dependencies_complete(&self) -> bool {
-        self.surface_complete(SemanticDependencySurface::NamedDestructorCall)
     }
     pub fn implicit_named_destructor_dependencies(
         &self,
@@ -7387,23 +7340,16 @@ impl CompilerSession {
             definition_fingerprints.push(stable_definition_input_fingerprint(&snapshot, record)?);
         }
         let (
-            mut named_method_dependencies,
-            mut named_destructor_dependencies,
             mut declaration_type_dependencies,
             mut declaration_type_call_head_dependencies,
             mut builtin_type_call_head_inputs,
             mut named_const_dependencies,
             mut implicit_named_destructor_dependencies,
-            named_method_events_translated,
-            named_destructor_events_translated,
             declaration_type_events_translated,
             declaration_type_call_head_events_translated,
             builtin_type_call_head_inputs_translated,
             named_const_events_translated,
             implicit_named_destructor_events_translated,
-            named_method_dependencies_complete,
-            generic_named_method_dependencies_complete,
-            named_destructor_dependencies_complete,
             declaration_type_dependencies_complete,
             declaration_type_call_head_dependencies_complete,
             supported_type_call_heads_complete,
@@ -7420,65 +7366,6 @@ impl CompilerSession {
                     return Err(invalid_dependency_manifest(
                         "semantic dependency translation used a stale body-owner issuer revision",
                     ));
-                }
-                let mut method_edges = Vec::new();
-                for event in semantic.named_method_dependencies() {
-                    let provenance = stable_named_method_endpoint(
-                        definitions,
-                        event.caller_file,
-                        &event.caller_owner_name,
-                        &event.caller_method_name,
-                    )?;
-                    let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-                    let target = match &event.target {
-                        rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                            StableNamedMethodDependencyTarget::FreeFunction(
-                                stable_free_function_endpoint(definitions, *file, name)?,
-                            )
-                        }
-                        rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                            file,
-                            owner_name,
-                            method_name,
-                        } => StableNamedMethodDependencyTarget::NamedMethod(
-                            stable_named_method_endpoint(
-                                definitions,
-                                *file,
-                                owner_name,
-                                method_name,
-                            )?,
-                        ),
-                    };
-                    method_edges.push(StableNamedMethodDependency { caller, target });
-                }
-                let mut destructor_edges = Vec::new();
-                for event in semantic.named_destructor_dependencies() {
-                    let provenance = stable_named_destructor_endpoint(
-                        definitions,
-                        event.caller_file,
-                        &event.caller_owner_name,
-                    )?;
-                    let caller = stable_token_endpoint(semantic, event.caller_token, &provenance)?;
-                    let target = match &event.target {
-                        rue_air::NamedMethodDependencyTargetEvent::FreeFunction { file, name } => {
-                            StableNamedMethodDependencyTarget::FreeFunction(
-                                stable_free_function_endpoint(definitions, *file, name)?,
-                            )
-                        }
-                        rue_air::NamedMethodDependencyTargetEvent::NamedMethod {
-                            file,
-                            owner_name,
-                            method_name,
-                        } => StableNamedMethodDependencyTarget::NamedMethod(
-                            stable_named_method_endpoint(
-                                definitions,
-                                *file,
-                                owner_name,
-                                method_name,
-                            )?,
-                        ),
-                    };
-                    destructor_edges.push(StableNamedDestructorDependency { caller, target });
                 }
                 let mut type_edges = Vec::new();
                 for event in semantic.declaration_type_dependencies() {
@@ -7621,15 +7508,11 @@ impl CompilerSession {
                     });
                 }
                 (
-                    method_edges,
-                    destructor_edges,
                     type_edges,
                     type_call_head_edges,
                     builtin_head_inputs,
                     const_edges,
                     implicit_destructor_edges,
-                    semantic.named_method_dependencies().len(),
-                    semantic.named_destructor_dependencies().len(),
                     semantic.declaration_type_dependencies().len(),
                     semantic.declaration_type_call_head_dependencies().len(),
                     semantic
@@ -7637,9 +7520,6 @@ impl CompilerSession {
                         .len(),
                     semantic.named_const_dependencies().len(),
                     semantic.implicit_named_destructor_dependencies().len(),
-                    semantic.non_generic_named_method_dependencies_complete(),
-                    semantic.generic_named_method_dependencies_complete(),
-                    semantic.named_destructor_dependencies_complete(),
                     semantic.declaration_type_dependencies_complete(),
                     semantic.declaration_type_call_head_dependencies_complete(),
                     semantic.supported_type_call_heads_complete(),
@@ -7653,18 +7533,11 @@ impl CompilerSession {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
-                Vec::new(),
-                Vec::new(),
                 0,
                 0,
                 0,
                 0,
                 0,
-                0,
-                0,
-                false,
-                false,
-                false,
                 false,
                 false,
                 false,
@@ -7773,10 +7646,6 @@ impl CompilerSession {
         body_named_dependencies.dedup();
         free_function_dependencies.sort();
         free_function_dependencies.dedup();
-        named_method_dependencies.sort();
-        named_method_dependencies.dedup();
-        named_destructor_dependencies.sort();
-        named_destructor_dependencies.dedup();
         declaration_type_dependencies.sort();
         declaration_type_dependencies.dedup();
         declaration_type_call_head_dependencies.sort();
@@ -7808,21 +7677,6 @@ impl CompilerSession {
             free_function_caller_dependencies_complete,
             SemanticDependencySurface::FreeFunctionCall,
             SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
-        );
-        block_body_surface(
-            named_method_dependencies_complete,
-            SemanticDependencySurface::NonGenericNamedMethodCall,
-            SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
-        );
-        block_body_surface(
-            generic_named_method_dependencies_complete,
-            SemanticDependencySurface::GenericNamedMethodCall,
-            SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
-        );
-        block_body_surface(
-            named_destructor_dependencies_complete,
-            SemanticDependencySurface::NamedDestructorCall,
-            SemanticDependencyIncompleteReason::DestructorEndpointUnavailable,
         );
         block_body_surface(
             implicit_named_destructor_dependencies_complete,
@@ -7879,24 +7733,6 @@ impl CompilerSession {
                     .filter(|edge| &edge.caller == owner)
                     .map(|edge| edge.callee.clone()),
             );
-            for edge in named_method_dependencies
-                .iter()
-                .filter(|edge| &edge.caller == owner)
-            {
-                direct_dependencies.push(match &edge.target {
-                    StableNamedMethodDependencyTarget::FreeFunction(target)
-                    | StableNamedMethodDependencyTarget::NamedMethod(target) => target.clone(),
-                });
-            }
-            for edge in named_destructor_dependencies
-                .iter()
-                .filter(|edge| &edge.caller == owner)
-            {
-                direct_dependencies.push(match &edge.target {
-                    StableNamedMethodDependencyTarget::FreeFunction(target)
-                    | StableNamedMethodDependencyTarget::NamedMethod(target) => target.clone(),
-                });
-            }
             direct_dependencies.extend(
                 implicit_named_destructor_dependencies
                     .iter()
@@ -8096,8 +7932,6 @@ impl CompilerSession {
         let work = SemanticDependencyManifestWork {
             definition_records_visited: partial_work.definition_records_visited,
             import_records_visited: partial_work.import_records_visited,
-            named_method_events_translated,
-            named_destructor_events_translated,
             declaration_type_events_translated,
             declaration_type_call_head_events_translated,
             builtin_type_call_head_inputs_translated,
@@ -8156,21 +7990,6 @@ impl CompilerSession {
             SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
         );
         block(
-            named_method_dependencies_complete,
-            SemanticDependencySurface::NonGenericNamedMethodCall,
-            SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
-        );
-        block(
-            generic_named_method_dependencies_complete,
-            SemanticDependencySurface::GenericNamedMethodCall,
-            SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
-        );
-        block(
-            named_destructor_dependencies_complete,
-            SemanticDependencySurface::NamedDestructorCall,
-            SemanticDependencyIncompleteReason::DestructorEndpointUnavailable,
-        );
-        block(
             implicit_named_destructor_dependencies_complete,
             SemanticDependencySurface::ImplicitNamedDestructor,
             SemanticDependencyIncompleteReason::AnonymousDropOwnerUnavailable,
@@ -8202,8 +8021,6 @@ impl CompilerSession {
             definition_fingerprints: definition_fingerprints.into(),
             module_imports: module_imports.into(),
             free_function_dependencies: free_function_dependencies.into(),
-            named_method_dependencies: named_method_dependencies.into(),
-            named_destructor_dependencies: named_destructor_dependencies.into(),
             implicit_named_destructor_dependencies: implicit_named_destructor_dependencies.into(),
             declaration_type_dependencies: declaration_type_dependencies.into(),
             declaration_type_call_head_dependencies: declaration_type_call_head_dependencies.into(),
@@ -8504,20 +8321,6 @@ fn collect_reverse_dependencies(
     };
     for edge in manifest.free_function_dependencies.iter() {
         add(&edge.caller, &edge.callee);
-    }
-    for edge in manifest.named_method_dependencies.iter() {
-        let target = match &edge.target {
-            StableNamedMethodDependencyTarget::FreeFunction(key)
-            | StableNamedMethodDependencyTarget::NamedMethod(key) => key,
-        };
-        add(&edge.caller, target);
-    }
-    for edge in manifest.named_destructor_dependencies.iter() {
-        let target = match &edge.target {
-            StableNamedMethodDependencyTarget::FreeFunction(key)
-            | StableNamedMethodDependencyTarget::NamedMethod(key) => key,
-        };
-        add(&edge.caller, target);
     }
     for edge in manifest.implicit_named_destructor_dependencies.iter() {
         add(&edge.source, &edge.target);
@@ -14902,16 +14705,8 @@ fn main() -> i32 {
                 SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
             ),
             (
-                SemanticDependencySurface::NonGenericNamedMethodCall,
-                SemanticDependencyIncompleteReason::CallerEndpointUnavailable,
-            ),
-            (
                 SemanticDependencySurface::GenericNamedMethodCall,
                 SemanticDependencyIncompleteReason::GenericSubstitutionIdentityUnavailable,
-            ),
-            (
-                SemanticDependencySurface::NamedDestructorCall,
-                SemanticDependencyIncompleteReason::DestructorEndpointUnavailable,
             ),
             (
                 SemanticDependencySurface::ImplicitNamedDestructor,
@@ -14955,6 +14750,59 @@ fn main() -> i32 {
                 "surface {surface:?} must fail closed"
             );
         }
+    }
+
+    /// RUE-1209: the manifest no longer projects named-method or
+    /// named-destructor edges, so a method body's calls reach invalidation
+    /// only through the query-owned body references. Editing a callee must
+    /// still close over the calling method, the calling destructor, and their
+    /// own callers.
+    #[test]
+    fn incremental_invalidation_closes_across_method_and_destructor_bodies() {
+        let build = |leaf_value: i32| {
+            let source = format!(
+                "fn leaf() -> i32 {{ {leaf_value} }}\n\
+                 fn sink() {{}}\n\
+                 struct Value {{ fn run(borrow self) -> i32 {{ leaf() }} }}\n\
+                 drop fn Value(self) {{ sink(); }}\n\
+                 fn unaffected() -> i32 {{ 7 }}\n\
+                 fn main() -> i32 {{ let value = Value {{}}; value.run() }}"
+            );
+            let source = snapshot(&[(1, "/p/main.rue", "main.rue", source.as_str())], 1);
+            let mut session = CompilerSession::new();
+            publish_with_test_imports(&mut session, &source);
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap();
+            session
+                .semantic_dependency_inputs(&CompileOptions::default(), None)
+                .unwrap()
+        };
+        let previous = build(1);
+        let current = build(2);
+        let plan = plan_semantic_invalidation(&previous, &current);
+
+        assert_eq!(plan.scope(), &SemanticInvalidationScope::Incremental);
+        assert_eq!(
+            plan.changed()
+                .iter()
+                .map(|key| key.name())
+                .collect::<Vec<_>>(),
+            ["leaf"]
+        );
+        // `run` calls `leaf`, and `main` calls `run`. Both close transitively
+        // even though no named-method edge is projected.
+        let mut invalidated = plan
+            .invalidated()
+            .iter()
+            .map(|key| key.name())
+            .collect::<Vec<_>>();
+        invalidated.sort_unstable();
+        assert_eq!(invalidated, ["leaf", "main", "run"]);
+        assert!(
+            plan.reusable().iter().any(|key| key.name() == "unaffected"),
+            "an unrelated function stays reusable"
+        );
     }
 
     #[test]
@@ -15208,10 +15056,8 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn stable_named_method_dependency_is_send_and_sync() {
+    fn stable_named_const_dependency_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<StableNamedMethodDependency>();
-        assert_send_sync::<StableNamedMethodDependencyTarget>();
         assert_send_sync::<StableNamedConstDependency>();
         assert_send_sync::<StableNamedConstDependencyTarget>();
         assert_send_sync::<StableBodyDependencyInputRecord>();
