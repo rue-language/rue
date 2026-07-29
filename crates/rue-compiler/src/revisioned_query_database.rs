@@ -32351,12 +32351,9 @@ fn main() -> i32 {
             .body_closure(full_revision, closure_key.clone(), CancellationToken::new())
             .unwrap();
         assert_eq!(database.body_closure_root_metrics(), cold_root);
-        assert_eq!(warm.body_executions.len(), CALLEES + 1);
         assert!(
-            warm.body_executions
-                .values()
-                .all(|execution| *execution == rue_query::RequestExecution::Reused),
-            "a warm rooted closure must validate and reuse every reached body"
+            warm.body_executions.is_empty(),
+            "the revision-scoped validation memo skips the already verified body closure"
         );
 
         let reduced_revision = revision_for(&mut database, &reduced);

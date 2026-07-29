@@ -1483,6 +1483,10 @@ pub struct RuntimeMetrics {
     pub joins: u64,
     /// Compatible retained terminals reused.
     pub reuses: u64,
+    /// Dependency validations satisfied by a node's revision-scoped memo.
+    pub validation_memo_hits: u64,
+    /// Dependency validations which had to inspect or re-demand the node.
+    pub validation_memo_misses: u64,
     /// Query bodies which completed before publication checks.
     pub body_completions: u64,
     /// Recomputations whose observable stamp stayed red.
@@ -1549,6 +1553,8 @@ struct Metrics {
     claims: AtomicU64,
     joins: AtomicU64,
     reuses: AtomicU64,
+    validation_memo_hits: AtomicU64,
+    validation_memo_misses: AtomicU64,
     body_completions: AtomicU64,
     red_publications: AtomicU64,
     green_publications: AtomicU64,
@@ -1573,6 +1579,8 @@ impl Metrics {
             claims: self.claims.load(Ordering::Relaxed),
             joins: self.joins.load(Ordering::Relaxed),
             reuses: self.reuses.load(Ordering::Relaxed),
+            validation_memo_hits: self.validation_memo_hits.load(Ordering::Relaxed),
+            validation_memo_misses: self.validation_memo_misses.load(Ordering::Relaxed),
             body_completions: self.body_completions.load(Ordering::Relaxed),
             red_publications: self.red_publications.load(Ordering::Relaxed),
             green_publications: self.green_publications.load(Ordering::Relaxed),
@@ -2712,6 +2720,8 @@ trait ErasedNode: fmt::Debug + Send + Sync {
         active: &mut BTreeSet<u64>,
     ) -> Result<Option<u64>, QueryAbort>;
 
+    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool);
+
     /// The typed node behind this erased handle, for the family-owned
     /// exact-terminal adoption path ([`QueryFamily::observe_adopted_terminal`])
     /// to recover its own `Node<K, V>` from the incarnation index without a
@@ -2733,6 +2743,37 @@ where
         if !active.insert(self.incarnation) {
             return Ok(None);
         }
+        {
+            let state = lock(&self.state);
+            if let Some((revision, stamp, registered_only)) = state.validated_at
+                && revision == task.revision
+                && state.attempts.iter().any(|attempt| {
+                    matches!(
+                        &attempt.state,
+                        AttemptState::Terminal { terminal, .. }
+                            if terminal.stamp == stamp
+                    )
+                })
+                // A registered-cone endorsement is also a retention proof. A
+                // memo may skip validation in that scope only after this task
+                // has already leased the exact node/stamp; otherwise the
+                // ordinary demand reconstructs and pins its transitive cone.
+                && (!task.validation_endorsements_active()
+                    || task.validation_endorsed_identity(self.incarnation, stamp))
+            {
+                if !registered_only {
+                    task.taint_validation_proofs();
+                }
+                core.metrics
+                    .validation_memo_hits
+                    .fetch_add(1, Ordering::Relaxed);
+                active.remove(&self.incarnation);
+                return Ok(Some(stamp));
+            }
+        }
+        core.metrics
+            .validation_memo_misses
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(demand) = &self.demand {
             let request_id = task.next_nested_request();
             let result = demand(task.clone(), request_id);
@@ -2807,6 +2848,18 @@ where
     fn as_any(self: Arc<Self>) -> Arc<dyn std::any::Any + Send + Sync> {
         self
     }
+
+    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool) {
+        let mut state = lock(&self.state);
+        if state.attempts.iter().any(|attempt| {
+            matches!(
+                &attempt.state,
+                AttemptState::Terminal { terminal, .. } if terminal.stamp == stamp
+            )
+        }) {
+            state.validated_at = Some((revision, stamp, registered_only));
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -2840,6 +2893,12 @@ struct NodeState<V> {
     next_attempt: u64,
     next_stamp: u64,
     attempts: VecDeque<Attempt<V>>,
+    /// The stamp already proven against this exact immutable revision.
+    ///
+    /// This is a verification skip only. The matching terminal must still be
+    /// retained, and the first visit in every revision continues to validate
+    /// direct inputs and the complete dependency cone authoritatively.
+    validated_at: Option<(Revision, u64, bool)>,
 }
 
 #[derive(Debug)]
@@ -3055,6 +3114,7 @@ where
                         next_attempt: 1,
                         next_stamp: 1,
                         attempts: VecDeque::new(),
+                        validated_at: None,
                     }),
                 }
             });
@@ -3656,6 +3716,11 @@ where
             waiters,
             handoffs,
         };
+        // Publication proves the value for this revision, but not that its
+        // dependency cone was reached exclusively through registered family
+        // evaluators. A later authoritative validation may strengthen this
+        // conservative bit for the separate retained-cone endorsement API.
+        state.validated_at = Some((revision, stamp, false));
         // Acquire the request lease *under the node lock*, before the terminal is
         // enqueued for retention or made reachable to a concurrent enforcer. The
         // pin's `pins > 0` is thus established atomically with publication: there
@@ -3969,6 +4034,7 @@ where
                     handoffs: AttemptHandoffLifecycle::shared_committed(),
                 },
             });
+            state.validated_at = Some((revision, held.stamp, true));
             // Pin UNDER the node lock, before the endorsement is enqueued or
             // reachable to a concurrent enforcer: `pins > 0` is established
             // atomically with insertion, so retention pressure (including the
@@ -5585,6 +5651,17 @@ impl Task {
         !lock(&self.validation_endorsements).is_empty()
     }
 
+    fn validation_endorsed_identity(&self, incarnation: u64, stamp: u64) -> bool {
+        lock(&self.validation_endorsements)
+            .iter()
+            .rev()
+            .any(|scope| {
+                scope
+                    .iter()
+                    .any(|identity| identity.0 == incarnation && identity.1 == stamp)
+            })
+    }
+
     fn validation_endorsed<V>(&self, terminal: &QueryTerminal<V>) -> bool {
         let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
         lock(&self.validation_endorsements)
@@ -6016,7 +6093,24 @@ impl RuntimeCore {
         let proof = task.begin_validation();
         let valid = self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new())?;
         let registered_only = proof.registered_only();
+        if valid {
+            self.mark_terminal_validated(terminal, task.revision, registered_only);
+        }
         Ok((valid, registered_only))
+    }
+
+    fn mark_terminal_validated<V>(
+        &self,
+        terminal: &QueryTerminal<V>,
+        revision: Revision,
+        registered_only: bool,
+    ) {
+        if let Some(node) = lock(&self.nodes)
+            .get(&terminal.node_incarnation)
+            .and_then(Weak::upgrade)
+        {
+            node.mark_validated(revision, terminal.stamp, registered_only);
+        }
     }
 
     fn valid_for_revision_inner<V>(
@@ -9611,6 +9705,97 @@ mod tests {
     }
 
     #[test]
+    fn revision_scoped_validation_memo_visits_a_diamond_node_once() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(20, 9);
+        let second = Revision::new(21, 9);
+        let input = InputIdentity::new("source", "diamond");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 1)])
+            .unwrap();
+
+        let leaf_input = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "validation-diamond-leaf",
+                8,
+                move |context, _, _| {
+                    context.input(leaf_input.clone())?;
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let leaf_for_left = leaf.clone();
+        let left = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "validation-diamond-left",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_left, Key("leaf"))?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        let leaf_for_right = leaf.clone();
+        let right = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "validation-diamond-right",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_right, Key("leaf"))?;
+                    Ok(QueryOutput::success(3))
+                },
+            )
+            .unwrap();
+        let left_for_root = left.clone();
+        let right_for_root = right.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "validation-diamond-root",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&left_for_root, Key("left"))?;
+                    context.query_registered(&right_for_root, Key("right"))?;
+                    Ok(QueryOutput::success(4))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            runtime
+                .request_registered(&root, first, Key("root"), CancellationToken::new())
+                .execution(),
+            RequestExecution::Computed
+        );
+        let before = runtime.metrics();
+        let reused =
+            runtime.request_registered(&root, second, Key("root"), CancellationToken::new());
+        assert_eq!(reused.execution(), RequestExecution::Reused);
+        let after = runtime.metrics();
+        assert_eq!(
+            after.validation_memo_misses - before.validation_memo_misses,
+            3
+        );
+        assert_eq!(
+            after.validation_memo_hits - before.validation_memo_hits,
+            1,
+            "the second edge into the shared leaf uses its revision memo"
+        );
+        assert_eq!(
+            reused
+                .nested_attempts()
+                .iter()
+                .filter(|attempt| attempt.node().family() == "validation-diamond-leaf")
+                .count(),
+            1,
+            "the shared leaf is re-demanded only on its first path"
+        );
+    }
+
+    #[test]
     fn red_green_validation_is_direct_recursive_and_semantic() {
         let runtime = QueryRuntime::new(1);
         let leaf = runtime.family::<Key, u64>("rg-leaf", 8).unwrap();
@@ -10370,13 +10555,13 @@ mod tests {
         assert_eq!(target_counts("endorsement-a"), 3);
         assert_eq!(
             target_counts("endorsement-b"),
-            2,
-            "the in-scope second A request uses its exact endorsement"
+            1,
+            "the revision memo skips repeated B validation across A requests"
         );
         assert_eq!(
             target_counts("endorsement-c"),
-            2,
-            "dropping the scope forces the later A request to validate C again"
+            1,
+            "the revision memo remains available after the endorsement scope"
         );
         assert!(
             attempt
