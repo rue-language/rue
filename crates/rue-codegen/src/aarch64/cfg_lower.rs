@@ -74,6 +74,12 @@ pub struct CfgLower<'a> {
     /// For by-ref params, the slot contains a pointer to the caller's memory.
     /// This map stores the vreg holding that pointer so Store can use it.
     by_ref_param_ptrs: HashMap<u32, VReg>,
+    /// Maps register-only by-value parameter indices (RUE-1170) to the vreg
+    /// their entry copy defined. These vregs are read-only for the rest of
+    /// the function — every consumer copies before mutating, the same
+    /// invariant that lets CSE key repeated `Param` reads (RUE-914) — so a
+    /// single vreg serves every read.
+    param_reg_vregs: HashMap<u32, VReg>,
 }
 
 impl crate::call_plan::CallMaterializer for CfgLower<'_> {
@@ -181,6 +187,15 @@ impl<'a> CfgLower<'a> {
         Self::new_inner(cfg, type_pool, interner, target, symbols)
     }
 
+    /// Install the pipeline's per-parameter storage decision (RUE-1170).
+    pub(crate) fn with_param_storage(
+        mut self,
+        param_storage: &'a crate::param_storage::ParamStoragePlan,
+    ) -> Self {
+        self.ctx = self.ctx.with_param_storage(param_storage);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn new_unchecked(
         cfg: &'a Cfg,
@@ -227,6 +242,7 @@ impl<'a> CfgLower<'a> {
             fn_name: cfg.fn_name(),
             struct_slot_vregs: HashMap::with_capacity(estimated_struct_inits),
             by_ref_param_ptrs: HashMap::with_capacity(estimated_by_ref_params),
+            param_reg_vregs: HashMap::new(),
         }
     }
 
@@ -397,11 +413,14 @@ impl<'a> CfgLower<'a> {
             return ptr_vreg;
         }
 
-        // Load the pointer from the param slot. The prologue copies every ABI
-        // arg slot — register- and stack-passed alike — into the contiguous
-        // frame param area, so this is uniform regardless of param count.
+        // Load the pointer from the param's frame home. A register-only
+        // by-ref pointer (RUE-1170) never reaches this load: the entry
+        // preamble copies it out of its argument register into the cache
+        // before any block is lowered, so the memoized hit above serves it.
+        // Stack-passed pointers stay homed by the prologue, so this load is
+        // uniform regardless of param count.
         let ptr_vreg = self.mir.alloc_vreg();
-        let slot = self.ctx.num_locals + param_slot;
+        let slot = self.ctx.param_frame_slot(param_slot);
         let offset = self.ctx.local_offset(slot);
         self.mir.push(Aarch64Inst::Ldr {
             dst: Operand::Virtual(ptr_vreg),
@@ -414,10 +433,32 @@ impl<'a> CfgLower<'a> {
         ptr_vreg
     }
 
+    /// Copy every register-only parameter (RUE-1170) out of its incoming
+    /// argument register into a virtual register, before CFG control flow
+    /// begins: the argument registers are caller-saved, so the copies must
+    /// precede every call and dominate every use (including loop back-edges
+    /// into the entry block). A register-only by-ref pointer seeds the
+    /// by-ref cache directly.
+    fn materialize_register_params(&mut self) {
+        for (param_slot, abi_index) in self.ctx.param_entry_copies() {
+            let vreg = self.mir.alloc_vreg();
+            self.mir.push(Aarch64Inst::MovRR {
+                dst: Operand::Virtual(vreg),
+                src: Operand::Physical(ARG_REGS[abi_index as usize]),
+            });
+            if self.ctx.cfg.is_param_by_ref(param_slot) {
+                self.by_ref_param_ptrs.insert(param_slot, vreg);
+            } else {
+                self.param_reg_vregs.insert(param_slot, vreg);
+            }
+        }
+    }
+
     /// Materialize every by-reference parameter pointer before CFG control
     /// flow begins, so the function-wide cache only contains definitions that
     /// dominate every block which may reuse them.
     fn preload_by_ref_param_ptrs(&mut self) {
+        self.materialize_register_params();
         for param_slot in crate::value_plan::by_ref_param_slots(&self.ctx) {
             self.ensure_by_ref_param_ptr(param_slot);
         }
@@ -1490,7 +1531,11 @@ impl<'a> CfgLower<'a> {
                     } else {
                         value.slots
                     };
-                    crate::agg_slots::store_slots(self, &vals, self.ctx.num_locals + param_slot);
+                    crate::agg_slots::store_slots(
+                        self,
+                        &vals,
+                        self.ctx.param_frame_slot(param_slot),
+                    );
                 }
                 return ValueResult::SideEffect;
             }
@@ -1707,7 +1752,7 @@ impl<'a> CfgLower<'a> {
             let slots: Vec<_> = (0..count)
                 .map(|slot| {
                     let v = self.mir.alloc_vreg();
-                    let frame_slot = self.ctx.num_locals + index + count - 1 - slot;
+                    let frame_slot = self.ctx.param_frame_slot(index) + count - 1 - slot;
                     self.mir.push(Aarch64Inst::Ldr {
                         dst: Operand::Virtual(v),
                         base: Reg::Fp,
@@ -1717,11 +1762,15 @@ impl<'a> CfgLower<'a> {
                 })
                 .collect();
             return (slots[0], slots);
+        } else if let Some(&vreg) = self.param_reg_vregs.get(&index) {
+            // Register-only scalar (RUE-1170): the entry preamble copied the
+            // argument register into one read-only vreg shared by every read.
+            return (vreg, Vec::new());
         } else {
             self.mir.push(Aarch64Inst::Ldr {
                 dst: Operand::Virtual(dst),
                 base: Reg::Fp,
-                offset: self.ctx.local_offset(self.ctx.num_locals + index),
+                offset: self.ctx.local_offset(self.ctx.param_frame_slot(index)),
             });
         }
         (dst, Vec::new())
@@ -3721,6 +3770,109 @@ mod tests {
         preview: PreviewFeatures,
     ) -> rue_error::CompileResult<Aarch64Mir> {
         try_lower_named_fn(source, preview, None)
+    }
+
+    /// Lower `name` with the pipeline's real parameter storage plan applied
+    /// (RUE-1170), as production lowering does.
+    fn lower_named_fn_with_plan(source: &str, name: &str) -> Aarch64Mir {
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().unwrap();
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().unwrap();
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all_for_test()
+            .unwrap();
+        let func = output
+            .functions
+            .iter()
+            .find(|f| f.name == name)
+            .unwrap_or_else(|| panic!("no function named `{name}`"));
+        let type_pool = &output.type_pool;
+        let cfg_output = CfgBuilder::build(
+            &func.air,
+            func.num_locals,
+            func.num_param_slots,
+            &func.name,
+            type_pool,
+            func.param_modes.clone(),
+            &interner,
+            func.allow_unreachable_code,
+            func.callable_kind,
+        );
+        let cfg = cfg_output.cfg.as_ref().unwrap();
+        let plan = crate::param_storage::ParamStoragePlan::plan(
+            cfg,
+            type_pool,
+            false,
+            ARG_REGS.len() as u32,
+        );
+        CfgLower::new(cfg, type_pool, &interner, Target::Aarch64Linux)
+            .with_param_storage(&plan)
+            .lower()
+            .unwrap()
+    }
+
+    /// RUE-1170: read-only scalar register arguments are entry-copied out of
+    /// their incoming registers instead of being reloaded from frame homes.
+    #[test]
+    fn register_only_params_entry_copy_and_never_load_from_the_frame() {
+        let mir = lower_named_fn_with_plan(
+            "fn both(a: i64, b: i64) -> i64 { a + b } \
+             fn main() -> i32 { let _ = both(1, 2); 0 }",
+            "both",
+        );
+        let insts = mir.instructions();
+        assert!(
+            matches!(
+                insts[0],
+                Aarch64Inst::MovRR {
+                    src: Operand::Physical(Reg::X0),
+                    dst: Operand::Virtual(_),
+                }
+            ),
+            "first instruction must copy x0 into a vreg, got {:?}",
+            insts[0]
+        );
+        assert!(
+            matches!(
+                insts[1],
+                Aarch64Inst::MovRR {
+                    src: Operand::Physical(Reg::X1),
+                    dst: Operand::Virtual(_),
+                }
+            ),
+            "second instruction must copy x1 into a vreg, got {:?}",
+            insts[1]
+        );
+        assert!(
+            !insts
+                .iter()
+                .any(|inst| matches!(inst, Aarch64Inst::Ldr { base: Reg::Fp, .. })),
+            "register-only parameters must not be reloaded from the frame:\n{mir}"
+        );
+    }
+
+    /// RUE-1170: an unused register argument produces no entry copy at all.
+    #[test]
+    fn unused_register_params_produce_no_code() {
+        let mir = lower_named_fn_with_plan(
+            "fn pick(a: i64, b: i64) -> i64 { 42 } \
+             fn main() -> i32 { let _ = pick(1, 2); 0 }",
+            "pick",
+        );
+        assert!(
+            !mir.instructions().iter().any(|inst| matches!(
+                inst,
+                Aarch64Inst::MovRR {
+                    src: Operand::Physical(Reg::X0 | Reg::X1),
+                    ..
+                }
+            )),
+            "unused register arguments must not be copied:\n{mir}"
+        );
     }
 
     /// Lower a specific function by name (or the first function when `None`),

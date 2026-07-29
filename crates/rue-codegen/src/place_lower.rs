@@ -126,7 +126,8 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
             by_ref: false,
         } => frame_access(
             b,
-            b.ctx().num_locals + slot + root_count.saturating_sub(1) - offsets.static_slot_offset,
+            b.ctx().param_frame_slot(slot) + root_count.saturating_sub(1)
+                - offsets.static_slot_offset,
             dynamic_offset,
         ),
     }
@@ -186,7 +187,7 @@ pub(crate) fn lower_place_read_plan<B: PlaceLowerBackend>(
             crate::value_plan::PlaceBasePlan::Param {
                 slot,
                 by_ref: false,
-            } => b.emit_load_slot(dst, b.ctx().num_locals + slot),
+            } => b.emit_load_slot(dst, b.ctx().param_frame_slot(slot)),
         }
         return;
     }
@@ -219,7 +220,7 @@ pub(crate) fn lower_place_write_plan<B: PlaceLowerBackend>(
             crate::value_plan::PlaceBasePlan::Param {
                 slot,
                 by_ref: false,
-            } => agg_slots::store_slots(b, vals, b.ctx().num_locals + slot),
+            } => agg_slots::store_slots(b, vals, b.ctx().param_frame_slot(slot)),
         }
         return;
     }
@@ -269,7 +270,7 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
         } => {
             b.emit_frame_addr(
                 dst,
-                b.ctx().num_locals + slot + root_count.saturating_sub(1)
+                b.ctx().param_frame_slot(slot) + root_count.saturating_sub(1)
                     - offsets.static_slot_offset,
             );
             if let Some(dynamic) = dynamic {

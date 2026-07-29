@@ -249,7 +249,8 @@ pub struct Emitter<'a> {
     /// Original number of local variables (for param offset calculation).
     /// CfgLower generates param offsets based on this value.
     num_locals_original: u32,
-    /// Number of function parameters.
+    /// Frame slots of the (compacted) parameter area: homed parameters
+    /// only — register-only parameters (RUE-1170) reserve no slots.
     num_params: u32,
     /// Whether the function returns via sret: a hidden buffer pointer arrives
     /// as the first ABI argument (shifting user params by one register) and is
@@ -296,7 +297,7 @@ impl<'a> Emitter<'a> {
     ///
     /// - `num_locals`: Total local slots including spills (for stack frame size)
     /// - `num_locals_original`: Original local count (for param offset calculation)
-    /// - `num_params`: Number of function parameters
+    /// - `num_params`: Frame slots of the homed parameter area (RUE-1170)
     /// - `strings`: String table for string constant references
     pub fn new(
         mir: &'a X86Mir,
@@ -571,10 +572,12 @@ impl<'a> Emitter<'a> {
     /// parameter slot when no grouped plan was supplied (RUE-1005).
     fn param_homing_or_per_slot(&self) -> Vec<crate::codegen_pipeline::ParamHoming> {
         if self.param_homing.is_empty() {
+            let abi_shift = self.has_sret as u32;
             (0..self.num_params)
                 .map(|slot| crate::codegen_pipeline::ParamHoming {
                     start_slot: slot,
                     reg_count: 1,
+                    abi_start: slot + abi_shift,
                 })
                 .collect()
         } else {
@@ -649,18 +652,16 @@ impl<'a> Emitter<'a> {
         const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9];
 
         let callee_saved_size = self.callee_saved_size();
-        let abi_shift = self.has_sret as u32;
 
         // Home incoming argument registers into the frame parameter area. Each
         // source parameter consumes `reg_count` consecutive incoming registers
         // (RUE-1005): normally one per frame slot, but a by-value indirect
         // compact aggregate arrives as one pointer register while reserving
-        // `slot_count` frame slots, shifting later parameters' registers. The
-        // running `abi_index` counts consumed argument registers; frame slots
-        // come from each parameter's `start_slot`. Gate-off every parameter is
-        // direct with `reg_count == slot_count`, so this is byte-identical to
-        // the historical one-register-per-slot loop.
-        let mut abi_index = abi_shift;
+        // `slot_count` frame slots, shifting later parameters' registers.
+        // Each entry names its own incoming ABI start (`abi_start`, sret shift
+        // included) because register-only parameters (RUE-1170) consume
+        // argument registers without appearing here at all; their frame slots
+        // are likewise compacted away, which `start_slot` already reflects.
         for homing in self.param_homing_or_per_slot() {
             for k in 0..homing.reg_count {
                 // Use num_locals_original (not num_locals which includes spills)
@@ -669,6 +670,7 @@ impl<'a> Emitter<'a> {
                 // Skip past callee-saved registers in the offset calculation
                 let offset = -callee_saved_size + crate::frame_layout::slot_offset_pre_saved(slot);
 
+                let abi_index = homing.abi_start + k;
                 if (abi_index as usize) < ARG_REGS.len() {
                     let reg = ARG_REGS[abi_index as usize];
                     // Emit: mov [rbp + offset], reg
@@ -685,7 +687,6 @@ impl<'a> Emitter<'a> {
                     self.emit_mov_mr(Reg::Rbp, offset, Reg::Rax);
                     end_inst!(self, "mov [rbp{}], rax", offset);
                 }
-                abi_index += 1;
             }
         }
 

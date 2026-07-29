@@ -19,39 +19,19 @@ use crate::frame_layout::{FrameLayout, FramePointer, SavedRegScheme};
 /// by-value indirect compact aggregate breaks that: it arrives as one pointer
 /// register (`reg_count == 1`) yet reserves `slot_count` frame slots, so
 /// subsequent parameters' incoming registers shift. Each entry homes `reg_count`
-/// consecutive incoming registers starting at the running argument index into
-/// frame parameter slots `[start_slot, start_slot + reg_count)`; the parameter's
-/// remaining reserved slots (for an indirect aggregate) are filled lazily by the
-/// body from the homed pointer. With the gate off every parameter is direct and
-/// `reg_count == slot_count`, so the emitted prologue is byte-identical.
+/// consecutive incoming registers starting at ABI argument index `abi_start`
+/// (sret shift included, RUE-1170) into frame parameter slots
+/// `[start_slot, start_slot + reg_count)`; the parameter's remaining reserved
+/// slots (for an indirect aggregate) are filled lazily by the body from the
+/// homed pointer. `start_slot` is the parameter's position within the
+/// *compacted* frame parameter area: register-only parameters (RUE-1170) get
+/// no entry at all and reserve no slots, so homed parameters pack together
+/// while their `abi_start` still names the original incoming register.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ParamHoming {
     pub(crate) start_slot: u32,
     pub(crate) reg_count: u32,
-}
-
-/// Build the callee prologue's per-source-parameter homing plan from the CFG's
-/// grouped descriptors, each carrying its precomputed incoming-register crossing
-/// width (RUE-1005). Falls back to one register per parameter slot when the CFG
-/// carries no grouped source-parameter layout (a directly constructed CFG in
-/// synthetic tests), reproducing the historical prologue exactly.
-pub(crate) fn param_homing_plan(cfg: &Cfg) -> Vec<ParamHoming> {
-    let source_params = cfg.source_param_abi();
-    if source_params.is_empty() {
-        return (0..cfg.num_params())
-            .map(|slot| ParamHoming {
-                start_slot: slot,
-                reg_count: 1,
-            })
-            .collect();
-    }
-    source_params
-        .iter()
-        .map(|param| ParamHoming {
-            start_slot: param.start_slot,
-            reg_count: param.crossing_regs,
-        })
-        .collect()
+    pub(crate) abi_start: u32,
 }
 
 /// Decide whether the final frame needs a frame pointer and a slot region, or
@@ -84,11 +64,14 @@ pub(crate) struct PreparedMir<M, R> {
     pub(crate) mir: M,
     pub(crate) total_locals: u32,
     pub(crate) num_locals_original: u32,
-    pub(crate) num_params: u32,
     pub(crate) has_sret: bool,
     pub(crate) used_callee_saved: Vec<R>,
-    /// Per-source-parameter prologue homing plan (RUE-1005).
+    /// Per-source-parameter prologue homing plan (RUE-1005), covering only
+    /// the homed parameters (RUE-1170).
     pub(crate) param_homing: Vec<ParamHoming>,
+    /// Per-parameter storage decision shared by lowering, emission, and the
+    /// stack-frame reporter (RUE-1170).
+    pub(crate) param_storage: crate::param_storage::ParamStoragePlan,
     /// Validated final layout consumed by emission and presentation paths.
     pub(crate) frame_layout: FrameLayout,
 }
@@ -173,8 +156,9 @@ pub(crate) fn validate_pre_lowering_budget(
 /// The closures monomorphize for each backend; there is no dynamic dispatch or
 /// universal backend trait. Keeping the two slot formulas here is deliberate:
 ///
-/// - `existing_slots` includes locals, parameters, and the optional incoming
-///   sret pointer so register-allocation spills cannot overlap any of them.
+/// - `existing_slots` includes locals, the *homed* parameters (RUE-1170), and
+///   the optional incoming sret pointer so register-allocation spills cannot
+///   overlap any of them.
 /// - `total_locals` includes only original locals and new spill slots because
 ///   emitters account for parameters and sret separately.
 ///
@@ -205,7 +189,7 @@ pub(crate) fn prepare_mir_with_artifacts<
     is_leaf: IsLeaf,
 ) -> CompileResult<(PreparedMir<M, R>, D)>
 where
-    Lower: FnOnce() -> CompileResult<(M, D)>,
+    Lower: FnOnce(&crate::param_storage::ParamStoragePlan) -> CompileResult<(M, D)>,
     Allocate: FnOnce(M, u32, &mut D) -> CompileResult<(M, u32, Vec<R>)>,
     Peephole: FnOnce(&mut M),
     Schedule: FnOnce(&mut M),
@@ -213,17 +197,24 @@ where
     IsLeaf: FnOnce(&M) -> bool,
 {
     let num_locals_original = cfg.num_locals();
-    let num_params = cfg.num_params();
     let has_sret =
         validate_pre_lowering_budget(cfg, type_pool, arg_reg_count, return_reg_count, scheme)?;
-    let param_homing = param_homing_plan(cfg);
+    // The per-parameter storage decision (RUE-1170) is computed once here and
+    // shared by lowering (body addressing and entry copies), the frame slot
+    // sums below, and the emitter's prologue homing, so they cannot disagree
+    // about which parameters have frame homes.
+    let param_storage =
+        crate::param_storage::ParamStoragePlan::plan(cfg, type_pool, has_sret, arg_reg_count);
+    let param_homing = param_storage.homing().to_vec();
+    let homed_param_slots = param_storage.homed_area_slots();
 
     let (mir, mut artifacts) = {
         let _span = info_span!("mir_lowering").entered();
-        lower()?
+        lower(&param_storage)?
     };
-    let existing_slots = checked_slot_sum([num_locals_original, num_params, u32::from(has_sret)])
-        .ok_or_else(|| frame_budget_error(cfg, None))?;
+    let existing_slots =
+        checked_slot_sum([num_locals_original, homed_param_slots, u32::from(has_sret)])
+            .ok_or_else(|| frame_budget_error(cfg, None))?;
     let (mut mir, num_spills, used_callee_saved) = {
         let _span = info_span!("register_allocation").entered();
         allocate(mir, existing_slots, &mut artifacts)?
@@ -245,7 +236,7 @@ where
     let total_locals = num_locals_original
         .checked_add(num_spills)
         .ok_or_else(|| frame_budget_error(cfg, None))?;
-    let total_slots = checked_slot_sum([total_locals, num_params, u32::from(has_sret)])
+    let total_slots = checked_slot_sum([total_locals, homed_param_slots, u32::from(has_sret)])
         .ok_or_else(|| frame_budget_error(cfg, None))?;
     // Frame planning is the last thing the pipeline decides: the eligible-leaf
     // question can only be answered once allocation, peephole, and scheduling
@@ -263,10 +254,10 @@ where
             mir,
             total_locals,
             num_locals_original,
-            num_params,
             has_sret,
             used_callee_saved,
             param_homing,
+            param_storage,
             frame_layout,
         },
         artifacts,
@@ -322,7 +313,7 @@ mod tests {
             6,
             6,
             SavedRegScheme::X86_64,
-            || {
+            |_param_storage| {
                 events.borrow_mut().push("lower");
                 Ok((10_u32, ()))
             },
@@ -361,7 +352,7 @@ mod tests {
         assert_eq!(prepared.mir, 16);
         assert_eq!(prepared.total_locals, 7);
         assert_eq!(prepared.num_locals_original, 3);
-        assert_eq!(prepared.num_params, 2);
+        assert_eq!(prepared.param_storage.homed_area_slots(), 2);
         assert!(prepared.has_sret);
         assert_eq!(prepared.used_callee_saved, [5]);
     }

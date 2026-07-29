@@ -1,0 +1,247 @@
+# Register-only parameter execution (RUE-1170).
+#
+# Incoming register arguments no longer get unconditional frame homes: a
+# by-value scalar that is only read — and the pointer of a by-ref parameter —
+# stays in registers (entry-copied into a callee-saved register or spilled by
+# the allocator), while aggregates, address-exposed, written, and stack-passed
+# parameters keep their frame homes. These cases run the real binary so both
+# storage paths are validated against the platform ABI on both backends.
+
+[section]
+id = "cli.register-params"
+name = "Register-only parameters"
+description = "Arguments consumed from registers without frame homes, alongside every parameter shape that must keep one (RUE-1170)."
+
+[[case]]
+name = "unused_register_args_cost_nothing_and_execute"
+files = [{ path = "main.rue", source = """
+fn pick(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    42
+}
+
+fn main() -> i32 {
+    let mut total = 0;
+    let mut i = 0;
+    // Unused register arguments produce no stores and no frame; calling in a
+    // loop would drift the stack if the elided prologue were unbalanced.
+    while i < 100 {
+        total = total + pick(i, i + 1, i + 2, i + 3);
+        i = i + 1;
+    }
+    @dbg(total);
+    0
+}
+""" }]
+stdout = "4200\n"
+
+[[case]]
+name = "leaf_consumes_args_from_registers"
+files = [{ path = "main.rue", source = """
+fn combine(a: i64, b: i64, c: i64) -> i64 {
+    a * 100 + b * 10 + c
+}
+
+fn main() -> i32 {
+    @dbg(combine(1, 2, 3));
+    @dbg(combine(7, 8, 9));
+    0
+}
+""" }]
+stdout = "123\n789\n"
+
+[[case]]
+name = "register_params_survive_calls_in_callee_saved_registers"
+files = [{ path = "main.rue", source = """
+fn noise() -> i64 {
+    // Clobbers every caller-saved register at the call boundary.
+    99
+}
+
+fn keep_across(a: i64, b: i64) -> i64 {
+    let n = noise();
+    // a and b are read after the call: their entry copies must live in
+    // callee-saved registers (or spill slots), never in argument registers.
+    a * 1000 + b * 10 + n - 99
+}
+
+fn main() -> i32 {
+    @dbg(keep_across(4, 5));
+    0
+}
+""" }]
+stdout = "4050\n"
+
+[[case]]
+name = "more_live_params_than_allocatable_registers_spill_correctly"
+files = [{ path = "main.rue", source = """
+fn squeeze(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> i64 {
+    // Six parameters plus the temporaries below exceed the five x86-64
+    // callee-saved registers, so some register-only parameters must spill —
+    // the allocator's ordinary spill path is their fallback storage.
+    let s1 = a + b;
+    let s2 = c + d;
+    let s3 = e + f;
+    s1 * 10000 + s2 * 100 + s3 + a - a + b - b + c - c + d - d + e - e + f - f
+}
+
+fn main() -> i32 {
+    @dbg(squeeze(1, 2, 3, 4, 5, 6));
+    0
+}
+""" }]
+stdout = "30711\n"
+
+[[case]]
+name = "stack_passed_args_keep_their_homes"
+files = [{ path = "main.rue", source = """
+fn tail(a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64, i: i64, j: i64) -> i64 {
+    // Beyond six ABI slots on x86-64 (eight on AArch64) arguments arrive on
+    // the stack and keep frame homes; the leading register arguments do not.
+    a + b + c + d + e + f + g * 10 + h * 100 + i * 1000 + j * 10000
+}
+
+fn main() -> i32 {
+    @dbg(tail(1, 2, 3, 4, 5, 6, 7, 8, 9, 1));
+    0
+}
+""" }]
+stdout = "19891\n"
+
+[[case]]
+name = "byref_scalar_pointer_stays_in_registers"
+files = [{ path = "main.rue", source = """
+fn bump(inout n: i64) {
+    // The inout pointer arrives in a register and is never stored to a frame
+    // home; writes go through it into the caller's variable.
+    n = n + 1;
+}
+
+fn peek(borrow n: i64) -> i64 {
+    n * 2
+}
+
+fn main() -> i32 {
+    let mut v = 20;
+    bump(inout v);
+    @dbg(v);
+    @dbg(peek(borrow v));
+    0
+}
+""" }]
+stdout = "21\n42\n"
+
+[[case]]
+name = "recursive_register_params_stay_independent_per_frame"
+files = [{ path = "main.rue", source = """
+fn fib(n: i64) -> i64 {
+    if n < 2 {
+        n
+    } else {
+        fib(n - 1) + fib(n - 2)
+    }
+}
+
+fn main() -> i32 {
+    // Each recursion level's `n` lives in that level's callee-saved register
+    // or spill slot; cross-frame interference would corrupt the sum.
+    @dbg(fib(15));
+    0
+}
+""" }]
+stdout = "610\n"
+
+[[case]]
+name = "aggregate_and_scalar_params_mix"
+files = [{ path = "main.rue", source = """
+struct Pair {
+    x: i64,
+    y: i64,
+}
+
+fn dot(p: Pair, scale: i64) -> i64 {
+    // The aggregate keeps its frame home (its slots are addressed); `scale`
+    // rides behind it as a register-only argument whose incoming register is
+    // shifted by the aggregate's ABI footprint.
+    (p.x + p.y) * scale
+}
+
+fn main() -> i32 {
+    @dbg(dot(Pair { x: 3, y: 4 }, 6));
+    0
+}
+""" }]
+stdout = "42\n"
+
+[[case]]
+name = "sret_returns_shift_register_params"
+files = [{ path = "main.rue", source = """
+struct Wide {
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    e: i64,
+    f: i64,
+    g: i64,
+}
+
+fn build(seed: i64) -> Wide {
+    // The hidden sret pointer occupies the first argument register, shifting
+    // `seed` by one; the sret pointer cell keeps its frame slot while `seed`
+    // needs none.
+    Wide { a: seed, b: seed + 1, c: seed + 2, d: seed + 3, e: seed + 4, f: seed + 5, g: seed + 6 }
+}
+
+fn main() -> i32 {
+    let w = build(10);
+    @dbg(w.a + w.g);
+    0
+}
+""" }]
+stdout = "26\n"
+
+[[case]]
+name = "borrowed_by_value_param_keeps_its_home"
+files = [{ path = "main.rue", source = """
+fn double(borrow n: i64) -> i64 {
+    n * 2
+}
+
+fn relay(n: i64) -> i64 {
+    // Forwarding a by-value parameter as a by-reference argument exposes the
+    // address of its frame home, so `n` must stay homed even though it is a
+    // scalar register argument.
+    double(borrow n) + n
+}
+
+fn main() -> i32 {
+    @dbg(relay(7));
+    0
+}
+""" }]
+stdout = "21\n"
+
+[[case]]
+name = "destructor_direct_slot_params_keep_region_homes"
+args = ["main.rue", "-o", "prog"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+const Nums = std.arraybuf.ArrayBuf(i64);
+
+fn main() -> i32 {
+    // The scope-exit destructor receives the container under the direct-slot
+    // cleanup convention: one aggregate flattened into single-slot parameter
+    // descriptors. Its body addresses them as one contiguous region, so the
+    // storage plan must home the full span — homing only the base slot made
+    // this drop read a garbage buffer pointer (the RUE-1170 regression).
+    let mut nums = Nums.new();
+    nums.push(40);
+    nums.push(2);
+    let a = nums.get_or(0, 0);
+    let b = nums.get_or(1, 0);
+    @dbg(a + b);
+    0
+}
+""" }]
+stdout = "42\n"
