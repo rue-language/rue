@@ -82,7 +82,7 @@ fn inspect_regions(inout out: result.Result, borrow world: model.World) {
         let mut i: u64 = 0;
         while i < world.tiles.len() {
             let tile = world.tiles.get_or(i, model.empty_tile());
-            if tile.region == region { tiles = tiles + 1; resources = resources + tile.resource; }
+            if tile.region == region { tiles += 1; resources += tile.resource; }
             i += 1;
         }
         let eligible = tiles > 0 && (region + FOCUS()) % 4 == 0;

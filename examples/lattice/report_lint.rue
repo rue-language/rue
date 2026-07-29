@@ -31,7 +31,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         if finding.edge < workflow.edges.len() {
             text.append_literal(inout out, " edge="); text.append_u64(inout out, finding.edge);
         }
-        out.push(10); i = i + 1;
+        out.push(10); i += 1;
     }
     out
 }

@@ -56,7 +56,7 @@ fn one(borrow scenario: model.Scenario, index: u64) -> Impact {
                 if during != routing.INF() { disrupted_cost = add(disrupted_cost, during); }
                 if during != before {
                     affected_pairs += 1;
-                    if during == routing.INF() { disconnected_pairs = disconnected_pairs + 1; }
+                    if during == routing.INF() { disconnected_pairs += 1; }
                 }
             }
             to += 1;

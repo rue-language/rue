@@ -80,7 +80,7 @@ fn alternate_count(borrow scenario: model.Scenario, route_index: u64) -> u64 {
         if i != route_index {
             let other = scenario.routes.get_or(i, model.empty_route());
             if other.from == route.from || other.to == route.from ||
-               other.from == route.to || other.to == route.to { count = count + 1; }
+               other.from == route.to || other.to == route.to { count += 1; }
         }
         i += 1;
     }
@@ -134,12 +134,12 @@ fn cargo_sources(borrow scenario: model.Scenario, cargo: u64) -> u64 {
     let mut count: u64 = 0;
     let mut i: u64 = 0;
     while i < scenario.supplies.len() {
-        if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count = count + 1; }
+        if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count += 1; }
         i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
-        if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count = count + 1; }
+        if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count += 1; }
         i += 1;
     }
     count
@@ -166,7 +166,7 @@ fn vehicles_at(borrow scenario: model.Scenario, location: u64) -> u64 {
     let mut count: u64 = 0;
     let mut i: u64 = 0;
     while i < scenario.vehicles.len() {
-        if scenario.vehicles.get_or(i, model.empty_vehicle()).at == location { count = count + 1; }
+        if scenario.vehicles.get_or(i, model.empty_vehicle()).at == location { count += 1; }
         i += 1;
     }
     count
@@ -200,10 +200,10 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Regist
     let mut i: u64 = 0;
     while i < risks.len() {
         let item = risks.get_or(i, empty_risk());
-        if item.score >= 80 { critical = critical + 1; }
-        else if item.score >= 45 { high = high + 1; }
-        else if item.score >= 20 { medium = medium + 1; }
-        else { low = low + 1; }
+        if item.score >= 80 { critical += 1; }
+        else if item.score >= 45 { high += 1; }
+        else if item.score >= 20 { medium += 1; }
+        else { low += 1; }
         total_score = add(total_score, item.score);
         if item.score > maximum_score { maximum_score = item.score; maximum_kind = item.kind; maximum_subject = item.subject; }
         digest = mix(digest, item.kind); digest = mix(digest, item.subject); digest = mix(digest, item.score);
@@ -238,7 +238,7 @@ pub fn render(borrow value: Register) -> StrBuf {
         text.append_u64(inout out, item.subject); out.push(32); text.append_u64(inout out, item.score); out.push(32);
         text.append_u64(inout out, item.severity); out.push(32); text.append_u64(inout out, item.likelihood); out.push(32);
         text.append_u64(inout out, item.exposure); out.push(32); text.append_u64(inout out, item.evidence); out.push(32);
-        text.append_u64(inout out, item.mitigation); out.push(10); i = i + 1;
+        text.append_u64(inout out, item.mitigation); out.push(10); i += 1;
     }
     text.append_literal(inout out, "total_score="); text.append_u64(inout out, value.total_score);
     text.append_literal(inout out, " maximum_score="); text.append_u64(inout out, value.maximum_score);

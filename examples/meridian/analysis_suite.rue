@@ -135,7 +135,7 @@ fn include(inout out: Result, borrow first: metric.Metric, borrow second: metric
     out.warnings += first.warnings;
     out.digest = metric.mix(out.digest, first.tag);
     out.digest = metric.mix(out.digest, first.digest);
-    if !verified || !metric.valid(borrow first) { out.failures = out.failures + 1; }
+    if !verified || !metric.valid(borrow first) { out.failures += 1; }
     if first.digest != second.digest || first.observations != second.observations ||
         first.warnings != second.warnings {
         out.deterministic = false;

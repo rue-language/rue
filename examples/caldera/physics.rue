@@ -36,7 +36,7 @@ pub fn integrate(inout world: model.World) -> u64 {
             let allowed = model.walkable(borrow world, nx, ny);
             let next_x = if allowed { nx } else { entity.x };
             let next_y = if allowed { ny } else { entity.y };
-            if next_x != entity.x || next_y != entity.y { moved = moved + 1; }
+            if next_x != entity.x || next_y != entity.y { moved += 1; }
             if !allowed { model.add_event(inout world, 2, entity.id, model.NONE(), 1); }
             world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
                 faction: entity.faction, x: next_x, y: next_y,

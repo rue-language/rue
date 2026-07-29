@@ -30,7 +30,7 @@ struct Parser {
     fn check(borrow self, kind: u64) -> bool { self.peek().kind == kind }
     fn advance(inout self) -> token.Token {
         let result = self.peek();
-        if result.kind != token.EOF { self.at = self.at + 1; }
+        if result.kind != token.EOF { self.at += 1; }
         result
     }
     fn take(inout self, kind: u64) -> bool {

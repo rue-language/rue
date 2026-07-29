@@ -125,7 +125,7 @@ pub fn build(borrow scenario: model.Scenario) -> Plan {
                             if item.reachable {
                                 reachable += 1;
                                 total_cost = add(total_cost, item.cost);
-                                if base != routing.INF() && item.cost > base { degraded = degraded + 1; }
+                                if base != routing.INF() && item.cost > base { degraded += 1; }
                             } else {
                                 isolated += 1;
                                 local_isolated += 1;

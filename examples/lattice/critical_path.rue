@@ -23,7 +23,7 @@ pub struct Analysis {
 fn filled(count: u64, value: u64) -> U64s {
     let mut result = U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { result.push(value); i = i + 1; }
+    while i < count { result.push(value); i += 1; }
     result
 }
 
@@ -85,7 +85,7 @@ fn critical_predecessor(
 fn reverse(values: U64s) -> U64s {
     let mut result = U64s.with_capacity(values.len());
     let mut i = values.len();
-    while i > 0 { i = i - 1; result.push(values.get_or(i, model.NONE())); }
+    while i > 0 { i -= 1; result.push(values.get_or(i, model.NONE())); }
     result
 }
 

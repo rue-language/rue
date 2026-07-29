@@ -49,7 +49,7 @@ fn locations(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "handling", item.handling);
         signed(inout out, inout first, "x", item.x);
         signed(inout out, inout first, "y", item.y);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -68,7 +68,7 @@ fn routes(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "cost", item.cost);
         number(inout out, inout first, "travel", item.travel);
         boolean(inout out, inout first, "bidirectional", item.bidirectional);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -84,7 +84,7 @@ fn cargoes(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "unit_value", item.unit_value);
         number(inout out, inout first, "shelf_life", item.shelf_life);
         number(inout out, inout first, "weight", item.weight);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -102,7 +102,7 @@ fn vehicles(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "speed", item.speed);
         number(inout out, inout first, "cost", item.cost);
         number(inout out, inout first, "available", item.available);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -118,7 +118,7 @@ fn supplies(inout out: StrBuf, borrow scenario: model.Scenario) {
         id(inout out, inout first, borrow scenario, "cargo", item.cargo_id);
         number(inout out, inout first, "quantity", item.quantity);
         number(inout out, inout first, "available", item.available);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -135,7 +135,7 @@ fn demands(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "quantity", item.quantity);
         number(inout out, inout first, "deadline", item.deadline);
         number(inout out, inout first, "priority", item.priority);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -153,7 +153,7 @@ fn productions(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "every", item.every);
         number(inout out, inout first, "start", item.start);
         number(inout out, inout first, "end", item.end);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }
@@ -170,7 +170,7 @@ fn disruptions(inout out: StrBuf, borrow scenario: model.Scenario) {
         number(inout out, inout first, "end", item.end);
         number(inout out, inout first, "capacity_percent", item.capacity_percent);
         number(inout out, inout first, "cost_percent", item.cost_percent);
-        out.push(125); i = i + 1;
+        out.push(125); i += 1;
     }
     out.push(93);
 }

@@ -11,7 +11,7 @@ fn add_saturating(a: u64, b: u64) -> u64 {
 
 fn fill(inout values: U64s, count: u64, value: u64) {
     let mut i: u64 = 0;
-    while i < count { values.push(value); i = i + 1; }
+    while i < count { values.push(value); i += 1; }
 }
 
 fn relax(
@@ -74,7 +74,7 @@ pub fn audit_all_pairs(borrow scenario: model.Scenario, now: u64, minimum_capaci
             let path = routing.shortest(borrow scenario, from, to, now, minimum_capacity, mode);
             let actual = routing.path_weight(borrow scenario, borrow path, now, mode);
             let expected = distance(borrow scenario, from, to, now, minimum_capacity, mode);
-            if actual != expected { mismatches = mismatches + 1; }
+            if actual != expected { mismatches += 1; }
             to += 1;
         }
         from += 1;

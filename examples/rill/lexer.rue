@@ -76,7 +76,7 @@ struct Lexer {
     fn identifier(inout self, start: u64) {
         let mut text = StrBuf.new();
         let mut i = start;
-        while i < self.at { text.push(self.byte(i)); i = i + 1; }
+        while i < self.at { text.push(self.byte(i)); i += 1; }
         while !self.done() && is_alnum(self.byte(self.at)) {
             text.push(self.advance());
         }

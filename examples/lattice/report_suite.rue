@@ -56,7 +56,7 @@ fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211
 fn include(inout result: Result, document: StrBuf, expected_prefix: u8) {
     result.documents += 1;
     result.bytes += document.len();
-    if document.len() == 0 { result.empty_documents = result.empty_documents + 1; }
+    if document.len() == 0 { result.empty_documents += 1; }
     else if StrBuf.byte_at_borrowed(borrow document, 0) != expected_prefix {
         result.prefix_mismatches += 1;
     }

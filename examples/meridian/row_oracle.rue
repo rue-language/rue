@@ -33,7 +33,7 @@ pub fn execute(borrow database: model.Database, borrow query: model.Query) -> re
                 let mut n: u64 = 0;
                 while n < matches {
                     result.observe(inout out, value);
-                    if query.join_table != model.NONE() { out.joined_rows = out.joined_rows + 1; }
+                    if query.join_table != model.NONE() { out.joined_rows += 1; }
                     n += 1;
                 }
             }

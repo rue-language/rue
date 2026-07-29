@@ -34,10 +34,10 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Oracle
         let attempts = run.attempts.get_or(i, 0);
         let work = task.duration * attempts;
         executed_work += work;
-        if attempts > 0 { started_tasks = started_tasks + 1; }
-        if run.status.get_or(i, state.FAILED()) == state.CACHED() { cached_tasks = cached_tasks + 1; }
-        else if run.status.get_or(i, state.FAILED()) == state.SUCCEEDED() { successful_work = successful_work + task.duration; }
-        else if run.status.get_or(i, state.FAILED()) == state.FAILED() { failed_work = failed_work + work; }
+        if attempts > 0 { started_tasks += 1; }
+        if run.status.get_or(i, state.FAILED()) == state.CACHED() { cached_tasks += 1; }
+        else if run.status.get_or(i, state.FAILED()) == state.SUCCEEDED() { successful_work += task.duration; }
+        else if run.status.get_or(i, state.FAILED()) == state.FAILED() { failed_work += work; }
         if work > maximum_single_task { maximum_single_task = work; }
         digest = mix(digest, i); digest = mix(digest, attempts); digest = mix(digest, work);
         i += 1;

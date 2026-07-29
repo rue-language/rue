@@ -78,9 +78,9 @@ fn parse_link(
 fn find_closing(borrow value: StrBuf, byte: u8, start: u64) -> u64 {
     let mut i = start;
     while i < value.len() {
-        if text.byte_of(borrow value, i) == 92 { i = i + 2; }
+        if text.byte_of(borrow value, i) == 92 { i += 2; }
         else if text.byte_of(borrow value, i) == byte { return i; }
-        else { i = i + 1; }
+        else { i += 1; }
     }
     value.len()
 }
@@ -88,9 +88,9 @@ fn find_closing(borrow value: StrBuf, byte: u8, start: u64) -> u64 {
 fn find_double_closing(borrow value: StrBuf, byte: u8, start: u64) -> u64 {
     let mut i = start;
     while i + 1 < value.len() {
-        if text.byte_of(borrow value, i) == 92 { i = i + 2; }
+        if text.byte_of(borrow value, i) == 92 { i += 2; }
         else if text.byte_of(borrow value, i) == byte && text.byte_of(borrow value, i + 1) == byte { return i; }
-        else { i = i + 1; }
+        else { i += 1; }
     }
     value.len()
 }
@@ -115,7 +115,7 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow value: StrBuf, line
                 flush_text(inout site, borrow value, plain_start, i, line);
                 i = after;
                 plain_start = i;
-            } else { i = i + 1; }
+            } else { i += 1; }
         } else if b == 96 {
             let close = find_closing(borrow value, 96, i + 1);
             if close < value.len() {
@@ -123,7 +123,7 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow value: StrBuf, line
                 push_tagged(inout site, model.INLINE_CODE(), borrow value, i + 1, close, line);
                 i = close + 1;
                 plain_start = i;
-            } else { i = i + 1; }
+            } else { i += 1; }
         } else if (b == 42 || b == 95) && i + 1 < value.len() && text.byte_of(borrow value, i + 1) == b {
             let close = find_double_closing(borrow value, b, i + 2);
             if close < value.len() {
@@ -131,7 +131,7 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow value: StrBuf, line
                 push_tagged(inout site, model.INLINE_STRONG(), borrow value, i + 2, close, line);
                 i = close + 2;
                 plain_start = i;
-            } else { i = i + 1; }
+            } else { i += 1; }
         } else if b == 42 || b == 95 {
             let close = find_closing(borrow value, b, i + 1);
             if close < value.len() {
@@ -139,14 +139,14 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow value: StrBuf, line
                 push_tagged(inout site, model.INLINE_EMPHASIS(), borrow value, i + 1, close, line);
                 i = close + 1;
                 plain_start = i;
-            } else { i = i + 1; }
+            } else { i += 1; }
         } else {
             i += 1;
         }
     }
     flush_text(inout site, borrow value, plain_start, value.len(), line);
     let mut n = first;
-    while n < site.inlines.len() { created.push(n); n = n + 1; }
+    while n < site.inlines.len() { created.push(n); n += 1; }
     created
 }
 
@@ -157,7 +157,7 @@ pub fn word_count(borrow value: StrBuf) -> u64 {
     while i < value.len() {
         let b = text.byte_of(borrow value, i);
         if text.is_alnum(b) {
-            if !inside { words = words + 1; inside = true; }
+            if !inside { words += 1; inside = true; }
         } else { inside = false; }
         i += 1;
     }

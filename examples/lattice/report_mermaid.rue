@@ -25,7 +25,7 @@ pub fn render(borrow workflow: model.Workflow) -> StrBuf {
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         text.append_literal(inout out, "  T"); text.append_u64(inout out, edge.before);
-        text.append_literal(inout out, " --> T"); text.append_u64(inout out, edge.after); out.push(10); i = i + 1;
+        text.append_literal(inout out, " --> T"); text.append_u64(inout out, edge.after); out.push(10); i += 1;
     }
     out
 }

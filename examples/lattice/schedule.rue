@@ -31,9 +31,9 @@ fn pool_usage(borrow workflow: model.Workflow, borrow run: state.Run, pool: u64,
         if run.status.get_or(i, state.FAILED()) == state.RUNNING() {
             let task = workflow.tasks.get_or(i, model.empty_task());
             if task.pool == pool {
-                if field == 0 { value = value + 1; }
-                else if field == 1 { value = value + task.cpu; }
-                else { value = value + task.memory; }
+                if field == 0 { value += 1; }
+                else if field == 1 { value += task.cpu; }
+                else { value += task.memory; }
             }
         }
         i += 1;
@@ -158,8 +158,8 @@ fn count_waits(inout run: state.Run, borrow workflow: model.Workflow, time: u64)
     let mut i: u64 = 0;
     while i < workflow.tasks.len() {
         if run.status.get_or(i, state.FAILED()) == state.PENDING() && run.next_ready.get_or(i, 0) <= time {
-            if !dependencies_done(borrow workflow, borrow run, i) { run.dependency_waits = run.dependency_waits + 1; }
-            else if !fits(borrow workflow, borrow run, i) { run.resource_waits = run.resource_waits + 1; }
+            if !dependencies_done(borrow workflow, borrow run, i) { run.dependency_waits += 1; }
+            else if !fits(borrow workflow, borrow run, i) { run.resource_waits += 1; }
         }
         i += 1;
     }
@@ -194,8 +194,8 @@ pub fn run(borrow workflow: model.Workflow, cache_seed: u64) -> state.Run {
             }
         }
         count_waits(inout result, borrow workflow, time);
-        if !started && !has_running(borrow result) && !all_terminal(borrow result) { result.idle_ticks = result.idle_ticks + 1; }
-        if !all_terminal(borrow result) { time = time + 1; }
+        if !started && !has_running(borrow result) && !all_terminal(borrow result) { result.idle_ticks += 1; }
+        if !all_terminal(borrow result) { time += 1; }
     }
     result.makespan = time;
     result

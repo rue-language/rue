@@ -25,7 +25,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         if value.task < workflow.tasks.len() {
             text.append_id(inout out, borrow workflow, workflow.tasks.get_or(value.task, model.empty_task()).id);
         } else { text.append_literal(inout out, "<none>"); }
-        out.push(10); i = i + 1;
+        out.push(10); i += 1;
     }
     out
 }

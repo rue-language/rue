@@ -69,7 +69,7 @@ fn include(inout audit: Audit, borrow first: StrBuf, borrow second: StrBuf, veri
     audit.documents += 1;
     audit.bytes += first.len();
     audit.digest = metric.mix(audit.digest, text.fnv1a(borrow first));
-    if !verified || first.len() == 0 { audit.failures = audit.failures + 1; }
+    if !verified || first.len() == 0 { audit.failures += 1; }
     if first.len() != second.len() ||
         text.fnv1a(borrow first) != text.fnv1a(borrow second) {
         audit.deterministic_mismatches += 1;

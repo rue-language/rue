@@ -9,14 +9,14 @@ const StrBuf = std.strbuf.StrBuf;
 
 fn append_padding(inout out: StrBuf, used: u64, width: u64) {
     let mut i = used;
-    while i < width { out.push(32); i = i + 1; }
+    while i < width { out.push(32); i += 1; }
 }
 
 fn append_task_label(inout out: StrBuf, borrow workflow: model.Workflow, id: u64, width: u64) {
     let length = workflow.strings.string_len(id);
     let limit = if length < width { length } else { width };
     let mut i: u64 = 0;
-    while i < limit { out.push(workflow.strings.byte_at(id, i)); i = i + 1; }
+    while i < limit { out.push(workflow.strings.byte_at(id, i)); i += 1; }
     append_padding(inout out, limit, width);
 }
 

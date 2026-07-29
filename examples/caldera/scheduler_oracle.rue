@@ -5,7 +5,7 @@ const scheduler = @import("scheduler.rue");
 pub fn build(borrow world: model.World) -> model.U64s {
     let mut used = model.Bools.new();
     let mut i: u64 = 0;
-    while i < world.entities.len() { used.push(false); i = i + 1; }
+    while i < world.entities.len() { used.push(false); i += 1; }
     let mut order = model.U64s.new();
     while order.len() < model.alive_count(borrow world) {
         let mut best = model.NONE();

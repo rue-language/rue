@@ -19,7 +19,7 @@ pub struct Catalog {
 fn zeroes(count: u64) -> model.U64s {
     let mut result = model.U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { result.push(0); i = i + 1; }
+    while i < count { result.push(0); i += 1; }
     result
 }
 
@@ -98,7 +98,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Catalog {
         let to = paths_to_leaves.get_or(i, 0);
         let through = saturating_multiply(from, to, inout saturated_additions);
         paths_through_task.set(i, through);
-        if model.dependency_count(borrow workflow, i) == 0 { roots = roots + 1; }
+        if model.dependency_count(borrow workflow, i) == 0 { roots += 1; }
         if model.dependent_count(borrow workflow, i) == 0 {
             leaves += 1;
             total_paths = saturating_add(total_paths, from, inout saturated_additions);

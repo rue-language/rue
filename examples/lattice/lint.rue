@@ -149,7 +149,7 @@ fn pool_rules(inout findings: Findings, borrow workflow: model.Workflow) {
         let mut tasks: u64 = 0;
         let mut i: u64 = 0;
         while i < workflow.tasks.len() {
-            if workflow.tasks.get_or(i, model.empty_task()).pool == pool_index { tasks = tasks + 1; }
+            if workflow.tasks.get_or(i, model.empty_task()).pool == pool_index { tasks += 1; }
             i += 1;
         }
         if pool.slots == 1 && tasks > 5 {
@@ -185,13 +185,13 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Report
     i = 0;
     while i < findings.len() {
         let finding = findings.get_or(i, empty_finding());
-        if finding.severity == ERROR() { errors = errors + 1; }
-        else if finding.severity == WARNING() { warnings = warnings + 1; }
-        else { infos = infos + 1; }
-        if finding.task != model.NONE() { task_findings = task_findings + 1; }
-        else if finding.pool != model.NONE() { pool_findings = pool_findings + 1; }
-        else if finding.edge != model.NONE() { edge_findings = edge_findings + 1; }
-        else { global_findings = global_findings + 1; }
+        if finding.severity == ERROR() { errors += 1; }
+        else if finding.severity == WARNING() { warnings += 1; }
+        else { infos += 1; }
+        if finding.task != model.NONE() { task_findings += 1; }
+        else if finding.pool != model.NONE() { pool_findings += 1; }
+        else if finding.edge != model.NONE() { edge_findings += 1; }
+        else { global_findings += 1; }
         digest = mix(digest, finding.rule); digest = mix(digest, finding.severity);
         digest = mix(digest, finding.actual); digest = mix(digest, finding.threshold);
         i += 1;

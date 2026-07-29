@@ -81,7 +81,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
         route_distance = add(route_distance, item.configured_distance);
         geometric_distance = add(geometric_distance, item.direct_distance);
         route_detour = add(route_detour, item.detour);
-        routes.push(item); i = i + 1;
+        routes.push(item); i += 1;
     }
     let mut total_pair_detour: u64 = 0;
     let mut pair_count: u64 = 0;
@@ -100,7 +100,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
                 let reachable = network != routing.INF();
                 let detour = if reachable && network > geometric { network - geometric } else { 0 };
                 if reachable {
-                    total_pair_detour = add(total_pair_detour, detour); pair_count = pair_count + 1;
+                    total_pair_detour = add(total_pair_detour, detour); pair_count += 1;
                     if detour > maximum_pair_detour {
                         maximum_pair_detour = detour; maximum_pair_from = from; maximum_pair_to = to;
                     }

@@ -26,7 +26,7 @@ fn render_inline(borrow site: model.Site, inline_index: u64, inout out: StrBuf) 
 
 fn render_inline_range(borrow site: model.Site, first: u64, count: u64, inout out: StrBuf) {
     let mut i = first;
-    while i < first + count { render_inline(borrow site, i, inout out); i = i + 1; }
+    while i < first + count { render_inline(borrow site, i, inout out); i += 1; }
 }
 
 fn anchor_for_heading(borrow site: model.Site, page_index: u64, block_index: u64) -> u64 {
@@ -120,7 +120,7 @@ fn render_table(borrow site: model.Site, block_index: u64, inout out: StrBuf) ->
     if block.count > 0 { render_table_row(borrow site, block.first, true, inout out); }
     out.push_str("</thead>\n<tbody>\n");
     let mut i = block.first + 1;
-    while i < block.first + block.count { render_table_row(borrow site, i, false, inout out); i = i + 1; }
+    while i < block.first + block.count { render_table_row(borrow site, i, false, inout out); i += 1; }
     out.push_str("</tbody>\n</table>\n");
     block.count + 1
 }
@@ -136,17 +136,17 @@ pub fn body(borrow site: model.Site, page_index: u64) -> StrBuf {
     while i < page.block_start + page.block_count {
         let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
         if block.tag == model.BLOCK_PARAGRAPH() {
-            render_text_block(borrow site, page_index, i, borrow paragraph_open, borrow paragraph_close, inout out); i = i + 1;
+            render_text_block(borrow site, page_index, i, borrow paragraph_open, borrow paragraph_close, inout out); i += 1;
         } else if block.tag == model.BLOCK_HEADING() {
-            render_heading(borrow site, page_index, i, inout out); i = i + 1;
+            render_heading(borrow site, page_index, i, inout out); i += 1;
         } else if block.tag == model.BLOCK_CODE() {
-            render_code(borrow site, i, inout out); i = i + 1;
+            render_code(borrow site, i, inout out); i += 1;
         } else if block.tag == model.BLOCK_LIST() {
             i += render_list(borrow site, page_index, i, inout out);
         } else if block.tag == model.BLOCK_QUOTE() {
-            render_text_block(borrow site, page_index, i, borrow quote_open, borrow quote_close, inout out); i = i + 1;
+            render_text_block(borrow site, page_index, i, borrow quote_open, borrow quote_close, inout out); i += 1;
         } else if block.tag == model.BLOCK_RULE() {
-            out.push_str("<hr>\n"); i = i + 1;
+            out.push_str("<hr>\n"); i += 1;
         } else if block.tag == model.BLOCK_TABLE() {
             i += render_table(borrow site, i, inout out);
         } else {

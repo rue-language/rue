@@ -94,7 +94,7 @@ fn function_at(borrow program: bytecode.Program, pc: u64) -> u64 {
 pub fn disassemble(borrow program: bytecode.Program) -> StrBuf {
     let mut out = StrBuf.new();
     let mut g: u64 = 0;
-    while g < program.global_names.len() { append_global(inout out, borrow program, g); g = g + 1; }
+    while g < program.global_names.len() { append_global(inout out, borrow program, g); g += 1; }
     if g > 0 { out.push_str("\n"); }
     let mut pc: u64 = 0;
     while pc < program.code.len() {

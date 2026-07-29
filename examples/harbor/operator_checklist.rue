@@ -153,11 +153,11 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Checkl
     let mut i: u64 = 0;
     while i < items.len() {
         let value = items.get_or(i, empty_item());
-        if value.blocking { blocking = blocking + 1; }
-        if value.priority == 1 { urgent = urgent + 1; }
-        else if value.priority == 2 { high = high + 1; }
-        else { normal = normal + 1; }
-        if value.complete { complete = complete + 1; } else { open = open + 1; }
+        if value.blocking { blocking += 1; }
+        if value.priority == 1 { urgent += 1; }
+        else if value.priority == 2 { high += 1; }
+        else { normal += 1; }
+        if value.complete { complete += 1; } else { open += 1; }
         evidence_total = add(evidence_total, value.evidence);
         digest = mix(digest, value.area); digest = mix(digest, value.subject);
         digest = mix(digest, value.evidence); digest = mix(digest, value.target);
@@ -182,7 +182,7 @@ fn owner_open(borrow value: Checklist, owner: u64) -> u64 {
     let mut i: u64 = 0;
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
-        if item_value.owner == owner && !item_value.complete { count = count + 1; }
+        if item_value.owner == owner && !item_value.complete { count += 1; }
         i += 1;
     }
     count
@@ -193,7 +193,7 @@ fn owner_blocking(borrow value: Checklist, owner: u64) -> u64 {
     let mut i: u64 = 0;
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
-        if item_value.owner == owner && item_value.blocking && !item_value.complete { count = count + 1; }
+        if item_value.owner == owner && item_value.blocking && !item_value.complete { count += 1; }
         i += 1;
     }
     count
@@ -215,7 +215,7 @@ fn due_open(borrow value: Checklist, due: u64) -> u64 {
     let mut i: u64 = 0;
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
-        if item_value.due_hour <= due && !item_value.complete { count = count + 1; }
+        if item_value.due_hour <= due && !item_value.complete { count += 1; }
         i += 1;
     }
     count
@@ -257,7 +257,7 @@ pub fn render(borrow value: Checklist) -> StrBuf {
         text.append_u64(inout out, item_value.owner); out.push(32);
         text.append_u64(inout out, item_value.due_hour); out.push(32);
         text.append_bool(inout out, item_value.blocking); out.push(32);
-        text.append_bool(inout out, item_value.complete); out.push(10); i = i + 1;
+        text.append_bool(inout out, item_value.complete); out.push(10); i += 1;
     }
     text.append_literal(inout out, "blocking="); text.append_u64(inout out, value.blocking);
     text.append_literal(inout out, " urgent="); text.append_u64(inout out, value.urgent);

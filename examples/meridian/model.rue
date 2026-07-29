@@ -245,7 +245,7 @@ pub fn table_rows(borrow database: Database, table: u64, snapshot: u64) -> u64 {
     let mut i: u64 = 0;
     while i < database.rows.len() {
         let row = database.rows.get_or(i, empty_row());
-        if row.table == table && visible(borrow row, snapshot) { count = count + 1; }
+        if row.table == table && visible(borrow row, snapshot) { count += 1; }
         i += 1;
     }
     count
@@ -255,7 +255,7 @@ pub fn table_cells(borrow database: Database, table: u64) -> u64 {
     let mut count: u64 = 0;
     let mut i: u64 = 0;
     while i < database.cells.len() {
-        if database.cells.get_or(i, empty_cell()).table == table { count = count + 1; }
+        if database.cells.get_or(i, empty_cell()).table == table { count += 1; }
         i += 1;
     }
     count

@@ -117,7 +117,7 @@ pub fn row_reachable(borrow matrix: Matrix, from: u64) -> u64 {
     let mut count: u64 = 0;
     let mut to: u64 = 0;
     while to < matrix.size {
-        if from != to && weight(borrow matrix, from, to) != routing.INF() { count = count + 1; }
+        if from != to && weight(borrow matrix, from, to) != routing.INF() { count += 1; }
         to += 1;
     }
     count

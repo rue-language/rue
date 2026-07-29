@@ -31,7 +31,7 @@ pub struct Summary {
 
 fn fill(inout values: U64s, count: u64, value: u64) {
     let mut i: u64 = 0;
-    while i < count { values.push(value); i = i + 1; }
+    while i < count { values.push(value); i += 1; }
 }
 
 fn add(a: u64, b: u64) -> u64 {
@@ -72,7 +72,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         let event = sim.log.get_or(i, state.empty_event());
         if event.time != current_time {
             let mut l: u64 = 0;
-            while l < handling.len() { handling.set(l, 0); l = l + 1; }
+            while l < handling.len() { handling.set(l, 0); l += 1; }
             current_time = event.time;
         }
         if event.tag == state.EVENT_SUPPLY() || event.tag == state.EVENT_PRODUCTION() {
@@ -110,8 +110,8 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         let location = scenario.locations.get_or(i, model.empty_location());
         let storage_overflow = peaks.get_or(i, 0) > location.capacity;
         let handling_overflow = handling_peaks.get_or(i, 0) > location.handling;
-        if storage_overflow { storage_overflows = storage_overflows + 1; }
-        if handling_overflow { handling_overflows = handling_overflows + 1; }
+        if storage_overflow { storage_overflows += 1; }
+        if handling_overflow { handling_overflows += 1; }
         if peaks.get_or(i, 0) > global_peak { global_peak = peaks.get_or(i, 0); }
         rejected_units = add(rejected_units, rejected.get_or(i, 0));
         locations.push(LocationCapacity {

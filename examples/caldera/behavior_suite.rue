@@ -133,8 +133,8 @@ const behavior_citizen_celebrate = @import("behavior_citizen_celebrate.rue");
 pub struct Summary { behaviors: u64, agents: u64, selected: u64, transitions: u64,
     deterministic_mismatches: u64, digest: u64, valid: bool }
 fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {
-    out.behaviors = out.behaviors + 1; out.agents = out.agents + first.agents;
-    out.selected = out.selected + first.selected; out.transitions = out.transitions + first.transitions;
+    out.behaviors += 1; out.agents += first.agents;
+    out.selected += first.selected; out.transitions += first.transitions;
     if first.digest != second.digest || first.utility != second.utility || !verified {
         out.deterministic_mismatches += 1;
     }

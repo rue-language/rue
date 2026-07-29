@@ -22,7 +22,7 @@ pub fn distance(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64) -
     if start == model.NONE() || goal == model.NONE() { return model.NONE(); }
     let mut distances = model.U64s.new();
     let mut i: u64 = 0;
-    while i < world.tiles.len() { distances.push(model.NONE()); i = i + 1; }
+    while i < world.tiles.len() { distances.push(model.NONE()); i += 1; }
     distances.set(start, 0);
     let mut pass: u64 = 0;
     while pass < world.tiles.len() {

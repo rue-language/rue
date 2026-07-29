@@ -10,7 +10,7 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
         let mut i: u64 = 0;
         while i < database.rows.len() {
             let row = database.rows.get_or(i, model.empty_row());
-            if model.visible(borrow row, snapshot) { visible_rows = visible_rows + 1; }
+            if model.visible(borrow row, snapshot) { visible_rows += 1; }
             metric.warn(inout out, row.version_deleted != model.NONE() &&
                 row.version_deleted < row.version_created);
             i += 1;

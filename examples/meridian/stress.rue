@@ -63,7 +63,7 @@ fn once(scale: u64) -> Result {
                 borrow query_plan, borrow actual);
             out.report_documents = reports.documents;
             out.digest = metric.mix(out.digest, reports.digest);
-            if !reports.valid { out.oracle_mismatches = out.oracle_mismatches + 1; }
+            if !reports.valid { out.oracle_mismatches += 1; }
         }
         q += 1;
     }

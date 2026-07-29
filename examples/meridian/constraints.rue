@@ -24,7 +24,7 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
                     }
                     earlier += 1;
                 }
-                if seen { duplicates = duplicates + 1; } else { distinct = distinct + 1; }
+                if seen { duplicates += 1; } else { distinct += 1; }
             }
             r += 1;
         }

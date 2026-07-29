@@ -19,7 +19,7 @@ pub struct Audit {
 fn zeros(count: u64) -> model.U64s {
     let mut out = model.U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { out.push(0); i = i + 1; }
+    while i < count { out.push(0); i += 1; }
     out
 }
 
@@ -37,32 +37,32 @@ pub fn audit(borrow workflow: model.Workflow, borrow run: state.Run) -> Audit {
     let mut i: u64 = 0;
     while i < run.events.len() {
         let event = run.events.get_or(i, state.empty_event());
-        if i > 0 && event.time < previous_time { ordering_errors = ordering_errors + 1; }
+        if i > 0 && event.time < previous_time { ordering_errors += 1; }
         previous_time = event.time;
-        if event.task >= workflow.tasks.len() { transition_errors = transition_errors + 1; }
+        if event.task >= workflow.tasks.len() { transition_errors += 1; }
         else {
             let old = status.get_or(event.task, 0);
             if event.kind == state.EVENT_START() {
-                if old != state.PENDING() { transition_errors = transition_errors + 1; }
+                if old != state.PENDING() { transition_errors += 1; }
                 let expected = attempts.get_or(event.task, 0) + 1;
-                if event.attempt != expected { attempt_errors = attempt_errors + 1; }
+                if event.attempt != expected { attempt_errors += 1; }
                 attempts.set(event.task, event.attempt);
                 status.set(event.task, state.RUNNING());
             } else if event.kind == state.EVENT_SUCCESS() {
-                if old != state.RUNNING() { transition_errors = transition_errors + 1; }
-                status.set(event.task, state.SUCCEEDED()); succeeded = succeeded + 1;
+                if old != state.RUNNING() { transition_errors += 1; }
+                status.set(event.task, state.SUCCEEDED()); succeeded += 1;
             } else if event.kind == state.EVENT_FAILURE() {
-                if old != state.RUNNING() { transition_errors = transition_errors + 1; }
+                if old != state.RUNNING() { transition_errors += 1; }
             } else if event.kind == state.EVENT_RETRY() {
-                if old != state.RUNNING() { transition_errors = transition_errors + 1; }
-                status.set(event.task, state.PENDING()); retries = retries + 1;
+                if old != state.RUNNING() { transition_errors += 1; }
+                status.set(event.task, state.PENDING()); retries += 1;
             } else if event.kind == state.EVENT_CACHE() {
-                if old != state.PENDING() { transition_errors = transition_errors + 1; }
-                status.set(event.task, state.CACHED()); cached = cached + 1;
+                if old != state.PENDING() { transition_errors += 1; }
+                status.set(event.task, state.CACHED()); cached += 1;
             } else if event.kind == state.EVENT_BLOCKED() {
-                if old != state.PENDING() { transition_errors = transition_errors + 1; }
-                status.set(event.task, state.FAILED()); failed = failed + 1;
-            } else { transition_errors = transition_errors + 1; }
+                if old != state.PENDING() { transition_errors += 1; }
+                status.set(event.task, state.FAILED()); failed += 1;
+            } else { transition_errors += 1; }
         }
         i += 1;
     }
@@ -71,7 +71,7 @@ pub fn audit(borrow workflow: model.Workflow, borrow run: state.Run) -> Audit {
     while i < workflow.tasks.len() {
         let expected = run.status.get_or(i, state.FAILED());
         let actual = status.get_or(i, state.FAILED());
-        if expected != actual { terminal_mismatches = terminal_mismatches + 1; }
+        if expected != actual { terminal_mismatches += 1; }
         if actual == state.FAILED() && expected == state.FAILED() {
             // A failed task may come from exhaustion rather than BLOCKED.
             failed += 1;

@@ -93,7 +93,7 @@ fn neighbor(route: model.Route, at: u64) -> u64 {
 
 fn fill(inout values: U64s, count: u64, value: u64) {
     let mut i: u64 = 0;
-    while i < count { values.push(value); i = i + 1; }
+    while i < count { values.push(value); i += 1; }
 }
 
 fn prefer(candidate_route: u64, old_route: u64) -> bool {
@@ -227,7 +227,7 @@ pub fn shortest(
             // to the same logical vector across calls, but not within one call.
             let mut next_distances = U64s.new();
             let mut i: u64 = 0;
-            while i < distances.len() { next_distances.push(distances.get_or(i, INF())); i = i + 1; }
+            while i < distances.len() { next_distances.push(distances.get_or(i, INF())); i += 1; }
             relax_from(
                 borrow scenario, at, now, minimum_capacity, mode,
                 borrow distances, inout next_distances,

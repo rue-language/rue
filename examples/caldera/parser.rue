@@ -10,12 +10,12 @@ fn peek(borrow state: State) -> token.Token {
 }
 fn advance(inout state: State) -> token.Token {
     let value = peek(borrow state);
-    if state.cursor < state.tokens.len() { state.cursor = state.cursor + 1; }
+    if state.cursor < state.tokens.len() { state.cursor += 1; }
     value
 }
 fn take(inout state: State, kind: u64) -> token.Token {
     let value = advance(inout state);
-    if value.kind != kind { state.errors = state.errors + 1; }
+    if value.kind != kind { state.errors += 1; }
     value
 }
 fn entity_kind(kind: u64) -> u64 {
@@ -49,7 +49,7 @@ pub fn parse(tokens: token.Tokens) -> scenario.Scenario {
             let y = take(inout state, token.NUMBER()).number;
             let _ = take(inout state, token.SEMI());
             let kind = entity_kind(kind_token.kind);
-            if kind == 0 { state.errors = state.errors + 1; }
+            if kind == 0 { state.errors += 1; }
             out.entities.push(scenario.EntitySpec { kind: kind, faction: faction, x: x, y: y });
         } else if statement.kind == token.TILE() {
             let x = take(inout state, token.NUMBER()).number;
@@ -57,7 +57,7 @@ pub fn parse(tokens: token.Tokens) -> scenario.Scenario {
             let terrain_token = advance(inout state);
             let _ = take(inout state, token.SEMI());
             let terrain = terrain_kind(terrain_token.kind);
-            if terrain == 0 { state.errors = state.errors + 1; }
+            if terrain == 0 { state.errors += 1; }
             out.tiles.push(scenario.TileSpec { x: x, y: y, terrain: terrain });
         } else if statement.kind == token.TICK() {
             out.ticks = take(inout state, token.NUMBER()).number;

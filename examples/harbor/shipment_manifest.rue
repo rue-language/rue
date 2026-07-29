@@ -126,15 +126,15 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Manife
     let mut i: u64 = 0;
     while i < sim.log.len() {
         let event = sim.log.get_or(i, state.empty_event());
-        if event.tag == state.EVENT_ARRIVAL() { arrivals = arrivals + 1; }
+        if event.tag == state.EVENT_ARRIVAL() { arrivals += 1; }
         if event.tag == state.EVENT_DEPARTURE() {
             departures += 1;
             let item = from_departure(borrow scenario, borrow sim, i, event);
             if item.matched {
                 matched += 1;
-                if item.on_time { on_time = on_time + 1; } else { late = late + 1; }
-                if item.arrive < item.depart { ordering_errors = ordering_errors + 1; }
-            } else { unmatched = unmatched + 1; }
+                if item.on_time { on_time += 1; } else { late += 1; }
+                if item.arrive < item.depart { ordering_errors += 1; }
+            } else { unmatched += 1; }
             cargo_units = add(cargo_units, item.quantity);
             total_cost = add(total_cost, item.cost);
             total_distance = add(total_distance, item.distance);
@@ -207,7 +207,7 @@ pub fn render(borrow scenario: model.Scenario, borrow value: Manifest) -> StrBuf
         if !item.matched { text.append_literal(inout out, "unmatched"); }
         else if item.on_time { text.append_literal(inout out, "on-time"); }
         else { text.append_literal(inout out, "late"); }
-        out.push(10); i = i + 1;
+        out.push(10); i += 1;
     }
     text.append_literal(inout out, "cargo_units="); text.append_u64(inout out, value.cargo_units);
     text.append_literal(inout out, " total_cost="); text.append_u64(inout out, value.total_cost);

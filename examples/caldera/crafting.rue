@@ -9,7 +9,7 @@ pub fn audit(borrow world: model.World) -> Craft {
     while recipe < out.recipes {
         let cost = 2 + recipe * 3;
         out.cost += cost;
-        if world.resources >= cost { out.craftable = out.craftable + 1; }
+        if world.resources >= cost { out.craftable += 1; }
         out.digest = metric.mix(out.digest, cost + world.seed % 97);
         recipe += 1;
     }

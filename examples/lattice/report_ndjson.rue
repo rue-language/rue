@@ -25,7 +25,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, ",\"attempt\":"); text.append_u64(inout out, event.attempt);
         text.append_literal(inout out, ",\"cpu\":"); text.append_u64(inout out, event.cpu);
         text.append_literal(inout out, ",\"memory\":"); text.append_u64(inout out, event.memory);
-        text.append_literal(inout out, "}\n"); i = i + 1;
+        text.append_literal(inout out, "}\n"); i += 1;
     }
     out
 }

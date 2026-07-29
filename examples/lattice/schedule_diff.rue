@@ -34,10 +34,10 @@ pub fn compare(borrow workflow: model.Workflow, borrow first: state.Run, borrow 
     let mut digest: u64 = 14695981039346656037;
     let mut i: u64 = 0;
     while i < workflow.tasks.len() {
-        if first.status.get_or(i, 0) != second.status.get_or(i, 0) { status_changes = status_changes + 1; }
-        if first.starts.get_or(i, 0) != second.starts.get_or(i, 0) { start_changes = start_changes + 1; }
-        if first.ends.get_or(i, 0) != second.ends.get_or(i, 0) { end_changes = end_changes + 1; }
-        if first.attempts.get_or(i, 0) != second.attempts.get_or(i, 0) { attempt_changes = attempt_changes + 1; }
+        if first.status.get_or(i, 0) != second.status.get_or(i, 0) { status_changes += 1; }
+        if first.starts.get_or(i, 0) != second.starts.get_or(i, 0) { start_changes += 1; }
+        if first.ends.get_or(i, 0) != second.ends.get_or(i, 0) { end_changes += 1; }
+        if first.attempts.get_or(i, 0) != second.attempts.get_or(i, 0) { attempt_changes += 1; }
         digest = mix(digest, first.status.get_or(i, 0)); digest = mix(digest, second.status.get_or(i, 0));
         digest = mix(digest, first.starts.get_or(i, 0)); digest = mix(digest, second.starts.get_or(i, 0));
         i += 1;
@@ -47,7 +47,7 @@ pub fn compare(borrow workflow: model.Workflow, borrow first: state.Run, borrow 
     while common_event_prefix < limit && same_event(
         first.events.get_or(common_event_prefix, state.empty_event()),
         second.events.get_or(common_event_prefix, state.empty_event()),
-    ) { common_event_prefix = common_event_prefix + 1; }
+    ) { common_event_prefix += 1; }
     Difference {
         status_changes: status_changes, start_changes: start_changes,
         end_changes: end_changes, attempt_changes: attempt_changes,

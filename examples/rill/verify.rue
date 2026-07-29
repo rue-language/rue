@@ -163,7 +163,7 @@ struct Verifier {
     fn check_function_flow(inout self, id: u64) {
         let mut heights = I64s.new();
         let mut i: u64 = 0;
-        while i < self.program.code.len() { heights.push(-2); i = i + 1; }
+        while i < self.program.code.len() { heights.push(-2); i += 1; }
         let mut work = U64s.new();
         self.enqueue(inout work, inout heights, self.program.fn_starts.get_or(id, 0), 0);
         while work.len() > 0 {
@@ -195,7 +195,7 @@ struct Verifier {
         self.check_metadata();
         self.check_operands();
         let mut i: u64 = 0;
-        while i < self.program.fn_names.len() { self.check_function_flow(i); i = i + 1; }
+        while i < self.program.fn_names.len() { self.check_function_flow(i); i += 1; }
     }
 }
 

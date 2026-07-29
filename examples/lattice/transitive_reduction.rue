@@ -51,8 +51,8 @@ pub fn compute(borrow workflow: model.Workflow) -> Reduction {
             essential.push(i);
             let before = workflow.tasks.get_or(edge.before, model.empty_task());
             let after = workflow.tasks.get_or(edge.after, model.empty_task());
-            if before.pool == after.pool { same_pool_essential = same_pool_essential + 1; }
-            else { cross_pool_essential = cross_pool_essential + 1; }
+            if before.pool == after.pool { same_pool_essential += 1; }
+            else { cross_pool_essential += 1; }
             digest = mix(digest, i + 0x1000);
         }
         digest = mix(digest, edge.before);

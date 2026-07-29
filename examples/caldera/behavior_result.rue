@@ -7,8 +7,8 @@ pub fn new(behavior: u64) -> Result {
 }
 pub fn record(inout out: Result, selected: bool, utility: u64, transition: bool) {
     out.agents += 1;
-    if selected { out.selected = out.selected + 1; }
-    if transition { out.transitions = out.transitions + 1; }
+    if selected { out.selected += 1; }
+    if transition { out.transitions += 1; }
     out.utility = @wrapping_add(out.utility, utility);
     out.digest = metric.mix(out.digest, utility + out.agents * 31);
 }

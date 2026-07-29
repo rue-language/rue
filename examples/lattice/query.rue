@@ -140,7 +140,7 @@ pub fn execute(borrow workflow: model.Workflow, borrow run: state.Run, borrow qu
     sort(inout tasks, borrow workflow);
     let mut digest: u64 = 14695981039346656037;
     i = 0;
-    while i < tasks.len() { digest = mix(digest, tasks.get_or(i, model.NONE())); i = i + 1; }
+    while i < tasks.len() { digest = mix(digest, tasks.get_or(i, model.NONE())); i += 1; }
     let count = tasks.len();
     Result {
         tasks: tasks, matches: count, total_duration: total_duration,

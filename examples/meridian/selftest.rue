@@ -45,7 +45,7 @@ pub struct Result {
 fn check(inout out: Result, condition: bool, fingerprint: u64) {
     out.checks += 1;
     out.digest = metric.mix(out.digest, fingerprint);
-    if !condition { out.failures = out.failures + 1; }
+    if !condition { out.failures += 1; }
 }
 
 pub fn run() -> Result {

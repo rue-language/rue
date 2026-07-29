@@ -111,7 +111,7 @@ pub fn run(max_tier: u64, repetitions: u64) -> Suite {
         events = add(events, baseline.events);
         dispatches = add(dispatches, baseline.dispatches);
         work_units = add(work_units, baseline.work_units);
-        if !baseline.ok { failures = failures + 1; }
+        if !baseline.ok { failures += 1; }
         digest = mix(digest, baseline.scenario_fingerprint);
         digest = mix(digest, baseline.simulation_fingerprint);
         let mut repetition: u64 = 1;
@@ -121,8 +121,8 @@ pub fn run(max_tier: u64, repetitions: u64) -> Suite {
             events = add(events, next.events);
             dispatches = add(dispatches, next.dispatches);
             work_units = add(work_units, next.work_units);
-            if !next.ok { failures = failures + 1; }
-            if !same_result(borrow baseline, borrow next) { nondeterministic = nondeterministic + 1; }
+            if !next.ok { failures += 1; }
+            if !same_result(borrow baseline, borrow next) { nondeterministic += 1; }
             digest = mix(digest, next.scenario_fingerprint);
             digest = mix(digest, next.simulation_fingerprint);
             samples.push(next);

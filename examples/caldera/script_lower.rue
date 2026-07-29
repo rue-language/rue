@@ -16,7 +16,7 @@ pub fn lower(borrow input: scenario.Scenario) -> bytecode.Program {
         out.ops.push(bytecode.Op { kind: bytecode.ADD(), operand: 0 });
         out.ops.push(bytecode.Op { kind: bytecode.PUSH(), operand: item.x + item.y });
         out.ops.push(bytecode.Op { kind: bytecode.MIX(), operand: 0 });
-        out.entities = out.entities + 1; i = i + 1;
+        out.entities += 1; i += 1;
     }
     out.ops.push(bytecode.Op { kind: bytecode.PUSH(), operand: input.ticks });
     out.ops.push(bytecode.Op { kind: bytecode.MIX(), operand: 0 });

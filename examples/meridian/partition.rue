@@ -10,7 +10,7 @@ pub fn audit(borrow database: model.Database, partitions: u64) -> metric.Metric 
     let mut out = metric.new(4601);
     let mut counts = model.U64s.new();
     let mut p: u64 = 0;
-    while p < partitions { counts.push(0); p = p + 1; }
+    while p < partitions { counts.push(0); p += 1; }
     let mut i: u64 = 0;
     while i < database.rows.len() {
         let row = database.rows.get_or(i, model.empty_row());

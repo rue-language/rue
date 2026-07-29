@@ -131,8 +131,8 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Dashbo
         weighted_score = add(weighted_score, item.score * item.weight);
         weight_total = add(weight_total, item.weight);
         observations = add(observations, item.observations); failures = add(failures, item.failures);
-        if item.warning { warnings = warnings + 1; }
-        if item.gate { if item.failures == 0 { gates_passed = gates_passed + 1; } else { gates_failed = gates_failed + 1; } }
+        if item.warning { warnings += 1; }
+        if item.gate { if item.failures == 0 { gates_passed += 1; } else { gates_failed += 1; } }
         digest = mix(digest, item.id); digest = mix(digest, item.score); digest = mix(digest, item.failures);
         i += 1;
     }
@@ -185,7 +185,7 @@ pub fn render(borrow value: Dashboard) -> StrBuf {
         append_name(inout out, item.id); out.push(32); text.append_u64(inout out, item.score); out.push(32);
         text.append_u64(inout out, item.weight); out.push(32); text.append_u64(inout out, item.observations); out.push(32);
         text.append_u64(inout out, item.failures); out.push(32); text.append_bool(inout out, item.warning); out.push(32);
-        text.append_bool(inout out, item.gate); out.push(10); i = i + 1;
+        text.append_bool(inout out, item.gate); out.push(10); i += 1;
     }
     text.append_literal(inout out, "score="); text.append_u64(inout out, value.score);
     text.append_literal(inout out, " grade="); append_grade(inout out, value.score);

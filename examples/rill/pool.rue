@@ -90,9 +90,9 @@ pub struct Pool {
     fn concat(inout self, a: u64, b: u64) -> u64 {
         let mut out = StrBuf.new();
         let mut i: u64 = 0;
-        while i < self.entry_len(a) { out.push(self.entry_byte(a, i)); i = i + 1; }
+        while i < self.entry_len(a) { out.push(self.entry_byte(a, i)); i += 1; }
         i = 0;
-        while i < self.entry_len(b) { out.push(self.entry_byte(b, i)); i = i + 1; }
+        while i < self.entry_len(b) { out.push(self.entry_byte(b, i)); i += 1; }
         self.intern(borrow out)
     }
 
@@ -100,7 +100,7 @@ pub struct Pool {
         let mut out = StrBuf.new();
         let n = self.entry_len(id);
         let mut i: u64 = 0;
-        while i < n { out.push(self.entry_byte(id, i)); i = i + 1; }
+        while i < n { out.push(self.entry_byte(id, i)); i += 1; }
         out
     }
 }

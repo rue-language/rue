@@ -2,8 +2,8 @@ fn Stack(comptime T: type, comptime CAP: i32) -> type {
     struct {
         items: [T; CAP],
         top: i32,
-        fn push(inout self, x: T) { self.items[self.top] = x; self.top = self.top + 1; }
-        fn pop(inout self) -> T { self.top = self.top - 1; self.items[self.top] }
+        fn push(inout self, x: T) { self.items[self.top] = x; self.top += 1; }
+        fn pop(inout self) -> T { self.top -= 1; self.items[self.top] }
         fn size(borrow self) -> i32 { self.top }
     }
 }

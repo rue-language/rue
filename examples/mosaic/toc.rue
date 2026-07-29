@@ -16,7 +16,7 @@ fn anchor_for_block(borrow site: model.Site, page_index: u64, block_index: u64) 
 }
 
 fn close_to(inout out: StrBuf, inout level: u64, target: u64) {
-    while level > target { out.push_str("</li></ul>"); level = level - 1; }
+    while level > target { out.push_str("</li></ul>"); level -= 1; }
 }
 
 pub fn render(borrow site: model.Site, page_index: u64) -> StrBuf {
@@ -30,7 +30,7 @@ pub fn render(borrow site: model.Site, page_index: u64) -> StrBuf {
         if block.tag == model.BLOCK_HEADING() && block.level >= 2 {
             if !any { out.push_str("<nav class=\"toc\" aria-label=\"Table of contents\"><h2>Contents</h2>"); any = true; }
             let wanted = block.level - 1;
-            while level < wanted { out.push_str("<ul><li>"); level = level + 1; }
+            while level < wanted { out.push_str("<ul><li>"); level += 1; }
             if level > wanted { close_to(inout out, inout level, wanted); out.push_str("<li>"); }
             else if level == wanted && level > 0 { out.push_str("</li><li>"); }
             out.push_str("<a href=\"#");

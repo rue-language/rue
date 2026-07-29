@@ -71,10 +71,10 @@ const report_replay_graph = @import("report_replay_graph.rue");
 pub struct Summary { documents: u64, bytes: u64, deterministic_mismatches: u64,
     failures: u64, digest: u64, valid: bool }
 fn include(inout out: Summary, borrow first: StrBuf, borrow second: StrBuf, verified: bool) {
-    out.documents = out.documents + 1; out.bytes = out.bytes + first.len();
+    out.documents += 1; out.bytes += first.len();
     let a = text.fnv1a(borrow first); let b = text.fnv1a(borrow second);
-    if a != b { out.deterministic_mismatches = out.deterministic_mismatches + 1; }
-    if !verified { out.failures = out.failures + 1; }
+    if a != b { out.deterministic_mismatches += 1; }
+    if !verified { out.failures += 1; }
     out.digest = metric.mix(out.digest, a);
 }
 pub fn run(borrow world: model.World, suite_digest: u64) -> Summary {

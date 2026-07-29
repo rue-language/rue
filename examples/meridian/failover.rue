@@ -21,7 +21,7 @@ pub fn elect(borrow database: model.Database) -> Election {
                 out.winner = i;
                 out.winning_lsn = replica.applied_lsn;
             }
-        } else { out.rejected = out.rejected + 1; }
+        } else { out.rejected += 1; }
         i += 1;
     }
     out.valid = out.winner != model.NONE() && out.winner < database.replicas.len();

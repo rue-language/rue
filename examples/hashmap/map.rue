@@ -51,7 +51,7 @@ pub struct Map {
                 i = (i + 1) % self.cap;
             } else {
                 // empty or tombstone: claim it
-                if s == 0 { self.used = self.used + 1; }
+                if s == 0 { self.used += 1; }
                 self.keys.set(i, key);
                 self.vals.set(i, val);
                 self.state.set(i, 1);

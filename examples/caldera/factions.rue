@@ -18,9 +18,9 @@ pub fn audit(borrow world: model.World) -> Relations {
         let mut b = a;
         while b <= max_faction {
             let relation = if a == b { 1 } else if (a + b + world.tick) % 3 == 0 { 2 } else { 3 };
-            if relation == 1 { out.allied = out.allied + 1; }
-            else if relation == 2 { out.hostile = out.hostile + 1; }
-            else { out.neutral = out.neutral + 1; }
+            if relation == 1 { out.allied += 1; }
+            else if relation == 2 { out.hostile += 1; }
+            else { out.neutral += 1; }
             out.digest = metric.mix(out.digest, a * 101 + b * 17 + relation);
             b += 1;
         }
