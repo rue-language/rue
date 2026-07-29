@@ -691,9 +691,13 @@ published artifact views. Exact public method shapes are handled under
 ADR-0061's facade rules.
 
 Batch compilation, `--emit` presentation, benchmarks, the oracle, a future LSP,
-and a future incremental linker request artifacts through the same graph.
-Presentation queries project canonical artifacts; they do not call free backend
-helpers or run a second lowering/regalloc/emission path.
+a future incremental linker, and future test selection/caching tooling request
+artifacts through the same graph. The test-selection consumer follows RUE-506's
+compiler-informed direction: reachability/`BodyReferences` and terminal
+fingerprints answer "which tests could this change affect" through the same
+queries every other consumer uses. Presentation queries project canonical
+artifacts; they do not call free backend helpers or run a second
+lowering/regalloc/emission path.
 
 The implementation may use an in-house engine, Salsa, or another substrate only
 if one database owns query state. A migration may not keep the current store as a
@@ -706,39 +710,39 @@ oracle.
 
 Tracked in Linear under the RUE-648 epic. The dependency order is:
 
-- [ ] **Phase 0: Runtime prototype and benchmark gate.** Prove exact-key
+- [x] **Phase 0: Runtime prototype and benchmark gate.** Prove exact-key
   claim-or-join, different-key parallel execution, red/green propagation,
   deterministic diagnostics, cancellation/revision isolation, exact cycle
   handling, bounded retention, and progress with one permit and adversarial
   claim/join/dependency schedules on representative query shapes. Compare an
   in-house evolution with a query-library prototype if substrate choice remains
   open. — RUE-1022
-- [ ] **Phase 1: Revisioned keyed database and compatibility shim.** Introduce
+- [x] **Phase 1: Revisioned keyed database and compatibility shim.** Introduce
   immutable revisions, per-key nodes, joined waiters, task-scoped dependency
   recording, and single-worker scheduling beneath a compatibility shim over the
   selected-state API. Do not require all query families to change call
   discipline in one diff. — RUE-1021 (blocked by RUE-1022)
-- [ ] **Phase 2: Source and import inputs.** Publish per-module source leaves,
+- [x] **Phase 2: Source and import inputs.** Publish per-module source leaves,
   fulfill rooted missing import observations in deduplicated frontier batches,
   prohibit speculative host demands, and preserve canonical read policy,
   precedence, provenance, and discovery-epoch reuse across successor attempts.
   — RUE-1023 (blocked by RUE-1021)
-- [ ] **Phase 3: Module syntax/RIR queries.** Parse and lower demanded modules,
+- [x] **Phase 3: Module syntax/RIR queries.** Parse and lower demanded modules,
   provide stable definition/name/import indexes, and keep whole-program views as
   thin projections. — RUE-1024 (blocked by RUE-1023)
-- [ ] **Phase 4: Complete stable semantic identity.** Cover named definitions,
+- [x] **Phase 4: Complete stable semantic identity.** Cover named definitions,
   specializations, anonymous nominals, methods/destructors,
   definition-relative structural anchors, and synthesized entities with
   schedule- and position-independent keys. — RUE-1025 (blocked by RUE-1024)
-- [ ] **Phase 5: Declaration and comptime queries.** Move shells, signatures,
+- [x] **Phase 5: Declaration and comptime queries.** Move shells, signatures,
   constants, type constructors, method lookup, and domain-specific cycle
   handling behind keyed canonical queries. — RUE-1026 (blocked by RUE-1025)
-- [ ] **Phase 6: Per-body semantics and projections.** Analyze one body per
+- [x] **Phase 6: Per-body semantics and projections.** Analyze one body per
   query, publish canonical bodies and independently stamped `BodyReferences`,
   including deterministic references from failed bodies, and remove the
   whole-program mutable Sema epoch as an authority. — RUE-1027 (blocked by
   RUE-1026)
-- [ ] **Phase 7: Reachability and parallel scheduling.** Implement
+- [x] **Phase 7: Reachability and parallel scheduling.** Implement
   database-owned reachability with per-identity memberships, correct edge
   deletion, and separate addition/deletion measurement gates; handle legal call
   SCCs; move existing Rayon CFG/backend parallelism onto the shared budget; and
