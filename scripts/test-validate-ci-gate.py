@@ -15,10 +15,11 @@ SOURCE = Path(os.environ["RUE_CI_WORKFLOW"])
 TEST_RUNNER_SOURCE = Path(
     os.environ.get("RUE_TEST_RUNNER_SOURCE", MODULE.TEST_RUNNER_SOURCE)
 )
+ROOT_BUCK = Path(os.environ.get("RUE_ROOT_BUCK", MODULE.ROOT_BUCK))
 
 
 class GateValidatorTests(unittest.TestCase):
-    def validate_text(self, text, native_runner=None, test_runner=None):
+    def validate_text(self, text, native_runner=None, test_runner=None, buck=None):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "ci.yml"
             path.write_text(text)
@@ -34,11 +35,18 @@ class GateValidatorTests(unittest.TestCase):
                 if test_runner is not None
                 else TEST_RUNNER_SOURCE.read_text()
             )
-            return MODULE.validate(path, runner_path, test_runner_path)
+            buck_path = Path(directory) / "BUCK"
+            buck_path.write_text(
+                buck if buck is not None else ROOT_BUCK.read_text()
+            )
+            return MODULE.validate(path, runner_path, test_runner_path, buck_path)
 
     def test_current_workflow_is_valid(self):
         self.assertEqual(
-            MODULE.validate(SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, TEST_RUNNER_SOURCE), []
+            MODULE.validate(
+                SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, TEST_RUNNER_SOURCE, ROOT_BUCK
+            ),
+            [],
         )
 
     def test_removing_or_renaming_job_fails_inventory(self):
@@ -105,10 +113,47 @@ class GateValidatorTests(unittest.TestCase):
     def test_unreadable_platform_matrix_is_reported(self):
         with tempfile.TemporaryDirectory() as directory:
             missing = Path(directory) / "absent.rs"
-            errors = MODULE.validate(SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, missing)
+            errors = MODULE.validate(
+                SOURCE, MODULE.NATIVE_RUNNER_SCRIPT, missing, ROOT_BUCK
+            )
         self.assertTrue(
             any("platform responsibility matrix unreadable" in error for error in errors),
             errors,
+        )
+
+
+    # RUE-1163: the label that replaced RUE_CI_DEFER_HEAVY_SUITES.
+    def test_reintroducing_the_defer_protocol_fails(self):
+        changed = SOURCE.read_text().replace(
+            "          RUE_TEST_TIER: premerge\n",
+            "          RUE_TEST_TIER: premerge\n"
+            "          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests'\n",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("RUE_CI_DEFER_HEAVY_SUITES is retired", errors)
+
+    def test_dedicated_lane_corpus_without_a_job_fails(self):
+        # spec-tests is skipped by the premerge suite because it carries the
+        # label, so dropping its platform-corpus entry would drop it entirely.
+        changed = SOURCE.read_text().replace("            target: //:spec-tests\n", "", 1)
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("//:spec-tests is marked rue_ci_dedicated_lane", errors)
+
+    def test_unlabeled_buck_fails_closed(self):
+        buck = ROOT_BUCK.read_text().replace('"rue_ci_dedicated_lane"', '"unused"')
+        errors = "\n".join(self.validate_text(SOURCE.read_text(), buck=buck))
+        self.assertIn("no corpus carries rue_ci_dedicated_lane", errors)
+
+    def test_sharded_corpus_counts_as_covered(self):
+        # //:cli-tests is labeled but never appears in the matrix by name; its
+        # four shards are what run it, and that must satisfy the check.
+        self.assertEqual(
+            MODULE.uncovered_dedicated_lanes(
+                'name = "cli-tests",\n    labels = ["rue_ci_dedicated_lane"]',
+                "target: //:cli-tests-shard-0\ntarget: //:cli-tests-shard-1\n",
+            ),
+            [],
         )
 
 

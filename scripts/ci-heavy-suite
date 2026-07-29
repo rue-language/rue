@@ -1,38 +1,36 @@
 #!/usr/bin/env bash
-# Run one explicitly assigned CI heavy suite and fail if Buck omits its result.
+# Run one named corpus suite.
 set -uo pipefail
 
 # Heavy suites live at the repository root (//:cli-tests) and, since RUE-1117,
-# in owning crate packages (//crates/rue-oracle-diff:oracle-diff-test). The
-# `rue_heavy_suite` label below — not the package path — is what decides whether
-# a target may run here, so this check only rejects a spelling Buck cannot
-# resolve to a single target in this cell.
+# in owning crate packages (//crates/rue-oracle-diff:oracle-diff-test), so this
+# only rejects a spelling that is not a target label at all.
 if [[ $# -ne 1 || "$1" != //*:* ]]; then
     echo "usage: scripts/ci-heavy-suite //PACKAGE:TARGET" >&2
     exit 2
 fi
 target="$1"
 
-if ! heavy_suites="$(./buck2 uquery 'attrfilter(labels, rue_heavy_suite, //...)')"; then
-    echo "error: failed to query rue_heavy_suite targets" >&2
-    exit 1
-fi
-if ! grep -Fxq "root$target" <<<"$heavy_suites"; then
-    echo "error: CI shard target is not labeled rue_heavy_suite: $target" >&2
-    exit 1
-fi
+# RUE-1163 removed two checks that used to live here, both of which had shell
+# deciding what Buck already decides:
+#
+#   * a `buck2 uquery` of the rue_heavy_suite label, grepped to confirm the
+#     argument was a heavy suite. Membership now comes from
+#     //test_tiers.bxl:heavy_suites, which is what produces this argument in the
+#     first place, and an argument naming no target fails in buck2 below.
+#   * a grep of the run's output for a `<Status>: root<target>` line, to catch a
+#     suite that silently never ran. Every corpus is a build action whose stamp
+#     its test asserts, so buck2 exiting 0 for a named target means that corpus
+#     passed; there is no longer a path where it exits 0 having run nothing.
+#
+# What remains is genuinely per-run plumbing that Buck has no opinion about.
 
-log="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-ci-heavy-suite.XXXXXX")"
-cleanup() {
-    rm -f "$log"
-}
-trap cleanup EXIT
-
-# RUE-1118/RUE-1163: every corpus now runs as a cacheable build action, and the
-# test executor only asserts the action's stamp — a sub-second check whatever
-# the corpus costs. An executor `--timeout` would bound the wrong thing, so
-# each suite's timeout_seconds in BUCK bounds the action that does the work.
-# The per-case budgets in execution_contracts.toml remain the honest gates.
+# RUE-1118/RUE-1163: every corpus runs as a cacheable build action, and the test
+# executor only asserts the action's stamp — a sub-second check whatever the
+# corpus costs. An executor `--timeout` would bound the wrong thing, so each
+# suite's timeout_seconds in BUCK bounds the action that does the work, checked
+# against the declarative policy by //:cli-timeout-policy-validation. The
+# per-case budgets in execution_contracts.toml remain the honest gates.
 test_args=("$target")
 
 # RUE-1158 shard weights. The measurements are a declared output of the corpus
@@ -54,8 +52,8 @@ if [[ -n "${RUE_CORRECTNESS_REPETITION:-}" ]]; then
     test_args+=(--env "RUE_CORRECTNESS_REPETITION=$RUE_CORRECTNESS_REPETITION")
 fi
 
-./buck2 test "${test_args[@]}" 2>&1 | tee "$log"
-status=${PIPESTATUS[0]}
+./buck2 test "${test_args[@]}"
+status=$?
 if [[ "$status" -ne 0 ]]; then
     exit "$status"
 fi
@@ -71,12 +69,7 @@ if [[ -n "$timings" ]]; then
         echo "cli-tests: measured $timing_cases cases in $timings"
     else
         # Not fatal: the artifact upload is `if-no-files-found: ignore`, and the
-        # suite's own Buck result below remains the required signal.
+        # suite's own Buck result remains the required signal.
         echo "cli-tests: no case timings produced for $target" >&2
     fi
-fi
-
-if ! grep -qE "(Pass|Fail|Skip|Timeout|Fatal|Omit|Flaky): root${target} " "$log"; then
-    echo "error: explicit CI shard produced no result for $target" >&2
-    exit 1
 fi
