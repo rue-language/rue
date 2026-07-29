@@ -341,10 +341,14 @@ fn generate_x86_64_stack_frame(
         });
     }
 
-    // Add parameter spill slots (ALL params: stack-passed args are copied
-    // into the frame param area by the prologue)
+    // Add parameter home slots. Only homed parameters occupy frame slots:
+    // register-only parameters (RUE-1170) live in a callee-saved register or
+    // an ordinary spill slot and are reported under argument locations only.
     for i in 0..num_params {
-        let slot = num_locals + i;
+        let Some(area_slot) = prepared.param_storage.area_slot(i) else {
+            continue;
+        };
+        let slot = num_locals + area_slot;
         slots.push(StackSlot {
             name: None, // We don't have param names from CFG yet
             offset: frame.slot_offset(slot),
@@ -353,10 +357,11 @@ fn generate_x86_64_stack_frame(
             kind: StackSlotKind::Parameter,
         });
     }
+    let homed_params = prepared.param_storage.homed_area_slots();
 
-    // Add the sret pointer slot (one past the param area)
+    // Add the sret pointer slot (one past the compacted param area)
     if has_sret {
-        let slot = num_locals + num_params;
+        let slot = num_locals + homed_params;
         slots.push(StackSlot {
             name: Some("sret ptr".to_string()),
             offset: frame.slot_offset(slot),
@@ -368,7 +373,7 @@ fn generate_x86_64_stack_frame(
 
     // Add spill slots
     for i in 0..num_spills {
-        let slot = num_locals + num_params + sret_slots + i;
+        let slot = num_locals + homed_params + sret_slots + i;
         slots.push(StackSlot {
             name: None,
             offset: frame.slot_offset(slot),
@@ -518,10 +523,14 @@ fn generate_aarch64_stack_frame(
         });
     }
 
-    // Add parameter spill slots (ALL params: stack-passed args are copied
-    // into the frame param area by the prologue)
+    // Add parameter home slots. Only homed parameters occupy frame slots:
+    // register-only parameters (RUE-1170) live in a callee-saved register or
+    // an ordinary spill slot and are reported under argument locations only.
     for i in 0..num_params {
-        let slot = num_locals + i;
+        let Some(area_slot) = prepared.param_storage.area_slot(i) else {
+            continue;
+        };
+        let slot = num_locals + area_slot;
         slots.push(StackSlot {
             name: None,
             offset: slot_offset(slot),
@@ -530,10 +539,11 @@ fn generate_aarch64_stack_frame(
             kind: StackSlotKind::Parameter,
         });
     }
+    let homed_params = prepared.param_storage.homed_area_slots();
 
-    // Add the sret pointer slot (one past the param area)
+    // Add the sret pointer slot (one past the compacted param area)
     if has_sret {
-        let slot = num_locals + num_params;
+        let slot = num_locals + homed_params;
         slots.push(StackSlot {
             name: Some("sret ptr".to_string()),
             offset: slot_offset(slot),
@@ -545,7 +555,7 @@ fn generate_aarch64_stack_frame(
 
     // Add spill slots
     for i in 0..num_spills {
-        let slot = num_locals + num_params + sret_slots + i;
+        let slot = num_locals + homed_params + sret_slots + i;
         slots.push(StackSlot {
             name: None,
             offset: slot_offset(slot),
@@ -745,17 +755,28 @@ mod tests {
     /// reported stack frame agrees with the emitted code in both cases.
     #[test]
     fn frameless_leaves_elide_the_frame_and_one_consumer_restores_it() {
+        // `frameless` reads its argument straight from its incoming register
+        // (RUE-1170), so even a parameter-consuming leaf elides the frame. A
+        // local that must be addressable — its address escapes through a
+        // by-reference call argument in `framed` — is what restores the
+        // frame: it needs a real frame slot.
         let source = "\
-fn frameless() -> i32 {
-    7
-}
-
-fn framed(n: i32) -> i32 {
+fn frameless(n: i32) -> i32 {
     n
 }
 
+fn bump(inout n: i32) {
+    n = n + 1;
+}
+
+fn framed() -> i32 {
+    let mut total = 41;
+    bump(inout total);
+    total
+}
+
 fn main() -> i32 {
-    frameless() + framed(1)
+    frameless(7) + framed()
 }
 ";
 
@@ -804,15 +825,15 @@ fn main() -> i32 {
             for marker in frame_markers(target) {
                 assert!(
                     asm.contains(marker),
-                    "one homed parameter must restore `{marker}` on {target:?}:\n{asm}"
+                    "one addressable local must restore `{marker}` on {target:?}:\n{asm}"
                 );
             }
             assert!(info.uses_frame_pointer);
             assert!(
                 info.slots
                     .iter()
-                    .any(|slot| slot.kind == StackSlotKind::Parameter),
-                "the restored frame must report its parameter slot on {target:?}"
+                    .any(|slot| slot.kind == StackSlotKind::Local),
+                "the restored frame must report its local slot on {target:?}"
             );
         }
     }
@@ -865,15 +886,21 @@ fn main() -> i32 {
     }
 
     /// RUE-774: the reported AArch64 slots must match the offsets in the emitted
-    /// prologue/body. `gcd`'s iterative body forces callee-saved registers and
-    /// homes both parameters, so it exercises callee-saved, local, and parameter
-    /// slots together.
+    /// prologue/body. `gcd`'s iterative body forces callee-saved registers, and
+    /// its two-slot aggregate parameter keeps its frame home (scalar register
+    /// arguments no longer get one, RUE-1170), so it exercises callee-saved,
+    /// local, and parameter slots together.
     #[test]
     fn aarch64_reported_slots_match_emitted_instructions() {
         let source = "\
-fn gcd(a: i32, b: i32) -> i32 {
-    let mut x = a;
-    let mut y = b;
+struct Pair {
+    a: i32,
+    b: i32,
+}
+
+fn gcd(p: Pair) -> i32 {
+    let mut x = p.a;
+    let mut y = p.b;
     while y != 0 {
         let temp = y;
         y = x % y;
@@ -883,7 +910,7 @@ fn gcd(a: i32, b: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    gcd(1071, 462)
+    gcd(Pair { a: 1071, b: 462 })
 }
 ";
         let (cfg, type_pool, interner) = compile_named_fn(source, "gcd");
@@ -906,21 +933,25 @@ fn main() -> i32 {
         .unwrap();
         let asm = product.artifacts.asm.expect("assembly projection");
 
-        // Parameters are homed into the frame by explicit `str x*, [x29, #N]`
-        // prologue stores; every reported parameter slot must appear at that
-        // exact FP-relative offset in the emitted assembly.
+        // Parameter slots are written at their reported FP-relative offsets:
+        // the prologue homes the aggregate's incoming pointer with a
+        // `str x0, [x29, #N]`, and the body's unmarshalling fills the
+        // remaining slots through `[fp, #N]` stores (RUE-1005). Either way,
+        // every reported parameter slot must appear at that exact offset in
+        // the emitted assembly.
         let params: Vec<i32> = info
             .slots
             .iter()
             .filter(|s| s.kind == StackSlotKind::Parameter)
             .map(|s| s.offset)
             .collect();
-        assert_eq!(params.len(), 2, "gcd homes two parameters");
+        assert_eq!(params.len(), 2, "gcd homes its aggregate's two slots");
         for offset in &params {
-            let needle = format!("[x29, #{offset}]");
+            let prologue_needle = format!("[x29, #{offset}]");
+            let body_needle = format!("[fp, #{offset}]");
             assert!(
-                asm.contains(&needle),
-                "reported parameter slot at fp{offset} is not homed at that offset in:\n{asm}"
+                asm.contains(&prologue_needle) || asm.contains(&body_needle),
+                "reported parameter slot at fp{offset} is not written at that offset in:\n{asm}"
             );
         }
 

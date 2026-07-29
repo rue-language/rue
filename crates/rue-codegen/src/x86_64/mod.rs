@@ -67,14 +67,17 @@ fn prepare_backend_with_artifacts(
         cfg_lower::ARG_REGS.len() as u32,
         cfg_lower::RET_REGS.len() as u32,
         crate::frame_layout::SavedRegScheme::X86_64,
-        || {
+        |param_storage| {
             let (mir, lowering) = if request.lowering {
                 let (mir, debug) = CfgLower::new_with_symbols(cfg, type_pool, interner, symbols)
+                    .with_param_storage(param_storage)
                     .lower_with_debug()?;
                 (mir, Some(debug))
             } else {
                 (
-                    CfgLower::new_with_symbols(cfg, type_pool, interner, symbols).lower()?,
+                    CfgLower::new_with_symbols(cfg, type_pool, interner, symbols)
+                        .with_param_storage(param_storage)
+                        .lower()?,
                     None,
                 )
             };
@@ -151,7 +154,7 @@ fn generate_inner(
         &prepared.mir,
         prepared.total_locals,
         prepared.num_locals_original,
-        prepared.num_params,
+        prepared.param_storage.homed_area_slots(),
         &prepared.used_callee_saved,
         &local_strings,
     )

@@ -705,7 +705,9 @@ fn place_plan<A: ValueLowerAdapter>(
     place: &Place,
 ) -> PlacePlan {
     let base = match place.base {
-        PlaceBase::Local(slot) => PlaceBasePlan::Local(slot),
+        // Emitted-frame numbering (RUE-1170): a raw Local base can name a
+        // parameter-range slot, which the compacted frame may relocate.
+        PlaceBase::Local(slot) => PlaceBasePlan::Local(ctx.frame_slot(slot)),
         PlaceBase::Param(slot) => PlaceBasePlan::Param {
             slot,
             by_ref: ctx.cfg.is_param_by_ref(slot),
@@ -807,7 +809,8 @@ fn addressable_value_plan<A: ValueLowerAdapter>(
             Some(ByRefAddressPlan::Place(place_plan(ctx, adapter, place)))
         }
         CfgInstData::Load { slot } => Some(ByRefAddressPlan::FrameSlot {
-            slot: *slot,
+            // Emitted-frame numbering (RUE-1170); see `store_destination`.
+            slot: ctx.frame_slot(*slot),
             low_shift: ctx.type_slot_count(inst.ty).saturating_sub(1),
         }),
         CfgInstData::Param { index } => Some(ByRefAddressPlan::Parameter {
@@ -1054,12 +1057,17 @@ fn residual_plan<A: ValueLowerAdapter>(
         ResidualInput::BitNot(value) => ResidualValuePlan::BitNot {
             value: operand(ctx, adapter, value).primary,
         },
+        // Slot-addressed plans carry emitted-frame slot numbers: the CFG's
+        // slot numbering assumes every parameter is homed, while the emitted
+        // frame compacts register-only parameters away (RUE-1170).
         ResidualInput::Alloc { slot, init } => ResidualValuePlan::Alloc {
-            slot,
+            slot: ctx.frame_slot(slot),
             init: operand(ctx, adapter, init),
             init_shape: ValuePlan::for_value(ctx, init).shape,
         },
-        ResidualInput::Load { slot } => ResidualValuePlan::Load { slot },
+        ResidualInput::Load { slot } => ResidualValuePlan::Load {
+            slot: ctx.frame_slot(slot),
+        },
         ResidualInput::Store { slot, value } => ResidualValuePlan::Store {
             destination: store_destination(ctx, slot),
             value: operand(ctx, adapter, value),
@@ -1177,7 +1185,9 @@ fn store_destination(ctx: &CfgLowerContext<'_>, slot: u32) -> StoreDestination {
     ctx.slot_to_param_index(slot)
         .filter(|&param_slot| ctx.cfg.is_param_by_ref(param_slot))
         .map(StoreDestination::ByRefParam)
-        .unwrap_or(StoreDestination::FrameSlot(slot))
+        // The CFG numbers slots against the all-homed layout; the emitted
+        // frame compacts register-only parameters away (RUE-1170).
+        .unwrap_or_else(|| StoreDestination::FrameSlot(ctx.frame_slot(slot)))
 }
 
 fn cache_result<A: ValueLowerAdapter>(adapter: &mut A, value: CfgValue, result: ValueResult) {
@@ -2296,7 +2306,7 @@ pub(crate) fn indirect_value_params(
         .filter_map(|param| {
             let ty = param.ty?;
             let map = crate::types::aggregate_physical_slot_map(ctx.type_pool, ty)?;
-            Some((ctx.num_locals + param.start_slot, map))
+            Some((ctx.param_frame_slot(param.start_slot), map))
         })
         .collect()
 }
@@ -2319,7 +2329,7 @@ pub(crate) fn indirect_value_params_dispatch(
                 return None;
             }
             let image = crate::types::aggregate_dispatch_image(ctx.type_pool, ty)?;
-            Some((ctx.num_locals + param.start_slot, image))
+            Some((ctx.param_frame_slot(param.start_slot), image))
         })
         .collect()
 }

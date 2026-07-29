@@ -156,7 +156,7 @@ function main:
 [[case]]
 name = "storage_lowering_mir_x86_64"
 spec = ["5.2:1", "5.2:2", "5.2:3", "6.1:14", "6.1:18"]
-description = "Scalar allocation, local load/store, and inout ParamStore retain their exact x86-64 MIR sequence."
+description = "Scalar allocation, local load/store, and inout ParamStore retain their exact x86-64 MIR sequence; the inout pointer is register-only (RUE-1170)."
 source = """
 fn set(inout x: i32) { x = 42; }
 
@@ -170,7 +170,7 @@ fn main() -> i32 {
 target = "x86-64-linux"
 expected_mir = """
 function __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_:
-    mov v0, [rbp-8]
+    mov v0, rdi
     mov v1, 42
     mov [v0], v1
     mov v2, 0
@@ -196,7 +196,7 @@ function main:
 [[case]]
 name = "storage_lowering_mir_aarch64"
 spec = ["5.2:1", "5.2:2", "5.2:3", "6.1:14", "6.1:18"]
-description = "Scalar allocation, local load/store, and inout ParamStore retain their exact AArch64 MIR sequence."
+description = "Scalar allocation, local load/store, and inout ParamStore retain their exact AArch64 MIR sequence; the inout pointer is register-only (RUE-1170)."
 source = """
 fn set(inout x: i32) { x = 42; }
 
@@ -210,7 +210,7 @@ fn main() -> i32 {
 target = "aarch64-macos"
 expected_mir = """
 function __rue_sem_v1_t0_t0_s8_746573742e727565t0_t0_s3_736574t0_:
-    ldr v0, [fp, #-8]
+    mov v0, x0
     mov v1, #42
     str v1, [v0]
     mov v2, #0
