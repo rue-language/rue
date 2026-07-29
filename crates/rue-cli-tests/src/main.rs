@@ -91,6 +91,15 @@
 //!   across all levels, catching optimizer miscompiles (RUE-236). The runner
 //!   drives `-O`, so the case must not set its own `-O` in `args` and must not
 //!   be `compile_fail`/`compile_only`. Give it exact `stdout`/`exit_code`.
+//! - `requires_system_linker = true`: report the case as ignored when no `cc`
+//!   driver is on `PATH`. For cases exercising the `--linker cc` symbolized
+//!   profiling build (RUE-1173).
+//! - `symbols_contain`: substrings that must each match at least one defined
+//!   symbol name in the produced executable's symbol table (ELF `.symtab` /
+//!   Mach-O `LC_SYMTAB`), verifying the symbolized profiling build workflow
+//! - `no_symbol_table = true`: assert the produced executable carries no
+//!   symbol table entries, pinning that default internal-linker output is
+//!   unsymbolized (the documented motivation for the profiling workflow)
 //!
 //! # ICE detection
 //!
@@ -115,7 +124,7 @@ use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use libtest2_mimic::{Harness, RunContext, RunError, Trial};
@@ -1106,6 +1115,24 @@ struct Case {
     /// not merely against the other levels.
     #[serde(default)]
     differential_opt: bool,
+    /// Report the case as ignored when no system `cc` driver is on `PATH`.
+    /// For cases exercising the `--linker cc` symbolized profiling build
+    /// (RUE-1173): every supported CI host provides `cc`, but a minimal local
+    /// environment without a C toolchain should skip rather than fail.
+    #[serde(default)]
+    requires_system_linker: bool,
+    /// Substrings that must each match at least one defined symbol name in
+    /// the produced executable's symbol table (ELF `.symtab` / Mach-O
+    /// `LC_SYMTAB`). Verifies the symbolized profiling build keeps function
+    /// symbols (RUE-1173). Incompatible with `compile_fail`.
+    #[serde(default)]
+    symbols_contain: Vec<String>,
+    /// Assert the produced executable carries no symbol table entries. Pins
+    /// that default internal-linker output is unsymbolized — the documented
+    /// motivation for the `--linker cc` profiling workflow (RUE-1173).
+    /// Incompatible with `compile_fail` and `symbols_contain`.
+    #[serde(default)]
+    no_symbol_table: bool,
 }
 
 /// What running one case produced: the compiled program's exit code and
@@ -1502,6 +1529,230 @@ fn validate_executable(path: &Path, target: Target) -> TestResult {
     })
 }
 
+/// Upper bound on symbol-table entries the harness will read, mirroring the
+/// bounded-inspection posture of the structural validators above.
+const MAX_SYMBOLS: usize = 1_000_000;
+
+/// Read a NUL-terminated name out of a string table region.
+fn read_strtab_name(bytes: &[u8], strtab: std::ops::Range<usize>, index: usize) -> Option<String> {
+    let start = strtab.start.checked_add(index)?;
+    if start >= strtab.end {
+        return None;
+    }
+    let terminator = bytes[start..strtab.end]
+        .iter()
+        .position(|&byte| byte == 0)?;
+    Some(String::from_utf8_lossy(&bytes[start..start + terminator]).into_owned())
+}
+
+/// Collect every defined symbol name from an ELF executable's `.symtab`.
+/// An executable without section headers or without a symbol table yields an
+/// empty list — exactly the internal linker's default output shape.
+fn read_elf_symbol_names(bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() < 64 || bytes.get(..4) != Some(b"\x7fELF") {
+        return Err("output is not an ELF file".to_string());
+    }
+    let shoff = read_u64(bytes, 40, "ELF section-header offset")?;
+    let shentsize = read_u16(bytes, 58, "ELF section-header size")? as u64;
+    let shnum = read_u16(bytes, 60, "ELF section-header count")? as usize;
+    if shnum == 0 {
+        return Ok(Vec::new());
+    }
+    if shentsize < 64 || shnum > MAX_SECTIONS {
+        return Err(format!(
+            "ELF has invalid bounded section-header layout: size={shentsize}, count={shnum}"
+        ));
+    }
+    checked_region(
+        shoff,
+        shentsize * shnum as u64,
+        bytes.len(),
+        "ELF section headers",
+    )?;
+
+    let section_header = |index: usize| (shoff + index as u64 * shentsize) as usize;
+    let mut names = Vec::new();
+    for index in 0..shnum {
+        let header = section_header(index);
+        // SHT_SYMTAB
+        if read_u32(bytes, header + 4, "ELF section type")? != 2 {
+            continue;
+        }
+        let symtab_offset = read_u64(bytes, header + 24, "ELF symtab offset")?;
+        let symtab_size = read_u64(bytes, header + 32, "ELF symtab size")?;
+        let strtab_index = read_u32(bytes, header + 40, "ELF symtab link")? as usize;
+        let entry_size = read_u64(bytes, header + 56, "ELF symtab entry size")?;
+        if entry_size < 24
+            || symtab_size % entry_size != 0
+            || symtab_size / entry_size > MAX_SYMBOLS as u64
+        {
+            return Err("ELF symbol table is not bounded".to_string());
+        }
+        checked_region(symtab_offset, symtab_size, bytes.len(), "ELF symtab")?;
+        if strtab_index >= shnum {
+            return Err("ELF symtab links to an out-of-range string table".to_string());
+        }
+        let strtab_header = section_header(strtab_index);
+        let strtab_offset = read_u64(bytes, strtab_header + 24, "ELF strtab offset")?;
+        let strtab_size = read_u64(bytes, strtab_header + 32, "ELF strtab size")?;
+        checked_region(strtab_offset, strtab_size, bytes.len(), "ELF strtab")?;
+        let strtab = strtab_offset as usize..(strtab_offset + strtab_size) as usize;
+
+        for entry in 0..(symtab_size / entry_size) as usize {
+            let symbol = (symtab_offset + entry as u64 * entry_size) as usize;
+            let name_index = read_u32(bytes, symbol, "ELF symbol name")? as usize;
+            let section = read_u16(bytes, symbol + 6, "ELF symbol section")?;
+            // Skip SHN_UNDEF entries (imports and the null symbol): the
+            // assertions speak about symbols the executable defines.
+            if section == 0 {
+                continue;
+            }
+            if let Some(name) = read_strtab_name(bytes, strtab.clone(), name_index) {
+                if !name.is_empty() {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    Ok(names)
+}
+
+/// Collect every defined symbol name from a Mach-O executable's `LC_SYMTAB`,
+/// excluding debug stabs and undefined entries.
+fn read_macho_symbol_names(bytes: &[u8]) -> Result<Vec<String>, String> {
+    if bytes.len() < 32 || bytes.get(..4) != Some(&[0xcf, 0xfa, 0xed, 0xfe]) {
+        return Err("output is not a little-endian 64-bit Mach-O file".to_string());
+    }
+    let command_count = read_u32(bytes, 16, "Mach-O load-command count")? as usize;
+    let command_bytes = read_u32(bytes, 20, "Mach-O load-command bytes")? as u64;
+    if command_count > MAX_LOAD_ENTRIES {
+        return Err(format!(
+            "Mach-O load-command count {command_count} is not bounded"
+        ));
+    }
+    checked_region(32, command_bytes, bytes.len(), "Mach-O load commands")?;
+    let command_end = 32usize + command_bytes as usize;
+
+    let mut names = Vec::new();
+    let mut command_offset = 32usize;
+    for index in 0..command_count {
+        let command = read_u32(bytes, command_offset, "Mach-O load command")?;
+        let command_size =
+            read_u32(bytes, command_offset + 4, "Mach-O load-command size")? as usize;
+        if command_size < 8 || command_offset + command_size > command_end {
+            return Err(format!("Mach-O load command {index} has an invalid size"));
+        }
+        // LC_SYMTAB
+        if command == 0x2 {
+            if command_size < 24 {
+                return Err("truncated Mach-O LC_SYMTAB".to_string());
+            }
+            let symtab_offset = read_u32(bytes, command_offset + 8, "Mach-O symtab offset")? as u64;
+            let symbol_count =
+                read_u32(bytes, command_offset + 12, "Mach-O symbol count")? as usize;
+            let strtab_offset =
+                read_u32(bytes, command_offset + 16, "Mach-O strtab offset")? as u64;
+            let strtab_size = read_u32(bytes, command_offset + 20, "Mach-O strtab size")? as u64;
+            if symbol_count > MAX_SYMBOLS {
+                return Err("Mach-O symbol table is not bounded".to_string());
+            }
+            checked_region(
+                symtab_offset,
+                symbol_count as u64 * 16,
+                bytes.len(),
+                "Mach-O symtab",
+            )?;
+            checked_region(strtab_offset, strtab_size, bytes.len(), "Mach-O strtab")?;
+            let strtab = strtab_offset as usize..(strtab_offset + strtab_size) as usize;
+
+            for entry in 0..symbol_count {
+                let symbol = (symtab_offset + entry as u64 * 16) as usize;
+                let name_index = read_u32(bytes, symbol, "Mach-O symbol name")? as usize;
+                let n_type = bytes[symbol + 4];
+                // Skip N_STAB debug entries and undefined (N_UNDF) entries.
+                if n_type & 0xe0 != 0 || n_type & 0x0e == 0 {
+                    continue;
+                }
+                if let Some(name) = read_strtab_name(bytes, strtab.clone(), name_index) {
+                    if !name.is_empty() {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+        command_offset += command_size;
+    }
+    Ok(names)
+}
+
+/// Enforce a case's `symbols_contain` / `no_symbol_table` expectations against
+/// the produced executable (RUE-1173).
+fn check_symbol_expectations(path: &Path, target: Target, case: &Case) -> TestResult {
+    let bytes = std::fs::read(path).map_err(|error| {
+        TestFailure::assertion(format!(
+            "failed to read produced executable '{}': {error}",
+            path.display()
+        ))
+    })?;
+    if bytes.len() > MAX_EXECUTABLE_BYTES {
+        return Err(TestFailure::assertion(format!(
+            "produced executable is {} bytes, exceeding the {} byte inspection limit",
+            bytes.len(),
+            MAX_EXECUTABLE_BYTES
+        )));
+    }
+    let names = if target.is_elf() {
+        read_elf_symbol_names(&bytes)
+    } else {
+        read_macho_symbol_names(&bytes)
+    }
+    .map_err(|error| {
+        TestFailure::assertion(format!(
+            "failed to read {target} executable symbol table: {error}"
+        ))
+    })?;
+
+    if case.no_symbol_table {
+        if !names.is_empty() {
+            return Err(TestFailure::assertion(format!(
+                "expected no symbol table entries, but found {} (first: {}). If the \
+                 internal linker now emits symbols, update docs/process/profiling.md \
+                 and this case together.",
+                names.len(),
+                names[0]
+            )));
+        }
+        return Ok(());
+    }
+
+    for expected in &case.symbols_contain {
+        if !names.iter().any(|name| name.contains(expected)) {
+            let mut listing = names.clone();
+            listing.sort();
+            return Err(TestFailure::assertion(format!(
+                "no defined symbol contains `{expected}`\n--- defined symbols ({}) ---\n{}",
+                listing.len(),
+                listing.join("\n")
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Whether a system `cc` driver is available on `PATH`, probed once per
+/// process. Gates `requires_system_linker` cases (RUE-1173).
+fn system_linker_available() -> bool {
+    static AVAILABLE: OnceLock<bool> = OnceLock::new();
+    *AVAILABLE.get_or_init(|| {
+        Command::new("cc")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    })
+}
+
 /// Expand `${REAL_STD}` in env values to the absolute path of the repo's std/.
 fn expand_env_value(value: &str, real_std: &Path) -> String {
     value.replace("${REAL_STD}", &real_std.to_string_lossy())
@@ -1808,6 +2059,16 @@ fn run_case(
         validate_executable(&program, target)?;
     }
 
+    // Symbol-table expectations (RUE-1173). The format is the case's declared
+    // executable target when present, otherwise the native host the compile
+    // defaulted to.
+    if !case.symbols_contain.is_empty() || case.no_symbol_table {
+        let symbol_target = executable_target.or_else(Target::host).ok_or_else(|| {
+            TestFailure::assertion("no target available for symbol-table inspection")
+        })?;
+        check_symbol_expectations(&program, symbol_target, case)?;
+    }
+
     if case.compile_only || (case.execute_if_native && executable_target != Target::host()) {
         return Ok(RunOutcome::default());
     }
@@ -1983,6 +2244,12 @@ fn run_case_wrapper(
         return ctx.ignore_for("marked as skip");
     }
 
+    // The `--linker cc` profiling workflow needs a system toolchain; a host
+    // without one skips rather than fails (RUE-1173).
+    if case.requires_system_linker && !system_linker_available() {
+        return ctx.ignore_for("no system `cc` linker driver on PATH");
+    }
+
     // Host-dependent cases: only run on the listed platforms.
     if !case.only_on.is_empty()
         && !case
@@ -2059,6 +2326,23 @@ fn invalid_executable_target(case: &Case) -> Option<&str> {
         .filter(|target| target.parse::<Target>().is_err())
 }
 
+/// Symbol-table expectations require a produced executable, so they cannot
+/// accompany `compile_fail`, and asserting an empty table contradicts
+/// asserting its contents (RUE-1173). Returns the load-time error, if any.
+fn invalid_symbol_expectations(case: &Case) -> Option<&'static str> {
+    let has_expectations = !case.symbols_contain.is_empty() || case.no_symbol_table;
+    if case.compile_fail && has_expectations {
+        return Some(
+            "`symbols_contain`/`no_symbol_table` inspect a produced executable \
+             and are incompatible with `compile_fail`",
+        );
+    }
+    if case.no_symbol_table && !case.symbols_contain.is_empty() {
+        return Some("`no_symbol_table` contradicts `symbols_contain`");
+    }
+    None
+}
+
 fn unknown_only_on_targets(case: &Case) -> Vec<&str> {
     case.only_on
         .iter()
@@ -2118,6 +2402,15 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                             ),
                             path.display(),
                             case.name
+                        );
+                        std::process::exit(1);
+                    }
+                    if let Some(reason) = invalid_symbol_expectations(case) {
+                        eprintln!(
+                            "error: {}: case '{}': {}",
+                            path.display(),
+                            case.name,
+                            reason
                         );
                         std::process::exit(1);
                     }
@@ -3129,6 +3422,80 @@ mod tests {
         };
 
         assert!(compile_fail_has_exit_code(&case));
+    }
+
+    #[test]
+    fn symbol_expectations_reject_contradictory_configurations() {
+        // Symbol assertions need a produced executable.
+        let with_compile_fail = Case {
+            name: "symbols_vs_compile_fail".to_string(),
+            compile_fail: true,
+            symbols_contain: vec!["main".to_string()],
+            ..Default::default()
+        };
+        assert!(invalid_symbol_expectations(&with_compile_fail).is_some());
+
+        // Asserting emptiness and contents at once is contradictory.
+        let contradictory = Case {
+            name: "empty_vs_contents".to_string(),
+            no_symbol_table: true,
+            symbols_contain: vec!["main".to_string()],
+            ..Default::default()
+        };
+        assert!(invalid_symbol_expectations(&contradictory).is_some());
+
+        let symbolized = Case {
+            name: "symbolized".to_string(),
+            symbols_contain: vec!["main".to_string()],
+            ..Default::default()
+        };
+        assert!(invalid_symbol_expectations(&symbolized).is_none());
+
+        let unsymbolized = Case {
+            name: "unsymbolized".to_string(),
+            no_symbol_table: true,
+            ..Default::default()
+        };
+        assert!(invalid_symbol_expectations(&unsymbolized).is_none());
+    }
+
+    #[test]
+    fn elf_symbol_reader_finds_defined_symbols() {
+        // An ObjectBuilder object carries exactly one defined global symbol in
+        // an ELF `.symtab`; the reader must surface it and nothing spurious.
+        let object = rue_linker::ObjectBuilder::new(Target::X86_64Linux, "profiling_probe")
+            .code(vec![0; 4])
+            .build();
+        let names = read_elf_symbol_names(&object).expect("readable ELF symtab");
+        assert!(
+            names.iter().any(|name| name == "profiling_probe"),
+            "defined symbol missing from {names:?}"
+        );
+    }
+
+    #[test]
+    fn macho_symbol_reader_finds_defined_symbols() {
+        // Mach-O emission prepends exactly one `_` to the symbol name.
+        let object = rue_linker::ObjectBuilder::new(Target::Aarch64Macos, "profiling_probe")
+            .code(vec![0; 4])
+            .build();
+        let names = read_macho_symbol_names(&object).expect("readable Mach-O symtab");
+        assert!(
+            names.iter().any(|name| name == "_profiling_probe"),
+            "defined symbol missing from {names:?}"
+        );
+    }
+
+    #[test]
+    fn elf_symbol_reader_reports_empty_for_sectionless_executables() {
+        // The internal linker's default ELF output has no section table at
+        // all; the reader must report "no symbols" rather than an error.
+        let mut minimal = vec![0u8; 64];
+        minimal[..4].copy_from_slice(b"\x7fELF");
+        assert_eq!(
+            read_elf_symbol_names(&minimal).unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

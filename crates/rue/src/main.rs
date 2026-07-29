@@ -249,6 +249,8 @@ Options:
   --linker <linker>    Set linker to use (default: internal)
                        Use 'internal' for built-in linker, or a command
                        like 'clang', 'gcc', or 'ld' for system linker
+                       A system linker keeps function symbols for native
+                       profilers (see docs/process/profiling.md)
   -O<level>            Set optimization level (default: -O0)
                        Levels: {opt_levels}
   -j, --jobs <N>       Set number of parallel jobs (default: 0 = auto; max: {MAX_EXPLICIT_JOBS})
