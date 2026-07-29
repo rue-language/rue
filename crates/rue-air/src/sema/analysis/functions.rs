@@ -55,6 +55,7 @@ impl<'a> BodySema<'a> {
         has_self: bool,
         self_mode: RirParamMode,
         self_is_mut: bool,
+        returns_borrow: bool,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -122,6 +123,7 @@ impl<'a> BodySema<'a> {
             false,
             false,
             self_is_mut,
+            returns_borrow,
         );
         self.active_anonymous_producer = previous_producer;
         let (
@@ -226,6 +228,7 @@ impl<'a> BodySema<'a> {
             /* is_destructor */ true,
             false,
             false,
+            false,
         );
         self.active_anonymous_producer = previous_producer;
         let (
@@ -302,6 +305,7 @@ impl<'a> BodySema<'a> {
         is_destructor: bool,
         allow_unused_variable: bool,
         self_is_mut: bool,
+        is_accessor: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -323,6 +327,7 @@ impl<'a> BodySema<'a> {
             is_destructor,
             allow_unused_variable,
             self_is_mut,
+            is_accessor,
         )
     }
 
@@ -362,6 +367,7 @@ impl<'a> BodySema<'a> {
             false,
             false,
             self_is_mut,
+            false,
         )
     }
 
@@ -454,6 +460,7 @@ impl<'a> BodySema<'a> {
             false,
             false,
             self_is_mut,
+            false,
         );
         self.active_anonymous_producer = previous_producer;
         analysis
@@ -541,6 +548,7 @@ impl<'a> BodySema<'a> {
             Some(&type_subst),
             Some(captured_comptime_values),
             /* is_destructor */ true,
+            false,
             false,
             false,
         );

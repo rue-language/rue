@@ -542,6 +542,14 @@ impl Shapes<'_> {
                 "_".into(),
                 "_".into(),
             ),
+            Expr::Yield(v) => node(
+                "yield",
+                "",
+                self.expr(&v.value),
+                "_".into(),
+                "_".into(),
+                "_".into(),
+            ),
             Expr::StructLit(v) => {
                 let mut head = v.base.as_ref().map_or_else(
                     || {

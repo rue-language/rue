@@ -467,10 +467,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     pub(crate) fn peek_place_type(&self, inst_ref: InstRef, ctx: &AnalysisContext) -> Option<Type> {
         match &self.body_rir_ref().get(inst_ref).data {
             InstData::VarRef { name, .. } => {
+                // An accessor-inline place alias (`self` inside an inlined
+                // accessor body, ADR-0062) shadows caller bindings.
+                if let Some(alias) = ctx.place_aliases.get(name) {
+                    return Some(
+                        alias
+                            .projections
+                            .last()
+                            .map(|p| p.result_type)
+                            .unwrap_or(alias.base_type),
+                    );
+                }
                 if let Some(local) = ctx.locals.get(name) {
                     return Some(local.ty);
                 }
                 ctx.params.iter().find(|p| p.name == *name).map(|p| p.ty)
+            }
+            // A `-> borrow T` accessor call is a place of its element type
+            // (ADR-0062); any other method call is not a place.
+            InstData::MethodCall {
+                receiver, method, ..
+            } => {
+                let base_ty = self.peek_place_type(*receiver, ctx)?;
+                let struct_id = base_ty.as_struct()?;
+                let info = self.call_facts().method_info(struct_id, *method)?;
+                info.returns_borrow.then_some(info.return_type)
             }
             InstData::FieldGet { base, field } => {
                 let base_ty = self.peek_place_type(*base, ctx)?;

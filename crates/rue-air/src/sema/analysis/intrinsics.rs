@@ -1117,7 +1117,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         }
 
         // Get the target type from HM inference
-        let target_ty = match ctx.resolved_types.get(&inst_ref).copied() {
+        let target_ty = match ctx.resolved_type_of(inst_ref) {
             Some(ty) if ty.is_integer() => ty,
             Some(Type::ERROR) => {
                 // The target type variable decayed to `<error>` with no
@@ -1667,7 +1667,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let index = self.analyze_inst(air, args[0].value, ctx)?;
         self.require_process_index_type(display, index.ty, span)?;
         let result_ty = Type::new_ptr_mut(self.body_type_pool().intern_ptr_mut_from_type(Type::U8));
-        if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
+        if let Some(expected) = ctx.resolved_type_of(inst_ref)
             && !self.types_equivalent(expected, result_ty)
             && !expected.is_error()
             && !expected.is_never()

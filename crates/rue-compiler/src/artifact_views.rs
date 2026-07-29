@@ -178,6 +178,7 @@ impl TokenView {
             Match => "MATCH",
             While => "WHILE",
             Loop => "LOOP",
+            Yield => "YIELD",
             For => "FOR",
             In => "IN",
             Break => "BREAK",
@@ -1666,6 +1667,13 @@ fn expr_record(
                 .map(|value| expr_record(owner, value))
                 .collect(),
         ),
+        Expr::Yield(yield_expression) => syntax_record(
+            "yield",
+            span,
+            None,
+            None,
+            vec![expr_record(owner, &yield_expression.value)],
+        ),
         Expr::StructLit(literal) => {
             let mut children = literal
                 .base
@@ -2032,6 +2040,7 @@ fn rir_kind(data: &rue_rir::InstData) -> &'static str {
         TypeIntrinsic { .. } => "type_intrinsic",
         OffsetOf { .. } => "offset_of",
         Ret(_) => "return",
+        Yield(_) => "yield",
         Block { .. } => "block",
         Alloc { .. } => "allocate",
         VarRef { .. } => "variable_reference",
@@ -2127,6 +2136,7 @@ fn rir_operands(rir: &rue_rir::Rir, data: &rue_rir::InstData) -> Vec<RirOperandR
                 push("value", *value);
             }
         }
+        Yield(value) => push("value", *value),
         FnDecl { body, .. } | DropFnDecl { body, .. } => push("body", *body),
         ConstDecl { init, .. } | Alloc { init, .. } => push("initializer", *init),
         Assign { value, .. } => push("value", *value),

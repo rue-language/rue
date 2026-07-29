@@ -94,6 +94,28 @@ pub struct MethodInfo {
     pub body: rue_rir::InstRef,
     /// Span of the method declaration
     pub span: Span,
+    /// Whether the result position is `-> borrow T` (ADR-0062): the method
+    /// is a place-returning accessor whose calls inline to guards plus the
+    /// yielded receiver projection. `return_type` holds the element type `T`.
+    pub returns_borrow: bool,
+}
+
+/// Whether a function body block ends in a `yield` — the derived marker of a
+/// `-> borrow T` accessor body (ADR-0062) for install paths that carry a body
+/// handle but not the declaring `FnDecl`. A non-accessor body ending in
+/// `yield` is ill-formed (E0256) and never completes compilation, so the
+/// derivation agrees with the declaration flag on every accepted program.
+pub(crate) fn body_ends_in_yield(rir: &rue_rir::Rir, body: rue_rir::InstRef) -> bool {
+    match &rir.get(body).data {
+        rue_rir::InstData::Block { instructions } => rir
+            .block_insts(instructions)
+            .values()
+            .last()
+            .is_some_and(|last| matches!(rir.get(last).data, rue_rir::InstData::Yield(_))),
+        // A single-statement body lowers to the instruction itself.
+        rue_rir::InstData::Yield(_) => true,
+        _ => false,
+    }
 }
 
 /// Signature-only callable metadata consumed at a call site. Imported
@@ -134,6 +156,10 @@ pub(crate) struct MethodCallInfo {
     pub self_mode: rue_rir::RirParamMode,
     pub params: ParamRange,
     pub return_type: Type,
+    /// Whether the method is a `-> borrow T` accessor (ADR-0062). Accessor
+    /// calls do not dispatch as ordinary calls: they inline the accessor
+    /// body at the call site via the dedicated accessor-body fact.
+    pub returns_borrow: bool,
 }
 
 impl MethodCallInfo {
@@ -144,6 +170,7 @@ impl MethodCallInfo {
             self_mode: info.self_mode,
             params: info.params,
             return_type: info.return_type,
+            returns_borrow: info.returns_borrow,
         }
     }
 }

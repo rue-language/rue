@@ -2642,6 +2642,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     *has_self,
                     *self_mode,
                     *self_is_mut,
+                    method_info.returns_borrow,
                 );
                 sema.declaration_type_observer = previous_type_observer;
                 sema.body_dependency_observer = previous_body_observer;
@@ -3430,6 +3431,7 @@ fn check_exclusive_access_in<A>(
     interner: &ThreadedRodeo,
     args: A,
     call_span: Span,
+    resolve_borrow_root: &dyn Fn(InstRef) -> Option<Spur>,
 ) -> CompileResult<()>
 where
     A: IntoIterator,
@@ -3440,7 +3442,15 @@ where
 
     for arg in args {
         let arg = &*arg;
-        let maybe_var_symbol = root_variable_of(rir, arg.value);
+        // A `-> borrow T` accessor call is a place for `borrow` arguments
+        // (ADR-0062): it roots at its receiver's root and joins the shared
+        // set. `inout` accessor results stay rejected as non-lvalues (the
+        // exclusive form is the RUE-1016 phase).
+        let maybe_var_symbol = root_variable_of(rir, arg.value).or_else(|| {
+            arg.is_borrow()
+                .then(|| resolve_borrow_root(arg.value))
+                .flatten()
+        });
 
         // Check that inout/borrow arguments are lvalues
         if arg.is_inout() && maybe_var_symbol.is_none() {
@@ -3528,7 +3538,7 @@ mod functions;
 mod instructions;
 mod intrinsics;
 mod ownership;
-pub(crate) use ownership::FirstClassStrSite;
+pub(crate) use ownership::{AccessorEscapeSite, FirstClassStrSite};
 mod pointers;
 mod type_inference;
 

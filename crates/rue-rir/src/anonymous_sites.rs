@@ -203,6 +203,9 @@ impl SiteWalker {
                     self.at(Seg::Operand(0), |this| this.walk_expr(value));
                 }
             }
+            Expr::Yield(yield_expr) => {
+                self.at(Seg::Operand(0), |this| this.walk_expr(&yield_expr.value));
+            }
             Expr::StructLit(struct_lit) => {
                 if let Some(base) = &struct_lit.base {
                     self.at(Seg::Operand(0), |this| this.walk_expr(base));

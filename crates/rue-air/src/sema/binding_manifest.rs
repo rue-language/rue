@@ -1388,6 +1388,10 @@ impl<'a> DeclarationShells<'a> {
                             .structs_by_file_name
                             .get(&(pending.shell.declaration_span.file_id, owner))
                             .ok_or(DeclarationInstallFailure::MissingNominal)?;
+                        // The shell carries no accessor flag; derive it from
+                        // the body's trailing `yield`, which coincides on
+                        // every accepted program.
+                        let returns_borrow = super::info::body_ends_in_yield(self.sema.rir, body);
                         self.sema.methods.insert(
                             (id, *name),
                             super::MethodInfo {
@@ -1399,6 +1403,7 @@ impl<'a> DeclarationShells<'a> {
                                 return_type: return_type_value,
                                 body,
                                 span: pending.shell.declaration_span,
+                                returns_borrow,
                             },
                         );
                         self.sema

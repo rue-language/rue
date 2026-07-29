@@ -68,7 +68,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // other path, instead of silently truncating (RUE-244). Skip when the
         // resolved type is unconstrained (`<error>` — e.g. no annotation) or
         // never; those carry no expectation to check against.
-        if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
+        if let Some(expected) = ctx.resolved_type_of(inst_ref)
             && !self.types_equivalent(expected, pointee_type)
             && !expected.is_error()
             && !expected.is_never()
@@ -599,7 +599,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         self.require_intrinsic_type("alloc_bytes", align.ty, Type::U64, span)?;
         self.require_power_of_two_align("alloc_bytes", args[1].value, span, ctx)?;
         let result_ty = Type::new_ptr_mut(self.body_type_pool().intern_ptr_mut_from_type(Type::U8));
-        if let Some(&expected) = ctx.resolved_types.get(&inst_ref)
+        if let Some(expected) = ctx.resolved_type_of(inst_ref)
             && !self.types_equivalent(expected, result_ty)
             && !expected.is_error()
             && !expected.is_never()

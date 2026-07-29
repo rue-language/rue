@@ -223,6 +223,10 @@ pub struct Method {
     pub params: Vec<Param>,
     /// Return type (None means implicit unit `()`)
     pub return_type: Option<TypeExpr>,
+    /// When the result position is `-> borrow T`, the span of the `borrow`
+    /// keyword: the method is a place-returning accessor (ADR-0062) whose
+    /// body yields a second-class borrow of a receiver projection.
+    pub borrow_return: Option<Span>,
     /// Method body
     pub body: Expr,
     /// Span covering the entire method
@@ -274,6 +278,11 @@ pub struct Function {
     pub params: Vec<Param>,
     /// Return type (None means implicit unit `()`)
     pub return_type: Option<TypeExpr>,
+    /// When the result position is `-> borrow T`, the span of the `borrow`
+    /// keyword (ADR-0062). Always rejected in sema for free functions —
+    /// accessors require a `borrow self` receiver — but parsed here so the
+    /// diagnostic can be semantic rather than a parse error.
+    pub borrow_return: Option<Span>,
     /// Function body
     pub body: Expr,
     /// The C ABI string when this function is a `pub extern "C" fn` export
@@ -685,6 +694,9 @@ pub enum Expr {
     Continue(ContinueExpr),
     /// Return statement (returns a value from the current function)
     Return(ReturnExpr),
+    /// Yield statement (hands out a receiver projection from an accessor
+    /// body, ADR-0062)
+    Yield(YieldExpr),
     /// Struct literal (e.g., `Point { x: 1, y: 2 }`)
     StructLit(StructLitExpr),
     /// Field access (e.g., `point.x`)
@@ -1264,6 +1276,16 @@ pub struct ReturnExpr {
     pub span: Span,
 }
 
+/// A yield expression: the exit form of a `-> borrow T` accessor body
+/// (ADR-0062). Its operand is the place the accessor hands out; unlike
+/// `return` the operand is mandatory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct YieldExpr {
+    /// The place expression the accessor yields.
+    pub value: Box<Expr>,
+    pub span: Span,
+}
+
 /// A self expression (the `self` keyword in method bodies).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelfExpr {
@@ -1321,6 +1343,7 @@ impl Expr {
             Expr::Break(break_expr) => break_expr.span,
             Expr::Continue(continue_expr) => continue_expr.span,
             Expr::Return(return_expr) => return_expr.span,
+            Expr::Yield(yield_expr) => yield_expr.span,
             Expr::StructLit(struct_lit) => struct_lit.span,
             Expr::Field(field_expr) => field_expr.span,
             Expr::MethodCall(method_call) => method_call.span,
@@ -1658,6 +1681,10 @@ fn rebind_expr(expr: &mut Expr, file_id: FileId) {
                 rebind_expr(value, file_id);
             }
             rebind_span(&mut return_expr.span, file_id);
+        }
+        Expr::Yield(yield_expr) => {
+            rebind_expr(&mut yield_expr.value, file_id);
+            rebind_span(&mut yield_expr.span, file_id);
         }
         Expr::StructLit(literal) => {
             if let Some(base) = &mut literal.base {
@@ -2089,6 +2116,10 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
             } else {
                 writeln!(f, "Return (unit)")
             }
+        }
+        Expr::Yield(yield_expr) => {
+            writeln!(f, "Yield")?;
+            fmt_expr(f, &yield_expr.value, level + 1)
         }
         Expr::StructLit(lit) => {
             writeln!(f, "StructLit sym:{}", lit.name.name.into_usize())?;

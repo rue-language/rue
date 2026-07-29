@@ -597,13 +597,16 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 has_self,
                 self_mode,
                 self_is_mut,
+                returns_borrow,
                 ..
             } = method_inst.data
             else {
                 continue;
             };
             let key = (struct_id, method_name);
-            if !seen_methods.insert(method_name) || self.has_method(key) {
+            // Accessors are not supported on anonymous structs (ADR-0062
+            // phase 1).
+            if !seen_methods.insert(method_name) || self.has_method(key) || returns_borrow {
                 return None;
             }
             let parameters = self.body_rir_ref().params(&params).to_vec();
@@ -649,6 +652,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                     return_type: return_ty,
                     body,
                     span: method_inst.span,
+                    returns_borrow: false,
                 },
             ));
         }
@@ -1517,6 +1521,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         has_self: bool,
         self_mode: RirParamMode,
         self_is_mut: bool,
+        returns_borrow: bool,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -1538,7 +1543,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 )
             })?,
         );
-        self.analyze_method_with_identity(
+        self.analyze_method_with_identity_kind(
             infer_ctx,
             identity,
             full_name,
@@ -1550,6 +1555,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             has_self,
             self_mode,
             self_is_mut,
+            false,
+            returns_borrow,
         )
     }
 
@@ -1592,9 +1599,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             self_mode,
             self_is_mut,
             false,
+            false,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn analyze_method_with_identity_kind<P>(
         &mut self,
         infer_ctx: &InferenceContext,
@@ -1612,6 +1621,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         self_mode: RirParamMode,
         self_is_mut: bool,
         is_destructor: bool,
+        is_accessor: bool,
     ) -> CompileResult<(
         AnalyzedFunction,
         Vec<CompileWarning>,
@@ -1665,6 +1675,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             is_destructor,
             false,
             self_is_mut,
+            is_accessor,
         );
         self.storage.replace_active_anonymous_producer(previous);
         let (
@@ -1750,6 +1761,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             self_mode,
             self_is_mut,
             true,
+            false,
         )
     }
 
@@ -1795,6 +1807,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             None,
             None,
             true,
+            false,
             false,
             false,
         );
@@ -1867,6 +1880,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             false,
             allow_unused_variable,
             false,
+            false,
         )
     }
 
@@ -1899,6 +1913,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             false,
             false,
             false,
+            false,
         )
     }
 
@@ -1913,6 +1928,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         is_destructor: bool,
         allow_unused_variable: bool,
         self_is_mut: bool,
+        is_accessor: bool,
     ) -> CompileResult<(
         Air,
         u32,
@@ -2111,8 +2127,46 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             in_loop_move_recheck: false,
             iter_borrows: Vec::new(),
             expected_type: None,
+            infer_ctx,
+            accessor_trailing_yield: None,
+            accessor_call_insts: HashMap::new(),
+            expression_loans: Vec::new(),
+            inline_resolved_types: Vec::new(),
+            place_aliases: HashMap::new(),
             try_operand: false,
         };
+
+        // Accessor body shape (ADR-0062 phase 1): the body block must end in
+        // a single trailing `yield`, and only that instruction may be a
+        // `yield` — every other non-diverging exit is E0254, enforced by the
+        // per-instruction `yield`/`return`/`?` analysis against the trailing
+        // reference recorded here.
+        if is_accessor {
+            // A single-statement body lowers to the instruction itself; a
+            // multi-statement body lowers to a block whose last instruction
+            // is the trailing exit.
+            let trailing = match &self.body_rir_ref().get(body).data {
+                rue_rir::InstData::Block { instructions } => self
+                    .body_rir_ref()
+                    .block_insts(instructions)
+                    .values()
+                    .last(),
+                _ => Some(body),
+            };
+            let trailing_yield = trailing.filter(|inst_ref| {
+                matches!(
+                    self.body_rir_ref().get(*inst_ref).data,
+                    rue_rir::InstData::Yield(_)
+                )
+            });
+            let Some(trailing_yield) = trailing_yield else {
+                return Err(CompileError::new(
+                    ErrorKind::AccessorBodyMissingYield,
+                    self.body_rir_ref().get(body).span,
+                ));
+            };
+            ctx.accessor_trailing_yield = Some(trailing_yield);
+        }
 
         // ======================================================================
         // Phase 3: AIR Emission
@@ -2173,6 +2227,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
 
         // Add implicit return only if body doesn't already diverge (e.g., explicit return)
         if body_result.ty != Type::NEVER {
+            // An accessor result cannot be the function's tail value: the
+            // borrowed place is scoped to its full expression (ADR-0062).
+            {
+                let tail = self.rir_block_tail_expr(body);
+                self.reject_accessor_result_escape(
+                    tail,
+                    super::analysis::AccessorEscapeSite::Return,
+                    self.body_rir_ref().get(tail).span,
+                    &ctx,
+                )?;
+            }
             // Two-types model (ADR-0043, RUE-386): a `str`-returning function's
             // implicit-return (tail) value must be a first-class `str`. A buffer
             // (`StrBuf`/`Str(N)`) or a borrowed `str` view escaping here dangles

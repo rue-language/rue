@@ -310,6 +310,7 @@ impl Validator<'_> {
                     self.check_expr(value);
                 }
             }
+            Expr::Yield(y) => self.check_expr(&y.value),
             Expr::StructLit(s) => {
                 if let Some(base) = &s.base {
                     self.check_expr(base);

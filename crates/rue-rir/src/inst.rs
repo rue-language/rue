@@ -1202,6 +1202,7 @@ impl RirEditor {
         has_self: bool,
         self_mode: RirParamMode,
         self_is_mut: bool,
+        returns_borrow: bool,
         span: Span,
     ) -> Result<InstRef, RirPayloadBuildError> {
         self.atomic(|rir| {
@@ -1221,6 +1222,7 @@ impl RirEditor {
                     has_self,
                     self_mode,
                     self_is_mut,
+                    returns_borrow,
                 },
                 span,
             }))
@@ -1665,6 +1667,7 @@ impl RirEditor {
                         has_self,
                         self_mode,
                         self_is_mut,
+                        returns_borrow,
                     } => {
                         let directives =
                             remap_directives(source, directives, &mut symbol, &mut remap_span);
@@ -1691,6 +1694,7 @@ impl RirEditor {
                             *has_self,
                             *self_mode,
                             *self_is_mut,
+                            *returns_borrow,
                             span,
                         )?
                     }
@@ -1746,6 +1750,9 @@ impl RirEditor {
                     }
                     InstData::Ret(value) => {
                         self.add_inst(payload_free(InstData::Ret(value.map(remap_ref))))
+                    }
+                    InstData::Yield(value) => {
+                        self.add_inst(payload_free(InstData::Yield(remap_ref(*value))))
                     }
                     InstData::Block { instructions } => {
                         let instructions = source
@@ -2727,6 +2734,7 @@ impl Rir {
                         refs!(*reference);
                     }
                 }
+                InstData::Yield(value) => refs!(*value),
                 InstData::FnDecl {
                     directives,
                     name,
@@ -4216,6 +4224,11 @@ pub enum InstData {
         /// identity, and is always false unless `has_self` is true with
         /// `self_mode == Normal`.
         self_is_mut: bool,
+        /// Whether the result position is `-> borrow T` (ADR-0062): the
+        /// declaration is a place-returning accessor whose body yields a
+        /// second-class borrow of a receiver projection. `return_type` holds
+        /// the borrowed element type `T`.
+        returns_borrow: bool,
     },
 
     /// Constant declaration
@@ -4282,6 +4295,11 @@ pub enum InstData {
 
     /// Return value from function (None for `return;` in unit-returning functions)
     Ret(Option<InstRef>),
+
+    /// Yield a place from a `-> borrow T` accessor body (ADR-0062). The
+    /// operand is the place expression the accessor hands out; valid only as
+    /// the trailing exit of an accessor body (enforced in sema).
+    Yield(InstRef),
 
     /// Block of instructions (for function bodies)
     /// The result is the last instruction in the block
@@ -4958,6 +4976,7 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     has_self,
                     self_mode,
                     self_is_mut,
+                    returns_borrow,
                 } => {
                     let pub_str = if *is_c_export {
                         "pub extern \"C\" "
@@ -5005,15 +5024,17 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                         })
                         .collect();
                     let directives_str = self.format_directives(directives);
+                    let borrow_str = if *returns_borrow { "borrow " } else { "" };
                     writeln!(
                         out,
-                        "{}{}{}fn {}({}{}) -> {} {{",
+                        "{}{}{}fn {}({}{}) -> {}{} {{",
                         directives_str,
                         pub_str,
                         unchecked_str,
                         name_str,
                         self_str,
                         params_str.join(", "),
+                        borrow_str,
                         ret_str
                     )
                     .unwrap();
@@ -5050,6 +5071,9 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
                     } else {
                         writeln!(out, "ret").unwrap();
                     }
+                }
+                InstData::Yield(inner) => {
+                    writeln!(out, "yield {}", self.display_ref(*inner)).unwrap();
                 }
                 InstData::Call { name, args } => {
                     let name_str = self.interner.resolve(&*name);
@@ -5635,6 +5659,7 @@ mod typed_payload_tests {
                 block,
                 false,
                 RirParamMode::Normal,
+                false,
                 false,
                 span(),
             )
@@ -6367,6 +6392,7 @@ mod typed_payload_tests {
                 has_self: false,
                 self_mode: RirParamMode::Normal,
                 self_is_mut: false,
+                returns_borrow: false,
             },
         );
 

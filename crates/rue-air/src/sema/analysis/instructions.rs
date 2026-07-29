@@ -174,6 +174,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             | InstData::Break { .. }
             | InstData::Continue
             | InstData::Ret(_)
+            | InstData::Yield(_)
             | InstData::Block { .. } => self.analyze_control_flow(air, inst_ref, ctx),
 
             // Variable operations

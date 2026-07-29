@@ -3729,4 +3729,343 @@ fn main() -> i32 {
             .is_some()
         );
     }
+
+    // ========================================================================
+    // Place-returning borrow accessors (ADR-0062, RUE-662)
+    // ========================================================================
+
+    fn compile_with_accessors(source: &str) -> MultiErrorResult<SemaOutput> {
+        let mut features = PreviewFeatures::new();
+        features.insert(PreviewFeature::BorrowAccessors);
+        compile_to_air_with_preview_features(source, features)
+    }
+
+    const GRID_ACCESSOR: &str = "
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 {
+            @panic(\"index out of bounds\");
+        }
+        yield self.cells[i];
+    }
+}
+";
+
+    #[test]
+    fn accessor_call_inlines_with_no_call_shape() {
+        // ADR-0062 §3: a call `g.at(2)` compiles by inlining — guards plus
+        // the yielded place — so the caller's AIR must contain NO call to the
+        // accessor; the read is an ordinary projected `PlaceRead`.
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [10, 20, 30, 40] }};
+    if g.at(2) == 30 {{ 0 }} else {{ 1 }}
+}}"
+        );
+        let output = compile_with_accessors(&source).expect("accessor call compiles");
+        let main = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main is analyzed");
+        let calls_accessor = main.air.iter().any(|(_, inst)| {
+            matches!(&inst.data, AirInstData::Call { name, .. }
+            if output.strings.is_empty() || {
+                // Call names are interned; compare through the printer-safe path.
+                let _ = name;
+                false
+            })
+        });
+        assert!(
+            !calls_accessor,
+            "an accessor call must not lower to an AIR call"
+        );
+        // The inlined result place is read: main contains a PlaceRead with an
+        // index projection, which an ordinary method call would never emit.
+        let has_place_read = main
+            .air
+            .iter()
+            .any(|(_, inst)| matches!(inst.data, AirInstData::PlaceRead { .. }));
+        assert!(has_place_read, "the yielded place is read in the caller");
+        // And no Call instruction at all exists in main (the only callee in
+        // this program is the accessor).
+        let has_any_call = main
+            .air
+            .iter()
+            .any(|(_, inst)| matches!(inst.data, AirInstData::Call { .. }));
+        assert!(
+            !has_any_call,
+            "mandatory inlining leaves no call in the caller"
+        );
+    }
+
+    #[test]
+    fn accessor_declaration_requires_preview_gate() {
+        let source = format!("{GRID_ACCESSOR}\nfn main() -> i32 {{ 0 }}");
+        let errors = compile_to_air(&source).expect_err("the gate is off");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::PreviewFeatureRequired { feature, .. }
+                if *feature == PreviewFeature::BorrowAccessors
+        )));
+    }
+
+    #[test]
+    fn accessor_result_cannot_be_returned() {
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn read(borrow g: Grid) -> i64 {{
+    return g.at(0);
+}}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [1, 2, 3, 4] }};
+    read(borrow g);
+    0
+}}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("return escape");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorResultReturned { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_result_cannot_be_tail_returned() {
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn read(borrow g: Grid) -> i64 {{
+    g.at(0)
+}}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [1, 2, 3, 4] }};
+    read(borrow g);
+    0
+}}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("tail-return escape");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorResultReturned { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_result_cannot_be_let_bound() {
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [1, 2, 3, 4] }};
+    let b = g.at(0);
+    0
+}}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("let escape");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorResultBound { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_result_cannot_be_stored() {
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [1, 2, 3, 4] }};
+    let mut x = 0;
+    x = g.at(0);
+    0
+}}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("store escape");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorResultStored { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_result_cannot_be_captured_in_aggregate() {
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [1, 2, 3, 4] }};
+    let a = [g.at(0)];
+    0
+}}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("capture escape");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorResultCaptured { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_loan_conflicts_with_inout_in_same_expression() {
+        // The (Accessor-Call) loan spans the enclosing full expression:
+        // `use(v.at(0), bump(inout v))` overlaps a shared accessor loan with
+        // an exclusive `inout` loan on the same root (ADR-0062 §2).
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn using(a: i64, b: i64) -> i64 {{ a + b }}
+fn bump(inout g: Grid) -> i64 {{ g.cells[0] = 9; 0 }}
+fn main() -> i32 {{
+    let mut g = Grid {{ cells: [1, 2, 3, 4] }};
+    using(g.at(0), bump(inout g));
+    0
+}}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("exclusivity conflict");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorLoanConflict { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_body_requires_trailing_yield() {
+        let source = "
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        self.x
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}";
+        let errors = compile_with_accessors(source).expect_err("missing yield");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorBodyMissingYield))
+        );
+    }
+
+    #[test]
+    fn accessor_yield_must_root_at_receiver() {
+        let source = "
+struct P {
+    x: i64,
+
+    fn xr(borrow self, other: i64) -> borrow i64 {
+        yield other;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr(2) == 1 { 0 } else { 1 }
+}";
+        let errors = compile_with_accessors(source).expect_err("non-receiver yield");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorYieldNotReceiverRooted { .. }
+        )));
+    }
+
+    #[test]
+    fn yield_outside_accessor_is_rejected() {
+        let errors =
+            compile_with_accessors("fn main() -> i32 { yield 1; }").expect_err("stray yield");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::YieldOutsideAccessor))
+        );
+    }
+
+    #[test]
+    fn accessor_requires_borrow_self_receiver() {
+        let source = "
+struct P {
+    x: i64,
+
+    fn xr(inout self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }";
+        let errors = compile_with_accessors(source).expect_err("inout self accessor");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorRequiresBorrowSelf { .. }))
+        );
+    }
+
+    #[test]
+    fn free_function_cannot_be_an_accessor() {
+        let source = "
+fn first(borrow v: i64) -> borrow i64 {
+    yield v;
+}
+fn main() -> i32 { 0 }";
+        let errors = compile_with_accessors(source).expect_err("free-fn accessor");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorRequiresBorrowSelf { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_params_must_be_by_value() {
+        let source = "
+struct P {
+    x: i64,
+
+    fn xr(borrow self, borrow k: i64) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }";
+        let errors = compile_with_accessors(source).expect_err("borrow accessor param");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorParamModeUnsupported { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_guards_execute_before_the_read() {
+        // The inlined guards must be part of the caller's AIR: the bounds
+        // panic from the accessor body appears in main.
+        let source = format!(
+            "{GRID_ACCESSOR}
+fn main() -> i32 {{
+    let g = Grid {{ cells: [10, 20, 30, 40] }};
+    if g.at(3) == 40 {{ 0 }} else {{ 1 }}
+}}"
+        );
+        let output = compile_with_accessors(&source).expect("accessor call compiles");
+        let main = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main is analyzed");
+        let has_panic = main.air.iter().any(|(_, inst)| {
+            matches!(
+                &inst.data,
+                AirInstData::Intrinsic {
+                    runtime: Some(crate::RuntimeCallKind::Panic),
+                    ..
+                }
+            )
+        });
+        assert!(has_panic, "the accessor guard's panic inlines into main");
+    }
 }

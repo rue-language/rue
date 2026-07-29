@@ -161,6 +161,16 @@ impl Parser {
                     span: self.span_from(start),
                 }))
             }
+            TokenKind::Yield => {
+                self.bump();
+                // Unlike `return`, the operand is mandatory: an accessor
+                // always hands out a place (ADR-0062).
+                let value = Box::new(self.expr()?);
+                Ok(Expr::Yield(YieldExpr {
+                    value,
+                    span: self.span_from(start),
+                }))
+            }
             TokenKind::Comptime => {
                 self.bump();
                 let inner = Expr::Block(self.block()?);
