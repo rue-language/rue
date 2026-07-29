@@ -46,6 +46,10 @@ const SYNTAX_PROBES: &[(&str, &str)] = &[
         "qualified-type-arguments.rue",
         "fn f(value: outer.Result(inner.Value, inner.Error)) { match value { outer.Result(inner.Value, inner.Error).Ok(v) => {} } }",
     ),
+    (
+        "compound-assignment.rue",
+        "fn f(inout o: O) { o.n += 1; o.n -= 1; o.n *= 2; o.n /= 2; o.n %= 3; o.n &= 7; o.n |= 8; o.n ^= 9; o.n <<= 1; o.n >>= 1; o.a[0] += 1; o.n = o.n + 1; }",
+    ),
 ];
 
 fn node(kind: &str, meta: &str, a: String, b: String, c: String, d: String) -> String {
@@ -369,6 +373,23 @@ impl Shapes<'_> {
             BinaryOp::BitXor => 71,
             BinaryOp::Shl => 91,
             BinaryOp::Shr => 92,
+        }
+    }
+
+    /// The compound-assignment operator's token kind, or 0 for a plain `=`.
+    fn compound_op(op: Option<CompoundOp>) -> u64 {
+        match op {
+            None => 0,
+            Some(CompoundOp::Add) => 96,
+            Some(CompoundOp::Sub) => 97,
+            Some(CompoundOp::Mul) => 98,
+            Some(CompoundOp::Div) => 99,
+            Some(CompoundOp::Mod) => 100,
+            Some(CompoundOp::BitAnd) => 101,
+            Some(CompoundOp::BitOr) => 102,
+            Some(CompoundOp::BitXor) => 103,
+            Some(CompoundOp::Shl) => 104,
+            Some(CompoundOp::Shr) => 105,
         }
     }
 
@@ -787,7 +808,7 @@ impl Shapes<'_> {
             ),
             Statement::Assign(v) => node(
                 "assign",
-                "",
+                &format!(" op={}", Self::compound_op(v.op)),
                 match &v.target {
                     AssignTarget::Var(_) => self.ident(),
                     AssignTarget::Field(e) => self.expr(&Expr::Field(e.clone())),

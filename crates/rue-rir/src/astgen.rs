@@ -12,9 +12,9 @@ use lasso::{Spur, ThreadedRodeo};
 use rue_parser::ast::{ConstDecl, DropFn, ExternBlock, ExternFn};
 use rue_parser::intrinsics::{OFFSET_OF_INTRINSIC, TYPE_INTRINSICS};
 use rue_parser::{
-    ArgMode, ArrayLength, AssignTarget, BinaryOp, CallArg, Directive, DirectiveArg, EnumDecl, Expr,
-    Function, IntrinsicArg, Item, LetPattern, Method, ParamMode, Pattern, Statement, StructDecl,
-    TypeExpr, UnaryOp, ast::Visibility,
+    ArgMode, ArrayLength, AssignStatement, AssignTarget, BinaryOp, CallArg, CompoundOp, Directive,
+    DirectiveArg, EnumDecl, Expr, Function, IntrinsicArg, Item, LetPattern, Method, ParamMode,
+    Pattern, Statement, StructDecl, TypeExpr, UnaryOp, ast::Visibility,
 };
 
 use crate::inst::{
@@ -51,6 +51,10 @@ pub struct AstGen<'a> {
     /// temporaries of a `for`-loop desugaring (RUE-220), so nested for-loops
     /// don't shadow one another's position/length/collection bindings.
     for_counter: u32,
+    /// Monotonic counter used to mint unique names for the compiler-generated
+    /// index temporaries of a compound-assignment desugaring (RUE-1043), so
+    /// nested and sibling compound assignments never share a temporary.
+    compound_counter: u32,
     /// Typed structural route to the AST node currently being lowered. The
     /// route is relative to its producing definition and contains no spans or
     /// global instruction ordinals. Still the source of string-literal and
@@ -86,6 +90,7 @@ impl<'a> AstGen<'a> {
             rir: RirEditor::new(),
             payload_error: None,
             for_counter: 0,
+            compound_counter: 0,
             structural_path: Vec::new(),
             anonymous_anchors: HashMap::new(),
             authoritative_anonymous_anchors: false,
@@ -1922,6 +1927,10 @@ impl<'a> AstGen<'a> {
                     )
                     .record_failure(&mut self.payload_error)
             }
+            Statement::Assign(assign) if assign.op.is_some() => {
+                let op = assign.op.expect("guarded by the match arm");
+                self.gen_compound_assign(assign, op)
+            }
             Statement::Assign(assign) => {
                 let value =
                     self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &assign.value);
@@ -1969,6 +1978,365 @@ impl<'a> AstGen<'a> {
                 self.gen_expr(expr)
             }
         }
+    }
+
+    /// Desugar a compound assignment `place op= value` (RUE-1043, spec 5.2:16).
+    ///
+    /// The statement lowers to exactly the read / binary-operate / write triple
+    /// that `place = place op value` produces, so overflow checking, division
+    /// traps, mutability, move, borrow, and drop rules all follow from reusing
+    /// the same RIR nodes rather than from a second set of rules.
+    ///
+    /// The one thing the expanded form cannot express is that **the place is
+    /// evaluated once**: an index subexpression that could observe or cause an
+    /// effect is bound to a compiler-generated temporary before the place is
+    /// projected, and both the read and the write index through that temporary.
+    /// `a[f()] += 1` therefore calls `f` exactly once. Operands that can be
+    /// replayed without changing the program's meaning (literals, variables,
+    /// and arithmetic over them — see [`is_replayable_place_operand`]) are
+    /// regenerated instead of bound, which keeps the common shapes such as
+    /// `a[0] += 1` structurally identical to their expanded form, preserving
+    /// constant-index bounds checking and per-element move tracking.
+    fn gen_compound_assign(&mut self, assign: &AssignStatement, op: CompoundOp) -> InstRef {
+        let span = assign.span;
+
+        // The right-hand side keeps operand slot 0, as in a plain assignment.
+        // It is not the first thing to *run*: a bound index temporary is a
+        // statement ahead of the write, so the target's index subexpressions
+        // are evaluated before the right-hand side (5.2:18).
+        let value = self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), &assign.value);
+
+        let mut hoisted: Vec<u32> = Vec::new();
+        let place = self.build_compound_place(&assign.target, &mut hoisted);
+
+        let read = self.gen_compound_read(&place, span);
+        let combined = self.rir.add_inst(Inst {
+            data: compound_op_data(op, read, value),
+            span,
+        });
+        let write = self.gen_compound_write(&place, combined, span);
+
+        if hoisted.is_empty() {
+            return write;
+        }
+        hoisted.push(write.as_u32());
+        let refs: Vec<_> = hoisted.into_iter().map(InstRef::from_raw).collect();
+        self.rir
+            .add_block(&refs, span)
+            .record_failure(&mut self.payload_error)
+    }
+
+    /// Decompose a compound-assignment target into a root expression and the
+    /// chain of projections applied to it, binding effectful index operands to
+    /// temporaries appended to `hoisted` along the way.
+    fn build_compound_place<'t>(
+        &mut self,
+        target: &'t AssignTarget,
+        hoisted: &mut Vec<u32>,
+    ) -> CompoundPlace<'t> {
+        match target {
+            AssignTarget::Var(ident) => CompoundPlace::Var(self.symbol(ident.name)),
+            AssignTarget::Field(field) => {
+                let (root, mut steps) = self.decompose_place(&field.base, hoisted);
+                steps.push(CompoundStep {
+                    kind: CompoundStepKind::Field(self.symbol(field.field.name)),
+                    span: field.span,
+                });
+                CompoundPlace::Projected { root, steps }
+            }
+            AssignTarget::Index(index) => {
+                let (root, mut steps) = self.decompose_place(&index.base, hoisted);
+                let operand = self.hoist_place_operand(&index.index, hoisted);
+                steps.push(CompoundStep {
+                    kind: CompoundStepKind::Index(operand),
+                    span: index.span,
+                });
+                CompoundPlace::Projected { root, steps }
+            }
+        }
+    }
+
+    /// The projection chain of a place expression, innermost projection first.
+    ///
+    /// The root is whatever the chain bottoms out in: a variable or `self` for
+    /// every well-formed target, which both the read and the write regenerate.
+    /// A root that is neither (a call result, say) is never a place, so it is
+    /// generated once and shared — semantic analysis rejects the target with
+    /// the same error the plain assignment form produces, and generating it
+    /// once keeps any literal inside it claiming its anchor exactly once.
+    fn decompose_place<'t>(
+        &mut self,
+        expr: &'t Expr,
+        hoisted: &mut Vec<u32>,
+    ) -> (CompoundRoot<'t>, Vec<CompoundStep<'t>>) {
+        match expr {
+            Expr::Paren(paren) => self.decompose_place(&paren.inner, hoisted),
+            Expr::Ident(_) | Expr::SelfExpr(_) => (CompoundRoot::Replay(expr), Vec::new()),
+            Expr::Field(field) => {
+                let (root, mut steps) = self.decompose_place(&field.base, hoisted);
+                steps.push(CompoundStep {
+                    kind: CompoundStepKind::Field(self.symbol(field.field.name)),
+                    span: field.span,
+                });
+                (root, steps)
+            }
+            Expr::Index(index) => {
+                let (root, mut steps) = self.decompose_place(&index.base, hoisted);
+                let operand = self.hoist_place_operand(&index.index, hoisted);
+                steps.push(CompoundStep {
+                    kind: CompoundStepKind::Index(operand),
+                    span: index.span,
+                });
+                (root, steps)
+            }
+            other => {
+                let generated = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(COMPOUND_ROOT_SEGMENT),
+                    other,
+                );
+                (CompoundRoot::Shared(generated), Vec::new())
+            }
+        }
+    }
+
+    /// Bind an index operand to a temporary unless it can be replayed verbatim.
+    fn hoist_place_operand<'t>(
+        &mut self,
+        index: &'t Expr,
+        hoisted: &mut Vec<u32>,
+    ) -> CompoundOperand<'t> {
+        if is_replayable_place_operand(index) {
+            return CompoundOperand::Replay(index);
+        }
+        // Each hoist owns one statement slot, so its ordinal is a structural
+        // segment no other operand of this statement can claim.
+        let ordinal = hoisted.len() as u32;
+        let init = self.gen_expr_at(
+            crate::RirStructuralPathSegment::Operand(COMPOUND_HOIST_SEGMENT + ordinal),
+            index,
+        );
+        let n = self.compound_counter;
+        self.compound_counter += 1;
+        let name = self.interner.get_or_intern(format!("__rue_place_{n}"));
+        let alloc = self
+            .rir
+            .add_alloc(&[], Some(name), false, None, init, false, index.span())
+            .record_failure(&mut self.payload_error);
+        hoisted.push(alloc.as_u32());
+        CompoundOperand::Temp(name)
+    }
+
+    /// Read the whole place: the value the compound operator is applied to.
+    fn gen_compound_read(&mut self, place: &CompoundPlace<'_>, span: rue_span::Span) -> InstRef {
+        self.with_structural_segment(
+            crate::RirStructuralPathSegment::Operand(COMPOUND_READ_SEGMENT),
+            |this| match place {
+                // The read carries the same read-only-data anchor an ordinary
+                // reference to the name would, so a compound assignment to a
+                // module constant reports its error the same way a plain one
+                // does rather than diverging on anchor handling.
+                CompoundPlace::Var(name) => this.rir.add_inst(Inst {
+                    data: InstData::VarRef {
+                        name: *name,
+                        anchor: Some(this.read_only_data_anchor(0)),
+                    },
+                    span,
+                }),
+                CompoundPlace::Projected { root, steps } => {
+                    let base = this.gen_place_root(root);
+                    this.gen_place_projections(base, steps)
+                }
+            },
+        )
+    }
+
+    /// Write `value` back through the place, projecting through the same
+    /// temporaries the read used.
+    fn gen_compound_write(
+        &mut self,
+        place: &CompoundPlace<'_>,
+        value: InstRef,
+        span: rue_span::Span,
+    ) -> InstRef {
+        match place {
+            CompoundPlace::Var(name) => self.rir.add_inst(Inst {
+                data: InstData::Assign { name: *name, value },
+                span,
+            }),
+            CompoundPlace::Projected { root, steps } => {
+                let (last, prefix) = steps
+                    .split_last()
+                    .expect("a projected place has at least one projection");
+                let data = self.with_structural_segment(
+                    crate::RirStructuralPathSegment::Operand(COMPOUND_WRITE_SEGMENT),
+                    |this| {
+                        let root_ref = this.gen_place_root(root);
+                        let base = this.gen_place_projections(root_ref, prefix);
+                        match &last.kind {
+                            CompoundStepKind::Field(field) => InstData::FieldSet {
+                                base,
+                                field: *field,
+                                value,
+                            },
+                            CompoundStepKind::Index(operand) => {
+                                let index =
+                                    this.gen_place_operand(operand, prefix.len(), last.span);
+                                InstData::IndexSet { base, index, value }
+                            }
+                        }
+                    },
+                );
+                self.rir.add_inst(Inst { data, span })
+            }
+        }
+    }
+
+    fn gen_place_root(&mut self, root: &CompoundRoot<'_>) -> InstRef {
+        match root {
+            CompoundRoot::Replay(expr) => {
+                self.gen_expr_at(crate::RirStructuralPathSegment::Operand(0), expr)
+            }
+            CompoundRoot::Shared(generated) => *generated,
+        }
+    }
+
+    fn gen_place_projections(&mut self, base: InstRef, steps: &[CompoundStep<'_>]) -> InstRef {
+        let mut current = base;
+        for (depth, step) in steps.iter().enumerate() {
+            current = match &step.kind {
+                CompoundStepKind::Field(field) => self.rir.add_inst(Inst {
+                    data: InstData::FieldGet {
+                        base: current,
+                        field: *field,
+                    },
+                    span: step.span,
+                }),
+                CompoundStepKind::Index(operand) => {
+                    let index = self.gen_place_operand(operand, depth, step.span);
+                    self.rir.add_inst(Inst {
+                        data: InstData::IndexGet {
+                            base: current,
+                            index,
+                        },
+                        span: step.span,
+                    })
+                }
+            };
+        }
+        current
+    }
+
+    /// Generate one index operand of a place. A hoisted operand reads its
+    /// temporary; a replayable one is regenerated under a depth-unique
+    /// structural segment so the read and the write never share an anchor.
+    fn gen_place_operand(
+        &mut self,
+        operand: &CompoundOperand<'_>,
+        depth: usize,
+        span: rue_span::Span,
+    ) -> InstRef {
+        match operand {
+            CompoundOperand::Temp(name) => self.rir.add_inst(Inst {
+                data: InstData::VarRef {
+                    name: *name,
+                    anchor: None,
+                },
+                span,
+            }),
+            CompoundOperand::Replay(expr) => self.gen_expr_at(
+                crate::RirStructuralPathSegment::Operand(1 + depth as u32),
+                expr,
+            ),
+        }
+    }
+}
+
+/// Structural-path operand slots the compound-assignment desugaring claims for
+/// the parts of the statement that have no counterpart in the source operand
+/// numbering. Slot 0 stays the right-hand side, as in a plain assignment.
+/// Distinct slots keep the read and the write chains from minting the same
+/// read-only-data anchor for two different instructions.
+const COMPOUND_WRITE_SEGMENT: u32 = 1;
+const COMPOUND_READ_SEGMENT: u32 = 2;
+const COMPOUND_ROOT_SEGMENT: u32 = 3;
+const COMPOUND_HOIST_SEGMENT: u32 = 4;
+
+/// A compound-assignment target, decomposed for a read and a write through the
+/// same evaluated place.
+enum CompoundPlace<'t> {
+    /// A bare variable (or `self`) target: `x op= v`.
+    Var(Spur),
+    /// A projected place: `root` followed by one or more projections, the last
+    /// of which is the one written.
+    Projected {
+        root: CompoundRoot<'t>,
+        steps: Vec<CompoundStep<'t>>,
+    },
+}
+
+/// The base a projected place bottoms out in.
+enum CompoundRoot<'t> {
+    /// A variable or `self`: regenerated for the read and for the write. Both
+    /// forms are effect-free and claim no anonymous-type anchor.
+    Replay(&'t Expr),
+    /// Anything else, generated once and shared by both. Never a valid place.
+    Shared(InstRef),
+}
+
+struct CompoundStep<'t> {
+    kind: CompoundStepKind<'t>,
+    span: rue_span::Span,
+}
+
+enum CompoundStepKind<'t> {
+    Field(Spur),
+    Index(CompoundOperand<'t>),
+}
+
+enum CompoundOperand<'t> {
+    /// The name of the temporary the operand was bound to.
+    Temp(Spur),
+    /// An operand cheap and pure enough to regenerate for each use.
+    Replay(&'t Expr),
+}
+
+/// Whether an index operand inside a compound-assignment target can be
+/// generated once for the read and again for the write without changing what
+/// the program does.
+///
+/// Only shapes that cannot call a function, allocate, branch, or trap qualify.
+/// Everything else — calls, method calls, intrinsics, `?`, nested indexing,
+/// and every block-like expression — is bound to a temporary instead, so the
+/// place is still evaluated exactly once.
+fn is_replayable_place_operand(expr: &Expr) -> bool {
+    match expr {
+        Expr::Int(_) | Expr::Bool(_) | Expr::Unit(_) | Expr::Ident(_) | Expr::SelfExpr(_) => true,
+        Expr::Paren(paren) => is_replayable_place_operand(&paren.inner),
+        Expr::Field(field) => is_replayable_place_operand(&field.base),
+        Expr::Unary(unary) => is_replayable_place_operand(&unary.operand),
+        Expr::Binary(binary) => {
+            is_replayable_place_operand(&binary.left) && is_replayable_place_operand(&binary.right)
+        }
+        _ => false,
+    }
+}
+
+/// The RIR node a compound operator applies.
+/// These are exactly the nodes `gen_expr` emits for the corresponding binary
+/// expression, so a compound assignment and its expanded form analyze, check,
+/// and code-generate identically.
+fn compound_op_data(op: CompoundOp, lhs: InstRef, rhs: InstRef) -> InstData {
+    match op {
+        CompoundOp::Add => InstData::Add { lhs, rhs },
+        CompoundOp::Sub => InstData::Sub { lhs, rhs },
+        CompoundOp::Mul => InstData::Mul { lhs, rhs },
+        CompoundOp::Div => InstData::Div { lhs, rhs },
+        CompoundOp::Mod => InstData::Mod { lhs, rhs },
+        CompoundOp::BitAnd => InstData::BitAnd { lhs, rhs },
+        CompoundOp::BitOr => InstData::BitOr { lhs, rhs },
+        CompoundOp::BitXor => InstData::BitXor { lhs, rhs },
+        CompoundOp::Shl => InstData::Shl { lhs, rhs },
+        CompoundOp::Shr => InstData::Shr { lhs, rhs },
     }
 }
 
@@ -3083,6 +3451,74 @@ mod tests {
             }
             _ => panic!("expected StructDecl"),
         }
+    }
+
+    fn inst_kind_counts(source: &str) -> std::collections::HashMap<&'static str, usize> {
+        let (rir, _) = gen_rir(source);
+        let mut counts = std::collections::HashMap::new();
+        for (_, instruction) in rir.iter() {
+            let kind = match &instruction.data {
+                InstData::Call { .. } => "call",
+                InstData::IndexGet { .. } => "index_get",
+                InstData::IndexSet { .. } => "index_set",
+                InstData::FieldGet { .. } => "field_get",
+                InstData::FieldSet { .. } => "field_set",
+                InstData::Add { .. } => "add",
+                InstData::Alloc { .. } => "alloc",
+                InstData::Assign { .. } => "assign",
+                _ => continue,
+            };
+            *counts.entry(kind).or_default() += 1;
+        }
+        counts
+    }
+
+    #[test]
+    fn compound_assignment_lowers_to_read_operate_write() {
+        let counts = inst_kind_counts("fn f() { let mut x = 0; x += 1; }");
+        // `x += 1` is exactly `x = x + 1`: one add, one store, and no
+        // temporary — a bare variable place has nothing to evaluate.
+        assert_eq!(counts.get("add"), Some(&1));
+        assert_eq!(counts.get("assign"), Some(&1));
+        assert_eq!(counts.get("alloc"), Some(&1)); // just the `let mut x`
+    }
+
+    #[test]
+    fn compound_assignment_replays_a_pure_index_without_a_temporary() {
+        let counts = inst_kind_counts("fn f(inout a: [i32; 4], i: u64) { a[i + 1] += 1; }");
+        // The index is regenerated for the read and the write rather than
+        // bound, so a constant-foldable index stays visible to later phases.
+        assert_eq!(counts.get("index_get"), Some(&1));
+        assert_eq!(counts.get("index_set"), Some(&1));
+        assert_eq!(counts.get("alloc"), None);
+    }
+
+    #[test]
+    fn compound_assignment_binds_an_effectful_index_once() {
+        let counts =
+            inst_kind_counts("fn g() -> u64 { 1 } fn f(inout a: [i32; 4]) { a[g()] += 1; }");
+        // The call is generated once, into a temporary both projections read.
+        assert_eq!(counts.get("call"), Some(&1));
+        assert_eq!(counts.get("alloc"), Some(&1));
+        assert_eq!(counts.get("index_get"), Some(&1));
+        assert_eq!(counts.get("index_set"), Some(&1));
+    }
+
+    #[test]
+    fn compound_assignment_binds_every_effectful_index_of_a_nested_place() {
+        let source = "fn g() -> u64 { 1 } \
+                      fn f(inout o: O) { o.rows[g()].cells[g()] += 1; }";
+        let counts = inst_kind_counts(source);
+        // One temporary per index — two calls, not the four the expanded
+        // `o.rows[g()].cells[g()] = o.rows[g()].cells[g()] + 1` would make.
+        assert_eq!(counts.get("call"), Some(&2));
+        assert_eq!(counts.get("alloc"), Some(&2));
+        // The read projects `o.rows[..].cells[..]`; the write reprojects
+        // `o.rows[..].cells` and stores through the final index. Only the
+        // projections are repeated — they are pure — never the index operands.
+        assert_eq!(counts.get("index_get"), Some(&3));
+        assert_eq!(counts.get("index_set"), Some(&1));
+        assert_eq!(counts.get("field_get"), Some(&4));
     }
 
     // RirPrinter integration test with actual generated RIR

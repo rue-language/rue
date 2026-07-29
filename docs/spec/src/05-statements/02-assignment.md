@@ -129,8 +129,78 @@ fn main() -> i32 {
 }
 ```
 
+## Compound Assignment
+
+{{ rule(id="5.2:16", cat="syntax") }}
+
+```ebnf
+compound_stmt = assign_target compound_op expression ";" ;
+compound_op   = "+=" | "-=" | "*=" | "/=" | "%="
+              | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
+```
+
+A compound assignment applies a binary operator to the value already held in
+the target place and stores the result back into that place. The ten operators
+above are exactly the binary operators whose result has the type of their left
+operand; the comparison and short-circuiting logical operators have no compound
+form.
+
+{{ rule(id="5.2:17", cat="normative") }}
+
+`place op= value` means `place = place op value`: the operator's operands are
+the value read from the place and the value of `value`, the operator is the one
+named by `op` (4.2, 4.3a), and the result is stored back into the place.
+Legality, typing, and every runtime effect are those of that expanded form —
+including the requirement that the place be assignable (5.2:3), that the
+operator apply to the operand types (5.2:4), and the operator's own overflow
+(8.1), bounds-check (8.2), and division-by-zero (8.3) behavior. Compound
+assignment introduces no new core form: it
+denotes the same `assign p = e` reduction as 5.2:1 (`docs/formal/01-core-calculus.md`
+§5.2, §6.8), with `e` the applied operator.
+
+{{ rule(id="5.2:18", cat="dynamic-semantics") }}
+
+The target place is evaluated **exactly once**. Any index subexpression in the
+target (the `[e]` in an `arr[e]` target) is evaluated once, before the
+right-hand side and in source order (left to right); the place is then read,
+the operator applied, and the result written back through that same place. This
+is the one respect in which `place op= value` is not interchangeable with
+`place = place op value`, which evaluates the target's index subexpressions a
+second time (5.2:14).
+
+{{ rule(id="5.2:19") }}
+
+```rue
+fn tap(n: u64) -> u64 { @dbg(n); n }
+
+fn main() -> i32 {
+    let mut arr: [i32; 4] = [0, 0, 0, 40];
+    // `tap(3)` runs once, not once per mention of the place: prints 3 only.
+    arr[tap(3)] += 2;
+    arr[3]  // 42
+}
+```
+
+{{ rule(id="5.2:20") }}
+
+```rue
+struct Counter { hits: i32 }
+
+fn main() -> i32 {
+    let mut c = Counter { hits: 16 };
+    let mut arr: [i32; 2] = [1, 2];
+    c.hits += 1;
+    c.hits *= 2;
+    arr[0] <<= 3;
+    arr[1] -= 2;
+    c.hits + arr[0] + arr[1]  // 34 + 8 + 0
+}
+```
+
 ## Assignment is Not an Expression
 
 {{ rule(id="5.2:10", cat="legality-rule") }}
 
-Assignment is a statement, not an expression. It **MUST NOT** be used in expression position.
+Assignment is a statement, not an expression. It **MUST NOT** be used in
+expression position. This holds for the compound forms as well: `place op=
+value` is a statement and produces no value.

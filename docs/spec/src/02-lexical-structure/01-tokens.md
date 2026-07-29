@@ -24,6 +24,7 @@ Rue tokens fall into the following categories:
 | Byte literals | `b'a'`, `b'0'`, `b'\n'`, `b'\''` |
 | String literals | `"hello"`, `"world"`, `"with \"escapes\""` |
 | Operators | `+`, `-`, `*`, `/`, `%`, `==`, `!=`, `<`, `>`, `<=`, `>=`, `&&`, `\|\|`, `!`, `&`, `\|`, `^`, `~`, `<<`, `>>` |
+| Compound assignment | `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `\|=`, `^=`, `<<=`, `>>=` |
 | Delimiters | `(`, `)`, `{`, `}`, `[`, `]`, `,`, `;`, `:`, `->`, `=>` |
 
 ## Integer Literals

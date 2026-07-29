@@ -61,7 +61,9 @@ const_decl     = directives [ "pub" ] "const" IDENT [ ":" type ] "=" expression 
 statement      = let_stmt | assign_stmt | expr_stmt ;
 let_stmt       = directives "let" [ "mut" ] let_pattern [ ":" type ] "=" expression ";" ;
 let_pattern    = IDENT | "_" ;
-assign_stmt    = place_expr "=" expression ";" ;
+assign_stmt    = place_expr ( "=" | compound_op ) expression ";" ;
+compound_op    = "+=" | "-=" | "*=" | "/=" | "%="
+               | "&=" | "|=" | "^=" | "<<=" | ">>=" ;
 expr_stmt      = expression ";"
                | control_flow_expr
                | block_expr ;          (* block-like expressions need no semicolon *)

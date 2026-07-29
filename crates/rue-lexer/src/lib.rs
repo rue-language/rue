@@ -106,6 +106,18 @@ pub enum TokenKind {
     LtLt,     // <<
     GtGt,     // >>
 
+    // Compound assignment (RUE-1043)
+    PlusEq,    // +=
+    MinusEq,   // -=
+    StarEq,    // *=
+    SlashEq,   // /=
+    PercentEq, // %=
+    AmpEq,     // &=
+    PipeEq,    // |=
+    CaretEq,   // ^=
+    LtLtEq,    // <<=
+    GtGtEq,    // >>=
+
     // Punctuation
     LParen,
     RParen,
@@ -200,6 +212,16 @@ impl TokenKind {
             TokenKind::Question => "'?'",
             TokenKind::LtLt => "'<<'",
             TokenKind::GtGt => "'>>'",
+            TokenKind::PlusEq => "'+='",
+            TokenKind::MinusEq => "'-='",
+            TokenKind::StarEq => "'*='",
+            TokenKind::SlashEq => "'/='",
+            TokenKind::PercentEq => "'%='",
+            TokenKind::AmpEq => "'&='",
+            TokenKind::PipeEq => "'|='",
+            TokenKind::CaretEq => "'^='",
+            TokenKind::LtLtEq => "'<<='",
+            TokenKind::GtGtEq => "'>>='",
             TokenKind::LParen => "'('",
             TokenKind::RParen => "')'",
             TokenKind::LBrace => "'{'",
@@ -305,6 +327,16 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Tilde => write!(f, "TILDE"),
             TokenKind::LtLt => write!(f, "LTLT"),
             TokenKind::GtGt => write!(f, "GTGT"),
+            TokenKind::PlusEq => write!(f, "PLUSEQ"),
+            TokenKind::MinusEq => write!(f, "MINUSEQ"),
+            TokenKind::StarEq => write!(f, "STAREQ"),
+            TokenKind::SlashEq => write!(f, "SLASHEQ"),
+            TokenKind::PercentEq => write!(f, "PERCENTEQ"),
+            TokenKind::AmpEq => write!(f, "AMPEQ"),
+            TokenKind::PipeEq => write!(f, "PIPEEQ"),
+            TokenKind::CaretEq => write!(f, "CARETEQ"),
+            TokenKind::LtLtEq => write!(f, "LTLTEQ"),
+            TokenKind::GtGtEq => write!(f, "GTGTEQ"),
             TokenKind::LParen => write!(f, "LPAREN"),
             TokenKind::RParen => write!(f, "RPAREN"),
             TokenKind::LBrace => write!(f, "LBRACE"),

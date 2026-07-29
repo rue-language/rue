@@ -256,3 +256,228 @@ fn main() -> i32 {
 }
 """
 exit_code = 42
+
+# =============================================================================
+# Compound Assignment (RUE-1043)
+# `place op= value` means `place = place op value`, with the place evaluated
+# exactly once.
+# =============================================================================
+
+[[case]]
+name = "compound_assign_arithmetic_operators"
+spec = ["5.2:16", "5.2:17"]
+source = """
+fn main() -> i32 {
+    let mut x = 10;
+    x += 5;
+    x -= 3;
+    x *= 4;
+    x /= 6;
+    x %= 5;
+    x
+}
+"""
+exit_code = 3
+
+[[case]]
+name = "compound_assign_bitwise_and_shift_operators"
+spec = ["5.2:16", "5.2:17"]
+source = """
+fn main() -> i32 {
+    let mut x = 1;
+    x <<= 6;
+    x >>= 1;
+    x |= 5;
+    x &= 61;
+    x ^= 2;
+    x
+}
+"""
+exit_code = 39
+
+[[case]]
+name = "compound_assign_matches_expanded_form"
+spec = ["5.2:17"]
+source = """
+fn main() -> i32 {
+    let mut compound = 3;
+    let mut expanded = 3;
+    compound *= 7;
+    expanded = expanded * 7;
+    if compound == expanded { 42 } else { 0 }
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "compound_assign_array_element"
+spec = ["5.2:16", "5.2:17"]
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 2] = [40, 1];
+    arr[0] += 2;
+    arr[1] <<= 3;
+    arr[0] - arr[1]
+}
+"""
+exit_code = 34
+
+[[case]]
+name = "compound_assign_nested_field"
+spec = ["5.2:16", "5.2:17"]
+source = """
+struct Inner { value: i32 }
+struct Outer { inner: Inner }
+
+fn main() -> i32 {
+    let mut o = Outer { inner: Inner { value: 5 } };
+    o.inner.value += 37;
+    o.inner.value
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "compound_assign_through_self_receiver"
+spec = ["5.2:17"]
+source = """
+struct Counter {
+    n: i32,
+
+    fn bump(inout self, by: i32) {
+        self.n += by;
+    }
+}
+
+fn main() -> i32 {
+    let mut c = Counter { n: 40 };
+    c.bump(2);
+    c.n
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "compound_assign_target_must_be_mutable"
+spec = ["5.2:17"]
+error_contains = "[E0203]"
+source = """
+fn main() -> i32 {
+    let x = 10;
+    x += 1;
+    x
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "compound_assign_operand_types_must_match"
+spec = ["5.2:17"]
+error_contains = "[E0206]"
+source = """
+fn main() -> i32 {
+    let mut x = 10;
+    x += true;
+    x
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "compound_assign_constant_index_is_bounds_checked"
+spec = ["5.2:17"]
+error_contains = "[E0902]"
+source = """
+fn main() -> i32 {
+    let mut arr: [i32; 3] = [1, 2, 3];
+    arr[9] += 1;
+    arr[0]
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "compound_assign_is_not_an_expression"
+spec = ["5.2:10"]
+error_contains = "[E0100]"
+source = """
+fn main() -> i32 {
+    let mut x = 1;
+    let y = (x += 1);
+    y
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "compound_assign_evaluates_the_place_once"
+spec = ["5.2:18"]
+source = """
+fn tap_index(n: u64) -> u64 { @dbg(n); n }
+fn tap_value(n: i32) -> i32 { @dbg(n); n }
+fn main() -> i32 {
+    let mut arr: [i32; 4] = [0, 0, 0, 40];
+    // The index runs once, before the right-hand side: prints 3 then 9.
+    arr[tap_index(3)] += tap_value(9);
+    arr[3]
+}
+"""
+exit_code = 49
+expected_stdout = """
+3
+9
+"""
+
+[[case]]
+name = "compound_assign_evaluates_each_place_index_once"
+spec = ["5.2:18"]
+source = """
+struct Row { cells: [i32; 2] }
+fn tap(n: u64) -> u64 { @dbg(n); n }
+fn main() -> i32 {
+    let mut rows: [Row; 2] = [Row { cells: [0, 0] }, Row { cells: [0, 0] }];
+    // Each index subexpression of the place runs exactly once, left to right.
+    rows[tap(1)].cells[tap(0)] += 42;
+    rows[1].cells[0]
+}
+"""
+exit_code = 42
+expected_stdout = """
+1
+0
+"""
+
+[[case]]
+name = "compound_assign_place_once_example"
+spec = ["5.2:19"]
+source = """
+fn tap(n: u64) -> u64 { @dbg(n); n }
+
+fn main() -> i32 {
+    let mut arr: [i32; 4] = [0, 0, 0, 40];
+    arr[tap(3)] += 2;
+    arr[3]
+}
+"""
+exit_code = 42
+expected_stdout = """
+3
+"""
+
+[[case]]
+name = "compound_assign_places_example"
+spec = ["5.2:20"]
+source = """
+struct Counter { hits: i32 }
+
+fn main() -> i32 {
+    let mut c = Counter { hits: 16 };
+    let mut arr: [i32; 2] = [1, 2];
+    c.hits += 1;
+    c.hits *= 2;
+    arr[0] <<= 3;
+    arr[1] -= 2;
+    c.hits + arr[0] + arr[1]
+}
+"""
+exit_code = 42

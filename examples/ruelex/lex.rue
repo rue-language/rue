@@ -345,12 +345,26 @@ pub struct Lexer {
         fmtutil.kn("STRING(sym:", sym, ")")
     }
 
-    // Operators and punctuation, longest match first (2.1:2). Two-byte tokens
-    // (<<, >>, ==, !=, <=, >=, &&, ||, ->, =>) are tried before their one-byte
-    // prefixes.
+    // Operators and punctuation, longest match first (2.1:2). The three-byte
+    // shift-assignments (<<=, >>=) are tried before the two-byte tokens
+    // (<<, >>, ==, !=, <=, >=, &&, ||, ->, =>, and the compound assignments),
+    // which are in turn tried before their one-byte prefixes.
     fn lex_op(inout self, start: u64) -> StrBuf {
         let c = self.peek(0);
         let c1 = self.peek(1);
+        let c2 = self.peek(2);
+
+        if c == 60 && c1 == 60 && c2 == 61 { self.advance(); self.advance(); self.advance(); return "LTLTEQ"; }
+        if c == 62 && c1 == 62 && c2 == 61 { self.advance(); self.advance(); self.advance(); return "GTGTEQ"; }
+
+        if c == 43 && c1 == 61 { self.advance(); self.advance(); return "PLUSEQ"; }
+        if c == 45 && c1 == 61 { self.advance(); self.advance(); return "MINUSEQ"; }
+        if c == 42 && c1 == 61 { self.advance(); self.advance(); return "STAREQ"; }
+        if c == 47 && c1 == 61 { self.advance(); self.advance(); return "SLASHEQ"; }
+        if c == 37 && c1 == 61 { self.advance(); self.advance(); return "PERCENTEQ"; }
+        if c == 38 && c1 == 61 { self.advance(); self.advance(); return "AMPEQ"; }
+        if c == 124 && c1 == 61 { self.advance(); self.advance(); return "PIPEEQ"; }
+        if c == 94 && c1 == 61 { self.advance(); self.advance(); return "CARETEQ"; }
 
         if c == 45 && c1 == 62 { self.advance(); self.advance(); return "ARROW"; }
         if c == 61 && c1 == 62 { self.advance(); self.advance(); return "FATARROW"; }

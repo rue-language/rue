@@ -91,6 +91,19 @@ pub const GTGT: u64 = 92;
 pub const AMPAMP: u64 = 93;
 pub const PIPEPIPE: u64 = 94;
 pub const UNDERSCORE: u64 = 95;
+
+// Compound assignment (5.2:16).
+pub const PLUSEQ: u64 = 96;
+pub const MINUSEQ: u64 = 97;
+pub const STAREQ: u64 = 98;
+pub const SLASHEQ: u64 = 99;
+pub const PERCENTEQ: u64 = 100;
+pub const AMPEQ: u64 = 101;
+pub const PIPEEQ: u64 = 102;
+pub const CARETEQ: u64 = 103;
+pub const LTLTEQ: u64 = 104;
+pub const GTGTEQ: u64 = 105;
+
 pub const UNKNOWN: u64 = 255;
 
 pub struct Token {
@@ -190,5 +203,15 @@ pub fn kind_from_name(borrow name: StrBuf) -> u64 {
     if eq(borrow name, "AMPAMP") { return AMPAMP; }
     if eq(borrow name, "PIPEPIPE") { return PIPEPIPE; }
     if eq(borrow name, "UNDERSCORE") { return UNDERSCORE; }
+    if eq(borrow name, "PLUSEQ") { return PLUSEQ; }
+    if eq(borrow name, "MINUSEQ") { return MINUSEQ; }
+    if eq(borrow name, "STAREQ") { return STAREQ; }
+    if eq(borrow name, "SLASHEQ") { return SLASHEQ; }
+    if eq(borrow name, "PERCENTEQ") { return PERCENTEQ; }
+    if eq(borrow name, "AMPEQ") { return AMPEQ; }
+    if eq(borrow name, "PIPEEQ") { return PIPEEQ; }
+    if eq(borrow name, "CARETEQ") { return CARETEQ; }
+    if eq(borrow name, "LTLTEQ") { return LTLTEQ; }
+    if eq(borrow name, "GTGTEQ") { return GTGTEQ; }
     ERROR
 }

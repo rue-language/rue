@@ -240,6 +240,10 @@ pub struct Arena {
             else if n.value == 28 { out.push_str("false"); }
             else if n.aux != 0 { out.push_str("neg-int"); }
             else { out.push_str("int"); }
+        } else if n.kind == ASSIGN {
+            // 0 for a plain `=`, otherwise the compound operator's token kind.
+            out.push_str(" op=");
+            Self.append_u(inout out, n.value);
         } else if n.kind == BOOL {
             out.push_str(" value=");
             Self.append_u(inout out, n.value);
