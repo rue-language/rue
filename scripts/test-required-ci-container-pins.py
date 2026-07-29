@@ -54,6 +54,47 @@ class RequiredCiContainerPinTests(unittest.TestCase):
             [],
         )
 
+    def digest_pins(self, source: str) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "remote_cache.bzl"
+            path.write_text(source)
+            return pins.validate_digest_pins(path)
+
+    def test_accepts_digest_pinned_executor_image(self) -> None:
+        self.assertEqual(
+            self.digest_pins(
+                '                    "container-image": "docker://gcr.io/x/y@sha256:'
+                + "0" * 64
+                + '",\n'
+            ),
+            [],
+        )
+
+    def test_rejects_executor_image_without_digest(self) -> None:
+        errors = self.digest_pins('"container-image": "docker://gcr.io/x/y:latest",\n')
+        self.assertEqual(len(errors), 1)
+        self.assertIn("is not pinned", errors[0])
+
+    def test_rejects_truncated_executor_digest(self) -> None:
+        errors = self.digest_pins(
+            '"container-image": "docker://gcr.io/x/y@sha256:' + "0" * 63 + '",\n'
+        )
+        self.assertEqual(len(errors), 1)
+        self.assertIn("is not pinned", errors[0])
+
+    def test_rejects_digest_pinned_file_with_no_image(self) -> None:
+        # A vacuous pass is the failure mode this gate exists to prevent.
+        errors = self.digest_pins('remote_execution_properties = {"OSFamily": "Linux"}\n')
+        self.assertEqual(len(errors), 1)
+        self.assertIn("no container-image property", errors[0])
+
+    def test_ignores_commented_executor_image(self) -> None:
+        errors = self.digest_pins(
+            '# "container-image": "docker://gcr.io/x/y:latest",\n'
+            '"container-image": "docker://gcr.io/x/y@sha256:' + "0" * 64 + '",\n'
+        )
+        self.assertEqual(errors, [])
+
     def test_ignores_latest_in_comments_and_quoted_hashes(self) -> None:
         self.assertEqual(
             self.validate(

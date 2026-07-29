@@ -1,5 +1,16 @@
 load(":remote_cache.bzl", "remote_cache_platform")
 
+# The execution-platform definition that names a BuildBuddy worker image.
+# Required CI's remote-execution canary runs the compiler build on that image,
+# so it is subject to the same reviewed-bytes rule as the workflow's own
+# containers; //:required-ci-container-pin-validation reads it from here and
+# fails the build if the digest is dropped (RUE-1165).
+filegroup(
+    name = "remote-execution-platforms",
+    srcs = ["remote_cache.bzl"],
+    visibility = ["PUBLIC"],
+)
+
 # Build-mode target platforms (RUE-277)
 #
 # These platforms put the //constraints:opt-level value into the *target

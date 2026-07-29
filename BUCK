@@ -384,7 +384,14 @@ rue_sh_test(
 rue_sh_test(
     name = "required-ci-container-pin-validation",
     test = "scripts/validate-required-ci-container-pins.py",
-    args = ["$(location :required-ci-workflows)/.github/workflows/ci.yml"],
+    args = [
+        "$(location :required-ci-workflows)/.github/workflows/ci.yml",
+        # The remote executor's worker image is required CI's other container
+        # (RUE-1165): the merge-group canary runs the compiler build on it. It
+        # must carry an immutable digest, not merely avoid a `latest` tag.
+        "--digest-pinned",
+        "$(location //platforms:remote-execution-platforms)/remote_cache.bzl",
+    ],
 )
 
 rue_sh_test(

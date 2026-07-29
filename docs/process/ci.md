@@ -291,10 +291,20 @@ shard summaries also show the number of measured cases next to wall time. Read
 wall time together with hit count: a small number of invalidated ThinLTO actions
 can dominate a release build even when its hit rate is above 90 percent.
 
+Each summary also reports the action-cache hit rate and the summed duration of
+the test processes themselves. That last figure is deliberately separate from
+the cached/remote/local counters, which describe only how Buck *obtained* each
+action: a corpus lane whose wall time is one harness process is a sharding
+problem, and a lane whose wall time is uncached actions is a cache problem.
+`docs/process/build-cache.md` explains the distinction.
+
 Containers executed by the workflow must use a reviewed, human-readable
 release tag and the immutable OCI index digest for that tag. The repository
 gate `//:required-ci-container-pin-validation` rejects a moving `latest` image
-reference, and the normal `./test.sh` run includes that gate.
+reference, and the normal `./test.sh` run includes that gate. The same gate
+covers the BuildBuddy worker image in `platforms/remote_cache.bzl`, which
+required CI's remote-execution canary executes: there it requires an immutable
+digest outright, since that image publishes no reviewable release tag.
 
 ## Updating actionlint
 

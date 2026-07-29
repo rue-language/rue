@@ -28,6 +28,8 @@ commands=0
 cached=0
 remote=0
 local_actions=0
+test_ms=0
+tests_seen=0
 cli_cases="—"
 while IFS= read -r line; do
     if [[ "$line" =~ Commands:[[:space:]]+([0-9]+)[[:space:]]+\(cached:[[:space:]]+([0-9]+),[[:space:]]+remote:[[:space:]]+([0-9]+),[[:space:]]+local:[[:space:]]+([0-9]+)\) ]]; then
@@ -37,10 +39,34 @@ while IFS= read -r line; do
         ((remote += BASH_REMATCH[3]))
         ((local_actions += BASH_REMATCH[4]))
     fi
+    # Buck's cached/remote/local counters describe how each action was *obtained*,
+    # not what a test spent once it started. Rue's corpora are whole harnesses
+    # behind a single sh_test action, so their runtime is opaque to those
+    # counters: a lane can show a 95% hit rate and still be dominated by one
+    # harness process. Buck reports each test's own duration on its result line
+    # ("Pass: root//:spec-tests (73.4s)"); summing those separates harness time
+    # from action-graph time (RUE-1165).
+    if [[ "$line" =~ (Pass|Fail|Timeout|Fatal|Omit):[[:space:]]+[^[:space:]]+[[:space:]]+\(([0-9]+m)?([0-9]+)(\.[0-9]+)?s\) ]]; then
+        ((tests_seen += 1))
+        minutes="${BASH_REMATCH[2]%m}"
+        fraction="${BASH_REMATCH[4]#.}000"
+        ((test_ms += ((10#${minutes:-0} * 60) + 10#${BASH_REMATCH[3]}) * 1000 + 10#${fraction:0:3}))
+    fi
     if [[ "$line" =~ cli-tests:[[:space:]]+measured[[:space:]]+([0-9]+)[[:space:]]+cases ]]; then
         cli_cases="${BASH_REMATCH[1]}"
     fi
 done <"$log"
+
+# Report only measured quantities: a step that built without running tests has
+# no opaque time, which is different from having measured zero.
+test_time="—"
+if [[ "$tests_seen" -gt 0 ]]; then
+    test_time="$((test_ms / 1000)).$(printf '%03d' "$((test_ms % 1000))")s"
+fi
+hit_rate="—"
+if [[ "$commands" -gt 0 ]]; then
+    hit_rate="$((cached * 100 / commands))%"
+fi
 
 if [[ "$status" -eq 0 && "${RUE_CI_REQUIRE_REMOTE_ACTIONS:-0}" == "1" && "$remote" -eq 0 ]]; then
     echo "::error::remote-execution canary completed without any remotely executed Buck actions" >&2
@@ -57,9 +83,14 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     {
         echo "### CI timing: $safe_label"
         echo
-        echo "| Result | Wall time | CLI cases | Buck invocations | Commands | Cached | Remote | Local |"
-        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
-        echo "| $result | ${elapsed}s | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions |"
+        echo "| Result | Wall time | Test time | Cache hits | CLI cases | Buck invocations | Commands | Cached | Remote | Local |"
+        echo "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"
+        echo "| $result | ${elapsed}s | $test_time | $hit_rate | $cli_cases | $invocations | $commands | $cached | $remote | $local_actions |"
+        echo
+        echo "<sup>Cached/Remote/Local count Buck actions by how each was obtained."
+        echo "Test time is the summed duration Buck reports for the test processes"
+        echo "themselves — opaque to those counters, and where a corpus lane's wall"
+        echo "time actually goes.</sup>"
         echo
     } >>"$GITHUB_STEP_SUMMARY"
 fi

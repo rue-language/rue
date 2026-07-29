@@ -95,7 +95,8 @@ they're recorded here so a future config change doesn't silently regress:
    relocatable, canonical fix — *not* an absolute-path `LD_LIBRARY_PATH` hack.
 5. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
    (Python 3.10 — the prelude's rustc wrapper needs ≥3.9; the default image ships
-   3.6).
+   3.6), by immutable digest rather than by its moving tag. See
+   "Updating the remote worker image" below.
 6. **Linker** (RUE-320): the remote worker needs **`cc`** instead of the absent
    `clang++`. A `remote-execution` constraint is inserted only into the explicit
    full-remote execution configuration. The cache-only configuration omits it
@@ -146,8 +147,13 @@ release build of `//crates/...` then a clean-and-rebuild, and reports buck2's
 `Commands: (cached / remote / local)` line. Each workflow attempt injects a
 unique, otherwise-unused Rust cfg so prior runs cannot satisfy the nominal cold
 phase. The probe fails unless that phase executes local actions and the warm
-phase increases cache hits while reducing local actions. Run it with
-`gh workflow run cache-probe.yml`.
+phase increases cache hits while reducing local actions. It runs weekly
+(Mondays 05:00 UTC) and on demand with `gh workflow run cache-probe.yml`.
+
+The schedule exists because cache degradation is silent by construction: the
+cache can only change speed, never correctness, so a dead or non-populating
+cache turns no lane red. Without a recurring genuinely-cold-then-warm probe, the
+regression surfaces only as CI gradually becoming expensive.
 
 Required CI also records per-step wall time and aggregate cached/remote/local
 command counts in each job summary via `scripts/ci-timed`. The probe answers
@@ -156,11 +162,68 @@ question of how expensive a real change's remaining local actions were. Both
 signals matter: a central Rust or ThinLTO change can have a high numerical hit
 rate while a few invalidated actions remain on the critical path.
 
+Each summary separates the four costs that a single wall-time number conflates:
+
+| Column | Question it answers |
+| --- | --- |
+| Cached | how many actions the remote cache served |
+| Remote | how many executed on the BuildBuddy worker |
+| Local | how many executed on the runner |
+| Test time | how long the test processes themselves ran |
+
+The first three are Buck's own accounting of how each action was *obtained*.
+The fourth is not: Rue's spec, UI, and CLI corpora are entire harnesses behind a
+single `sh_test` action, so their runtime is opaque to those counters. A corpus
+lane can report a 95 percent hit rate and still spend nearly all its wall time
+in one harness process — that is a corpus-sharding problem, not a cache problem,
+and the two are only distinguishable when the summary reports both.
+
 RUE-320 also adds a merge-group-only remote-execution canary. It disables action
 cache reads, selects the no-fallback `//platforms:remote_execution` executor, and
 requires Buck to report remotely executed actions. This is deliberately
 separate from the cache probe: one proves worker execution, the other proves
 unchanged-action reuse.
+
+## Updating the remote worker image
+
+The merge-group remote-execution canary claims "the compiler builds on the
+worker we reviewed". A moving tag would silently change what that proves, and
+would convert an upstream image republish into a merge-queue failure with no
+local reproduction. `//:required-ci-container-pin-validation` therefore rejects
+a `platforms/remote_cache.bzl` image reference without an `@sha256:` digest, and
+rejects a `latest` tag anywhere in required CI. BuildBuddy publishes no
+versioned tag for this image, so unlike the actionlint pin the digest stands
+alone rather than accompanying a reviewed release tag.
+
+1. Resolve the moving stream to its current immutable OCI index digest:
+
+   ```bash
+   docker buildx imagetools inspect gcr.io/flame-public/rbe-ubuntu22-04:latest
+   ```
+
+   The index digest covers every architecture, so the executor still selects the
+   linux/amd64 manifest from it.
+
+2. Update `container-image` in `platforms/remote_cache.bzl` to
+   `docker://gcr.io/flame-public/rbe-ubuntu22-04@sha256:<INDEX-DIGEST>` and
+   refresh the resolution date in the comment above it.
+
+3. Confirm the new image still satisfies the constraints recorded above —
+   Python ≥3.9 for the prelude's rustc wrapper, and a `cc` driver for the
+   RUE-320 linker select:
+
+   ```bash
+   docker run --rm gcr.io/flame-public/rbe-ubuntu22-04@sha256:<INDEX-DIGEST> \
+     bash -c 'python3 --version && cc --version'
+   ```
+
+4. Run the policy and its focused regression tests, then let the merge-group
+   `remote execution (linux-x64)` canary prove the worker end to end:
+
+   ```bash
+   ./buck2 test //:required-ci-container-pin-validation \
+     //:required-ci-container-pin-tool-tests
+   ```
 
 ## Toward a fully hermetic linker
 
