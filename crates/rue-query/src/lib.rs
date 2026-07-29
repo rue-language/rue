@@ -480,6 +480,7 @@ mod registered_batch_tests {
                             .expect("the child dependency starts observed");
                         leases.held.remove(index)
                     };
+                    context.task.core.metrics.task_leases_released(1);
                     drop(removed);
                     assert!(matches!(
                         context.retain_observed_terminal_cone(&current),
@@ -1512,6 +1513,16 @@ pub struct RuntimeMetrics {
     pub retention_enforcements: u64,
     /// Peak simultaneously executing query bodies.
     pub peak_active_bodies: u64,
+    /// Terminals currently protected by rooted-request observation leases.
+    pub active_task_leases: u64,
+    /// Peak terminals simultaneously protected by rooted-request observation
+    /// leases. Unlike RSS, this is an allocator-independent ownership gauge.
+    pub peak_task_leases: u64,
+    /// Terminals currently protected by session-owned retained pin sets.
+    pub active_retained_pins: u64,
+    /// Peak terminals simultaneously protected by session-owned retained pin
+    /// sets. This includes atomic predecessor/successor handoff overlap.
+    pub peak_retained_pins: u64,
     /// Times a parked joiner released its permit.
     pub donated_permits: u64,
     /// Immutable revision views currently retained by the runtime.
@@ -1549,6 +1560,10 @@ struct Metrics {
     retention_enforcements: AtomicU64,
     active_bodies: AtomicU64,
     peak_active_bodies: AtomicU64,
+    active_task_leases: AtomicU64,
+    peak_task_leases: AtomicU64,
+    active_retained_pins: AtomicU64,
+    peak_retained_pins: AtomicU64,
     donated_permits: AtomicU64,
 }
 
@@ -1568,6 +1583,10 @@ impl Metrics {
             retention_growth: self.retention_growth.load(Ordering::Relaxed),
             retention_enforcements: self.retention_enforcements.load(Ordering::Relaxed),
             peak_active_bodies: self.peak_active_bodies.load(Ordering::Relaxed),
+            active_task_leases: self.active_task_leases.load(Ordering::Relaxed),
+            peak_task_leases: self.peak_task_leases.load(Ordering::Relaxed),
+            active_retained_pins: self.active_retained_pins.load(Ordering::Relaxed),
+            peak_retained_pins: self.peak_retained_pins.load(Ordering::Relaxed),
             donated_permits: self.donated_permits.load(Ordering::Relaxed),
             retained_revisions: 0,
             revision_limit: REVISION_RETENTION_LIMIT as u64,
@@ -1581,6 +1600,26 @@ impl Metrics {
 
     fn body_left(&self) {
         self.active_bodies.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn task_lease_acquired(&self) {
+        let active = self.active_task_leases.fetch_add(1, Ordering::Relaxed) + 1;
+        self.peak_task_leases.fetch_max(active, Ordering::Relaxed);
+    }
+
+    fn task_leases_released(&self, count: usize) {
+        self.active_task_leases
+            .fetch_sub(count as u64, Ordering::Relaxed);
+    }
+
+    fn retained_pin_acquired(&self) {
+        let active = self.active_retained_pins.fetch_add(1, Ordering::Relaxed) + 1;
+        self.peak_retained_pins.fetch_max(active, Ordering::Relaxed);
+    }
+
+    fn retained_pins_released(&self, count: usize) {
+        self.active_retained_pins
+            .fetch_sub(count as u64, Ordering::Relaxed);
     }
 }
 
@@ -3984,6 +4023,7 @@ where
         );
         if leases.observed.insert(identity) {
             leases.held.push(Box::new(pin));
+            task.core.metrics.task_lease_acquired();
         }
     }
 
@@ -4959,6 +4999,7 @@ impl RetainedPinSet {
             pin.terminal.revision,
         );
         if self.observed.insert(identity) {
+            pin.family.core.metrics.retained_pin_acquired();
             self.held.push(Box::new(pin));
             true
         } else {
@@ -4968,6 +5009,7 @@ impl RetainedPinSet {
 
     fn lease_erased(&mut self, lease: Box<dyn ObservedLease>) -> bool {
         if self.observed.insert(lease.identity()) {
+            lease.metrics().retained_pin_acquired();
             self.held.push(lease);
             true
         } else {
@@ -4978,6 +5020,9 @@ impl RetainedPinSet {
 
 impl Drop for RetainedPinSet {
     fn drop(&mut self) {
+        for lease in &self.held {
+            lease.metrics().retained_pins_released(1);
+        }
         batched_release(&mut self.held);
     }
 }
@@ -4987,6 +5032,7 @@ impl Drop for RetainedPinSet {
 /// type parameters lets one task hold observation leases across every family it
 /// touches without a second retention structure.
 trait ObservedLease: Send + Sync {
+    fn metrics(&self) -> &Metrics;
     fn identity(&self) -> (u64, u64, Revision);
 
     fn dependencies(&self) -> &[Observation];
@@ -5007,6 +5053,10 @@ where
     K: QueryKey,
     V: Clone + Send + Sync + 'static,
 {
+    fn metrics(&self) -> &Metrics {
+        &self.family.core.metrics
+    }
+
     fn identity(&self) -> (u64, u64, Revision) {
         (
             self.terminal.node_incarnation,
@@ -5450,6 +5500,8 @@ impl Task {
             let identity = lease.identity();
             if parent_leases.observed.insert(identity) {
                 parent_leases.held.push(lease);
+            } else {
+                self.core.metrics.task_leases_released(1);
             }
         }
         child_leases.observed.clear();
@@ -5937,6 +5989,9 @@ impl Task {
 impl Drop for Task {
     fn drop(&mut self) {
         self.discard_observed_handoffs();
+        self.core
+            .metrics
+            .task_leases_released(lock(&self.leases).held.len());
     }
 }
 
@@ -11953,10 +12008,12 @@ mod tests {
         const LEASED: u64 = 64;
         let before_release = Arc::new(AtomicU64::new(0));
         let evictions_before_release = Arc::new(AtomicU64::new(0));
+        let active_leases_before_release = Arc::new(AtomicU64::new(0));
 
         let metrics_runtime = runtime.clone();
         let before_slot = before_release.clone();
         let evict_slot = evictions_before_release.clone();
+        let active_lease_slot = active_leases_before_release.clone();
         let leaf = family.clone();
 
         // One rooted request leases LEASED distinct terminals in the single
@@ -11977,6 +12034,7 @@ mod tests {
                 let snapshot = metrics_runtime.metrics();
                 before_slot.store(snapshot.retention_enforcements, Ordering::SeqCst);
                 evict_slot.store(snapshot.evictions, Ordering::SeqCst);
+                active_lease_slot.store(snapshot.active_task_leases, Ordering::SeqCst);
                 Err(QueryAbort::Canceled)
             },
         );
@@ -11985,6 +12043,19 @@ mod tests {
         let after = runtime.metrics();
         let before = before_release.load(Ordering::SeqCst);
         let evict_before = evictions_before_release.load(Ordering::SeqCst);
+        assert_eq!(
+            active_leases_before_release.load(Ordering::SeqCst),
+            LEASED,
+            "the ownership gauge counts the exact live request lease set"
+        );
+        assert_eq!(
+            after.active_task_leases, 0,
+            "request completion releases every task-owned lease"
+        );
+        assert_eq!(
+            after.peak_task_leases, LEASED,
+            "peak request ownership is allocator-independent and stable"
+        );
 
         // Linearity: releasing LEASED pins in one family ran exactly ONE
         // enforcement pass. The per-pin `Drop` path would have run LEASED (64).
@@ -12053,6 +12124,7 @@ mod tests {
         // A redundant re-lease of the same terminal is dropped, not double-held.
         assert!(!set_a.lease(leaf.pin_terminal(&produced).unwrap()));
         assert_eq!(set_a.len(), 1);
+        assert_eq!(runtime.metrics().active_retained_pins, 1);
         drop(attempt);
 
         // Pressure in the gap: only `set_a` protects `produced` now.
@@ -12085,6 +12157,8 @@ mod tests {
         // released. No instant leaves `produced` unprotected.
         let mut set_b = RetainedPinSet::new();
         assert!(set_b.lease(leaf.pin_terminal(&produced).unwrap()));
+        assert_eq!(runtime.metrics().active_retained_pins, 2);
+        assert_eq!(runtime.metrics().peak_retained_pins, 2);
         for i in 9..=16 {
             runtime
                 .query(
@@ -12098,6 +12172,7 @@ mod tests {
         }
         let published = std::mem::replace(&mut set_a, set_b); // install successor
         drop(published); // then release the predecessor's pin
+        assert_eq!(runtime.metrics().active_retained_pins, 1);
         let reused = runtime
             .query(
                 &leaf,
@@ -12114,6 +12189,7 @@ mod tests {
         // protected root, so ordinary pressure can evict it.
         let evictions_before = runtime.metrics().evictions;
         drop(set_a);
+        assert_eq!(runtime.metrics().active_retained_pins, 0);
         for i in 17..=24 {
             runtime
                 .query(
