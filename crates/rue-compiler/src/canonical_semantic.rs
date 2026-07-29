@@ -2320,7 +2320,35 @@ mod tests {
         .unwrap();
     }
 
+    /// Analyze a fixture the way production does: one session, its own RIR and
+    /// semantic queries.
     fn canonical(
+        snapshot: &SourceSnapshot,
+        options: &CompileOptions,
+    ) -> (
+        std::sync::Arc<CanonicalSemanticOutput>,
+        std::sync::Arc<CanonicalRirOutput>,
+    ) {
+        let mut session = crate::CompilerSession::new();
+        crate::test_support::publish_test_snapshot(&mut session, snapshot).unwrap();
+        let rir = session.canonical_rir().unwrap();
+        let semantic = session.canonical_semantic(options).unwrap();
+        (semantic, rir)
+    }
+
+    /// Analyze a fixture through the whole-program body path rather than the
+    /// session's queried composition.
+    ///
+    /// Two kinds of test still need this. Stable declaration IDs are requested
+    /// by no production caller — the session asserts `!stable_ids_requested` —
+    /// so `ids` is reachable only here. And body-record assertions
+    /// (specialization origins, body-analysis counters) are empty through the
+    /// session because `compose_queried_bodies` never records them while the
+    /// shared finalizer still reports them complete; that is RUE-1204. Moving
+    /// those tests onto the session would assert the empty result and encode
+    /// the defect as expected behavior, so they stay here until RUE-1204 is
+    /// resolved.
+    fn whole_program_canonical(
         snapshot: &SourceSnapshot,
         options: &CompileOptions,
         ids: bool,
@@ -2369,7 +2397,7 @@ mod tests {
             )],
             1,
         );
-        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
         let origins = output.specialized_free_function_origins();
         let wraps = origins
             .iter()
@@ -2414,7 +2442,7 @@ mod tests {
             )],
             1,
         );
-        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
         let origins = output
             .specialized_free_function_origins()
             .iter()
@@ -2455,7 +2483,7 @@ mod tests {
             ],
             9,
         );
-        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
         let origins = output
             .specialized_free_function_origins()
             .iter()
@@ -2497,7 +2525,7 @@ mod tests {
             9,
         );
         let options = CompileOptions::default();
-        let (canonical, canonical_rir) = canonical(&source, &options, false);
+        let (canonical, canonical_rir) = canonical(&source, &options);
         assert_eq!(
             canonical.work().body_owner_tokens,
             BodyOwnerTokenWork {
@@ -2535,8 +2563,8 @@ mod tests {
             1,
         );
         let options = CompileOptions::default();
-        let (ordinary, ordinary_rir) = canonical(&source, &options, false);
-        let (with_ids, with_ids_rir) = canonical(&source, &options, true);
+        let (ordinary, ordinary_rir) = whole_program_canonical(&source, &options, false);
+        let (with_ids, with_ids_rir) = whole_program_canonical(&source, &options, true);
         assert_eq!(ordinary.work().binding.bind_invocations, 1);
         assert_eq!(with_ids.work().binding.bind_invocations, 1);
         assert_eq!(ordinary.work().manifest.build_invocations, 1);
@@ -2561,9 +2589,7 @@ mod tests {
             source.push_str(&format!(" fn irrelevant{index}() -> i32 {{ {index} }}"));
         }
         let snapshot = snapshot(&[(1, "/main.rue", "main.rue", &source)], 1);
-        canonical(&snapshot, &CompileOptions::default(), false)
-            .0
-            .work()
+        canonical(&snapshot, &CompileOptions::default()).0.work()
     }
 
     #[test]
@@ -2594,7 +2620,7 @@ mod tests {
             source.push_str(&format!(" fn irrelevant{index}() -> i32 {{ {index} }}"));
         }
         let snapshot = snapshot(&[(1, "/main.rue", "main.rue", &source)], 1);
-        canonical(&snapshot, &CompileOptions::default(), false)
+        whole_program_canonical(&snapshot, &CompileOptions::default(), false)
             .0
             .work()
     }
@@ -2622,7 +2648,7 @@ mod tests {
             )],
             1,
         );
-        let (output, _) = canonical(&source, &CompileOptions::default(), false);
+        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
         assert_eq!(
             output
                 .functions()
@@ -2644,12 +2670,11 @@ mod tests {
     #[test]
     fn codegen_input_tracks_root_paths_and_options_but_not_linker() {
         let sources = [
-            (
-                1,
-                "/old/main.rue",
-                "main.rue",
-                "const h = @import(\"helper.rue\"); fn main() -> i32 { h.helper() }",
-            ),
+            // This fixture asserts on declared physical paths, so it must stay
+            // import-free: an import-bearing fixture is republished by a
+            // discovery epoch, which normalizes physical paths and would erase
+            // the /old vs /new distinction the relocation case rests on.
+            (1, "/old/main.rue", "main.rue", "fn main() -> i32 { 42 }"),
             (
                 2,
                 "/old/helper.rue",
@@ -2663,16 +2688,16 @@ mod tests {
         ];
         let base_snapshot = snapshot(&sources, 1);
         let base_options = CompileOptions::default();
-        let (base, _) = canonical(&base_snapshot, &base_options, false);
+        let (base, _) = canonical(&base_snapshot, &base_options);
 
         let mut linker = base_options.clone();
         linker.linker = crate::LinkerMode::System("clang".to_owned());
-        let (linker, _) = canonical(&base_snapshot, &linker, false);
+        let (linker, _) = canonical(&base_snapshot, &linker);
         assert_eq!(base.input(), linker.input());
 
         let mut optimized = base_options.clone();
         optimized.opt_level = crate::OptLevel::O1;
-        let (optimized, _) = canonical(&base_snapshot, &optimized, false);
+        let (optimized, _) = canonical(&base_snapshot, &optimized);
         assert_ne!(base.input(), optimized.input());
 
         let relocated = snapshot(
@@ -2682,7 +2707,7 @@ mod tests {
             ],
             1,
         );
-        let (relocated, _) = canonical(&relocated, &base_options, false);
+        let (relocated, _) = canonical(&relocated, &base_options);
         assert_ne!(base.input(), relocated.input());
 
         // The designated root is its own input axis. It is exercised on an
@@ -2699,8 +2724,8 @@ mod tests {
                 "fn main() -> i32 { 1 }",
             ),
         ];
-        let (first_root, _) = canonical(&snapshot(&roots, 1), &base_options, false);
-        let (second_root, _) = canonical(&snapshot(&roots, 2), &base_options, false);
+        let (first_root, _) = canonical(&snapshot(&roots, 1), &base_options);
+        let (second_root, _) = canonical(&snapshot(&roots, 2), &base_options);
         assert_ne!(first_root.input(), second_root.input());
     }
 
@@ -2716,10 +2741,10 @@ mod tests {
             1,
         );
         let o0_options = CompileOptions::default();
-        let (o0, _) = canonical(&source, &o0_options, false);
+        let (o0, _) = canonical(&source, &o0_options);
         let mut o1_options = o0_options.clone();
         o1_options.opt_level = crate::OptLevel::O1;
-        let (o1, _) = canonical(&source, &o1_options, false);
+        let (o1, _) = canonical(&source, &o1_options);
 
         let o0 = o0.work().cfg;
         let o1 = o1.work().cfg;
