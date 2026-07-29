@@ -41,7 +41,8 @@ The stable or substantially implemented surface includes:
 - inference, constants, functions, recursion, methods, and comptime execution;
 - blocks, `if`, `match`, `while`, `for`, `break`, `continue`, `return`, and `?`;
 - structs, anonymous structs, payload enums, fixed arrays, and strings;
-- mutable bindings, assignments, field/index places, and evaluation-order rules;
+- mutable bindings, assignments (plain and compound, `x += 1`), field/index
+  places, and evaluation-order rules;
 - affine move semantics, `borrow`/`inout` parameter modes, exclusivity checks,
   destructors, and explicit `@drop`;
 - modules, `@import`, visibility, and the `std` module;

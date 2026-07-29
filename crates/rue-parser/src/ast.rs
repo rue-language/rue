@@ -1130,9 +1130,67 @@ pub struct LetStatement {
 pub struct AssignStatement {
     /// Assignment target (variable or field)
     pub target: AssignTarget,
+    /// The compound-assignment operator, when the statement was written as
+    /// `place op= value` (RUE-1043). `None` for a plain `place = value`.
+    pub op: Option<CompoundOp>,
     /// Value expression
     pub value: Box<Expr>,
     pub span: Span,
+}
+
+/// The operator of a compound assignment statement `place op= value` (RUE-1043).
+///
+/// Only the binary operators that produce a value of the target's own type can
+/// appear here; the comparison and short-circuiting logical operators have no
+/// compound form because their result type differs from their operands'.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompoundOp {
+    Add,    // +=
+    Sub,    // -=
+    Mul,    // *=
+    Div,    // /=
+    Mod,    // %=
+    BitAnd, // &=
+    BitOr,  // |=
+    BitXor, // ^=
+    Shl,    // <<=
+    Shr,    // >>=
+}
+
+impl CompoundOp {
+    /// The compound operator spelled by `kind`, if it spells one.
+    pub fn from_token(kind: rue_lexer::TokenKind) -> Option<Self> {
+        use rue_lexer::TokenKind as T;
+        Some(match kind {
+            T::PlusEq => CompoundOp::Add,
+            T::MinusEq => CompoundOp::Sub,
+            T::StarEq => CompoundOp::Mul,
+            T::SlashEq => CompoundOp::Div,
+            T::PercentEq => CompoundOp::Mod,
+            T::AmpEq => CompoundOp::BitAnd,
+            T::PipeEq => CompoundOp::BitOr,
+            T::CaretEq => CompoundOp::BitXor,
+            T::LtLtEq => CompoundOp::Shl,
+            T::GtGtEq => CompoundOp::Shr,
+            _ => return None,
+        })
+    }
+
+    /// The source spelling of the compound operator, e.g. `+=`.
+    pub fn spelling(self) -> &'static str {
+        match self {
+            CompoundOp::Add => "+=",
+            CompoundOp::Sub => "-=",
+            CompoundOp::Mul => "*=",
+            CompoundOp::Div => "/=",
+            CompoundOp::Mod => "%=",
+            CompoundOp::BitAnd => "&=",
+            CompoundOp::BitOr => "|=",
+            CompoundOp::BitXor => "^=",
+            CompoundOp::Shl => "<<=",
+            CompoundOp::Shr => ">>=",
+        }
+    }
 }
 
 /// An assignment target.
@@ -2138,14 +2196,27 @@ fn fmt_stmt(f: &mut fmt::Formatter<'_>, stmt: &Statement, level: usize) -> fmt::
             fmt_expr(f, &let_stmt.init, level + 1)
         }
         Statement::Assign(assign) => {
+            // A plain assignment prints exactly as before; a compound one names
+            // its operator so the two forms are distinguishable (RUE-1043).
+            let op = match assign.op {
+                Some(op) => format!("{} ", op.spelling()),
+                None => String::new(),
+            };
             match &assign.target {
-                AssignTarget::Var(ident) => writeln!(f, "Assign sym:{}", ident.name.into_usize())?,
+                AssignTarget::Var(ident) => {
+                    writeln!(f, "Assign {}sym:{}", op, ident.name.into_usize())?
+                }
                 AssignTarget::Field(field) => {
-                    writeln!(f, "Assign field .sym:{}", field.field.name.into_usize())?;
+                    writeln!(
+                        f,
+                        "Assign {}field .sym:{}",
+                        op,
+                        field.field.name.into_usize()
+                    )?;
                     fmt_expr(f, &field.base, level + 1)?;
                 }
                 AssignTarget::Index(index) => {
-                    writeln!(f, "Assign index")?;
+                    writeln!(f, "Assign {}index", op)?;
                     indent(f, level + 1)?;
                     writeln!(f, "Base:")?;
                     fmt_expr(f, &index.base, level + 2)?;

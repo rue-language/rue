@@ -29,6 +29,7 @@ pub use ast::{
     BlockExpr,
     CallArg,
     CallExpr,
+    CompoundOp,
     Directive,
     DirectiveArg,
     EnumDecl,

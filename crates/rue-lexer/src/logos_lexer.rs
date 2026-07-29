@@ -541,6 +541,30 @@ pub enum LogosTokenKind {
     Arrow,
     #[token("=>")]
     FatArrow,
+
+    // Compound-assignment operators (RUE-1043). Logos prefers the longest
+    // match, so `<<=` wins over `<<` and `+=` over `+` without any ordering
+    // requirement here.
+    #[token("+=")]
+    PlusEq,
+    #[token("-=")]
+    MinusEq,
+    #[token("*=")]
+    StarEq,
+    #[token("/=")]
+    SlashEq,
+    #[token("%=")]
+    PercentEq,
+    #[token("&=")]
+    AmpEq,
+    #[token("|=")]
+    PipeEq,
+    #[token("^=")]
+    CaretEq,
+    #[token("<<=")]
+    LtLtEq,
+    #[token(">>=")]
+    GtGtEq,
     // `::` is no longer a Rue operator (RUE-488): `.` is the sole member-access
     // spelling. The token is still recognized so a stray `::` reaches the parser
     // as one unit and yields a precise "use `.`" diagnostic, rather than lexing
@@ -664,6 +688,16 @@ impl From<LogosTokenKind> for TokenKind {
             LogosTokenKind::Arrow => TokenKind::Arrow,
             LogosTokenKind::FatArrow => TokenKind::FatArrow,
             LogosTokenKind::ColonColon => TokenKind::ColonColon,
+            LogosTokenKind::PlusEq => TokenKind::PlusEq,
+            LogosTokenKind::MinusEq => TokenKind::MinusEq,
+            LogosTokenKind::StarEq => TokenKind::StarEq,
+            LogosTokenKind::SlashEq => TokenKind::SlashEq,
+            LogosTokenKind::PercentEq => TokenKind::PercentEq,
+            LogosTokenKind::AmpEq => TokenKind::AmpEq,
+            LogosTokenKind::PipeEq => TokenKind::PipeEq,
+            LogosTokenKind::CaretEq => TokenKind::CaretEq,
+            LogosTokenKind::LtLtEq => TokenKind::LtLtEq,
+            LogosTokenKind::GtGtEq => TokenKind::GtGtEq,
             LogosTokenKind::Plus => TokenKind::Plus,
             LogosTokenKind::Minus => TokenKind::Minus,
             LogosTokenKind::Star => TokenKind::Star,
@@ -1877,6 +1911,41 @@ mod tests {
         let (tokens, _) = LogosLexer::new(&source).tokenize().unwrap();
         assert_eq!(tokens.len(), MAX_INITIAL_TOKEN_CAPACITY * 4 + 1);
         assert!(tokens.capacity() >= tokens.len());
+    }
+
+    #[test]
+    fn compound_assignment_operators_lex_as_single_tokens() {
+        let lexer = LogosLexer::new("+= -= *= /= %= &= |= ^= <<= >>=");
+        let (tokens, _) = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|token| token.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                TokenKind::PlusEq,
+                TokenKind::MinusEq,
+                TokenKind::StarEq,
+                TokenKind::SlashEq,
+                TokenKind::PercentEq,
+                TokenKind::AmpEq,
+                TokenKind::PipeEq,
+                TokenKind::CaretEq,
+                TokenKind::LtLtEq,
+                TokenKind::GtGtEq,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn compound_assignment_does_not_shadow_its_shorter_operators() {
+        // The longest match wins, but only where one is actually spelled:
+        // `a << b` and `a <= b` keep lexing as they did (RUE-1043).
+        let lexer = LogosLexer::new("a << b <= c == d");
+        let (tokens, _) = lexer.tokenize().unwrap();
+        let kinds: Vec<_> = tokens.iter().map(|token| token.kind).collect();
+        assert!(matches!(kinds[1], TokenKind::LtLt));
+        assert!(matches!(kinds[3], TokenKind::LtEq));
+        assert!(matches!(kinds[5], TokenKind::EqEq));
     }
 
     #[test]

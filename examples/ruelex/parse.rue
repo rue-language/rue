@@ -99,6 +99,16 @@ pub struct Parser {
         self.arena.list(list, item, n.start, n.end)
     }
 
+    // The compound-assignment operator a token spells (5.2:16), or zero when
+    // it spells none. The operator is the token kind itself, so an assignment
+    // node records which operator it applies.
+    fn compound_assign_op(kind: u64) -> u64 {
+        if kind == token.PLUSEQ || kind == token.MINUSEQ || kind == token.STAREQ
+            || kind == token.SLASHEQ || kind == token.PERCENTEQ || kind == token.AMPEQ
+            || kind == token.PIPEEQ || kind == token.CARETEQ || kind == token.LTLTEQ
+            || kind == token.GTGTEQ { kind } else { 0 }
+    }
+
     // Binding power is ordered from loose to tight. Zero means non-infix.
     fn binding_power(kind: u64) -> u64 {
         if kind == token.PIPEPIPE { 1 }
@@ -506,10 +516,12 @@ pub struct Parser {
             }
             let start = self.current().start;
             let expr = self.parse_expr(0, true);
-            if self.eat(token.EQ) {
+            let compound = Self.compound_assign_op(self.current().kind);
+            if compound != 0 || self.at(token.EQ) {
+                let _ = self.bump();
                 let rhs = self.parse_expr(0, true);
                 let semi = self.expect(token.SEMI);
-                let s = self.add(ast.ASSIGN, 0, start, semi.end, expr, rhs, 0);
+                let s = self.add(ast.ASSIGN, compound, start, semi.end, expr, rhs, 0);
                 stmts = self.append(stmts, s);
             } else if self.eat(token.SEMI) {
                 let s = self.add(ast.EXPR_STMT, 0, start, self.previous().end, expr, 0, 0);

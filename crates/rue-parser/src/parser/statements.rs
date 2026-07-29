@@ -399,7 +399,12 @@ impl Parser {
             } else {
                 self.expr()?
             };
-            if self.eat(TokenKind::Eq) {
+            // `place = value` and the compound forms `place op= value`
+            // (RUE-1043) share one statement shape; the operator, if any, is
+            // recorded on the statement and applied by the desugaring in RIR.
+            let compound = CompoundOp::from_token(self.kind());
+            if compound.is_some() || self.at(TokenKind::Eq) {
+                self.bump();
                 let target = expr_to_target(value, self.syms.self_value).ok_or_else(|| {
                     self.error("invalid assignment target");
                 })?;
@@ -407,6 +412,7 @@ impl Parser {
                 self.expect(TokenKind::Semi)?;
                 statements.push(Statement::Assign(AssignStatement {
                     target,
+                    op: compound,
                     value: rhs,
                     span: Span::with_file(
                         self.file_id,
@@ -573,6 +579,60 @@ mod tests {
         assert!(parses(
             "fn f(x: i32) -> i32 { let mut y: i32 = x; while y > 0 { y = y - 1; } if y == 0 { 1 } else { 2 } }"
         ));
+    }
+
+    fn assignment_of(source: &str) -> AssignStatement {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, _) = Parser::new(tokens, interner).parse().unwrap();
+        let Item::Function(function) = &ast.items[0] else {
+            panic!("expected a function item");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected a block body");
+        };
+        match &body.statements[1] {
+            Statement::Assign(assignment) => assignment.clone(),
+            other => panic!("expected an assignment statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compound_assignment_records_its_operator() {
+        for (source, expected) in [
+            ("x += 1;", CompoundOp::Add),
+            ("x -= 1;", CompoundOp::Sub),
+            ("x *= 1;", CompoundOp::Mul),
+            ("x /= 1;", CompoundOp::Div),
+            ("x %= 1;", CompoundOp::Mod),
+            ("x &= 1;", CompoundOp::BitAnd),
+            ("x |= 1;", CompoundOp::BitOr),
+            ("x ^= 1;", CompoundOp::BitXor),
+            ("x <<= 1;", CompoundOp::Shl),
+            ("x >>= 1;", CompoundOp::Shr),
+        ] {
+            let assignment = assignment_of(&format!("fn f() {{ let mut x = 0; {source} }}"));
+            assert_eq!(assignment.op, Some(expected), "for `{source}`");
+            assert!(matches!(assignment.target, AssignTarget::Var(_)));
+        }
+    }
+
+    #[test]
+    fn plain_assignment_records_no_operator() {
+        let assignment = assignment_of("fn f() { let mut x = 0; x = 1; }");
+        assert_eq!(assignment.op, None);
+    }
+
+    #[test]
+    fn compound_assignment_accepts_every_place_form() {
+        assert!(parses("fn f() { let mut x = 0; x += 1; }"));
+        assert!(parses("fn f(inout p: P) { p.field += 1; }"));
+        assert!(parses("fn f(inout a: [i32; 2]) { a[0] += 1; }"));
+        assert!(parses("fn f(inout o: O) { o.rows[1].cells[i] *= 2; }"));
+    }
+
+    #[test]
+    fn compound_assignment_is_a_statement_not_an_expression() {
+        assert!(!parses("fn f() { let mut x = 0; let y = (x += 1); y }"));
     }
 
     #[test]
