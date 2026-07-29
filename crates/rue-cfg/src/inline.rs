@@ -1114,10 +1114,10 @@ mod tests {
         let caller = program.cfg("caller");
         let callee = program.cfg("bump");
         assert!(callee.is_param_by_ref(0), "inout uses the by-ref ABI");
-        let caller_live = count_matching(&**caller, |data| {
+        let caller_live = count_matching(caller, |data| {
             matches!(data, CfgInstData::StorageLive { .. })
         });
-        let callee_live = count_matching(&**callee, |data| {
+        let callee_live = count_matching(callee, |data| {
             matches!(data, CfgInstData::StorageLive { .. })
         });
         let inlined = program.inline("caller", "bump");
