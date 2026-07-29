@@ -614,9 +614,11 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
             ))
         })
         .collect::<Result<Vec<_>, F>>()?;
-    method_references.sort_by(|(left_symbol, left_method, _), (right_symbol, right_method, _)| {
-        (left_symbol, left_method).cmp(&(right_symbol, right_method))
-    });
+    method_references.sort_by(
+        |(left_symbol, left_method, _), (right_symbol, right_method, _)| {
+            (left_symbol, left_method).cmp(&(right_symbol, right_method))
+        },
+    );
     let method_references = method_references
         .into_iter()
         .map(|(_, _, reference)| reference)

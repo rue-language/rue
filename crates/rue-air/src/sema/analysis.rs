@@ -22,9 +22,7 @@ use rue_rir::{InstData, InstRef, Rir, RirArgMode, RirCallArg, RirParamMode};
 use rue_span::{FileId, Span};
 use rue_target::{Arch, DataModel, Os};
 
-use super::call_resolution::{
-    CallResolutionFacts, resolve_static_call_reference,
-};
+use super::call_resolution::{CallResolutionFacts, resolve_static_call_reference};
 use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue};
 use super::{AnalyzedFunction, BodySema, InferenceContext, MethodInfo, ParamSlotModes, SemaOutput};
 use crate::inference::{
@@ -958,8 +956,7 @@ pub(crate) fn import_staged_body(
     // exactly when its corresponding `Call` resolved above; anything else
     // fails the whole import closed rather than dropping a reference.
     let mut imported = imported;
-    let mut method_references =
-        HashSet::with_capacity(body.method_references.len());
+    let mut method_references = HashSet::with_capacity(body.method_references.len());
     for reference in body.method_references.iter() {
         let struct_id = resolve_struct_nominal(sema, &reference.receiver)?;
         let method = sema
