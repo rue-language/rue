@@ -347,6 +347,13 @@ CLI_TEST_SHARD_COUNT = 4
 # The required pre-merge canaries compile a reduced root from each maintained
 # application and execute its core path. They are intentionally honest about
 # their scope: neither target claims to compile the complete generated graph.
+#
+# None of the large-example sh_tests declares a per-rule timeout:
+# `test_rule_timeout_ms` is parsed but ignored by the OSS test executor
+# (RUE-1156), so the effective outer bound on each of them is the executor's
+# 600-second default. Scheduled runs finish well inside it; a target that ever
+# needs more must pass `-- --timeout N` at the invocation site, the one
+# executor mechanism that works.
 [
     rue_sh_test(
         name = "large-example-{}-canary".format(_program),
@@ -357,7 +364,6 @@ CLI_TEST_SHARD_COUNT = 4
             "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
             "RUE_STD_DIR": "$(location :std)/std",
         },
-        test_rule_timeout_ms = 600000,
     )
     for _program in ["caldera", "meridian"]
 ]
@@ -378,7 +384,6 @@ CLI_TEST_SHARD_COUNT = 4
             "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
             "RUE_STD_DIR": "$(location :std)/std",
         },
-        test_rule_timeout_ms = 7200000,
     )
     for _program in ["caldera", "meridian"]
 ]
@@ -397,7 +402,6 @@ CLI_TEST_SHARD_COUNT = 4
             "RUE_EXAMPLES_DIR": "$(location :examples)/examples",
             "RUE_STD_DIR": "$(location :std)/std",
         },
-        test_rule_timeout_ms = 7200000,
     )
     for _program in ["caldera", "meridian"]
 ]
