@@ -49,7 +49,7 @@ pub fn primary(borrow site: model.Site, current: u64) -> StrBuf {
     let mut i: u64 = 0;
     while i < count {
         append_page_link(borrow site, site.navigation.get_or(start + i, 0), current, inout out);
-        i = i + 1;
+        i += 1;
     }
     out.push_str("</ul></nav>");
     out
@@ -59,7 +59,7 @@ fn position(borrow site: model.Site, page_index: u64) -> u64 {
     let mut i: u64 = 0;
     while i < site.navigation.len() {
         if site.navigation.get_or(i, model.NONE()) == page_index { return i; }
-        i = i + 1;
+        i += 1;
     }
     model.NONE()
 }

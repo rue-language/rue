@@ -24,7 +24,7 @@ fn is_rule(borrow line: StrBuf) -> bool {
         let b = text.byte_of(borrow line, i);
         if b == first { marks = marks + 1; }
         else if !text.is_space(b) { return false; }
-        i = i + 1;
+        i += 1;
     }
     marks >= 3
 }
@@ -47,7 +47,7 @@ fn explicit_anchor(borrow heading: StrBuf) -> StrBuf {
     if heading.len() < 4 || text.byte_of(borrow heading, heading.len() - 1) != 125 { return StrBuf.new(); }
     let mut i = heading.len() - 1;
     while i > 1 {
-        i = i - 1;
+        i -= 1;
         if text.byte_of(borrow heading, i) == 123 && text.byte_of(borrow heading, i + 1) == 35 {
             return text.slice(borrow heading, i + 2, heading.len() - 1);
         }
@@ -80,7 +80,7 @@ fn add_anchor(inout site: model.Site, page_index: u64, block_index: u64, borrow 
             model.add_error(inout site, 202, page.source_id, line, "duplicate heading anchor");
             return;
         }
-        i = i + 1;
+        i += 1;
     }
     site.anchors.push(model.Anchor { page: page_index, name_id: id, line: line, heading_block: block_index });
 }
@@ -187,9 +187,9 @@ fn parse_list(
         let raw_item = text.slice(borrow current, prefix, current.len());
         let item = text.trim(borrow raw_item);
         add_text_block(inout site, page_index, model.BLOCK_ITEM(), 0, borrow item, current_line);
-        count = count + 1;
+        count += 1;
         offset = text.next_line(borrow source, offset);
-        current_line = current_line + 1;
+        current_line += 1;
     }
     let mut list = site.blocks.get_or(list_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
     list.count = count;
@@ -205,7 +205,7 @@ fn is_table_separator(borrow line: StrBuf) -> bool {
         let b = text.byte_of(borrow line, i);
         if b == 45 { dashes = dashes + 1; }
         else if b != 124 && b != 58 && !text.is_space(b) { return false; }
-        i = i + 1;
+        i += 1;
     }
     dashes >= 3
 }
@@ -253,9 +253,9 @@ fn parse_table(
         let row = text.line_at(borrow source, offset);
         if row.len() == 0 || text.count_byte(borrow row, 124) == 0 { break; }
         add_table_row(inout site, page_index, borrow row, current_line);
-        count = count + 1;
+        count += 1;
         offset = text.next_line(borrow source, offset);
-        current_line = current_line + 1;
+        current_line += 1;
     }
     let mut table = site.blocks.get_or(table_index, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
     table.count = count;
@@ -277,7 +277,7 @@ pub fn parse_page(inout site: model.Site, page_index: u64, source: StrBuf) {
         let current = text.line_at(borrow source, offset);
         if current.len() == 0 {
             offset = text.next_line(borrow source, offset);
-            line = line + 1;
+            line += 1;
         } else {
             let level = heading_level(borrow current);
             if level > 0 {
@@ -288,7 +288,7 @@ pub fn parse_page(inout site: model.Site, page_index: u64, source: StrBuf) {
                 add_text_block(inout site, page_index, model.BLOCK_HEADING(), level, borrow clean_heading, line);
                 add_anchor(inout site, page_index, heading_block, borrow heading, line);
                 offset = text.next_line(borrow source, offset);
-                line = line + 1;
+                line += 1;
             } else if is_fence(borrow current) {
                 let next = parse_fence(inout site, page_index, borrow source, offset, line);
                 while offset < next { offset = text.next_line(borrow source, offset); line = line + 1; }
@@ -298,13 +298,13 @@ pub fn parse_page(inout site: model.Site, page_index: u64, source: StrBuf) {
             } else if is_rule(borrow current) {
                 site.blocks.push(model.Block { tag: model.BLOCK_RULE(), text_id: model.NONE(), level: 0, first: 0, count: 0, line: line, aux: model.NONE() });
                 offset = text.next_line(borrow source, offset);
-                line = line + 1;
+                line += 1;
             } else if text.byte_of(borrow current, 0) == 62 {
                 let raw = text.slice(borrow current, 1, current.len());
                 let quote = text.trim(borrow raw);
                 add_text_block(inout site, page_index, model.BLOCK_QUOTE(), 0, borrow quote, line);
                 offset = text.next_line(borrow source, offset);
-                line = line + 1;
+                line += 1;
             } else {
                 let next_offset = text.next_line(borrow source, offset);
                 let next = if next_offset < source.len() { text.line_at(borrow source, next_offset) } else { StrBuf.new() };
@@ -329,9 +329,9 @@ pub fn parse_page(inout site: model.Site, page_index: u64, source: StrBuf) {
         let block = site.blocks.get_or(b, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
         if block.text_id != model.NONE() {
             let value = site.strings.copy(block.text_id);
-            words = words + inline.word_count(borrow value);
+            words += inline.word_count(borrow value);
         }
-        b = b + 1;
+        b += 1;
     }
     page.word_count = words;
     if page.title_id == model.NONE() {

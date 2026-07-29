@@ -35,13 +35,13 @@ pub fn to_radix(n: u64, base: u64) -> StrBuf {
     while m > 0 {
         let d = m % base;
         buf.push(digits[d]);
-        m = m / base;
+        m /= base;
     }
     // Digits were produced least-significant first; emit them reversed.
     let mut out = StrBuf.new();
     let mut i = buf.len();
     while i > 0 {
-        i = i - 1;
+        i -= 1;
         out.push(buf.get_or(i, 48));
     }
     out

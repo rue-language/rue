@@ -85,7 +85,7 @@ fn compare_pair(
     let before = route_matrix.weight(borrow baseline, from, to);
     let after = route_matrix.weight(borrow candidate, from, to);
     if before != after {
-        changed = changed + 1;
+        changed += 1;
         if before != routing.INF() && after == routing.INF() {
             total_penalty = add(total_penalty, baseline.diameter + 1);
         } else {
@@ -112,9 +112,9 @@ fn make_cell(
             if from != to {
                 compare_pair(borrow baseline, borrow cost, from, to, inout changed, inout total_penalty);
             }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     Cell {
         hour: at, minimum_capacity: capacity,
@@ -158,9 +158,9 @@ pub fn run(borrow scenario: model.Scenario) -> Analysis {
             digest = mix(digest, cell.changed_from_baseline);
             digest = mix(digest, cell.total_penalty);
             cells.push(cell);
-            threshold_index = threshold_index + 1;
+            threshold_index += 1;
         }
-        hour_index = hour_index + 1;
+        hour_index += 1;
     }
     Analysis {
         cells: cells, hours: 5, thresholds: 5,
@@ -200,7 +200,7 @@ pub fn render(borrow value: Analysis) -> StrBuf {
         text.append_u64(inout out, cell.diameter); out.push(32);
         text.append_u64(inout out, cell.changed_from_baseline); out.push(32);
         text.append_u64(inout out, cell.total_penalty); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "most_sensitive_hour="); text.append_u64(inout out, value.most_sensitive_hour);
     text.append_literal(inout out, " capacity="); text.append_u64(inout out, value.most_sensitive_capacity);

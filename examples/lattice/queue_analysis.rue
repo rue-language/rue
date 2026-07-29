@@ -33,7 +33,7 @@ fn ready_time(borrow workflow: model.Workflow, borrow run: state.Run, task: u64)
             let finish = run.ends.get_or(edge.before, 0);
             if finish != model.NONE() && finish > result { result = finish; }
         }
-        i = i + 1;
+        i += 1;
     }
     result
 }
@@ -59,11 +59,11 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         let end = run.ends.get_or(i, model.NONE());
         dependency_ready.set(i, ready);
         if start == model.NONE() {
-            unstarted_tasks = unstarted_tasks + 1;
+            unstarted_tasks += 1;
         } else {
             let delay = if start >= ready { start - ready } else { timing_mismatches = timing_mismatches + 1; 0 };
             queue_delay.set(i, delay);
-            total_queue_delay = total_queue_delay + delay;
+            total_queue_delay += delay;
             if delay == 0 { zero_delay_tasks = zero_delay_tasks + 1; }
             else { delayed_tasks = delayed_tasks + 1; }
             if maximum_queue_task == model.NONE() || delay > maximum_queue_delay {
@@ -76,7 +76,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         }
         digest = mix(digest, ready); digest = mix(digest, start);
         digest = mix(digest, end); digest = mix(digest, queue_delay.get_or(i, 0));
-        i = i + 1;
+        i += 1;
     }
     Analysis {
         dependency_ready: dependency_ready, queue_delay: queue_delay, runtime: runtime,

@@ -22,16 +22,16 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
                         model.cell_number(borrow database, earlier, c) == value {
                         seen = true;
                     }
-                    earlier = earlier + 1;
+                    earlier += 1;
                 }
                 if seen { duplicates = duplicates + 1; } else { distinct = distinct + 1; }
             }
-            r = r + 1;
+            r += 1;
         }
         metric.observe(inout out, distinct, c + 1);
         metric.warn(inout out, column.unique && duplicates > 0);
         metric.warn(inout out, !column.nullable && column.kind == 0);
-        c = c + 1;
+        c += 1;
     }
     metric.finish(inout out);
     out

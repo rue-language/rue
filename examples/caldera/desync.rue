@@ -12,7 +12,7 @@ pub fn compare(borrow a: model.World, borrow b: model.World) -> Audit {
         let x = a.entities.get_or(i, model.empty_entity());
         let y = b.entities.get_or(i, model.empty_entity());
         if first == model.NONE() && (x.x != y.x || x.y != y.y || x.health != y.health) { first = i; }
-        i = i + 1;
+        i += 1;
     }
     Audit { left: left, right: right, mismatch: left != right,
         first_entity: first, digest: metric.mix(left, right),

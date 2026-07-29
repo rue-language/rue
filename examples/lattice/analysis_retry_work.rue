@@ -61,7 +61,7 @@ fn observe_tasks(inout result: metric.Metric, borrow workflow: model.Workflow) {
         let task = workflow.tasks.get_or(i, model.empty_task());
         metric.observe(inout result, value, task.priority + 1);
         metric.warn(inout result, task.duration == 0 || task.cpu == 0 || task.memory == 0);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -72,7 +72,7 @@ fn observe_edges(inout result: metric.Metric, borrow workflow: model.Workflow) {
         let value = edge_projection(borrow workflow, i);
         metric.observe(inout result, value, i + 1);
         metric.warn(inout result, edge.before >= workflow.tasks.len() || edge.after >= workflow.tasks.len());
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -83,7 +83,7 @@ fn observe_pools(inout result: metric.Metric, borrow workflow: model.Workflow) {
         let pool = workflow.pools.get_or(i, model.empty_pool());
         metric.observe(inout result, value, pool.slots + 1);
         metric.warn(inout result, pool.slots == 0 || pool.cpu == 0 || pool.memory == 0);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -95,11 +95,11 @@ fn observe_pairs(inout result: metric.Metric, borrow workflow: model.Workflow) -
         while second < workflow.tasks.len() {
             if related_pair(borrow workflow, first, second) {
                 metric.observe(inout result, pair_projection(borrow workflow, first, second), first + second + 1);
-                pairs = pairs + 1;
+                pairs += 1;
             }
-            second = second + 1;
+            second += 1;
         }
-        first = first + 1;
+        first += 1;
     }
     pairs
 }

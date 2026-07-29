@@ -19,7 +19,7 @@ pub fn render(borrow workflow: model.Workflow) -> StrBuf {
         text.append_literal(inout out, " from_roots="); text.append_u64(inout out, paths.paths_from_roots.get_or(i, 0));
         text.append_literal(inout out, " to_leaves="); text.append_u64(inout out, paths.paths_to_leaves.get_or(i, 0));
         text.append_literal(inout out, " through="); text.append_u64(inout out, paths.paths_through_task.get_or(i, 0)); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

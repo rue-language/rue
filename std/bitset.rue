@@ -77,10 +77,10 @@ pub fn BitSet() -> type {
             while w < self.words.len() {
                 let mut v = self.words.get_or(w, 0);
                 while v != 0 {
-                    total = total + (v & 1);
-                    v = v >> 1;
+                    total += (v & 1);
+                    v >>= 1;
                 }
-                w = w + 1;
+                w += 1;
             }
             total
         }

@@ -29,7 +29,7 @@ fn append_gantt(inout out: StrBuf, start: u64, end: u64, makespan: u64, width: u
     while i < width {
         if i >= first && i < last { out.push(61); }
         else { out.push(46); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -52,7 +52,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         format.append_optional_u64(inout out, end); out.push(32);
         text.append_u64(inout out, queue.queue_delay.get_or(i, 0)); out.push(32);
         format.append_status(inout out, run.status.get_or(i, state.FAILED())); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "total_queue_delay="); text.append_u64(inout out, queue.total_queue_delay);
     text.append_literal(inout out, " maximum_queue_delay="); text.append_u64(inout out, queue.maximum_queue_delay); out.push(10);

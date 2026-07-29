@@ -29,14 +29,14 @@ fn check_headings(inout site: model.Site, page_index: u64) {
         let block = site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 });
         if block.tag == model.BLOCK_HEADING() {
             if block.level == 1 {
-                h1_count = h1_count + 1;
+                h1_count += 1;
             }
             if previous > 0 && block.level > previous + 1 {
                 page_error(inout site, page_index, block.line, "heading level skips an intermediate level");
             }
             previous = block.level;
         }
-        i = i + 1;
+        i += 1;
     }
     if h1_count == 0 {
         page_error(inout site, page_index, 0, "published page needs a level-one heading");
@@ -60,10 +60,10 @@ fn check_tables(inout site: model.Site, page_index: u64) {
                 if cell_count(borrow site, borrow row) != columns {
                     page_error(inout site, page_index, row.line, "table row has a different column count from its header");
                 }
-                row_index = row_index + 1;
+                row_index += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -94,7 +94,7 @@ fn check_links(inout site: model.Site, page_index: u64) {
         if !link.external && url.has_query(borrow target) {
             page_error(inout site, page_index, link.line, "local links cannot contain query strings");
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -112,11 +112,11 @@ fn check_code_languages(inout site: model.Site, page_index: u64) {
                     page_error(inout site, page_index, block.line, "fenced code language contains unsafe punctuation");
                     j = language.len();
                 } else {
-                    j = j + 1;
+                    j += 1;
                 }
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -138,6 +138,6 @@ pub fn validate(inout site: model.Site) {
     let mut i: u64 = 0;
     while i < site.pages.len() {
         validate_page(inout site, i);
-        i = i + 1;
+        i += 1;
     }
 }

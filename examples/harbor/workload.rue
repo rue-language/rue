@@ -126,10 +126,10 @@ pub fn run(max_tier: u64, repetitions: u64) -> Suite {
             digest = mix(digest, next.scenario_fingerprint);
             digest = mix(digest, next.simulation_fingerprint);
             samples.push(next);
-            repetition = repetition + 1;
+            repetition += 1;
         }
         samples.push(baseline);
-        tier_value = tier_value + 1;
+        tier_value += 1;
     }
     Suite {
         samples: samples, repetitions: repeat_count, tiers: tier_count,
@@ -150,7 +150,7 @@ fn tier_baseline(borrow suite: Suite, tier_value: u64) -> Sample {
     while i < suite.samples.len() {
         let item = suite.samples.get_or(i, empty_sample());
         if item.tier == tier_value && item.repetition == 0 { return item; }
-        i = i + 1;
+        i += 1;
     }
     empty_sample()
 }
@@ -177,7 +177,7 @@ pub fn render(borrow suite: Suite) -> StrBuf {
         text.append_u64(inout out, item.dispatches); out.push(32);
         text.append_u64(inout out, item.work_units); out.push(32);
         text.append_u64(inout out, ratio(item.work_units, first.work_units)); out.push(10);
-        tier_value = tier_value + 1;
+        tier_value += 1;
     }
     text.append_literal(inout out, "total_route_pairs="); text.append_u64(inout out, suite.route_pairs);
     text.append_literal(inout out, " total_events="); text.append_u64(inout out, suite.events);

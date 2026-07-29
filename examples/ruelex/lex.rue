@@ -124,12 +124,12 @@ pub struct Lexer {
     // Consume one byte, maintaining 1-based line/column (columns count bytes).
     fn advance(inout self) {
         let c = self.at(self.pos);
-        self.pos = self.pos + 1;
+        self.pos += 1;
         if c == 10 {
-            self.line = self.line + 1;
+            self.line += 1;
             self.col = 1;
         } else {
-            self.col = self.col + 1;
+            self.col += 1;
         }
     }
 

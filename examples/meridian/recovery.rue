@@ -18,18 +18,18 @@ pub fn run(borrow database: model.Database, checkpoint_lsn: u64) -> Recovery {
     let mut previous: u64 = 0;
     while i < database.wal.len() {
         let entry = database.wal.get_or(i, model.empty_wal());
-        out.scanned = out.scanned + 1;
+        out.scanned += 1;
         if entry.lsn <= checkpoint_lsn { out.skipped = out.skipped + 1; }
         else if entry.committed {
-            out.redone = out.redone + 1;
+            out.redone += 1;
             out.checksum = metric.mix(out.checksum, entry.after);
         } else {
-            out.undone = out.undone + 1;
+            out.undone += 1;
             out.checksum = metric.mix(out.checksum, entry.before);
         }
         if entry.lsn <= previous { out.valid = false; }
         previous = entry.lsn;
-        i = i + 1;
+        i += 1;
     }
     out.checksum = metric.mix(out.checksum, out.redone);
     out.checksum = metric.mix(out.checksum, out.undone);

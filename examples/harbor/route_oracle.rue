@@ -57,10 +57,10 @@ pub fn distance(
             if route.bidirectional {
                 if relax(borrow scenario, i, route.to, route.from, now, minimum_capacity, mode, inout distances) { changed = true; }
             }
-            i = i + 1;
+            i += 1;
         }
         if !changed { break; }
-        pass = pass + 1;
+        pass += 1;
     }
     distances.get_or(target, routing.INF())
 }
@@ -75,9 +75,9 @@ pub fn audit_all_pairs(borrow scenario: model.Scenario, now: u64, minimum_capaci
             let actual = routing.path_weight(borrow scenario, borrow path, now, mode);
             let expected = distance(borrow scenario, from, to, now, minimum_capacity, mode);
             if actual != expected { mismatches = mismatches + 1; }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     mismatches
 }

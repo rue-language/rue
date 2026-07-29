@@ -32,7 +32,7 @@ pub fn pad_left(n: u64, width: u64) -> StrBuf {
         let mut i = len;
         while i < width {
             b.push(32);
-            i = i + 1;
+            i += 1;
         }
     }
     b.push_str(ds);
@@ -50,7 +50,7 @@ pub fn pad_right(n: u64, width: u64) -> StrBuf {
         let mut i = len;
         while i < width {
             b.push(32);
-            i = i + 1;
+            i += 1;
         }
     }
     b

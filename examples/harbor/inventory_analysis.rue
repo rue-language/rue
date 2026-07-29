@@ -60,9 +60,9 @@ fn blank_cells(borrow scenario: model.Scenario) -> Cells {
                 peak: 0, peak_time: 0, final_quantity: 0, underflows: 0,
                 turns_numerator: 0, turns_denominator: 0,
             });
-            cargo = cargo + 1;
+            cargo += 1;
         }
-        location = location + 1;
+        location += 1;
     }
     cells
 }
@@ -91,14 +91,14 @@ fn capture(borrow scenario: model.Scenario, borrow quantities: U64s, time: u64) 
             let value = quantities.get_or(index(borrow scenario, location, cargo), 0);
             at_location = add(at_location, value);
             if value > 0 { occupied_cells = occupied_cells + 1; }
-            cargo = cargo + 1;
+            cargo += 1;
         }
         total_inventory = add(total_inventory, at_location);
         if at_location > 0 { occupied_locations = occupied_locations + 1; }
         if at_location > max_location_inventory {
             max_location_inventory = at_location; max_location = location;
         }
-        location = location + 1;
+        location += 1;
     }
     Snapshot {
         time: time, total_inventory: total_inventory,
@@ -159,12 +159,12 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
             underflows = add(underflows, apply_event(borrow scenario, inout quantities, inout cells, borrow event));
             if event.tag == state.EVENT_SUPPLY() || event.tag == state.EVENT_PRODUCTION() { total_inbound = add(total_inbound, event.quantity); }
             if event.tag == state.EVENT_DEPARTURE() { total_outbound = add(total_outbound, event.quantity); }
-            cursor = cursor + 1;
+            cursor += 1;
         }
         let snapshot = capture(borrow scenario, borrow quantities, time);
         if snapshot.total_inventory > global_peak { global_peak = snapshot.total_inventory; global_peak_time = time; }
         snapshots.push(snapshot);
-        time = time + 1;
+        time += 1;
     }
     let mut final_inventory: u64 = 0;
     i = 0;

@@ -127,7 +127,7 @@ fn edge_rules(
     while i < reduction.redundant.len() {
         let edge_index = reduction.redundant.get_or(i, model.NONE());
         add(inout findings, REDUNDANT_DEPENDENCY(), INFO(), model.NONE(), model.NONE(), edge_index, 1, 0);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < reduction.essential.len() {
@@ -138,7 +138,7 @@ fn edge_rules(
         if before.pool != after.pool {
             add(inout findings, CROSS_POOL_DEPENDENCY(), INFO(), model.NONE(), model.NONE(), edge_index, before.pool, after.pool);
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -150,12 +150,12 @@ fn pool_rules(inout findings: Findings, borrow workflow: model.Workflow) {
         let mut i: u64 = 0;
         while i < workflow.tasks.len() {
             if workflow.tasks.get_or(i, model.empty_task()).pool == pool_index { tasks = tasks + 1; }
-            i = i + 1;
+            i += 1;
         }
         if pool.slots == 1 && tasks > 5 {
             add(inout findings, SINGLE_SLOT_HOT_POOL(), WARNING(), model.NONE(), pool_index, model.NONE(), tasks, 5);
         }
-        pool_index = pool_index + 1;
+        pool_index += 1;
     }
 }
 
@@ -166,7 +166,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Report
     let mut i: u64 = 0;
     while i < workflow.tasks.len() {
         task_rules(inout findings, borrow workflow, borrow run, borrow queue, i);
-        i = i + 1;
+        i += 1;
     }
     edge_rules(inout findings, borrow workflow, borrow reduction);
     pool_rules(inout findings, borrow workflow);
@@ -194,7 +194,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Report
         else { global_findings = global_findings + 1; }
         digest = mix(digest, finding.rule); digest = mix(digest, finding.severity);
         digest = mix(digest, finding.actual); digest = mix(digest, finding.threshold);
-        i = i + 1;
+        i += 1;
     }
     let count = findings.len();
     Report {

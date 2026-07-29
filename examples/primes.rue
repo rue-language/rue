@@ -20,7 +20,7 @@ fn is_prime(n: i32) -> bool {
         if n % i == 0 {
             return false;
         }
-        i = i + 2;
+        i += 2;
     }
     true
 }
@@ -30,9 +30,9 @@ fn count_primes(limit: i32) -> i32 {
     let mut n = 2;
     while n <= limit {
         if is_prime(n) {
-            count = count + 1;
+            count += 1;
         }
-        n = n + 1;
+        n += 1;
     }
     count
 }
@@ -44,7 +44,7 @@ fn main() -> i32 {
         if is_prime(n) {
             @dbg(n);
         }
-        n = n + 1;
+        n += 1;
     }
 
     // Return the count of primes up to 100 (should be 25)

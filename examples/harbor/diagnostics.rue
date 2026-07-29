@@ -24,7 +24,7 @@ pub fn render(borrow scenario: model.Scenario) -> StrBuf {
         let diagnostic = scenario.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: model.NONE(), detail: model.NONE() });
         let line = render_one(borrow scenario, diagnostic);
         text.append_string(inout out, borrow line);
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -35,7 +35,7 @@ pub fn count_code(borrow scenario: model.Scenario, code: u64) -> u64 {
     while i < scenario.diagnostics.len() {
         let diagnostic = scenario.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: 0, detail: 0 });
         if diagnostic.code == code { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }

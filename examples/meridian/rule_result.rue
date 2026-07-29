@@ -20,12 +20,12 @@ pub fn empty(rule: u64, cost: u64) -> Decision {
 }
 
 pub fn record(inout value: Decision, benefit: u64, fingerprint: u64) {
-    value.matches = value.matches + 1;
+    value.matches += 1;
     value.digest = metric.mix(value.digest, fingerprint);
     if benefit > 0 && benefit <= value.cost_after {
-        value.rewrites = value.rewrites + 1;
-        value.benefit = value.benefit + benefit;
-        value.cost_after = value.cost_after - benefit;
+        value.rewrites += 1;
+        value.benefit += benefit;
+        value.cost_after -= benefit;
     }
 }
 

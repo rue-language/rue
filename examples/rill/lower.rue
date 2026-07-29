@@ -41,7 +41,7 @@ struct Lowerer {
     fn local_slot(borrow self, symbol: u64) -> u64 {
         let mut i = self.locals.len();
         while i > 0 {
-            i = i - 1;
+            i -= 1;
             if self.locals.get_or(i, ast.NONE) == symbol { return i; }
         }
         ast.NONE
@@ -51,7 +51,7 @@ struct Lowerer {
         else { self.scopes.get_or(self.scopes.len() - 1, 0) };
         let mut i = self.locals.len();
         while i > start {
-            i = i - 1;
+            i -= 1;
             if self.locals.get_or(i, ast.NONE) == symbol {
                 self.report(node, "duplicate local binding in the same scope");
                 return i;
@@ -72,7 +72,7 @@ struct Lowerer {
         let mut count: u64 = 0;
         let mut id = first;
         while id != ast.NONE {
-            count = count + 1;
+            count += 1;
             id = self.arena.get(id).next;
         }
         count
@@ -252,7 +252,7 @@ struct Lowerer {
             let symbol = param.value;
             let next = param.next;
             let _ = self.declare(param, symbol);
-            arity = arity + 1;
+            arity += 1;
             parameter = next;
         }
         let id = self.program.add_function(node.value, self.program.code.len(), arity);

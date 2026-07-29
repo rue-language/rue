@@ -49,19 +49,19 @@ fn one(borrow scenario: model.Scenario, index: u64) -> Impact {
         let mut to: u64 = 0;
         while to < scenario.locations.len() {
             if from != to {
-                pairs = pairs + 1;
+                pairs += 1;
                 let before = path_cost(borrow scenario, from, to, baseline_at);
                 let during = path_cost(borrow scenario, from, to, active_at);
                 if before != routing.INF() { baseline_cost = add(baseline_cost, before); }
                 if during != routing.INF() { disrupted_cost = add(disrupted_cost, during); }
                 if during != before {
-                    affected_pairs = affected_pairs + 1;
+                    affected_pairs += 1;
                     if during == routing.INF() { disconnected_pairs = disconnected_pairs + 1; }
                 }
             }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     let added_cost = if disrupted_cost > baseline_cost { disrupted_cost - baseline_cost } else { 0 };
     Impact {
@@ -90,7 +90,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
             worst_disruption = i;
         }
         impacts.push(impact);
-        i = i + 1;
+        i += 1;
     }
     Summary {
         impacts: impacts, affected_pairs: affected_pairs,

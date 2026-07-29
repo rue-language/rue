@@ -65,15 +65,15 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Plan {
         slot_headroom.set(i, difference(pool.slots, peak_slots));
         cpu_headroom.set(i, difference(pool.cpu, peak_cpu));
         memory_headroom.set(i, difference(pool.memory, peak_memory));
-        total_slot_increase = total_slot_increase + difference(slots, pool.slots);
-        total_cpu_increase = total_cpu_increase + difference(cpu, pool.cpu);
-        total_memory_increase = total_memory_increase + difference(memory, pool.memory);
+        total_slot_increase += difference(slots, pool.slots);
+        total_cpu_increase += difference(cpu, pool.cpu);
+        total_memory_increase += difference(memory, pool.memory);
         if peak_slots == pool.slots || peak_cpu == pool.cpu || peak_memory == pool.memory {
-            saturated_pools = saturated_pools + 1;
+            saturated_pools += 1;
             constrained_pools.push(i);
         }
         digest = mix(digest, slots); digest = mix(digest, cpu); digest = mix(digest, memory);
-        i = i + 1;
+        i += 1;
     }
     let valid = audit.ok && constrained_pools.len() == saturated_pools;
     Plan {

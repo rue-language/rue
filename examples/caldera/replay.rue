@@ -15,10 +15,10 @@ pub fn run(borrow baseline: model.World, count: u64) -> Result {
     let mut i: u64 = 0;
     while i < count {
         let result = tick.step(inout world);
-        out.ticks = out.ticks + 1;
+        out.ticks += 1;
         out.timeline_digest = metric.mix(out.timeline_digest, result.checksum);
         if !result.valid { out.valid = false; }
-        i = i + 1;
+        i += 1;
     }
     out.final_checksum = checksum.world(borrow world);
     out.valid = out.valid && out.ticks == count; out

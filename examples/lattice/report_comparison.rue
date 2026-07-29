@@ -24,7 +24,7 @@ pub fn render(borrow workflow: model.Workflow, borrow first: state.Run, alternat
         text.append_literal(inout out, " second="); format.append_status(inout out, second.status.get_or(index, state.FAILED()));
         text.append_literal(inout out, " first_end="); format.append_optional_u64(inout out, first.ends.get_or(index, model.NONE()));
         text.append_literal(inout out, " second_end="); format.append_optional_u64(inout out, second.ends.get_or(index, model.NONE())); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

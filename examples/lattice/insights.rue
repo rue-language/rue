@@ -37,7 +37,7 @@ pub struct Insights {
 fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
 
 fn check(inout checks: u64, inout failures: u64, condition: bool) {
-    checks = checks + 1;
+    checks += 1;
     if !condition { failures = failures + 1; }
 }
 

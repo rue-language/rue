@@ -11,7 +11,7 @@ fn quoted_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
     while i < workflow.strings.string_len(id) {
         let byte = workflow.strings.byte_at(id, i);
         if byte == 39 { out.push(39); out.push(39); } else { out.push(byte); }
-        i = i + 1;
+        i += 1;
     }
     out.push(39);
 }

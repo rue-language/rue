@@ -20,7 +20,7 @@ pub fn build(borrow site: model.Site) -> StrBuf {
             escape.html_text(borrow path, inout out);
             out.push_str("</loc></url>\n");
         }
-        i = i + 1;
+        i += 1;
     }
     out.push_str("</urlset>\n");
     out

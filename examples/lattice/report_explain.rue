@@ -27,7 +27,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, " queue_delay="); text.append_u64(inout out, value.queue_delay);
         text.append_literal(inout out, " attempts="); text.append_u64(inout out, value.attempts);
         text.append_literal(inout out, " consistent="); text.append_bool(inout out, value.consistent); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

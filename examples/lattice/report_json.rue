@@ -55,7 +55,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         let edge = workflow.edges.get_or(i, model.empty_edge());
         out.push(123); key(inout out, "before"); text.json_id(inout out, borrow workflow, edge.before_id);
         out.push(44); key(inout out, "after"); text.json_id(inout out, borrow workflow, edge.after_id); out.push(125);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "],\"events\":[");
     i = 0;
@@ -67,7 +67,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         key(inout out, "task"); text.append_u64(inout out, event.task); out.push(44);
         key(inout out, "pool"); text.append_u64(inout out, event.pool); out.push(44);
         key(inout out, "attempt"); text.append_u64(inout out, event.attempt); out.push(125);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "],\"summary\":{");
     key(inout out, "makespan"); text.append_u64(inout out, run.makespan); out.push(44);

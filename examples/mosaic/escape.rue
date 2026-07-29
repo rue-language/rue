@@ -12,7 +12,7 @@ pub fn html_text(borrow value: StrBuf, inout out: StrBuf) {
         else if b == 60 { out.push_str("&lt;"); }
         else if b == 62 { out.push_str("&gt;"); }
         else { out.push(b); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -26,7 +26,7 @@ pub fn html_attribute(borrow value: StrBuf, inout out: StrBuf) {
         else if b == 60 { out.push_str("&lt;"); }
         else if b == 62 { out.push_str("&gt;"); }
         else { out.push(b); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -41,7 +41,7 @@ pub fn url_attribute(borrow value: StrBuf, inout out: StrBuf) {
         else if b == 62 { out.push_str("%3E"); }
         else if b == 38 { out.push_str("&amp;"); }
         else { out.push(b); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -62,6 +62,6 @@ pub fn plain_text(borrow value: StrBuf, inout out: StrBuf) {
             out.push(b);
             last_space = false;
         }
-        i = i + 1;
+        i += 1;
     }
 }

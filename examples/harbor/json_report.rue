@@ -95,7 +95,7 @@ fn cargo_array(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: s
         u64_field(inout out, inout first, "inventory", state.cargo_total_inventory(borrow scenario, borrow sim, i));
         u64_field(inout out, inout first, "expired", sim.expired.get_or(i, 0));
         out.push(125);
-        i = i + 1;
+        i += 1;
     }
     out.push(93);
 }
@@ -124,7 +124,7 @@ fn demand_array(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: 
         u64_field(inout out, inout first, "on_time", item.on_time);
         u64_field(inout out, inout first, "unmet", item.unmet);
         out.push(125);
-        i = i + 1;
+        i += 1;
     }
     out.push(93);
 }
@@ -151,7 +151,7 @@ fn vehicle_array(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim:
         u64_field(inout out, inout first, "empty_distance", item.empty_distance);
         u64_field(inout out, inout first, "cost", item.operating_cost);
         out.push(125);
-        i = i + 1;
+        i += 1;
     }
     out.push(93);
 }

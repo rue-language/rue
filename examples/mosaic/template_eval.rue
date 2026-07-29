@@ -27,7 +27,7 @@ fn append_source(borrow source: StrBuf, start: u64, end: u64, inout out: StrBuf)
     let mut i = start;
     while i < end && i < source.len() {
         out.push(text.byte_of(borrow source, i));
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -90,7 +90,7 @@ pub fn evaluate(source: StrBuf, env: Environment) -> Result {
             let value = variable(borrow source, borrow node, borrow env);
             append_value(borrow value, node.filter, inout out);
         }
-        i = i + 1;
+        i += 1;
     }
     Result { output: out, ok: true, error_offset: 0 }
 }

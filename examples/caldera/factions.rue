@@ -9,7 +9,7 @@ pub fn audit(borrow world: model.World) -> Relations {
     while i < world.entities.len() {
         let value = world.entities.get_or(i, model.empty_entity()).faction;
         if value > max_faction { max_faction = value; }
-        i = i + 1;
+        i += 1;
     }
     let mut out = Relations { factions: max_faction, allied: 0, hostile: 0,
         neutral: 0, digest: 14695981039346656037, valid: false };
@@ -22,9 +22,9 @@ pub fn audit(borrow world: model.World) -> Relations {
             else if relation == 2 { out.hostile = out.hostile + 1; }
             else { out.neutral = out.neutral + 1; }
             out.digest = metric.mix(out.digest, a * 101 + b * 17 + relation);
-            b = b + 1;
+            b += 1;
         }
-        a = a + 1;
+        a += 1;
     }
     out.valid = out.allied + out.hostile + out.neutral ==
         (max_faction * (max_faction + 1)) / 2;

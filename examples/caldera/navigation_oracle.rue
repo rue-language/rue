@@ -34,10 +34,10 @@ pub fn distance(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64) -
             if relax(borrow world, inout distances, i, @intCast(tile.x), @intCast(tile.y) + 1) { changed = true; }
             if relax(borrow world, inout distances, i, @intCast(tile.x) - 1, @intCast(tile.y)) { changed = true; }
             if relax(borrow world, inout distances, i, @intCast(tile.x), @intCast(tile.y) - 1) { changed = true; }
-            i = i + 1;
+            i += 1;
         }
         if !changed { break; }
-        pass = pass + 1;
+        pass += 1;
     }
     distances.get_or(goal, model.NONE())
 }

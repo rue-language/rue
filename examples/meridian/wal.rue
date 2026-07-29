@@ -15,7 +15,7 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
         if entry.committed { metric.observe(inout out, entry.after, 3); }
         else { metric.observe(inout out, entry.before, 2); }
         expected = entry.lsn + 1;
-        i = i + 1;
+        i += 1;
     }
     metric.finish(inout out);
     out

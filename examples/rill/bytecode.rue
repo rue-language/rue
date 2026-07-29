@@ -94,7 +94,7 @@ pub struct Program {
         let mut i: u64 = 0;
         while i < self.fn_names.len() {
             if self.fn_names.get_or(i, 18446744073709551615) == name { return i; }
-            i = i + 1;
+            i += 1;
         }
         18446744073709551615
     }
@@ -111,7 +111,7 @@ pub struct Program {
         let mut i: u64 = 0;
         while i < self.global_names.len() {
             if self.global_names.get_or(i, 18446744073709551615) == name { return i; }
-            i = i + 1;
+            i += 1;
         }
         18446744073709551615
     }

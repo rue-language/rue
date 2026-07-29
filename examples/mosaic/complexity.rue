@@ -54,7 +54,7 @@ pub fn estimate(borrow site: model.Site) -> Complexity {
     let mut i: u64 = 0;
     while i < site.pages.len() {
         words = saturated_add(words, site.pages.get_or(i, model.empty_page()).word_count);
-        i = i + 1;
+        i += 1;
     }
     let search_units = saturated_add(words, strings);
     let mut total_units: u64 = 0;

@@ -51,25 +51,25 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         let task = workflow.tasks.get_or(i, model.empty_task());
         let attempts = run.attempts.get_or(i, 0);
         let retries = if attempts > 0 { attempts - 1 } else { 0 };
-        configured_budget = configured_budget + task.retries;
-        total_attempts = total_attempts + attempts;
-        observed_retries = observed_retries + retries;
+        configured_budget += task.retries;
+        total_attempts += attempts;
+        observed_retries += retries;
         add(inout attempts_by_pool, task.pool, attempts);
         add(inout retries_by_pool, task.pool, retries);
         add(inout budget_by_pool, task.pool, task.retries);
         if attempts > task.retries + 1 { budget_violations = budget_violations + 1; }
         if attempts > 1 && run.status.get_or(i, state.FAILED()) == state.SUCCEEDED() {
-            recovered_tasks = recovered_tasks + 1;
+            recovered_tasks += 1;
         }
         if run.status.get_or(i, state.PENDING()) == state.FAILED() && attempts > 0 {
-            exhausted_tasks = exhausted_tasks + 1;
+            exhausted_tasks += 1;
         }
         if task.fail_attempt > 0 && attempts == 0 { untouched_fallible_tasks = untouched_fallible_tasks + 1; }
         if maximum_attempt_task == model.NONE() || attempts > maximum_attempts {
             maximum_attempts = attempts; maximum_attempt_task = i;
         }
         digest = mix(digest, i); digest = mix(digest, attempts); digest = mix(digest, task.retries);
-        i = i + 1;
+        i += 1;
     }
     Analysis {
         attempts_by_pool: attempts_by_pool, retries_by_pool: retries_by_pool,

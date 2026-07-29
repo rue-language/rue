@@ -308,7 +308,7 @@ fn _sockaddr_to_kernel_buf(b: [u8; 16]) -> ptr mut u8 {
     let mut i: u64 = 0;
     while i < 16 {
         checked { @byte_write(buf, i, b[i]); };
-        i = i + 1;
+        i += 1;
     }
     buf
 }
@@ -394,7 +394,7 @@ pub struct TcpStream {
         while i < n {
             let b = checked { @byte_read(tmp, i) };
             buf.push(b);
-            i = i + 1;
+            i += 1;
         }
         checked { @free_bytes(tmp, want, 1); };
         R.Ok(n)
@@ -416,7 +416,7 @@ pub struct TcpStream {
         let mut i: u64 = 0;
         while i < n {
             checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
-            i = i + 1;
+            i += 1;
         }
         let addr: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
@@ -443,7 +443,7 @@ pub struct TcpStream {
         let mut i: u64 = 0;
         while i < n {
             checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
-            i = i + 1;
+            i += 1;
         }
         let base: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
@@ -467,7 +467,7 @@ pub struct TcpStream {
                     checked { @free_bytes(tmp, n, 1); };
                     return R.Err(NetworkError.Other(0));
                 }
-                off = off + wrote;
+                off += wrote;
             }
         }
         checked { @free_bytes(tmp, n, 1); };

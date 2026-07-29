@@ -128,7 +128,7 @@ struct Parser {
                     table: table, row: row_index, column: column, number: value,
                     text: model.NONE(), is_text: false, is_null: false,
                 });
-                count = count + 1;
+                count += 1;
             } else {
                 self.error("INSERT values must be integers in the compact surface");
                 let _ = self.advance();
@@ -202,7 +202,7 @@ struct Parser {
                     writes: item.writes, reads: item.reads,
                 });
             }
-            i = i + 1;
+            i += 1;
         }
         if state == 2 { self.database.version = self.database.version + 1; }
     }

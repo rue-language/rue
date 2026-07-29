@@ -17,7 +17,7 @@ pub struct Ledger {
 
 fn cast(value: u64, inout overflows: u64) -> i64 {
     if value > 9223372036854775807 {
-        overflows = overflows + 1;
+        overflows += 1;
         9223372036854775807
     } else { @intCast(value) }
 }
@@ -40,7 +40,7 @@ fn mul(a: i64, b: i64, inout overflows: u64) -> i64 {
     match std.math.checked_mul(a, b) {
         OptI64.Some(v) => v,
         OptI64.None => {
-            overflows = overflows + 1;
+            overflows += 1;
             if (a < 0 && b > 0) || (a > 0 && b < 0) { -9223372036854775807 - 1 }
             else { 9223372036854775807 }
         },
@@ -61,7 +61,7 @@ pub fn calculate(borrow scenario: model.Scenario, borrow sim: state.State) -> Le
         let remaining = sim.demand_remaining.get_or(i, 0);
         revenue = add(revenue, mul(cast(delivered, inout overflows), cast(cargo.unit_value, inout overflows), inout overflows), inout overflows);
         unmet_penalty = add(unmet_penalty, mul(cast(remaining, inout overflows), cast(demand.priority, inout overflows), inout overflows), inout overflows);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < sim.log.len() {
@@ -74,13 +74,13 @@ pub fn calculate(borrow scenario: model.Scenario, borrow sim: state.State) -> Le
                 lateness_penalty = add(lateness_penalty, mul(units, cast(demand.priority, inout overflows), inout overflows), inout overflows);
             }
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.cargoes.len() {
         let cargo = scenario.cargoes.get_or(i, model.empty_cargo());
         spoilage_loss = add(spoilage_loss, mul(cast(sim.expired.get_or(i, 0), inout overflows), cast(cargo.unit_value, inout overflows), inout overflows), inout overflows);
-        i = i + 1;
+        i += 1;
     }
     let operating_cost = cast(sim.total_cost, inout overflows);
     let mut profit = sub(revenue, operating_cost, inout overflows);

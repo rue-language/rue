@@ -64,9 +64,9 @@ fn _fnv1a(borrow key: StrBuf) -> u64 {
     let mut i: u64 = 0;
     while i < n {
         let b: u64 = @intCast(_byte_of(borrow key, i));
-        h = h ^ b;
+        h ^= b;
         h = @wrapping_mul(h, 1099511628211);
-        i = i + 1;
+        i += 1;
     }
     h
 }
@@ -131,7 +131,7 @@ pub fn StrMap(comptime V: type) -> type {
                 if a != b {
                     return false;
                 }
-                j = j + 1;
+                j += 1;
             }
             true
         }
@@ -155,7 +155,7 @@ pub fn StrMap(comptime V: type) -> type {
                 nh.push(0);
                 nv.push(self.filler);
                 ns.push(_EMPTY());
-                i = i + 1;
+                i += 1;
             }
             // Move existing entries over, copying only live key bytes into the
             // fresh pool (this is the compaction step).
@@ -172,7 +172,7 @@ pub fn StrMap(comptime V: type) -> type {
                     let mut b: u64 = 0;
                     while b < len {
                         np.push(_byte_of(borrow self.pool, old_off + b));
-                        b = b + 1;
+                        b += 1;
                     }
                     // Insert into the new table by linear probing.
                     let mut idx = h % new_cap;
@@ -185,7 +185,7 @@ pub fn StrMap(comptime V: type) -> type {
                     nv.set(idx, v);
                     ns.set(idx, _OCCUPIED());
                 }
-                j = j + 1;
+                j += 1;
             }
             self.pool = np;
             self.offs = no;
@@ -202,14 +202,14 @@ pub fn StrMap(comptime V: type) -> type {
             let mut j: u64 = 0;
             while j < klen {
                 self.pool.push(_byte_of(borrow k, j));
-                j = j + 1;
+                j += 1;
             }
             self.offs.set(target, off);
             self.lens.set(target, klen);
             self.hashes.set(target, khash);
             self.vals.set(target, v);
             self.states.set(target, _OCCUPIED());
-            self.count = self.count + 1;
+            self.count += 1;
         }
 
         // Insert or overwrite `k -> v`.
@@ -251,7 +251,7 @@ pub fn StrMap(comptime V: type) -> type {
                     }
                 }
                 idx = (idx + 1) % self.cap;
-                probes = probes + 1;
+                probes += 1;
             }
             // Every slot probed, none EMPTY and no key match. Growth keeps
             // `count` below `cap`, so some slot is a tombstone; reuse the first.
@@ -275,7 +275,7 @@ pub fn StrMap(comptime V: type) -> type {
                     }
                 }
                 idx = (idx + 1) % self.cap;
-                probes = probes + 1;
+                probes += 1;
             }
             O.None
         }
@@ -303,12 +303,12 @@ pub fn StrMap(comptime V: type) -> type {
                 } else if st == _OCCUPIED() {
                     if self._key_eq(idx, borrow k, khash, klen) {
                         self.states.set(idx, _TOMBSTONE());
-                        self.count = self.count - 1;
+                        self.count -= 1;
                         return true;
                     }
                 }
                 idx = (idx + 1) % self.cap;
-                probes = probes + 1;
+                probes += 1;
             }
             false
         }

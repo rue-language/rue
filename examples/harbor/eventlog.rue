@@ -57,7 +57,7 @@ pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBu
     while i < sim.log.len() {
         let line = render_event(borrow scenario, sim.log.get_or(i, state.empty_event()));
         text.append_string(inout out, borrow line);
-        i = i + 1;
+        i += 1;
     }
     out
 }

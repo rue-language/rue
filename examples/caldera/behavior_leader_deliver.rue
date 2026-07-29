@@ -58,13 +58,13 @@ pub fn evaluate(borrow world: model.World) -> result.Result {
             score >= (PROFILE() % 13) + entity.kind;
         result.record(inout out, selected, score,
             selected && transition(borrow world, borrow entity, score));
-        i = i + 1;
+        i += 1;
     }
     let mut faction: u64 = 1;
     while faction <= 3 {
         let proxy = world.resources / faction + world.treasury / (faction + 1) + PROFILE();
         result.record(inout out, proxy % 2 == 0, proxy, proxy % 5 == 0);
-        faction = faction + 1;
+        faction += 1;
     }
     result.finish(inout out); out
 }

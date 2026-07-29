@@ -25,7 +25,7 @@ fn reaches(borrow database: model.Database, start: u64, target: u64, depth: u64)
             if i == target { return true; }
             if reaches(borrow database, i, target, depth + 1) { return true; }
         }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -40,14 +40,14 @@ pub fn audit(borrow database: model.Database) -> Audit {
         while j < database.transactions.len() {
             let right = database.transactions.get_or(j, model.empty_transaction());
             if waits_for(borrow left, borrow right) {
-                out.waits = out.waits + 1;
+                out.waits += 1;
                 out.checksum = metric.mix(out.checksum, left.id);
                 out.checksum = metric.mix(out.checksum, right.id);
             }
-            j = j + 1;
+            j += 1;
         }
         if reaches(borrow database, i, i, 0) { out.cycles = out.cycles + 1; }
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.cycles <= out.transactions;
     out

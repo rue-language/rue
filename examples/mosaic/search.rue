@@ -24,7 +24,7 @@ fn append_headings(borrow site: model.Site, page_index: u64, inout out: StrBuf) 
             append_pool_json(borrow site, block.text_id, inout out);
             first = false;
         }
-        i = i + 1;
+        i += 1;
     }
     out.push(93);
 }
@@ -47,9 +47,9 @@ pub fn build(borrow site: model.Site) -> StrBuf {
             out.push_str(",\"words\":"); out.push_str(@to_string(page.word_count));
             out.push_str(",\"headings\":"); append_headings(borrow site, i, inout out);
             out.push(125);
-            emitted = emitted + 1;
+            emitted += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     out.push_str("]}\n");
     out
@@ -60,7 +60,7 @@ pub fn expected_page_count(borrow site: model.Site) -> u64 {
     let mut i: u64 = 0;
     while i < site.pages.len() {
         if !site.pages.get_or(i, model.empty_page()).draft { n = n + 1; }
-        i = i + 1;
+        i += 1;
     }
     n
 }

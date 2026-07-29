@@ -8,7 +8,7 @@ fn duplicate_pool(borrow workflow: model.Workflow, at: u64) -> bool {
     let mut i: u64 = 0;
     while i < at {
         if workflow.strings.ids_equal(candidate.id, workflow.pools.get_or(i, model.empty_pool()).id) { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -18,7 +18,7 @@ fn duplicate_task(borrow workflow: model.Workflow, at: u64) -> bool {
     let mut i: u64 = 0;
     while i < at {
         if workflow.strings.ids_equal(candidate.id, workflow.tasks.get_or(i, model.empty_task()).id) { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -31,7 +31,7 @@ fn validate_pools(inout workflow: model.Workflow) {
         if item.slots == 0 { model.add_error(inout workflow, 202, item.id, "pool slots must be positive"); }
         if item.cpu == 0 { model.add_error(inout workflow, 202, item.id, "pool cpu must be positive"); }
         if item.memory == 0 { model.add_error(inout workflow, 202, item.id, "pool memory must be positive"); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -54,7 +54,7 @@ fn validate_tasks(inout workflow: model.Workflow) {
         if item.priority > 100 { model.add_error(inout workflow, 202, item.id, "priority must be at most 100"); }
         if item.retries > 20 { model.add_error(inout workflow, 202, item.id, "retries must be at most 20"); }
         workflow.tasks.set(i, item);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -75,10 +75,10 @@ fn validate_edges(inout workflow: model.Workflow) {
             if other.before_id == edge.before_id && other.after_id == edge.after_id {
                 model.add_error(inout workflow, 200, edge.after_id, "duplicate dependency");
             }
-            earlier = earlier + 1;
+            earlier += 1;
         }
         workflow.edges.set(i, edge);
-        i = i + 1;
+        i += 1;
     }
 }
 

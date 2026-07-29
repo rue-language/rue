@@ -106,7 +106,7 @@ pub fn find_pool(borrow workflow: Workflow, id: u64) -> u64 {
     while i < workflow.pools.len() {
         let item = workflow.pools.get_or(i, empty_pool());
         if workflow.strings.ids_equal(item.id, id) { return i; }
-        i = i + 1;
+        i += 1;
     }
     NONE()
 }
@@ -116,7 +116,7 @@ pub fn find_task(borrow workflow: Workflow, id: u64) -> u64 {
     while i < workflow.tasks.len() {
         let item = workflow.tasks.get_or(i, empty_task());
         if workflow.strings.ids_equal(item.id, id) { return i; }
-        i = i + 1;
+        i += 1;
     }
     NONE()
 }
@@ -126,7 +126,7 @@ pub fn dependency_count(borrow workflow: Workflow, task: u64) -> u64 {
     let mut i: u64 = 0;
     while i < workflow.edges.len() {
         if workflow.edges.get_or(i, empty_edge()).after == task { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -136,7 +136,7 @@ pub fn dependent_count(borrow workflow: Workflow, task: u64) -> u64 {
     let mut i: u64 = 0;
     while i < workflow.edges.len() {
         if workflow.edges.get_or(i, empty_edge()).before == task { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -146,7 +146,7 @@ pub fn has_edge(borrow workflow: Workflow, before: u64, after: u64) -> bool {
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, empty_edge());
         if edge.before == before && edge.after == after { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }

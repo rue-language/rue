@@ -58,9 +58,9 @@ fn reachable_without(borrow scenario: model.Scenario, removed: u64) -> u64 {
                     seen.set(candidate);
                     queue.enqueue(candidate);
                 }
-                candidate = candidate + 1;
+                candidate += 1;
             }
-            route_index = route_index + 1;
+            route_index += 1;
         }
     }
     seen.count()
@@ -77,26 +77,26 @@ fn location_stats(borrow scenario: model.Scenario, location: u64) -> LocationSta
     while i < scenario.routes.len() {
         let route = scenario.routes.get_or(i, model.empty_route());
         if route.from == location {
-            outgoing = outgoing + 1;
+            outgoing += 1;
             outbound_capacity = add(outbound_capacity, route.capacity);
             distance_sum = add(distance_sum, route.distance);
             if route.to < scenario.locations.len() { neighbors.set(route.to); }
         }
         if route.to == location {
-            incoming = incoming + 1;
+            incoming += 1;
             inbound_capacity = add(inbound_capacity, route.capacity);
             if route.from < scenario.locations.len() { neighbors.set(route.from); }
             if route.bidirectional {
-                outgoing = outgoing + 1;
+                outgoing += 1;
                 outbound_capacity = add(outbound_capacity, route.capacity);
                 distance_sum = add(distance_sum, route.distance);
             }
         }
         if route.bidirectional && route.from == location {
-            incoming = incoming + 1;
+            incoming += 1;
             inbound_capacity = add(inbound_capacity, route.capacity);
         }
-        i = i + 1;
+        i += 1;
     }
     let connected_without = reachable_without(borrow scenario, location);
     let expected = if scenario.locations.len() > 0 { scenario.locations.len() - 1 } else { 0 };
@@ -122,14 +122,14 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
         if stats.critical { critical_locations = critical_locations + 1; }
         if stats.neighbors == 0 { isolated_locations = isolated_locations + 1; }
         locations.push(stats);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.routes.len() {
         let route = scenario.routes.get_or(i, model.empty_route());
         total_capacity = add(total_capacity, route.capacity);
         total_distance = add(total_distance, route.distance);
-        i = i + 1;
+        i += 1;
     }
     Summary {
         locations: locations, directed_edges: directed_edges,

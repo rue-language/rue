@@ -16,14 +16,14 @@ pub fn run(borrow database: model.Database) -> Undo {
     let mut at = database.wal.len();
     let mut previous = database.next_lsn;
     while at > 0 {
-        at = at - 1;
+        at -= 1;
         let entry = database.wal.get_or(at, model.empty_wal());
-        out.visited = out.visited + 1;
+        out.visited += 1;
         if entry.lsn >= previous { out.valid = false; }
         previous = entry.lsn;
         if entry.committed { out.skipped = out.skipped + 1; }
         else {
-            out.applied = out.applied + 1;
+            out.applied += 1;
             out.checksum = metric.mix(out.checksum, entry.before);
             out.checksum = metric.mix(out.checksum, entry.row);
         }

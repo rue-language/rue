@@ -38,7 +38,7 @@ fn safe_relative_path(borrow value: StrBuf) -> bool {
                 return false;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -53,7 +53,7 @@ fn valid_language(borrow value: StrBuf) -> bool {
         if !text.is_alpha(b) && b != 45 {
             return false;
         }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -134,10 +134,10 @@ fn check_navigation_orders(inout site: model.Site) {
                 if b.nav_order == a.nav_order {
                     page_error(inout site, j, "published navigation orders must be unique");
                 }
-                j = j + 1;
+                j += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -146,7 +146,7 @@ pub fn validate(inout site: model.Site) {
     let mut i: u64 = 0;
     while i < site.pages.len() {
         check_page(inout site, i);
-        i = i + 1;
+        i += 1;
     }
     check_navigation_orders(inout site);
 }

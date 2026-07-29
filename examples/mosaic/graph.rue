@@ -16,7 +16,7 @@ fn anchor_for(borrow site: model.Site, page: u64, borrow name: StrBuf) -> u64 {
     while i < site.anchors.len() {
         let anchor = site.anchors.get_or(i, model.Anchor { page: 0, name_id: 0, line: 0, heading_block: 0 });
         if anchor.page == page && site.strings.equals(anchor.name_id, borrow name) { return i; }
-        i = i + 1;
+        i += 1;
     }
     model.NONE()
 }
@@ -67,13 +67,13 @@ fn build_navigation(inout site: model.Site) {
             let order = if page.nav_order == model.NONE() { 1000000 + i } else { page.nav_order };
             keys.push(order * 100000 + i);
         }
-        i = i + 1;
+        i += 1;
     }
     std.sort.quicksort(u64, inout keys);
     i = 0;
     while i < keys.len() {
         site.navigation.push(keys.get_or(i, 0) % 100000);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -97,7 +97,7 @@ fn mark_reachable(inout site: model.Site) {
                 visited.set(link.resolved_page);
                 queue.enqueue(link.resolved_page);
             }
-            i = i + 1;
+            i += 1;
         }
     }
     let mut i: u64 = 1;
@@ -106,7 +106,7 @@ fn mark_reachable(inout site: model.Site) {
         if !page.draft && !visited.test(i) {
             model.add_error(inout site, 301, page.source_id, 0, "page is unreachable from the first manifest page");
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -120,7 +120,7 @@ pub fn validate(inout site: model.Site) {
         let output = site.strings.copy(page.output_id);
         paths.insert(borrow source, i);
         paths.insert(borrow output, i);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.links.len() { resolve_one(inout site, borrow paths, i); i = i + 1; }
@@ -137,7 +137,7 @@ pub fn resolved_internal_count(borrow site: model.Site) -> u64 {
             resolved_page: model.NONE(), resolved_anchor: model.NONE(), external: false,
         });
         if !link.external && link.resolved_page != model.NONE() { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }

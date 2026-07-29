@@ -61,7 +61,7 @@ fn append_quoted(inout out: StrBuf, borrow value: StrBuf) {
         else if b == 34 { out.push_str("\\\""); }
         else if b == 92 { out.push_str("\\\\"); }
         else { out.push(b); }
-        i = i + 1;
+        i += 1;
     }
     out.push_str("\"");
 }
@@ -86,7 +86,7 @@ fn function_at(borrow program: bytecode.Program, pc: u64) -> u64 {
     let mut i: u64 = 0;
     while i < program.fn_starts.len() {
         if program.fn_starts.get_or(i, 18446744073709551615) == pc { return i; }
-        i = i + 1;
+        i += 1;
     }
     18446744073709551615
 }
@@ -127,7 +127,7 @@ pub fn disassemble(borrow program: bytecode.Program) -> StrBuf {
             }
         }
         out.push_str("\n");
-        pc = pc + 1;
+        pc += 1;
     }
     out
 }

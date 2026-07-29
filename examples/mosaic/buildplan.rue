@@ -43,7 +43,7 @@ fn add(inout plan: Plan, borrow site: model.Site, entry: Entry) {
             fail(inout plan, "two build outputs have the same path");
             return;
         }
-        i = i + 1;
+        i += 1;
     }
     plan.entries.push(entry);
 }
@@ -61,7 +61,7 @@ pub fn create(inout site: model.Site) -> Plan {
         if !page.draft {
             add(inout plan, borrow site, Entry { kind: KIND_PAGE(), page: i, path_id: page.output_id });
         }
-        i = i + 1;
+        i += 1;
     }
     shared(inout site, inout plan, "search-index.json", KIND_SEARCH());
     shared(inout site, inout plan, "sitemap.xml", KIND_SITEMAP());
@@ -75,9 +75,9 @@ pub fn page_outputs(borrow plan: Plan) -> u64 {
     let mut i: u64 = 0;
     while i < plan.entries.len() {
         if plan.entries.get_or(i, Entry { kind: 0, page: 0, path_id: 0 }).kind == KIND_PAGE() {
-            count = count + 1;
+            count += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -87,11 +87,11 @@ pub fn fingerprint(borrow plan: Plan, borrow site: model.Site) -> u64 {
     let mut i: u64 = 0;
     while i < plan.entries.len() {
         let entry = plan.entries.get_or(i, Entry { kind: 0, page: 0, path_id: 0 });
-        hash = hash ^ entry.kind;
+        hash ^= entry.kind;
         hash = @wrapping_mul(hash, 1099511628211);
-        hash = hash ^ site.strings.hash(entry.path_id);
+        hash ^= site.strings.hash(entry.path_id);
         hash = @wrapping_mul(hash, 1099511628211);
-        i = i + 1;
+        i += 1;
     }
     hash
 }

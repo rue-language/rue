@@ -54,15 +54,15 @@ fn compare(borrow baseline: route_matrix.Matrix, borrow current: route_matrix.Ma
                 let before = route_matrix.weight(borrow baseline, from, to);
                 let after = route_matrix.weight(borrow current, from, to);
                 if before != after {
-                    degradation_pairs = degradation_pairs + 1;
+                    degradation_pairs += 1;
                     if before != routing.INF() && after != routing.INF() && after > before {
                         added_weight = add(added_weight, after - before);
                     }
                 }
             }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     Snapshot {
         time: current.at, minimum_capacity: 1,
@@ -84,7 +84,7 @@ fn event_times(borrow scenario: model.Scenario) -> std.arraybuf.ArrayBuf(u64) {
         let item = scenario.disruptions.get_or(i, model.empty_disruption());
         times.push(item.start);
         if item.end <= scenario.duration { times.push(item.end); }
-        i = i + 1;
+        i += 1;
     }
     times.push(scenario.duration);
     std.sort.insertion_sort(u64, inout times);
@@ -93,7 +93,7 @@ fn event_times(borrow scenario: model.Scenario) -> std.arraybuf.ArrayBuf(u64) {
     while i < times.len() {
         let value = times.get_or(i, 0);
         if unique.len() == 0 || unique.get_or(unique.len() - 1, 0) != value { unique.push(value); }
-        i = i + 1;
+        i += 1;
     }
     unique
 }
@@ -108,14 +108,14 @@ fn route_exposure(borrow scenario: model.Scenario, route: u64) -> RouteExposure 
     while i < scenario.disruptions.len() {
         let item = scenario.disruptions.get_or(i, model.empty_disruption());
         if item.route == route {
-            windows = windows + 1;
+            windows += 1;
             disruption_hours = add(disruption_hours, item.end - item.start);
             let capacity = routing.effective_capacity(borrow scenario, route, item.start);
             let cost = routing.effective_cost(borrow scenario, route, item.start);
             if capacity < minimum_capacity { minimum_capacity = capacity; }
             if cost > maximum_cost { maximum_cost = cost; }
         }
-        i = i + 1;
+        i += 1;
     }
     RouteExposure {
         route: route, disruption_hours: disruption_hours,
@@ -142,7 +142,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
             if snapshot.added_weight > worst_added_weight { worst_added_weight = snapshot.added_weight; }
         }
         snapshots.push(snapshot);
-        i = i + 1;
+        i += 1;
     }
     let mut routes = RouteExposures.new();
     i = 0;
@@ -154,7 +154,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
         let matrix = route_matrix.compute(borrow scenario, 0, level, routing.MODE_COST());
         if matrix.unreachable_pairs == 0 { fully_connected_levels = fully_connected_levels + 1; }
         else if fragile_capacity == 0 { fragile_capacity = level; }
-        level = level + 10;
+        level += 10;
     }
     Summary {
         snapshots: snapshots, routes: routes,

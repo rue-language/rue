@@ -30,7 +30,7 @@ pub fn summarize(borrow site: model.Site) -> StrBuf {
         else if block.tag == model.BLOCK_CODE() { code_blocks = code_blocks + 1; }
         else if block.tag == model.BLOCK_LIST() { lists = lists + 1; }
         else if block.tag == model.BLOCK_TABLE() { tables = tables + 1; }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.pages.len() { words = words + site.pages.get_or(i, model.empty_page()).word_count; i = i + 1; }

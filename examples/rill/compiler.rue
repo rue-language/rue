@@ -69,7 +69,7 @@ struct Compiler {
     fn local_slot(borrow self, symbol: u64) -> u64 {
         let mut i = self.locals.len();
         while i > 0 {
-            i = i - 1;
+            i -= 1;
             if self.locals.get_or(i, 18446744073709551615) == symbol { return i; }
         }
         18446744073709551615
@@ -83,7 +83,7 @@ struct Compiler {
         };
         let mut i = self.locals.len();
         while i > scope_start {
-            i = i - 1;
+            i -= 1;
             if self.locals.get_or(i, 18446744073709551615) == symbol {
                 self.error_here("duplicate local binding in the same scope");
                 return i;
@@ -116,7 +116,7 @@ struct Compiler {
             if !self.check(token.RBRACKET) {
                 loop {
                     self.expression();
-                    count = count + 1;
+                    count += 1;
                     if !self.take(token.COMMA) { break; }
                 }
             }
@@ -147,7 +147,7 @@ struct Compiler {
                 if !self.check(token.RPAREN) {
                     loop {
                         self.expression();
-                        argc = argc + 1;
+                        argc += 1;
                         if !self.take(token.COMMA) { break; }
                     }
                 }
@@ -344,7 +344,7 @@ struct Compiler {
             loop {
                 let param = self.expect(token.IDENT, "expected parameter name");
                 let _ = self.declare_local(param.value);
-                arity = arity + 1;
+                arity += 1;
                 if !self.take(token.COMMA) { break; }
             }
         }

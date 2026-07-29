@@ -40,7 +40,7 @@ pub fn multiply(a: u64, b: u64) -> u64 {
 }
 
 pub fn observe(inout value: Metric, observation: u64, weight: u64) {
-    value.observations = value.observations + 1;
+    value.observations += 1;
     value.sum = add(value.sum, observation);
     value.weighted = add(value.weighted, multiply(observation, weight));
     if observation < value.minimum { value.minimum = observation; }

@@ -71,7 +71,7 @@ fn add_wal(inout database: model.Database, transaction: u64, kind: u64,
         lsn: database.next_lsn, transaction: transaction, kind: kind,
         table: table, row: row, before: before, after: after, committed: committed,
     });
-    database.next_lsn = database.next_lsn + 1;
+    database.next_lsn += 1;
 }
 
 pub fn database(scale: u64) -> model.Database {
@@ -96,17 +96,17 @@ pub fn database(scale: u64) -> model.Database {
     let mut i: u64 = 0;
     while i < 4 * scale {
         let _ = add_row3(inout value, teams, i + 1, (i % 3) + 1, 1000 + i * 250);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < 12 * scale {
         let _ = add_row3(inout value, users, i + 1, (i % (4 * scale)) + 1, 40 + ((i * 17) % 61));
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < 30 * scale {
         let _ = add_row3(inout value, orders, i + 1, (i % (12 * scale)) + 1, 10 + ((i * 29) % 240));
-        i = i + 1;
+        i += 1;
     }
 
     add_index(inout value, "teams_pk", teams, team_id, true);

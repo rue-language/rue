@@ -6,7 +6,7 @@ pub fn new(behavior: u64) -> Result {
         transitions: 0, digest: metric.mix(14695981039346656037, behavior), valid: false }
 }
 pub fn record(inout out: Result, selected: bool, utility: u64, transition: bool) {
-    out.agents = out.agents + 1;
+    out.agents += 1;
     if selected { out.selected = out.selected + 1; }
     if transition { out.transitions = out.transitions + 1; }
     out.utility = @wrapping_add(out.utility, utility);

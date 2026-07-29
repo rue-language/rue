@@ -18,9 +18,9 @@ pub fn create(borrow database: model.Database) -> Checkpoint {
     let mut i: u64 = 0;
     while i < database.transactions.len() {
         if database.transactions.get_or(i, model.empty_transaction()).state == 1 {
-            active = active + 1;
+            active += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     let mut retained: u64 = 0;
     let mut dirty: u64 = 0;
@@ -29,7 +29,7 @@ pub fn create(borrow database: model.Database) -> Checkpoint {
         let entry = database.wal.get_or(i, model.empty_wal());
         if entry.lsn > lsn { retained = retained + 1; }
         if entry.kind == 1 || entry.kind == 2 { dirty = dirty + 1; }
-        i = i + 1;
+        i += 1;
     }
     let mut checksum = metric.mix(14695981039346656037, lsn);
     checksum = metric.mix(checksum, active);

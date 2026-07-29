@@ -33,7 +33,7 @@ fn demands(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state
         number(inout out, item.requested); comma(inout out); number(inout out, item.delivered); comma(inout out);
         number(inout out, item.on_time); comma(inout out); number(inout out, item.late); comma(inout out);
         number(inout out, item.unmet); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -54,7 +54,7 @@ fn fleet(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.S
         number(inout out, item.cargo_units); comma(inout out); number(inout out, item.loaded_distance); comma(inout out);
         number(inout out, item.empty_distance); comma(inout out); number(inout out, item.travel_time); comma(inout out);
         number(inout out, item.operating_cost); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -70,7 +70,7 @@ fn events(inout out: StrBuf, borrow scenario: model.Scenario, borrow sim: state.
         number(inout out, event.to); comma(inout out); number(inout out, event.demand); comma(inout out);
         number(inout out, event.cost); comma(inout out); number(inout out, event.distance); comma(inout out);
         number(inout out, event.travel); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 

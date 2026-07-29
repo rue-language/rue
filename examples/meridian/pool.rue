@@ -45,7 +45,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < value.len() {
             if self.byte_at(id, i) != Self.byte_of(borrow value, i) { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -55,7 +55,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < self.string_len(first) {
             if self.byte_at(first, i) != self.byte_at(second, i) { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -77,7 +77,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < value.len() {
             self.bytes.push(Self.byte_of(borrow value, i));
-            i = i + 1;
+            i += 1;
         }
         id
     }
@@ -90,7 +90,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < self.string_len(id) {
             out.push(self.byte_at(id, i));
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -104,9 +104,9 @@ pub struct Pool {
         let mut value: u64 = 14695981039346656037;
         let mut i: u64 = 0;
         while i < self.string_len(id) {
-            value = value ^ @intCast(self.byte_at(id, i));
+            value ^= @intCast(self.byte_at(id, i));
             value = @wrapping_mul(value, 1099511628211);
-            i = i + 1;
+            i += 1;
         }
         value
     }

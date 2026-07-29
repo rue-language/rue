@@ -25,7 +25,7 @@ pub fn render(borrow workflow: model.Workflow) -> StrBuf {
         }
         let task = workflow.tasks.get_or(row, model.empty_task());
         text.append_id(inout out, borrow workflow, task.id); out.push(10);
-        row = row + 1;
+        row += 1;
     }
     out
 }

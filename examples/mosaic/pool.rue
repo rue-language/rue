@@ -40,9 +40,9 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < value.len() {
             let b = match value.byte_at(i) { OptU8.Some(x) => x, OptU8.None => 0 };
-            h = h ^ @intCast(b);
+            h ^= @intCast(b);
             h = @wrapping_mul(h, 1099511628211);
-            i = i + 1;
+            i += 1;
         }
         h
     }
@@ -57,7 +57,7 @@ pub struct Pool {
             let mut slot = self.hash(id) % new_cap;
             while fresh.get_or(slot, 0) != 0 { slot = (slot + 1) % new_cap; }
             fresh.set(slot, id + 1);
-            id = id + 1;
+            id += 1;
         }
         self.slots = fresh;
         self.slot_cap = new_cap;
@@ -82,7 +82,7 @@ pub struct Pool {
                 OptU8.Some(b) => { self.bytes.push(b); },
                 OptU8.None => {},
             }
-            i = i + 1;
+            i += 1;
         }
         id
     }
@@ -131,7 +131,7 @@ pub struct Pool {
         while i < n {
             let b = match value.byte_at(i) { OptU8.Some(x) => x, OptU8.None => 0 };
             if self.byte_at(id, i) != b { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -142,7 +142,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < n {
             if self.byte_at(a, i) != self.byte_at(b, i) { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -153,7 +153,7 @@ pub struct Pool {
         while i < prefix.len() {
             let b = match prefix.byte_at(i) { OptU8.Some(x) => x, OptU8.None => 0 };
             if self.byte_at(id, i) != b { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -162,9 +162,9 @@ pub struct Pool {
         let mut h: u64 = 14695981039346656037;
         let mut i: u64 = 0;
         while i < self.string_len(id) {
-            h = h ^ @intCast(self.byte_at(id, i));
+            h ^= @intCast(self.byte_at(id, i));
             h = @wrapping_mul(h, 1099511628211);
-            i = i + 1;
+            i += 1;
         }
         h
     }

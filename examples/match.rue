@@ -29,9 +29,9 @@ fn count_weekdays(start: i32, end: i32) -> i32 {
     let mut day = start;
     while day <= end {
         if is_weekday(day) {
-            count = count + 1;
+            count += 1;
         }
-        day = day + 1;
+        day += 1;
     }
     count
 }

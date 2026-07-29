@@ -20,7 +20,7 @@ pub fn verify(borrow world: model.World) -> bool {
         if ai.choose(borrow world, borrow entity) != expected(borrow world, borrow entity) {
             return false;
         }
-        i = i + 1;
+        i += 1;
     }
     true
 }

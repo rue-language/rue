@@ -21,7 +21,7 @@ pub fn render(borrow workflow: model.Workflow) -> StrBuf {
         let task_index = critical.canonical_path.get_or(i, model.NONE());
         let task = workflow.tasks.get_or(task_index, model.empty_task());
         text.append_id(inout out, borrow workflow, task.id);
-        i = i + 1;
+        i += 1;
     }
     out.push(10);
     text.append_literal(inout out, "task                 early late slack paths-through critical\n");
@@ -34,7 +34,7 @@ pub fn render(borrow workflow: model.Workflow) -> StrBuf {
         text.append_u64(inout out, critical.slack.get_or(i, 0)); out.push(32);
         text.append_u64(inout out, paths.paths_through_task.get_or(i, 0)); out.push(32);
         text.append_bool(inout out, critical.slack.get_or(i, 1) == 0); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "total_paths="); text.append_u64(inout out, paths.total_paths);
     text.append_literal(inout out, " total_slack="); text.append_u64(inout out, critical.total_slack);

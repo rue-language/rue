@@ -41,7 +41,7 @@ fn check_page_ranges(inout site: model.Site) {
         if !valid_range(page.link_start, page.link_count, site.links.len()) {
             page_error(inout site, i, "page link range is outside the link arena");
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -52,7 +52,7 @@ fn owner_of_block(borrow site: model.Site, block_index: u64) -> u64 {
         if block_index >= page.block_start && block_index < page.block_start + page.block_count {
             return i;
         }
-        i = i + 1;
+        i += 1;
     }
     model.NONE()
 }
@@ -85,7 +85,7 @@ fn check_blocks(inout site: model.Site) {
                 }
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -102,7 +102,7 @@ fn check_inlines(inout site: model.Site) {
         if node.tag == model.INLINE_LINK() && node.target_id == model.NONE() {
             model.add_error(inout site, 204, site.manifest_path_id, node.line, "link inline has no target");
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -123,7 +123,7 @@ fn check_anchors(inout site: model.Site) {
                 page_error(inout site, anchor.page, "anchor has an invalid or empty name");
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -152,7 +152,7 @@ fn check_links(inout site: model.Site) {
                 page_error(inout site, link.source_page, "link resolved anchor is outside the anchor arena");
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -172,7 +172,7 @@ fn check_navigation(inout site: model.Site) {
                 page_error(inout site, page, "draft page appears in navigation");
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 

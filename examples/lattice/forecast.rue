@@ -27,7 +27,7 @@ fn seen(borrow fingerprints: model.U64s, value: u64) -> bool {
     let mut i: u64 = 0;
     while i < fingerprints.len() {
         if fingerprints.get_or(i, 0) == value { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -57,13 +57,13 @@ pub fn compute(borrow workflow: model.Workflow, base_seed: u64, samples: u64) ->
         fingerprints.push(run.fingerprint);
         if i == 0 || run.makespan < minimum_makespan { minimum_makespan = run.makespan; }
         if i == 0 || run.makespan > maximum_makespan { maximum_makespan = run.makespan; }
-        total_makespan = total_makespan + run.makespan;
-        total_cache_hits = total_cache_hits + run.cached;
-        total_retries = total_retries + run.retries;
+        total_makespan += run.makespan;
+        total_cache_hits += run.cached;
+        total_retries += run.retries;
         if run.failed > 0 { failed_samples = failed_samples + 1; }
         digest = mix(digest, seed); digest = mix(digest, run.makespan);
         digest = mix(digest, run.cached); digest = mix(digest, run.fingerprint);
-        i = i + 1;
+        i += 1;
     }
     Forecast {
         seeds: seeds, makespans: makespans, cache_hits: cache_hits,

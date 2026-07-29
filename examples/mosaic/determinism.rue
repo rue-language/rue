@@ -24,7 +24,7 @@ pub fn model_fingerprint(borrow site: model.Site) -> u64 {
         hash = mix(hash, page.block_start);
         hash = mix(hash, page.block_count);
         hash = mix(hash, page.word_count);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.blocks.len() {
@@ -44,7 +44,7 @@ pub fn model_fingerprint(borrow site: model.Site) -> u64 {
         if block.text_id != model.NONE() {
             hash = mix(hash, site.strings.hash(block.text_id));
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.links.len() {
@@ -61,7 +61,7 @@ pub fn model_fingerprint(borrow site: model.Site) -> u64 {
         hash = mix(hash, site.strings.hash(link.target_id));
         hash = mix(hash, link.resolved_page);
         hash = mix(hash, link.resolved_anchor);
-        i = i + 1;
+        i += 1;
     }
     hash
 }

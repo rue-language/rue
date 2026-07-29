@@ -39,7 +39,7 @@ struct Lexer {
     fn done(borrow self) -> bool { self.at >= self.source.len() }
     fn advance(inout self) -> u8 {
         let b = self.byte(self.at);
-        self.at = self.at + 1;
+        self.at += 1;
         b
     }
     fn add(inout self, kind: u64, start: u64, value: u64) {

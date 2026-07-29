@@ -53,7 +53,7 @@ pub struct Result {
 }
 
 fn check(inout out: Result, condition: bool, fingerprint: u64) {
-    out.checks = out.checks + 1; out.digest = metric.mix(out.digest, fingerprint);
+    out.checks += 1; out.digest = metric.mix(out.digest, fingerprint);
     if !condition { out.failures = out.failures + 1; }
 }
 

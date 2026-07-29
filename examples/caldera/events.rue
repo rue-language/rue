@@ -15,7 +15,7 @@ pub fn audit(borrow world: model.World) -> Audit {
         out.digest = metric.mix(out.digest, event.sequence);
         out.digest = metric.mix(out.digest, event.kind);
         out.digest = metric.mix(out.digest, event.actor);
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.monotonic && (out.events == 0 || previous < world.next_sequence);
     out

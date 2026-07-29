@@ -67,7 +67,7 @@ fn disruption_overlap(borrow scenario: model.Scenario, route: u64) -> u64 {
     while i < scenario.disruptions.len() {
         let item = scenario.disruptions.get_or(i, model.empty_disruption());
         if item.route == route && item.end > item.start { hours = add(hours, item.end - item.start); }
-        i = i + 1;
+        i += 1;
     }
     hours
 }
@@ -82,7 +82,7 @@ fn alternate_count(borrow scenario: model.Scenario, route_index: u64) -> u64 {
             if other.from == route.from || other.to == route.from ||
                other.from == route.to || other.to == route.to { count = count + 1; }
         }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -99,7 +99,7 @@ fn add_route_risks(borrow scenario: model.Scenario, inout risks: Risks) {
         if severity >= 4 || likelihood >= 3 || exposure >= 4 {
             risks.push(make(KIND_ROUTE(), i, severity, likelihood, exposure, disrupted_hours, alternatives));
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -115,7 +115,7 @@ fn add_demand_risks(borrow scenario: model.Scenario, borrow sim: state.State, in
         if remaining > 0 || severity >= 4 {
             risks.push(make(KIND_DEMAND(), i, severity, likelihood, exposure, remaining, delivered));
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -125,7 +125,7 @@ fn cargo_requested(borrow scenario: model.Scenario, cargo: u64) -> u64 {
     while i < scenario.demands.len() {
         let demand = scenario.demands.get_or(i, model.empty_demand());
         if demand.cargo == cargo { total = add(total, demand.quantity); }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -135,12 +135,12 @@ fn cargo_sources(borrow scenario: model.Scenario, cargo: u64) -> u64 {
     let mut i: u64 = 0;
     while i < scenario.supplies.len() {
         if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
         if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -158,7 +158,7 @@ fn add_cargo_risks(borrow scenario: model.Scenario, borrow sim: state.State, ino
         if requested > 0 && (exposure >= 3 || likelihood >= 4 || expired > 0) {
             risks.push(make(KIND_CARGO(), cargo_index, severity, likelihood, exposure, expired, sources));
         }
-        cargo_index = cargo_index + 1;
+        cargo_index += 1;
     }
 }
 
@@ -167,7 +167,7 @@ fn vehicles_at(borrow scenario: model.Scenario, location: u64) -> u64 {
     let mut i: u64 = 0;
     while i < scenario.vehicles.len() {
         if scenario.vehicles.get_or(i, model.empty_vehicle()).at == location { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -183,7 +183,7 @@ fn add_fleet_risks(borrow scenario: model.Scenario, inout risks: Risks) {
             let exposure = if count == 1 { 2 } else { count };
             if severity >= 4 || likelihood >= 3 { risks.push(make(KIND_FLEET(), location, severity, likelihood, exposure, count, path.routes.len())); }
         }
-        location = location + 1;
+        location += 1;
     }
 }
 
@@ -207,7 +207,7 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Regist
         total_score = add(total_score, item.score);
         if item.score > maximum_score { maximum_score = item.score; maximum_kind = item.kind; maximum_subject = item.subject; }
         digest = mix(digest, item.kind); digest = mix(digest, item.subject); digest = mix(digest, item.score);
-        i = i + 1;
+        i += 1;
     }
     Register { risks: risks, critical: critical, high: high, medium: medium, low: low,
         total_score: total_score, maximum_score: maximum_score, maximum_kind: maximum_kind,

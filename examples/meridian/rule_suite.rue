@@ -98,20 +98,20 @@ fn empty() -> Result {
 fn include(inout out: Result, borrow input: plan.Plan,
     borrow first: rule_result.Decision, borrow second: rule_result.Decision,
     verified: bool) {
-    out.evaluations = out.evaluations + 1;
-    out.inspected = out.inspected + first.inspected;
-    out.matches = out.matches + first.matches;
-    out.rewrites = out.rewrites + first.rewrites;
-    out.benefit = out.benefit + first.benefit;
+    out.evaluations += 1;
+    out.inspected += first.inspected;
+    out.matches += first.matches;
+    out.rewrites += first.rewrites;
+    out.benefit += first.benefit;
     out.digest = metric.mix(out.digest, first.rule);
     out.digest = metric.mix(out.digest, first.digest);
     if !verified || !first.valid || first.cost_before != input.cost {
-        out.failures = out.failures + 1;
+        out.failures += 1;
     }
     if first.digest != second.digest || first.matches != second.matches ||
         first.rewrites != second.rewrites || first.cost_after != second.cost_after {
         out.deterministic = false;
-        out.failures = out.failures + 1;
+        out.failures += 1;
     }
 }
 
@@ -409,7 +409,7 @@ pub fn run(borrow database: model.Database) -> Result {
         let distributed_balance_fragments_b = rule_distributed_balance_fragments.evaluate(borrow database, borrow query, borrow input);
         include(inout out, borrow input, borrow distributed_balance_fragments_a, borrow distributed_balance_fragments_b,
             rule_distributed_balance_fragments.verify(borrow input, borrow distributed_balance_fragments_a));
-        q = q + 1;
+        q += 1;
     }
     out.rules = 72;
     out.valid = out.rules == 72 &&

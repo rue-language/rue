@@ -16,7 +16,7 @@ fn identifier_continue(b: u8) -> bool {
 fn skip_space(borrow source: StrBuf, start: u64) -> u64 {
     let mut i = start;
     while i < source.len() && text.is_space(text.byte_of(borrow source, i)) {
-        i = i + 1;
+        i += 1;
     }
     i
 }
@@ -40,9 +40,9 @@ pub fn lex(borrow source: StrBuf) -> ast.Lexed {
                 return ast.Lexed { tokens: tokens, ok: false, error_offset: i };
             }
             let name_start = i;
-            i = i + 1;
+            i += 1;
             while i < source.len() && identifier_continue(text.byte_of(borrow source, i)) {
-                i = i + 1;
+                i += 1;
             }
             push(inout tokens, ast.TOKEN_IDENT(), name_start, i);
             i = skip_space(borrow source, i);
@@ -53,9 +53,9 @@ pub fn lex(borrow source: StrBuf) -> ast.Lexed {
                     return ast.Lexed { tokens: tokens, ok: false, error_offset: i };
                 }
                 let filter_start = i;
-                i = i + 1;
+                i += 1;
                 while i < source.len() && identifier_continue(text.byte_of(borrow source, i)) {
-                    i = i + 1;
+                    i += 1;
                 }
                 push(inout tokens, ast.TOKEN_IDENT(), filter_start, i);
                 i = skip_space(borrow source, i);
@@ -64,10 +64,10 @@ pub fn lex(borrow source: StrBuf) -> ast.Lexed {
                 return ast.Lexed { tokens: tokens, ok: false, error_offset: i };
             }
             push(inout tokens, ast.TOKEN_CLOSE(), i, i + 2);
-            i = i + 2;
+            i += 2;
             text_start = i;
         } else {
-            i = i + 1;
+            i += 1;
         }
     }
     if text_start < source.len() {

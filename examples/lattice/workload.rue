@@ -23,12 +23,12 @@ pub struct Result {
 fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
 
 fn include(inout result: Result, borrow value: stress.Result) {
-    result.runs = result.runs + 1;
-    result.tasks = result.tasks + value.tasks;
-    result.edges = result.edges + value.edges;
-    result.events = result.events + value.events;
-    result.observations = result.observations + value.observations;
-    result.makespan_sum = result.makespan_sum + value.makespan;
+    result.runs += 1;
+    result.tasks += value.tasks;
+    result.edges += value.edges;
+    result.events += value.events;
+    result.observations += value.observations;
+    result.makespan_sum += value.makespan;
     if value.makespan > result.maximum_makespan { result.maximum_makespan = value.makespan; }
     result.digest = mix(result.digest, value.digest);
     if !value.valid { result.invalid_runs = result.invalid_runs + 1; }
@@ -40,9 +40,9 @@ fn pair(inout result: Result, scale: u64) {
     let second = stress.run(stress.tier(scale));
     include(inout result, borrow first);
     include(inout result, borrow second);
-    result.tiers = result.tiers + 1;
+    result.tiers += 1;
     if first.digest != second.digest || first.fingerprint != second.fingerprint {
-        result.nondeterministic_runs = result.nondeterministic_runs + 1;
+        result.nondeterministic_runs += 1;
     }
 }
 

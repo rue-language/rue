@@ -31,7 +31,7 @@ fn inspect_entities(inout out: result.Result, borrow world: model.World) {
         let matched = entity_match(borrow world, borrow entity);
         let benefit = entity_benefit(borrow world, borrow entity);
         result.record(inout out, matched, matched && benefit > POLICY() % 40, benefit);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -45,7 +45,7 @@ fn inspect_tiles(inout out: result.Result, borrow world: model.World) {
             else { tile.resource > POLICY() % 29 };
         let benefit = tile.resource + tile.height * 3 + tile.region + POLICY();
         result.record(inout out, matched, matched && benefit % 3 != 0, benefit);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -56,7 +56,7 @@ fn inspect_events(inout out: result.Result, borrow world: model.World) {
         let matched = (event.kind + POLICY()) % 5 == 0;
         let benefit = event.value + event.sequence + event.actor % 211 + POLICY();
         result.record(inout out, matched, matched && event.tick <= world.tick, benefit);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -68,7 +68,7 @@ fn inspect_snapshots(inout out: result.Result, borrow world: model.World) {
         let benefit = item.entity_count * 7 + item.event_count * 5 +
             item.command_count * 3 + item.checksum % 4093;
         result.record(inout out, matched, matched && item.checksum != 0, benefit);
-        i = i + 1;
+        i += 1;
     }
 }
 

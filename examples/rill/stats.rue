@@ -33,13 +33,13 @@ struct Inventory {
             self.counts.set(ins.op, self.counts.get_or(ins.op, 0) + 1);
         }
         if ins.op == bytecode.JUMP || ins.op == bytecode.JUMP_FALSE {
-            self.jumps = self.jumps + 1;
+            self.jumps += 1;
             if ins.a >= 0 && @intCast(ins.a) <= pc {
-                self.backward_jumps = self.backward_jumps + 1;
+                self.backward_jumps += 1;
             }
         }
         if ins.op == bytecode.CALL {
-            self.calls = self.calls + 1;
+            self.calls += 1;
             if ins.b >= 0 && @intCast(ins.b) > self.max_call_arity {
                 self.max_call_arity = @intCast(ins.b);
             }
@@ -60,7 +60,7 @@ pub fn summarize(borrow program: bytecode.Program) -> StrBuf {
     let mut pc: u64 = 0;
     while pc < program.code.len() {
         inventory.observe(pc, program.code.get_or(pc, bytecode.Instruction { op: 0, a: 0, b: 0 }));
-        pc = pc + 1;
+        pc += 1;
     }
     let mut out = StrBuf.new();
     append_metric(inout out, "functions", program.fn_names.len());

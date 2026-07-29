@@ -21,16 +21,16 @@ fn add_tiles(inout world: model.World) {
                 occupant: model.NONE(), region: (x / 4) + (y / 4) * 8,
                 walkable: kind != model.WATER() && kind != model.WALL(),
                 visible: false });
-            x = x + 1;
+            x += 1;
         }
-        y = y + 1;
+        y += 1;
     }
 }
 
 pub fn add_entity(inout world: model.World, kind: u64, faction: u64,
     x: u64, y: u64) -> u64 {
     let id = world.next_entity;
-    world.next_entity = world.next_entity + 1;
+    world.next_entity += 1;
     world.entities.push(model.Entity { id: id, kind: kind, faction: faction,
         x: @intCast(x), y: @intCast(y), previous_x: @intCast(x), previous_y: @intCast(y),
         velocity_x: 0, velocity_y: 0, health: 100, energy: 100,
@@ -59,7 +59,7 @@ pub fn demo(scale: u64) -> model.World {
         let x = 1 + (i * 3) % (size - 2);
         let y = 1 + (i * 5) % (size - 2);
         let _ = add_entity(inout world, kind, faction, x, y);
-        i = i + 1;
+        i += 1;
     }
     world.resources = 400 * scale;
     world.treasury = 250 * scale;
@@ -82,7 +82,7 @@ pub fn from_scenario(borrow input: scenario.Scenario) -> model.World {
                 walkable: spec.terrain != model.WALL() && spec.terrain != model.WATER(),
                 visible: old.visible });
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < input.entities.len() {
@@ -92,7 +92,7 @@ pub fn from_scenario(borrow input: scenario.Scenario) -> model.World {
         } else {
             let _ = add_entity(inout world, spec.kind, spec.faction, spec.x, spec.y);
         }
-        i = i + 1;
+        i += 1;
     }
     world.resources = input.entities.len() * 50;
     world.treasury = input.entities.len() * 25;

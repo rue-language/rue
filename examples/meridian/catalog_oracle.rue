@@ -18,19 +18,19 @@ pub fn audit(borrow database: model.Database) -> Audit {
     let mut t: u64 = 0;
     while t < database.tables.len() {
         let table = database.tables.get_or(t, model.empty_table());
-        out.columns = out.columns + table.column_count;
+        out.columns += table.column_count;
         let rows = model.table_rows(borrow database, t, database.version);
-        out.rows = out.rows + rows;
-        out.cells = out.cells + model.table_cells(borrow database, t);
+        out.rows += rows;
+        out.cells += model.table_cells(borrow database, t);
         out.checksum = metric.mix(out.checksum, database.strings.hash(table.name));
         out.checksum = metric.mix(out.checksum, rows);
-        t = t + 1;
+        t += 1;
     }
     let mut i: u64 = 0;
     while i < database.indexes.len() {
         out.index_entries = out.index_entries +
             database.indexes.get_or(i, model.empty_index()).entries;
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.columns == database.columns.len() &&
         out.rows <= database.rows.len() && out.cells == database.cells.len();

@@ -40,7 +40,7 @@ fn predecessor_finish(borrow workflow: model.Workflow, borrow finish: U64s, task
             let candidate = finish.get_or(edge.before, 0);
             if candidate > value { value = candidate; }
         }
-        i = i + 1;
+        i += 1;
     }
     value
 }
@@ -55,7 +55,7 @@ fn successor_start(borrow workflow: model.Workflow, borrow latest_start: U64s, t
             let candidate = latest_start.get_or(edge.after, makespan);
             if !found || candidate < value { value = candidate; found = true; }
         }
-        i = i + 1;
+        i += 1;
     }
     value
 }
@@ -77,7 +77,7 @@ fn critical_predecessor(
         if edge.after == task && earliest_finish.get_or(edge.before, 0) == start && slack.get_or(edge.before, 1) == 0 {
             if best == model.NONE() || edge.before < best { best = edge.before; }
         }
-        i = i + 1;
+        i += 1;
     }
     best
 }
@@ -104,14 +104,14 @@ pub fn compute(borrow workflow: model.Workflow) -> Analysis {
         earliest_start.set(task_index, start);
         earliest_finish.set(task_index, finish);
         if finish > makespan { makespan = finish; }
-        i = i + 1;
+        i += 1;
     }
 
     let mut latest_start = filled(workflow.tasks.len(), makespan);
     let mut latest_finish = filled(workflow.tasks.len(), makespan);
     i = order.tasks.len();
     while i > 0 {
-        i = i - 1;
+        i -= 1;
         let task_index = order.tasks.get_or(i, model.NONE());
         let task = workflow.tasks.get_or(task_index, model.empty_task());
         let finish = successor_start(borrow workflow, borrow latest_start, task_index, makespan);
@@ -131,12 +131,12 @@ pub fn compute(borrow workflow: model.Workflow) -> Analysis {
         let late = latest_start.get_or(i, early);
         let value = if late >= early { late - early } else { 0 };
         slack.set(i, value);
-        total_slack = total_slack + value;
+        total_slack += value;
         if value > maximum_slack { maximum_slack = value; }
         if value == 0 { critical_tasks.push(i); }
         digest = mix(digest, early); digest = mix(digest, earliest_finish.get_or(i, 0));
         digest = mix(digest, late); digest = mix(digest, value);
-        i = i + 1;
+        i += 1;
     }
 
     let mut leaf = model.NONE();
@@ -145,7 +145,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Analysis {
         if earliest_finish.get_or(i, 0) == makespan && slack.get_or(i, 1) == 0 {
             if leaf == model.NONE() || i < leaf { leaf = i; }
         }
-        i = i + 1;
+        i += 1;
     }
     let mut backward = U64s.new();
     let mut cursor = leaf;
@@ -172,14 +172,14 @@ pub fn verify(borrow workflow: model.Workflow, borrow analysis: Analysis) -> boo
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         if analysis.earliest_finish.get_or(edge.before, 0) > analysis.earliest_start.get_or(edge.after, 0) { return false; }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < workflow.tasks.len() {
         let task = workflow.tasks.get_or(i, model.empty_task());
         if analysis.earliest_start.get_or(i, 0) + task.duration != analysis.earliest_finish.get_or(i, 0) { return false; }
         if analysis.latest_start.get_or(i, 0) + task.duration != analysis.latest_finish.get_or(i, 0) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }

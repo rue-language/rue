@@ -16,7 +16,7 @@ pub struct Table {
 
     fn insert(inout self, dept: record.Dept, salary: i64) -> i64 {
         let id = self.next_id;
-        self.next_id = self.next_id + 1;
+        self.next_id += 1;
         self.rows.push(record.Row.new(id, dept, salary));
         id
     }

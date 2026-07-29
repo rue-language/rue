@@ -24,9 +24,9 @@ pub fn sum_salaries(borrow t: table.Table, p: Pred) -> i64 {
     while i < n {
         let row = t.row_at(i);
         if matches(borrow row, borrow p) {
-            total = total + row.salary;
+            total += row.salary;
         }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -44,7 +44,7 @@ pub fn top_earner(borrow t: table.Table, p: Pred) -> i64 {
                 best_id = row.id;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     best_id
 }

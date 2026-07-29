@@ -22,7 +22,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, " budget="); text.append_u64(inout out, retries.budget_by_pool.get_or(i, 0));
         text.append_literal(inout out, " attempts="); text.append_u64(inout out, retries.attempts_by_pool.get_or(i, 0));
         text.append_literal(inout out, " retries="); text.append_u64(inout out, retries.retries_by_pool.get_or(i, 0)); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

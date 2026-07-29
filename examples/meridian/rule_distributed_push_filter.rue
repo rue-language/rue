@@ -53,13 +53,13 @@ fn inspect_indexes(inout out: rule_result.Decision, borrow database: model.Datab
     let mut i: u64 = 0;
     while i < database.indexes.len() {
         let index = database.indexes.get_or(i, model.empty_index());
-        out.inspected = out.inspected + 1;
+        out.inspected += 1;
         if index.table == query.table &&
             (index.column == query.filter_column || index.column == query.order_column) {
             let benefit = if index.unique { (FOCUS() % 7) + 1 } else { (FOCUS() % 3) + 1 };
             rule_result.record(inout out, benefit, index.entries + index.column + FOCUS());
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -69,7 +69,7 @@ fn inspect_columns(inout out: rule_result.Decision, borrow database: model.Datab
     let mut i: u64 = 0;
     while i < table.column_count {
         let column = database.columns.get_or(table.first_column + i, model.empty_column());
-        out.inspected = out.inspected + 1;
+        out.inspected += 1;
         let selected = (column.ordinal + FOCUS()) % 5 == 0 ||
             column.name == query.filter_column_name ||
             column.name == query.group_column_name ||
@@ -79,7 +79,7 @@ fn inspect_columns(inout out: rule_result.Decision, borrow database: model.Datab
             rule_result.record(inout out, benefit,
                 database.strings.hash(column.name) + column.kind + column.ordinal);
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -90,12 +90,12 @@ pub fn evaluate(borrow database: model.Database, borrow query: model.Query,
     let mut i: u64 = 0;
     while i < input.nodes.len() {
         let node = input.nodes.get_or(i, plan.empty_node());
-        out.inspected = out.inspected + 1;
+        out.inspected += 1;
         if eligible(borrow node, borrow query) {
             rule_result.record(inout out, node_benefit(borrow node),
                 fingerprint + node.kind * 17 + node.estimated_rows + i);
         }
-        i = i + 1;
+        i += 1;
     }
     inspect_indexes(inout out, borrow database, borrow query);
     inspect_columns(inout out, borrow database, borrow query);

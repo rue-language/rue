@@ -47,7 +47,7 @@ pub fn Queue(comptime T: type) -> type {
                 O.None
             } else {
                 let front = self.buf.get(self.head);
-                self.head = self.head + 1;
+                self.head += 1;
                 // Reset to empty once fully drained, reclaiming the buffer.
                 if self.head >= self.buf.len() {
                     self.buf.clear();

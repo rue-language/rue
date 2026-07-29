@@ -20,7 +20,7 @@ fn collatz_length(start: i32) -> i32 {
     let mut steps = 0;
     while n != 1 {
         n = collatz_step(n);
-        steps = steps + 1;
+        steps += 1;
     }
     steps
 }
@@ -50,7 +50,7 @@ fn main() -> i32 {
             max_length = len;
             max_start = i;
         }
-        i = i + 1;
+        i += 1;
     }
 
     // Return the starting number with longest sequence

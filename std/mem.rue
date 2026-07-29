@@ -30,7 +30,7 @@ pub fn swap(comptime T: type, inout a: T, inout b: T) {
         let tb = checked { @byte_read(pb, i) };
         checked { @byte_write(pa, i, tb); };
         checked { @byte_write(pb, i, ta); };
-        i = i + 1;
+        i += 1;
     }
 }
 

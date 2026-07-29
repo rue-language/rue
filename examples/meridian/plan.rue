@@ -70,7 +70,7 @@ pub fn build(borrow database: model.Database, borrow query: model.Query) -> Plan
     let mut cost = scan_cost;
     if query.filter_column != model.NONE() {
         rows = (rows + 1) / 2;
-        cost = cost + base_rows;
+        cost += base_rows;
         root = add(inout value, FILTER(), root, model.NONE(), query.table,
             query.filter_column, rows, cost, 0);
     }
@@ -87,18 +87,18 @@ pub fn build(borrow database: model.Database, borrow query: model.Query) -> Plan
     }
     if query.group_column != model.NONE() {
         rows = if rows > 4 { 4 } else { rows };
-        cost = cost + rows * 2;
+        cost += rows * 2;
         root = add(inout value, GROUP(), root, model.NONE(), query.table,
             query.group_column, rows, cost, 0);
     }
     if query.order_column != model.NONE() {
-        cost = cost + rows * (rows + 1);
+        cost += rows * (rows + 1);
         root = add(inout value, SORT(), root, model.NONE(), query.table,
             query.order_column, rows, cost, 0);
     }
     if query.limit != model.NONE() {
         if rows > query.limit { rows = query.limit; }
-        cost = cost + 1;
+        cost += 1;
         root = add(inout value, LIMIT(), root, model.NONE(), query.table,
             model.NONE(), rows, cost, 0);
     }
@@ -119,7 +119,7 @@ pub fn verify(borrow value: Plan) -> bool {
         if node.kind == 0 || node.cost == 0 { return false; }
         if node.left != model.NONE() && node.left >= i { return false; }
         if node.right != model.NONE() && node.right >= i { return false; }
-        i = i + 1;
+        i += 1;
     }
     let root = value.nodes.get_or(value.root, empty_node());
     root.estimated_rows == value.estimated_rows && root.cost == value.cost

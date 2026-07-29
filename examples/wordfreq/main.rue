@@ -125,15 +125,15 @@ fn main() -> i32 {
             word.push(to_lower(b));
         } else if word.len() > 0 {
             count_word(borrow word, inout counts, inout order);
-            words_total = words_total + 1;
+            words_total += 1;
             word.clear();
         }
-        i = i + 1;
+        i += 1;
     }
     // Flush a trailing word not terminated by a separator.
     if word.len() > 0 {
         count_word(borrow word, inout counts, inout order);
-        words_total = words_total + 1;
+        words_total += 1;
     }
 
     let distinct = order.len();
@@ -159,7 +159,7 @@ fn main() -> i32 {
                 best_count = c;
                 best_idx = k;
             }
-            k = k + 1;
+            k += 1;
         }
         let mut line = StrBuf.new();
         line.push_str("top=");

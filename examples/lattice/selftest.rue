@@ -38,9 +38,9 @@ pub struct Result {
 }
 
 fn record(inout result: Result, condition: bool) {
-    result.checks = result.checks + 1;
+    result.checks += 1;
     if !condition {
-        result.failures = result.failures + 1;
+        result.failures += 1;
         result.last_failed_check = result.checks;
     }
 }
@@ -50,9 +50,9 @@ fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211
 fn one(inout result: Result, tasks: u64, pools: u64, width: u64, seed: u64) {
     let mut workflow = generate.workflow(tasks, pools, width, seed);
     validate.workflow(inout workflow);
-    result.workflows = result.workflows + 1;
-    result.tasks = result.tasks + workflow.tasks.len();
-    result.edges = result.edges + workflow.edges.len();
+    result.workflows += 1;
+    result.tasks += workflow.tasks.len();
+    result.edges += workflow.edges.len();
     record(inout result, workflow.diagnostics.len() == 0);
     let order = topology.sort(borrow workflow);
     let closure = cycle_oracle.compute(borrow workflow);
@@ -77,7 +77,7 @@ fn one(inout result: Result, tasks: u64, pools: u64, width: u64, seed: u64) {
     let events = event_analysis.summarize(borrow workflow, borrow first);
     let serial = serial_oracle.compute(borrow workflow, borrow first);
     let difference = schedule_diff.compare(borrow workflow, borrow first, borrow second);
-    result.events = result.events + first.events.len();
+    result.events += first.events.len();
     record(inout result, audit.ok);
     record(inout result, first.failed == 0);
     record(inout result, first.succeeded + first.cached == workflow.tasks.len());
@@ -104,9 +104,9 @@ fn one(inout result: Result, tasks: u64, pools: u64, width: u64, seed: u64) {
     result.digest = mix(result.digest, events.digest);
     result.digest = mix(result.digest, serial.digest);
     result.digest = mix(result.digest, difference.digest);
-    result.analysis_passes = result.analysis_passes + analyses.passes;
-    result.analysis_observations = result.analysis_observations + analyses.observations;
-    result.analysis_warnings = result.analysis_warnings + analyses.warnings;
+    result.analysis_passes += analyses.passes;
+    result.analysis_observations += analyses.observations;
+    result.analysis_warnings += analyses.warnings;
 }
 
 pub fn run() -> Result {

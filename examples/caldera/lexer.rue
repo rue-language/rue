@@ -16,7 +16,7 @@ fn word_eq(borrow source: Bytes, start: u64, end: u64, value: str) -> bool {
     let mut i: u64 = 0;
     while i < value.len() {
         if upper(source.get_or(start + i, 0)) != value[i] { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -45,18 +45,18 @@ pub fn scan(source: Bytes) -> Scan {
     while i < source.len() {
         let byte = source.get_or(i, 0);
         if byte == 32 || byte == 9 || byte == 10 || byte == 13 {
-            i = i + 1;
+            i += 1;
         } else if byte == 35 {
             while i < source.len() && source.get_or(i, 0) != 10 { i = i + 1; }
         } else if byte == 59 {
             out.tokens.push(token.Token { kind: token.SEMI(), number: 0, offset: i });
-            i = i + 1;
+            i += 1;
         } else if digit(byte) {
             let start = i;
             let mut number: u64 = 0;
             while i < source.len() && digit(source.get_or(i, 0)) {
                 number = number * 10 + @intCast(source.get_or(i, 0) - 48);
-                i = i + 1;
+                i += 1;
             }
             out.tokens.push(token.Token { kind: token.NUMBER(), number: number, offset: start });
         } else if alpha(byte) {
@@ -66,9 +66,9 @@ pub fn scan(source: Bytes) -> Scan {
             if kind == token.INVALID() { out.errors = out.errors + 1; }
             out.tokens.push(token.Token { kind: kind, number: 0, offset: start });
         } else {
-            out.errors = out.errors + 1;
+            out.errors += 1;
             out.tokens.push(token.Token { kind: token.INVALID(), number: 0, offset: i });
-            i = i + 1;
+            i += 1;
         }
     }
     out.tokens.push(token.Token { kind: token.EOF(), number: 0, offset: source.len() });

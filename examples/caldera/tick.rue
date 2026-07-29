@@ -9,7 +9,7 @@ pub struct Result { tick: u64, ai_changes: u64, moved: u64,
     produced: u64, events: u64, checksum: u64, valid: bool }
 
 pub fn step(inout world: model.World) -> Result {
-    world.tick = world.tick + 1;
+    world.tick += 1;
     let ai_changes = ai.update(inout world);
     let moved = physics.step(inout world);
     let ledger = economy.step(inout world);

@@ -21,9 +21,9 @@ pub fn execute(borrow database: model.Database, borrow query: model.Query) -> re
                         if other.table == query.join_table &&
                             model.visible(borrow other, database.version) &&
                             model.cell_number(borrow database, j, query.join_right) == key {
-                            matches = matches + 1;
+                            matches += 1;
                         }
-                        j = j + 1;
+                        j += 1;
                     }
                 }
                 let column = if query.order_column != model.NONE() { query.order_column }
@@ -34,11 +34,11 @@ pub fn execute(borrow database: model.Database, borrow query: model.Query) -> re
                 while n < matches {
                     result.observe(inout out, value);
                     if query.join_table != model.NONE() { out.joined_rows = out.joined_rows + 1; }
-                    n = n + 1;
+                    n += 1;
                 }
             }
         }
-        i = i + 1;
+        i += 1;
     }
     if query.limit != model.NONE() && out.rows > query.limit {
         out.rows = query.limit;

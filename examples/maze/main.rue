@@ -56,7 +56,7 @@ fn solve(inout m: grid.Maze) -> i64 {
         let x = qx.get_or(head, 0);
         let y = qy.get_or(head, 0);
         let d = qd.get_or(head, 0);
-        head = head + 1;
+        head += 1;
         if x == w - 1 {
             if y == h - 1 {
                 result = d;
@@ -86,12 +86,12 @@ fn main() -> i32 {
         while x < 16 {
             let mut p = m.passages(x, y);
             while p != 0 {
-                bits = bits + (p & 1);
-                p = p >> 1;
+                bits += (p & 1);
+                p >>= 1;
             }
-            x = x + 1;
+            x += 1;
         }
-        y = y + 1;
+        y += 1;
     }
     @assert(bits == 510, "tree edges * 2");   // (256-1)*2
 

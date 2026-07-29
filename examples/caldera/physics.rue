@@ -21,7 +21,7 @@ pub fn prepare(inout world: model.World) {
                 experience: entity.experience, born_tick: entity.born_tick,
                 updated_tick: world.tick, alive: entity.alive });
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -47,7 +47,7 @@ pub fn integrate(inout world: model.World) -> u64 {
                 credits: entity.credits, experience: entity.experience + if allowed { 1 } else { 0 },
                 born_tick: entity.born_tick, updated_tick: world.tick, alive: entity.alive });
         }
-        i = i + 1;
+        i += 1;
     }
     moved
 }

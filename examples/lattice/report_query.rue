@@ -17,7 +17,7 @@ fn section(inout out: StrBuf, label: str, borrow workflow: model.Workflow, borro
         text.append_literal(inout out, "  "); text.append_id(inout out, borrow workflow, task.id);
         text.append_literal(inout out, " priority="); text.append_u64(inout out, task.priority);
         text.append_literal(inout out, " duration="); text.append_u64(inout out, task.duration); out.push(10);
-        i = i + 1;
+        i += 1;
     }
 }
 

@@ -19,9 +19,9 @@ fn join_matches(borrow database: model.Database, borrow query: model.Query, row_
         let row = database.rows.get_or(j, model.empty_row());
         if row.table == query.join_table && model.visible(borrow row, database.version) &&
             model.cell_number(borrow database, j, query.join_right) == key {
-            matches = matches + 1;
+            matches += 1;
         }
-        j = j + 1;
+        j += 1;
     }
     matches
 }
@@ -30,7 +30,7 @@ fn group_seen(borrow value: result.Result, item: u64) -> bool {
     let mut i: u64 = 0;
     while i < value.values.len() {
         if value.values.get_or(i, model.NONE()) == item { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -42,10 +42,10 @@ fn sort(inout values: model.U64s) {
         let mut j = i;
         while j > 0 && values.get_or(j - 1, 0) > value {
             values.set(j, values.get_or(j - 1, 0));
-            j = j - 1;
+            j -= 1;
         }
         values.set(j, value);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -67,7 +67,7 @@ pub fn execute(borrow database: model.Database, borrow query: model.Query) -> re
                 while m < matches {
                     result.observe(inout out, value);
                     out.joined_rows = out.joined_rows + if query.join_table != model.NONE() { 1 } else { 0 };
-                    m = m + 1;
+                    m += 1;
                 }
                 if query.group_column != model.NONE() {
                     let group = model.cell_number(borrow database, i, query.group_column);
@@ -75,7 +75,7 @@ pub fn execute(borrow database: model.Database, borrow query: model.Query) -> re
                 }
             }
         }
-        i = i + 1;
+        i += 1;
     }
     if query.order_column != model.NONE() { sort(inout out.values); }
     out.groups = groups.len();

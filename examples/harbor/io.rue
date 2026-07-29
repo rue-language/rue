@@ -31,7 +31,7 @@ pub fn bytes_to_text(borrow bytes: Bytes) -> StrBuf {
     let mut i: u64 = 0;
     while i < bytes.len() {
         out.push(bytes.get_or(i, 0));
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -49,7 +49,7 @@ fn text_to_bytes(borrow text: StrBuf) -> Bytes {
     let mut i: u64 = 0;
     while i < text.len() {
         out.push(StrBuf.byte_at_borrowed(borrow text, i));
-        i = i + 1;
+        i += 1;
     }
     out
 }

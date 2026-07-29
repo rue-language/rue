@@ -24,7 +24,7 @@ pub fn new(tag: u64) -> Metric {
 }
 
 pub fn observe(inout value: Metric, sample: u64, weight: u64) {
-    value.observations = value.observations + 1;
+    value.observations += 1;
     value.total = @wrapping_add(value.total, @wrapping_mul(sample, weight));
     if sample < value.minimum { value.minimum = sample; }
     if sample > value.maximum { value.maximum = sample; }
@@ -34,7 +34,7 @@ pub fn observe(inout value: Metric, sample: u64, weight: u64) {
 
 pub fn warn(inout value: Metric, condition: bool) {
     if condition {
-        value.warnings = value.warnings + 1;
+        value.warnings += 1;
         value.digest = mix(value.digest, 18446744073709551557);
     }
 }

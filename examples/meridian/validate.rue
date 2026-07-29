@@ -16,9 +16,9 @@ fn validate_tables(inout database: model.Database) {
                     ordinal: actual,
                 };
                 database.columns.set(c, resolved);
-                actual = actual + 1;
+                actual += 1;
             }
-            c = c + 1;
+            c += 1;
         }
         if actual != table.column_count {
             model.add_error(inout database, 202, table.name, "declared column count does not match COLUMN statements");
@@ -28,9 +28,9 @@ fn validate_tables(inout database: model.Database) {
             if database.strings.ids_equal(table.name, database.tables.get_or(j, model.empty_table()).name) {
                 model.add_error(inout database, 200, table.name, "duplicate table name");
             }
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -48,9 +48,9 @@ fn validate_columns(inout database: model.Database) {
                 database.strings.ids_equal(column.name, other.name) {
                 model.add_error(inout database, 200, column.name, "duplicate column name");
             }
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -66,7 +66,7 @@ fn validate_rows(inout database: model.Database) {
                 model.add_error(inout database, 203, table.name, "INSERT value count does not match table schema");
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -85,7 +85,7 @@ fn validate_indexes(inout database: model.Database) {
         if table == model.NONE() || column == model.NONE() {
             model.add_error(inout database, 201, index.name, "index references unknown table or column");
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -123,7 +123,7 @@ fn resolve_queries(inout database: model.Database) {
             }
         }
         database.queries.set(i, query);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -139,9 +139,9 @@ fn validate_transactions(inout database: model.Database) {
             if item.id == database.transactions.get_or(j, model.empty_transaction()).id {
                 model.add_error(inout database, 300, item.id, "duplicate transaction id");
             }
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 

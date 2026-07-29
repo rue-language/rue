@@ -21,7 +21,7 @@ pub struct Maze {
         while i < total {
             cells.push(0);
             visited.push(0);
-            i = i + 1;
+            i += 1;
         }
         Self { w: w, h: h, cells: cells, visited: visited }
     }
@@ -54,7 +54,7 @@ pub struct Maze {
         let mut i: u64 = 0;
         while i < @intCast(total) {
             self.visited.set(i, 0);
-            i = i + 1;
+            i += 1;
         }
     }
 }

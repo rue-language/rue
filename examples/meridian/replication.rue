@@ -14,7 +14,7 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
         metric.warn(inout out, replica.applied_lsn > latest);
         metric.warn(inout out, replica.lag != latest - replica.applied_lsn);
         metric.warn(inout out, replica.primary && !replica.healthy);
-        i = i + 1;
+        i += 1;
     }
     metric.warn(inout out, primaries != 1);
     metric.finish(inout out);

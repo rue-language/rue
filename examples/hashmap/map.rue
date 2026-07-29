@@ -22,7 +22,7 @@ pub struct Map {
             keys.push(0);
             vals.push(0);
             state.push(0);
-            i = i + 1;
+            i += 1;
         }
         Self { keys: keys, vals: vals, state: state, live: 0, used: 0, cap: cap }
     }
@@ -55,7 +55,7 @@ pub struct Map {
                 self.keys.set(i, key);
                 self.vals.set(i, val);
                 self.state.set(i, 1);
-                self.live = self.live + 1;
+                self.live += 1;
                 break;
             }
         }
@@ -73,7 +73,7 @@ pub struct Map {
                 }
             }
             i = (i + 1) % self.cap;
-            probes = probes + 1;
+            probes += 1;
         }
         OptI64.None
     }
@@ -95,13 +95,13 @@ pub struct Map {
             if s == 1 {
                 if self.keys.get_or(i, 0) == key {
                     self.state.set(i, 2);   // tombstone
-                    self.live = self.live - 1;
+                    self.live -= 1;
                     removed = true;
                     break;
                 }
             }
             i = (i + 1) % self.cap;
-            probes = probes + 1;
+            probes += 1;
         }
         removed
     }
@@ -116,7 +116,7 @@ pub struct Map {
             if self.state.get_or(j, 0) == 1 {
                 bigger.insert(self.keys.get_or(j, 0), self.vals.get_or(j, 0));
             }
-            j = j + 1;
+            j += 1;
         }
         // Field-by-field move of the local into self: each assignment
         // overwrite-drops the old buffer and partially moves `bigger`.

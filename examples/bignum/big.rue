@@ -16,7 +16,7 @@ pub struct Big {
         }
         while rest > 0 {
             limbs.push(rest % 1000000000);
-            rest = rest / 1000000000;
+            rest /= 1000000000;
         }
         Self { limbs: limbs }
     }
@@ -34,11 +34,11 @@ pub struct Big {
             let prod = self.limbs.get_or(i, 0) * small + carry;
             out.push(prod % 1000000000);
             carry = prod / 1000000000;
-            i = i + 1;
+            i += 1;
         }
         while carry > 0 {
             out.push(carry % 1000000000);
-            carry = carry / 1000000000;
+            carry /= 1000000000;
         }
         Self { limbs: out }
     }
@@ -54,7 +54,7 @@ pub struct Big {
             let s = self.limbs.get_or(i, 0) + other.limb(i) + carry;
             out.push(s % 1000000000);
             carry = s / 1000000000;
-            i = i + 1;
+            i += 1;
         }
         if carry > 0 {
             out.push(carry);
@@ -72,7 +72,7 @@ pub struct Big {
             let mut i = n;
             let mut result: i64 = 0;
             while i > 0 {
-                i = i - 1;
+                i -= 1;
                 let a = self.limbs.get_or(i, 0);
                 let b = other.limb(i);
                 if result == 0 {
@@ -90,7 +90,7 @@ pub fn factorial(n: i64) -> Big {
     let mut k: i64 = 2;
     while k <= n {
         acc = acc.mul_small(k);
-        k = k + 1;
+        k += 1;
     }
     acc
 }

@@ -33,10 +33,10 @@ pub fn collect(borrow site: model.Site) -> Ratios {
     while i < site.pages.len() {
         let page = site.pages.get_or(i, model.empty_page());
         if !page.draft {
-            published = published + 1;
+            published += 1;
         }
-        words = words + page.word_count;
-        i = i + 1;
+        words += page.word_count;
+        i += 1;
     }
     i = 0;
     while i < site.links.len() {
@@ -50,14 +50,14 @@ pub fn collect(borrow site: model.Site) -> Ratios {
             external: false,
         });
         if !link.external && link.resolved_page != model.NONE() {
-            internal_links = internal_links + 1;
+            internal_links += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.strings.len() {
-        pooled_bytes = pooled_bytes + site.strings.string_len(i);
-        i = i + 1;
+        pooled_bytes += site.strings.string_len(i);
+        i += 1;
     }
     Ratios {
         blocks_per_page_x100: ratio_x100(site.blocks.len(), published),

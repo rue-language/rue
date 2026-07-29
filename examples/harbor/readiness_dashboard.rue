@@ -134,7 +134,7 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Dashbo
         if item.warning { warnings = warnings + 1; }
         if item.gate { if item.failures == 0 { gates_passed = gates_passed + 1; } else { gates_failed = gates_failed + 1; } }
         digest = mix(digest, item.id); digest = mix(digest, item.score); digest = mix(digest, item.failures);
-        i = i + 1;
+        i += 1;
     }
     let score = if weight_total == 0 { 0 } else { weighted_score / weight_total };
     Dashboard { dimensions: dimensions, score: score, weighted_score: weighted_score,
@@ -170,7 +170,7 @@ fn minimum_dimension(borrow value: Dashboard) -> Dimension {
             worst = item;
             found = true;
         }
-        i = i + 1;
+        i += 1;
     }
     worst
 }

@@ -24,7 +24,7 @@ fn disrupted(borrow scenario: model.Scenario, route: u64) -> bool {
     let mut i: u64 = 0;
     while i < scenario.disruptions.len() {
         if scenario.disruptions.get_or(i, model.empty_disruption()).route == route { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -51,7 +51,7 @@ pub fn render(borrow scenario: model.Scenario) -> StrBuf {
         text.append_json_string(inout out, borrow label);
         if location_stats.critical { text.append_literal(inout out, ", color=red, penwidth=2"); }
         text.append_literal(inout out, "];\n");
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.routes.len() {
@@ -64,7 +64,7 @@ pub fn render(borrow scenario: model.Scenario) -> StrBuf {
         if route.bidirectional { text.append_literal(inout out, ", dir=both"); }
         if disrupted(borrow scenario, i) { text.append_literal(inout out, ", color=orange, style=dashed"); }
         text.append_literal(inout out, "];\n");
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "}\n");
     out

@@ -45,7 +45,7 @@ pub fn render(borrow world: model.World, suite_digest: u64) -> StrBuf {
         text.append_i64(inout out, entity.y); separator(inout out);
         text.append_u64(inout out, entity.health); separator(inout out);
         text.append_u64(inout out, entity.state); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     field(inout out, "world_checksum", checksum.world(borrow world));
     field(inout out, "suite_digest", suite_digest);

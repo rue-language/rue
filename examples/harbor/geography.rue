@@ -110,9 +110,9 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
                     network_distance: network, detour: detour, reachable: reachable,
                 });
             }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     let mut min_x: i64 = 0; let mut max_x: i64 = 0; let mut min_y: i64 = 0; let mut max_y: i64 = 0;
     i = 0;
@@ -122,7 +122,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
         if i == 0 || item.x > max_x { max_x = item.x; }
         if i == 0 || item.y < min_y { min_y = item.y; }
         if i == 0 || item.y > max_y { max_y = item.y; }
-        i = i + 1;
+        i += 1;
     }
     Summary {
         routes: routes, pairs: pairs, route_distance: route_distance,

@@ -48,7 +48,7 @@ pub struct FirstSeen {
         let mut j: u64 = 0;
         while j < len {
             self.pool.push(_byte_of(borrow w, j));
-            j = j + 1;
+            j += 1;
         }
         self.offs.push(off);
         self.lens.push(len);
@@ -61,7 +61,7 @@ pub struct FirstSeen {
         let mut j: u64 = 0;
         while j < len {
             out.push(_byte_of(borrow self.pool, off + j));
-            j = j + 1;
+            j += 1;
         }
     }
 }

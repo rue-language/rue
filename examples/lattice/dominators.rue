@@ -43,7 +43,7 @@ fn predecessor_allows(
             found = true;
             if !matrix.get_or(at(size, edge.before, candidate), false) { return false; }
         }
-        i = i + 1;
+        i += 1;
     }
     found
 }
@@ -56,21 +56,21 @@ pub fn compute(borrow workflow: model.Workflow) -> Dominators {
     let mut task: u64 = 0;
     while task < size {
         if is_root(borrow workflow, task) {
-            roots = roots + 1;
+            roots += 1;
             let mut candidate: u64 = 0;
             while candidate < size {
                 matrix.set(at(size, task, candidate), candidate == task);
-                candidate = candidate + 1;
+                candidate += 1;
             }
         }
-        task = task + 1;
+        task += 1;
     }
 
     let mut changed = true;
     let mut iterations: u64 = 0;
     while changed && iterations <= size + 1 {
         changed = false;
-        iterations = iterations + 1;
+        iterations += 1;
         let mut position: u64 = 0;
         while position < order.tasks.len() {
             task = order.tasks.get_or(position, model.NONE());
@@ -83,10 +83,10 @@ pub fn compute(borrow workflow: model.Workflow) -> Dominators {
                         matrix.set(index, next);
                         changed = true;
                     }
-                    candidate = candidate + 1;
+                    candidate += 1;
                 }
             }
-            position = position + 1;
+            position += 1;
         }
     }
 
@@ -99,14 +99,14 @@ pub fn compute(borrow workflow: model.Workflow) -> Dominators {
         let mut candidate: u64 = 0;
         while candidate < size {
             if matrix.get_or(at(size, task, candidate), false) {
-                chain = chain + 1;
+                chain += 1;
                 if candidate != task { strict_pairs = strict_pairs + 1; }
                 digest = @wrapping_mul(digest ^ (task * size + candidate), 1099511628211);
             }
-            candidate = candidate + 1;
+            candidate += 1;
         }
         if chain > maximum_chain { maximum_chain = chain; }
-        task = task + 1;
+        task += 1;
     }
     Dominators {
         matrix: matrix, size: size, iterations: iterations, roots: roots,
@@ -125,7 +125,7 @@ pub fn verify(borrow workflow: model.Workflow, borrow value: Dominators) -> bool
     let mut task: u64 = 0;
     while task < value.size {
         if !dominates(borrow value, task, task) { return false; }
-        task = task + 1;
+        task += 1;
     }
     true
 }

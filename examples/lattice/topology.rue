@@ -29,7 +29,7 @@ fn compute_indegrees(borrow workflow: model.Workflow) -> U64s {
         if edge.after < values.len() {
             values.set(edge.after, values.get_or(edge.after, 0) + 1);
         }
-        i = i + 1;
+        i += 1;
     }
     values
 }
@@ -39,7 +39,7 @@ fn outdegree(borrow workflow: model.Workflow, task: u64) -> u64 {
     let mut i: u64 = 0;
     while i < workflow.edges.len() {
         if workflow.edges.get_or(i, model.empty_edge()).before == task { value = value + 1; }
-        i = i + 1;
+        i += 1;
     }
     value
 }
@@ -67,7 +67,7 @@ pub fn sort(borrow workflow: model.Workflow) -> Order {
                     }
                 }
             }
-            i = i + 1;
+            i += 1;
         }
         if best == model.NONE() { break; }
         emitted.set(best, true);
@@ -79,7 +79,7 @@ pub fn sort(borrow workflow: model.Workflow) -> Order {
                 let old = remaining.get_or(edge.after, 0);
                 if old > 0 { remaining.set(edge.after, old - 1); }
             }
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -95,7 +95,7 @@ pub fn sort(borrow workflow: model.Workflow) -> Order {
         if outside == 0 { leaves = leaves + 1; }
         if inside > maximum_indegree { maximum_indegree = inside; }
         if outside > maximum_outdegree { maximum_outdegree = outside; }
-        i = i + 1;
+        i += 1;
     }
     let has_cycle = tasks.len() != workflow.tasks.len();
     Order {
@@ -113,7 +113,7 @@ pub fn position(borrow order: Order, task: u64) -> u64 {
     let mut i: u64 = 0;
     while i < order.tasks.len() {
         if order.tasks.get_or(i, model.NONE()) == task { return i; }
-        i = i + 1;
+        i += 1;
     }
     model.NONE()
 }
@@ -124,7 +124,7 @@ pub fn valid(borrow workflow: model.Workflow, borrow order: Order) -> bool {
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         if position(borrow order, edge.before) >= position(borrow order, edge.after) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }

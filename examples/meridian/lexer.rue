@@ -38,7 +38,7 @@ struct Lexer {
 
     fn advance(inout self) -> u8 {
         let value = self.byte(self.at);
-        self.at = self.at + 1;
+        self.at += 1;
         value
     }
 
@@ -61,7 +61,7 @@ struct Lexer {
             let actual = StrBuf.byte_at_borrowed(borrow word, i);
             let folded = if actual >= 97 && actual <= 122 { actual - 32 } else { actual };
             if folded != value[i] { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }

@@ -73,7 +73,7 @@ struct Tree {
             let top = stack.pop_or(0);
             if top == 0 { break; }
             let node = self.nodes.get_or(top, Node { val: 0, left: 0, right: 0 });
-            total = total + node.val;
+            total += node.val;
             cur = node.right;
         }
         total

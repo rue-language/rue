@@ -20,7 +20,7 @@ pub fn build(borrow world: model.World) -> model.U64s {
                     best = i; best_priority = current;
                 }
             }
-            i = i + 1;
+            i += 1;
         }
         if best == model.NONE() { break; }
         used.set(best, true); order.push(best);
@@ -34,7 +34,7 @@ pub fn agrees(borrow world: model.World, borrow actual: scheduler.Schedule) -> b
     let mut i: u64 = 0;
     while i < expected.len() {
         if expected.get_or(i, model.NONE()) != actual.order.get_or(i, model.NONE()) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }

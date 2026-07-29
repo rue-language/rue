@@ -26,7 +26,7 @@ pub struct Pool {
         while i < value.len() {
             let b = match value.byte_at(i) { OptU8.Some(x) => x, OptU8.None => 0 };
             self.bytes.push(b);
-            i = i + 1;
+            i += 1;
         }
         id
     }
@@ -37,7 +37,7 @@ pub struct Pool {
         let mut id: u64 = 0;
         while id < self.len() {
             if self.equals(id, borrow value) { return id; }
-            id = id + 1;
+            id += 1;
         }
         self.len()
     }
@@ -60,7 +60,7 @@ pub struct Pool {
         while i < value.len() {
             let b = match value.byte_at(i) { OptU8.Some(x) => x, OptU8.None => 0 };
             if self.byte_at(id, i) != b { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -70,7 +70,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < self.string_len(a) {
             if self.byte_at(a, i) != self.byte_at(b, i) { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -79,7 +79,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < self.string_len(id) {
             out.push(self.byte_at(id, i));
-            i = i + 1;
+            i += 1;
         }
     }
 
@@ -93,9 +93,9 @@ pub struct Pool {
         let mut h: u64 = 14695981039346656037;
         let mut i: u64 = 0;
         while i < self.string_len(id) {
-            h = h ^ @intCast(self.byte_at(id, i));
+            h ^= @intCast(self.byte_at(id, i));
             h = @wrapping_mul(h, 1099511628211);
-            i = i + 1;
+            i += 1;
         }
         h
     }

@@ -28,7 +28,7 @@ pub fn world(borrow value: model.World) -> u64 {
         hash = metric.mix(hash, entity.credits);
         hash = metric.mix(hash, entity.experience);
         hash = metric.mix(hash, if entity.alive { 1 } else { 0 });
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < value.tiles.len() {
@@ -40,7 +40,7 @@ pub fn world(borrow value: model.World) -> u64 {
         hash = metric.mix(hash, tile.resource);
         hash = metric.mix(hash, tile.region);
         hash = metric.mix(hash, if tile.walkable { 1 } else { 0 });
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < value.events.len() {
@@ -51,7 +51,7 @@ pub fn world(borrow value: model.World) -> u64 {
         hash = metric.mix(hash, event.target);
         hash = metric.mix(hash, event.value);
         hash = metric.mix(hash, event.sequence);
-        i = i + 1;
+        i += 1;
     }
     hash
 }

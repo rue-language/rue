@@ -110,7 +110,7 @@ pub fn find_entity(borrow world: World, id: u64) -> u64 {
     let mut i: u64 = 0;
     while i < world.entities.len() {
         if world.entities.get_or(i, empty_entity()).id == id { return i; }
-        i = i + 1;
+        i += 1;
     }
     NONE()
 }
@@ -120,7 +120,7 @@ pub fn alive_count(borrow world: World) -> u64 {
     let mut i: u64 = 0;
     while i < world.entities.len() {
         if world.entities.get_or(i, empty_entity()).alive { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -137,7 +137,7 @@ pub fn add_event(inout world: World, kind: u64, actor: u64,
     target: u64, value: u64) {
     world.events.push(Event { tick: world.tick, kind: kind, actor: actor,
         target: target, value: value, sequence: world.next_sequence });
-    world.next_sequence = world.next_sequence + 1;
+    world.next_sequence += 1;
 }
 
 pub fn add_diagnostic(inout world: World, code: u64, subject: u64, detail: u64) {

@@ -33,13 +33,13 @@ struct VM {
     // Fetch the immediate operand following the current opcode.
     fn imm(inout self) -> i64 {
         let v = self.code.get_or(self.pc, 0);
-        self.pc = self.pc + 1;
+        self.pc += 1;
         v
     }
 
     fn step(inout self) -> Step {
         let op = self.code.get_or(self.pc, 4);
-        self.pc = self.pc + 1;
+        self.pc += 1;
         if op == 0 {
             let v = self.imm();
             self.stack.push(v);

@@ -75,7 +75,7 @@ pub fn audit(borrow scenario: model.Scenario, borrow sim: state.State) -> Audit 
         source_total = add(source_total, balance.source_total);
         sink_total = add(sink_total, balance.sink_total);
         balances.push(balance);
-        i = i + 1;
+        i += 1;
     }
     let mut demand_total: u64 = 0;
     let mut delivered_total: u64 = 0;
@@ -87,9 +87,9 @@ pub fn audit(borrow scenario: model.Scenario, borrow sim: state.State) -> Audit 
         delivered_total = add(delivered_total, sim.demand_delivered.get_or(i, 0));
         unmet_total = add(unmet_total, sim.demand_remaining.get_or(i, 0));
         if demand.quantity != add(sim.demand_delivered.get_or(i, 0), sim.demand_remaining.get_or(i, 0)) {
-            mismatches = mismatches + 1;
+            mismatches += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     Audit {
         balances: balances,

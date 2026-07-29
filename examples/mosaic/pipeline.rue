@@ -45,7 +45,7 @@ fn read_pages(inout site: model.Site, borrow base_dir: StrBuf) {
             },
             OptStr.None => { model.add_error(inout site, 400, page.source_id, 0, "cannot read page source"); },
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -96,7 +96,7 @@ pub fn build(borrow loaded: LoadResult) -> bool {
     let mut i: u64 = 0;
     while i < loaded.site.pages.len() {
         if !write_page(borrow loaded.site, i, borrow loaded.base_dir) { return false; }
-        i = i + 1;
+        i += 1;
     }
     let index_name: StrBuf = "search-index.json";
     let index_path = text.join_path(borrow loaded.base_dir, borrow index_name);
@@ -130,12 +130,12 @@ pub fn output_fingerprint(borrow site: model.Site) -> u64 {
             let html = template.page(borrow site, i);
             let mut j: u64 = 0;
             while j < html.len() {
-                hash = hash ^ @intCast(text.byte_of(borrow html, j));
+                hash ^= @intCast(text.byte_of(borrow html, j));
                 hash = @wrapping_mul(hash, 1099511628211);
-                j = j + 1;
+                j += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     hash
 }

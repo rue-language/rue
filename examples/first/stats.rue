@@ -47,8 +47,8 @@ fn main() -> i32 {
     loop {
         match read_num() {
             OptInt.Some(x) => {
-                count = count + 1;
-                sum = sum + x;
+                count += 1;
+                sum += x;
                 max = match max {
                     OptInt.None => OptInt.Some(x),
                     OptInt.Some(m) => if x > m { OptInt.Some(x) } else { OptInt.Some(m) },

@@ -29,7 +29,7 @@ pub fn collect(borrow site: model.Site) -> Analysis {
     while i < site.pages.len() {
         inbound.push(0);
         outbound.push(0);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.links.len() {
@@ -43,22 +43,22 @@ pub fn collect(borrow site: model.Site) -> Analysis {
             external: false,
         });
         if link.external {
-            value.external = value.external + 1;
+            value.external += 1;
         } else if link.resolved_page == model.NONE() {
-            value.unresolved = value.unresolved + 1;
+            value.unresolved += 1;
         } else {
-            value.internal = value.internal + 1;
+            value.internal += 1;
             inbound.set(link.resolved_page, inbound.get_or(link.resolved_page, 0) + 1);
             outbound.set(link.source_page, outbound.get_or(link.source_page, 0) + 1);
             if link.source_page == link.resolved_page {
-                value.self_links = value.self_links + 1;
+                value.self_links += 1;
             }
             let target = site.strings.copy(link.target_id);
             if text.find_byte(borrow target, 35, 0) < target.len() {
-                value.fragments = value.fragments + 1;
+                value.fragments += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.pages.len() {
@@ -70,7 +70,7 @@ pub fn collect(borrow site: model.Site) -> Analysis {
         if outgoing > value.max_outbound {
             value.max_outbound = outgoing;
         }
-        i = i + 1;
+        i += 1;
     }
     value
 }

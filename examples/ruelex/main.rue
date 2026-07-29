@@ -147,12 +147,12 @@ fn main() -> i32 {
                 } else if str_eq(borrow a, "--ast-shape") {
                     shape_mode = true;
                 } else {
-                    nfiles = nfiles + 1;
+                    nfiles += 1;
                 }
             },
             OptStr.None => {},
         }
-        i = i + 1;
+        i += 1;
     }
 
     if nfiles == 0 {
@@ -185,7 +185,7 @@ fn main() -> i32 {
             },
             OptStr.None => {},
         }
-        i = i + 1;
+        i += 1;
     }
 
     if ok { 0 } else { 1 }

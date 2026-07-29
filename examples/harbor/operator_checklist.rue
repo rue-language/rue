@@ -161,7 +161,7 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Checkl
         evidence_total = add(evidence_total, value.evidence);
         digest = mix(digest, value.area); digest = mix(digest, value.subject);
         digest = mix(digest, value.evidence); digest = mix(digest, value.target);
-        i = i + 1;
+        i += 1;
     }
     Checklist { items: items, blocking: blocking, urgent: urgent, high: high,
         normal: normal, complete: complete, open: open,
@@ -183,7 +183,7 @@ fn owner_open(borrow value: Checklist, owner: u64) -> u64 {
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
         if item_value.owner == owner && !item_value.complete { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -194,7 +194,7 @@ fn owner_blocking(borrow value: Checklist, owner: u64) -> u64 {
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
         if item_value.owner == owner && item_value.blocking && !item_value.complete { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -205,7 +205,7 @@ fn owner_evidence(borrow value: Checklist, owner: u64) -> u64 {
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
         if item_value.owner == owner { total = add(total, item_value.evidence); }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -216,7 +216,7 @@ fn due_open(borrow value: Checklist, due: u64) -> u64 {
     while i < value.items.len() {
         let item_value = value.items.get_or(i, empty_item());
         if item_value.due_hour <= due && !item_value.complete { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -229,7 +229,7 @@ fn render_owner_summary(inout out: StrBuf, borrow value: Checklist) {
         text.append_u64(inout out, owner_open(borrow value, owner)); out.push(32);
         text.append_u64(inout out, owner_blocking(borrow value, owner)); out.push(32);
         text.append_u64(inout out, owner_evidence(borrow value, owner)); out.push(10);
-        owner = owner + 1;
+        owner += 1;
     }
 }
 
@@ -239,7 +239,7 @@ fn render_due_summary(inout out: StrBuf, borrow value: Checklist) {
     while due <= 4 {
         text.append_u64(inout out, due); out.push(32);
         text.append_u64(inout out, due_open(borrow value, due)); out.push(10);
-        due = due + 1;
+        due += 1;
     }
 }
 

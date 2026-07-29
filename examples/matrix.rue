@@ -33,9 +33,9 @@ fn multiply(a: Matrix, b: Matrix) -> Matrix {
             let mut k = 0;
             while k < N { acc = acc + a.get(r, k) * b.get(k, c); k = k + 1; }
             out.set(r, c, acc);
-            c = c + 1;
+            c += 1;
         }
-        r = r + 1;
+        r += 1;
     }
     out
 }
@@ -48,7 +48,7 @@ fn main() -> i32 {
     while r < N {
         let mut c = 0;
         while c < N { a.set(r, c, v); v = v + 1; c = c + 1; }
-        r = r + 1;
+        r += 1;
     }
     // a * identity == a, so trace(a*id) == trace(a) == 1 + 5 + 9 == 15
     let prod = multiply(a, id);

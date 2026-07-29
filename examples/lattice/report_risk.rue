@@ -32,7 +32,7 @@ pub fn render(borrow workflow: model.Workflow) -> StrBuf {
         text.append_literal(inout out, " paths="); text.append_u64(inout out, paths.paths_through_task.get_or(i, 0));
         text.append_literal(inout out, " fallible="); text.append_bool(inout out, task.fail_attempt > 0);
         text.append_literal(inout out, " cacheable="); text.append_bool(inout out, task.cacheable); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "mandatory_tasks="); text.append_u64(inout out, cuts.mandatory_count);
     text.append_literal(inout out, " bridge_edges="); text.append_u64(inout out, cuts.bridge_count);

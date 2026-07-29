@@ -55,11 +55,11 @@ pub fn compare(borrow workflow: model.Workflow, borrow first: state.Run, borrow 
         }
         if first_status == state.CACHED() && second_status != state.CACHED() { cached_only_first.push(i); }
         if second_status == state.CACHED() && first_status != state.CACHED() { cached_only_second.push(i); }
-        total_start_delta = total_start_delta + delta(first.starts.get_or(i, model.NONE()), second.starts.get_or(i, model.NONE()));
-        total_end_delta = total_end_delta + delta(first_end, second_end);
+        total_start_delta += delta(first.starts.get_or(i, model.NONE()), second.starts.get_or(i, model.NONE()));
+        total_end_delta += delta(first_end, second_end);
         digest = mix(digest, first_status); digest = mix(digest, second_status);
         digest = mix(digest, first_end); digest = mix(digest, second_end);
-        i = i + 1;
+        i += 1;
     }
     let changed_task_count = changed_tasks.len();
     let faster_count = faster_tasks.len();

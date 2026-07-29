@@ -71,7 +71,7 @@ fn max_priority(borrow scenario: model.Scenario) -> u64 {
     while i < scenario.demands.len() {
         let demand = scenario.demands.get_or(i, model.empty_demand());
         if demand.priority > result { result = demand.priority; }
-        i = i + 1;
+        i += 1;
     }
     result
 }
@@ -91,7 +91,7 @@ fn priority_bands(borrow scenario: model.Scenario, borrow served: service.Summar
                     late: 0, unmet: demand.quantity, first_arrival: 0, last_arrival: 0,
                     weighted_requested: 0, weighted_delivered: 0,
                 });
-                band.demands = band.demands + 1;
+                band.demands += 1;
                 band.requested = add(band.requested, item.requested);
                 band.delivered = add(band.delivered, item.delivered);
                 band.on_time = add(band.on_time, item.on_time);
@@ -99,10 +99,10 @@ fn priority_bands(borrow scenario: model.Scenario, borrow served: service.Summar
                 band.weighted_requested = add(band.weighted_requested, mul(item.requested, priority));
                 band.weighted_delivered = add(band.weighted_delivered, mul(item.delivered, priority));
             }
-            i = i + 1;
+            i += 1;
         }
         result.push(band);
-        priority = priority + 1;
+        priority += 1;
     }
     result
 }
@@ -126,14 +126,14 @@ fn deadline_bands(borrow scenario: model.Scenario, borrow served: service.Summar
                     late: 0, unmet: demand.quantity, first_arrival: 0, last_arrival: 0,
                     weighted_requested: 0, weighted_delivered: 0,
                 });
-                band.demands = band.demands + 1;
+                band.demands += 1;
                 band.requested = add(band.requested, item.requested);
                 band.delivered = add(band.delivered, item.delivered);
                 band.on_time = add(band.on_time, item.on_time);
                 band.late = add(band.late, item.late);
                 band.unmet = add(band.unmet, item.unmet);
             }
-            i = i + 1;
+            i += 1;
         }
         result.push(band);
         if end == scenario.duration { break; }
@@ -147,7 +147,7 @@ fn sorted_deadlines(borrow scenario: model.Scenario) -> U64s {
     let mut i: u64 = 0;
     while i < scenario.demands.len() {
         values.push(scenario.demands.get_or(i, model.empty_demand()).deadline);
-        i = i + 1;
+        i += 1;
     }
     std.sort.insertion_sort(u64, inout values);
     values
@@ -172,7 +172,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State, band_
         else { partial_demands = partial_demands + 1; }
         let demand = scenario.demands.get_or(i, model.empty_demand());
         deadline_total = add(deadline_total, demand.deadline);
-        i = i + 1;
+        i += 1;
     }
     let count = deadlines.len();
     Summary {
