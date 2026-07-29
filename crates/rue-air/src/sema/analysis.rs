@@ -1052,11 +1052,10 @@ fn intern_named_callable_symbols(sema: &BodySema<'_>) {
     let mut symbols = sema
         .methods
         .iter()
-        .filter_map(|(&(struct_id, method), info)| {
-            // Membership, not the generated-name prefix (RUE-1050).
-            (!sema.anonymous_struct_ids.contains(&struct_id)).then(|| {
-                sema.method_symbol(struct_id, sema.interner.resolve(&method), info.has_self)
-            })
+        // Membership, not the generated-name prefix (RUE-1050).
+        .filter(|((struct_id, _), _)| !sema.anonymous_struct_ids.contains(struct_id))
+        .map(|(&(struct_id, method), info)| {
+            sema.method_symbol(struct_id, sema.interner.resolve(&method), info.has_self)
         })
         .collect::<Vec<_>>();
     symbols.sort();
