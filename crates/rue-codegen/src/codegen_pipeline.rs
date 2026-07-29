@@ -10,7 +10,7 @@ use rue_cfg::{Cfg, CfgArgMode, CfgInstData, CfgValue};
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use tracing::info_span;
 
-use crate::frame_layout::{FrameLayout, SavedRegScheme};
+use crate::frame_layout::{FrameLayout, FramePointer, SavedRegScheme};
 
 /// How the callee prologue homes one source parameter's incoming argument
 /// registers into its frame parameter slots (ADR-0052 phase 5.8, RUE-1005).
@@ -52,6 +52,30 @@ pub(crate) fn param_homing_plan(cfg: &Cfg) -> Vec<ParamHoming> {
             reg_count: param.crossing_regs,
         })
         .collect()
+}
+
+/// Decide whether the final frame needs a frame pointer and a slot region, or
+/// whether the function is an eligible frameless leaf (RUE-1171).
+///
+/// Two facts make a frame unavoidable:
+///
+/// - **Any frame slot.** A local, a register-allocator spill, a homed
+///   parameter, or the incoming sret pointer cell is addressed FP-relative, so
+///   the frame pointer and the slot region both have to exist. Conversely
+///   `total_slots == 0` means nothing in the body can name a frame location:
+///   every FP-based address this backend emits — lowering's local, parameter,
+///   and sret addressing and allocation's spill reloads — is derived from a
+///   slot index. The emitters assert this rather than assume it, and raise an
+///   internal error if an FP-relative operand reaches a frameless function.
+/// - **Any call.** A call needs the call-boundary stack alignment the slot
+///   region's rounding establishes, and on AArch64 it clobbers the link
+///   register that the FP/LR save preserves. Only leaves are eligible.
+pub(crate) fn plan_frame_pointer(total_slots: u32, is_leaf: bool) -> FramePointer {
+    if total_slots == 0 && is_leaf {
+        FramePointer::Omitted
+    } else {
+        FramePointer::Established
+    }
 }
 
 /// A target's MIR after allocation, peephole optimization, scheduling, and
@@ -157,7 +181,17 @@ pub(crate) fn validate_pre_lowering_budget(
 /// Run the canonical backend pipeline while carrying optional diagnostic
 /// observations alongside the same lowering and allocation execution.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prepare_mir_with_artifacts<M, R, D, Lower, Allocate, Peephole, Schedule, Verify>(
+pub(crate) fn prepare_mir_with_artifacts<
+    M,
+    R,
+    D,
+    Lower,
+    Allocate,
+    Peephole,
+    Schedule,
+    Verify,
+    IsLeaf,
+>(
     cfg: &Cfg,
     type_pool: &FrozenTypeInternPool,
     arg_reg_count: u32,
@@ -168,6 +202,7 @@ pub(crate) fn prepare_mir_with_artifacts<M, R, D, Lower, Allocate, Peephole, Sch
     peephole: Peephole,
     schedule: Schedule,
     verify: Verify,
+    is_leaf: IsLeaf,
 ) -> CompileResult<(PreparedMir<M, R>, D)>
 where
     Lower: FnOnce() -> CompileResult<(M, D)>,
@@ -175,6 +210,7 @@ where
     Peephole: FnOnce(&mut M),
     Schedule: FnOnce(&mut M),
     Verify: FnOnce(&M) -> CompileResult<()>,
+    IsLeaf: FnOnce(&M) -> bool,
 {
     let num_locals_original = cfg.num_locals();
     let num_params = cfg.num_params();
@@ -211,8 +247,16 @@ where
         .ok_or_else(|| frame_budget_error(cfg, None))?;
     let total_slots = checked_slot_sum([total_locals, num_params, u32::from(has_sret)])
         .ok_or_else(|| frame_budget_error(cfg, None))?;
-    let frame_layout = FrameLayout::try_new(scheme, used_callee_saved.len(), total_slots)
-        .map_err(|_| frame_budget_error(cfg, None))?;
+    // Frame planning is the last thing the pipeline decides: the eligible-leaf
+    // question can only be answered once allocation, peephole, and scheduling
+    // have settled the final instruction stream and the final spill count.
+    let frame_layout = match plan_frame_pointer(total_slots, is_leaf(&mir)) {
+        FramePointer::Omitted => FrameLayout::frameless(scheme, used_callee_saved.len()),
+        FramePointer::Established => {
+            FrameLayout::try_new(scheme, used_callee_saved.len(), total_slots)
+                .map_err(|_| frame_budget_error(cfg, None))?
+        }
+    };
 
     Ok((
         PreparedMir {
@@ -238,7 +282,22 @@ mod tests {
     use rue_cfg::{Cfg, CfgArgMode, CfgCallArg, CfgInst, CfgInstData};
     use rue_span::Span;
 
-    use super::{SavedRegScheme, prepare_mir_with_artifacts, validate_pre_lowering_budget};
+    use super::{
+        FramePointer, SavedRegScheme, plan_frame_pointer, prepare_mir_with_artifacts,
+        validate_pre_lowering_budget,
+    };
+
+    #[test]
+    fn only_a_slotless_leaf_omits_the_frame_pointer() {
+        assert_eq!(plan_frame_pointer(0, true), FramePointer::Omitted);
+        // One real frame consumer — a local, a spill, a homed parameter, or the
+        // sret pointer cell — restores the frame.
+        assert_eq!(plan_frame_pointer(1, true), FramePointer::Established);
+        // A call needs the call-boundary alignment and, on AArch64, the FP/LR
+        // save, even with nothing to store in the frame.
+        assert_eq!(plan_frame_pointer(0, false), FramePointer::Established);
+        assert_eq!(plan_frame_pointer(3, false), FramePointer::Established);
+    }
 
     #[test]
     fn pass_order_and_frame_slot_formulas_are_single_source() {
@@ -285,12 +344,19 @@ mod tests {
                 assert_eq!(*mir, 16);
                 Ok(())
             },
+            |mir| {
+                events.borrow_mut().push("is_leaf");
+                assert_eq!(*mir, 16, "frame planning sees the final instruction stream");
+                true
+            },
         )
         .expect("synthetic pipeline should succeed");
 
         assert_eq!(
             events.into_inner(),
-            ["lower", "allocate", "peephole", "schedule", "verify"]
+            [
+                "lower", "allocate", "peephole", "schedule", "verify", "is_leaf"
+            ]
         );
         assert_eq!(prepared.mir, 16);
         assert_eq!(prepared.total_locals, 7);

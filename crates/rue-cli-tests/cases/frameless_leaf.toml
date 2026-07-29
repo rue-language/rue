@@ -1,0 +1,89 @@
+# Frameless leaf execution (RUE-1171).
+#
+# A leaf function with no locals, spills, homed parameters, sret pointer,
+# calls, or stack arguments gets no frame pointer and no frame allocation: its
+# prologue is at most the callee-saved pushes the register allocator needed.
+# These cases run the real binary so the elided prologue is validated against
+# the platform ABI on both backends, not just inspected as assembly.
+
+[section]
+id = "cli.frameless-leaf"
+name = "Frameless leaf prologues"
+description = "Leaf functions that need no frame still return correctly, and framed leaves still work alongside them."
+
+[[case]]
+name = "frameless_leaf_returns_and_restores_callee_saved"
+files = [{ path = "main.rue", source = """
+fn frameless() -> i32 {
+    7
+}
+
+fn framed(n: i32) -> i32 {
+    n + 1
+}
+
+fn main() -> i32 {
+    // `keep` is live across the frameless call, so a callee-saved register
+    // holds it: if the frameless prologue failed to save and restore what it
+    // clobbers, this value would come back wrong.
+    let keep = 100;
+    let a = frameless();
+    let b = framed(4);
+    @dbg(keep);
+    @dbg(a);
+    @dbg(b);
+    0
+}
+""" }]
+stdout = "100\n7\n5\n"
+
+[[case]]
+name = "frameless_leaves_nest_under_a_framed_caller"
+files = [{ path = "main.rue", source = """
+fn zero() -> i32 {
+    0
+}
+
+fn one() -> i32 {
+    1
+}
+
+fn two() -> i32 {
+    2
+}
+
+// A caller is never a leaf, so it keeps its frame and its return address
+// across every frameless callee.
+fn sum() -> i32 {
+    zero() + one() + two()
+}
+
+fn main() -> i32 {
+    @dbg(sum());
+    @dbg(sum() + zero());
+    0
+}
+""" }]
+stdout = "3\n3\n"
+
+[[case]]
+name = "frameless_leaf_in_a_loop_keeps_the_stack_balanced"
+files = [{ path = "main.rue", source = """
+fn step() -> i32 {
+    3
+}
+
+fn main() -> i32 {
+    let mut total = 0;
+    let mut i = 0;
+    // Calling a frameless leaf many times would drift the stack pointer if its
+    // pushes and pops were not balanced.
+    while i < 1000 {
+        total = total + step();
+        i = i + 1;
+    }
+    @dbg(total);
+    0
+}
+""" }]
+stdout = "3000\n"

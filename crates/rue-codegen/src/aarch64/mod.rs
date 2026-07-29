@@ -108,6 +108,7 @@ fn prepare_backend_with_artifacts(
         },
         schedule::schedule,
         verify::verify_stack_alignment,
+        Aarch64Mir::is_leaf,
     )
 }
 

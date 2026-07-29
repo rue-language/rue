@@ -125,6 +125,28 @@ pub fn align_frame_size(bytes: i32) -> i32 {
     .expect("validated frame size fits i32")
 }
 
+/// Whether a function establishes a frame pointer at all (RUE-1171).
+///
+/// A frame pointer exists to address frame slots. A function with no frame
+/// storage whatsoever — no locals, no spills, no homed parameters, no sret
+/// pointer cell — and no calls has nothing to address and nothing to keep
+/// aligned, so its prologue can skip the frame-pointer setup and the slot
+/// region entirely. Calls are excluded because a call both consumes the
+/// call-boundary alignment the slot region establishes and, on AArch64,
+/// clobbers the link register the FP/LR save preserves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FramePointer {
+    /// The prologue establishes a frame pointer and allocates the slot region;
+    /// every frame slot is addressed FP-relative.
+    Established,
+    /// No frame pointer and no slot region. Callee-saved registers, if the
+    /// allocator used any, are still saved and restored — they are addressed by
+    /// the push/pop (pre/post-indexed) instructions themselves, not the frame
+    /// pointer — and their offsets below the entry stack pointer are the same
+    /// numbers [`FrameLayout::slot_offset`]'s saved-area helpers report.
+    Omitted,
+}
+
 /// How a target saves the registers that sit between the frame pointer and the
 /// slot region. Their total byte span shifts every frame-slot offset down.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,14 +168,26 @@ pub fn aarch64_callee_saved_pairs_bytes(num_callee_saved: usize) -> u64 {
 }
 
 impl SavedRegScheme {
+    /// Bytes the prologue's callee-saved pushes occupy, excluding any
+    /// frame-pointer save. This is the whole saved area of a frameless function
+    /// ([`FramePointer::Omitted`]).
+    pub fn callee_saved_bytes(self, num_callee_saved: usize) -> u64 {
+        match self {
+            SavedRegScheme::X86_64 => num_callee_saved as u64 * frame_cell_bytes(),
+            SavedRegScheme::Aarch64 => aarch64_callee_saved_pairs_bytes(num_callee_saved),
+        }
+    }
+
     /// Bytes reserved for saved registers between the frame pointer and the
     /// slot region, given `num_callee_saved` saved general-purpose registers.
     pub fn saved_area_bytes(self, num_callee_saved: usize) -> u64 {
         match self {
-            SavedRegScheme::X86_64 => num_callee_saved as u64 * frame_cell_bytes(),
+            // The saved RBP sits *above* the frame pointer, so it is not part
+            // of this area.
+            SavedRegScheme::X86_64 => self.callee_saved_bytes(num_callee_saved),
             // FP/LR pair plus the paired callee-saved registers.
             SavedRegScheme::Aarch64 => {
-                STACK_FRAME_ALIGNMENT + aarch64_callee_saved_pairs_bytes(num_callee_saved)
+                STACK_FRAME_ALIGNMENT + self.callee_saved_bytes(num_callee_saved)
             }
         }
     }
@@ -168,11 +202,29 @@ impl SavedRegScheme {
 #[derive(Debug, Clone, Copy)]
 pub struct FrameLayout {
     scheme: SavedRegScheme,
+    frame_pointer: FramePointer,
     saved_area_bytes: u64,
     num_slots: u32,
 }
 
 impl FrameLayout {
+    /// Build the layout of a function that establishes no frame pointer and
+    /// allocates no slot region: only the callee-saved registers the allocator
+    /// actually used are pushed (RUE-1171).
+    ///
+    /// Callers must have established that the function has zero frame slots and
+    /// makes no calls; see [`FramePointer::Omitted`]. No budget check is needed
+    /// because the saved area is bounded by the target's allocatable
+    /// callee-saved register count.
+    pub fn frameless(scheme: SavedRegScheme, num_callee_saved: usize) -> Self {
+        Self {
+            scheme,
+            frame_pointer: FramePointer::Omitted,
+            saved_area_bytes: scheme.callee_saved_bytes(num_callee_saved),
+            num_slots: 0,
+        }
+    }
+
     /// Build a frame layout for `num_slots` slot cells sitting below the saved
     /// registers described by `scheme`.
     pub fn try_new(
@@ -200,13 +252,21 @@ impl FrameLayout {
         }
         Ok(Self {
             scheme,
+            frame_pointer: FramePointer::Established,
             saved_area_bytes,
             num_slots,
         })
     }
 
+    /// Whether this function establishes a frame pointer and a slot region.
+    #[inline]
+    pub fn frame_pointer(&self) -> FramePointer {
+        self.frame_pointer
+    }
+
     /// Bytes reserved for saved registers between the frame pointer and the
-    /// slot region.
+    /// slot region. With the frame pointer omitted this is the whole frame:
+    /// the callee-saved pushes and nothing else.
     #[inline]
     pub fn saved_area_bytes(&self) -> i32 {
         self.saved_area_bytes as i32
@@ -219,6 +279,19 @@ impl FrameLayout {
         -self.saved_area_bytes() + slot_offset_pre_saved(slot)
     }
 
+    /// Byte granularity this frame maintains.
+    ///
+    /// A framed function keeps the call-boundary [`STACK_FRAME_ALIGNMENT`]. A
+    /// frameless leaf makes no calls, so it only has to keep the stack pointer
+    /// on the granularity its saved-register pushes move it by: one cell per
+    /// push on x86-64, a 16-byte pair on AArch64.
+    pub fn alignment(&self) -> u64 {
+        match (self.frame_pointer, self.scheme) {
+            (FramePointer::Omitted, SavedRegScheme::X86_64) => frame_cell_bytes(),
+            _ => STACK_FRAME_ALIGNMENT,
+        }
+    }
+
     /// Byte size of frame slot `slot`. Uniform [`frame_cell_bytes`] today.
     #[inline]
     pub fn slot_size(&self, _slot: u32) -> u64 {
@@ -228,6 +301,11 @@ impl FrameLayout {
     /// Total frame size in bytes, including the saved-register area and the
     /// 16-byte-aligned slot region.
     pub fn frame_size(&self) -> u64 {
+        if self.frame_pointer == FramePointer::Omitted {
+            // No slot region to round up and no frame pointer to align against:
+            // the callee-saved pushes are the entire frame.
+            return self.saved_area_bytes;
+        }
         let slots = slot_region_bytes(self.num_slots);
         match self.scheme {
             // The saved GPR pushes are not 16-aligned on x86-64, so the whole
@@ -320,6 +398,46 @@ mod tests {
         // saved = 16 + 16 = 32, slots = 24 -> round16(24) = 32; total = 64.
         assert_eq!(layout.frame_size(), 64);
         assert_eq!(layout.slot_offset(0), -32 - 8);
+    }
+
+    #[test]
+    fn frameless_layouts_are_only_the_callee_saved_pushes() {
+        // x86-64: one 8-byte push per saved register, no `push rbp` and no
+        // 16-byte rounding — a frameless leaf has no call boundary to align.
+        let x86 = FrameLayout::frameless(SavedRegScheme::X86_64, 1);
+        assert_eq!(x86.frame_pointer(), FramePointer::Omitted);
+        assert_eq!(x86.frame_size(), 8);
+        assert_eq!(x86.saved_area_bytes(), 8);
+        assert_eq!(
+            FrameLayout::frameless(SavedRegScheme::X86_64, 0).frame_size(),
+            0
+        );
+
+        // AArch64: 16-byte pairs, and the FP/LR pair is no longer saved.
+        let arm = FrameLayout::frameless(SavedRegScheme::Aarch64, 1);
+        assert_eq!(arm.frame_size(), 16);
+        assert_eq!(arm.saved_area_bytes(), 16);
+        assert_eq!(
+            FrameLayout::frameless(SavedRegScheme::Aarch64, 3).frame_size(),
+            32
+        );
+        assert_eq!(
+            FrameLayout::frameless(SavedRegScheme::Aarch64, 0).frame_size(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_frame_slot_restores_the_full_framed_layout() {
+        // Adding one real frame consumer to the frameless x86-64 case above
+        // brings back the frame pointer, the slot cell, and 16-byte rounding.
+        let framed = FrameLayout::try_new(SavedRegScheme::X86_64, 1, 1).unwrap();
+        assert_eq!(framed.frame_pointer(), FramePointer::Established);
+        assert_eq!(framed.frame_size(), 16);
+        // And on AArch64 the FP/LR pair is saved again.
+        let framed = FrameLayout::try_new(SavedRegScheme::Aarch64, 1, 1).unwrap();
+        assert_eq!(framed.saved_area_bytes(), 32);
+        assert_eq!(framed.frame_size(), 48);
     }
 
     #[test]
