@@ -591,6 +591,14 @@ pub(crate) struct RevisionedQueryDatabase {
     body_closure_anonymous_digest_forcing: Arc<Mutex<TestBodyClosureAnonymousDigestForcing>>,
     next_import_request: u64,
     current_import_revision: Option<ImportInputRevision>,
+    /// Compatibility namespace shared by ordinary snapshot publication and
+    /// rooted import publication. The first rooted request can bind an
+    /// existing ordinary-update lineage to its observation context; later
+    /// context changes mint the context's regime token.
+    active_compatibility_token: u64,
+    /// Whether an ordinary update has established the compatibility lineage.
+    ordinary_lineage_published: bool,
+    active_import_context: Option<ImportDiscoveryContext>,
     #[cfg(test)]
     current_test_import_revision: Option<Revision>,
     /// Cumulative count of import occurrences the demand frontier has rooted
@@ -13964,6 +13972,9 @@ impl RevisionedQueryDatabase {
             body_closure_anonymous_digest_forcing,
             next_import_request: 0,
             current_import_revision: None,
+            active_compatibility_token: 1,
+            ordinary_lineage_published: false,
+            active_import_context: None,
             #[cfg(test)]
             current_test_import_revision: None,
             import_frontier_roots_requested: 0,
@@ -14184,6 +14195,20 @@ impl RevisionedQueryDatabase {
 impl RevisionedQueryDatabase {
     pub(crate) const SOURCE_INPUT: &'static str = "selected-source";
 
+    fn compatibility_token_for_import_context(&self, context: &ImportDiscoveryContext) -> u64 {
+        match self.active_import_context.as_ref() {
+            Some(active) if active == context => self.active_compatibility_token,
+            Some(_) => context.regime_token(),
+            // An ordinary update already published explicit source leaves in
+            // this session. Bind that lineage to the first rooted context so
+            // retained terminals can validate across the protocol boundary.
+            None if self.ordinary_lineage_published => self.active_compatibility_token,
+            // A purely rooted session has no lineage to bridge, so begin in
+            // the context-derived namespace directly.
+            None => context.regime_token(),
+        }
+    }
+
     pub(crate) fn current_parse_revision(&self) -> Option<Revision> {
         let terminal = self.parse.selection.current()?;
         let rue_query::QueryOutcome::Success(record) = terminal.outcome() else {
@@ -14231,7 +14256,7 @@ impl RevisionedQueryDatabase {
             .expect("selected parse retains its module input view")
             .snapshot
             .clone();
-        let revision = Revision::new(self.next_revision, 1);
+        let revision = Revision::new(self.next_revision, self.active_compatibility_token);
         self.next_revision += 1;
         let stamp = {
             let mut store = self
@@ -16652,12 +16677,12 @@ impl RevisionedQueryDatabase {
         for source in ledger.iter().filter_map(ImportObservation::accepted_source) {
             crate::import_discovery::accepted_import_module(source, &accepted_reads)?;
         }
-        // RUE-1137: the runtime revision's compatibility slot carries
-        // observation-regime identity, not the per-request counter. A request
-        // reading under unchanged rules therefore publishes a revision its
-        // predecessor's terminals can still be validated against; only a
-        // regime change (roots, read policy, discovery epoch) resets the epoch.
-        let compatibility_token = context.regime_token();
+        // RUE-1137/RUE-1202: the runtime revision's compatibility slot carries
+        // one shared observation namespace for both ordinary updates and
+        // rooted publication. The first rooted request may bind an existing
+        // ordinary lineage to its context; a later context change starts the
+        // context-derived regime. File changes remain per-leaf stamp changes.
+        let compatibility_token = self.compatibility_token_for_import_context(&context);
         let revision = Revision::new(self.next_revision, compatibility_token);
         self.next_revision += 1;
         let mut leaves = Vec::new();
@@ -16748,6 +16773,8 @@ impl RevisionedQueryDatabase {
             .map_err(|error| {
                 import_input_error(format!("cannot publish import revision: {error:?}"))
             })?;
+        self.active_compatibility_token = compatibility_token;
+        self.active_import_context = Some(context.clone());
         let view = Arc::new(ImportInputView {
             revision,
             generation,
@@ -17058,6 +17085,9 @@ impl RevisionedQueryDatabase {
         {
             self.current_test_import_revision = None;
         }
+        // Ordinary source publication stays in the active compatibility
+        // namespace so retained terminals can validate across ordinary/rooted
+        // protocol transitions (RUE-1202).
         // The parse family is allocated with the shared runtime now so callers
         // can migrate without creating a peer executor.
         let _parse_migration_family = &self.parse;
@@ -17071,7 +17101,7 @@ impl RevisionedQueryDatabase {
                 self.source_stamps.push_back((source.clone(), stamp));
                 stamp
             });
-        let revision = Revision::new(self.next_revision, 1);
+        let revision = Revision::new(self.next_revision, self.active_compatibility_token);
         self.next_revision += 1;
         let mut leaves = vec![(InputIdentity::new(Self::SOURCE_INPUT, "current"), stamp)];
         leaves.extend(publish_module_inputs(
@@ -17082,6 +17112,7 @@ impl RevisionedQueryDatabase {
         self.runtime
             .publish_revision(revision, leaves)
             .expect("compiler input revisions are immutable and uniquely numbered");
+        self.ordinary_lineage_published = true;
         revision
     }
 
@@ -26260,6 +26291,86 @@ fn main() -> i32 {
         (snapshot, reads, revision, plan)
     }
 
+    #[test]
+    fn ordinary_and_rooted_publication_share_one_compatibility_namespace() {
+        let context =
+            ImportDiscoveryContext::new(401, "/project", Some("/sdk"), "test-policy").unwrap();
+        let mut assembler = DiscoverySourceAssembler::new(
+            context.clone(),
+            "/project/main.rue",
+            "/physical/main.rue",
+            PhysicalFileIdentity::new(1, 1),
+            FileMetadataFingerprint::new(1, 2, 3),
+            Arc::new("fn helper() -> i32 { 1 }\nfn main() -> i32 { helper() }".to_owned()),
+        )
+        .unwrap();
+        let snapshot = assembler.snapshot().unwrap();
+        let reads = assembler.accepted_read_manifest();
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let closure_key = crate::body_query::BodyClosureQueryKey {
+            modules: Arc::from([module.clone()]),
+            roots: Arc::from([free_function_instance(&module, "main")]),
+            configuration: semantic_configuration(),
+        };
+        let mut database = RevisionedQueryDatabase::with_query_concurrency(4);
+
+        // Ordinary staged update: establish and pin both reached bodies.
+        let ordinary = revision_for(&mut database, &snapshot);
+        let cold = database
+            .body_closure(ordinary, closure_key.clone(), CancellationToken::new())
+            .unwrap();
+        assert_eq!(cold.body_executions.len(), 2);
+        let modules = snapshot
+            .source_revision()
+            .modules()
+            .iter()
+            .map(|module| module.module.clone())
+            .collect::<Vec<_>>();
+        let (program, _) = database.parse_program(ordinary, &module, modules);
+        let plan = ImportDiscoveryPlan::new(&program.unwrap(), context.clone()).unwrap();
+
+        // Rooted request: bind the existing ordinary lineage to this exact
+        // observation context and validate both body terminals.
+        let rooted_input = database
+            .begin_import_inputs(&snapshot, context, reads)
+            .unwrap();
+        let rooted = Revision::new(rooted_input.revision_id, rooted_input.compatibility_token);
+        assert!(ordinary.is_compatible_with(rooted));
+        database
+            .import_frontier(
+                rooted_input,
+                &plan,
+                ImportDemandMode::Rooted,
+                &plan.demand_roots(),
+            )
+            .unwrap();
+        let rooted_close = database
+            .body_closure(rooted, closure_key.clone(), CancellationToken::new())
+            .unwrap();
+        assert!(
+            rooted_close
+                .body_executions
+                .values()
+                .all(|execution| *execution == RequestExecution::Reused),
+            "rooted publication must reuse the ordinary-update body terminals"
+        );
+
+        // A subsequent ordinary staged update stays in the bound namespace,
+        // rather than returning to the old constant-token namespace.
+        let ordinary_again = revision_for(&mut database, &snapshot);
+        assert!(rooted.is_compatible_with(ordinary_again));
+        let ordinary_close = database
+            .body_closure(ordinary_again, closure_key, CancellationToken::new())
+            .unwrap();
+        assert!(
+            ordinary_close
+                .body_executions
+                .values()
+                .all(|execution| *execution == RequestExecution::Reused),
+            "ordinary publication after a rooted request must retain body reuse"
+        );
+    }
+
     fn publish_manifest_observations(
         database: &mut RevisionedQueryDatabase,
         snapshot: &SourceSnapshot,
@@ -27511,6 +27622,18 @@ fn main() -> i32 {
         let second_revision = session
             .begin_import_input_request(&snapshot, second_context.clone(), reads.clone())
             .unwrap();
+        let first_runtime_revision = Revision::new(
+            first_revision.revision_id,
+            first_revision.compatibility_token,
+        );
+        let second_runtime_revision = Revision::new(
+            second_revision.revision_id,
+            second_revision.compatibility_token,
+        );
+        assert!(
+            !first_runtime_revision.is_compatible_with(second_runtime_revision),
+            "a discovery-context change must start a new compatibility namespace"
+        );
         let second_plan = session
             .stage_import_discovery(
                 &snapshot,
