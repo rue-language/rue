@@ -27,94 +27,119 @@ use rue_air::{
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
 
-/// Check if a type needs drop.
-fn type_needs_drop(ty: Type, type_pool: &FrozenTypeInternPool) -> bool {
-    type_pool.type_needs_drop(ty)
+type IssuedTypeInstanceKey =
+    rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>;
+
+fn plan_type_matches_live(
+    planned: &IssuedTypeInstanceKey,
+    live: Type,
+    type_pool: &FrozenTypeInternPool,
+    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+) -> bool {
+    use rue_air::TypeInstanceKey as P;
+    match planned {
+        P::I8 => live == Type::I8,
+        P::I16 => live == Type::I16,
+        P::I32 => live == Type::I32,
+        P::I64 => live == Type::I64,
+        P::U8 => live == Type::U8,
+        P::U16 => live == Type::U16,
+        P::U32 => live == Type::U32,
+        P::U64 => live == Type::U64,
+        P::Bool => live == Type::BOOL,
+        P::Unit => live == Type::UNIT,
+        P::Never => live == Type::NEVER,
+        P::ComptimeType => live == Type::COMPTIME_TYPE,
+        P::PtrConst(pointee) => live.as_ptr_const().is_some_and(|id| {
+            plan_type_matches_live(
+                pointee,
+                type_pool.ptr_const_def(id),
+                type_pool,
+                types_by_identity,
+            )
+        }),
+        P::PtrMut(pointee) => live.as_ptr_mut().is_some_and(|id| {
+            plan_type_matches_live(
+                pointee,
+                type_pool.ptr_mut_def(id),
+                type_pool,
+                types_by_identity,
+            )
+        }),
+        P::Array { .. } | P::Slice { .. } | P::BuiltinNominal { .. } | P::Nominal(_) => {
+            types_by_identity.get(planned).is_some_and(|ty| *ty == live)
+        }
+        P::Module(_) | P::GenericParameter(_) => false,
+    }
 }
 
-/// Synthesize drop glue functions for all structs and arrays that need them.
+/// Synthesize glue for the exact reached owner set.
 ///
-/// Returns a list of synthesized functions that should be added to the compilation.
-pub fn synthesize_drop_glue(
+/// `types_by_identity` is the semantic epoch's direct reverse index.  This
+/// path performs one keyed probe per demanded owner and never enumerates a
+/// struct/array/enum pool.
+pub fn synthesize_demanded_drop_glue(
     type_pool: &FrozenTypeInternPool,
-    type_identities: &std::collections::HashMap<
-        Type,
+    types_by_identity: &std::collections::HashMap<
         rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>,
+        Type,
+    >,
+    demanded: impl IntoIterator<Item = IssuedTypeInstanceKey>,
+    plans: &std::collections::BTreeMap<
+        IssuedTypeInstanceKey,
+        crate::type_queries::DropGlueFacts<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
     >,
 ) -> CompileResult<Vec<AnalyzedFunction>> {
     let mut drop_glue_functions = Vec::new();
-
-    // Create drop glue for structs
-    for struct_id in type_pool.all_struct_ids() {
-        let struct_def = type_pool.struct_def(struct_id);
-        let struct_ty = Type::new_struct(struct_id);
-        // Body analysis may retain inert request-local pool slots from an
-        // abandoned anonymous representative attempt. Only the active
-        // semantic identity map is authoritative for terminal glue emission.
-        if !type_identities.contains_key(&struct_ty) {
-            continue;
-        }
-        // Skip structs that don't need drop
-        if !type_needs_drop(struct_ty, type_pool) {
-            continue;
-        }
-
-        // Skip builtins that have runtime-provided destructors (e.g., String)
-        // to avoid duplicate symbol errors. User-defined destructors still need
-        // synthesized drop glue.
-        if struct_def.is_builtin && struct_def.destructor.is_some() {
-            continue;
-        }
-
-        // Create drop glue function for struct
-        let identity = type_identities.get(&struct_ty).cloned().ok_or_else(|| {
+    for identity in demanded {
+        let plan = plans.get(&identity).ok_or_else(|| {
             CompileError::without_span(ErrorKind::InternalError(
-                "missing canonical struct identity for drop glue".into(),
+                "demanded drop-glue owner has no authoritative query plan".into(),
             ))
         })?;
-        let func = create_struct_drop_glue_function(struct_def, struct_id, type_pool, identity)?;
-        drop_glue_functions.push(func);
-    }
-
-    // Create drop glue for arrays
-    for array_id in type_pool.all_array_ids() {
-        let array_ty = Type::new_array(array_id);
-        if !type_identities.contains_key(&array_ty) {
-            continue;
-        }
-        // Skip arrays that don't need drop
-        if !type_needs_drop(array_ty, type_pool) {
-            continue;
-        }
-
-        // Create drop glue function for array
-        let identity = type_identities.get(&array_ty).cloned().ok_or_else(|| {
+        let ty = types_by_identity.get(&identity).copied().ok_or_else(|| {
             CompileError::without_span(ErrorKind::InternalError(
-                "missing canonical array identity for drop glue".into(),
+                "demanded drop-glue owner has no live type materialization".into(),
             ))
         })?;
-        let func = create_array_drop_glue_function(array_id, type_pool, identity)?;
-        drop_glue_functions.push(func);
-    }
-
-    // Create drop glue for payload-carrying enums (RUE-221). The glue switches
-    // on the discriminant and drops the active variant's payload.
-    for enum_id in type_pool.all_enum_ids() {
-        let enum_ty = Type::new_enum(enum_id);
-        if !type_identities.contains_key(&enum_ty) {
+        if !plan.required || !plan.synthesize {
             continue;
         }
-        if !type_needs_drop(enum_ty, type_pool) {
-            continue;
+        match ty.kind() {
+            TypeKind::Struct(struct_id) => {
+                let struct_def = type_pool.struct_def(struct_id);
+                drop_glue_functions.push(create_struct_drop_glue_function(
+                    struct_def,
+                    struct_id,
+                    type_pool,
+                    types_by_identity,
+                    identity,
+                    plan,
+                )?);
+            }
+            TypeKind::Array(array_id) => {
+                drop_glue_functions.push(create_array_drop_glue_function(
+                    array_id,
+                    type_pool,
+                    types_by_identity,
+                    identity,
+                    plan,
+                )?);
+            }
+            TypeKind::Enum(enum_id) => {
+                drop_glue_functions.push(create_enum_drop_glue_function(
+                    enum_id,
+                    type_pool,
+                    types_by_identity,
+                    identity,
+                    plan,
+                )?);
+            }
+            _ => {}
         }
-
-        let identity = type_identities.get(&enum_ty).cloned().ok_or_else(|| {
-            CompileError::without_span(ErrorKind::InternalError(
-                "missing canonical enum identity for drop glue".into(),
-            ))
-        })?;
-        let func = create_enum_drop_glue_function(enum_id, type_pool, identity)?;
-        drop_glue_functions.push(func);
     }
 
     Ok(drop_glue_functions)
@@ -125,7 +150,9 @@ fn create_struct_drop_glue_function(
     struct_def: &StructDef,
     struct_id: rue_air::StructId,
     type_pool: &FrozenTypeInternPool,
-    identity: rue_air::TypeInstanceKey<
+    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    identity: IssuedTypeInstanceKey,
+    facts: &crate::type_queries::DropGlueFacts<
         rue_air::SemanticDefinitionToken,
         rue_air::SemanticModuleToken,
     >,
@@ -148,10 +175,36 @@ fn create_struct_drop_glue_function(
     // We need to reconstruct the field values from the flattened parameters.
     let mut current_param_slot = 0u32;
 
-    for field in &struct_def.fields {
+    let crate::type_queries::DropGluePlan::Struct {
+        fields: planned_fields,
+    } = &facts.plan
+    else {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "struct drop-glue owner received a non-struct query plan".into(),
+        )));
+    };
+    if planned_fields.len() != struct_def.fields.len() {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "struct drop-glue plan disagrees with live field count".into(),
+        )));
+    }
+    if planned_fields
+        .iter()
+        .zip(&struct_def.fields)
+        .any(|(planned, live)| {
+            planned.name.as_ref() != live.name
+                || !plan_type_matches_live(&planned.ty, live.ty, type_pool, types_by_identity)
+        })
+    {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "struct drop-glue plan disagrees with live field order or type".into(),
+        )));
+    }
+    for (field_index, field) in struct_def.fields.iter().enumerate() {
         let field_slot_count = type_pool.abi_slot_count(field.ty);
 
-        if type_needs_drop(field.ty, type_pool) {
+        let should_drop = planned_fields[field_index].drop;
+        if should_drop {
             // Emit Drop for this field.
             // Type::Struct handles both user-defined structs and builtin String.
             match field.ty.kind() {
@@ -240,7 +293,9 @@ fn create_struct_drop_glue_function(
 fn create_array_drop_glue_function(
     array_id: rue_air::ArrayTypeId,
     type_pool: &FrozenTypeInternPool,
-    identity: rue_air::TypeInstanceKey<
+    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    identity: IssuedTypeInstanceKey,
+    facts: &crate::type_queries::DropGlueFacts<
         rue_air::SemanticDefinitionToken,
         rue_air::SemanticModuleToken,
     >,
@@ -250,6 +305,23 @@ fn create_array_drop_glue_function(
 
     // Get array element type and length
     let (element_type, length) = type_pool.array_def(array_id);
+    let crate::type_queries::DropGluePlan::Array {
+        element,
+        len,
+        drop_element: planned_drop_element,
+    } = &facts.plan
+    else {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "array drop-glue owner received a non-array query plan".into(),
+        )));
+    };
+    if *len != length
+        || !plan_type_matches_live(element, element_type, type_pool, types_by_identity)
+    {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "array drop-glue plan disagrees with live length or element type".into(),
+        )));
+    }
 
     // Create AIR for the drop glue function
     let mut air = AirEditor::new(Type::UNIT);
@@ -276,6 +348,9 @@ fn create_array_drop_glue_function(
         let current_param_slot = phys_chunk as u32 * element_slot_count;
 
         // Emit Drop for this element
+        if !*planned_drop_element {
+            continue;
+        }
         match element_type.kind() {
             TypeKind::Struct(struct_id) => {
                 let param_ref =
@@ -346,12 +421,36 @@ fn create_array_drop_glue_function(
 fn create_enum_drop_glue_function(
     enum_id: EnumId,
     type_pool: &FrozenTypeInternPool,
-    identity: rue_air::TypeInstanceKey<
+    types_by_identity: &std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    identity: IssuedTypeInstanceKey,
+    facts: &crate::type_queries::DropGlueFacts<
         rue_air::SemanticDefinitionToken,
         rue_air::SemanticModuleToken,
     >,
 ) -> CompileResult<AnalyzedFunction> {
     let enum_def = type_pool.enum_def(enum_id);
+    let crate::type_queries::DropGluePlan::Enum {
+        variants: planned_variants,
+    } = &facts.plan
+    else {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "enum drop-glue owner received a non-enum query plan".into(),
+        )));
+    };
+    if planned_variants.len() != enum_def.variant_count() {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "enum drop-glue plan disagrees with live variant count".into(),
+        )));
+    }
+    if planned_variants
+        .iter()
+        .zip(&enum_def.variants)
+        .any(|(planned, live)| planned.name.as_ref() != live.as_str())
+    {
+        return Err(CompileError::without_span(ErrorKind::InternalError(
+            "enum drop-glue plan disagrees with live variant order".into(),
+        )));
+    }
     let fn_name = enum_drop_glue_name(enum_id, type_pool);
     let span = Span::new(0, 0); // Synthetic span
 
@@ -375,15 +474,29 @@ fn create_enum_drop_glue_function(
 
     for variant_index in 0..enum_def.variant_count() {
         let payload = enum_def.variant_payload(variant_index);
-        if !payload.iter().any(|&ty| type_needs_drop(ty, type_pool)) {
+        let planned_fields = planned_variants[variant_index].fields.as_ref();
+        if planned_fields.len() != payload.len() {
+            return Err(CompileError::without_span(ErrorKind::InternalError(
+                "enum drop-glue plan disagrees with live payload field count".into(),
+            )));
+        }
+        if planned_fields.iter().zip(payload).any(|(planned, &live)| {
+            !plan_type_matches_live(&planned.ty, live, type_pool, types_by_identity)
+        }) {
+            return Err(CompileError::without_span(ErrorKind::InternalError(
+                "enum drop-glue plan disagrees with live payload field type".into(),
+            )));
+        }
+        if !planned_fields.iter().any(|field| field.drop) {
             continue;
         }
 
         let mut drop_stmts: Vec<AirRef> = Vec::new();
         let mut field_slot = 1u32; // slot 0 is the discriminant
-        for &field_ty in payload {
+        for (field_index, &field_ty) in payload.iter().enumerate() {
             let field_slots = type_pool.abi_slot_count(field_ty);
-            if type_needs_drop(field_ty, type_pool) {
+            let should_drop = planned_fields[field_index].drop;
+            if should_drop {
                 // The logical half-open range [field_slot, field_slot +
                 // field_slots) becomes the reversed ABI range beginning here.
                 // Reading an aggregate Param reverses that range once more,
@@ -447,8 +560,105 @@ pub use rue_air::drop_glue_names::{array_drop_glue_name, enum_drop_glue_name};
 mod tests {
     use lasso::ThreadedRodeo;
     use rue_air::{AirInstData, EnumDef, StructField, TypeInternPool};
+    use std::sync::Arc;
 
     use super::*;
+
+    fn test_type_identity(ty: Type, type_pool: &FrozenTypeInternPool) -> IssuedTypeInstanceKey {
+        use rue_air::{AnonymousNominalKind as K, TypeInstanceKey as T, TypeKind};
+        match ty.kind() {
+            TypeKind::I8 => T::I8,
+            TypeKind::I16 => T::I16,
+            TypeKind::I32 => T::I32,
+            TypeKind::I64 => T::I64,
+            TypeKind::U8 => T::U8,
+            TypeKind::U16 => T::U16,
+            TypeKind::U32 => T::U32,
+            TypeKind::U64 => T::U64,
+            TypeKind::Bool => T::Bool,
+            TypeKind::Unit => T::Unit,
+            TypeKind::Never => T::Never,
+            TypeKind::ComptimeType => T::ComptimeType,
+            TypeKind::Struct(id) => T::BuiltinNominal {
+                kind: K::Struct,
+                name: type_pool.struct_def(id).name.clone().into(),
+            },
+            TypeKind::Enum(id) => T::BuiltinNominal {
+                kind: K::Enum,
+                name: type_pool.enum_def(id).name.clone().into(),
+            },
+            TypeKind::Array(id) => {
+                let (element, len) = type_pool.array_def(id);
+                T::Array {
+                    element: Box::new(test_type_identity(element, type_pool)),
+                    len,
+                }
+            }
+            TypeKind::PtrConst(id) => T::PtrConst(Box::new(test_type_identity(
+                type_pool.ptr_const_def(id),
+                type_pool,
+            ))),
+            TypeKind::PtrMut(id) => T::PtrMut(Box::new(test_type_identity(
+                type_pool.ptr_mut_def(id),
+                type_pool,
+            ))),
+            TypeKind::Module(_) | TypeKind::Error => {
+                panic!("test drop-glue plans contain only materializable runtime types")
+            }
+        }
+    }
+
+    fn insert_test_type(
+        ty: Type,
+        type_pool: &FrozenTypeInternPool,
+        output: &mut std::collections::HashMap<IssuedTypeInstanceKey, Type>,
+    ) {
+        match ty.kind() {
+            TypeKind::Struct(id) => {
+                output.insert(test_type_identity(ty, type_pool), ty);
+                for field in &type_pool.struct_def(id).fields {
+                    insert_test_type(field.ty, type_pool, output);
+                }
+            }
+            TypeKind::Enum(id) => {
+                output.insert(test_type_identity(ty, type_pool), ty);
+                for payload in &type_pool.enum_def(id).variant_payloads {
+                    for &field in payload {
+                        insert_test_type(field, type_pool, output);
+                    }
+                }
+            }
+            TypeKind::Array(id) => {
+                output.insert(test_type_identity(ty, type_pool), ty);
+                insert_test_type(type_pool.array_def(id).0, type_pool, output);
+            }
+            TypeKind::PtrConst(id) => {
+                insert_test_type(type_pool.ptr_const_def(id), type_pool, output);
+            }
+            TypeKind::PtrMut(id) => {
+                insert_test_type(type_pool.ptr_mut_def(id), type_pool, output);
+            }
+            _ => {}
+        }
+    }
+
+    fn test_facts(
+        plan: crate::type_queries::DropGluePlan<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+    ) -> crate::type_queries::DropGlueFacts<
+        rue_air::SemanticDefinitionToken,
+        rue_air::SemanticModuleToken,
+    > {
+        crate::type_queries::DropGlueFacts {
+            required: true,
+            synthesize: true,
+            destructor: None,
+            nested: Arc::from([]),
+            plan,
+        }
+    }
 
     fn register_struct(
         type_pool: &TypeInternPool,
@@ -643,21 +853,46 @@ mod tests {
         );
         let outer_ty = Type::new_struct(outer_id);
         let type_pool = type_pool.freeze();
+        let mut types_by_identity = std::collections::HashMap::new();
+        insert_test_type(outer_ty, &type_pool, &mut types_by_identity);
+        let outer_facts = test_facts(crate::type_queries::DropGluePlan::Struct {
+            fields: type_pool
+                .struct_def(outer_id)
+                .fields
+                .iter()
+                .enumerate()
+                .map(|(index, field)| crate::type_queries::DropGlueField {
+                    name: field.name.clone().into(),
+                    ty: test_type_identity(field.ty, &type_pool),
+                    drop: index >= 16,
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        });
         let outer = create_struct_drop_glue_function(
             type_pool.struct_def(outer_id),
             outer_id,
             &type_pool,
-            rue_air::TypeInstanceKey::I32,
+            &types_by_identity,
+            test_type_identity(outer_ty, &type_pool),
+            &outer_facts,
         )
         .unwrap();
         assert_eq!(outer.num_param_slots, type_pool.abi_slot_count(outer_ty));
         assert_eq!(outer.num_param_slots, 27);
         assert_eq!(param_indices(&outer), [19, 20, 22, 24]);
 
+        let array_facts = test_facts(crate::type_queries::DropGluePlan::Array {
+            element: test_type_identity(drop_ty, &type_pool),
+            len: 2,
+            drop_element: true,
+        });
         let array = create_array_drop_glue_function(
             drop_array_id,
             &type_pool,
-            rue_air::TypeInstanceKey::I32,
+            &types_by_identity,
+            test_type_identity(drop_array_ty, &type_pool),
+            &array_facts,
         )
         .unwrap();
         assert_eq!(
@@ -666,9 +901,34 @@ mod tests {
         );
         assert_eq!(param_indices(&array), [0, 1]);
 
-        let enum_glue =
-            create_enum_drop_glue_function(drop_enum_id, &type_pool, rue_air::TypeInstanceKey::I32)
-                .unwrap();
+        let enum_facts = test_facts(crate::type_queries::DropGluePlan::Enum {
+            variants: type_pool
+                .enum_def(drop_enum_id)
+                .variants
+                .iter()
+                .zip(&type_pool.enum_def(drop_enum_id).variant_payloads)
+                .map(|(name, payload)| crate::type_queries::DropGlueVariant {
+                    name: name.clone().into(),
+                    fields: payload
+                        .iter()
+                        .map(|&field| crate::type_queries::DropGlueVariantField {
+                            ty: test_type_identity(field, &type_pool),
+                            drop: field == drop_ty,
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        });
+        let enum_glue = create_enum_drop_glue_function(
+            drop_enum_id,
+            &type_pool,
+            &types_by_identity,
+            test_type_identity(drop_enum_ty, &type_pool),
+            &enum_facts,
+        )
+        .unwrap();
         assert_eq!(
             enum_glue.num_param_slots,
             type_pool.abi_slot_count(drop_enum_ty)

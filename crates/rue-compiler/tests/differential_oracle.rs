@@ -587,6 +587,41 @@ fn corpus() -> Vec<Step> {
             ),
         ),
         step(
+            "query-native-drop-glue",
+            snapshot(
+                &[(
+                    7,
+                    "/p/main.rue",
+                    "main.rue",
+                    r#"
+                    struct D { value: i32 }
+                    drop fn D(self) {}
+                    struct Inner { item: D, items: [D; 2] }
+                    enum E { Full(Inner, D), Empty }
+                    fn Box() -> type {
+                        struct { item: D, drop fn(self) {} }
+                    }
+                    fn main() -> i32 {
+                        let values = [
+                            E.Full(
+                                Inner {
+                                    item: D { value: 1 },
+                                    items: [D { value: 2 }, D { value: 3 }],
+                                },
+                                D { value: 4 },
+                            ),
+                            E.Empty,
+                        ];
+                        let B = Box();
+                        let anonymous = B { item: D { value: 5 } };
+                        0
+                    }
+                    "#,
+                )],
+                7,
+            ),
+        ),
+        step(
             "incomplete-manifest",
             snapshot(
                 &[(
@@ -616,6 +651,21 @@ fn bounded_corpus_matches_stepwise_fresh_sessions() {
         observe(&mut fresh, incomplete)
             .manifest
             .contains("complete=false")
+    );
+
+    let glue = corpus
+        .iter()
+        .find(|step| step.name == "query-native-drop-glue")
+        .unwrap();
+    let glue_observation = observe(&mut CompilerSession::new(), glue);
+    assert!(glue_observation.semantic.contains("__rue_drop_D"));
+    assert!(glue_observation.semantic.contains("__rue_drop_Inner"));
+    assert!(glue_observation.semantic.contains("__rue_drop_E"));
+    assert!(glue_observation.semantic.contains("__rue_drop_array_"));
+    assert!(
+        glue_observation.semantic.matches("__rue_drop_").count() >= 5,
+        "named, anonymous, array, and enum plans must all reach glue synthesis: {}",
+        glue_observation.semantic
     );
 }
 

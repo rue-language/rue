@@ -90,25 +90,10 @@ fn compose_queried_bodies_inner(
     let mut functions = Vec::with_capacity(candidates.len());
     let mut warnings = Vec::new();
     let mut seen_warnings = HashSet::new();
-    // Declaration-time aggregates remain part of the eager semantic universe.
-    // Snapshot them before importing bodies; body-produced aggregates become
-    // active only when committed AIR owns them.
-    let declaration_aggregate_roots = sema
-        .type_pool
-        .all_struct_ids()
-        .into_iter()
-        .filter(|id| !sema.anonymous_struct_ids.contains(id))
-        .map(Type::new_struct)
-        .chain(
-            sema.type_pool
-                .all_enum_ids()
-                .into_iter()
-                .filter(|id| !sema.anonymous_enum_ids.contains(id))
-                .map(Type::new_enum),
-        )
-        .collect::<Vec<_>>();
+    // Query-native composition materializes aggregate identities only from the
+    // exact reached AIR below. Merely declaring a type must not root layout,
+    // ownership, destructor diagnostics, or drop glue.
     let mut active_types = HashSet::new();
-    extend_owned_aggregate_types(sema, declaration_aggregate_roots, &mut active_types);
     let mut composed_identities = std::collections::BTreeSet::new();
     let mut errors = CompileErrors::new();
     for candidate in candidates {
@@ -1227,6 +1212,10 @@ fn finalize_function_body_analysis(
                 })
         })
         .collect::<CompileResult<HashMap<_, _>>>()?;
+    let aggregate_types_by_identity = aggregate_type_identities_by_type
+        .iter()
+        .map(|(ty, identity)| (identity.clone(), *ty))
+        .collect();
 
     let output = SemaOutput {
         functions,
@@ -1239,6 +1228,7 @@ fn finalize_function_body_analysis(
             .map(|(ty, identity)| (*ty, identity.clone()))
             .collect(),
         aggregate_type_identities_by_type,
+        aggregate_types_by_identity,
         body_analysis_work: sema.body_analysis_work,
         ordinary_body_exports: std::mem::take(&mut sema.ordinary_body_exports),
         specialized_body_exports: std::mem::take(&mut sema.specialized_body_exports),
@@ -3534,6 +3524,7 @@ mod error_invariant_tests {
             warnings: Vec::new(),
             anonymous_nominal_identities_by_type: HashMap::new(),
             aggregate_type_identities_by_type: HashMap::new(),
+            aggregate_types_by_identity: HashMap::new(),
             type_pool: TypeInternPool::new().freeze(),
             body_analysis_work: crate::BodyAnalysisWork::default(),
             ordinary_body_exports: Vec::new(),

@@ -462,6 +462,13 @@ pub struct SemaOutput {
         Type,
         crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     >,
+    /// Exact reverse index for demand-driven consumers.  Looking up one
+    /// reached glue owner must not scan either the complete type pool or the
+    /// complete active aggregate map.
+    pub aggregate_types_by_identity: HashMap<
+        crate::TypeInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
+        Type,
+    >,
     /// Exact structural work performed while dispatching reachable bodies.
     pub body_analysis_work: BodyAnalysisWork,
     /// Pre-specialization durable candidates for supported ordinary bodies.

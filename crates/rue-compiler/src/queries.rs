@@ -176,6 +176,16 @@ pub(crate) struct CfgConstructionFailure {
 /// helpers so the live semantic tail stays in one place.
 pub(crate) fn build_functions_and_cfgs(
     sema_output: SemaOutput,
+    demanded_drop_glue: &std::collections::BTreeSet<
+        rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>,
+    >,
+    demanded_drop_glue_plans: &std::collections::BTreeMap<
+        rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>,
+        crate::type_queries::DropGlueFacts<
+            rue_air::SemanticDefinitionToken,
+            rue_air::SemanticModuleToken,
+        >,
+    >,
     opt_level: OptLevel,
     target: Target,
     interner: &ThreadedRodeo,
@@ -194,19 +204,23 @@ pub(crate) fn build_functions_and_cfgs(
         strings,
         mut warnings,
         type_pool,
-        aggregate_type_identities_by_type,
+        aggregate_type_identities_by_type: _,
+        aggregate_types_by_identity,
         body_analysis_work: _,
         ..
     } = sema_output;
 
     // Synthesize drop glue functions.
-    let drop_glue_functions =
-        drop_glue::synthesize_drop_glue(&type_pool, &aggregate_type_identities_by_type).map_err(
-            |error| CfgConstructionFailure {
-                errors: error.into(),
-                work: canonical_semantic::CfgConstructionWork::default(),
-            },
-        )?;
+    let drop_glue_functions = drop_glue::synthesize_demanded_drop_glue(
+        &type_pool,
+        &aggregate_types_by_identity,
+        demanded_drop_glue.iter().cloned(),
+        demanded_drop_glue_plans,
+    )
+    .map_err(|error| CfgConstructionFailure {
+        errors: error.into(),
+        work: canonical_semantic::CfgConstructionWork::default(),
+    })?;
     let mut work = canonical_semantic::CfgConstructionWork {
         drop_glue_functions_synthesized: drop_glue_functions.len(),
         functions_considered: functions.len() + drop_glue_functions.len(),
@@ -980,8 +994,12 @@ mod failure_work_tests {
         let run = || {
             let (output, interner) = malformed_cfg_input();
             let projected_identities = synthetic_projected_function_identities(&output);
+            let demanded_drop_glue = std::collections::BTreeSet::new();
+            let drop_glue_plans = std::collections::BTreeMap::new();
             match build_functions_and_cfgs(
                 output,
+                &demanded_drop_glue,
+                &drop_glue_plans,
                 OptLevel::O1,
                 Target::host().unwrap(),
                 &interner,
