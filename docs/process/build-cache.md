@@ -178,6 +178,17 @@ lane can report a 95 percent hit rate and still spend nearly all its wall time
 in one harness process — that is a corpus-sharding problem, not a cache problem,
 and the two are only distinguishable when the summary reports both.
 
+The separation is not a presentational choice: the first three counters *cannot*
+see test execution. A `buck2 test` run is handed to the test executor rather than
+evaluated as an action, so it never enters the `Commands:` accounting, and OSS
+buck2 ships no test-result cache to serve it from. In one `merge_group` run,
+`//:cli-tests-caldera` (which executed nothing) and `//:cli-tests-shard-1` (which
+ran for 11:18) both reported `Commands: 465 (cached: 465/464)`. A corpus job can
+therefore print a perfect hit rate while re-running an eleven-minute suite in
+full, and that reads as "everything was cached" to anyone who stops at the
+cache columns. Test time is the signal that separates those two runs. RUE-1118
+has the measurements.
+
 RUE-320 also adds a merge-group-only remote-execution canary. It disables action
 cache reads, selects the no-fallback `//platforms:remote_execution` executor, and
 requires Buck to report remotely executed actions. This is deliberately
