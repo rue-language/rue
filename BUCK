@@ -233,7 +233,14 @@ _CLI_TEST_ABSOLUTIZE = [
 # test executor's timeout, which scripts/ci-heavy-suite used to pass and a build
 # action does not get; the per-case contracts in execution_contracts.toml remain
 # the honest gates. Re-tighten when the per-case budgets come back down.
-_CLI_TESTS_TIMEOUT_SECONDS = 1800
+#
+# RUE-1163: these must cover the correctness deadline
+# scripts/cli-timeout-policy.py derives from the same measured weights, on every
+# platform in shard-weights.json — an action bound that cuts inside it kills
+# healthy runs. //:cli-tests sat at 1800s against a 3600s derived deadline (and
+# a 2203s measured expected cost) until //:cli-timeout-policy-validation started
+# comparing the two.
+_CLI_TESTS_TIMEOUT_SECONDS = 3700
 _CLI_SHARD_TIMEOUT_SECONDS = 1200
 
 # The bounded premerge CLI corpus in one invocation: the canonical target that a
@@ -707,6 +714,13 @@ rue_sh_test(
         "$(location //crates/rue-cli-tests:cases)/cases/execution_contracts.toml",
         "--weights",
         "$(location //crates/rue-cli-tests:shard-weights)",
+        # RUE-1163: a corpus action gets no test-executor timeout, so the
+        # `timeout_seconds` spelled here is the only bound on a wedged harness.
+        # Declaring this file as an input makes the two sources of truth fail
+        # closed when they disagree, instead of a static number silently
+        # tightening below the deadline the policy derives.
+        "--buck",
+        "$(location :root-buck-file)/BUCK",
     ],
 )
 
