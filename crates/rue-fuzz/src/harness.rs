@@ -45,12 +45,21 @@ pub const DEFAULT_PER_INPUT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Number of additional distinct reproducers saved for coarse crash buckets.
 ///
-/// Signals and timeouts intentionally have broad signatures because the forked
-/// harness cannot cheaply recover a precise crash site from the dying child.
-/// Saving a small amount of duplicate evidence keeps flood control while
-/// avoiding a single `signal:SIGSEGV` or `timeout` bucket hiding later,
-/// materially different inputs.
+/// Every crash bucket is deliberately broader than the bug that filled it.
+/// Signals and timeouts are broad because the forked harness cannot cheaply
+/// recover a precise crash site from the dying child; panics are broad because
+/// their signature redacts input-derived payload so one invariant stays in one
+/// bucket (see [`panic_signature`]). Saving a small amount of duplicate
+/// evidence keeps flood control while avoiding a single `signal:SIGSEGV`,
+/// `timeout`, or ICE bucket hiding later, materially different inputs.
 const MAX_DUPLICATE_REPRODUCERS_PER_SIGNATURE: u64 = 5;
+
+/// Cap on the redacted message text a panic signature carries. ICE payloads can
+/// be arbitrarily long `{:?}` dumps; the invariant's wording comes first.
+const MAX_SIGNATURE_DETAIL_CHARS: usize = 200;
+
+/// Cap on the crash description recorded in `.meta`, for the same reason.
+const MAX_DESCRIPTION_CHARS: usize = 600;
 
 /// The outcome of running one fuzz input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +87,8 @@ impl RunOutcome {
 
     /// A stable signature used to collapse duplicate crashes.
     ///
-    /// - Panics dedup on their message's first line (the crash site text).
+    /// - Panics dedup on their crash site *and* a redacted form of the panic
+    ///   message; see [`panic_signature`] for why the site alone is not enough.
     /// - Signals dedup on the signal type. Async-signal-safe backtracing is out
     ///   of scope, so all crashes of the same signal kind collapse to one entry
     ///   — which is precisely the flood-control we want (the RUE-42 overflow
@@ -86,7 +96,7 @@ impl RunOutcome {
     pub fn signature(&self) -> Option<String> {
         match self {
             RunOutcome::Ok => None,
-            RunOutcome::Panic(msg) => Some(format!("panic:{}", first_line(msg))),
+            RunOutcome::Panic(msg) => Some(format!("panic:{}", panic_signature(msg))),
             RunOutcome::Signal(sig) => Some(format!("signal:{}", signal_name(*sig))),
             // All hangs collapse to one bucket — same flood-control rationale
             // as signals (one superlinear-parse bug makes *many* inputs hang).
@@ -94,19 +104,137 @@ impl RunOutcome {
         }
     }
 
-    /// Short human-readable description for logs.
+    /// Short human-readable description for logs and the `.meta` sibling.
+    ///
+    /// A panic keeps its whole message (flattened onto one line so `.meta` stays
+    /// line-oriented, and length-bounded so a runaway `{:?}` payload cannot
+    /// dominate the artifact). For a graceful ICE the message *is* the finding:
+    /// dropping everything after the `panicked at <site>:` line left the
+    /// downloaded artifact saying only that some ICE happened somewhere.
     pub fn describe(&self) -> String {
         match self {
             RunOutcome::Ok => "ok".to_string(),
-            RunOutcome::Panic(msg) => format!("panic: {}", first_line(msg)),
+            RunOutcome::Panic(msg) => {
+                format!("panic: {}", truncate(&flatten(msg), MAX_DESCRIPTION_CHARS))
+            }
             RunOutcome::Signal(sig) => format!("signal: {} ({})", signal_name(*sig), sig),
             RunOutcome::Timeout(secs) => format!("timeout: hung for more than {secs}s"),
         }
     }
 }
 
-fn first_line(s: &str) -> &str {
-    s.lines().next().unwrap_or("").trim()
+/// Dedup key for a panic: the crash site plus a payload-redacted digest of the
+/// message.
+///
+/// The site alone is not a usable key. `assert_no_ice` funnels *every* graceful
+/// compiler ICE — whichever invariant broke, in whichever phase — through one
+/// `panic!`, so a site-only signature collapses every ICE the fuzzer can ever
+/// find into a single bucket — and, panic buckets having kept only their first
+/// reproducer, every later ICE was discarded unseen. The nightly job reported
+/// the same opaque `panicked at targets.rs:<line>:<col>` night after night while
+/// the evidence for materially different bugs was thrown away. That is the
+/// RUE-383 over-merge, one crash class over.
+///
+/// The message is redacted rather than used raw because ICE text embeds
+/// input-derived payload — module paths, symbol names, indices. Keying on it
+/// verbatim splits one invariant across an unbounded number of buckets, which
+/// is the opposite failure and refloods the crashes directory. See
+/// [`redact_payload`] for what is dropped; what survives is the invariant's own
+/// wording, which is the discriminator.
+fn panic_signature(msg: &str) -> String {
+    let mut lines = msg.lines().map(str::trim).filter(|line| !line.is_empty());
+    let site = lines.next().unwrap_or("");
+    match lines.next() {
+        Some(detail) => format!(
+            "{site} {}",
+            truncate(&redact_payload(detail), MAX_SIGNATURE_DETAIL_CHARS)
+        ),
+        None => site.to_string(),
+    }
+}
+
+/// Replace input-derived payload with fixed placeholders so that two reports of
+/// the same broken invariant share a signature.
+///
+/// Balanced `{}`/`[]`/`()` groups collapse whole, quoted spans become `""`, and
+/// digit runs become `#`; what survives is the invariant's own wording. Group
+/// collapsing is what keeps the wording *within* [`MAX_SIGNATURE_DETAIL_CHARS`]:
+/// an ICE that debug-prints a nested query key spends hundreds of characters on
+/// payload before reaching the phrase that names the broken invariant, so
+/// redacting character-by-character would leave the cap to truncate the only
+/// discriminating part away.
+fn redact_payload(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                out.push_str("\"\"");
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    i += 1;
+                }
+                i += 1; // step past the closing quote (or off the end)
+            }
+            open @ ('{' | '[' | '(') => {
+                let close = matching_close(open);
+                out.push(open);
+                out.push(close);
+                i += 1;
+                // Track depth so a nested group does not close the outer one.
+                // An unbalanced tail (a truncated debug dump) just consumes the
+                // rest, which is exactly the payload we mean to drop.
+                let mut depth = 1usize;
+                while i < chars.len() && depth > 0 {
+                    match chars[i] {
+                        c if c == open => depth += 1,
+                        c if c == close => depth -= 1,
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            c if c.is_ascii_digit() => {
+                out.push('#');
+                while i < chars.len() && chars[i].is_ascii_digit() {
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn matching_close(open: char) -> char {
+    match open {
+        '{' => '}',
+        '[' => ']',
+        _ => ')',
+    }
+}
+
+/// Collapse a multi-line message onto one line. The `.meta` format is
+/// `key: value` per line, so an embedded newline would corrupt it.
+fn flatten(s: &str) -> String {
+    s.lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Truncate on a char boundary, marking that the text was cut.
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        return s.to_string();
+    }
+    let head: String = s.chars().take(max_chars).collect();
+    format!("{head}...")
 }
 
 /// Human-readable name for the common fatal signals.
@@ -335,9 +463,9 @@ fn run_in_process<F: FnOnce()>(f: F) -> RunOutcome {
 /// Records crashes to disk, collapsing duplicates by [`RunOutcome::signature`].
 ///
 /// A reproducer is always written for the *first* occurrence of each distinct
-/// crash signature. For coarse signatures (`signal:*` and `timeout`), the first
-/// few duplicate inputs are also saved as bounded evidence; exact same-input
-/// reruns are still deduped so retry loops do not rewrite the same artifact.
+/// crash signature, and the first few duplicate inputs in a bucket are saved as
+/// bounded evidence; exact same-input reruns are still deduped so retry loops do
+/// not rewrite the same artifact.
 pub struct CrashReporter {
     crash_dir: Option<PathBuf>,
     signatures: HashMap<String, SignatureState>,
@@ -421,8 +549,17 @@ impl CrashReporter {
     }
 }
 
+/// Whether a bucket keeps bounded duplicate reproducers beyond its first.
+///
+/// Every crash class qualifies: none of their signatures is precise enough to
+/// promise that two inputs in one bucket are the same bug. Panics were the
+/// exception until a single site-only ICE bucket was observed swallowing every
+/// graceful ICE after the first (see [`panic_signature`]).
 fn saves_duplicate_evidence(outcome: &RunOutcome) -> bool {
-    matches!(outcome, RunOutcome::Signal(_) | RunOutcome::Timeout(_))
+    matches!(
+        outcome,
+        RunOutcome::Panic(_) | RunOutcome::Signal(_) | RunOutcome::Timeout(_)
+    )
 }
 
 /// Write the crashing input to `crash_dir` under a name that includes both a
@@ -568,6 +705,131 @@ mod tests {
     fn fast_run_is_not_a_timeout() {
         let outcome = run_forked_with_timeout(|| (), Duration::from_secs(30));
         assert_eq!(outcome, RunOutcome::Ok);
+    }
+
+    /// Two graceful ICEs share one `panic!` site inside `assert_no_ice`, so a
+    /// site-only signature merged every ICE the fuzzer could find into one
+    /// bucket. The broken invariant must discriminate them.
+    #[test]
+    fn distinct_ices_from_one_panic_site_get_distinct_signatures() {
+        let site = "panicked at crates/rue-fuzz/src/targets.rs:38:17:";
+        let terminal = RunOutcome::Panic(format!(
+            "{site}\ngraceful ICE: error: [E9000]: internal compiler error: \
+             reached body query Specialization did not publish a terminal"
+        ));
+        let producer = RunOutcome::Panic(format!(
+            "{site}\ngraceful ICE: error: [E9000]: internal compiler error: \
+             anonymous nominal producer did not publish the requested identity"
+        ));
+        assert_ne!(terminal.signature(), producer.signature());
+    }
+
+    /// The other half of the contract: one invariant reported over inputs that
+    /// differ only in the payload it echoes back (module paths, symbol names,
+    /// indices) must stay in a single bucket, or the crashes directory refloods.
+    #[test]
+    fn one_ice_over_varying_payload_keeps_one_signature() {
+        let ice = |module: &str, index: u32| {
+            RunOutcome::Panic(format!(
+                "panicked at crates/rue-fuzz/src/targets.rs:38:17:\n\
+                 graceful ICE: reached body query Specialization {{ module: \
+                 ModuleId {{ logical_path: \"{module}\" }}, slot: {index} }} \
+                 did not publish a terminal"
+            ))
+        };
+        assert_eq!(
+            ice("a.rue", 3).signature(),
+            ice("other.rue", 1291).signature()
+        );
+    }
+
+    /// A graceful ICE's own text is the finding. Keeping only the `panicked at`
+    /// line left the downloaded `.meta` unable to say which bug it recorded.
+    #[test]
+    fn panic_description_carries_the_ice_text() {
+        let outcome = RunOutcome::Panic(
+            "panicked at crates/rue-fuzz/src/targets.rs:38:17:\n\
+             graceful ICE: reached body query did not publish a terminal"
+                .to_string(),
+        );
+        let described = outcome.describe();
+        assert!(
+            described.contains("did not publish a terminal"),
+            "got: {described}"
+        );
+        assert!(
+            !described.contains('\n'),
+            "`.meta` is line-oriented: {described}"
+        );
+    }
+
+    /// Verbatim message from the nightly `sema`/`payload_schemas` crash of
+    /// 2026-07-28 (GitHub #1930). Its debug payload runs for ~200 characters
+    /// before the phrase that names the broken invariant, so the signature is
+    /// only discriminating if the payload collapses rather than being redacted
+    /// character-by-character and then truncated.
+    #[test]
+    fn real_ice_signature_keeps_the_invariant_wording() {
+        let outcome = RunOutcome::Panic(
+            "panicked at crates/rue-fuzz/src/targets.rs:38:17:\n\
+             graceful ICE: internal compiler error: reached body query \
+             Specialization { base: Definition(StableDefinitionKey { module: \
+             ModuleId { logical_path: \"<fuzz>\", origin: Caller }, namespace: \
+             Value, kind: Function, name: \"Box\", owner: None }), arguments: \
+             CanonicalArguments { types: [U64], values: [] } } did not publish \
+             a terminal"
+                .to_string(),
+        );
+        let signature = outcome.signature().unwrap();
+        assert!(
+            signature.contains("did not publish a terminal"),
+            "the broken invariant must survive redaction and the cap: {signature}"
+        );
+        assert!(
+            !signature.contains("Box") && !signature.contains("logical_path"),
+            "input-derived payload must not reach the key: {signature}"
+        );
+    }
+
+    #[test]
+    fn oversized_panic_payload_is_bounded() {
+        let outcome = RunOutcome::Panic(format!(
+            "panicked at src/x.rs:1:1:\ngraceful ICE: {}",
+            "payload ".repeat(500)
+        ));
+        assert!(outcome.signature().unwrap().chars().count() < 300);
+        assert!(outcome.describe().chars().count() < 700);
+    }
+
+    /// Distinct ICEs also have to survive to disk, not merely be counted: a
+    /// panic bucket that keeps only its first reproducer leaves later, different
+    /// crashing inputs with no evidence at all (RUE-383, one class over).
+    #[test]
+    fn reporter_saves_bounded_panic_duplicate_evidence() {
+        let dir = std::env::temp_dir().join(format!(
+            "rue-fuzz-panic-duplicates-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut reporter = CrashReporter::new(Some(dir.clone()));
+        let outcome = RunOutcome::Panic(
+            "panicked at crates/rue-fuzz/src/targets.rs:38:17:\n\
+             graceful ICE: reached body query did not publish a terminal"
+                .to_string(),
+        );
+
+        assert!(
+            reporter
+                .report("sema", b"first-ice-input", &outcome)
+                .is_some()
+        );
+        let second = reporter.report("sema", b"second-ice-input", &outcome);
+        let second = second.expect("a distinct input in one ICE bucket must be saved");
+        assert_eq!(std::fs::read(&second).unwrap(), b"second-ice-input");
+        assert_eq!(reporter.unique_crashes, 1);
+        assert_eq!(reporter.distinct_signatures(), 1);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
