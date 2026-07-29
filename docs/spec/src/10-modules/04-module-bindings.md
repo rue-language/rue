@@ -113,9 +113,10 @@ fn main() -> i32 {
 {{ rule(id="10.4:12", cat="normative") }}
 
 A value constant declared at the top level of a module's file is a member of
-that module. Accessing it through the module yields the constant's value,
-with the constant's declared (or inferred, 6.5:4) type. The access is itself
-compile-time evaluable, so it may appear in another constant's initializer.
+that module. Accessing it through the module yields the constant's value, with
+the constant's declared type — a value constant always carries an explicit type
+annotation (6.5:4). The access is itself compile-time evaluable, so it may
+appear in another constant's initializer.
 
 {{ rule(id="10.4:13", cat="normative") }}
 
@@ -228,12 +229,15 @@ fn main() -> i32 {
 {{ rule(id="10.4:6", cat="legality-rule") }}
 
 A module is not a runtime value. It is a compile-time error to use a module
-binding as a function argument, as a struct field value, or as an operand of
-an operator such as `==`.
+binding where a value of some type is expected — as a function argument, as a
+struct field value, as an operand of an operator such as `==`, or as an
+expression whose type must match an expected type. This includes the expected
+type `()`: a module expression is never treated as the unit value. The
+diagnostic is a type mismatch (`E0206`) reporting `<module>` as the found type.
 
-{{ rule(id="10.4:7") }}
+{{ rule(id="10.4:7", cat="legality-rule") }}
 
-In a few value positions (for example, the tail expression of a block whose
-type is `()`) a module expression is currently accepted and treated as the
-unit value. Programs must not rely on this; it is an artifact of the current
-implementation, not a guarantee.
+A module expression in statement position — a bare expression statement such as
+`m;`, or a block statement whose tail is a module expression — is accepted. No
+type is expected there, so the module is discarded without being materialized as
+a value. This is not an exception to 10.4:6: no module value is produced.

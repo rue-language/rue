@@ -108,7 +108,12 @@ pub struct ConstDecl {
     pub visibility: Visibility,
     /// Constant name
     pub name: Ident,
-    /// Optional type annotation (usually inferred)
+    /// Type annotation. Syntactically optional so the parser can accept both
+    /// forms, but a *value* constant must carry one: an unannotated value
+    /// constant is rejected as E0475 (spec 6.5:4). It is legitimately absent
+    /// only for the constants that name no value type — module bindings,
+    /// their aliases and re-exports (chapter 10), and callable function
+    /// aliases (6.5:15).
     pub ty: Option<TypeExpr>,
     /// Initializer expression
     pub init: Box<Expr>,

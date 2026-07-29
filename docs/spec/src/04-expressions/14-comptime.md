@@ -31,6 +31,8 @@ operations are supported within comptime blocks:
 - Bitwise operators (`&`, `|`, `^`, `<<`, `>>`, `~`)
 - `let` bindings of comptime values
 - References to file-level constants and to `comptime` parameters in scope
+- Fully-comptime calls (4.14:28): a call to a function whose parameters are all
+  declared `comptime`, applied to comptime-evaluable arguments
 
 Evaluation follows runtime semantics exactly: arithmetic is checked at the operands' type (Chapter 8.1), the full value range of every integer type is supported (including negative results and `u64` values above `i64::MAX`), shift amounts are masked modulo the bit width and shift results truncate to the operand width (4.3a:10), and `&&`/`||` short-circuit.
 
@@ -52,7 +54,10 @@ fn main() -> i32 {
 It is a compile-time error if an expression inside a comptime block cannot be evaluated at compile time. This includes:
 
 - References to runtime variables
-- Function calls (except to comptime-evaluable functions in future versions)
+- Calls that are not fully-comptime calls (4.14:28): a call to a function with
+  any non-`comptime` parameter is never comptime-evaluable, because that
+  function's body runs at runtime, and a call to an all-`comptime` function is
+  comptime-evaluable only when every argument is itself comptime-evaluable
 - Operations that would panic at runtime: integer overflow at the operands' type (including in intermediate results), division by zero, and remainder by zero
 
 ```rue
@@ -61,6 +66,21 @@ fn main() -> i32 {
     comptime { x + 1 }  // ERROR: x cannot be known at compile time
 }
 ```
+
+A fully-comptime call is permitted, because every parameter is bound to a
+compile-time value:
+
+```rue
+fn inc(comptime n: i32) -> i32 { n + 1 }
+
+fn main() -> i32 {
+    comptime { inc(4) }  // 5: fully-comptime call (4.14:28)
+}
+```
+
+A call to `fn add(a: i32, b: i32)` would be rejected in the same position
+because `add` has runtime parameters, and `inc(x)` would be rejected for a
+runtime `x` because the argument is not comptime-evaluable.
 
 ## Comptime Parameters
 
