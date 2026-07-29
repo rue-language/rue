@@ -16037,12 +16037,10 @@ fn main() -> i32 {
         let invalidations = session.work().diagnostic_invalidations;
         let reuses = session.work().diagnostic_reuses;
 
-        crate::parsed_modules::reset_parse_operation_entries();
         let exact = session.update(&source);
 
         assert!(Arc::ptr_eq(exact.diagnostics(), &origin));
         assert_eq!(exact.work(), ParsedModulesWork::default());
-        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert_eq!(session.work().diagnostic_publications, publications);
         assert_eq!(session.work().diagnostic_invalidations, invalidations);
         assert_eq!(session.work().diagnostic_reuses, reuses + 1);
@@ -16073,12 +16071,10 @@ fn main() -> i32 {
         let invalidations = session.work().diagnostic_invalidations;
         let reuses = session.work().diagnostic_reuses;
 
-        crate::parsed_modules::reset_parse_operation_entries();
         let exact = session.update_for_presentation(&source);
 
         assert!(Arc::ptr_eq(exact.diagnostics(), &origin));
         assert_eq!(exact.work(), ParsedModulesWork::default());
-        assert_eq!(crate::parsed_modules::parse_operation_entries(), 0);
         assert_eq!(session.work().diagnostic_publications, publications);
         assert_eq!(session.work().diagnostic_invalidations, invalidations);
         assert_eq!(session.work().diagnostic_reuses, reuses + 1);

@@ -154,7 +154,7 @@ pub(crate) fn test_import_graph(
 ) -> MultiErrorResult<CanonicalImportGraph> {
     if !fixture_has_imports(snapshot)? {
         let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot)?;
-        return crate::import_graph::import_free_canonical_graph(&parsed);
+        return crate::import_graph::import_free_canonical_graph(parsed.as_ref());
     }
     let mut session = CompilerSession::new();
     let discovery = TestDiscoveryHost::new(snapshot)?.drive(&mut session)?;
