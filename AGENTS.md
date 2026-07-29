@@ -259,11 +259,18 @@ jj new 'trunk()'
 jj describe -m 'RUE-NNN: concise summary'
 jj git push --remote upstream -c @
 gh pr create --repo rue-language/rue --base trunk --head <bookmark>
-gh pr merge <number> --repo rue-language/rue --auto --squash
+gh pr merge <number> --repo rue-language/rue --auto
 # wait for the authoritative MERGED state
 jj git fetch
 jj new 'trunk()'
 ```
+
+`trunk` is behind a merge queue, so `--auto` enqueues the PR and the queue
+performs the merge once it reaches the front and merge-group CI passes. Do not
+pass a merge-method flag: squash is disabled on the repository (`--squash`
+fails with a 405), and the queue owns the method regardless. A direct
+`gh pr merge` without `--auto` is refused by branch protection with
+"Changes must be made through the merge queue".
 
 For a fork-based contribution, push with `--remote origin` and pass
 `--head <user>:<bookmark>` when creating the PR.
