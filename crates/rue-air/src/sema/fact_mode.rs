@@ -334,12 +334,6 @@ mod tests {
         fn call_method_info(&self, _: StructId, _: Spur) -> Option<MethodCallInfo> {
             None
         }
-        fn call_named_method_by_callable_symbol(
-            &self,
-            _: Spur,
-        ) -> Option<(StructId, Spur, MethodCallInfo)> {
-            None
-        }
         fn call_named_method_declaration(&self, _: FileId, _: Spur, _: Spur) -> Option<InstRef> {
             None
         }

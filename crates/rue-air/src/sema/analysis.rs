@@ -23,7 +23,7 @@ use rue_span::{FileId, Span};
 use rue_target::{Arch, DataModel, Os};
 
 use super::call_resolution::{
-    CallResolutionFacts, StaticCallReference, classify_static_call, resolve_static_call_reference,
+    CallResolutionFacts, resolve_static_call_reference,
 };
 use super::context::{AnalysisContext, AnalysisResult, CallLoanKind, ConstValue};
 use super::{AnalyzedFunction, BodySema, InferenceContext, MethodInfo, ParamSlotModes, SemaOutput};
@@ -953,30 +953,48 @@ pub(crate) fn import_staged_body(
         |name| sema.interner.get_or_intern(name),
     )?;
     sema.type_pool = scratch;
+    // Project the recorded method references into this session's live keys.
+    // Every receiver/method a durable body legitimately recorded is resolvable
+    // exactly when its corresponding `Call` resolved above; anything else
+    // fails the whole import closed rather than dropping a reference.
+    let mut imported = imported;
+    let mut method_references =
+        HashSet::with_capacity(body.method_references.len());
+    for reference in body.method_references.iter() {
+        let struct_id = resolve_struct_nominal(sema, &reference.receiver)?;
+        let method = sema
+            .interner
+            .get(reference.method.as_ref())
+            .ok_or(BF::Semantic(F::MissingFunction))?;
+        method_references.insert((struct_id, method));
+    }
+    imported.method_references = method_references;
     Ok(imported)
 }
 
+/// The reachability references of an imported body: free functions are
+/// classified by direct symbol membership in the declaration table, and method
+/// references are read from the body's recorded reference set — the payload
+/// captured when resolution selected each method winner — so no rendered
+/// callable symbol is ever reversed back into a method key (RUE-1128).
 pub(crate) fn imported_body_references(
     sema: &BodySema<'_>,
-    air: &Air,
+    imported: &crate::SemanticImportedBody<
+        crate::SemanticDefinitionToken,
+        crate::SemanticModuleToken,
+    >,
 ) -> (HashSet<Spur>, HashSet<(crate::StructId, Spur)>) {
     let mut functions = HashSet::new();
-    let mut methods = HashSet::new();
-    for instruction in air.instructions() {
+    let facts = sema.call_facts();
+    for instruction in imported.air.instructions() {
         let AirInstData::Call { name, .. } = instruction.data else {
             continue;
         };
-        match classify_static_call(&sema.call_facts(), name) {
-            Some(StaticCallReference::Free(name)) => {
-                functions.insert(name);
-            }
-            Some(StaticCallReference::Method(struct_id, method)) => {
-                methods.insert((struct_id, method));
-            }
-            None => {}
+        if facts.function_contains(name) {
+            functions.insert(name);
         }
     }
-    (functions, methods)
+    (functions, imported.method_references.clone())
 }
 
 #[cfg(test)]
@@ -1964,7 +1982,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                         sema.body_analysis_work.ordinary_bodies_reused += 1;
                         sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
                         let (referenced_fns, referenced_meths) =
-                            imported_body_references(sema, &imported.air);
+                            imported_body_references(sema, &imported);
                         let mut ordered_referenced_fns =
                             referenced_fns.iter().copied().collect::<Vec<_>>();
                         ordered_referenced_fns
@@ -2023,6 +2041,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             &analyzed,
                             &imported.strings,
                             &[],
+                            &referenced_meths,
                         ) {
                             Ok(export) => {
                                 sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
@@ -2125,6 +2144,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             &analyzed,
                             &local_strings,
                             &warnings,
+                            &referenced_meths,
                         ) {
                             Ok(export) => {
                                 sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
@@ -2491,7 +2511,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                             sema.body_analysis_work.ordinary_bodies_reused += 1;
                             sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
                             let (referenced_fns, referenced_meths) =
-                                imported_body_references(sema, &imported.air);
+                                imported_body_references(sema, &imported);
                             let analyzed = AnalyzedFunction {
                                 identity: named_method_identity.clone(),
                                 callable_kind: crate::AnalyzedCallableKind::Ordinary,
@@ -2545,6 +2565,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 &analyzed,
                                 &imported.strings,
                                 &[],
+                                &referenced_meths,
                             ) {
                                 Ok(export) => {
                                     sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
@@ -2675,6 +2696,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 &analyzed,
                                 &local_strings,
                                 &warnings,
+                                &referenced_meths,
                             ) {
                                 Ok(export) => {
                                     sema.body_analysis_work.ordinary_body_exports_succeeded += 1;
@@ -2840,7 +2862,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 sema.body_analysis_work.ordinary_bodies_reused += 1;
                                 sema.body_analysis_work.ordinary_body_analyses_skipped += 1;
                                 let (referenced_fns, referenced_meths) =
-                                    imported_body_references(sema, &imported.air);
+                                    imported_body_references(sema, &imported);
                                 let analyzed = AnalyzedFunction {
                                     identity: named_destructor_identity.clone(),
                                     callable_kind: crate::AnalyzedCallableKind::Destructor,
@@ -2891,6 +2913,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                     &analyzed,
                                     &imported.strings,
                                     &[],
+                                    &referenced_meths,
                                 ) {
                                     Ok(export) => {
                                         sema.body_analysis_work.ordinary_body_exports_succeeded +=
@@ -2999,6 +3022,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 &analyzed,
                                 &local_strings,
                                 &warnings,
+                                &referenced_meths,
                             ) {
                                 Ok(export) => {
                                     sema.body_analysis_work.ordinary_body_exports_succeeded += 1;

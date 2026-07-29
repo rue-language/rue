@@ -429,6 +429,10 @@ where
     fn resolve_publication_symbol(&self, symbol: &Spur) -> &str {
         self.interner.resolve(symbol)
     }
+
+    fn body_struct_symbol(&self, id: StructId) -> String {
+        self.type_pool.struct_symbol_name(id)
+    }
 }
 
 struct ProviderBodyHost<'a, P, S, K, M> {
@@ -2303,12 +2307,6 @@ where
     }
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.method_info_for_symbol(struct_id, name)
-    }
-    fn call_named_method_by_callable_symbol(
-        &self,
-        _name: Spur,
-    ) -> Option<(StructId, Spur, MethodCallInfo)> {
-        None
     }
     fn call_named_method_declaration(
         &self,
@@ -4282,6 +4280,7 @@ where
         &strings,
         &warnings,
         Some(&selected_calls),
+        &referenced_methods,
     )
     .map_err(|failure| {
         CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(
@@ -4747,6 +4746,7 @@ where
         &strings,
         &warnings,
         Some(&selected_calls),
+        &referenced_methods,
     )
     .map(|export| crate::SemanticAnonymousBodyExport {
         identity: issued_identity,
@@ -4925,6 +4925,7 @@ where
         &specialized.local_strings,
         &specialized.warnings,
         Some(&selected_calls),
+        &specialized.referenced_methods,
     )
     .map_err(|failure| {
         CompileError::without_span(rue_error::ErrorKind::OutputPublication(format!(

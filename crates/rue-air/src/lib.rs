@@ -67,7 +67,7 @@ pub use intern_pool::{
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;
 pub use param_arena::{ParamArena, ParamRange, ParamRangeData};
-pub use path_norm::{mangle_symbol_component, normalize_module_path, unmangle_symbol_component};
+pub use path_norm::{mangle_symbol_component, normalize_module_path};
 pub use runtime_call::{
     OptionVariant, RuntimeAirArgument, RuntimeAirType, RuntimeCallActivation, RuntimeCallKind,
     RuntimeOperandOrigin,
@@ -114,8 +114,9 @@ pub use semantic_body::{
     SemanticBodyExport, SemanticBodyExportFailure, SemanticBodyImportFailure,
     SemanticBodyImportFailureKind, SemanticBodyInst, SemanticBodyInstData,
     SemanticBodyInstDependency, SemanticBodyInstFailureContext, SemanticBodyInstKind,
-    SemanticBodyMatchArm, SemanticBodyPattern, SemanticBodyPlace, SemanticBodyPlaceRef,
-    SemanticBodyProjection, SemanticBodyRef, SemanticBodyWarning, SemanticBodyWarningLabel,
+    SemanticBodyMatchArm, SemanticBodyMethodReference, SemanticBodyPattern, SemanticBodyPlace,
+    SemanticBodyPlaceRef, SemanticBodyProjection, SemanticBodyRef, SemanticBodyWarning,
+    SemanticBodyWarningLabel,
     SemanticBodyWarningSuggestion, SemanticDefinitionEndpoint, SemanticDefinitionToken,
     SemanticImportedBody, SemanticModuleEndpoint, SemanticModuleToken,
     SemanticQueriedBodyCandidate, SemanticSpecializationIdentity, SemanticSpecializedBodyCandidate,

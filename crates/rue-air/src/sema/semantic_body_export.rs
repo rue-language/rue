@@ -1,4 +1,7 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use lasso::Spur;
 use rue_error::CompileWarning;
@@ -30,6 +33,7 @@ impl BodySema<'_> {
         >,
         dependencies: &[SemanticDefinitionToken],
         dependency_boundary_complete: bool,
+        method_references: &HashSet<(crate::StructId, Spur)>,
     ) -> Result<SemanticSpecializedBodyExport, F> {
         let source_name = self.source_function_name(base_name);
         let source_name_str = self.interner.resolve(&source_name);
@@ -47,6 +51,7 @@ impl BodySema<'_> {
             strings,
             warnings,
             Some(specialized_calls),
+            method_references,
         )?
         .body;
         let type_arguments = type_arguments
@@ -94,8 +99,18 @@ impl BodySema<'_> {
         analyzed: &AnalyzedFunction,
         strings: &[String],
         warnings: &[CompileWarning],
+        method_references: &HashSet<(crate::StructId, Spur)>,
     ) -> Result<SemanticBodyExport, F> {
-        export_body(self, owner, body_span, analyzed, strings, warnings, None)
+        export_body(
+            self,
+            owner,
+            body_span,
+            analyzed,
+            strings,
+            warnings,
+            None,
+            method_references,
+        )
     }
 }
 
@@ -123,6 +138,12 @@ pub(crate) trait SemanticBodyExportHost {
         symbol: Spur,
     ) -> Result<crate::FunctionInstanceKey<SemanticDefinitionToken, SemanticModuleToken>, F>;
     fn resolve_publication_symbol(&self, symbol: &Spur) -> &str;
+    /// The content-canonical rendered symbol component of a struct receiver
+    /// (`{name}${mangled module}` for user nominals, the bare name for
+    /// builtin/language-item/generated exemptions, the digest name for
+    /// anonymous nominals). Used only to order the recorded method-reference
+    /// payload deterministically across sessions and revisions.
+    fn body_struct_symbol(&self, id: crate::StructId) -> String;
 }
 
 pub(crate) fn export_body<H: SemanticBodyExportHost>(
@@ -138,6 +159,7 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
             SemanticSpecializationIdentity<SemanticDefinitionToken, SemanticModuleToken>,
         >,
     >,
+    method_references: &HashSet<(crate::StructId, Spur)>,
 ) -> Result<SemanticBodyExport, F> {
     let warning_anchor = |span: Span| {
         if span.file_id != body_span.file_id
@@ -576,6 +598,29 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
     let borrow_slots = (0..analyzed.num_locals)
         .filter(|slot| body.is_borrow_slot(*slot))
         .collect::<Vec<_>>();
+    // The recorded references were captured when method resolution selected
+    // each winner. Order the payload by content-canonical render so equal
+    // recorded sets serialize identically regardless of session-local ids.
+    let mut method_references = method_references
+        .iter()
+        .map(|(struct_id, method)| {
+            Ok((
+                host.body_struct_symbol(*struct_id),
+                host.resolve_publication_symbol(method).to_owned(),
+                crate::SemanticBodyMethodReference {
+                    receiver: host.body_struct_identity(*struct_id)?,
+                    method: Arc::from(host.resolve_publication_symbol(method)),
+                },
+            ))
+        })
+        .collect::<Result<Vec<_>, F>>()?;
+    method_references.sort_by(|(left_symbol, left_method, _), (right_symbol, right_method, _)| {
+        (left_symbol, left_method).cmp(&(right_symbol, right_method))
+    });
+    let method_references = method_references
+        .into_iter()
+        .map(|(_, _, reference)| reference)
+        .collect::<Vec<_>>();
     Ok(SemanticBodyExport {
         owner,
         body: SemanticBody {
@@ -602,6 +647,7 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
             param_writable: Arc::from(analyzed.param_modes.writable()),
             allow_unreachable_code: analyzed.allow_unreachable_code,
             warnings: warnings.into(),
+            method_references: method_references.into(),
         },
     })
 }
@@ -637,6 +683,10 @@ impl SemanticBodyExportHost for BodySema<'_> {
 
     fn resolve_publication_symbol(&self, symbol: &Spur) -> &str {
         self.interner.resolve(symbol)
+    }
+
+    fn body_struct_symbol(&self, id: crate::StructId) -> String {
+        self.type_pool.struct_symbol_name(id)
     }
 }
 

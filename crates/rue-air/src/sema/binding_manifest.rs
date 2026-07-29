@@ -2362,32 +2362,6 @@ impl<'a> BoundSema<'a> {
         self.sema.function_info(name).copied()
     }
 
-    /// Return the canonical callable-symbol reversal for parity checks.
-    /// Delegates to the epoch's
-    /// `named_callable_methods_by_symbol` index. The epoch answers BARE
-    /// (language-item / builtin) owner symbols here — the class the provider path
-    /// refuses, which the parity check records explicitly.
-    pub fn named_method_by_callable_symbol(
-        &self,
-        symbol: lasso::Spur,
-    ) -> Option<(crate::types::StructId, lasso::Spur, super::info::MethodInfo)> {
-        self.sema
-            .named_method_by_callable_symbol(symbol)
-            .map(|(struct_id, method, info)| (struct_id, method, *info))
-    }
-
-    /// Return rendered symbol keys from the canonical named-method callable
-    /// index, so parity checks can locate the
-    /// bare (file-qualification-exempt) key a language-item owner produces and
-    /// witness the epoch answering it.
-    pub fn named_callable_symbol_keys(&self) -> Vec<String> {
-        self.sema
-            .named_callable_methods_by_symbol
-            .keys()
-            .cloned()
-            .collect()
-    }
-
     /// Return the canonical resolved nominal [`Type`] for `(file, name)`.
     /// Provider-boundary parity checks compare it with the independently
     /// assembled `ProviderEndpointFacts` result.

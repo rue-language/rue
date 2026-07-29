@@ -826,24 +826,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         Some((true, key))
     }
 
-    pub(crate) fn named_method_by_callable_symbol(
-        &self,
-        symbol: Spur,
-    ) -> Option<(StructId, Spur, &MethodInfo)> {
-        let &[(struct_id, method_name)] = self
-            .named_callable_methods_by_symbol
-            .get(self.interner.resolve(&symbol))?
-            .as_slice()
-        else {
-            return None;
-        };
-        Some((
-            struct_id,
-            method_name,
-            self.methods.get(&(struct_id, method_name))?,
-        ))
-    }
-
     fn insert_callable_method_candidate(
         candidates: &mut HashMap<String, Vec<(StructId, Spur)>>,
         symbol: String,
