@@ -53,7 +53,7 @@ ALLOWANCES = {
         2, "redundant memo-retention and canonical-root accounting"
     ),
     "crates/rue-compiler/src/semantic_query_nucleus.rs": Allowance(1, "redundant semantic query category check"),
-    "crates/rue-compiler/src/session.rs": Allowance(8, "redundant canonical-session phase and provenance checks"),
+    "crates/rue-compiler/src/session.rs": Allowance(7, "redundant canonical-session phase and provenance checks"),
     "crates/rue-compiler/src/source_identity.rs": Allowance(4, "redundant normalized-path representation checks"),
     "crates/rue-compiler/src/source_snapshot.rs": Allowance(1, "redundant source arena identity check"),
     "crates/rue-compiler/src/typed_query_store.rs": Allowance(1, "redundant typed-query key check"),

@@ -511,8 +511,6 @@ pub const FRONTEND_INVALIDATION_PLAN_RETENTION_LIMIT: usize = 8;
 pub struct SemanticDependencyManifestWork {
     pub definition_records_visited: usize,
     pub import_records_visited: usize,
-    pub free_function_events_translated: usize,
-    pub specialization_origins_validated: usize,
     pub named_method_events_translated: usize,
     pub named_destructor_events_translated: usize,
     pub declaration_type_events_translated: usize,
@@ -6928,7 +6926,6 @@ impl CompilerSession {
             debug_assert_eq!(output.input(), &input);
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
-            debug_assert!(!semantic_work.stable_ids_requested);
         }
         let diagnostic_input = semantic_diagnostic_input(&input, imports.clone());
         let diagnostics = self.publish_diagnostics(
@@ -7390,7 +7387,6 @@ impl CompilerSession {
             definition_fingerprints.push(stable_definition_input_fingerprint(&snapshot, record)?);
         }
         let (
-            mut free_function_dependencies,
             mut named_method_dependencies,
             mut named_destructor_dependencies,
             mut declaration_type_dependencies,
@@ -7398,8 +7394,6 @@ impl CompilerSession {
             mut builtin_type_call_head_inputs,
             mut named_const_dependencies,
             mut implicit_named_destructor_dependencies,
-            free_function_events_translated,
-            specialization_origins_validated,
             named_method_events_translated,
             named_destructor_events_translated,
             declaration_type_events_translated,
@@ -7407,7 +7401,6 @@ impl CompilerSession {
             builtin_type_call_head_inputs_translated,
             named_const_events_translated,
             implicit_named_destructor_events_translated,
-            mut free_function_caller_dependencies_complete,
             named_method_dependencies_complete,
             generic_named_method_dependencies_complete,
             named_destructor_dependencies_complete,
@@ -7427,43 +7420,6 @@ impl CompilerSession {
                     return Err(invalid_dependency_manifest(
                         "semantic dependency translation used a stale body-owner issuer revision",
                     ));
-                }
-                let mut edges = Vec::new();
-                for origin in semantic.specialized_free_function_origins() {
-                    stable_free_function_endpoint(
-                        definitions,
-                        origin.base_file,
-                        &origin.base_name,
-                    )?;
-                }
-                for event in semantic.ordinary_free_function_dependencies() {
-                    let provenance = stable_free_function_endpoint(
-                        definitions,
-                        event.caller_file,
-                        &event.caller_name,
-                    )?;
-                    edges.push(StableFreeFunctionDependency {
-                        caller: stable_token_endpoint(semantic, event.caller_token, &provenance)?,
-                        callee: stable_free_function_endpoint(
-                            definitions,
-                            event.callee_file,
-                            &event.callee_name,
-                        )?,
-                    });
-                }
-                for event in semantic.specialized_free_function_dependencies() {
-                    edges.push(StableFreeFunctionDependency {
-                        caller: stable_free_function_endpoint(
-                            definitions,
-                            event.base_file,
-                            &event.base_name,
-                        )?,
-                        callee: stable_free_function_endpoint(
-                            definitions,
-                            event.callee_file,
-                            &event.callee_name,
-                        )?,
-                    });
                 }
                 let mut method_edges = Vec::new();
                 for event in semantic.named_method_dependencies() {
@@ -7665,7 +7621,6 @@ impl CompilerSession {
                     });
                 }
                 (
-                    edges,
                     method_edges,
                     destructor_edges,
                     type_edges,
@@ -7673,9 +7628,6 @@ impl CompilerSession {
                     builtin_head_inputs,
                     const_edges,
                     implicit_destructor_edges,
-                    semantic.ordinary_free_function_dependencies().len()
-                        + semantic.specialized_free_function_dependencies().len(),
-                    semantic.specialized_free_function_origins().len(),
                     semantic.named_method_dependencies().len(),
                     semantic.named_destructor_dependencies().len(),
                     semantic.declaration_type_dependencies().len(),
@@ -7685,8 +7637,6 @@ impl CompilerSession {
                         .len(),
                     semantic.named_const_dependencies().len(),
                     semantic.implicit_named_destructor_dependencies().len(),
-                    semantic.ordinary_free_function_dependencies_complete()
-                        && semantic.specialized_free_function_dependencies_complete(),
                     semantic.non_generic_named_method_dependencies_complete(),
                     semantic.generic_named_method_dependencies_complete(),
                     semantic.named_destructor_dependencies_complete(),
@@ -7705,7 +7655,6 @@ impl CompilerSession {
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
-                Vec::new(),
                 0,
                 0,
                 0,
@@ -7713,9 +7662,6 @@ impl CompilerSession {
                 0,
                 0,
                 0,
-                0,
-                0,
-                false,
                 false,
                 false,
                 false,
@@ -7726,6 +7672,10 @@ impl CompilerSession {
                 false,
             ),
         };
+        // RUE-1027: body call edges have one production authority — the
+        // query-owned references each reached body transaction returns.
+        let mut free_function_dependencies = Vec::new();
+        let mut free_function_caller_dependencies_complete = false;
         if let Ok(semantic) = &semantic {
             let mut query_edges = Vec::new();
             for function in semantic.functions() {
@@ -7756,10 +7706,6 @@ impl CompilerSession {
                     });
                 }
             }
-            // RUE-1027: body call edges have one production authority. The
-            // query-owned references returned by each reached body transaction
-            // replace the whole-program observer projection used by the
-            // compatibility oracle above.
             free_function_dependencies = query_edges;
             free_function_caller_dependencies_complete = true;
         }
@@ -8150,8 +8096,6 @@ impl CompilerSession {
         let work = SemanticDependencyManifestWork {
             definition_records_visited: partial_work.definition_records_visited,
             import_records_visited: partial_work.import_records_visited,
-            free_function_events_translated,
-            specialization_origins_validated,
             named_method_events_translated,
             named_destructor_events_translated,
             declaration_type_events_translated,
@@ -12311,10 +12255,6 @@ mod tests {
         assert_eq!(
             format!("{:?}", actual.analyzed_body_owners()),
             format!("{:?}", fresh.analyzed_body_owners())
-        );
-        assert_eq!(
-            format!("{:?}", actual.ordinary_free_function_dependencies()),
-            format!("{:?}", fresh.ordinary_free_function_dependencies())
         );
         assert_eq!(actual.type_pool().stats(), fresh.type_pool().stats());
     }
@@ -16695,10 +16635,6 @@ fn main() -> i32 { selected.value() }"#;
         assert_eq!(
             format!("{:?}", reused.warnings()),
             format!("{:?}", fresh.warnings())
-        );
-        assert_eq!(
-            format!("{:?}", reused.ordinary_free_function_dependencies()),
-            format!("{:?}", fresh.ordinary_free_function_dependencies())
         );
         assert_eq!(
             format!("{:?}", reused.analyzed_body_owners()),
