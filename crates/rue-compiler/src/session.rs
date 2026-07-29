@@ -1428,255 +1428,6 @@ fn stable_producer_definition_root(
     }
 }
 
-fn enqueue_owned_destructor_closure(
-    ty: &crate::TypeInstanceKey,
-    definitions: &crate::BoundDefinitionSet,
-    declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
-    produced_anonymous: &BTreeMap<
-        crate::AnonymousNominalKey,
-        crate::durable_semantics::DurableAnonymousNominal,
-    >,
-    declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-    pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-) {
-    fn named(
-        owner: &crate::StableDefinitionKey,
-        definitions: &crate::BoundDefinitionSet,
-        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        let identity =
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(owner.clone()));
-        if !visited.insert(identity) {
-            return;
-        }
-        for record in definitions.definitions() {
-            let candidate = record.stable_key();
-            let Some(candidate_owner) = candidate.owner() else {
-                continue;
-            };
-            if candidate.kind() == crate::StableDefinitionKind::Destructor
-                && candidate_owner.module() == owner.module()
-                && candidate_owner.kind() == owner.kind()
-                && candidate_owner.name() == owner.name()
-            {
-                pending.insert(crate::FunctionInstanceKey::Definition(candidate.clone()));
-            }
-        }
-        let Some(declaration) = declarations
-            .iter()
-            .find(|declaration| declaration.key == *owner)
-        else {
-            return;
-        };
-        match &declaration.payload {
-            crate::durable_semantics::DurableDeclarationPayload::Struct { fields, .. } => {
-                for (_, field) in fields.iter() {
-                    durable(
-                        field,
-                        definitions,
-                        declarations,
-                        produced_anonymous,
-                        declaration_anonymous,
-                        pending,
-                        visited,
-                    );
-                }
-            }
-            crate::durable_semantics::DurableDeclarationPayload::Enum { variants } => {
-                for (_, fields) in variants.iter() {
-                    for field in fields.iter() {
-                        durable(
-                            field,
-                            definitions,
-                            declarations,
-                            produced_anonymous,
-                            declaration_anonymous,
-                            pending,
-                            visited,
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn anonymous(
-        owner: &crate::AnonymousNominalKey,
-        definitions: &crate::BoundDefinitionSet,
-        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        let identity =
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner.clone()));
-        if !visited.insert(identity.clone()) {
-            return;
-        }
-        let Some(nominal) = produced_anonymous.get(owner).or_else(|| {
-            declaration_anonymous
-                .iter()
-                .find(|nominal| nominal.identity == *owner)
-        }) else {
-            return;
-        };
-        match &nominal.shape {
-            crate::durable_semantics::DurableAnonymousNominalShape::Struct { fields, methods } => {
-                if methods
-                    .iter()
-                    .any(|method| method.has_self && method.name.as_ref() == "__drop")
-                {
-                    pending.insert(crate::FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(identity),
-                        member: crate::AnonymousMemberKey {
-                            kind: crate::AnonymousMemberKind::Destructor,
-                            name: Arc::from("__drop"),
-                        },
-                    });
-                }
-                for (_, field) in fields.iter() {
-                    durable(
-                        field,
-                        definitions,
-                        declarations,
-                        produced_anonymous,
-                        declaration_anonymous,
-                        pending,
-                        visited,
-                    );
-                }
-            }
-            crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants } => {
-                for (_, fields) in variants.iter() {
-                    for field in fields.iter() {
-                        durable(
-                            field,
-                            definitions,
-                            declarations,
-                            produced_anonymous,
-                            declaration_anonymous,
-                            pending,
-                            visited,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn durable(
-        ty: &crate::durable_semantics::DurableType,
-        definitions: &crate::BoundDefinitionSet,
-        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        match ty {
-            crate::durable_semantics::DurableType::Nominal(owner) => named(
-                owner,
-                definitions,
-                declarations,
-                produced_anonymous,
-                declaration_anonymous,
-                pending,
-                visited,
-            ),
-            crate::durable_semantics::DurableType::AnonymousNominal(owner) => anonymous(
-                owner,
-                definitions,
-                declarations,
-                produced_anonymous,
-                declaration_anonymous,
-                pending,
-                visited,
-            ),
-            crate::durable_semantics::DurableType::Array { element, .. } => durable(
-                element,
-                definitions,
-                declarations,
-                produced_anonymous,
-                declaration_anonymous,
-                pending,
-                visited,
-            ),
-            _ => {}
-        }
-    }
-
-    fn instance(
-        ty: &crate::TypeInstanceKey,
-        definitions: &crate::BoundDefinitionSet,
-        declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        pending: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut std::collections::BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        match ty {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(owner)) => named(
-                owner,
-                definitions,
-                declarations,
-                produced_anonymous,
-                declaration_anonymous,
-                pending,
-                visited,
-            ),
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) => {
-                anonymous(
-                    owner,
-                    definitions,
-                    declarations,
-                    produced_anonymous,
-                    declaration_anonymous,
-                    pending,
-                    visited,
-                );
-            }
-            crate::TypeInstanceKey::Array { element, .. } => instance(
-                element,
-                definitions,
-                declarations,
-                produced_anonymous,
-                declaration_anonymous,
-                pending,
-                visited,
-            ),
-            _ => {}
-        }
-    }
-
-    instance(
-        ty,
-        definitions,
-        declarations,
-        produced_anonymous,
-        declaration_anonymous,
-        pending,
-        &mut std::collections::BTreeSet::new(),
-    );
-}
-
 #[derive(Debug)]
 enum SemanticRequestControl {
     Compile(CompileErrors),
@@ -6625,6 +6376,10 @@ impl CompilerSession {
         let mut body_consulted_anonymous = BTreeMap::new();
         let mut body_query_errors = BTreeMap::new();
         let mut body_query_reference_cache = BTreeMap::new();
+        let mut demanded_drop_glue: Arc<[crate::TypeInstanceKey]> = Arc::from([]);
+        let mut demanded_drop_glue_plans: Arc<
+            [(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)],
+        > = Arc::from([]);
         // RUE-1027 production boundary: derive the reached callable frontier
         // serially from the references owned by each body transaction. Ordinary
         // call recursion is worklist state, never a query dependency cycle.
@@ -6638,10 +6393,9 @@ impl CompilerSession {
             let mut pending = std::collections::BTreeSet::new();
             for record in prepared_definitions.definitions().definitions() {
                 let stable = record.stable_key();
-                if (stable.kind() == crate::StableDefinitionKind::Function
+                if stable.kind() == crate::StableDefinitionKind::Function
                     && stable.name() == "main"
-                    && stable.module() == merged.ast().root())
-                    || stable.kind() == crate::StableDefinitionKind::Destructor
+                    && stable.module() == merged.ast().root()
                 {
                     pending.insert(crate::FunctionInstanceKey::Definition(stable.clone()));
                 }
@@ -6652,27 +6406,6 @@ impl CompilerSession {
                     .cloned()
                     .map(crate::FunctionInstanceKey::Definition),
             );
-            let no_body_produced_anonymous = BTreeMap::new();
-            for record in prepared_definitions.definitions().definitions() {
-                let stable = record.stable_key();
-                if matches!(
-                    stable.kind(),
-                    crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum
-                ) {
-                    enqueue_owned_destructor_closure(
-                        &crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
-                            stable.clone(),
-                        )),
-                        prepared_definitions.definitions(),
-                        query_declarations
-                            .as_deref()
-                            .expect("body traversal follows a successful declaration projection"),
-                        &no_body_produced_anonymous,
-                        &query_anonymous_nominals,
-                        &mut pending,
-                    );
-                }
-            }
             let roots = pending;
             let closure_request = match self.queries.revisioned.body_closure(
                 runtime_revision,
@@ -6697,6 +6430,8 @@ impl CompilerSession {
             else {
                 unreachable!("BodyClosure publishes typed values")
             };
+            demanded_drop_glue = closure_output.demanded_drop_glue.clone();
+            demanded_drop_glue_plans = closure_output.demanded_drop_glue_plans.clone();
             if let Some(park) = &closure_output.parked_toolchain {
                 return Err(SemanticRequestControl::Parked(Box::new(park.clone())));
             }
@@ -6732,6 +6467,14 @@ impl CompilerSession {
                     } => (
                         Some(instance.clone()),
                         well_known_option_resolution_diagnostics(merged.ast(), failure),
+                    ),
+                    crate::body_query::BodyClosureFatal::TypeQuery { ty, detail } => (
+                        roots.iter().next().cloned(),
+                        crate::CompileErrors::from(crate::CompileError::without_span(
+                            rue_error::ErrorKind::InternalError(format!(
+                                "canonical type query failed for {ty:?}: {detail}"
+                            )),
+                        )),
                     ),
                     crate::body_query::BodyClosureFatal::AnonymousDigestCollision {
                         digest,
@@ -7053,6 +6796,8 @@ impl CompilerSession {
                 durable_specialized_body_candidates,
                 durable_anonymous_body_candidates,
                 previous_cfg_cache.clone(),
+                demanded_drop_glue,
+                demanded_drop_glue_plans,
                 durable_body_work,
             )?;
             output.install_body_references(body_query_reference_cache);
@@ -17924,7 +17669,8 @@ fn main() -> i32 {
                         producers.insert(definition.name().to_owned());
                     }
                 }
-                crate::body_query::BodyReference::Type(ty) => {
+                crate::body_query::BodyReference::Type(ty)
+                | crate::body_query::BodyReference::DropGlue(ty) => {
                     let owner = crate::FunctionInstanceKey::DropGlue(Box::new(ty.clone()));
                     producers.extend(
                         crate::revisioned_query_database::collect_instance_anonymous_nominals(
@@ -18087,7 +17833,8 @@ fn main() -> i32 {
                             crate::FunctionInstanceKey::Definition(owner) if owner == definition
                         )
                     }
-                    crate::body_query::BodyReference::Type(_) => false,
+                    crate::body_query::BodyReference::Type(_)
+                    | crate::body_query::BodyReference::DropGlue(_) => false,
                 })
         );
     }

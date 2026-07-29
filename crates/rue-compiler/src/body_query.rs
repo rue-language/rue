@@ -121,6 +121,9 @@ pub(crate) enum BodyReference {
     Definition(crate::StableDefinitionKey),
     #[allow(dead_code)]
     Type(crate::TypeInstanceKey),
+    /// Exact type whose value is destroyed by this body.  This is distinct
+    /// from an ordinary type mention: only this edge can root drop glue.
+    DropGlue(crate::TypeInstanceKey),
 }
 
 /// The per-body resolution of the well-known `Option` demands: the resolved
@@ -330,6 +333,9 @@ pub(crate) struct BodyClosureBody {
 #[derive(Debug, Clone)]
 pub(crate) struct BodyReachabilityOutput {
     pub(crate) reached: Arc<[crate::FunctionInstanceKey]>,
+    pub(crate) demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
+    pub(crate) demanded_drop_glue_plans:
+        Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
     pub(crate) fatal: Option<BodyClosureFatal>,
     pub(crate) parked_toolchain: Option<crate::ParkedToolchainModules>,
@@ -340,6 +346,8 @@ pub(crate) fn body_reachability_output_equal(
     right: &BodyReachabilityOutput,
 ) -> bool {
     left.reached == right.reached
+        && left.demanded_drop_glue == right.demanded_drop_glue
+        && left.demanded_drop_glue_plans == right.demanded_drop_glue_plans
         && left.scheduling_errors == right.scheduling_errors
         && left.fatal == right.fatal
         && left.parked_toolchain == right.parked_toolchain
@@ -363,6 +371,10 @@ pub(crate) enum BodyClosureFatal {
         instance: crate::FunctionInstanceKey,
         failure: crate::revisioned_query_database::WellKnownOptionResolutionFailure,
     },
+    TypeQuery {
+        ty: Option<crate::TypeInstanceKey>,
+        detail: Arc<str>,
+    },
     AnonymousDigestCollision {
         digest: u128,
         first: crate::AnonymousNominalKey,
@@ -373,6 +385,9 @@ pub(crate) enum BodyClosureFatal {
 #[derive(Debug, Clone)]
 pub(crate) struct BodyClosureOutput {
     pub(crate) reached: Arc<[crate::FunctionInstanceKey]>,
+    pub(crate) demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
+    pub(crate) demanded_drop_glue_plans:
+        Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     pub(crate) bodies: Arc<[BodyClosureBody]>,
     pub(crate) scheduling_errors: Arc<[(crate::FunctionInstanceKey, crate::CompileErrors)]>,
     pub(crate) fatal: Option<BodyClosureFatal>,
@@ -384,6 +399,8 @@ pub(crate) fn body_closure_output_equal(
     right: &BodyClosureOutput,
 ) -> bool {
     left.reached == right.reached
+        && left.demanded_drop_glue == right.demanded_drop_glue
+        && left.demanded_drop_glue_plans == right.demanded_drop_glue_plans
         && left.bodies.len() == right.bodies.len()
         && left
             .bodies

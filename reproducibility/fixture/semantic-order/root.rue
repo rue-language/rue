@@ -1,8 +1,8 @@
 // The root module owns the program entry point (spec 6.1:38, RUE-920) and
 // discovers both sibling modules through imports. The siblings still exchange
 // FileId-adjacent identities through manifest-order and parallelism
-// perturbation in the gate, and their same-named types keep colliding in the
-// path-qualified glue namespace.
+// perturbation in the gate, while the reached left type pins path-qualified
+// glue identity independently of the unreachable sibling declarations.
 const left = @import("left/types.rue");
 const right = @import("right/types.rue");
 

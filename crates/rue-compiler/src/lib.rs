@@ -66,6 +66,7 @@ mod source_metadata;
 mod source_snapshot;
 mod syntax;
 mod toolchain_module_demand;
+mod type_queries;
 mod typed_query_store;
 pub mod unstable;
 mod well_known_option;

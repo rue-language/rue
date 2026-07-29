@@ -1829,8 +1829,6 @@ mod tests {
             "fn:Payload$right_2fshared_2erue.__drop",
             "fn:__rue_drop_Payload$left_2fshared_2erue",
             "fn:__rue_drop_Payload$right_2fshared_2erue",
-            "fn:__rue_drop_Choice$left_2fshared_2erue",
-            "fn:__rue_drop_Choice$right_2fshared_2erue",
         ]
         .into_iter()
         .map(str::to_string)

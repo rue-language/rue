@@ -253,13 +253,7 @@ assert_semantic_order_symbols() {
     for expected_name in \
         'Payload$left_2ftypes_2erue.__drop' \
         'Payload$left_2ftypes_2erue.score' \
-        'Payload$right_2ftypes_2erue.__drop' \
-        '__rue_drop_Payload$left_2ftypes_2erue' \
-        '__rue_drop_Payload$right_2ftypes_2erue' \
-        '__rue_drop_Choice$left_2ftypes_2erue' \
-        '__rue_drop_Choice$right_2ftypes_2erue' \
-        '__rue_drop_Clash$left_2ftypes_2erue' \
-        '__rue_drop_Clash$right_2ftypes_2erue'; do
+        '__rue_drop_Payload$left_2ftypes_2erue'; do
         if ! grep -Fq "function ${expected_name}:" "$output"; then
             printf 'FAIL: semantic-order output omitted stable symbol %s\n' \
                 "$expected_name" >&2

@@ -553,6 +553,17 @@ pub(crate) struct RevisionedQueryDatabase {
     >,
     declaration_semantics_projection:
         QueryFamily<SemanticNucleusProjectionKey, SemanticNucleusProjectionValue>,
+    #[allow(dead_code)]
+    type_shapes:
+        QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeShapeValue>,
+    #[allow(dead_code)]
+    type_facts: QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
+    #[allow(dead_code)]
+    layouts: QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
+    #[allow(dead_code)]
+    call_abis: QueryFamily<crate::type_queries::CallAbiQueryKey, crate::type_queries::CallAbiValue>,
+    #[allow(dead_code)]
+    drop_glues: QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::DropGlueValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     /// Per-`(module, import-path)` binding-resolution family. Registered query
     /// machinery for the exact provider boundary. Production body import
@@ -2669,7 +2680,11 @@ fn closure_callable_has_body(
             parameters, result, ..
         } => {
             !matches!(result, crate::durable_semantics::DurableType::ComptimeType)
-                && parameters.iter().all(|parameter| !parameter.is_comptime)
+                // Only comptime *type* parameters require a specialized
+                // callable identity. Comptime value parameters are retained
+                // runtime inputs, so the definition body is an ordinary
+                // closure node and must remain reachable.
+                && parameters.iter().all(durable_parameter_is_runtime)
         }
         Payload::Destructor => true,
         Payload::Struct { .. }
@@ -2677,236 +2692,6 @@ fn closure_callable_has_body(
         | Payload::Const { .. }
         | Payload::ModuleBinding { .. } => false,
     }))
-}
-
-fn enqueue_closure_destructors(
-    ty: &crate::TypeInstanceKey,
-    declarations: &BTreeMap<crate::StableDefinitionKey, crate::DurableDeclarationSemantic>,
-    declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-    produced_anonymous: &BTreeMap<
-        crate::AnonymousNominalKey,
-        crate::durable_semantics::DurableAnonymousNominal,
-    >,
-    pending: &mut BTreeSet<crate::FunctionInstanceKey>,
-) {
-    fn named(
-        owner: &crate::StableDefinitionKey,
-        declarations: &BTreeMap<crate::StableDefinitionKey, crate::DurableDeclarationSemantic>,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        pending: &mut BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        let identity =
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(owner.clone()));
-        if !visited.insert(identity) {
-            return;
-        }
-        for candidate in declarations.keys() {
-            let Some(candidate_owner) = candidate.owner() else {
-                continue;
-            };
-            if candidate.kind() == crate::StableDefinitionKind::Destructor
-                && candidate_owner.module() == owner.module()
-                && candidate_owner.kind() == owner.kind()
-                && candidate_owner.name() == owner.name()
-            {
-                pending.insert(crate::FunctionInstanceKey::Definition(candidate.clone()));
-            }
-        }
-        let Some(declaration) = declarations.get(owner) else {
-            return;
-        };
-        use crate::durable_semantics::DurableDeclarationPayload as Payload;
-        match &declaration.payload {
-            Payload::Struct { fields, .. } => {
-                for (_, field) in fields.iter() {
-                    durable(
-                        field,
-                        declarations,
-                        declaration_anonymous,
-                        produced_anonymous,
-                        pending,
-                        visited,
-                    );
-                }
-            }
-            Payload::Enum { variants } => {
-                for (_, fields) in variants.iter() {
-                    for field in fields.iter() {
-                        durable(
-                            field,
-                            declarations,
-                            declaration_anonymous,
-                            produced_anonymous,
-                            pending,
-                            visited,
-                        );
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn anonymous(
-        owner: &crate::AnonymousNominalKey,
-        declarations: &BTreeMap<crate::StableDefinitionKey, crate::DurableDeclarationSemantic>,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        pending: &mut BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        let identity =
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner.clone()));
-        if !visited.insert(identity.clone()) {
-            return;
-        }
-        let Some(nominal) = produced_anonymous.get(owner).or_else(|| {
-            declaration_anonymous
-                .iter()
-                .find(|nominal| nominal.identity == *owner)
-        }) else {
-            return;
-        };
-        match &nominal.shape {
-            crate::durable_semantics::DurableAnonymousNominalShape::Struct { fields, methods } => {
-                if methods
-                    .iter()
-                    .any(|method| method.has_self && method.name.as_ref() == "__drop")
-                {
-                    pending.insert(crate::FunctionInstanceKey::AnonymousMember {
-                        owner: Box::new(identity),
-                        member: crate::AnonymousMemberKey {
-                            kind: crate::AnonymousMemberKind::Destructor,
-                            name: Arc::from("__drop"),
-                        },
-                    });
-                }
-                for (_, field) in fields.iter() {
-                    durable(
-                        field,
-                        declarations,
-                        declaration_anonymous,
-                        produced_anonymous,
-                        pending,
-                        visited,
-                    );
-                }
-            }
-            crate::durable_semantics::DurableAnonymousNominalShape::Enum { variants } => {
-                for (_, fields) in variants.iter() {
-                    for field in fields.iter() {
-                        durable(
-                            field,
-                            declarations,
-                            declaration_anonymous,
-                            produced_anonymous,
-                            pending,
-                            visited,
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    fn durable(
-        ty: &crate::durable_semantics::DurableType,
-        declarations: &BTreeMap<crate::StableDefinitionKey, crate::DurableDeclarationSemantic>,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        pending: &mut BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        match ty {
-            crate::durable_semantics::DurableType::Nominal(owner) => named(
-                owner,
-                declarations,
-                declaration_anonymous,
-                produced_anonymous,
-                pending,
-                visited,
-            ),
-            crate::durable_semantics::DurableType::AnonymousNominal(owner) => anonymous(
-                owner,
-                declarations,
-                declaration_anonymous,
-                produced_anonymous,
-                pending,
-                visited,
-            ),
-            crate::durable_semantics::DurableType::Array { element, .. } => durable(
-                element,
-                declarations,
-                declaration_anonymous,
-                produced_anonymous,
-                pending,
-                visited,
-            ),
-            _ => {}
-        }
-    }
-
-    fn instance(
-        ty: &crate::TypeInstanceKey,
-        declarations: &BTreeMap<crate::StableDefinitionKey, crate::DurableDeclarationSemantic>,
-        declaration_anonymous: &[crate::durable_semantics::DurableAnonymousNominal],
-        produced_anonymous: &BTreeMap<
-            crate::AnonymousNominalKey,
-            crate::durable_semantics::DurableAnonymousNominal,
-        >,
-        pending: &mut BTreeSet<crate::FunctionInstanceKey>,
-        visited: &mut BTreeSet<crate::TypeInstanceKey>,
-    ) {
-        match ty {
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(owner)) => named(
-                owner,
-                declarations,
-                declaration_anonymous,
-                produced_anonymous,
-                pending,
-                visited,
-            ),
-            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) => {
-                anonymous(
-                    owner,
-                    declarations,
-                    declaration_anonymous,
-                    produced_anonymous,
-                    pending,
-                    visited,
-                );
-            }
-            crate::TypeInstanceKey::Array { element, .. } => instance(
-                element,
-                declarations,
-                declaration_anonymous,
-                produced_anonymous,
-                pending,
-                visited,
-            ),
-            _ => {}
-        }
-    }
-
-    instance(
-        ty,
-        declarations,
-        declaration_anonymous,
-        produced_anonymous,
-        pending,
-        &mut BTreeSet::new(),
-    );
 }
 
 /// The request-local result of lowering one owned body input. This type is
@@ -3316,6 +3101,1632 @@ fn anonymous_nominal_query_key(
     })
 }
 
+fn query_anonymous_nominal(
+    context: &rue_query::QueryContext,
+    semantic_nucleus: &SemanticNucleusFamily,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    identity: &crate::AnonymousNominalKey,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+) -> Result<
+    Result<
+        crate::durable_semantics::DurableAnonymousNominal,
+        crate::type_queries::TypeQueryFailure,
+    >,
+    QueryAbort,
+> {
+    let unavailable = |detail| {
+        Err(crate::type_queries::TypeQueryFailure::Unavailable(
+            Arc::from(detail),
+        ))
+    };
+    if let Some(query) = anonymous_nominal_query_key(identity, configuration) {
+        let terminal = context.query_registered(
+            semantic_nucleus,
+            crate::semantic_query_nucleus::SemanticNucleusKey::AnonymousNominal(query),
+        )?;
+        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("SemanticNucleus publishes typed values")
+        };
+        return Ok(match value {
+            crate::semantic_query_nucleus::SemanticNucleusValue::AnonymousNominal(nominal) => {
+                Ok(nominal.clone())
+            }
+            _ => unavailable("anonymous type facts are unavailable"),
+        });
+    }
+    let crate::StableProducerId::Function(producer) = &identity.producer else {
+        return Ok(unavailable("anonymous type has no stable producer"));
+    };
+    let produced = context.query_registered(
+        body_produced_anonymous,
+        crate::body_query::BodyQueryKey {
+            instance: producer.as_ref().clone(),
+            configuration: configuration.clone(),
+        },
+    )?;
+    let rue_query::QueryOutcome::Success(produced) = produced.outcome() else {
+        unreachable!("BodyProducedAnonymous publishes typed values")
+    };
+    let crate::body_query::ProducedAnonymous::Produced(produced) = produced else {
+        return Ok(unavailable("anonymous type producer failed"));
+    };
+    Ok(produced
+        .0
+        .iter()
+        .find(|nominal| nominal.identity == *identity)
+        .cloned()
+        .ok_or_else(|| {
+            crate::type_queries::TypeQueryFailure::Unavailable(Arc::from(
+                "anonymous type is absent from its producer",
+            ))
+        }))
+}
+
+fn type_shape_from_terminal(
+    terminal: &rue_query::QueryTerminal<crate::type_queries::TypeShapeValue>,
+) -> Result<&crate::type_queries::TypeShape, crate::type_queries::TypeQueryFailure> {
+    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+        unreachable!("TypeShape publishes typed values")
+    };
+    match value {
+        crate::type_queries::TypeShapeValue::Available(shape) => Ok(shape),
+        crate::type_queries::TypeShapeValue::Failure(failure) => Err(failure.clone()),
+    }
+}
+
+fn evaluate_type_shape(
+    context: &rue_query::QueryContext,
+    semantic_nucleus: &SemanticNucleusFamily,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    key: &crate::type_queries::TypeQueryKey,
+) -> Result<QueryOutput<crate::type_queries::TypeShapeValue>, QueryAbort> {
+    use crate::type_queries::{TypeQueryFailure, TypeShape, TypeShapeValue};
+    use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+    let value = match &key.ty {
+        T::I8
+        | T::I16
+        | T::I32
+        | T::I64
+        | T::U8
+        | T::U16
+        | T::U32
+        | T::U64
+        | T::Bool
+        | T::Unit
+        | T::Never => TypeShapeValue::Available(TypeShape::Scalar),
+        T::PtrConst(_) | T::PtrMut(_) => TypeShapeValue::Available(TypeShape::Pointer),
+        T::Slice { .. } => TypeShapeValue::Available(TypeShape::Slice),
+        T::Array { element, len } => TypeShapeValue::Available(TypeShape::Array {
+            element: element.as_ref().clone(),
+            len: *len,
+        }),
+        T::ComptimeType | T::Module(_) | T::GenericParameter(_) => {
+            TypeShapeValue::Available(TypeShape::Opaque)
+        }
+        T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
+            if *kind == rue_air::AnonymousNominalKind::Struct
+                && (name.as_ref() == "str"
+                    || (name.starts_with("Str(") && name.ends_with(')'))) =>
+        {
+            TypeShapeValue::Available(TypeShape::Struct {
+                fields: Arc::from([
+                    (Arc::from("ptr"), T::PtrConst(Box::new(T::U8))),
+                    (Arc::from("len"), T::U64),
+                ]),
+            })
+        }
+        T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
+            if *kind == rue_air::AnonymousNominalKind::Enum =>
+        {
+            TypeShapeValue::Available(match rue_builtins::get_builtin_enum(name) {
+                Some(definition) => TypeShape::Enum {
+                    variants: definition
+                        .variants
+                        .iter()
+                        .map(|variant| (Arc::from(*variant), Arc::from([])))
+                        .collect::<Vec<_>>()
+                        .into(),
+                },
+                None => TypeShape::Opaque,
+            })
+        }
+        T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => {
+            TypeShapeValue::Available(TypeShape::Opaque)
+        }
+        T::Nominal(N::Named(definition)) => {
+            let Some(candidate) = declaration_candidate_for_stable_key(definition) else {
+                return Ok(QueryOutput::success(TypeShapeValue::Failure(
+                    TypeQueryFailure::Unavailable(Arc::from(
+                        "named type has no declaration candidate",
+                    )),
+                ))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+            };
+            let signature = context.query_registered(
+                semantic_nucleus,
+                crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                    crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: candidate,
+                        configuration: key.configuration.clone(),
+                    },
+                ),
+            )?;
+            let rue_query::QueryOutcome::Success(signature) = signature.outcome() else {
+                unreachable!("SemanticNucleus publishes typed values")
+            };
+            use crate::semantic_query_nucleus::DeclarationSignatureProjection as S;
+            match signature {
+                crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature) => {
+                    match &signature.signature {
+                        S::Struct { fields, .. } => TypeShapeValue::Available(TypeShape::Struct {
+                            fields: fields
+                                .iter()
+                                .map(|(name, ty)| {
+                                    (name.clone(), crate::type_queries::type_instance(ty))
+                                })
+                                .collect::<Vec<_>>()
+                                .into(),
+                        }),
+                        S::Enum { variants } => TypeShapeValue::Available(TypeShape::Enum {
+                            variants: variants
+                                .iter()
+                                .map(|(name, fields)| {
+                                    (
+                                        name.clone(),
+                                        fields
+                                            .iter()
+                                            .map(crate::type_queries::type_instance)
+                                            .collect::<Vec<_>>()
+                                            .into(),
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .into(),
+                        }),
+                        _ => TypeShapeValue::Failure(TypeQueryFailure::Invalid(Arc::from(
+                            "named type resolved to a non-type signature",
+                        ))),
+                    }
+                }
+                _ => TypeShapeValue::Failure(TypeQueryFailure::Unavailable(Arc::from(
+                    "type signature is unavailable",
+                ))),
+            }
+        }
+        T::Nominal(N::Anonymous(identity)) => {
+            let nominal = match query_anonymous_nominal(
+                context,
+                semantic_nucleus,
+                body_produced_anonymous,
+                identity,
+                &key.configuration,
+            )? {
+                Ok(nominal) => nominal,
+                Err(failure) => {
+                    return Ok(QueryOutput::success(TypeShapeValue::Failure(failure))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                }
+            };
+            use crate::durable_semantics::DurableAnonymousNominalShape as S;
+            TypeShapeValue::Available(match &nominal.shape {
+                S::Struct { fields, .. } => TypeShape::Struct {
+                    fields: fields
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), crate::type_queries::type_instance(ty)))
+                        .collect::<Vec<_>>()
+                        .into(),
+                },
+                S::Enum { variants } => TypeShape::Enum {
+                    variants: variants
+                        .iter()
+                        .map(|(name, fields)| {
+                            (
+                                name.clone(),
+                                fields
+                                    .iter()
+                                    .map(crate::type_queries::type_instance)
+                                    .collect::<Vec<_>>()
+                                    .into(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                },
+            })
+        }
+    };
+    let kind = if matches!(value, TypeShapeValue::Failure(_)) {
+        QueryTerminalKind::Failure
+    } else {
+        QueryTerminalKind::Success
+    };
+    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+}
+
+fn type_query_failure(detail: impl Into<Arc<str>>) -> crate::type_queries::TypeFactsValue {
+    crate::type_queries::TypeFactsValue::Failure(
+        crate::type_queries::TypeQueryFailure::Unavailable(detail.into()),
+    )
+}
+
+fn type_facts_from_terminal(
+    terminal: &rue_query::QueryTerminal<crate::type_queries::TypeFactsValue>,
+) -> Result<&crate::type_queries::TypeFacts, crate::type_queries::TypeQueryFailure> {
+    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+        unreachable!("TypeFacts publishes typed values")
+    };
+    match value {
+        crate::type_queries::TypeFactsValue::Available(facts) => Ok(facts.as_ref()),
+        crate::type_queries::TypeFactsValue::Failure(failure) => Err(failure.clone()),
+    }
+}
+
+fn evaluate_type_facts(
+    context: &rue_query::QueryContext,
+    family: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
+    type_shapes: &QueryFamily<
+        crate::type_queries::TypeQueryKey,
+        crate::type_queries::TypeShapeValue,
+    >,
+    semantic_nucleus: &SemanticNucleusFamily,
+    lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    key: &crate::type_queries::TypeQueryKey,
+) -> Result<QueryOutput<crate::type_queries::TypeFactsValue>, QueryAbort> {
+    use crate::type_queries::{TypeFacts, TypeFactsValue, TypeShape};
+    use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+
+    let shape_terminal = context.query_registered(type_shapes, key.clone())?;
+    let canonical_shape = match type_shape_from_terminal(&shape_terminal) {
+        Ok(shape) => shape.clone(),
+        Err(failure) => {
+            return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+    let direct = |is_copy| {
+        TypeFactsValue::Available(Box::new(TypeFacts {
+            is_copy,
+            carries_linear: false,
+            needs_drop: false,
+            destructor: None,
+            shape: canonical_shape.clone(),
+        }))
+    };
+    let mut value = match &key.ty {
+        T::I8
+        | T::I16
+        | T::I32
+        | T::I64
+        | T::U8
+        | T::U16
+        | T::U32
+        | T::U64
+        | T::Bool
+        | T::Unit
+        | T::Never => direct(true),
+        T::PtrConst(_) | T::PtrMut(_) => direct(true),
+        T::Slice { .. } => direct(true),
+        T::ComptimeType | T::Module(_) | T::GenericParameter(_) => direct(true),
+        T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
+            if *kind == rue_air::AnonymousNominalKind::Struct
+                && (name.as_ref() == "str"
+                    || (name.starts_with("Str(") && name.ends_with(')'))) =>
+        {
+            direct(true)
+        }
+        T::BuiltinNominal { kind, name } | T::Nominal(N::Builtin { kind, name })
+            if *kind == rue_air::AnonymousNominalKind::Enum =>
+        {
+            direct(rue_builtins::get_builtin_enum(name).is_some())
+        }
+        T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => direct(false),
+        T::Array { element, len } => {
+            if *len == 0 {
+                return Ok(QueryOutput::success(TypeFactsValue::Available(Box::new(
+                    TypeFacts {
+                        is_copy: true,
+                        carries_linear: false,
+                        needs_drop: false,
+                        destructor: None,
+                        shape: canonical_shape.clone(),
+                    },
+                ))));
+            }
+            let child = context.query_registered(
+                family,
+                crate::type_queries::TypeQueryKey {
+                    ty: element.as_ref().clone(),
+                    configuration: key.configuration.clone(),
+                },
+            )?;
+            match type_facts_from_terminal(&child) {
+                Ok(child) => TypeFactsValue::Available(Box::new(TypeFacts {
+                    is_copy: child.is_copy,
+                    carries_linear: child.carries_linear,
+                    needs_drop: child.needs_drop,
+                    destructor: None,
+                    shape: canonical_shape.clone(),
+                })),
+                Err(failure) => TypeFactsValue::Failure(failure),
+            }
+        }
+        T::Nominal(N::Named(definition)) => {
+            let Some(candidate) = declaration_candidate_for_stable_key(definition) else {
+                return Ok(QueryOutput::success(type_query_failure(
+                    "named type has no declaration candidate",
+                ))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+            };
+            let signature = context.query_registered(
+                semantic_nucleus,
+                crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                    crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                        declaration: candidate,
+                        configuration: key.configuration.clone(),
+                    },
+                ),
+            )?;
+            let rue_query::QueryOutcome::Success(signature) = signature.outcome() else {
+                unreachable!("SemanticNucleus publishes typed values")
+            };
+            let (is_copy, is_linear) = match signature {
+                crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature) => {
+                    use crate::semantic_query_nucleus::DeclarationSignatureProjection as S;
+                    match &signature.signature {
+                        S::Struct {
+                            is_copy, is_linear, ..
+                        } => (*is_copy, *is_linear),
+                        S::Enum { .. } => (false, false),
+                        _ => {
+                            return Ok(QueryOutput::success(type_query_failure(
+                                "named type resolved to a non-type signature",
+                            ))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                        }
+                    }
+                }
+                crate::semantic_query_nucleus::SemanticNucleusValue::Failure(failure) => {
+                    return Ok(QueryOutput::success(type_query_failure(format!(
+                        "type signature failed: {failure:?}"
+                    )))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
+                }
+                _ => {
+                    return Ok(QueryOutput::success(type_query_failure(
+                        "type signature returned the wrong projection",
+                    ))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
+                }
+            };
+            let shape = canonical_shape.clone();
+            let children = match &shape {
+                TypeShape::Struct { fields } => {
+                    fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>()
+                }
+                TypeShape::Enum { variants } => variants
+                    .iter()
+                    .flat_map(|(_, fields)| fields.iter().cloned())
+                    .collect::<Vec<_>>(),
+                _ => Vec::new(),
+            };
+            let child_keys = children
+                .iter()
+                .cloned()
+                .map(|ty| crate::type_queries::TypeQueryKey {
+                    ty,
+                    configuration: key.configuration.clone(),
+                })
+                .collect::<Vec<_>>();
+            let child_terminals = context.query_registered_batch(family, child_keys)?;
+            let mut carries_linear = is_linear;
+            let mut needs_drop = false;
+            for child in &child_terminals {
+                match type_facts_from_terminal(child) {
+                    Ok(child) => {
+                        carries_linear |= child.carries_linear;
+                        needs_drop |= child.needs_drop;
+                    }
+                    Err(failure) => {
+                        return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                }
+            }
+            let destructor_lookup = context.query_registered(
+                lookup_names,
+                LookupNameKey {
+                    module: definition.module().clone(),
+                    namespace: DefinitionNamespace::Destructor,
+                    name: Arc::from(definition.name()),
+                },
+            )?;
+            let destructor = match destructor_lookup.outcome() {
+                rue_query::QueryOutcome::Success(LookupNameValue(Ok(facts))) => {
+                    facts.first().map(|_| {
+                        crate::FunctionInstanceKey::Definition(
+                            crate::StableDefinitionKey::from_stable_parts(
+                                definition.module().clone(),
+                                crate::StableDefinitionNamespace::Destructor,
+                                crate::StableDefinitionKind::Destructor,
+                                definition.name(),
+                                Some((definition.kind(), Arc::<str>::from(definition.name()))),
+                            ),
+                        )
+                    })
+                }
+                _ => None,
+            };
+            needs_drop |= destructor.is_some();
+            TypeFactsValue::Available(Box::new(TypeFacts {
+                is_copy,
+                carries_linear,
+                needs_drop,
+                destructor,
+                shape,
+            }))
+        }
+        T::Nominal(N::Anonymous(identity)) => {
+            let nominal = match query_anonymous_nominal(
+                context,
+                semantic_nucleus,
+                body_produced_anonymous,
+                identity,
+                &key.configuration,
+            )? {
+                Ok(nominal) => nominal,
+                Err(failure) => {
+                    return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
+                        .with_terminal_kind(QueryTerminalKind::Failure));
+                }
+            };
+            use crate::durable_semantics::DurableAnonymousNominalShape as S;
+            let destructor = match &nominal.shape {
+                S::Struct { methods, .. } => methods
+                    .iter()
+                    .find(|method| method.has_self && method.name.as_ref() == "__drop")
+                    .map(|_| crate::FunctionInstanceKey::AnonymousMember {
+                        owner: Box::new(key.ty.clone()),
+                        member: crate::AnonymousMemberKey {
+                            kind: crate::AnonymousMemberKind::Destructor,
+                            name: Arc::from("__drop"),
+                        },
+                    }),
+                S::Enum { .. } => None,
+            };
+            let shape = canonical_shape.clone();
+            let children = match &shape {
+                TypeShape::Struct { fields } => {
+                    fields.iter().map(|(_, ty)| ty.clone()).collect::<Vec<_>>()
+                }
+                TypeShape::Enum { variants } => variants
+                    .iter()
+                    .flat_map(|(_, fields)| fields.iter().cloned())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let child_terminals = context.query_registered_batch(
+                family,
+                children
+                    .iter()
+                    .cloned()
+                    .map(|ty| crate::type_queries::TypeQueryKey {
+                        ty,
+                        configuration: key.configuration.clone(),
+                    }),
+            )?;
+            let mut carries_linear = false;
+            let mut needs_drop = destructor.is_some();
+            for child in &child_terminals {
+                match type_facts_from_terminal(child) {
+                    Ok(child) => {
+                        carries_linear |= child.carries_linear;
+                        needs_drop |= child.needs_drop;
+                    }
+                    Err(failure) => {
+                        return Ok(QueryOutput::success(TypeFactsValue::Failure(failure))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                }
+            }
+            TypeFactsValue::Available(Box::new(TypeFacts {
+                is_copy: false,
+                carries_linear,
+                needs_drop,
+                destructor,
+                shape,
+            }))
+        }
+    };
+    if let TypeFactsValue::Available(facts) = &mut value {
+        facts.shape = canonical_shape;
+    }
+    let kind = if matches!(value, TypeFactsValue::Failure(_)) {
+        QueryTerminalKind::Failure
+    } else {
+        QueryTerminalKind::Success
+    };
+    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+}
+
+fn scalar_layout(ty: &crate::TypeInstanceKey) -> crate::type_queries::CanonicalLayout {
+    use crate::TypeInstanceKey as T;
+    let size = match ty {
+        T::I8 | T::U8 | T::Bool => 1,
+        T::I16 | T::U16 => 2,
+        T::I32 | T::U32 => 4,
+        T::I64 | T::U64 => 8,
+        T::Unit | T::Never => 0,
+        _ => 8,
+    };
+    crate::type_queries::CanonicalLayout {
+        size,
+        alignment: size.max(1),
+        stride: size,
+        abi_slots: u32::from(size != 0),
+        slot_identical: matches!(ty, T::I64 | T::U64 | T::Unit | T::Never),
+        kind: crate::type_queries::CanonicalLayoutKind::Scalar,
+    }
+}
+
+fn layout_from_terminal(
+    terminal: &rue_query::QueryTerminal<crate::type_queries::LayoutValue>,
+) -> Result<&crate::type_queries::CanonicalLayout, crate::type_queries::TypeQueryFailure> {
+    let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+        unreachable!("Layout publishes typed values")
+    };
+    match value {
+        crate::type_queries::LayoutValue::Available(layout) => Ok(layout),
+        crate::type_queries::LayoutValue::Failure(failure) => Err(failure.clone()),
+    }
+}
+
+fn evaluate_layout(
+    context: &rue_query::QueryContext,
+    family: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
+    type_shapes: &QueryFamily<
+        crate::type_queries::TypeQueryKey,
+        crate::type_queries::TypeShapeValue,
+    >,
+    key: &crate::type_queries::TypeQueryKey,
+) -> Result<QueryOutput<crate::type_queries::LayoutValue>, QueryAbort> {
+    use crate::TypeInstanceKey as T;
+    use crate::type_queries::{CanonicalLayout, CanonicalLayoutKind, LayoutValue, TypeShape};
+    if matches!(key.ty, T::PtrConst(_) | T::PtrMut(_)) {
+        return Ok(QueryOutput::success(LayoutValue::Available(
+            CanonicalLayout {
+                size: 8,
+                alignment: 8,
+                stride: 8,
+                abi_slots: 1,
+                slot_identical: true,
+                kind: CanonicalLayoutKind::Pointer,
+            },
+        )));
+    }
+    if matches!(key.ty, T::Slice { .. }) {
+        // A generated slice is the canonical `{ data: ptr const T, len: u64 }`
+        // fat pointer. Its pointee remains deliberately unobserved.
+        return Ok(QueryOutput::success(LayoutValue::Available(
+            CanonicalLayout {
+                size: 16,
+                alignment: 8,
+                stride: 16,
+                abi_slots: 2,
+                slot_identical: true,
+                kind: CanonicalLayoutKind::Slice,
+            },
+        )));
+    }
+    if matches!(
+        key.ty,
+        T::I8
+            | T::I16
+            | T::I32
+            | T::I64
+            | T::U8
+            | T::U16
+            | T::U32
+            | T::U64
+            | T::Bool
+            | T::Unit
+            | T::Never
+    ) {
+        return Ok(QueryOutput::success(LayoutValue::Available(scalar_layout(
+            &key.ty,
+        ))));
+    }
+    let shape_terminal = context.query_registered(type_shapes, key.clone())?;
+    let shape = match type_shape_from_terminal(&shape_terminal) {
+        Ok(shape) => shape,
+        Err(failure) => {
+            return Ok(QueryOutput::success(LayoutValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+    let value = match shape {
+        TypeShape::Array { element, len } => {
+            if *len == 0 {
+                return Ok(QueryOutput::success(LayoutValue::Available(
+                    CanonicalLayout {
+                        size: 0,
+                        alignment: 1,
+                        stride: 0,
+                        abi_slots: 0,
+                        slot_identical: true,
+                        kind: CanonicalLayoutKind::Array {
+                            element: None,
+                            count: 0,
+                        },
+                    },
+                )));
+            }
+            let element = context.query_registered(
+                family,
+                crate::type_queries::TypeQueryKey {
+                    ty: element.clone(),
+                    configuration: key.configuration.clone(),
+                },
+            )?;
+            match layout_from_terminal(&element) {
+                Ok(element) => {
+                    let size = element.stride.saturating_mul(*len);
+                    LayoutValue::Available(CanonicalLayout {
+                        size,
+                        alignment: element.alignment,
+                        stride: size,
+                        abi_slots: u32::try_from(u64::from(element.abi_slots).saturating_mul(*len))
+                            .unwrap_or(u32::MAX),
+                        slot_identical: element.slot_identical,
+                        kind: CanonicalLayoutKind::Array {
+                            element: Some(Box::new(element.clone())),
+                            count: *len,
+                        },
+                    })
+                }
+                Err(failure) => LayoutValue::Failure(failure),
+            }
+        }
+        TypeShape::Struct { fields } => {
+            let terminals = context.query_registered_batch(
+                family,
+                fields
+                    .iter()
+                    .map(|(_, ty)| crate::type_queries::TypeQueryKey {
+                        ty: ty.clone(),
+                        configuration: key.configuration.clone(),
+                    }),
+            )?;
+            let mut offset = 0u64;
+            let mut alignment = 1u64;
+            let mut slots = 0u32;
+            let mut slot_identical = true;
+            let mut offsets = Vec::with_capacity(terminals.len());
+            let mut padding_ranges = Vec::new();
+            for terminal in &terminals {
+                let layout = match layout_from_terminal(terminal) {
+                    Ok(layout) => layout,
+                    Err(failure) => {
+                        return Ok(QueryOutput::success(LayoutValue::Failure(failure))
+                            .with_terminal_kind(QueryTerminalKind::Failure));
+                    }
+                };
+                let placed = crate::type_queries::align_to(offset, layout.alignment);
+                if placed > offset {
+                    padding_ranges.push(rue_air::PaddingRange {
+                        start: offset,
+                        end: placed,
+                    });
+                }
+                offsets.push(placed);
+                offset = placed.saturating_add(layout.size);
+                alignment = alignment.max(layout.alignment);
+                slots = slots.saturating_add(layout.abi_slots);
+                slot_identical &= layout.slot_identical;
+            }
+            let size = crate::type_queries::align_to(offset, alignment);
+            if size > offset {
+                padding_ranges.push(rue_air::PaddingRange {
+                    start: offset,
+                    end: size,
+                });
+            }
+            LayoutValue::Available(CanonicalLayout {
+                size,
+                alignment,
+                stride: size,
+                abi_slots: slots,
+                slot_identical,
+                kind: CanonicalLayoutKind::Struct {
+                    field_offsets: offsets.into(),
+                    padding_ranges: padding_ranges.into(),
+                },
+            })
+        }
+        TypeShape::Enum { variants } => {
+            let keys = variants
+                .iter()
+                .flat_map(|(_, fields)| fields.iter())
+                .cloned()
+                .map(|ty| crate::type_queries::TypeQueryKey {
+                    ty,
+                    configuration: key.configuration.clone(),
+                })
+                .collect::<Vec<_>>();
+            let terminals = context.query_registered_batch(family, keys)?;
+            let tag_size = match variants.len() {
+                0..=256 => 1,
+                257..=65536 => 2,
+                _ => 4,
+            };
+            let mut cursor = 0usize;
+            let mut payload_size = 0u64;
+            let mut payload_alignment = 1u64;
+            let mut max_slots = 0u32;
+            let mut projected = Vec::with_capacity(variants.len());
+            for (_, fields) in variants.iter() {
+                let mut offset = 0u64;
+                let mut variant_slots = 0u32;
+                let mut offsets = Vec::with_capacity(fields.len());
+                for _ in fields.iter() {
+                    let layout = match layout_from_terminal(&terminals[cursor]) {
+                        Ok(layout) => layout,
+                        Err(failure) => {
+                            return Ok(QueryOutput::success(LayoutValue::Failure(failure))
+                                .with_terminal_kind(QueryTerminalKind::Failure));
+                        }
+                    };
+                    cursor += 1;
+                    offset = crate::type_queries::align_to(offset, layout.alignment);
+                    offsets.push(offset);
+                    offset = offset.saturating_add(layout.size);
+                    payload_alignment = payload_alignment.max(layout.alignment);
+                    variant_slots = variant_slots.saturating_add(layout.abi_slots);
+                }
+                payload_size = payload_size.max(offset);
+                max_slots = max_slots.max(variant_slots);
+                projected.push(offsets.into());
+            }
+            let alignment = payload_alignment.max(tag_size);
+            let payload_offset = crate::type_queries::align_to(tag_size, payload_alignment);
+            let size = crate::type_queries::align_to(
+                payload_offset.saturating_add(payload_size),
+                alignment,
+            );
+            LayoutValue::Available(CanonicalLayout {
+                size,
+                alignment,
+                stride: size,
+                abi_slots: 1u32.saturating_add(max_slots),
+                // Compact enums always carry a narrow tag rather than the
+                // eight-byte discriminant slot used by value decomposition.
+                slot_identical: false,
+                kind: CanonicalLayoutKind::Enum {
+                    tag_size,
+                    payload_offset,
+                    variants: projected
+                        .into_iter()
+                        .map(|offsets: Arc<[u64]>| {
+                            offsets
+                                .iter()
+                                .map(|offset| payload_offset.saturating_add(*offset))
+                                .collect::<Vec<_>>()
+                                .into()
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                },
+            })
+        }
+        TypeShape::Scalar => LayoutValue::Available(scalar_layout(&key.ty)),
+        TypeShape::Pointer => unreachable!("pointer layouts return before TypeShape"),
+        TypeShape::Slice => unreachable!("slice layouts return before TypeShape"),
+        TypeShape::Opaque => LayoutValue::Failure(crate::type_queries::TypeQueryFailure::Invalid(
+            Arc::from("type is not materializable"),
+        )),
+    };
+    let kind = if matches!(value, LayoutValue::Failure(_)) {
+        QueryTerminalKind::Failure
+    } else {
+        QueryTerminalKind::Success
+    };
+    Ok(QueryOutput::success(value).with_terminal_kind(kind))
+}
+
+#[derive(Debug)]
+struct StableCallableSignature {
+    parameters: Vec<(
+        crate::durable_semantics::DurableParameterMode,
+        crate::TypeInstanceKey,
+    )>,
+    result: crate::TypeInstanceKey,
+    target_c: bool,
+}
+
+fn named_callable_owner_type(
+    definition: &crate::StableDefinitionKey,
+) -> Option<crate::TypeInstanceKey> {
+    let owner = definition.owner()?;
+    Some(crate::TypeInstanceKey::Nominal(
+        crate::NominalInstanceKey::Named(crate::StableDefinitionKey::from_stable_parts(
+            owner.module().clone(),
+            crate::StableDefinitionNamespace::Type,
+            owner.kind(),
+            owner.name(),
+            None,
+        )),
+    ))
+}
+
+fn anonymous_method_type(
+    ty: &crate::durable_semantics::DurableAnonymousMethodType,
+    owner: &crate::TypeInstanceKey,
+) -> crate::TypeInstanceKey {
+    match ty {
+        crate::durable_semantics::DurableAnonymousMethodType::SelfType => owner.clone(),
+        crate::durable_semantics::DurableAnonymousMethodType::Concrete(ty) => {
+            crate::type_queries::type_instance(ty)
+        }
+    }
+}
+
+fn durable_parameter_is_runtime(
+    parameter: &crate::durable_semantics::DurableSemanticParameter,
+) -> bool {
+    !parameter.is_comptime || parameter.ty != crate::durable_semantics::DurableType::ComptimeType
+}
+
+fn anonymous_parameter_is_runtime(
+    ty: &crate::durable_semantics::DurableAnonymousMethodType,
+    is_comptime: bool,
+) -> bool {
+    !is_comptime
+        || !matches!(
+            ty,
+            crate::durable_semantics::DurableAnonymousMethodType::Concrete(
+                crate::durable_semantics::DurableType::ComptimeType
+            )
+        )
+}
+
+fn exact_specialized_callable_types(
+    context: &rue_query::QueryContext,
+    semantic_nucleus: &SemanticNucleusFamily,
+    declaration_shells: &QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    raw_declaration_signatures: &QueryFamily<
+        RawDeclarationSignatureQueryKey,
+        RawDeclarationSignatureQueryValue,
+    >,
+    lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
+    declaration: &crate::declaration_candidate::DeclarationCandidateKey,
+    definition: &crate::StableDefinitionKey,
+    signature_parameters: &[crate::durable_semantics::DurableSemanticParameter],
+    arguments: &crate::CanonicalArguments,
+    configuration: &crate::semantic_query_nucleus::SemanticQueryConfiguration,
+) -> Result<
+    Result<
+        (
+            Vec<crate::durable_semantics::DurableType>,
+            crate::durable_semantics::DurableType,
+        ),
+        crate::type_queries::TypeQueryFailure,
+    >,
+    QueryAbort,
+> {
+    use crate::type_queries::TypeQueryFailure;
+
+    let shell = context.query_registered(
+        declaration_shells,
+        DeclarationShellQueryKey(declaration.clone()),
+    )?;
+    let rue_query::QueryOutcome::Success(shell) = shell.outcome() else {
+        unreachable!("DeclarationShell publishes typed values")
+    };
+    let DeclarationShellQueryValue::Available(shell) = shell else {
+        return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(format!(
+            "specialized callable shell is unavailable: {shell:?}"
+        )))));
+    };
+    if shell.parameters.len() != signature_parameters.len() {
+        return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+            "specialized callable shell disagrees with its semantic signature",
+        ))));
+    }
+
+    let mut type_arguments = arguments.types.iter();
+    let mut value_arguments = arguments.values.iter();
+    let mut substitutions = BTreeMap::new();
+    let mut value_substitutions = BTreeMap::new();
+    for (header, parameter) in shell.parameters.iter().zip(signature_parameters) {
+        if !header.is_comptime {
+            continue;
+        }
+        if parameter.ty == crate::durable_semantics::DurableType::ComptimeType {
+            let Some(argument) = type_arguments
+                .next()
+                .and_then(durable_type_from_instance_key)
+            else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "specialized callable has an invalid comptime type argument stream",
+                ))));
+            };
+            substitutions.insert(header.name.clone(), argument);
+        } else {
+            let Some(argument) = value_arguments.next().and_then(durable_value_from_argument)
+            else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "specialized callable has an invalid comptime value argument stream",
+                ))));
+            };
+            value_substitutions.insert(header.name.clone(), argument);
+        }
+    }
+    if type_arguments.next().is_some() || value_arguments.next().is_some() {
+        return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+            "specialized callable has excess comptime arguments",
+        ))));
+    }
+
+    let raw = context.query_registered(
+        raw_declaration_signatures,
+        RawDeclarationSignatureQueryKey(declaration.clone()),
+    )?;
+    let rue_query::QueryOutcome::Success(raw) = raw.outcome() else {
+        unreachable!("RawDeclarationSignature publishes typed values")
+    };
+    let RawDeclarationSignatureQueryValue::Available(raw) = raw else {
+        return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(format!(
+            "specialized callable syntax is unavailable: {raw:?}"
+        )))));
+    };
+    let parsed = match crate::semantic_query_nucleus::parse_semantic_signature(declaration, raw) {
+        Ok(parsed) => parsed,
+        Err(failure) => return Ok(Err(TypeQueryFailure::Invalid(failure))),
+    };
+    let crate::semantic_query_nucleus::ParsedSemanticSignature::Callable {
+        parameters, result, ..
+    } = parsed
+    else {
+        return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+            "specialized definition is not callable",
+        ))));
+    };
+    if parameters.len() != signature_parameters.len() {
+        return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+            "specialized callable syntax disagrees with its semantic signature",
+        ))));
+    }
+
+    let mut provider = SemanticNucleusTypeProvider {
+        context,
+        family: semantic_nucleus,
+        shells: declaration_shells,
+        names: lookup_names,
+        configuration: configuration.clone(),
+        substitutions,
+        value_substitutions,
+        deferred_value_parameters: BTreeMap::new(),
+        anonymous_nominals: BTreeMap::new(),
+        dependency_source: definition.clone(),
+        dependency_kind: rue_air::DeclarationTypeDependencyKind::Signature,
+        dependencies: BTreeSet::new(),
+        deferred_ownership: BTreeSet::new(),
+    };
+    let mut resolve = |syntax: &str| {
+        rue_air::resolve_semantic_type_syntax(&mut provider, &declaration.module, syntax)
+            .map_err(semantic_type_query_failure)
+    };
+    let mut runtime_parameters = Vec::new();
+    for (parameter, _semantic) in parameters
+        .iter()
+        .zip(signature_parameters)
+        .filter(|(_, semantic)| durable_parameter_is_runtime(semantic))
+    {
+        match resolve(&parameter.ty) {
+            Ok(ty) => runtime_parameters.push(ty),
+            Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
+            Err(ResolveSemanticSignatureError::Failure(failure)) => {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(format!(
+                    "specialized callable parameter type failed to resolve: {failure:?}"
+                )))));
+            }
+        }
+    }
+    let result = match resolve(&result) {
+        Ok(result) => result,
+        Err(ResolveSemanticSignatureError::Abort(abort)) => return Err(abort),
+        Err(ResolveSemanticSignatureError::Failure(failure)) => {
+            return Ok(Err(TypeQueryFailure::Invalid(Arc::from(format!(
+                "specialized callable result type failed to resolve: {failure:?}"
+            )))));
+        }
+    };
+    Ok(Ok((runtime_parameters, result)))
+}
+
+fn query_callable_signature(
+    context: &rue_query::QueryContext,
+    semantic_nucleus: &SemanticNucleusFamily,
+    declaration_shells: &QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    raw_declaration_signatures: &QueryFamily<
+        RawDeclarationSignatureQueryKey,
+        RawDeclarationSignatureQueryValue,
+    >,
+    lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    key: &crate::type_queries::CallAbiQueryKey,
+) -> Result<Result<StableCallableSignature, crate::type_queries::TypeQueryFailure>, QueryAbort> {
+    use crate::durable_semantics::DurableParameterMode;
+    use crate::type_queries::TypeQueryFailure;
+    match &key.callable {
+        crate::FunctionInstanceKey::DropGlue(owner) => Ok(Ok(StableCallableSignature {
+            parameters: vec![(DurableParameterMode::Value, owner.as_ref().clone())],
+            result: crate::TypeInstanceKey::Unit,
+            target_c: false,
+        })),
+        crate::FunctionInstanceKey::Definition(definition)
+            if definition.kind() == crate::StableDefinitionKind::Destructor =>
+        {
+            let Some(owner) = named_callable_owner_type(definition) else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "named destructor has no nominal owner",
+                ))));
+            };
+            Ok(Ok(StableCallableSignature {
+                parameters: vec![(DurableParameterMode::Value, owner)],
+                result: crate::TypeInstanceKey::Unit,
+                target_c: false,
+            }))
+        }
+        crate::FunctionInstanceKey::AnonymousMember { owner, member } => {
+            let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity)) =
+                owner.as_ref()
+            else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "anonymous member owner is not an anonymous nominal",
+                ))));
+            };
+            let nominal = match query_anonymous_nominal(
+                context,
+                semantic_nucleus,
+                body_produced_anonymous,
+                identity,
+                &key.configuration,
+            )? {
+                Ok(nominal) => nominal,
+                Err(failure) => return Ok(Err(failure)),
+            };
+            let crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. } =
+                &nominal.shape
+            else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "anonymous enum has no callable members",
+                ))));
+            };
+            let signature = methods.iter().find(|signature| {
+                signature.name == member.name
+                    && match member.kind {
+                        crate::AnonymousMemberKind::Destructor => {
+                            signature.has_self && signature.name.as_ref() == "__drop"
+                        }
+                        crate::AnonymousMemberKind::Method => signature.has_self,
+                        crate::AnonymousMemberKind::AssociatedFunction => !signature.has_self,
+                    }
+            });
+            let Some(signature) = signature else {
+                return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(
+                    "anonymous member signature is unavailable",
+                ))));
+            };
+            let mut parameters = Vec::new();
+            if signature.has_self {
+                parameters.push((signature.self_mode, owner.as_ref().clone()));
+            }
+            parameters.extend(
+                signature
+                    .parameters
+                    .iter()
+                    .filter(|(ty, _, comptime)| anonymous_parameter_is_runtime(ty, *comptime))
+                    .map(|(ty, mode, _)| (*mode, anonymous_method_type(ty, owner))),
+            );
+            Ok(Ok(StableCallableSignature {
+                parameters,
+                result: anonymous_method_type(&signature.result, owner),
+                target_c: false,
+            }))
+        }
+        callable => {
+            let Some(definition) = function_definition_key(callable) else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "callable identity has no signature contract",
+                ))));
+            };
+            let Some(candidates) = stable_syntax_candidate_set(definition) else {
+                return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(
+                    "callable has no declaration candidate",
+                ))));
+            };
+            let candidates = candidates.into_iter().flatten().collect::<Vec<_>>();
+            let terminals = context.query_registered_batch(
+                semantic_nucleus,
+                candidates.iter().cloned().map(|declaration| {
+                    crate::semantic_query_nucleus::SemanticNucleusKey::Signature(
+                        crate::semantic_query_nucleus::DeclarationSemanticQueryKey {
+                            declaration,
+                            configuration: key.configuration.clone(),
+                        },
+                    )
+                }),
+            )?;
+            let mut observed_failures = Vec::new();
+            let mut signatures =
+                terminals
+                    .iter()
+                    .zip(&candidates)
+                    .filter_map(|(terminal, declaration)| {
+                        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                            unreachable!("SemanticNucleus publishes typed values")
+                        };
+                        match value {
+                            crate::semantic_query_nucleus::SemanticNucleusValue::Signature(
+                                signature,
+                            ) => Some((signature, declaration)),
+                            other => {
+                                observed_failures.push(format!("{other:?}"));
+                                None
+                            }
+                        }
+                    });
+            let Some((signature, declaration)) = signatures.next() else {
+                return Ok(Err(TypeQueryFailure::Unavailable(Arc::from(format!(
+                    "callable signature is unavailable: {}",
+                    observed_failures.join("; ")
+                )))));
+            };
+            if signatures.next().is_some() {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "callable signature is ambiguous",
+                ))));
+            }
+            let crate::semantic_query_nucleus::DeclarationSignatureProjection::Callable {
+                parameters,
+                result,
+                has_self,
+                self_mode,
+                is_extern,
+                is_c_export: _,
+                ..
+            } = &signature.signature
+            else {
+                return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                    "definition is not callable",
+                ))));
+            };
+            let mut runtime_parameters = Vec::new();
+            if *has_self {
+                let Some(owner) = named_callable_owner_type(definition) else {
+                    return Ok(Err(TypeQueryFailure::Invalid(Arc::from(
+                        "receiver-taking callable has no nominal owner",
+                    ))));
+                };
+                runtime_parameters.push((*self_mode, owner));
+            }
+            let (runtime_types, result) = match callable {
+                crate::FunctionInstanceKey::Specialization { arguments, .. } => {
+                    match exact_specialized_callable_types(
+                        context,
+                        semantic_nucleus,
+                        declaration_shells,
+                        raw_declaration_signatures,
+                        lookup_names,
+                        declaration,
+                        definition,
+                        parameters,
+                        arguments,
+                        &key.configuration,
+                    )? {
+                        Ok(signature) => signature,
+                        Err(failure) => return Ok(Err(failure)),
+                    }
+                }
+                _ => (
+                    parameters
+                        .iter()
+                        .filter(|parameter| durable_parameter_is_runtime(parameter))
+                        .map(|parameter| parameter.ty.clone())
+                        .collect(),
+                    result.clone(),
+                ),
+            };
+            runtime_parameters.extend(
+                parameters
+                    .iter()
+                    .filter(|parameter| durable_parameter_is_runtime(parameter))
+                    .zip(runtime_types)
+                    .map(|(parameter, ty)| {
+                        (parameter.mode, crate::type_queries::type_instance(&ty))
+                    }),
+            );
+            Ok(Ok(StableCallableSignature {
+                parameters: runtime_parameters,
+                result: crate::type_queries::type_instance(&result),
+                // A C export's source body uses Rue's native ABI. The separate
+                // entry thunk is the Target-C boundary.
+                target_c: *is_extern,
+            }))
+        }
+    }
+}
+
+fn stable_type_is_aggregate(ty: &crate::TypeInstanceKey) -> bool {
+    use crate::{NominalInstanceKey as N, TypeInstanceKey as T};
+    match ty {
+        T::Array { .. } | T::Slice { .. } => true,
+        T::BuiltinNominal { .. } | T::Nominal(N::Builtin { .. }) => true,
+        T::Nominal(N::Named(definition)) => matches!(
+            definition.kind(),
+            crate::StableDefinitionKind::Struct | crate::StableDefinitionKind::Enum
+        ),
+        T::Nominal(N::Anonymous(_)) => true,
+        _ => false,
+    }
+}
+
+fn stable_type_is_strbuf(ty: &crate::TypeInstanceKey) -> bool {
+    matches!(
+        ty,
+        crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition))
+            if definition.module().is_trusted_standard_library()
+                && definition.kind() == crate::StableDefinitionKind::Struct
+                && definition.name() == "StrBuf"
+    )
+}
+
+fn c_scalar_extension(ty: &crate::TypeInstanceKey) -> rue_air::ScalarAbiExtension {
+    use crate::TypeInstanceKey as T;
+    match ty {
+        T::I8 => rue_air::ScalarAbiExtension::Signed { from_bits: 8 },
+        T::I16 => rue_air::ScalarAbiExtension::Signed { from_bits: 16 },
+        T::I32 => rue_air::ScalarAbiExtension::Signed { from_bits: 32 },
+        T::U8 | T::Bool => rue_air::ScalarAbiExtension::Unsigned { from_bits: 8 },
+        T::U16 => rue_air::ScalarAbiExtension::Unsigned { from_bits: 16 },
+        T::U32 => rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 },
+        _ => rue_air::ScalarAbiExtension::None,
+    }
+}
+
+fn evaluate_call_abi(
+    context: &rue_query::QueryContext,
+    semantic_nucleus: &SemanticNucleusFamily,
+    declaration_shells: &QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
+    raw_declaration_signatures: &QueryFamily<
+        RawDeclarationSignatureQueryKey,
+        RawDeclarationSignatureQueryValue,
+    >,
+    lookup_names: &QueryFamily<LookupNameKey, LookupNameValue>,
+    body_produced_anonymous: &QueryFamily<
+        crate::body_query::BodyQueryKey,
+        crate::body_query::ProducedAnonymous,
+    >,
+    layouts: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
+    key: &crate::type_queries::CallAbiQueryKey,
+) -> Result<QueryOutput<crate::type_queries::CallAbiValue>, QueryAbort> {
+    use crate::durable_semantics::DurableParameterMode;
+    use crate::type_queries::{
+        CallAbiArgument, CallAbiArgumentClass as A, CallAbiConvention, CallAbiFacts,
+        CallAbiReturnClass as R, CallAbiValue,
+    };
+    let signature = match query_callable_signature(
+        context,
+        semantic_nucleus,
+        declaration_shells,
+        raw_declaration_signatures,
+        lookup_names,
+        body_produced_anonymous,
+        key,
+    )? {
+        Ok(signature) => signature,
+        Err(failure) => {
+            return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+    let target_c_flavor = match key.configuration.target {
+        crate::Target::X86_64Linux => rue_air::TargetCAbiFlavor::SysVAmd64,
+        crate::Target::Aarch64Linux | crate::Target::Aarch64Macos => {
+            rue_air::TargetCAbiFlavor::Aapcs64
+        }
+    };
+    let convention = if signature.target_c {
+        CallAbiConvention::TargetC(target_c_flavor)
+    } else {
+        CallAbiConvention::Native
+    };
+    let mut arguments = Vec::with_capacity(signature.parameters.len());
+    for (mode, ty) in &signature.parameters {
+        if !matches!(mode, DurableParameterMode::Value) {
+            arguments.push(CallAbiArgument {
+                mode: *mode,
+                value_slots: 1,
+                class: A::Reference,
+            });
+            continue;
+        }
+        let layout = context.query_registered(
+            layouts,
+            crate::type_queries::TypeQueryKey {
+                ty: ty.clone(),
+                configuration: key.configuration.clone(),
+            },
+        )?;
+        let layout = match layout_from_terminal(&layout) {
+            Ok(layout) => layout,
+            Err(failure) => {
+                return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
+            }
+        };
+        let aggregate = stable_type_is_aggregate(ty);
+        let class = match convention {
+            CallAbiConvention::Native => {
+                if layout.abi_slots == 0 {
+                    A::Omitted
+                } else if aggregate && layout.abi_slots > 1 && !layout.slot_identical {
+                    A::NativeIndirect
+                } else {
+                    A::NativeDirect {
+                        slots: layout.abi_slots,
+                    }
+                }
+            }
+            CallAbiConvention::TargetC(flavor) => {
+                if layout.size == 0 {
+                    A::Omitted
+                } else if !aggregate {
+                    A::CScalar {
+                        extension: c_scalar_extension(ty),
+                    }
+                } else if layout.size <= 16 {
+                    A::CIntegerRegisters {
+                        eightbytes: u32::try_from((layout.size + 7) / 8).unwrap_or(u32::MAX),
+                    }
+                } else {
+                    let size = u32::try_from(layout.size).unwrap_or(u32::MAX);
+                    let alignment = u32::try_from(layout.alignment).unwrap_or(u32::MAX);
+                    match flavor {
+                        rue_air::TargetCAbiFlavor::SysVAmd64 => {
+                            A::CByValueStack { size, alignment }
+                        }
+                        rue_air::TargetCAbiFlavor::Aapcs64 => {
+                            A::CByReferenceCopy { size, alignment }
+                        }
+                    }
+                }
+            }
+        };
+        arguments.push(CallAbiArgument {
+            mode: *mode,
+            value_slots: layout.abi_slots,
+            class,
+        });
+    }
+    let return_layout = context.query_registered(
+        layouts,
+        crate::type_queries::TypeQueryKey {
+            ty: signature.result.clone(),
+            configuration: key.configuration.clone(),
+        },
+    )?;
+    let return_layout = match layout_from_terminal(&return_layout) {
+        Ok(layout) => layout,
+        Err(failure) => {
+            return Ok(QueryOutput::success(CallAbiValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+    let aggregate = stable_type_is_aggregate(&signature.result);
+    let return_class = if return_layout.abi_slots == 0 {
+        R::ZeroSized
+    } else {
+        match convention {
+            CallAbiConvention::Native => {
+                let budget = match key.configuration.target {
+                    crate::Target::X86_64Linux => 6,
+                    crate::Target::Aarch64Linux | crate::Target::Aarch64Macos => 8,
+                };
+                if stable_type_is_strbuf(&signature.result)
+                    || (aggregate && return_layout.abi_slots > budget)
+                    || (aggregate && return_layout.abi_slots > 1 && !return_layout.slot_identical)
+                {
+                    R::NativeIndirect {
+                        slots: return_layout.abi_slots,
+                    }
+                } else if aggregate {
+                    R::NativeRegisters {
+                        slots: return_layout.abi_slots,
+                    }
+                } else {
+                    R::Scalar {
+                        extension: rue_air::ScalarAbiExtension::None,
+                    }
+                }
+            }
+            CallAbiConvention::TargetC(_) => {
+                if !aggregate {
+                    R::Scalar {
+                        extension: c_scalar_extension(&signature.result),
+                    }
+                } else if return_layout.size <= 16 {
+                    R::CIntegerRegisters {
+                        eightbytes: u32::try_from((return_layout.size + 7) / 8).unwrap_or(u32::MAX),
+                    }
+                } else {
+                    R::CIndirect {
+                        size: u32::try_from(return_layout.size).unwrap_or(u32::MAX),
+                        alignment: u32::try_from(return_layout.alignment).unwrap_or(u32::MAX),
+                    }
+                }
+            }
+        }
+    };
+    Ok(QueryOutput::success(CallAbiValue::Available(
+        CallAbiFacts {
+            convention,
+            return_class,
+            arguments: arguments.into(),
+        },
+    )))
+}
+
+fn evaluate_drop_glue(
+    context: &rue_query::QueryContext,
+    type_shapes: &QueryFamily<
+        crate::type_queries::TypeQueryKey,
+        crate::type_queries::TypeShapeValue,
+    >,
+    type_facts: &QueryFamily<
+        crate::type_queries::TypeQueryKey,
+        crate::type_queries::TypeFactsValue,
+    >,
+    key: &crate::type_queries::TypeQueryKey,
+) -> Result<QueryOutput<crate::type_queries::DropGlueValue>, QueryAbort> {
+    use crate::type_queries::{
+        DropGlueFacts, DropGlueField, DropGluePlan, DropGlueValue, DropGlueVariant,
+        DropGlueVariantField, TypeShape,
+    };
+    let terminal = context.query_registered(type_facts, key.clone())?;
+    let facts = match type_facts_from_terminal(&terminal) {
+        Ok(facts) => facts,
+        Err(failure) => {
+            return Ok(QueryOutput::success(DropGlueValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+    let shape_terminal = context.query_registered(type_shapes, key.clone())?;
+    let shape = match type_shape_from_terminal(&shape_terminal) {
+        Ok(shape) => shape,
+        Err(failure) => {
+            return Ok(QueryOutput::success(DropGlueValue::Failure(failure))
+                .with_terminal_kind(QueryTerminalKind::Failure));
+        }
+    };
+    let children = match shape {
+        TypeShape::Array { element, len } if *len != 0 => vec![element.clone()],
+        TypeShape::Array { .. } => Vec::new(),
+        TypeShape::Struct { fields } => fields.iter().map(|(_, ty)| ty.clone()).collect(),
+        TypeShape::Enum { variants } => variants
+            .iter()
+            .flat_map(|(_, fields)| fields.iter().cloned())
+            .collect(),
+        TypeShape::Scalar | TypeShape::Pointer | TypeShape::Slice | TypeShape::Opaque => Vec::new(),
+    };
+    let terminals = context.query_registered_batch(
+        type_facts,
+        children
+            .iter()
+            .cloned()
+            .map(|ty| crate::type_queries::TypeQueryKey {
+                ty,
+                configuration: key.configuration.clone(),
+            }),
+    )?;
+    let mut nested = Vec::new();
+    let mut decisions = Vec::new();
+    for (ty, terminal) in children.into_iter().zip(terminals) {
+        match type_facts_from_terminal(&terminal) {
+            Ok(child) => {
+                if child.needs_drop {
+                    nested.push(ty.clone());
+                }
+                decisions.push((ty, child.needs_drop));
+            }
+            Err(failure) => {
+                return Ok(QueryOutput::success(DropGlueValue::Failure(failure))
+                    .with_terminal_kind(QueryTerminalKind::Failure));
+            }
+        }
+    }
+    nested.sort();
+    nested.dedup();
+    let mut decisions = decisions.into_iter();
+    let plan = match shape {
+        TypeShape::Struct { fields } => DropGluePlan::Struct {
+            fields: fields
+                .iter()
+                .map(|(name, ty)| {
+                    let (_observed, drop) = decisions
+                        .next()
+                        .expect("one ownership decision per struct field");
+                    DropGlueField {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        drop,
+                    }
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        },
+        TypeShape::Array { element, len } => DropGluePlan::Array {
+            element: element.clone(),
+            len: *len,
+            drop_element: if *len == 0 {
+                false
+            } else {
+                decisions
+                    .next()
+                    .expect("one ownership decision for a non-empty array")
+                    .1
+            },
+        },
+        TypeShape::Enum { variants } => DropGluePlan::Enum {
+            variants: variants
+                .iter()
+                .map(|(name, fields)| DropGlueVariant {
+                    name: name.clone(),
+                    fields: fields
+                        .iter()
+                        .map(|ty| {
+                            let (_observed, drop) = decisions
+                                .next()
+                                .expect("one ownership decision per enum field");
+                            DropGlueVariantField {
+                                ty: ty.clone(),
+                                drop,
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .into(),
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        },
+        TypeShape::Scalar | TypeShape::Pointer | TypeShape::Slice | TypeShape::Opaque => {
+            DropGluePlan::None
+        }
+    };
+    Ok(QueryOutput::success(DropGlueValue::Available(Box::new(
+        DropGlueFacts {
+            required: facts.needs_drop,
+            synthesize: facts.needs_drop,
+            destructor: facts.destructor.clone(),
+            nested: nested.into(),
+            plan,
+        },
+    ))))
+}
+
 #[derive(Debug)]
 #[allow(dead_code)]
 pub(crate) enum BodyTransactionRequestFailure {
@@ -3712,9 +5123,38 @@ fn collect_published_body_references(
     references: &mut BTreeSet<crate::body_query::BodyReference>,
 ) {
     use rue_air::SemanticBodyInstDependency as D;
+    let collect_drop_obligation =
+        |value: rue_air::SemanticBodyRef,
+         references: &mut BTreeSet<crate::body_query::BodyReference>| {
+            if let Some(value) = body.instructions.get(value as usize) {
+                references.insert(crate::body_query::BodyReference::DropGlue(
+                    body_type_instance(&value.ty),
+                ));
+            }
+        };
     collect_body_type_reference(&body.return_type, references);
     for instruction in body.instructions.iter() {
         collect_body_type_reference(&instruction.ty, references);
+        use rue_air::SemanticBodyInstData as I;
+        match &instruction.data {
+            // These are precisely the ownership sites from which CFG cleanup
+            // elaboration can emit an implicit destroy: a live local, an
+            // overwritten local/parameter/place, or a discarded statement
+            // result. Publishing their value types here keeps DropGlue rooted
+            // in the reached body that owns the obligation without duplicating
+            // CFG's path-sensitive drop elaboration.
+            I::Alloc { init: value, .. }
+            | I::Store { value, .. }
+            | I::ParamStore { value, .. }
+            | I::PlaceWrite { value, .. }
+            | I::Drop { value } => collect_drop_obligation(*value, references),
+            I::Block { statements, .. } => {
+                for &statement in statements.iter() {
+                    collect_drop_obligation(statement, references);
+                }
+            }
+            _ => {}
+        }
         instruction
             .data
             .visit_dependencies(&mut |dependency| match dependency {
@@ -3752,6 +5192,9 @@ fn collect_published_body_references(
     }
     for (_, ty) in body.param_drops.iter() {
         collect_body_type_reference(ty, references);
+        references.insert(crate::body_query::BodyReference::DropGlue(
+            body_type_instance(ty),
+        ));
     }
 }
 
@@ -9526,16 +10969,6 @@ impl RevisionedQueryDatabase {
                             Incomplete::MissingPrerequisite(Arc::from("declaration shell")),
                         )));
                     };
-                    if shell.is_generic
-                        && matches!(
-                            key.instance,
-                            crate::FunctionInstanceKey::Definition(_)
-                        )
-                    {
-                        return Ok(QueryOutput::success(BodyInputValue::Incomplete(
-                            Incomplete::Generic,
-                        )));
-                    }
                     if shell.is_extern
                         || candidate.category
                             == crate::declaration_candidate::DeclarationCandidateCategory::ExternFunction
@@ -9568,6 +11001,39 @@ impl RevisionedQueryDatabase {
                             )),
                         )));
                     };
+                    if shell.is_generic
+                        && matches!(
+                            key.instance,
+                            crate::FunctionInstanceKey::Definition(_)
+                        )
+                    {
+                        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+                        use crate::semantic_query_nucleus::ParsedSemanticSignature;
+
+                        // Free functions with any comptime parameter are
+                        // materialized only through specialization identities.
+                        // Named members are different: their comptime value
+                        // parameters stay in the one runtime body and ABI.
+                        // Only a comptime type parameter makes that definition
+                        // unavailable without a specialized identity.
+                        let named_runtime_value_body = matches!(
+                            candidate.category,
+                            Category::Method | Category::AssociatedFunction
+                        ) && matches!(
+                            crate::semantic_query_nucleus::parse_semantic_signature(
+                                &candidate, signature
+                            ),
+                            Ok(ParsedSemanticSignature::Callable { parameters, .. })
+                                if parameters.iter().all(|parameter| {
+                                    !parameter.is_comptime || parameter.ty.trim() != "type"
+                                })
+                        );
+                        if !named_runtime_value_body {
+                            return Ok(QueryOutput::success(BodyInputValue::Incomplete(
+                                Incomplete::Generic,
+                            )));
+                        }
+                    }
                     let body = match context.query_registered(
                         &bodies_for_body_inputs,
                         RawDeclarationBodyQueryKey(candidate.clone()),
@@ -9760,21 +11226,36 @@ impl RevisionedQueryDatabase {
                             .query_registered(&transactions_for_produced_anonymous, key.clone())
                         {
                             Ok(transaction) => {
-                                let rue_query::QueryOutcome::Success(
-                                    crate::body_query::BodyTransaction::Success {
-                                        produced_anonymous_nominals,
-                                        ..
-                                    },
-                                ) = transaction.outcome()
+                                let rue_query::QueryOutcome::Success(transaction) =
+                                    transaction.outcome()
                                 else {
-                                    return Err(QueryAbort::Canceled);
+                                    unreachable!("BodyTransaction publishes typed values")
                                 };
-                                if produced_anonymous_nominals.0.is_empty() {
+                                if let crate::body_query::BodyTransaction::Success {
+                                    produced_anonymous_nominals,
+                                    ..
+                                } = transaction
+                                    && produced_anonymous_nominals.0.is_empty()
+                                {
                                     return Ok(QueryOutput::success(
                                         crate::body_query::ProducedAnonymous::Produced(
                                             produced_anonymous_nominals.clone(),
                                         ),
                                     ));
+                                }
+                                // A deterministic producer diagnostic is a
+                                // stable semantic fact, not cancellation. Let
+                                // the comptime projection below recover its
+                                // typed `ProducerFailed` value so anonymous
+                                // type consumers cannot abort the rooted
+                                // request while collecting that diagnostic.
+                                // Control outcomes remain unavailable until
+                                // their exact prerequisite is scheduled.
+                                if matches!(
+                                    transaction,
+                                    crate::body_query::BodyTransaction::Control(_)
+                                ) {
+                                    return Err(QueryAbort::Canceled);
                                 }
                             }
                             Err(QueryAbort::Canceled) => {}
@@ -11172,6 +12653,126 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the DeclarationSemanticsProjection family has one canonical name");
+        let semantic_nucleus_for_type_shape = semantic_nucleus.clone();
+        let produced_anonymous_for_type_shape = body_produced_anonymous.clone();
+        let type_shapes = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.type-shape",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::type_queries::TypeShapeValue,
+                 right: &crate::type_queries::TypeShapeValue| left == right,
+                move |context, _, key: &crate::type_queries::TypeQueryKey| {
+                    evaluate_type_shape(
+                        context,
+                        &semantic_nucleus_for_type_shape,
+                        &produced_anonymous_for_type_shape,
+                        key,
+                    )
+                },
+            )
+            .expect("the TypeShape family has one canonical name");
+        let type_facts_family = Arc::new(std::sync::OnceLock::<
+            QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::TypeFactsValue>,
+        >::new());
+        let type_facts_family_for_evaluator = type_facts_family.clone();
+        let semantic_nucleus_for_type_facts = semantic_nucleus.clone();
+        let lookup_names_for_type_facts = lookup_names.clone();
+        let produced_anonymous_for_type_facts = body_produced_anonymous.clone();
+        let type_shapes_for_type_facts = type_shapes.clone();
+        let type_facts = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.type-facts",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::type_queries::TypeFactsValue,
+                 right: &crate::type_queries::TypeFactsValue| left == right,
+                move |context, _, key: &crate::type_queries::TypeQueryKey| {
+                    evaluate_type_facts(
+                        context,
+                        type_facts_family_for_evaluator
+                            .get()
+                            .expect("TypeFacts family is installed before requests"),
+                        &type_shapes_for_type_facts,
+                        &semantic_nucleus_for_type_facts,
+                        &lookup_names_for_type_facts,
+                        &produced_anonymous_for_type_facts,
+                        key,
+                    )
+                },
+            )
+            .expect("the TypeFacts family has one canonical name");
+        type_facts_family
+            .set(type_facts.clone())
+            .expect("TypeFacts family is installed once");
+        let layout_family = Arc::new(std::sync::OnceLock::<
+            QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
+        >::new());
+        let layout_family_for_evaluator = layout_family.clone();
+        let type_shapes_for_layout = type_shapes.clone();
+        let layouts = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.layout",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::type_queries::LayoutValue,
+                 right: &crate::type_queries::LayoutValue| left == right,
+                move |context, _, key: &crate::type_queries::TypeQueryKey| {
+                    evaluate_layout(
+                        context,
+                        layout_family_for_evaluator
+                            .get()
+                            .expect("Layout family is installed before requests"),
+                        &type_shapes_for_layout,
+                        key,
+                    )
+                },
+            )
+            .expect("the Layout family has one canonical name");
+        layout_family
+            .set(layouts.clone())
+            .expect("Layout family is installed once");
+        let semantic_nucleus_for_call_abi = semantic_nucleus.clone();
+        let declaration_shells_for_call_abi = declaration_shells.clone();
+        let raw_signatures_for_call_abi = raw_declaration_signatures.clone();
+        let lookup_names_for_call_abi = lookup_names.clone();
+        let produced_anonymous_for_call_abi = body_produced_anonymous.clone();
+        let layouts_for_call_abi = layouts.clone();
+        let call_abis = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.call-abi",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::type_queries::CallAbiValue,
+                 right: &crate::type_queries::CallAbiValue| left == right,
+                move |context, _, key: &crate::type_queries::CallAbiQueryKey| {
+                    evaluate_call_abi(
+                        context,
+                        &semantic_nucleus_for_call_abi,
+                        &declaration_shells_for_call_abi,
+                        &raw_signatures_for_call_abi,
+                        &lookup_names_for_call_abi,
+                        &produced_anonymous_for_call_abi,
+                        &layouts_for_call_abi,
+                        key,
+                    )
+                },
+            )
+            .expect("the CallAbi family has one canonical name");
+        let type_shapes_for_drop_glue = type_shapes.clone();
+        let type_facts_for_drop_glue = type_facts.clone();
+        let drop_glues = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.drop-glue",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &crate::type_queries::DropGlueValue,
+                 right: &crate::type_queries::DropGlueValue| left == right,
+                move |context, _, key: &crate::type_queries::TypeQueryKey| {
+                    evaluate_drop_glue(
+                        context,
+                        &type_shapes_for_drop_glue,
+                        &type_facts_for_drop_glue,
+                        key,
+                    )
+                },
+            )
+            .expect("the DropGlue family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
@@ -11262,6 +12863,9 @@ impl RevisionedQueryDatabase {
         let produced_for_body_reachability = body_produced_anonymous.clone();
         let inputs_for_body_closure = body_inputs.clone();
         let declarations_for_body_closure = declaration_semantics_projection.clone();
+        let type_facts_for_body_reachability = type_facts.clone();
+        let call_abis_for_body_reachability = call_abis.clone();
+        let drop_glues_for_body_reachability = drop_glues.clone();
         let body_reachability = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-reachability",
@@ -11292,6 +12896,8 @@ impl RevisionedQueryDatabase {
                             return Ok(QueryOutput::success(
                                 crate::body_query::BodyReachabilityOutput {
                                     reached: Arc::from([]),
+                                    demanded_drop_glue: Arc::from([]),
+                                    demanded_drop_glue_plans: Arc::from([]),
                                     scheduling_errors: Arc::from([]),
                                     fatal: Some(
                                         crate::body_query::BodyClosureFatal::DeclarationFailed {
@@ -11329,6 +12935,10 @@ impl RevisionedQueryDatabase {
                         .map(|root| (root, 0usize))
                         .collect::<BTreeMap<_, _>>();
                     let mut reached_body_keys = Vec::new();
+                    let mut demanded_drop_glue = BTreeSet::new();
+                    let mut demanded_drop_glue_plans = BTreeMap::new();
+                    let mut pending_drop_glue = BTreeSet::new();
+                    let mut visited_drop_glue = BTreeSet::new();
                     let mut scheduling_errors = BTreeMap::new();
                     let mut fatal = None;
                     let mut parked_toolchain = None;
@@ -11734,34 +13344,27 @@ impl RevisionedQueryDatabase {
                                     .cloned()
                                     .map(|nominal| (nominal.identity.clone(), nominal)),
                             );
-                            for nominal in produced.0.iter() {
-                                if let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
-                                    methods,
-                                    ..
-                                } = &nominal.shape
-                                    && methods.iter().any(|method| {
-                                        method.has_self && method.name.as_ref() == "__drop"
-                                    })
-                                {
-                                    pending.insert(
-                                        crate::FunctionInstanceKey::AnonymousMember {
-                                            owner: Box::new(crate::TypeInstanceKey::Nominal(
-                                                crate::NominalInstanceKey::Anonymous(
-                                                    nominal.identity.clone(),
-                                                ),
-                                            )),
-                                            member: crate::AnonymousMemberKey {
-                                                kind: crate::AnonymousMemberKind::Destructor,
-                                                name: Arc::from("__drop"),
-                                            },
-                                        },
-                                    );
-                                }
-                            }
                         }
                         for reference in references.0.iter() {
                             match reference {
                                 crate::body_query::BodyReference::Callable(callable) => {
+                                    let abi = context.query_registered(
+                                        &call_abis_for_body_reachability,
+                                        crate::type_queries::CallAbiQueryKey {
+                                            callable: callable.clone(),
+                                            configuration: key.configuration.clone(),
+                                        },
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(abi) = abi.outcome()
+                                    else {
+                                        unreachable!("CallAbi publishes typed values")
+                                    };
+                                    // A typed unavailable ABI result is an
+                                    // honest query terminal. The legacy CFG
+                                    // consumer still owns materialization until
+                                    // RUE-1030 switches it to these facts, so it
+                                    // must not become a new source diagnostic.
+                                    let _ = abi;
                                     match closure_callable_has_body(
                                         context,
                                         &inputs_for_body_closure,
@@ -11796,15 +13399,78 @@ impl RevisionedQueryDatabase {
                                     }
                                 }
                                 crate::body_query::BodyReference::Type(ty) => {
-                                    enqueue_closure_destructors(
-                                        ty,
-                                        &declaration_payloads,
-                                        &projection.anonymous_nominals,
-                                        &produced_anonymous,
-                                        &mut pending,
-                                    );
+                                    let facts = context.query_registered(
+                                        &type_facts_for_body_reachability,
+                                        crate::type_queries::TypeQueryKey {
+                                            ty: ty.clone(),
+                                            configuration: key.configuration.clone(),
+                                        },
+                                    )?;
+                                    let rue_query::QueryOutcome::Success(facts) = facts.outcome()
+                                    else {
+                                        unreachable!("TypeFacts publishes typed values")
+                                    };
+                                    // TypeFacts publishes typed incomplete
+                                    // outcomes for non-materializable semantic
+                                    // types. Until RUE-1030 makes downstream
+                                    // consumers query-native, observing that
+                                    // terminal must preserve existing behavior.
+                                    let _ = facts;
+                                }
+                                crate::body_query::BodyReference::DropGlue(ty) => {
+                                    pending_drop_glue.insert(ty.clone());
                                 }
                                 crate::body_query::BodyReference::Definition(_) => {}
+                            }
+                        }
+                        while fatal.is_none() && !pending_drop_glue.is_empty() {
+                            let frontier = std::mem::take(&mut pending_drop_glue)
+                                .into_iter()
+                                .filter(|ty| !visited_drop_glue.contains(ty))
+                                .collect::<Vec<_>>();
+                            if frontier.is_empty() {
+                                break;
+                            }
+                            let terminals = context.query_registered_batch(
+                                &drop_glues_for_body_reachability,
+                                frontier.iter().cloned().map(|ty| {
+                                    crate::type_queries::TypeQueryKey {
+                                        ty,
+                                        configuration: key.configuration.clone(),
+                                    }
+                                }),
+                            )?;
+                            for (ty, terminal) in frontier.into_iter().zip(terminals) {
+                                visited_drop_glue.insert(ty.clone());
+                                let rue_query::QueryOutcome::Success(value) = terminal.outcome()
+                                else {
+                                    unreachable!("DropGlue publishes typed values")
+                                };
+                                match value {
+                                    crate::type_queries::DropGlueValue::Available(glue) => {
+                                        if !glue.required {
+                                            continue;
+                                        }
+                                        demanded_drop_glue_plans
+                                            .insert(ty.clone(), glue.as_ref().clone());
+                                        demanded_drop_glue.insert(ty);
+                                        pending_drop_glue.extend(glue.nested.iter().cloned());
+                                        if let Some(destructor) = &glue.destructor {
+                                            pending.insert(destructor.clone());
+                                        }
+                                    }
+                                    crate::type_queries::DropGlueValue::Failure(failure) => {
+                                        fatal = Some(
+                                            crate::body_query::BodyClosureFatal::TypeQuery {
+                                                ty: Some(ty),
+                                                detail: Arc::from(format!(
+                                                    "drop glue: {failure:?}"
+                                                )),
+                                            },
+                                        );
+                                        break;
+                                    }
+                                }
                             }
                         }
                     }
@@ -11821,6 +13487,11 @@ impl RevisionedQueryDatabase {
                         || parked_toolchain.is_some();
                     let output = crate::body_query::BodyReachabilityOutput {
                         reached: reached.into(),
+                        demanded_drop_glue: demanded_drop_glue.into_iter().collect::<Vec<_>>().into(),
+                        demanded_drop_glue_plans: demanded_drop_glue_plans
+                            .into_iter()
+                            .collect::<Vec<_>>()
+                            .into(),
                         scheduling_errors: scheduling_errors.into(),
                         fatal,
                         parked_toolchain,
@@ -12004,6 +13675,8 @@ impl RevisionedQueryDatabase {
                     }
                     let output = crate::body_query::BodyClosureOutput {
                         reached: reachability.reached.clone(),
+                        demanded_drop_glue: reachability.demanded_drop_glue.clone(),
+                        demanded_drop_glue_plans: reachability.demanded_drop_glue_plans.clone(),
                         bodies: bodies.into(),
                         scheduling_errors: reachability.scheduling_errors.clone(),
                         fatal,
@@ -12274,6 +13947,11 @@ impl RevisionedQueryDatabase {
             declaration_imports,
             semantic_nucleus,
             declaration_semantics_projection,
+            type_shapes,
+            type_facts,
+            layouts,
+            call_abis,
+            drop_glues,
             lookup_names,
             lookup_imports,
             #[cfg(test)]
@@ -26426,6 +28104,634 @@ fn main() -> i32 {
         )
     }
 
+    fn named_type_instance(
+        module: &ModuleId,
+        name: &str,
+        kind: crate::StableDefinitionKind,
+    ) -> crate::TypeInstanceKey {
+        crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
+            crate::StableDefinitionKey::from_stable_parts(
+                module.clone(),
+                crate::StableDefinitionNamespace::Type,
+                kind,
+                name,
+                None,
+            ),
+        ))
+    }
+
+    fn request_layout(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        ty: crate::TypeInstanceKey,
+    ) -> QueryRequestAttempt<crate::type_queries::LayoutValue> {
+        request_layout_for_target(database, revision, ty, crate::Target::X86_64Linux)
+    }
+
+    fn request_layout_for_target(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        ty: crate::TypeInstanceKey,
+        target: crate::Target,
+    ) -> QueryRequestAttempt<crate::type_queries::LayoutValue> {
+        database.runtime.request_registered(
+            &database.layouts,
+            revision,
+            crate::type_queries::TypeQueryKey {
+                ty,
+                configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                    target,
+                    preview_features: crate::StablePreviewFeatures::new(
+                        &crate::PreviewFeatures::default(),
+                    ),
+                },
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    fn assert_layout_parity(
+        canonical: &crate::type_queries::CanonicalLayout,
+        live: &rue_air::Layout,
+    ) {
+        use crate::type_queries::CanonicalLayoutKind as C;
+        use rue_air::LayoutKind as L;
+        assert_eq!(
+            (canonical.size, canonical.alignment, canonical.stride),
+            (live.size, live.alignment, live.stride)
+        );
+        match (&canonical.kind, &live.kind) {
+            (
+                C::Array {
+                    element: Some(canonical_element),
+                    count: canonical_count,
+                },
+                L::Array {
+                    element: live_element,
+                    count: live_count,
+                },
+            ) => {
+                assert_eq!(canonical_count, live_count);
+                assert_layout_parity(canonical_element, live_element);
+            }
+            (
+                C::Struct {
+                    field_offsets,
+                    padding_ranges,
+                },
+                L::Struct {
+                    field_offsets: live_offsets,
+                    padding_ranges: live_padding,
+                },
+            ) => {
+                assert_eq!(field_offsets.as_ref(), live_offsets);
+                assert_eq!(padding_ranges.as_ref(), live_padding);
+            }
+            (
+                C::Enum {
+                    tag_size,
+                    payload_offset,
+                    variants,
+                },
+                L::Enum {
+                    tag,
+                    payload_offset: live_payload_offset,
+                    variants: live_variants,
+                },
+            ) => {
+                assert_eq!(*tag_size, tag.size);
+                assert_eq!(payload_offset, live_payload_offset);
+                assert_eq!(
+                    variants
+                        .iter()
+                        .map(|variant| variant.to_vec())
+                        .collect::<Vec<_>>(),
+                    *live_variants
+                );
+            }
+            (C::Scalar, L::Scalar) => {}
+            (canonical, live) => panic!("layout kind mismatch: {canonical:?} != {live:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_layout_matches_frozen_pool_for_padding_nested_arrays_and_enums() {
+        use lasso::ThreadedRodeo;
+        use rue_air::{EnumDef, StructDef, StructField, Type, TypeInternPool};
+
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "struct Padded { first: u8, aligned: u64, tail: u16 }\n\
+                 enum Choice { Small(u8, u64), Wide(u32, u16, u64) }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let padded_key =
+            named_type_instance(&module, "Padded", crate::StableDefinitionKind::Struct);
+        let choice_key = named_type_instance(&module, "Choice", crate::StableDefinitionKind::Enum);
+        let inner_array_key = crate::TypeInstanceKey::Array {
+            element: Box::new(padded_key.clone()),
+            len: 2,
+        };
+        let outer_array_key = crate::TypeInstanceKey::Array {
+            element: Box::new(inner_array_key),
+            len: 3,
+        };
+
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::new();
+        let padded_id = pool
+            .register_struct(
+                interner.get_or_intern("Padded"),
+                StructDef {
+                    name: "Padded".into(),
+                    fields: vec![
+                        StructField {
+                            name: "first".into(),
+                            ty: Type::U8,
+                        },
+                        StructField {
+                            name: "aligned".into(),
+                            ty: Type::U64,
+                        },
+                        StructField {
+                            name: "tail".into(),
+                            ty: Type::U16,
+                        },
+                    ],
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: None,
+                    is_builtin: false,
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        let padded_ty = Type::new_struct(padded_id);
+        let inner_array = pool.intern_array_from_type(padded_ty, 2);
+        let outer_array = pool.intern_array_from_type(Type::new_array(inner_array), 3);
+        let choice_id = pool
+            .register_enum(
+                interner.get_or_intern("Choice"),
+                EnumDef {
+                    name: "Choice".into(),
+                    variants: vec!["Small".into(), "Wide".into()],
+                    variant_payloads: vec![
+                        vec![Type::U8, Type::U64],
+                        vec![Type::U32, Type::U16, Type::U64],
+                    ],
+                    is_pub: false,
+                    file_id: rue_span::FileId::DEFAULT,
+                },
+            )
+            .0;
+        let pool = pool.freeze();
+
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            for (stable, live) in [
+                (padded_key.clone(), padded_ty),
+                (outer_array_key.clone(), Type::new_array(outer_array)),
+                (choice_key.clone(), Type::new_enum(choice_id)),
+            ] {
+                let attempt = request_layout_for_target(&database, revision, stable, target);
+                let terminal = attempt.terminal().unwrap();
+                let rue_query::QueryOutcome::Success(crate::type_queries::LayoutValue::Available(
+                    canonical,
+                )) = terminal.outcome()
+                else {
+                    panic!("layout query failed: {terminal:?}");
+                };
+                assert_layout_parity(canonical, &pool.layout(live));
+            }
+        }
+    }
+
+    #[test]
+    fn layout_observes_only_structural_by_value_dependencies() {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let source = |text| source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+        let first = source("struct Foo { value: i64 }");
+        let destructor_only = source("struct Foo { value: i64 }\ndrop fn Foo(self) {}");
+        let linearity_only = source("linear struct Foo { value: i64 }\ndrop fn Foo(self) {}");
+        let shape_edit =
+            source("linear struct Foo { value: i64, extra: i64 }\ndrop fn Foo(self) {}");
+        let foo = named_type_instance(&module, "Foo", crate::StableDefinitionKind::Struct);
+        let pointer = crate::TypeInstanceKey::PtrConst(Box::new(foo.clone()));
+        let slice = crate::TypeInstanceKey::Slice {
+            element: Box::new(foo.clone()),
+            name: Arc::from("FooSlice"),
+        };
+        let zero_array = crate::TypeInstanceKey::Array {
+            element: Box::new(foo.clone()),
+            len: 0,
+        };
+        let mut database = RevisionedQueryDatabase::default();
+
+        let first_revision = revision_for(&mut database, &first);
+        let cold = request_layout(&database, first_revision, foo.clone());
+        let cold_stamp = cold.terminal().unwrap().stamp();
+        assert_eq!(cold.execution(), RequestExecution::Computed);
+        for ty in [pointer.clone(), slice.clone(), zero_array.clone()] {
+            assert_eq!(
+                request_layout(&database, first_revision, ty).execution(),
+                RequestExecution::Computed
+            );
+        }
+
+        let destructor_revision = revision_for(&mut database, &destructor_only);
+        let destructor = request_layout(&database, destructor_revision, foo.clone());
+        assert_eq!(destructor.execution(), RequestExecution::Reused);
+        assert_eq!(destructor.terminal().unwrap().stamp(), cold_stamp);
+
+        let linear_revision = revision_for(&mut database, &linearity_only);
+        let linear = request_layout(&database, linear_revision, foo.clone());
+        assert_eq!(linear.execution(), RequestExecution::Reused);
+        assert_eq!(linear.terminal().unwrap().stamp(), cold_stamp);
+
+        let shape_revision = revision_for(&mut database, &shape_edit);
+        let shape = request_layout(&database, shape_revision, foo);
+        assert_eq!(shape.execution(), RequestExecution::Computed);
+        assert_ne!(shape.terminal().unwrap().stamp(), cold_stamp);
+        for ty in [pointer, slice, zero_array] {
+            assert_eq!(
+                request_layout(&database, shape_revision, ty).execution(),
+                RequestExecution::Reused,
+                "non-by-value containment must not observe the element edit"
+            );
+        }
+    }
+
+    fn request_call_abi(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        callable: crate::FunctionInstanceKey,
+        target: crate::Target,
+    ) -> crate::type_queries::CallAbiFacts {
+        let attempt = database.runtime.request_registered(
+            &database.call_abis,
+            revision,
+            crate::type_queries::CallAbiQueryKey {
+                callable,
+                configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration {
+                    target,
+                    preview_features: crate::StablePreviewFeatures::new(
+                        &crate::PreviewFeatures::from([rue_error::PreviewFeature::CFfi]),
+                    ),
+                },
+            },
+            CancellationToken::new(),
+        );
+        let terminal = attempt.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(crate::type_queries::CallAbiValue::Available(facts)) =
+            terminal.outcome()
+        else {
+            panic!("call ABI query failed: {terminal:?}");
+        };
+        facts.clone()
+    }
+
+    #[test]
+    fn call_abi_classifies_native_target_c_named_destructor_and_drop_glue_on_both_targets() {
+        use crate::type_queries::{
+            CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
+        };
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn native(value: [u64; 7]) -> [u64; 7] { value }\n\
+                 extern \"C\" { fn foreign(value: u32) -> u32; }\n\
+                 pub extern \"C\" fn exported(value: u32) -> u32 { value }\n\
+                 struct Owner { value: i64 }\n\
+                 drop fn Owner(self) {}",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let native = free_function_instance(&module, "native");
+        let foreign = free_function_instance(&module, "foreign");
+        let exported = free_function_instance(&module, "exported");
+        let owner = named_type_instance(&module, "Owner", crate::StableDefinitionKind::Struct);
+        let destructor =
+            crate::FunctionInstanceKey::Definition(crate::StableDefinitionKey::from_stable_parts(
+                module,
+                crate::StableDefinitionNamespace::Destructor,
+                crate::StableDefinitionKind::Destructor,
+                "Owner",
+                Some((crate::StableDefinitionKind::Struct, Arc::from("Owner"))),
+            ));
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            let native = request_call_abi(&database, revision, native.clone(), target);
+            assert_eq!(native.convention, C::Native);
+            assert_eq!(
+                native.return_class,
+                if target == crate::Target::X86_64Linux {
+                    R::NativeIndirect { slots: 7 }
+                } else {
+                    R::NativeRegisters { slots: 7 }
+                }
+            );
+
+            let foreign = request_call_abi(&database, revision, foreign.clone(), target);
+            assert_eq!(
+                foreign.convention,
+                C::TargetC(if target == crate::Target::X86_64Linux {
+                    rue_air::TargetCAbiFlavor::SysVAmd64
+                } else {
+                    rue_air::TargetCAbiFlavor::Aapcs64
+                })
+            );
+            assert_eq!(
+                foreign.return_class,
+                R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 }
+                }
+            );
+            assert!(matches!(
+                foreign.arguments[0].class,
+                A::CScalar {
+                    extension: rue_air::ScalarAbiExtension::Unsigned { from_bits: 32 }
+                }
+            ));
+
+            let exported = request_call_abi(&database, revision, exported.clone(), target);
+            assert_eq!(exported.convention, C::Native);
+            assert_eq!(
+                exported.return_class,
+                R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::None
+                }
+            );
+
+            let destructor = request_call_abi(&database, revision, destructor.clone(), target);
+            assert_eq!(destructor.convention, C::Native);
+            assert_eq!(destructor.arguments.len(), 1);
+            assert!(matches!(
+                destructor.arguments[0].class,
+                A::NativeDirect { slots: 1 }
+            ));
+
+            let glue = request_call_abi(
+                &database,
+                revision,
+                crate::FunctionInstanceKey::DropGlue(Box::new(owner.clone())),
+                target,
+            );
+            assert_eq!(glue.convention, C::Native);
+            assert_eq!(glue.return_class, R::ZeroSized);
+            assert!(matches!(
+                glue.arguments[0].class,
+                A::NativeDirect { slots: 1 }
+            ));
+        }
+    }
+
+    #[test]
+    fn call_abi_resolves_value_specialized_array_layout_on_both_targets() {
+        use crate::type_queries::{
+            CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
+        };
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn named(comptime N: i32, value: u64) -> u64 { value + N }\n\
+                 fn sized(comptime N: i32, value: [u64; N]) -> [u64; N] { value }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let named = free_function_instance(&module, "named");
+        let callable = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "sized")),
+            arguments: crate::CanonicalArguments {
+                types: Arc::from([]),
+                values: Arc::from([crate::CanonicalArgumentValue::Integer(7)]),
+            },
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            let named = request_call_abi(&database, revision, named.clone(), target);
+            assert_eq!(named.convention, C::Native);
+            assert_eq!(
+                named.return_class,
+                R::Scalar {
+                    extension: rue_air::ScalarAbiExtension::None
+                }
+            );
+            assert_eq!(named.arguments.len(), 2);
+            assert!(
+                named
+                    .arguments
+                    .iter()
+                    .all(|argument| matches!(argument.class, A::NativeDirect { slots: 1 }))
+            );
+
+            let facts = request_call_abi(&database, revision, callable.clone(), target);
+            assert_eq!(facts.convention, C::Native);
+            assert_eq!(
+                facts.return_class,
+                if target == crate::Target::X86_64Linux {
+                    R::NativeIndirect { slots: 7 }
+                } else {
+                    R::NativeRegisters { slots: 7 }
+                }
+            );
+            assert_eq!(facts.arguments.len(), 2);
+            assert!(matches!(
+                facts.arguments[0].class,
+                A::NativeDirect { slots: 1 }
+            ));
+            assert_eq!(facts.arguments[0].value_slots, 1);
+            assert!(matches!(
+                facts.arguments[1].class,
+                A::NativeDirect { slots: 7 }
+            ));
+            assert_eq!(facts.arguments[1].value_slots, 7);
+        }
+    }
+
+    #[test]
+    fn call_abi_derives_anonymous_destructor_signature_from_its_exact_producer() {
+        use crate::type_queries::{
+            CallAbiArgumentClass as A, CallAbiConvention as C, CallAbiReturnClass as R,
+        };
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Box() -> type { struct { value: i64, drop fn(self) {} } }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Box")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let configuration = semantic_configuration();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+        let produced = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            revision,
+            crate::body_query::BodyQueryKey {
+                instance: producer,
+                configuration,
+            },
+            CancellationToken::new(),
+        );
+        let terminal = produced.terminal().unwrap();
+        let rue_query::QueryOutcome::Success(crate::body_query::ProducedAnonymous::Produced(
+            produced,
+        )) = terminal.outcome()
+        else {
+            panic!("anonymous producer failed: {terminal:?}");
+        };
+        let owner = crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
+            produced.0[0].identity.clone(),
+        ));
+        let callable = crate::FunctionInstanceKey::AnonymousMember {
+            owner: Box::new(owner),
+            member: crate::AnonymousMemberKey {
+                kind: crate::AnonymousMemberKind::Destructor,
+                name: Arc::from("__drop"),
+            },
+        };
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            let facts = request_call_abi(&database, revision, callable.clone(), target);
+            assert_eq!(facts.convention, C::Native);
+            assert_eq!(facts.return_class, R::ZeroSized);
+            assert_eq!(facts.arguments.len(), 1);
+            assert!(matches!(
+                facts.arguments[0].class,
+                A::NativeDirect { slots: 1 }
+            ));
+        }
+    }
+
+    #[test]
+    fn anonymous_producer_preserves_a_deterministic_body_diagnostic_as_a_typed_failure() {
+        let source = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn Bad() -> type {\n\
+                     struct {\n\
+                         x: i32,\n\
+                         fn get(self) -> i32 { self.x }\n\
+                         fn get(self) -> i32 { 0 }\n\
+                     }\n\
+                 }\n\
+                 fn main() -> i32 {\n\
+                     let B = Bad();\n\
+                     0\n\
+                 }",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &source);
+
+        let request = database
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([module.clone()]),
+                    roots: Arc::from([free_function_instance(&module, "main")]),
+                    configuration: semantic_configuration(),
+                },
+                CancellationToken::new(),
+            )
+            .expect("a deterministic producer diagnostic is not query cancellation");
+        let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        assert!(output.bodies.iter().any(|body| matches!(
+            body.bundle.outcome(),
+            rue_query::QueryOutcome::Success(crate::body_query::BodyAnalysisBundle {
+                transaction: crate::body_query::BodyTransaction::DeterministicFailure { .. },
+                ..
+            })
+        )));
+    }
+
+    fn request_drop_glue(
+        database: &RevisionedQueryDatabase,
+        revision: Revision,
+        ty: crate::TypeInstanceKey,
+    ) -> QueryRequestAttempt<crate::type_queries::DropGlueValue> {
+        database.runtime.request_registered(
+            &database.drop_glues,
+            revision,
+            crate::type_queries::TypeQueryKey {
+                ty,
+                configuration: semantic_configuration(),
+            },
+            CancellationToken::new(),
+        )
+    }
+
+    #[test]
+    fn drop_glue_plan_is_cold_reusable_and_changes_with_order_not_only_nested_set() {
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let source = |text| source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+        let first = source(
+            "struct Child { value: i64 }\n\
+             drop fn Child(self) {}\n\
+             struct Outer { first: Child, spacer: i64, second: Child }",
+        );
+        let reordered = source(
+            "struct Child { value: i64 }\n\
+             drop fn Child(self) {}\n\
+             struct Outer { spacer: i64, first: Child, second: Child }",
+        );
+        let outer = named_type_instance(&module, "Outer", crate::StableDefinitionKind::Struct);
+        let mut database = RevisionedQueryDatabase::default();
+        let first_revision = revision_for(&mut database, &first);
+        let cold = request_drop_glue(&database, first_revision, outer.clone());
+        assert_eq!(cold.execution(), RequestExecution::Computed);
+        let cold_stamp = cold.terminal().unwrap().stamp();
+        let reused = request_drop_glue(&database, first_revision, outer.clone());
+        assert_eq!(reused.execution(), RequestExecution::Reused);
+        assert_eq!(reused.terminal().unwrap().stamp(), cold_stamp);
+
+        let reordered_revision = revision_for(&mut database, &reordered);
+        let changed = request_drop_glue(&database, reordered_revision, outer);
+        assert_eq!(changed.execution(), RequestExecution::Computed);
+        assert_ne!(changed.terminal().unwrap().stamp(), cold_stamp);
+        let rue_query::QueryOutcome::Success(crate::type_queries::DropGlueValue::Available(facts)) =
+            changed.terminal().unwrap().outcome()
+        else {
+            panic!("drop-glue plan did not publish");
+        };
+        let crate::type_queries::DropGluePlan::Struct { fields } = &facts.plan else {
+            panic!("outer must have a struct plan");
+        };
+        assert_eq!(
+            fields
+                .iter()
+                .map(|field| (field.name.as_ref(), field.drop))
+                .collect::<Vec<_>>(),
+            [("spacer", false), ("first", true), ("second", true)]
+        );
+    }
+
     fn request_lookup_name(
         database: &RevisionedQueryDatabase,
         revision: Revision,
@@ -32192,6 +34498,9 @@ fn main() -> i32 {
                  fn b() -> i32 { 2 }\n\
                  fn c() -> i32 { 3 }\n\
                  fn d() -> i32 { 4 }\n\
+                 struct Dead { value: i64 }\n\
+                 drop fn Dead(self) { missing_named(); }\n\
+                 fn DeadAnonymous() -> type { struct { value: i64, drop fn(self) { missing_anonymous(); } } }\n\
                  fn main() -> i32 { a() + b() + c() + d() }\n",
             )],
             1,
@@ -32216,10 +34525,22 @@ fn main() -> i32 {
             let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
                 unreachable!("BodyClosure publishes typed values")
             };
+            assert_eq!(
+                output.reached.len(),
+                5,
+                "invalid unreachable destructors must not become roots"
+            );
+            assert!(
+                output.demanded_drop_glue_plans.is_empty(),
+                "unowned unreachable types must demand no glue"
+            );
+            assert!(output.scheduling_errors.is_empty());
+            assert!(output.fatal.is_none());
             (
                 output.reached.to_vec(),
                 output.scheduling_errors.clone(),
                 output.fatal.clone(),
+                output.demanded_drop_glue_plans.clone(),
                 work,
             )
         };

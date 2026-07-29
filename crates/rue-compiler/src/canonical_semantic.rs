@@ -888,63 +888,6 @@ impl CanonicalSemanticOutput {
     }
 }
 
-/// Bind declarations once, optionally issue stable IDs, then consume the same
-/// transient bound Sema for body analysis and CFG construction.
-#[cfg(test)]
-pub(crate) fn analyze_canonical_program_for_test_support(
-    merged: &CanonicalMergedProgram,
-    rir: &CanonicalRirOutput,
-    options: &CompileOptions,
-    imports: &CanonicalImportGraph,
-    request_stable_ids: bool,
-) -> MultiErrorResult<CanonicalSemanticOutput> {
-    let input = CodegenInputDescriptor {
-        semantic: SemanticInputDescriptor::new(
-            merged.definitions().source_snapshot(),
-            options.target,
-            &options.preview_features,
-        ),
-        opt_level: options.opt_level.into(),
-    };
-    let query_shells =
-        crate::revisioned_query_database::projected_declaration_shells_for_test(merged)?;
-    let prepared = prepare_query_declaration_shells(merged, rir, options, imports, &query_shells)
-        .map_err(|failure| failure.errors)?;
-    let CanonicalPreparedDeclarations {
-        shells,
-        shell_records: _,
-        definitions,
-        declaration_index,
-    } = prepared;
-    let bound = shells.resolve_declarations_for_test()?;
-    finish_canonical_analysis_with(
-        input,
-        merged,
-        rir,
-        options,
-        request_stable_ids,
-        declaration_index,
-        bound,
-        definitions,
-        CanonicalDeclarationReuseWork::default(),
-        Vec::new(),
-        Vec::new(),
-        Vec::new(),
-        Arc::from([]),
-        crate::DurableBodyWork::default(),
-        info_span!("sema", phase = "semantic_analysis").entered(),
-        |bound, _candidates, _definitions, _merged| {
-            bound
-                .analyze_all_bodies_for_test()
-                .map_err(|errors| CanonicalBodyCompositionFailure {
-                    errors,
-                    work: BodyAnalysisWork::default(),
-                })
-        },
-    )
-    .map_err(|failure| failure.errors)
-}
-
 /// Analyze bodies in a fresh semantic epoch whose declaration payloads come
 /// from the canonical keyed semantic nucleus. Projection and installation are
 /// invariant checks, not a compatibility choice: a failure is terminal and
@@ -963,6 +906,8 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
+    demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
+    demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     body_work: crate::DurableBodyWork,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
     // Rebinding the durable declaration records and rebuilding the query
@@ -1276,6 +1221,8 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         specialized_body_candidates,
         anonymous_body_candidates,
         durable_cfg_candidates,
+        demanded_drop_glue,
+        demanded_drop_glue_plans,
         body_work,
         sema_span,
     )
@@ -1573,6 +1520,8 @@ fn finish_canonical_analysis(
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
+    demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
+    demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
 ) -> Result<CanonicalSemanticOutput, CanonicalSemanticFailure> {
@@ -1590,6 +1539,8 @@ fn finish_canonical_analysis(
         durable_specialized_body_candidates,
         durable_anonymous_body_candidates,
         durable_cfg_candidates,
+        demanded_drop_glue,
+        demanded_drop_glue_plans,
         durable_body_reuse_work,
         sema_span,
         |bound, candidates, definitions, merged| {
@@ -1621,6 +1572,8 @@ fn finish_canonical_analysis_with(
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
     durable_cfg_candidates: Arc<[crate::queries::DurableCfgArtifact]>,
+    demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
+    demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     mut durable_body_reuse_work: crate::DurableBodyWork,
     sema_span: tracing::span::EnteredSpan,
     analyze_bodies: impl FnOnce(
@@ -1984,14 +1937,98 @@ fn finish_canonical_analysis_with(
     let named_const_dependencies = sema_output.named_const_dependencies.clone();
     let named_value_const_dependencies_complete =
         sema_output.named_value_const_dependencies_complete;
+    let issue_type = |stable: &crate::TypeInstanceKey| {
+        stable.try_map_identities(
+            &|definition| authoritative_definitions.semantic_token_for_key(definition),
+            &|module| authoritative_definitions.module_token_for(merged, module),
+        )
+    };
+    let demanded_issued_drop_glue = demanded_drop_glue
+        .iter()
+        .map(|stable| {
+            issue_type(stable).map_err(|failure| {
+                CanonicalSemanticFailure::new(
+                    CanonicalSemanticFailurePhase::BodyAnalysis,
+                    crate::CompileErrors::from(crate::CompileError::without_span(
+                        rue_error::ErrorKind::InternalError(format!(
+                            "failed to issue demanded drop-glue owner {stable:?}: {failure:?}"
+                        )),
+                    )),
+                    CanonicalSemanticWork {
+                        declaration_index,
+                        binding,
+                        manifest: manifest_work,
+                        bound_definitions: Some(authoritative_definitions.work()),
+                        body_analysis,
+                        durable_bodies: durable_body_work,
+                        declaration_reuse,
+                        ..CanonicalSemanticWork::default()
+                    },
+                )
+            })
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    for issued in &demanded_issued_drop_glue {
+        if !sema_output.aggregate_types_by_identity.contains_key(issued) {
+            return Err(CanonicalSemanticFailure::new(
+                CanonicalSemanticFailurePhase::BodyAnalysis,
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(
+                        "demanded drop-glue owner was not materialized by reached AIR".into(),
+                    ),
+                )),
+                CanonicalSemanticWork {
+                    declaration_index,
+                    binding,
+                    manifest: manifest_work,
+                    bound_definitions: Some(authoritative_definitions.work()),
+                    body_analysis,
+                    durable_bodies: durable_body_work,
+                    declaration_reuse,
+                    ..CanonicalSemanticWork::default()
+                },
+            ));
+        }
+    }
+    let demanded_issued_drop_glue_plans = demanded_drop_glue_plans
+        .iter()
+        .map(|(stable, plan)| {
+            issue_type(stable).and_then(|issued| {
+                plan.try_map_identities(
+                    &|definition| authoritative_definitions.semantic_token_for_key(definition),
+                    &|module| authoritative_definitions.module_token_for(merged, module),
+                )
+                .map(|plan| (issued, plan))
+            })
+        })
+        .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
+        .map_err(|failure| {
+            CanonicalSemanticFailure::new(
+                CanonicalSemanticFailurePhase::BodyAnalysis,
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    rue_error::ErrorKind::InternalError(format!(
+                        "failed to issue demanded drop-glue plan owner: {failure:?}"
+                    )),
+                )),
+                CanonicalSemanticWork {
+                    declaration_index,
+                    binding,
+                    manifest: manifest_work,
+                    bound_definitions: Some(authoritative_definitions.work()),
+                    body_analysis,
+                    durable_bodies: durable_body_work,
+                    declaration_reuse,
+                    ..CanonicalSemanticWork::default()
+                },
+            )
+        })?;
     let issued_callable_identities = sema_output
         .functions
         .iter()
         .map(|function| function.identity.clone())
         .chain(
-            sema_output
-                .aggregate_type_identities_by_type
-                .values()
+            demanded_issued_drop_glue
+                .iter()
                 .cloned()
                 .map(|ty| rue_air::FunctionInstanceKey::DropGlue(Box::new(ty))),
         )
@@ -2080,6 +2117,8 @@ fn finish_canonical_analysis_with(
     // `build_functions_and_cfgs`.
     let cfg = build_functions_and_cfgs(
         sema_output,
+        &demanded_issued_drop_glue,
+        &demanded_issued_drop_glue_plans,
         options.opt_level,
         options.target,
         rir.semantic_symbols().interner(),
@@ -2231,13 +2270,10 @@ mod tests {
 
     use rue_span::FileId;
 
-    use super::{
-        BodyOwnerTokenWork, CanonicalSemanticOutput, CanonicalSemanticWork,
-        analyze_canonical_program_for_test_support,
-    };
+    use super::{BodyOwnerTokenWork, CanonicalSemanticOutput, CanonicalSemanticWork};
     use crate::{
-        CanonicalRirOutput, CompileOptions, FunctionWithCfg, PreviewFeatures, SourceMetadata,
-        SourceSnapshot, Target,
+        CanonicalRirOutput, CompileOptions, CompilerSession, FunctionWithCfg, PreviewFeatures,
+        SourceMetadata, SourceSnapshot, Target,
     };
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
@@ -2263,11 +2299,8 @@ mod tests {
     fn assert_token_preparation_preserves_source_errors(source: &str) {
         let source = snapshot(&[(1, "/main.rue", "main.rue", source)], 1);
         let stages = crate::test_support::test_frontend_stages(&source).unwrap();
-        let merged = &stages.merged;
         let rir = &stages.rir;
         let options = CompileOptions::default();
-        let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
-
         let ordinary = match rue_air::Sema::new_synthetic(
             rir.rir(),
             rir.semantic_symbols().interner(),
@@ -2278,9 +2311,9 @@ mod tests {
             Err(errors) => errors,
             Ok(_) => panic!("test input must fail ordinary declaration binding"),
         };
-        let canonical =
-            analyze_canonical_program_for_test_support(merged, rir, &options, &imports, false)
-                .unwrap_err();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let canonical = session.canonical_semantic(&options).unwrap_err();
         let messages = |errors: crate::CompileErrors| {
             errors.iter().map(ToString::to_string).collect::<Vec<_>>()
         };
@@ -2325,45 +2358,19 @@ mod tests {
     fn canonical(
         snapshot: &SourceSnapshot,
         options: &CompileOptions,
-    ) -> (
-        std::sync::Arc<CanonicalSemanticOutput>,
-        std::sync::Arc<CanonicalRirOutput>,
-    ) {
-        let mut session = crate::CompilerSession::new();
-        crate::test_support::publish_test_snapshot(&mut session, snapshot).unwrap();
-        let rir = session.canonical_rir().unwrap();
-        let semantic = session.canonical_semantic(options).unwrap();
-        (semantic, rir)
-    }
-
-    /// Analyze a fixture through the whole-program body path rather than the
-    /// session's queried composition.
-    ///
-    /// Two kinds of test still need this. Stable declaration IDs are requested
-    /// by no production caller — the session asserts `!stable_ids_requested` —
-    /// so `ids` is reachable only here. And body-record assertions
-    /// (specialization origins, body-analysis counters) are empty through the
-    /// session because `compose_queried_bodies` never records them while the
-    /// shared finalizer still reports them complete; that is RUE-1204. Moving
-    /// those tests onto the session would assert the empty result and encode
-    /// the defect as expected behavior, so they stay here until RUE-1204 is
-    /// resolved.
-    fn whole_program_canonical(
-        snapshot: &SourceSnapshot,
-        options: &CompileOptions,
-        ids: bool,
-    ) -> (CanonicalSemanticOutput, std::sync::Arc<CanonicalRirOutput>) {
-        let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
-        let imports = crate::test_support::test_import_graph(snapshot).unwrap();
-        let output = analyze_canonical_program_for_test_support(
-            &stages.merged,
-            &stages.rir,
-            options,
-            &imports,
-            ids,
-        )
-        .unwrap();
-        (output, stages.rir)
+    ) -> (Arc<CanonicalSemanticOutput>, Arc<CanonicalRirOutput>) {
+        let mut session = CompilerSession::new();
+        if crate::test_support::fixture_has_imports(snapshot).unwrap() {
+            crate::test_support::TestDiscoveryHost::new(snapshot)
+                .unwrap()
+                .drive(&mut session)
+                .unwrap();
+        } else {
+            session.update(snapshot).into_result().unwrap();
+        }
+        let output = session.canonical_semantic(options).unwrap();
+        let rir = session.selected_semantic_rir_owner().unwrap();
+        (output, rir)
     }
 
     fn function_fingerprint(
@@ -2382,8 +2389,52 @@ mod tests {
             .collect()
     }
 
+    fn function_base_definition(
+        identity: &crate::FunctionInstanceKey,
+    ) -> Option<&crate::StableDefinitionKey> {
+        match identity {
+            crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+            crate::FunctionInstanceKey::Specialization { base, .. } => {
+                function_base_definition(base)
+            }
+            crate::FunctionInstanceKey::AnonymousMember { .. }
+            | crate::FunctionInstanceKey::DropGlue(_) => None,
+        }
+    }
+
+    fn specialized_functions<'a>(
+        output: &'a CanonicalSemanticOutput,
+        base_name: &'a str,
+    ) -> impl Iterator<
+        Item = (
+            &'a crate::StableDefinitionKey,
+            &'a crate::CanonicalArguments,
+        ),
+    > {
+        output.functions().iter().filter_map(move |function| {
+            let crate::FunctionInstanceKey::Specialization { base, arguments } =
+                &function.semantic_identity
+            else {
+                return None;
+            };
+            let definition = function_base_definition(base)?;
+            (definition.name() == base_name).then_some((definition, arguments))
+        })
+    }
+
+    fn integer_arguments(arguments: &crate::CanonicalArguments) -> Vec<i128> {
+        arguments
+            .values
+            .iter()
+            .map(|value| match value {
+                crate::CanonicalArgumentValue::Integer(value) => *value,
+                value => panic!("expected integer specialization argument, got {value:?}"),
+            })
+            .collect()
+    }
+
     #[test]
-    fn specialization_origins_preserve_exact_generic_base_and_arguments() {
+    fn specialization_identities_preserve_exact_generic_base_and_arguments() {
         let source = snapshot(
             &[(
                 1,
@@ -2397,34 +2448,32 @@ mod tests {
             )],
             1,
         );
-        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
-        let origins = output.specialized_free_function_origins();
-        let wraps = origins
-            .iter()
-            .filter(|origin| origin.base_name == "wrap")
-            .collect::<Vec<_>>();
-        let ids = origins
-            .iter()
-            .filter(|origin| origin.base_name == "id")
-            .collect::<Vec<_>>();
+        let (output, _) = canonical(&source, &CompileOptions::default());
+        let wraps = specialized_functions(&output, "wrap").collect::<Vec<_>>();
+        let ids = specialized_functions(&output, "id").collect::<Vec<_>>();
         assert_eq!(wraps.len(), 1, "identical specialization deduplicates");
         assert_eq!(ids.len(), 2, "direct and later-fixpoint specializations");
-        assert!(ids.iter().all(|origin| origin.base_file == 1));
-        assert_ne!(ids[0].value_arguments, ids[1].value_arguments);
-        assert!(
-            origins
-                .iter()
-                .all(|origin| origin.specialized_name != origin.base_name)
+        assert_eq!(integer_arguments(wraps[0].1), [1]);
+        assert_eq!(
+            ids.iter()
+                .map(|(_, arguments)| integer_arguments(arguments))
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([vec![1], vec![2]])
         );
+        assert!(wraps.iter().chain(ids.iter()).all(|(definition, _)| {
+            definition.module().as_str() == "main.rue"
+                && definition.kind() == crate::StableDefinitionKind::Function
+        }));
         assert!(
             output
                 .functions()
                 .iter()
-                .all(|function| function.analyzed.name != "id" && function.analyzed.name != "wrap")
-        );
-        assert_eq!(
-            output.work().body_analysis.specialized_origin_records,
-            origins.len()
+                .filter_map(|function| match &function.semantic_identity {
+                    crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+                    _ => None,
+                })
+                .all(|definition| !matches!(definition.name(), "id" | "wrap")),
+            "generic definitions are not runtime bodies"
         );
     }
 
@@ -2442,22 +2491,21 @@ mod tests {
             )],
             1,
         );
-        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
-        let origins = output
-            .specialized_free_function_origins()
-            .iter()
-            .filter(|origin| origin.base_name == "fib")
-            .collect::<Vec<_>>();
-        assert_eq!(origins.len(), 6, "fib(0) through fib(5), each exactly once");
-        assert!(origins.iter().all(|origin| origin.base_file == 1));
+        let (output, _) = canonical(&source, &CompileOptions::default());
         assert_eq!(
-            output.work().body_analysis.specialized_origin_records,
-            origins.len()
+            specialized_functions(&output, "fib")
+                .map(|(definition, arguments)| {
+                    assert_eq!(definition.module().as_str(), "main.rue");
+                    integer_arguments(arguments)
+                })
+                .collect::<std::collections::BTreeSet<_>>(),
+            (0..=5).map(|value| vec![value]).collect(),
+            "fib(0) through fib(5) must each have one production identity"
         );
     }
 
     #[test]
-    fn sibling_same_name_specializations_retain_distinct_base_files() {
+    fn sibling_same_name_specializations_retain_distinct_base_modules() {
         let source = snapshot(
             &[
                 (
@@ -2483,19 +2531,22 @@ mod tests {
             ],
             9,
         );
-        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
-        let origins = output
-            .specialized_free_function_origins()
-            .iter()
-            .filter(|origin| origin.base_name == "id")
-            .collect::<Vec<_>>();
-        assert_eq!(origins.len(), 2);
+        let (output, _) = canonical(&source, &CompileOptions::default());
+        let instances = specialized_functions(&output, "id").collect::<Vec<_>>();
+        assert_eq!(instances.len(), 2);
         assert_eq!(
-            origins
+            instances
                 .iter()
-                .map(|origin| origin.base_file)
+                .map(|(definition, _)| definition.module().as_str())
                 .collect::<std::collections::BTreeSet<_>>(),
-            std::collections::BTreeSet::from([3, 7])
+            std::collections::BTreeSet::from(["left.rue", "right.rue"])
+        );
+        assert_eq!(
+            instances
+                .iter()
+                .map(|(_, arguments)| integer_arguments(arguments))
+                .collect::<std::collections::BTreeSet<_>>(),
+            std::collections::BTreeSet::from([vec![1], vec![2]])
         );
     }
 
@@ -2551,38 +2602,6 @@ mod tests {
         assert!(canonical.bound_definitions().is_none());
     }
 
-    #[test]
-    fn requesting_ids_materializes_manifest_without_rebinding() {
-        let source = snapshot(
-            &[(
-                1,
-                "/main.rue",
-                "main.rue",
-                "struct Value { n: i32 } fn main() -> i32 { 42 }",
-            )],
-            1,
-        );
-        let options = CompileOptions::default();
-        let (ordinary, ordinary_rir) = whole_program_canonical(&source, &options, false);
-        let (with_ids, with_ids_rir) = whole_program_canonical(&source, &options, true);
-        assert_eq!(ordinary.work().binding.bind_invocations, 1);
-        assert_eq!(with_ids.work().binding.bind_invocations, 1);
-        assert_eq!(ordinary.work().manifest.build_invocations, 1);
-        assert_eq!(with_ids.work().manifest.build_invocations, 1);
-        assert!(ordinary.bound_definitions().is_none());
-        assert!(with_ids.bound_definitions().is_some());
-        assert_eq!(
-            function_fingerprint(
-                ordinary.functions(),
-                ordinary_rir.semantic_symbols().interner()
-            ),
-            function_fingerprint(
-                with_ids.functions(),
-                with_ids_rir.semantic_symbols().interner()
-            )
-        );
-    }
-
     fn irrelevant_declarations(count: usize) -> CanonicalSemanticWork {
         let mut source = String::from("fn main() -> i32 { 42 }");
         for index in 0..count {
@@ -2612,7 +2631,9 @@ mod tests {
         assert!(many.binding.indexed_free_functions > one.binding.indexed_free_functions);
     }
 
-    fn named_method_capture_with_irrelevant_declarations(count: usize) -> CanonicalSemanticWork {
+    fn named_method_capture_with_irrelevant_declarations(
+        count: usize,
+    ) -> (Arc<CanonicalSemanticOutput>, Arc<CanonicalRirOutput>) {
         let mut source = String::from(
             "fn helper() -> i32 { 1 } struct Value { fn run(borrow self) -> i32 { helper() } } fn main() -> i32 { let value = Value {}; value.run() }",
         );
@@ -2620,21 +2641,42 @@ mod tests {
             source.push_str(&format!(" fn irrelevant{index}() -> i32 {{ {index} }}"));
         }
         let snapshot = snapshot(&[(1, "/main.rue", "main.rue", &source)], 1);
-        whole_program_canonical(&snapshot, &CompileOptions::default(), false)
-            .0
-            .work()
+        canonical(&snapshot, &CompileOptions::default())
     }
 
     #[test]
-    fn named_method_capture_work_is_constant_with_128_irrelevant_declarations() {
-        let one = named_method_capture_with_irrelevant_declarations(1);
-        let many = named_method_capture_with_irrelevant_declarations(128);
-        assert_eq!(one.body_analysis.named_method_dependency_events, 1);
-        assert_eq!(many.body_analysis.named_method_dependency_events, 1);
-        assert_eq!(one.body_analysis.named_method_record_lookups, 1);
-        assert_eq!(many.body_analysis.named_method_record_lookups, 1);
-        assert_eq!(one.body_analysis.reachable_declaration_rir_visits, 0);
-        assert_eq!(many.body_analysis.reachable_declaration_rir_visits, 0);
+    fn named_method_capture_is_unchanged_by_irrelevant_declarations() {
+        let (one, one_rir) = named_method_capture_with_irrelevant_declarations(1);
+        let (many, many_rir) = named_method_capture_with_irrelevant_declarations(128);
+        assert_eq!(
+            function_fingerprint(one.functions(), one_rir.semantic_symbols().interner()),
+            function_fingerprint(many.functions(), many_rir.semantic_symbols().interner())
+        );
+
+        for output in [&one, &many] {
+            let method = output
+                .functions()
+                .iter()
+                .find(|function| {
+                    matches!(
+                        &function.semantic_identity,
+                        crate::FunctionInstanceKey::Definition(definition)
+                            if definition.kind() == crate::StableDefinitionKind::Method
+                                && definition.name() == "run"
+                                && definition.owner().is_some_and(|owner| owner.name() == "Value")
+                    )
+                })
+                .expect("reachable named method must be a production body");
+            let references = output
+                .body_references(&method.semantic_identity)
+                .expect("production body must retain its exact references");
+            assert!(references.0.iter().any(|reference| matches!(
+                reference,
+                crate::body_query::BodyReference::Callable(
+                    crate::FunctionInstanceKey::Definition(definition)
+                ) if definition.name() == "helper"
+            )));
+        }
     }
 
     #[test]
@@ -2648,23 +2690,94 @@ mod tests {
             )],
             1,
         );
-        let (output, _) = whole_program_canonical(&source, &CompileOptions::default(), false);
+        let (output, _) = canonical(&source, &CompileOptions::default());
         assert_eq!(
             output
                 .functions()
                 .iter()
-                // The named struct's method symbol is file-qualified
-                // (`Value$<file>.choose`) under ADR-0066.
-                .filter(|function| {
-                    function.analyzed.name.starts_with("Value$")
-                        && function.analyzed.name.ends_with(".choose")
-                })
+                .filter(|function| matches!(
+                    &function.semantic_identity,
+                    crate::FunctionInstanceKey::Definition(definition)
+                        if definition.kind() == crate::StableDefinitionKind::Method
+                            && definition.name() == "choose"
+                            && definition.owner().is_some_and(|owner| owner.name() == "Value")
+                ))
                 .count(),
-            1
+            1,
+            "{:#?}",
+            output
+                .functions()
+                .iter()
+                .map(|function| &function.semantic_identity)
+                .collect::<Vec<_>>()
         );
-        assert!(output.specialized_free_function_origins().is_empty());
-        assert_eq!(output.named_method_dependencies().len(), 1);
-        assert!(output.generic_named_method_dependencies_complete());
+        assert!(
+            output.functions().iter().all(|function| !matches!(
+                &function.semantic_identity,
+                crate::FunctionInstanceKey::Specialization { base, .. }
+                    if function_base_definition(base).is_some_and(|definition| {
+                        definition.kind() == crate::StableDefinitionKind::Method
+                            && definition.name() == "choose"
+                    })
+            )),
+            "comptime named-method arguments do not create runtime bodies"
+        );
+        let method = output
+            .functions()
+            .iter()
+            .find(|function| {
+                function_base_definition(&function.semantic_identity).is_some_and(|definition| {
+                    definition.kind() == crate::StableDefinitionKind::Method
+                        && definition.name() == "choose"
+                })
+            })
+            .unwrap();
+        let method_references = output.body_references(&method.semantic_identity).unwrap();
+        assert!(
+            method_references.0.iter().any(|reference| matches!(
+                reference,
+                crate::body_query::BodyReference::Callable(identity)
+                    if function_base_definition(identity)
+                        .is_some_and(|definition| definition.name() == "helper")
+            )),
+            "the retained named-method body must close over its transitive helper"
+        );
+        assert!(
+            output.functions().iter().any(|function| {
+                matches!(
+                    &function.semantic_identity,
+                    crate::FunctionInstanceKey::Definition(definition)
+                        if definition.kind() == crate::StableDefinitionKind::Function
+                            && definition.name() == "helper"
+                )
+            }),
+            "the transitive helper must be composed into production output"
+        );
+        let main = output
+            .functions()
+            .iter()
+            .find(|function| {
+                function_base_definition(&function.semantic_identity)
+                    .is_some_and(|definition| definition.name() == "main")
+            })
+            .unwrap();
+        let references = output.body_references(&main.semantic_identity).unwrap();
+        assert_eq!(
+            references
+                .0
+                .iter()
+                .filter(|reference| matches!(
+                    reference,
+                    crate::body_query::BodyReference::Callable(identity)
+                        if function_base_definition(identity).is_some_and(|definition| {
+                            definition.kind() == crate::StableDefinitionKind::Method
+                                && definition.name() == "choose"
+                        })
+                ))
+                .count(),
+            1,
+            "both calls share the named method's one exact body reference"
+        );
     }
 
     #[test]
