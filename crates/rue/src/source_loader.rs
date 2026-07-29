@@ -164,6 +164,24 @@ fn normalize_lexical_path(path: &Path) -> PathBuf {
     normalized
 }
 
+/// Capture the standard-library root in the same physical spelling every
+/// candidate read canonicalizes to.
+///
+/// Discovery classifies a candidate as standard-library by comparing its
+/// *canonical* path against this captured root, so the two must agree on how
+/// the filesystem spells the location. A configured root frequently reaches the
+/// compiler through a symlinked prefix: on macOS a `mktemp -d` root is spelled
+/// `/var/folders/...` while canonicalization resolves it to
+/// `/private/var/folders/...`. Normalizing that root only lexically rejected
+/// every module in the bundle as escaping its own root (RUE-991).
+///
+/// A root that cannot be canonicalized keeps its lexical spelling. That case is
+/// a missing or unreadable toolchain, which the trusted-acquisition
+/// diagnostics report against the path the user configured.
+fn capture_std_root(std_root: &Path) -> PathBuf {
+    fs::canonicalize(std_root).unwrap_or_else(|_| normalize_lexical_path(std_root))
+}
+
 #[derive(Debug)]
 enum StableReadError {
     Io(std::io::Error),
@@ -827,7 +845,7 @@ pub(crate) fn discover_and_load_imports(
         .parent()
         .unwrap_or_else(|| Path::new("/"))
         .to_path_buf();
-    let std_root = std_root.map(normalize_lexical_path);
+    let std_root = std_root.map(capture_std_root);
     let policy_revision = source_manifest
         .as_ref()
         .map(SourceManifest::policy_revision)
@@ -1647,6 +1665,50 @@ mod tests {
                 .iter()
                 .all(|entry| entry.canonical_path() != unrelated.to_string_lossy())
         );
+    }
+
+    /// RUE-991: a std root reached through a symlinked prefix is the same
+    /// location as its canonical spelling, so its modules must classify as
+    /// standard-library rather than as escaping their own root. This is the
+    /// portable form of the macOS `/var` -> `/private/var` alias that a
+    /// `mktemp -d` std bundle hits on every run.
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_std_root_classifies_as_standard_library() {
+        let project = TestDir::new("aliased-std-project");
+        let stdlib = TestDir::new("aliased-std-library");
+        let main = project.write(
+            "main.rue",
+            r#"const std = @import("std"); fn main() -> i32 { 0 }"#,
+        );
+        stdlib.write("_std.rue", r#"pub const math = @import("math.rue");"#);
+        stdlib.write("math.rue", "pub fn answer() -> i32 { 42 }");
+        let canonical_root = fs::canonicalize(&stdlib.path).unwrap();
+        let alias = stdlib.path.with_extension("alias");
+        std::os::unix::fs::symlink(&canonical_root, &alias).unwrap();
+
+        let result = discover_and_load_imports(main.to_str().unwrap(), None, Some(&alias))
+            .expect("an aliased std root resolves to the same bundle as its canonical spelling");
+
+        assert_eq!(result.read_manifest.len(), 3);
+        let std_modules: Vec<_> = result
+            .read_manifest
+            .iter()
+            .filter(|entry| entry.module().is_trusted_standard_library())
+            .map(|entry| entry.module().as_str().to_owned())
+            .collect();
+        assert_eq!(
+            std_modules,
+            vec!["\0rue-std/_std.rue", "\0rue-std/math.rue"],
+            "aliased std modules keep their root-relative standard-library identity"
+        );
+        assert_eq!(
+            result.std_root.as_deref(),
+            Some(canonical_root.as_path()),
+            "the captured std root is canonicalized once for the whole epoch"
+        );
+
+        fs::remove_file(&alias).unwrap();
     }
 
     #[test]
