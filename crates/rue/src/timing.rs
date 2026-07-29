@@ -24,8 +24,8 @@
 //! mixed in one visualization (ADR-0067).
 //!
 //! **Inclusive spans** are the `passes` table. Spans nest and overlap, a child's
-//! duration is contained in its parent's, and codegen subphases run
-//! concurrently across Rayon workers. Summing them double-counts, which is why
+//! duration is contained in its parent's, and backend subphases can run
+//! concurrently across query workers. Summing them double-counts, which is why
 //! the root total is a union of active intervals rather than a sum.
 //!
 //! **Wall-clock phase accounting** is [`BenchmarkTiming::phase_accounting`]. A
@@ -155,8 +155,8 @@ struct TimingDataInner {
     /// A phase is active exactly while its count is greater than zero. The set
     /// of active phases is always derived from these counts and never tracked
     /// independently, so the two can never disagree. Multiple concurrent spans
-    /// of the same phase are expected — Rayon workers re-enter one `codegen`
-    /// span by value (RUE-786) — and the count absorbs them.
+    /// of the same phase are expected — query workers can concurrently enter
+    /// backend subphases — and the count absorbs them.
     phase_counts: [u64; Phase::ALL.len()],
     /// Wall time charged to each published phase, indexed by [`Phase::index`].
     phase_durations: [Duration; Phase::ALL.len()],
@@ -1249,15 +1249,14 @@ mod tests {
             ("declaration_shells", "declaration_shell_prepare"),
             ("declaration_shell_prepare", "rir_declaration_index"),
             ("compile_pipeline", "sema"),
-            // The backend and linker subphases RUE-786 added must reach the
-            // pipeline aggregate rather than escaping to their own roots —
-            // codegen in particular runs its subphases on Rayon workers.
-            ("compile_pipeline", "codegen"),
-            ("codegen", "mir_lowering"),
-            ("codegen", "register_allocation"),
-            ("codegen", "machine_emission"),
-            // Object serialization runs after the parallel fan-out returns, so
-            // it is a sibling of `codegen`, not one of its subphases.
+            // Query-native codegen units publish their backend subphases
+            // directly beneath the pipeline aggregate. They must not escape
+            // to query-root timing spans or revive a peer codegen coordinator.
+            ("compile_pipeline", "mir_lowering"),
+            ("compile_pipeline", "register_allocation"),
+            ("compile_pipeline", "machine_emission"),
+            // Object serialization runs after collecting the query units, so
+            // it remains a sibling of those backend leaves.
             ("compile_pipeline", "object_serialization"),
             ("compile_pipeline", "linker"),
             ("linker", "link_parse_objects"),
@@ -1885,23 +1884,27 @@ mod phase_accounting_tests {
 
     #[test]
     fn time_outside_the_root_is_excluded_entirely() {
-        let accounting = collect(|| {
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        tracing::subscriber::with_default(subscriber, || {
             {
                 let _root = tracing::info_span!("compile").entered();
                 thread::sleep(TICK);
             }
+            let before_driver_overhead = data.phase_accounting();
             // The root has closed. This interval is real time the process
             // spends, but it is driver overhead rather than compiler work, so it
             // must not enter the phase stack at all.
             thread::sleep(TICK * 2);
+            let after_driver_overhead = data.phase_accounting();
+            assert_eq!(
+                before_driver_overhead.compiler_root_ns, after_driver_overhead.compiler_root_ns,
+                "driver time leaked into the root total: {after_driver_overhead:?}"
+            );
         });
 
+        let accounting = data.phase_accounting();
         assert_invariant(&accounting);
-        // Root time covers only the first tick, not the three ticks elapsed.
-        assert!(
-            accounting.compiler_root_ns < duration_ns(TICK * 2),
-            "excluded time leaked into the root total: {accounting:?}"
-        );
     }
 
     #[test]

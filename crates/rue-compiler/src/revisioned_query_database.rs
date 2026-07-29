@@ -567,6 +567,10 @@ pub(crate) struct RevisionedQueryDatabase {
     #[allow(dead_code)]
     cfgs: QueryFamily<crate::cfg_query::CfgQueryKey, crate::cfg_query::CfgValue>,
     optimized_cfgs: QueryFamily<crate::cfg_query::OptimizedCfgQueryKey, crate::cfg_query::CfgValue>,
+    codegen_units: QueryFamily<
+        crate::codegen_query::CodegenUnitQueryKey,
+        crate::codegen_query::CodegenUnitValue,
+    >,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     /// Per-`(module, import-path)` binding-resolution family. Registered query
     /// machinery for the exact provider boundary. Production body import
@@ -12816,6 +12820,21 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the OptimizedCfg family has one canonical name");
+        let optimized_cfgs_for_codegen = optimized_cfgs.clone();
+        let codegen_units = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.codegen-unit",
+                BODY_QUERY_MEMO_RETENTION,
+                crate::codegen_query::codegen_unit_value_equal,
+                move |context, _, key: &crate::codegen_query::CodegenUnitQueryKey| {
+                    crate::codegen_query::evaluate_codegen_unit(
+                        context,
+                        &optimized_cfgs_for_codegen,
+                        key,
+                    )
+                },
+            )
+            .expect("the CodegenUnit family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
@@ -13997,6 +14016,7 @@ impl RevisionedQueryDatabase {
             drop_glues,
             cfgs,
             optimized_cfgs,
+            codegen_units,
             lookup_names,
             lookup_imports,
             #[cfg(test)]
@@ -14284,7 +14304,7 @@ impl RevisionedQueryDatabase {
         cancellation: CancellationToken,
     ) -> Result<
         (
-            crate::cfg_query::CfgQueryKey,
+            crate::cfg_query::OptimizedCfgQueryKey,
             rue_query::QueryRequestAttempt<crate::cfg_query::CfgValue>,
         ),
         QueryAbort,
@@ -14382,13 +14402,50 @@ impl RevisionedQueryDatabase {
             call_abi_values.into(),
             live,
         );
+        let optimized = crate::cfg_query::OptimizedCfgQueryKey::new(cfg, opt_level);
         let attempt = self.runtime.request_registered(
             &self.optimized_cfgs,
             revision,
-            crate::cfg_query::OptimizedCfgQueryKey::new(cfg.clone(), opt_level),
+            optimized.clone(),
             cancellation,
         );
-        Ok((cfg, attempt))
+        Ok((optimized, attempt))
+    }
+
+    /// Request one canonical backend terminal. Batch assembly supplies the
+    /// current resolver, but the query key records only the callable names its
+    /// CFG actually uses; unrelated functions cannot invalidate this unit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn codegen_unit(
+        &self,
+        revision: Revision,
+        function: crate::FunctionWithCfg,
+        type_pool: crate::FrozenTypeInternPool,
+        strings: Arc<[String]>,
+        interner: Arc<lasso::ThreadedRodeo>,
+        symbol_mappings: Arc<BTreeMap<String, String>>,
+        foreign_symbols: Arc<BTreeSet<String>>,
+        optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
+        target: rue_target::Target,
+        request: rue_codegen::BackendArtifactRequest,
+        optimization: rue_cfg::OptLevel,
+        cancellation: CancellationToken,
+    ) -> Result<QueryRequestAttempt<crate::codegen_query::CodegenUnitValue>, QueryAbort> {
+        let live = Arc::new(crate::codegen_query::CodegenLiveInput {
+            function: Arc::new(function),
+            type_pool,
+            strings,
+            interner,
+            symbol_mappings,
+            foreign_symbols,
+            optimized_cfg_key,
+        });
+        Ok(self.runtime.request_registered(
+            &self.codegen_units,
+            revision,
+            crate::codegen_query::CodegenUnitQueryKey::new(live, target, request, optimization),
+            cancellation,
+        ))
     }
 
     /// Publish an immutable, revisioned import authority for lower-layer

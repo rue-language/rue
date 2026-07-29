@@ -699,13 +699,10 @@ impl crate::CompilerSession {
                 if let Some(backend_request) = backend_request {
                     let foreign_symbols =
                         crate::backend::collect_foreign_symbols(rir.rir(), interner);
-                    let products = crate::backend::generate_backend_products(
-                        semantic.functions(),
-                        semantic.type_pool(),
-                        semantic.strings(),
-                        interner,
-                        request.options,
+                    let products = self.codegen_products(
+                        &semantic,
                         &foreign_symbols,
+                        request.options,
                         backend_request,
                     )?;
                     for product in products {
@@ -824,6 +821,332 @@ impl crate::CompilerSession {
             }
         }
         Ok(PresentationOutput { text })
+    }
+}
+
+#[cfg(test)]
+mod codegen_unit_tests {
+    use super::*;
+
+    #[test]
+    fn codegen_presentation_is_available_before_and_after_normal_codegen() {
+        let snapshot = crate::SourceSnapshot::single("main.rue", "fn main() -> i32 { 7 }").unwrap();
+        let options = crate::CompileOptions::default();
+        let order = snapshot
+            .files()
+            .map(|file| file.file_id)
+            .collect::<Vec<_>>();
+        let mut first_emit = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut first_emit, &snapshot).unwrap();
+        let emitted_first = first_emit
+            .unstable_present(PresentationRequest {
+                stage: PresentationStage::Asm,
+                options: &options,
+                file_order: &order,
+            })
+            .unwrap();
+        let semantic = first_emit.canonical_semantic(&options).unwrap();
+        first_emit
+            .codegen_products(
+                &semantic,
+                &[],
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let emitted_after = first_emit
+            .unstable_present(PresentationRequest {
+                stage: PresentationStage::Asm,
+                options: &options,
+                file_order: &order,
+            })
+            .unwrap();
+        assert_eq!(emitted_first.text, emitted_after.text);
+
+        let mut first_link = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut first_link, &snapshot).unwrap();
+        let semantic = first_link.canonical_semantic(&options).unwrap();
+        first_link
+            .codegen_products(
+                &semantic,
+                &[],
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            emitted_first.text,
+            first_link
+                .unstable_present(PresentationRequest {
+                    stage: PresentationStage::Asm,
+                    options: &options,
+                    file_order: &order
+                })
+                .unwrap()
+                .text
+        );
+    }
+
+    #[test]
+    fn codegen_unit_failure_preserves_the_backend_diagnostic() {
+        let snapshot = crate::SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
+        let options = crate::CompileOptions::default();
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+
+        let errors = crate::codegen_query::with_test_codegen_failure_injection(|| {
+            session
+                .codegen_products(
+                    &semantic,
+                    &[],
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap_err()
+        });
+
+        assert!(
+            matches!(
+                errors.first().map(|error| &error.kind),
+                Some(crate::ErrorKind::InternalCodegenError(message))
+                    if message
+                        == "production machine-symbol resolver left source/glue call `injected_unresolved_codegen_symbol` unresolved"
+            ),
+            "codegen failure must retain its original diagnostic: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn codegen_units_skip_unreached_bodies_and_keep_non_inlined_caller_bytes() {
+        let first = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn callee() -> i32 { 1 } fn dead() -> i32 { 99 } fn main() -> i32 { callee() }",
+        )
+        .unwrap();
+        let second = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn callee() -> i32 { 2 } fn dead() -> i32 { 99 } fn main() -> i32 { callee() }",
+        )
+        .unwrap();
+        let options = crate::CompileOptions::default();
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &first).unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let before = session
+            .codegen_products(
+                &semantic,
+                &[],
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        assert_eq!(
+            before.len(),
+            2,
+            "only reached callee and main publish units"
+        );
+        let caller = before
+            .iter()
+            .find(|product| product.machine_name == "main")
+            .unwrap()
+            .machine_code
+            .code
+            .clone();
+        crate::publish_test_snapshot(&mut session, &second).unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let after = session
+            .codegen_products(
+                &semantic,
+                &[],
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let executions = session.codegen_executions();
+        assert_eq!(
+            executions.len(),
+            2,
+            "only main and reached callee publish units"
+        );
+        assert!(executions.iter().any(|(identity, execution)| matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == "callee") && *execution == rue_query::RequestExecution::Computed), "{executions:?}");
+        assert!(executions.iter().any(|(identity, execution)| matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == "main") && *execution == rue_query::RequestExecution::Reused), "{executions:?}");
+        assert_eq!(
+            caller,
+            after
+                .iter()
+                .find(|product| product.machine_name == "main")
+                .unwrap()
+                .machine_code
+                .code
+        );
+    }
+
+    #[test]
+    fn codegen_units_cover_x86_and_aarch64_relocations_deterministically() {
+        let snapshot = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn callee() -> i32 { 1 } fn main() -> i32 { callee() }",
+        )
+        .unwrap();
+        for target in [crate::Target::X86_64Linux, crate::Target::Aarch64Linux] {
+            let options = crate::CompileOptions {
+                target,
+                ..crate::CompileOptions::default()
+            };
+            let mut session = crate::CompilerSession::new();
+            crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let semantic = session.canonical_semantic(&options).unwrap();
+            let first = session
+                .codegen_products(
+                    &semantic,
+                    &[],
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            let second = session
+                .codegen_products(
+                    &semantic,
+                    &[],
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            assert_eq!(
+                first
+                    .iter()
+                    .map(|product| (
+                        &product.machine_code.code,
+                        &product.machine_code.relocations
+                    ))
+                    .collect::<Vec<_>>(),
+                second
+                    .iter()
+                    .map(|product| (
+                        &product.machine_code.code,
+                        &product.machine_code.relocations
+                    ))
+                    .collect::<Vec<_>>()
+            );
+            let relocs = &first
+                .iter()
+                .find(|product| product.machine_name == "main")
+                .unwrap()
+                .machine_code
+                .relocations;
+            assert!(relocs.iter().any(|relocation| matches!(
+                (target.arch(), relocation.kind),
+                (
+                    rue_target::Arch::X86_64,
+                    rue_codegen::RelocationKind::X86Plt32
+                ) | (
+                    rue_target::Arch::Aarch64,
+                    rue_codegen::RelocationKind::Aarch64Call26
+                )
+            )));
+        }
+    }
+
+    #[test]
+    fn codegen_units_are_identical_with_one_or_four_query_workers() {
+        let snapshot = crate::SourceSnapshot::single(
+            "main.rue",
+            "fn f() -> i32 { 1 } fn main() -> i32 { f() }",
+        )
+        .unwrap();
+        let options = crate::CompileOptions::default();
+        let run = |workers| {
+            let mut session = crate::CompilerSession::with_query_concurrency(workers);
+            crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let semantic = session.canonical_semantic(&options).unwrap();
+            let products = session
+                .codegen_products(
+                    &semantic,
+                    &[],
+                    &options,
+                    rue_codegen::BackendArtifactRequest {
+                        asm: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let units = products
+                .iter()
+                .map(|product| format!("{:?}", product))
+                .collect::<Vec<_>>();
+            let objects = crate::backend::generate_pre_link_objects_from_products(
+                semantic.functions(),
+                products,
+                &options,
+                &[],
+            )
+            .unwrap();
+            (units, objects)
+        };
+        assert_eq!(run(1), run(4));
+    }
+
+    #[test]
+    fn layout_successor_rebuilds_codegen_units() {
+        let first = crate::SourceSnapshot::single("main.rue", "struct Inner { b: i32, a: i32 } struct Outer { inner: Inner } fn consume(value: Outer) -> i32 { value.inner.a } fn main() -> i32 { consume(Outer { inner: Inner { b: 1, a: 1 } }) }").unwrap();
+        let second = crate::SourceSnapshot::single("main.rue", "struct Inner { b: i64, a: i32 } struct Outer { inner: Inner } fn consume(value: Outer) -> i32 { value.inner.a } fn main() -> i32 { consume(Outer { inner: Inner { b: 1, a: 1 } }) }").unwrap();
+        let options = crate::CompileOptions::default();
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &first).unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let consume_name = semantic
+            .functions()
+            .iter()
+            .find(|function| function.analyzed.name == "consume")
+            .unwrap()
+            .machine_name
+            .clone();
+        let before = session
+            .codegen_products(
+                &semantic,
+                &[],
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let consume_before = before
+            .iter()
+            .find(|product| product.machine_name == consume_name)
+            .map(|product| {
+                (
+                    product.machine_code.code.clone(),
+                    product.machine_code.relocations.clone(),
+                )
+            })
+            .unwrap();
+        crate::publish_test_snapshot(&mut session, &second).unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let after = session
+            .codegen_products(
+                &semantic,
+                &[],
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let consume_after = after
+            .iter()
+            .find(|product| product.machine_name == consume_name)
+            .map(|product| {
+                (
+                    product.machine_code.code.clone(),
+                    product.machine_code.relocations.clone(),
+                )
+            })
+            .unwrap();
+        assert_ne!(consume_before, consume_after);
+        assert!(
+            session
+                .codegen_executions()
+                .iter()
+                .any(|(identity, execution)| matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == "consume") && *execution == rue_query::RequestExecution::Computed)
+        );
     }
 }
 

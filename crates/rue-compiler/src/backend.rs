@@ -43,7 +43,7 @@ pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRode
 /// and the linker satisfies it from a static archive. The identity mapping also
 /// lets `validate_production_call_relocations` recognize the raw name as a
 /// declared foreign call rather than an unresolved glue symbol.
-fn foreign_call_symbol_mappings(
+pub(crate) fn foreign_call_symbol_mappings(
     functions: &[FunctionWithCfg],
     foreign_symbols: &[String],
 ) -> std::collections::BTreeMap<String, String> {
@@ -60,6 +60,7 @@ fn foreign_call_symbol_mappings(
 }
 
 /// Canonical per-function result of the production backend pipeline.
+#[derive(Debug, Clone)]
 pub(crate) struct FunctionBackendProduct {
     pub(crate) machine_name: String,
     pub(crate) machine_code: rue_codegen::MachineCode,
@@ -74,6 +75,7 @@ pub(crate) struct FunctionBackendProduct {
 /// 3. Links them into an executable
 ///
 /// This function is used by the sole one-shot compilation adapter.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn compile_backend(
     functions: &[FunctionWithCfg],
@@ -114,6 +116,7 @@ pub(crate) fn compile_backend(
 /// relocations. This is the pre-link boundary the RUE-1086 scaling-bench runner
 /// times as its `pre_link` interval; `compile_backend` calls it and then links
 /// the returned objects.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_pre_link_objects(
     functions: &[FunctionWithCfg],
@@ -166,6 +169,44 @@ pub(crate) fn generate_pre_link_objects(
         foreign_symbols,
         rue_codegen::BackendArtifactRequest::default(),
     )?;
+    generate_pre_link_objects_from_products(functions, products, options, export_symbols)
+}
+
+/// Object/link projection of canonical `CodegenUnit` terminals. This owns no
+/// lowering or emission; callers have already collected the shared units.
+pub(crate) fn generate_pre_link_objects_from_products(
+    functions: &[FunctionWithCfg],
+    products: Vec<FunctionBackendProduct>,
+    options: &CompileOptions,
+    export_symbols: &[String],
+) -> MultiErrorResult<Vec<Vec<u8>>> {
+    if !functions.iter().any(|function| {
+        matches!(
+            function.symbol,
+            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
+                crate::CompilerCallableId::ProgramEntry
+            ))
+        ) && function.machine_name == "main"
+    }) {
+        return Err(CompileError::without_span(ErrorKind::NoMainFunction).into());
+    }
+    for function in functions {
+        match &function.symbol {
+            crate::StableSymbolId::Callable(crate::StableCallableId::Function(identity))
+                if identity == &function.semantic_identity
+                    && crate::StableSymbolEncoder::encode(&function.symbol)
+                        == function.machine_name => {}
+            crate::StableSymbolId::Callable(crate::StableCallableId::Compiler(
+                crate::CompilerCallableId::ProgramEntry,
+            )) if function.machine_name == "main" => {}
+            _ => {
+                return Err(CompileError::without_span(ErrorKind::InternalError(
+                    "compiler function record has inconsistent semantic/symbol projection".into(),
+                ))
+                .into());
+            }
+        }
+    }
     let mut object_files = products
         .into_iter()
         .map(|product| project_backend_object(product, options.target))
@@ -191,6 +232,7 @@ pub(crate) fn generate_pre_link_objects(
 
 /// Run the production per-function backend pipeline, optionally retaining
 /// diagnostic projections from that exact execution.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn generate_backend_products(
     functions: &[FunctionWithCfg],
@@ -275,7 +317,7 @@ pub(crate) fn generate_backend_products(
         .map_err(CompileErrors::from)
 }
 
-fn project_backend_object(
+pub(crate) fn project_backend_object(
     product: FunctionBackendProduct,
     target: Target,
 ) -> CompileResult<Vec<u8>> {
@@ -307,6 +349,24 @@ fn project_backend_object(
         });
     }
     Ok(obj_builder.build())
+}
+
+/// Link canonical codegen units through the ordinary one-shot adapter.
+pub(crate) fn compile_backend_products(
+    functions: &[FunctionWithCfg],
+    products: Vec<FunctionBackendProduct>,
+    options: &CompileOptions,
+    warnings: &[CompileWarning],
+    export_symbols: &[String],
+) -> MultiErrorResult<CompileOutput> {
+    let objects =
+        generate_pre_link_objects_from_products(functions, products, options, export_symbols)?;
+    match &options.linker {
+        LinkerMode::Internal => link_internal_with_warnings(options, &objects, warnings),
+        LinkerMode::System(linker_cmd) => {
+            link_system_with_warnings(options, &objects, linker_cmd, warnings)
+        }
+    }
 }
 
 /// Emit the C-ABI entry thunk objects for every `pub extern "C" fn` export
@@ -387,7 +447,7 @@ fn generate_export_thunk_objects(
 /// the compiler's production path must never let an unresolved source or glue
 /// name reach the linker. Runtime exports and already-projected canonical
 /// machine names are the only call relocations which may bypass a map lookup.
-fn validate_production_call_relocations(
+pub(crate) fn validate_production_call_relocations(
     relocations: &[rue_codegen::EmittedRelocation],
     symbol_mappings: &std::collections::BTreeMap<String, String>,
 ) -> CompileResult<()> {

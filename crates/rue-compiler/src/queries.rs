@@ -94,7 +94,7 @@ impl Default for CompileOptions {
 /// A function with its typed IR (AIR) and control flow graph (CFG).
 ///
 /// This combines the output of semantic analysis with CFG construction.
-#[derive(Debug)]
+#[derive(Clone)]
 pub struct FunctionWithCfg {
     /// The analyzed function from semantic analysis.
     pub analyzed: std::sync::Arc<AnalyzedFunction>,
@@ -111,8 +111,29 @@ pub struct FunctionWithCfg {
     /// Request-local live symbol used only to resolve pre-projection AIR and
     /// cleanup metadata through the authoritative mapping.
     pub(crate) legacy_name: String,
+    /// Stable semantic/ABI/CFG content identity used by the per-function
+    /// codegen terminal. It intentionally excludes current interner and type
+    /// pool indexes while retaining every exact input observed by Cfg.
+    pub(crate) optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
     /// The control flow graph built from the AIR.
     pub cfg: Cfg,
+}
+
+impl std::fmt::Debug for FunctionWithCfg {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The optimized query key contains request-local relocation domains;
+        // it is an execution dependency, not semantic presentation state.
+        formatter
+            .debug_struct("FunctionWithCfg")
+            .field("analyzed", &self.analyzed)
+            .field("semantic_identity", &self.semantic_identity)
+            .field("symbol", &self.symbol)
+            .field("local_atoms", &self.local_atoms)
+            .field("machine_name", &self.machine_name)
+            .field("legacy_name", &self.legacy_name)
+            .field("cfg", &self.cfg)
+            .finish()
+    }
 }
 
 /// Intermediate compilation state after frontend processing.
@@ -476,7 +497,7 @@ pub(crate) fn collect_function_cfg_queries(
                         Some(rue_air::ImplicitDropDependencySourceEvent::Anonymous)
                     ),
                 });
-                let (_, attempt) = cfg_queries
+                let (optimized_cfg_key, attempt) = cfg_queries
                     .optimized_cfg(
                         revision,
                         semantic_identity.clone(),
@@ -635,6 +656,7 @@ pub(crate) fn collect_function_cfg_queries(
                                     local_atoms,
                                     machine_name,
                                     legacy_name,
+                                    optimized_cfg_key,
                                     cfg,
                                 },
                                 func_warnings,
@@ -856,13 +878,16 @@ pub(crate) fn pre_link_object_bytes_with_session(
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
         crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-    let objects = crate::backend::generate_pre_link_objects(
-        semantic.functions(),
-        semantic.type_pool(),
-        semantic.strings(),
-        rir.semantic_symbols().interner(),
-        options,
+    let products = session.codegen_products(
+        &semantic,
         &foreign_symbols,
+        options,
+        rue_codegen::BackendArtifactRequest::default(),
+    )?;
+    let objects = crate::backend::generate_pre_link_objects_from_products(
+        semantic.functions(),
+        products,
+        options,
         &export_symbols,
     )?;
     Ok(objects.iter().map(|object| object.len()).sum())
@@ -899,19 +924,22 @@ pub(crate) fn compile_with_session(
         session.canonical_rir()?
     };
     let semantic = session.canonical_semantic(options)?;
-    let session_work = session.work();
+    let session_work = session.work().clone();
     let foreign_symbols =
         crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
         crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-    let mut output = crate::backend::compile_backend(
+    let products = session.codegen_products(
+        &semantic,
+        &foreign_symbols,
+        options,
+        rue_codegen::BackendArtifactRequest::default(),
+    )?;
+    let mut output = crate::backend::compile_backend_products(
         semantic.functions(),
-        semantic.type_pool(),
-        semantic.strings(),
-        rir.semantic_symbols().interner(),
+        products,
         options,
         semantic.warnings(),
-        &foreign_symbols,
         &export_symbols,
     )?;
     output.source_stats = SourceStats {

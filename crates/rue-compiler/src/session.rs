@@ -1344,6 +1344,8 @@ pub struct CompilerSession {
     /// successor classifies only its appended delta.
     parse_invalidation_entries_compared: u64,
     queries: FrontendQueryDatabase,
+    #[cfg(test)]
+    codegen_executions: Vec<(crate::FunctionInstanceKey, rue_query::RequestExecution)>,
     /// One-shot cancellation injections, each consumed with `mem::take` at a
     /// fixed point inside an attempt.
     ///
@@ -2582,6 +2584,15 @@ fn compute_stable_definitions(
 }
 
 impl CompilerSession {
+    #[cfg(test)]
+    pub(crate) fn with_query_concurrency(workers: usize) -> Self {
+        let mut session = Self::default();
+        session.queries.revisioned =
+            crate::revisioned_query_database::RevisionedQueryDatabase::with_query_concurrency(
+                workers,
+            );
+        session
+    }
     /// Corrupt actual retained/selectable query state for the differential
     /// oracle. This is deliberately typed and narrow; production callers have
     /// no reason to use it.
@@ -5960,6 +5971,98 @@ impl CompilerSession {
                 panic!("uncanceled semantic request aborted: {abort:?}")
             }
         }
+    }
+
+    /// Collect the canonical per-function backend terminals for one semantic
+    /// result. This is deliberately a deterministic adapter: `CodegenUnit`
+    /// owns lowering, allocation, scheduling, emission, and requested
+    /// presentation projections; callers only order and project terminals.
+    pub(crate) fn codegen_products(
+        &mut self,
+        semantic: &crate::CanonicalSemanticOutput,
+        foreign_symbols: &[String],
+        options: &crate::CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+    ) -> Result<Vec<crate::backend::FunctionBackendProduct>, crate::CompileErrors> {
+        let revision = self
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .ok_or_else(|| {
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    crate::ErrorKind::InvalidCompilerInput(
+                        "code generation requires a published semantic revision".into(),
+                    ),
+                ))
+            })?;
+        let mappings = Arc::new(crate::backend::foreign_call_symbol_mappings(
+            semantic.functions(),
+            foreign_symbols,
+        ));
+        let foreign: Arc<std::collections::BTreeSet<String>> =
+            Arc::new(foreign_symbols.iter().cloned().collect());
+        let strings: Arc<[String]> = semantic.strings().to_vec().into();
+        let interner = self
+            .selected_semantic_rir_owner()
+            .expect("semantic output retains the exact RIR interner")
+            .semantic_symbols()
+            .shared_interner();
+        let mut products = Vec::with_capacity(semantic.functions().len());
+        #[cfg(test)]
+        self.codegen_executions.clear();
+        for function in semantic.functions() {
+            let attempt = self
+                .queries
+                .revisioned
+                .codegen_unit(
+                    revision,
+                    function.clone(),
+                    semantic.type_pool().clone(),
+                    strings.clone(),
+                    interner.clone(),
+                    mappings.clone(),
+                    foreign.clone(),
+                    function.optimized_cfg_key.clone(),
+                    options.target,
+                    request,
+                    options.opt_level,
+                    rue_query::CancellationToken::new(),
+                )
+                .map_err(|abort| {
+                    crate::CompileErrors::from(crate::CompileError::without_span(
+                        crate::ErrorKind::InternalError(format!(
+                            "codegen query aborted: {abort:?}"
+                        )),
+                    ))
+                })?;
+            #[cfg(test)]
+            self.codegen_executions
+                .push((function.semantic_identity.clone(), attempt.execution()));
+            let terminal = attempt.into_result().map_err(|abort| {
+                crate::CompileErrors::from(crate::CompileError::without_span(
+                    crate::ErrorKind::InternalError(format!("codegen query aborted: {abort:?}")),
+                ))
+            })?;
+            let rue_query::QueryOutcome::Success(unit) = terminal.outcome() else {
+                unreachable!("CodegenUnit publishes typed terminals")
+            };
+            match unit {
+                crate::codegen_query::CodegenUnitValue::Available(unit) => {
+                    products.push(unit.backend_product());
+                }
+                crate::codegen_query::CodegenUnitValue::Failure(errors) => {
+                    return Err(errors.clone());
+                }
+            }
+        }
+        Ok(products)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn codegen_executions(
+        &self,
+    ) -> &[(crate::FunctionInstanceKey, rue_query::RequestExecution)] {
+        &self.codegen_executions
     }
 
     /// Analyze the current revision, surfacing an unsatisfied trusted-toolchain
