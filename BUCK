@@ -78,6 +78,7 @@ filegroup(
 filegroup(
     name = "examples",
     srcs = glob(["examples/**"]),
+    visibility = ["PUBLIC"],
 )
 
 # Syntax-valid, checked-in Rue programs compared by the independent stage-1
@@ -97,6 +98,10 @@ filegroup(
 filegroup(
     name = "cli-test-fixtures",
     srcs = glob(["cli-test-fixtures/**"]),
+    # RUE-1163: also reached by the //crates/rue-cli-tests:cli developer entry
+    # point, which carries the corpus's declared inputs so a filtered run needs
+    # no shell to plumb them.
+    visibility = ["PUBLIC"],
 )
 
 # A deliberately adversarial multi-module project used to assert that Rue's
@@ -117,6 +122,9 @@ filegroup(
 filegroup(
     name = "tutorial-snippet-tool-inputs",
     srcs = [
+        # RUE-1163: BUCK is an input because the gate membership the tool test
+        # checks lives in //:repository-quality-gates now, not in a bash array.
+        "BUCK",
         "scripts/check-tutorial-snippets.py",
         "test.sh",
     ],
@@ -521,6 +529,20 @@ rue_sh_test(
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_TUTORIAL_TEST_ROOT": "$(location :tutorial-snippet-tool-inputs)",
     },
+)
+
+# RUE-1163: the lightweight repository gates a filtered `./test.sh <pattern>`
+# run executes after the corpora. This used to be a bash array of four target
+# names; as a test_suite the membership is a Buck fact, and adding a gate here
+# reaches every caller without editing a script.
+rue_test_suite(
+    name = "repository-quality-gates",
+    tests = [
+        ":adr-registry-validation",
+        ":spec-traceability",
+        ":tutorial-snippet-tests",
+        ":tutorial-snippet-tool-tests",
+    ],
 )
 
 rue_sh_test(

@@ -36,3 +36,20 @@ filegroup(
     srcs = ["cases/deep_nesting.toml"],
     visibility = ["PUBLIC"],
 )
+
+# RUE-1163: the developer entry point. RUE_CLI_CASE_TIER is deliberately unset,
+# which the harness reads as `all`: a developer filtering by name wants every
+# tier's cases, where //:cli-tests bounds itself to the premerge inventory.
+command_alias(
+    name = "cli",
+    exe = ":rue-cli-tests",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_CLI_CASES": "$(location :cases)/cases",
+        "RUE_EXAMPLES_DIR": "$(location root//:examples)/examples",
+        "RUE_REPO_DIR": "$(location root//:cli-test-fixtures)",
+        "RUE_STD_DIR": "$(location root//:std)/std",
+    },
+    visibility = ["PUBLIC"],
+)
+

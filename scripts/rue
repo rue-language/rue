@@ -159,22 +159,20 @@ case "$cmd" in
         ./buck2 run "$target" -- "$@" || rc=$?
         exit $rc
         ;;
+    # RUE-1163: each harness's declared inputs live on a command_alias in its
+    # own BUCK file, so these are passthroughs. They used to set a hand-written
+    # subset of the corpus environment here, which had already drifted: neither
+    # spec nor ui passed RUE_REAL_STD_PATH, so `real_std` cases resolved the
+    # standard library through a cwd-relative fallback rather than the declared
+    # input the equivalent Buck target uses.
     spec)
-        RUE_BINARY="$(scripts/rue-bin)" \
-        RUE_SPEC_CASES="crates/rue-spec/cases" \
-        ./buck2 run //crates/rue-spec:rue-spec -- "$@"
+        ./buck2 run //crates/rue-spec:spec -- "$@"
         ;;
     cli)
-        RUE_BINARY="$(scripts/rue-bin)" \
-        RUE_CLI_CASES="crates/rue-cli-tests/cases" \
-        RUE_EXAMPLES_DIR="$repo_root/examples" \
-        RUE_STD_DIR="std" \
-        ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- "$@"
+        ./buck2 run //crates/rue-cli-tests:cli -- "$@"
         ;;
     ui)
-        RUE_BINARY="$(scripts/rue-bin)" \
-        RUE_UI_CASES="crates/rue-ui-tests/cases" \
-        ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- "$@"
+        ./buck2 run //crates/rue-ui-tests:ui -- "$@"
         ;;
     frontend-manifest)
         corpus_output="$(./buck2 build root//:frontend-diff-corpus --show-simple-output)"
