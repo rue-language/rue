@@ -141,9 +141,17 @@ filegroup(
     srcs = [".github/workflows/ci.yml"],
 )
 
+# RUE-1163: `rue_ci_dedicated_lane` marks a corpus that required CI schedules in
+# its own platform-corpus job, so the linux-premerge job's ./test.sh must not
+# also run it. It replaces the RUE_CI_DEFER_HEAVY_SUITES environment protocol,
+# which named the same two targets in ci.yml and made test.sh re-derive and
+# cross-check them against a label query in bash. The set is a Buck fact now,
+# and scripts/validate-ci-gate.py fails if it and the workflow's matrix disagree
+# — in either direction, so a corpus given the label without a job would be
+# caught as surely as one dropped from the matrix.
 cached_corpus_suite(
     name = "spec-tests",
-    labels = ["rue_heavy_suite"],
+    labels = ["rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = "//crates/rue-spec:rue-spec",
     args = ["--quiet"],
     env = {
@@ -249,7 +257,7 @@ _CLI_SHARD_TIMEOUT_SECONDS = 1200
 # automatic examples are registered by //:cli-tests-slow instead.
 cached_corpus_suite(
     name = "cli-tests",
-    labels = ["rue_heavy_suite"],
+    labels = ["rue_heavy_suite", "rue_ci_dedicated_lane"],
     harness = "//crates/rue-cli-tests:rue-cli-tests",
     args = _CLI_TEST_ARGS,
     env = _CLI_TEST_ENV,
@@ -665,6 +673,11 @@ rue_sh_test(
         # coverage to cases no lane executes.
         "--test-runner-source",
         "$(location //crates/rue-test-runner:platform-responsibility-source)/src/lib.rs",
+        # RUE-1163: which corpora own a required-CI job is a BUCK label now, so
+        # the gate reads BUCK to prove each labeled corpus is actually run by a
+        # platform-corpus entry.
+        "--buck",
+        "$(location :root-buck-file)/BUCK",
     ],
     resources = [
         "scripts/ci-required-results.py",
@@ -684,6 +697,7 @@ rue_sh_test(
         "PYTHONDONTWRITEBYTECODE": "1",
         "RUE_CI_WORKFLOW": "$(location :required-ci-workflows)/.github/workflows/ci.yml",
         "RUE_TEST_RUNNER_SOURCE": "$(location //crates/rue-test-runner:platform-responsibility-source)/src/lib.rs",
+        "RUE_ROOT_BUCK": "$(location :root-buck-file)/BUCK",
     },
 )
 

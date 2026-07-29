@@ -265,44 +265,33 @@ EOF
     cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$BUCK_LOG"
-if [[ "${1:-}" == "uquery" ]]; then
-    # RUE-1116: test.sh subtracts the rue_cli_shard set from heavy-suite
-    # discovery; this baseline fixture defines no CLI shards.
-    if [[ "$*" == *rue_cli_shard* ]]; then
-        :
-    else
-        printf '%s\n' \
-            root//:cli-tests \
-            root//:cli-tests-slow \
-            root//crates/rue-oracle-diff:oracle-diff-test \
-            root//crates/rue-oracle-diff:oracle-diff-spec-test \
-            root//:frontend-diff-test \
-            root//:oracle-diff-generated-smoke \
-            root//:reproducible-programs \
-            root//:spec-tests \
-            root//:ui-tests
-    fi
+if [[ "${1:-}" == "bxl" ]]; then
+    # RUE-1163: heavy-suite membership comes from the BXL selector, not from a
+    # label uquery filtered in bash.
+    case "${2:-}" in
+        *:validate) printf 'Rue test tiers valid\n' ;;
+        *:heavy_suites)
+            printf '%s\n' \
+                //:cli-tests \
+                //:cli-tests-slow \
+                //crates/rue-oracle-diff:oracle-diff-test \
+                //crates/rue-oracle-diff:oracle-diff-spec-test \
+                //:frontend-diff-test \
+                //:oracle-diff-generated-smoke \
+                //:reproducible-programs \
+                //:spec-tests \
+                //:ui-tests
+            ;;
+    esac
 elif [[ "${1:-}" == "test" ]]; then
-    # Emit buck2's per-test result line so the RUE-924 corpus-omission audit
-    # in test.sh sees each required harness actually ran. The heavy-labeled
-    # corpus suites arrive one at a time through ci-heavy-suite; the
-    # non-heavy tutorial-snippet-tests runs inside the broad "test //..." pass.
-    if [[ "${2:-}" == "//..." ]]; then
-        printf 'Pass: root//:tutorial-snippet-tests (0.0s)\n'
-        printf 'Pass: root//:large-example-caldera-canary (0.0s)\n'
-        printf 'Pass: root//:large-example-meridian-canary (0.0s)\n'
-    elif [[ "${2:-}" == //*:* ]]; then
-        printf 'Pass: root%s (0.0s)\n' "${2:-}"
-    else
-        printf 'Pass: %s (0.0s)\n' "${2:-}"
-    fi
+    printf 'Pass: %s (0.0s)\n' "${2:-}"
 fi
 EOF
     chmod +x "$sb/buck2"
     # The required macOS job sets this variable for its outer test.sh. Keep
     # this fixture's baseline full-suite contract independent of that caller
     # environment; deferral behavior has its own focused tests.
-    out="$(BUCK_LOG="$sb/calls" RUE_CI_DEFER_HEAVY_SUITES= \
+    out="$(BUCK_LOG="$sb/calls" \
         RUE_FULL_SUITE_LOCK_DIR="$sb/lock" "$sb/test.sh" 2>&1)" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         printf '%s\n' "$out" >&2
@@ -310,8 +299,8 @@ EOF
     check "suite: unfiltered orchestration succeeds" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
     check "suite: broad discovery excludes opaque heavy tests" \
         "$(grep -Fxq 'test //... toolchains//... --exclude rue_heavy_suite --always-exclude --ignore-tests-attribute --exclude rue_test_tier_stress' "$sb/calls" && echo 0 || echo 1)"
-    check "suite: heavy targets are discovered from the live graph" \
-        "$(grep -Fxq 'uquery attrfilter(labels, rue_heavy_suite, //...)' "$sb/calls" && echo 0 || echo 1)"
+    check "suite: heavy targets come from the canonical Buck selector" \
+        "$(grep -Fq 'bxl //test_tiers.bxl:heavy_suites' "$sb/calls" && echo 0 || echo 1)"
     # RUE-1118/RUE-1163: every corpus is now invoked bare. Each runs as a
     # cacheable build action and the test executor only asserts its stamp, so an
     # executor timeout here would bound a sub-second check while reading as if

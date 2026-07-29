@@ -205,11 +205,12 @@ jobs:
         run: scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
 
       - name: Run complete target-independent premerge suite
-        # CLI and spec are sharded onto explicit Linux jobs. The omission audit
-        # proves those are the only deferred targets.
+        # RUE-1163: the corpora with their own platform-corpus job carry the
+        # `rue_ci_dedicated_lane` label in BUCK, and test.sh subtracts that label
+        # when CI=true. This step no longer names them: the CI-contract job
+        # fails if the labeled set and the platform-corpus matrix disagree.
         env:
           RUE_TEST_TIER: premerge
-          RUE_CI_DEFER_HEAVY_SUITES: '//:cli-tests //:spec-tests'
         run: scripts/ci-timed "linux-x64 premerge" -- ./test.sh
 
       - name: Run explicit cross-backend compilation and encoding coverage
