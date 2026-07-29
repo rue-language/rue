@@ -1387,7 +1387,6 @@ pub struct CompilerSession {
 /// rather than through a parallel branch compiled only under `cfg(test)`.
 #[derive(Debug, Default, Clone)]
 struct DurableBaselineOverride {
-    successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
 }
 
@@ -2281,7 +2280,6 @@ struct SemanticCacheEntry {
     rir: Option<Arc<CanonicalRirOutput>>,
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
     durable_declaration_cache: Option<DurableDeclarationCache>,
-    successful_cfg_cache: Option<Arc<[crate::queries::DurableCfgArtifact]>>,
     oracle_injected: bool,
 }
 
@@ -2610,7 +2608,6 @@ impl CompilerSession {
                 injected.result = stale.result.clone();
                 injected.rir = stale.rir.clone();
                 injected.durable_declaration_cache = stale.durable_declaration_cache.clone();
-                injected.successful_cfg_cache = stale.successful_cfg_cache.clone();
                 injected.oracle_injected = true;
                 self.queries.semantic.insert_with_dependencies(
                     &mut self.queries.graph,
@@ -4329,23 +4326,8 @@ impl CompilerSession {
         self.diagnostics.last_good_semantic()
     }
 
-    /// Per-function durable CFG artifacts retained by the last successful
-    /// semantic record — the baseline an ordinary attempt reuses from.
-    ///
-    /// This reads the production source of truth. It exists so a caller that
-    /// wants to inspect or perturb the reuse baseline does so through the same
-    /// record the reuse path consults, rather than through a separate mirror
-    /// (RUE-1143).
-    #[cfg(test)]
-    fn last_good_successful_cfg_cache(&self) -> Option<&Arc<[crate::queries::DurableCfgArtifact]>> {
-        self.queries
-            .semantic
-            .last_good_record()
-            .and_then(|entry| entry.successful_cfg_cache.as_ref())
-    }
-
     /// Durable declaration cache retained by the last successful semantic
-    /// record. Companion to [`Self::last_good_successful_cfg_cache`].
+    /// record.
     #[cfg(test)]
     fn last_good_durable_declaration_cache(&self) -> Option<&DurableDeclarationCache> {
         self.queries
@@ -6147,22 +6129,6 @@ impl CompilerSession {
             }
             return result.map_err(SemanticRequestControl::Compile);
         }
-        let durable_baseline = self.queries.semantic.last_good_record().cloned();
-        // One selection order, compiled identically under test and production
-        // (RUE-1143): an explicit override when one was supplied, otherwise the
-        // last-good record. Ordinary compiles never set the override, so this
-        // reduces to the last-good record.
-        let previous_cfg_cache = self
-            .durable_baseline_override
-            .as_ref()
-            .and_then(|override_baseline| override_baseline.successful_cfg_cache.clone())
-            .or_else(|| {
-                durable_baseline
-                    .as_ref()
-                    .and_then(|entry| entry.successful_cfg_cache.clone())
-            })
-            .unwrap_or_else(|| Arc::from([]));
-
         let rir_result = self.canonical_rir();
         if cancellation.is_canceled() {
             return Err(SemanticRequestControl::Abort(
@@ -6208,7 +6174,6 @@ impl CompilerSession {
                             rir: None,
                             diagnostics,
                             durable_declaration_cache: None,
-                            successful_cfg_cache: None,
                             oracle_injected: false,
                         },
                         [dependency],
@@ -6795,10 +6760,12 @@ impl CompilerSession {
                 durable_body_candidates,
                 durable_specialized_body_candidates,
                 durable_anonymous_body_candidates,
-                previous_cfg_cache.clone(),
                 demanded_drop_glue,
                 demanded_drop_glue_plans,
                 durable_body_work,
+                &self.queries.revisioned,
+                runtime_revision,
+                cancellation.clone(),
             )?;
             output.install_body_references(body_query_reference_cache);
             output.accrue_body_query_work(queried_body_work);
@@ -6832,9 +6799,7 @@ impl CompilerSession {
             .then_some(query_declarations_for_cache)
             .flatten()
             .map(|semantics| DurableDeclarationCache { semantics });
-        let mut published_cfg_cache = None;
         if let Ok(output) = &result {
-            published_cfg_cache = Some(output.durable_cfgs().clone());
             debug_assert_eq!(output.input(), &input);
             debug_assert_eq!(semantic_work.binding.bind_invocations, 1);
             debug_assert_eq!(semantic_work.manifest.build_invocations, 1);
@@ -6894,7 +6859,6 @@ impl CompilerSession {
                         .is_ok()
                         .then_some(published_declaration_cache)
                         .flatten(),
-                    successful_cfg_cache: result.is_ok().then_some(published_cfg_cache).flatten(),
                     oracle_injected: false,
                 },
                 dependencies,
@@ -10898,7 +10862,6 @@ mod tests {
         session.canonical_semantic(&default).unwrap();
         let diagnostics = session.latest_diagnostics().unwrap().clone();
         let last_good = session.last_good_semantic_diagnostics().unwrap().clone();
-        let cfgs = session.last_good_successful_cfg_cache().cloned().unwrap();
         let edited = snapshot(
             &[
                 (7, "/p/main.rue", "main.rue", "fn main() -> i32 { 1 }"),
@@ -10950,10 +10913,6 @@ mod tests {
         assert!(Arc::ptr_eq(
             session.last_good_semantic_diagnostics().unwrap(),
             &last_good
-        ));
-        assert!(Arc::ptr_eq(
-            session.last_good_successful_cfg_cache().unwrap(),
-            &cfgs
         ));
         assert_eq!(session.work().semantic.calls, 2);
         assert_eq!(session.work().semantic.executions, 2);
@@ -11466,7 +11425,6 @@ mod tests {
         cache.semantics = records.into();
         session.set_durable_baseline_override(Some(DurableBaselineOverride {
             durable_declaration_cache: Some(cache),
-            ..DurableBaselineOverride::default()
         }));
 
         publish_with_test_imports(&mut session, &edited);
@@ -11543,7 +11501,7 @@ mod tests {
         session.update(&second).into_result().unwrap();
         let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert!(warm.work().cfg.cfg_import_failures >= 1);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
         let fresh = fresh.canonical_semantic(&options).unwrap();
@@ -11583,7 +11541,7 @@ mod tests {
         session.update(&second).into_result().unwrap();
         let warm = session.canonical_semantic(&options).unwrap();
         assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert!(warm.work().cfg.cfg_import_failures >= 1);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();
         let fresh = fresh.canonical_semantic(&options).unwrap();
@@ -11678,7 +11636,366 @@ mod tests {
     }
 
     #[test]
-    fn specialized_cfg_reuse_is_stable_and_malformed_import_falls_back_atomically() {
+    fn cfg_drop_facts_invalidate_same_layout_cleanup_changes() {
+        let first = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Resource { value: i32 }\n\
+                 fn main() -> i32 { let resource = Resource { value: 1 }; 0 }",
+            )],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "struct Resource { value: i32 }\n\
+                 drop fn Resource(self) { @dbg(self.value); }\n\
+                 fn main() -> i32 { let resource = Resource { value: 1 }; 0 }",
+            )],
+            1,
+        );
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert!(
+            warm.work().cfg.cfg_builds_attempted > 0,
+            "same-layout drop-fact changes must rebuild affected CFGs: {:?}",
+            warm.work().cfg
+        );
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", warm.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh.functions()))
+        );
+    }
+
+    #[test]
+    fn cfg_relocation_covers_runtime_param_drop_and_nominal_field_domains() {
+        let program = |prefix: &str| {
+            format!(
+                "{prefix}\
+                 struct Leaf {{ value: i32 }}\n\
+                 drop fn Leaf(self) {{ @dbg(self.value); }}\n\
+                 struct Holder {{ leaf: Leaf }}\n\
+                 fn consume(value: Holder) -> i32 {{\n\
+                     @dbg(value.leaf.value);\n\
+                     value.leaf.value\n\
+                 }}\n\
+                 fn main() -> i32 {{ consume(Holder {{ leaf: Leaf {{ value: 7 }} }}) }}"
+            )
+        };
+        let first_text = program("");
+        let second_text = program(
+            "struct Noise { pad: i64 }\n\
+             fn noise(value: Noise) -> i64 { @assert(value.pad >= 0); value.pad }\n",
+        );
+        let first = snapshot(&[(1, "/p/main.rue", "main.rue", first_text.as_str())], 1);
+        let second = snapshot(&[(1, "/p/main.rue", "main.rue", second_text.as_str())], 1);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            warm.work().cfg.cfg_builds_attempted,
+            0,
+            "live-domain relocation must not rebuild reusable unoptimized CFGs: {:?}",
+            warm.work().cfg
+        );
+        assert_eq!(
+            warm.work().cfg.cfg_reuses,
+            5,
+            "every unchanged reachable CFG must be reused: {:?}",
+            warm.work().cfg
+        );
+        assert_eq!(
+            warm.work().cfg.optimization_attempts,
+            0,
+            "complete relocation domains must reuse optimized terminals: {:?}",
+            warm.work().cfg
+        );
+        assert_eq!(
+            warm.work().cfg.cfg_import_successes,
+            warm.work().cfg.cfg_reuses,
+            "the collector must receive already-relocated optimized terminals: {:?}",
+            warm.work().cfg
+        );
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", warm.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh.functions()))
+        );
+        assert_eq!(
+            format!("{:?}", warm.warnings()),
+            format!("{:?}", fresh.warnings())
+        );
+    }
+
+    #[test]
+    fn cfg_import_failure_rebuilds_current_body_with_exact_fallback_work() {
+        let first = snapshot(
+            &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 7 }")],
+            1,
+        );
+        let second = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "// relocate the retained body\nfn main() -> i32 { 7 }",
+            )],
+            1,
+        );
+        let options = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+
+        session.update(&second).into_result().unwrap();
+        let warm = crate::canonical_semantic::with_test_cfg_import_failure_injection(|| {
+            session.canonical_semantic(&options).unwrap()
+        });
+        assert_eq!(warm.work().cfg.cfg_reuse_candidates, 1);
+        assert_eq!(warm.work().cfg.cfg_reuses, 0);
+        assert_eq!(warm.work().cfg.cfg_import_attempts, 1);
+        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
+        assert_eq!(warm.work().cfg.cfg_import_failures, 1);
+        assert_eq!(warm.work().cfg.cfg_fallbacks, 1);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
+        assert_eq!(warm.work().cfg.cfg_builds_succeeded, 1);
+        assert_eq!(warm.work().cfg.cfg_builds_failed, 0);
+        assert_eq!(warm.work().cfg.optimization_attempts, 1);
+        assert_eq!(warm.work().cfg.optimization_completions, 1);
+        assert_eq!(warm.work().cfg.optimized_level_attempts, 1);
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", warm.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh.functions()))
+        );
+    }
+
+    #[test]
+    fn reused_parse_runtime_symbol_relocates_to_the_current_interner() {
+        let program = |prefix: &str| {
+            format!(
+                "{prefix}\
+                 const opt = @import(\"std/option.rue\");\n\
+                 fn parse_runtime() -> i32 {{ let _ = @parse_i64(\"7\"); 0 }}\n\
+                 fn main() -> i32 {{ parse_runtime() }}"
+            )
+        };
+        let first_text = program("");
+        let second_text =
+            program("struct Noise { value: i64 }\nfn noise(value: Noise) -> i64 { value.value }\n");
+        let first = well_known_option_isolation_snapshot(&first_text);
+        let second = well_known_option_isolation_snapshot(&second_text);
+        let options = CompileOptions::default();
+        let runtime_symbols = |output: &crate::CanonicalSemanticOutput| {
+            output
+                .functions()
+                .iter()
+                .flat_map(|function| {
+                    let cfg = &function.cfg;
+                    cfg.blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter_map(|value| match cfg.get_inst(*value).data {
+                            rue_cfg::CfgInstData::Intrinsic {
+                                runtime: Some(rue_air::RuntimeCallKind::ParseI64),
+                                name,
+                                ..
+                            } => Some(name),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &first);
+        session.canonical_semantic(&options).unwrap();
+        publish_with_test_imports(&mut session, &second);
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
+        assert!(warm.work().cfg.cfg_reuses >= 2, "{:?}", warm.work().cfg);
+        assert_eq!(
+            warm.work().cfg.optimization_attempts,
+            0,
+            "the collector must relocate the complete optimized terminal: {:?}",
+            warm.work().cfg
+        );
+        let warm_symbols = runtime_symbols(&warm);
+        assert_eq!(warm_symbols.len(), 1);
+        let warm_rir = session.canonical_rir().unwrap();
+        assert_eq!(
+            warm_rir
+                .semantic_symbols()
+                .interner()
+                .resolve(&warm_symbols[0]),
+            "parse_i64"
+        );
+
+        let mut fresh = CompilerSession::new();
+        publish_with_test_imports(&mut fresh, &second);
+        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let fresh_symbols = runtime_symbols(&fresh_output);
+        assert_eq!(fresh_symbols.len(), 1);
+        let fresh_rir = fresh.canonical_rir().unwrap();
+        assert_eq!(
+            fresh_rir
+                .semantic_symbols()
+                .interner()
+                .resolve(&fresh_symbols[0]),
+            "parse_i64"
+        );
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", warm.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh_output.functions()))
+        );
+    }
+
+    #[test]
+    fn reused_print_runtime_call_relocates_to_the_current_helper_symbol() {
+        let program = |prefix: &str| {
+            format!(
+                "{prefix}\
+                 fn probe_print() {{ println(\"literal\"); }}\n\
+                 fn main() -> i32 {{ probe_print(); 0 }}"
+            )
+        };
+        let runtime_calls = |output: &crate::CanonicalSemanticOutput| {
+            output
+                .functions()
+                .iter()
+                .flat_map(|function| {
+                    let cfg = &function.cfg;
+                    cfg.blocks()
+                        .iter()
+                        .flat_map(|block| block.insts.iter())
+                        .filter_map(|value| match cfg.get_inst(*value).data {
+                            rue_cfg::CfgInstData::Call {
+                                runtime: Some(runtime),
+                                name,
+                                ..
+                            } => Some((runtime, name)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let first_text = program("");
+        let second_text = program("fn noise() -> i32 { let interner_churn = 1; interner_churn }\n");
+        let first = snapshot(&[(1, "/p/main.rue", "main.rue", &first_text)], 1);
+        let second = snapshot(&[(1, "/p/main.rue", "main.rue", &second_text)], 1);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        let cold = session.canonical_semantic(&options).unwrap();
+        let cold_calls = runtime_calls(&cold);
+        assert_eq!(cold_calls.len(), 1);
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
+        assert_eq!(warm.work().cfg.cfg_reuses, 2);
+        assert_eq!(warm.work().cfg.optimization_attempts, 0);
+        let warm_calls = runtime_calls(&warm);
+        assert_eq!(warm_calls.len(), 1);
+        assert_ne!(
+            cold_calls, warm_calls,
+            "the inserted declaration must perturb the live runtime-call symbol"
+        );
+        let warm_rir = session.canonical_rir().unwrap();
+        for (runtime, symbol) in &warm_calls {
+            assert_eq!(
+                warm_rir.semantic_symbols().interner().resolve(symbol),
+                runtime.helper().helper().symbol
+            );
+        }
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh_output = fresh.canonical_semantic(&options).unwrap();
+        let fresh_calls = runtime_calls(&fresh_output);
+        assert_eq!(fresh_calls.len(), 1);
+        let fresh_rir = fresh.canonical_rir().unwrap();
+        for (runtime, symbol) in &fresh_calls {
+            assert_eq!(
+                fresh_rir.semantic_symbols().interner().resolve(symbol),
+                runtime.helper().helper().symbol
+            );
+        }
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", warm.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh_output.functions()))
+        );
+    }
+
+    #[test]
+    fn opt_level_only_change_reuses_cfg_and_recomputes_optimization_per_function() {
+        let source = snapshot(
+            &[(
+                1,
+                "/p/main.rue",
+                "main.rue",
+                "fn left() -> i32 { 20 }\n\
+                 fn right() -> i32 { 22 }\n\
+                 fn main() -> i32 { left() + right() }",
+            )],
+            1,
+        );
+        let o0 = CompileOptions {
+            opt_level: OptLevel::O0,
+            ..CompileOptions::default()
+        };
+        let o1 = CompileOptions {
+            opt_level: OptLevel::O1,
+            ..CompileOptions::default()
+        };
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+
+        let cold = session.canonical_semantic(&o0).unwrap();
+        assert_eq!(cold.functions().len(), 3);
+        assert_eq!(cold.work().cfg.cfg_builds_attempted, 3);
+        assert_eq!(cold.work().cfg.optimization_attempts, 3);
+
+        let optimized = session.canonical_semantic(&o1).unwrap();
+        assert_eq!(optimized.functions().len(), 3);
+        assert_eq!(optimized.work().cfg.cfg_builds_attempted, 0);
+        assert_eq!(optimized.work().cfg.cfg_builds_succeeded, 0);
+        assert_eq!(optimized.work().cfg.cfg_builds_failed, 0);
+        assert_eq!(optimized.work().cfg.cfg_reuses, 3);
+        assert_eq!(optimized.work().cfg.cfg_import_attempts, 3);
+        assert_eq!(optimized.work().cfg.cfg_import_successes, 3);
+        assert_eq!(optimized.work().cfg.optimization_attempts, 3);
+        assert_eq!(optimized.work().cfg.optimization_completions, 3);
+        assert_eq!(optimized.work().cfg.optimized_level_attempts, 3);
+    }
+
+    #[test]
+    fn specialized_cfg_reuse_is_stable_across_unrelated_body_edits() {
         let first = snapshot(
             &[(
                 1,
@@ -11697,15 +12014,6 @@ mod tests {
             )],
             1,
         );
-        let third = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "fn choose(comptime n: i32) -> i32 { n }\nfn b() -> i32 { 4 }\nfn main() -> i32 { choose(40) + b() }",
-            )],
-            1,
-        );
         let options = CompileOptions {
             opt_level: OptLevel::O0,
             ..CompileOptions::default()
@@ -11713,41 +12021,14 @@ mod tests {
         let mut session = CompilerSession::new();
         session.update(&first).into_result().unwrap();
         session.canonical_semantic(&options).unwrap();
-        // As above: perturb a copy and inject it rather than reaching into a
-        // mirror of the baseline (RUE-1143).
-        let mut artifacts = session.last_good_successful_cfg_cache().unwrap().to_vec();
-        let specialization = artifacts
-            .iter_mut()
-            .find(|candidate| {
-                matches!(
-                    candidate.input.function,
-                    crate::FunctionInstanceKey::Specialization { .. }
-                )
-            })
-            .unwrap();
-        specialization.semantic_schema_version.implementation_epoch += 1;
-        session.set_durable_baseline_override(Some(DurableBaselineOverride {
-            successful_cfg_cache: Some(artifacts.into()),
-            ..DurableBaselineOverride::default()
-        }));
         session.update(&second).into_result().unwrap();
         let warm = session.canonical_semantic(&options).unwrap();
-        // The override stood in for the last-good record for exactly that one
-        // attempt. Drop it so the repair below reuses the record the warm
-        // attempt actually published, which is what the old mirror did
-        // implicitly by repopulating after every successful attempt.
-        session.set_durable_baseline_override(None);
-        assert_eq!(warm.work().cfg.cfg_import_failures, 2);
-        assert_eq!(warm.work().cfg.cfg_schema_version_rejections, 1);
-        assert_eq!(warm.work().cfg.cfg_fallbacks, 2);
-        assert_eq!(warm.work().cfg.cfg_reuses, 1);
-        assert_eq!(warm.work().cfg.cfg_builds_attempted, 2);
-        assert_eq!(warm.work().cfg.optimization_attempts, 2);
-        assert_eq!(warm.work().cfg.optimized_level_attempts, 0);
-        session.update(&third).into_result().unwrap();
-        let repaired = session.canonical_semantic(&options).unwrap();
-        assert_eq!(repaired.work().cfg.cfg_reuses, 2);
-        assert_eq!(repaired.work().cfg.cfg_builds_attempted, 1);
+        assert!(warm.functions().iter().any(|function| {
+            matches!(
+                function.semantic_identity,
+                crate::FunctionInstanceKey::Specialization { .. }
+            )
+        }));
     }
 
     #[test]
@@ -11792,45 +12073,16 @@ mod tests {
         let cross_target = session.canonical_semantic(&other_options).unwrap();
         assert_eq!(cross_target.work().cfg.cfg_reuses, 0);
         assert_eq!(cross_target.work().cfg.cfg_builds_attempted, 3);
-        assert!(cross_target.work().cfg.cfg_import_failures >= 2);
         session.update(&renamed).into_result().unwrap();
         let changed = session.canonical_semantic(&other_options).unwrap();
         assert_eq!(changed.work().cfg.cfg_reuses, 1);
         assert_eq!(changed.work().cfg.cfg_builds_attempted, 2);
-        assert_eq!(changed.work().cfg.cfg_import_failures, 1);
         let mut fresh = CompilerSession::new();
         fresh.update(&renamed).into_result().unwrap();
         let fresh = fresh.canonical_semantic(&other_options).unwrap();
         assert_eq!(
             format!("{:?}", changed.functions()),
             format!("{:?}", fresh.functions())
-        );
-    }
-
-    #[test]
-    fn incomplete_optimized_cfg_projection_is_rejected_at_export() {
-        let source = snapshot(
-            &[(
-                1,
-                "/p/main.rue",
-                "main.rue",
-                "fn choose(value: bool) -> i32 { if value { 1 } else { 2 } }\nfn main() -> i32 { choose(true) }",
-            )],
-            1,
-        );
-        let mut session = CompilerSession::new();
-        session.update(&source).into_result().unwrap();
-        let output = session
-            .canonical_semantic(&CompileOptions {
-                opt_level: OptLevel::O0,
-                ..CompileOptions::default()
-            })
-            .unwrap();
-        assert_eq!(output.work().cfg.cfg_export_attempts, 2);
-        assert!(output.work().cfg.cfg_export_rejections >= 1);
-        assert_eq!(
-            output.work().cfg.cfg_export_attempts,
-            output.work().cfg.cfg_export_successes + output.work().cfg.cfg_export_rejections
         );
     }
 
@@ -13678,8 +13930,6 @@ mod tests {
             CanonicalSemanticFailurePhase::CfgConstruction
         );
         assert_eq!(failed.work.cfg.functions_considered, 1);
-        assert_eq!(failed.work.cfg.cfg_builds_attempted, 1);
-        assert_eq!(failed.work.cfg.cfg_builds_failed, 1);
         assert_eq!(failed.work.cfg.optimization_attempts, 0);
 
         session.update(&valid).into_result().unwrap();
@@ -14250,7 +14500,6 @@ fn main() -> i32 {
                 rir: None,
                 diagnostics: failed_diagnostics,
                 durable_declaration_cache: None,
-                successful_cfg_cache: None,
                 oracle_injected: false,
             },
             [source_dependency],
@@ -14904,7 +15153,7 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn implicit_drop_edges_distinguish_body_obligations_from_global_glue() {
+    fn implicit_drop_edges_distinguish_body_obligations_from_synthesized_glue() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<StableImplicitNamedDestructorDependency>();
         let program = r#"
@@ -14951,6 +15200,80 @@ fn main() -> i32 {
             first.implicit_named_destructor_dependencies().len()
         );
         assert_eq!(first.work().extra_rir_instructions_visited, 0);
+    }
+
+    #[test]
+    fn new_specialization_drop_edge_matches_fresh_and_invalidates_on_destructor_edit() {
+        let program = |main_body: &str, destructor: Option<i32>| {
+            let destructor = destructor
+                .map(|value| format!("drop fn Leaf(self) {{ @dbg({value}); }}\n"))
+                .unwrap_or_default();
+            format!(
+                "struct Leaf {{ n: i32 }}\n\
+                 {destructor}\
+                 fn consume(comptime T: type, value: T) -> i32 {{ 0 }}\n\
+                 fn main() -> i32 {{ {main_body} }}"
+            )
+        };
+        let first_text = program("consume(i32, 1)", Some(1));
+        let second_text = program("consume(Leaf, Leaf { n: 1 })", Some(1));
+        let third_text = program("consume(Leaf, Leaf { n: 1 })", None);
+        let first = snapshot(&[(1, "/p/main.rue", "main.rue", &first_text)], 1);
+        let second = snapshot(&[(1, "/p/main.rue", "main.rue", &second_text)], 1);
+        let third = snapshot(&[(1, "/p/main.rue", "main.rue", &third_text)], 1);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+
+        session.update(&second).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        let specialization_edges = warm
+            .implicit_named_destructor_dependencies()
+            .iter()
+            .filter(|edge| {
+                matches!(
+                    edge.source,
+                    rue_air::ImplicitDropDependencySourceEvent::Specialization { .. }
+                ) && edge.target_owner_name == "Leaf"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            specialization_edges.len(),
+            1,
+            "the newly demanded specialization must publish its exact Leaf drop edge: {:?}",
+            warm.implicit_named_destructor_dependencies()
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh.update(&second).into_result().unwrap();
+        let fresh_second = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            format!("{:?}", warm.implicit_named_destructor_dependencies()),
+            format!(
+                "{:?}",
+                fresh_second.implicit_named_destructor_dependencies()
+            )
+        );
+
+        session.update(&third).into_result().unwrap();
+        let changed = session.canonical_semantic(&options).unwrap();
+        assert!(
+            changed.work().body_analysis.specialized_bodies_attempted > 0,
+            "editing Leaf's destructor must invalidate consume(Leaf): {:?}",
+            changed.work().body_analysis
+        );
+        let mut fresh = CompilerSession::new();
+        fresh.update(&third).into_result().unwrap();
+        let fresh_third = fresh.canonical_semantic(&options).unwrap();
+        assert_eq!(
+            normalize_session_local_spurs(format!("{:?}", changed.functions())),
+            normalize_session_local_spurs(format!("{:?}", fresh_third.functions()))
+        );
+        assert_eq!(
+            format!("{:?}", changed.implicit_named_destructor_dependencies()),
+            format!("{:?}", fresh_third.implicit_named_destructor_dependencies())
+        );
     }
 
     #[test]

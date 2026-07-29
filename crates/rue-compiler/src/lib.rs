@@ -40,6 +40,7 @@ mod bound_definitions;
 mod canonical_lower;
 mod canonical_merge;
 mod canonical_semantic;
+mod cfg_query;
 mod declaration_candidate;
 mod definition_snapshot;
 mod dependency_envelope;
@@ -211,8 +212,8 @@ pub(crate) use durable_body::{
     DurableBodyProjectionFailure,
 };
 pub(crate) use durable_body::{
-    DurableAirInstData, DurableBodyAnchor, DurableOrdinaryBody, DurableOrdinaryBodyPayload,
-    DurableProjection, DurableSpecializedBodyPayload, convert_semantic_specialized_body_exports,
+    DurableAirInstData, DurableOrdinaryBody, DurableOrdinaryBodyPayload, DurableProjection,
+    DurableSpecializedBodyPayload, convert_semantic_specialized_body_exports,
 };
 #[cfg(test)]
 pub(crate) use durable_semantics::DurableDeclarationPayload;
@@ -248,7 +249,6 @@ pub(crate) use durable_semantics::{
 pub(crate) use import_graph::{validate_additive_successor, validate_canonical_import_graph};
 #[cfg(test)]
 pub(crate) use linking::{parse_runtime_archive, validate_runtime};
-pub(crate) use queries::build_functions_and_cfgs;
 #[cfg(test)]
 pub(crate) use rue_parser::Item;
 pub(crate) use semantic_symbols::SemanticSymbolUniverse;
@@ -256,7 +256,7 @@ pub(crate) use syntax::SyntaxWork;
 
 pub(crate) use lasso::ThreadedRodeo;
 pub(crate) use rue_air::{AnalyzedFunction, SemaOutput, Type};
-pub(crate) use rue_cfg::{CfgBuilder, ValidatedCfg as Cfg};
+pub(crate) use rue_cfg::ValidatedCfg as Cfg;
 pub(crate) use rue_codegen::RelocationKind;
 pub(crate) use rue_linker::{
     Archive, CodeRelocation, Linker, ObjectBuilder, ObjectFile, RelocationType,
