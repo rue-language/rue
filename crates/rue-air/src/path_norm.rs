@@ -108,5 +108,4 @@ mod tests {
         assert_eq!(m("a_b"), "a_5fb");
         assert_ne!(m("a/b"), m("a_2fb"));
     }
-
 }

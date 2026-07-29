@@ -853,6 +853,180 @@ fn relocation_file_ids_and_input_order_preserve_same_version_body_values() {
     assert_eq!(reused.type_pool().stats(), fresh.type_pool().stats());
 }
 
+/// Warm==cold parity for the recorded method-reference payload (RUE-1128): a
+/// body analyzed fresh and the same body imported from a durable candidate
+/// carry identical recorded `(receiver, method)` sets, covering a
+/// builtin/lang-item bare-symbol owner (`StrBuf` string concatenation), a
+/// direct user-struct method call, and a specialized-generic receiver.
+#[test]
+fn recorded_method_references_are_identical_fresh_and_imported() {
+    use std::collections::{BTreeMap, HashMap, HashSet};
+
+    let strbuf_source = r#"
+pub struct StrBuf {
+    buf: ptr mut u8,
+    len: u64,
+    cap: u64,
+
+    fn concat_borrowed(borrow first: Self, borrow second: Self) -> Self {
+        Self { buf: first.buf, len: first.len + second.len, cap: 0 }
+    }
+
+    fn len(borrow self) -> u64 { self.len }
+    fn as_ptr(borrow self) -> ptr mut u8 { self.buf }
+}
+
+drop fn StrBuf(self) { }
+"#;
+    let root_source = r#"
+const strbuf = @import("std/strbuf.rue");
+const helper = @import("helper.rue");
+
+struct Counter {
+    value: i32,
+    fn get(borrow self) -> i32 { self.value }
+}
+
+fn read(comptime T: type, value: T) -> i32 { value.get() }
+
+fn main() -> i32 {
+    println("n: " + @to_string(3));
+    let counter = Counter { value: 2 };
+    counter.get() + read(Counter, Counter { value: 1 }) + helper.bump()
+}
+"#;
+    let trusted = |helper_source: &str| {
+        let root = FileId::new(1);
+        let helper = FileId::new(2);
+        let strbuf = FileId::new(3);
+        let metadata = SourceMetadata::new_with_trusted_standard_library(
+            root,
+            HashMap::from([
+                (root, "/project/main.rue".to_owned()),
+                (helper, "/project/helper.rue".to_owned()),
+                (strbuf, "/project/std/strbuf.rue".to_owned()),
+            ]),
+            HashMap::from([
+                (root, "main.rue".to_owned()),
+                (helper, "helper.rue".to_owned()),
+                (strbuf, "\0rue-std/strbuf.rue".to_owned()),
+            ]),
+            HashSet::from([strbuf]),
+        )
+        .unwrap();
+        SourceSnapshot::new(
+            metadata,
+            vec![
+                (root, Arc::new(root_source.to_owned())),
+                (helper, Arc::new(helper_source.to_owned())),
+                (strbuf, Arc::new(strbuf_source.to_owned())),
+            ],
+        )
+        .unwrap()
+    };
+    // Editing only the helper's body between revisions keeps every other
+    // body's durable candidate retained, so the warm run's composition
+    // reconstructs the interesting bodies from their durable candidates.
+    let original = trusted("pub fn bump() -> i32 { 1 }\n");
+    let edited = trusted("pub fn bump() -> i32 { 2 }\n");
+    let options = CompileOptions::default();
+
+    // The recorded sets ride the durable canonical bodies inside each retained
+    // body transaction — the exact candidates warm composition imports.
+    fn recorded(
+        session: &CompilerSession,
+        options: &CompileOptions,
+    ) -> BTreeMap<String, BTreeSet<String>> {
+        session
+            .retained_body_identity_states_for_test(options)
+            .into_iter()
+            .filter_map(|(identity, transaction)| {
+                let crate::BodyTransaction::Success { body, .. } = transaction? else {
+                    return None;
+                };
+                let body = match body.as_ref() {
+                    crate::body_query::CanonicalBody::Ordinary { body, .. }
+                    | crate::body_query::CanonicalBody::Anonymous { body, .. }
+                    | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
+                };
+                Some((
+                    identity,
+                    body.method_references
+                        .iter()
+                        .map(|reference| format!("{reference:?}"))
+                        .collect(),
+                ))
+            })
+            .collect()
+    }
+
+    let mut warm = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&original)
+        .unwrap()
+        .drive(&mut warm)
+        .unwrap();
+    warm.canonical_semantic(&options).unwrap();
+    crate::test_support::TestDiscoveryHost::new(&edited)
+        .unwrap()
+        .drive(&mut warm)
+        .unwrap();
+    let reused = warm.canonical_semantic(&options).unwrap();
+    assert!(
+        reused.work().body_analysis.ordinary_body_import_successes > 0,
+        "the warm run must reconstruct bodies from durable candidates: {:?}",
+        reused.work().body_analysis
+    );
+    assert!(
+        reused.work().body_analysis.bodies_attempted
+            < reused.work().body_analysis.ordinary_body_import_attempts,
+        "the warm-edit run retains the unedited bodies and re-imports them: {:?}",
+        reused.work().body_analysis
+    );
+
+    let mut cold = CompilerSession::new();
+    crate::test_support::TestDiscoveryHost::new(&edited)
+        .unwrap()
+        .drive(&mut cold)
+        .unwrap();
+    cold.canonical_semantic(&options).unwrap();
+
+    let warm_references = recorded(&warm, &options);
+    let fresh_references = recorded(&cold, &options);
+    assert_eq!(
+        warm_references, fresh_references,
+        "imported bodies must carry the recorded reference sets fresh analysis produced"
+    );
+
+    let (_, main_references) = fresh_references
+        .iter()
+        .find(|(owner, _)| owner.contains("kind: Function, name: \"main\""))
+        .unwrap_or_else(|| panic!("main owns a durable body: {fresh_references:#?}"));
+    assert!(
+        main_references
+            .iter()
+            .any(|reference| reference.contains("StrBuf") && reference.contains("concat_borrowed")),
+        "the lang-item (bare-symbol) StrBuf concatenation is recorded: {main_references:?}"
+    );
+    assert!(
+        main_references
+            .iter()
+            .any(|reference| reference.contains("Counter") && reference.contains("get")),
+        "the direct user-struct method call is recorded: {main_references:?}"
+    );
+    let (_, specialized_references) = fresh_references
+        .iter()
+        .find(|(owner, _)| owner.starts_with("Specialization") && owner.contains("\"read\""))
+        .unwrap_or_else(|| {
+            panic!("the read specialization owns a durable body: {fresh_references:#?}")
+        });
+    assert!(
+        specialized_references
+            .iter()
+            .any(|reference| reference.contains("Counter") && reference.contains("get")),
+        "the specialized-generic receiver's method call is recorded: {specialized_references:?}"
+    );
+}
+
 #[test]
 fn representative_body_families_project_and_import_through_production_reuse() {
     let cases = [
