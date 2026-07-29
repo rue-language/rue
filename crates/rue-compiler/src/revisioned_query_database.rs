@@ -487,6 +487,7 @@ pub(crate) struct RevisionedQueryDatabase {
     #[cfg(test)]
     test_import_store: Arc<Mutex<TestImportInputStore>>,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
+    module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     module_indexes: QueryFamily<ModuleQueryKey, ModuleIndexValue>,
     declaration_occurrence_indexes: QueryFamily<ModuleQueryKey, DeclarationOccurrenceIndexValue>,
     declaration_shells: QueryFamily<DeclarationShellQueryKey, DeclarationShellQueryValue>,
@@ -8025,6 +8026,48 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the ParseModule family has one canonical name");
+        let parse_for_module_source_bases = parse_modules.clone();
+        // Body-host module registration needs only stable file identity and
+        // path. Keep that dependency independent of the exact parsed module so
+        // an imported body's text edit does not invalidate every caller merely
+        // to rediscover the same module identity. Exact body locators remain
+        // responsible for current lengths and spans.
+        let module_source_bases = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.module-source-basis",
+                BODY_QUERY_MEMO_RETENTION,
+                |left: &Option<rue_air::DurableBodySourceLocator>,
+                 right: &Option<rue_air::DurableBodySourceLocator>| {
+                    match (left, right) {
+                        (Some(left), Some(right)) => {
+                            left.file_id == right.file_id
+                                && left.physical_path == right.physical_path
+                        }
+                        (None, None) => true,
+                        _ => false,
+                    }
+                },
+                move |context, _, key: &ModuleQueryKey| {
+                    let parsed =
+                        context.query_registered(&parse_for_module_source_bases, key.clone())?;
+                    let rue_query::QueryOutcome::Success(ParseModuleValue {
+                        result: Ok(parsed),
+                        ..
+                    }) = parsed.outcome()
+                    else {
+                        return Ok(QueryOutput::success(None));
+                    };
+                    Ok(QueryOutput::success(Some(
+                        rue_air::DurableBodySourceLocator {
+                            file_id: parsed.file_id(),
+                            physical_path: Arc::from(parsed.physical_path()),
+                            source_length: u32::try_from(parsed.source_text().len())
+                                .map_err(|_| QueryAbort::Canceled)?,
+                        },
+                    )))
+                },
+            )
+            .expect("the ModuleSourceBasis family has one canonical name");
         // Test-only per-evaluator probes recording which modules and lookup keys
         // are (re)built. They make the ADR-0066 §4 fan-out bound observable:
         // building one module's index consults no other module, and editing a
@@ -11981,6 +12024,7 @@ impl RevisionedQueryDatabase {
             .expect("the BodyClosure family has one canonical name");
         let closures_for_publication = body_closures.clone();
         let reachability_for_publication = body_reachability.clone();
+        let bundles_for_closure_publication = body_analysis_bundles.clone();
         let names_for_closure_publication = lookup_names.clone();
         let imports_for_closure_publication = lookup_imports.clone();
         let lease_for_closure_publication = lookup_root_lease.clone();
@@ -12035,15 +12079,36 @@ impl RevisionedQueryDatabase {
                                 )
                             });
                         if closure.kind() == QueryTerminalKind::Success {
-                            context.register_attempt_handoff(PublishedBodyClosureTerminalHandoff {
-                                root: terminal_root_for_closure_publication.clone(),
-                                pending: Some(
+                            let pending = match context.retain_observed_terminal_cone(&closure) {
+                                Ok(pending) => pending,
+                                Err(rue_query::RetainTerminalConeError::DependencyNotObserved(
+                                    _,
+                                )) => {
+                                    // When every reached body stays green, the
+                                    // reused closure carries its bundle
+                                    // terminals without observing them in this
+                                    // publication task. Re-observe those exact
+                                    // carried keys before transferring the
+                                    // closure's retention cone.
+                                    for body in output.bodies.iter() {
+                                        context.query_registered(
+                                            &bundles_for_closure_publication,
+                                            body.key.clone(),
+                                        )?;
+                                    }
                                     context
                                         .retain_observed_terminal_cone(&closure)
                                         .expect(
-                                            "registered closure validation retains its exact dependency cone",
-                                        ),
+                                            "registered closure validation retains its exact dependency cone after observing carried body bundles",
+                                        )
+                                }
+                                Err(error) => panic!(
+                                    "registered closure validation retains its exact dependency cone: {error:?}"
                                 ),
+                            };
+                            context.register_attempt_handoff(PublishedBodyClosureTerminalHandoff {
+                                root: terminal_root_for_closure_publication.clone(),
+                                pending: Some(pending),
                                 pending_reached: Some(output.reached.iter().cloned().collect()),
                                 previous: None,
                                 installed: false,
@@ -12149,6 +12214,7 @@ impl RevisionedQueryDatabase {
             body_transaction_evaluator
                 .set(BodyTransactionEvaluator {
                     parse_modules: parse_modules.clone(),
+                    module_source_bases: module_source_bases.clone(),
                     raw_declaration_signatures: raw_declaration_signatures.clone(),
                     raw_declaration_bodies: raw_declaration_bodies.clone(),
                     body_inputs: body_inputs.clone(),
@@ -12180,6 +12246,7 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             test_import_store,
             parse_modules,
+            module_source_bases,
             module_indexes,
             declaration_occurrence_indexes,
             declaration_shells,
@@ -12626,6 +12693,7 @@ impl RevisionedQueryDatabase {
 
 struct BodyTransactionEvaluator {
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
+    module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
@@ -12680,6 +12748,7 @@ impl BodyTransactionEvaluator {
         CompilerBodyProviderQueries {
             context,
             parse_modules: self.parse_modules.clone(),
+            module_source_bases: self.module_source_bases.clone(),
             raw_declaration_signatures: self.raw_declaration_signatures.clone(),
             lookup_names: self.lookup_names.clone(),
             lookup_imports: self.lookup_imports.clone(),
@@ -15977,6 +16046,7 @@ fn provider_status_should_replace(
 pub(crate) struct CompilerBodyProviderQueries<'a> {
     context: &'a rue_query::QueryContext,
     parse_modules: QueryFamily<ModuleQueryKey, ParseModuleValue>,
+    module_source_bases: QueryFamily<ModuleQueryKey, Option<rue_air::DurableBodySourceLocator>>,
     raw_declaration_signatures:
         QueryFamily<RawDeclarationSignatureQueryKey, RawDeclarationSignatureQueryValue>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
@@ -17441,28 +17511,20 @@ impl<'a> CompilerBodyFactProvider<'a> {
     }
 
     fn source_locator(&self, module: &ModuleId) -> Option<rue_air::DurableBodySourceLocator> {
-        let terminal = match self
-            .queries
-            .context
-            .query_registered(&self.queries.parse_modules, ModuleQueryKey(module.clone()))
-        {
+        let terminal = match self.queries.context.query_registered(
+            &self.queries.module_source_bases,
+            ModuleQueryKey(module.clone()),
+        ) {
             Ok(terminal) => terminal,
             Err(abort) => {
                 self.observe_abort(abort);
                 return None;
             }
         };
-        let rue_query::QueryOutcome::Success(ParseModuleValue {
-            result: Ok(parsed), ..
-        }) = terminal.outcome()
-        else {
+        let rue_query::QueryOutcome::Success(Some(locator)) = terminal.outcome() else {
             return None;
         };
-        Some(rue_air::DurableBodySourceLocator {
-            file_id: parsed.file_id(),
-            physical_path: Arc::from(parsed.physical_path()),
-            source_length: u32::try_from(parsed.source_text().len()).ok()?,
-        })
+        Some(locator.clone())
     }
 
     fn producer_relative_span(
@@ -19266,6 +19328,7 @@ impl RevisionedQueryDatabase {
         CompilerBodyProviderQueries {
             context,
             parse_modules: self.parse_modules.clone(),
+            module_source_bases: self.module_source_bases.clone(),
             raw_declaration_signatures: self.raw_declaration_signatures.clone(),
             lookup_names: self.lookup_names.clone(),
             lookup_imports: self.lookup_imports.clone(),
