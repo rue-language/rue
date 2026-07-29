@@ -1115,6 +1115,49 @@ fn import_source(
     )
 }
 
+fn rooted_demand_locality_source(
+    leaf_value: i32,
+    unrelated_value: i32,
+    observation: u64,
+) -> (SourceSnapshot, ImportDiscoveryContext, AcceptedReadManifest) {
+    // The observation regime remains fixed across revisions. Only the imported
+    // source leaf changes, matching a long-lived host whose read policy is
+    // stable while it services successive import-input requests.
+    let context = ImportDiscoveryContext::new(1, "/p", None, "scaling-import").unwrap();
+    let root = Arc::new(
+        "const a = @import(\"a.rue\");\n\
+         fn main() -> i32 { a.value() }\n"
+            .to_owned(),
+    );
+    let imported = Arc::new(format!(
+        "pub fn value() -> i32 {{ {leaf_value} }}\n\
+         fn unrelated() -> i32 {{ {unrelated_value} }}\n"
+    ));
+    let mut assembler = DiscoverySourceAssembler::new(
+        context.clone(),
+        "/p/main.rue",
+        "/p/main.rue",
+        PhysicalFileIdentity::new(1200, 1),
+        FileMetadataFingerprint::new(root.len() as u64, 1, 1),
+        root,
+    )
+    .unwrap();
+    assembler
+        .add_explicit(
+            "/p/a.rue",
+            "/p/a.rue",
+            PhysicalFileIdentity::new(1200, 2),
+            FileMetadataFingerprint::new(imported.len() as u64, observation, observation),
+            imported,
+        )
+        .unwrap();
+    (
+        assembler.snapshot().unwrap(),
+        context,
+        assembler.accepted_read_manifest(),
+    )
+}
+
 fn close_import_source(
     session: &mut CompilerSession,
     source: &SourceSnapshot,
@@ -1950,6 +1993,80 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
         changed_body_origins(&before, &after).contains("main"),
         "changing an imported value must refresh its root consumer"
     );
+}
+
+#[test]
+fn rooted_demand_in_process_host_pins_warm_edit_locality() {
+    let options = CompileOptions::default();
+    let run_edit = |leaf_value, unrelated_value| {
+        let (baseline, baseline_context, baseline_reads) = rooted_demand_locality_source(1, 10, 1);
+        let (edited, edited_context, edited_reads) =
+            rooted_demand_locality_source(leaf_value, unrelated_value, 2);
+        let mut session = CompilerSession::new();
+        // Stay entirely on the rooted import-input protocol. Mixing this with
+        // the ordinary update-token namespace is tracked separately by RUE-1202.
+        close_import_source(&mut session, &baseline, baseline_context, baseline_reads);
+        session
+            .semantic(&options)
+            .expect("rooted-demand baseline compiles");
+        session
+            .unstable_dependency_baseline(&options, None)
+            .expect("rooted-demand baseline dependency manifest is available");
+        close_import_source(&mut session, &edited, edited_context, edited_reads);
+        let semantic_record_start = session.unstable_metrics().semantic_record_count();
+        session
+            .semantic(&options)
+            .expect("rooted-demand warm edit compiles");
+        let work = session
+            .unstable_metrics()
+            .semantic_work_json(semantic_record_start);
+        let count = |path: &[&str]| {
+            path.iter()
+                .fold(&work, |value, key| &value[*key])
+                .as_u64()
+                .unwrap() as usize
+        };
+        [
+            count(&["body_analyses_computed"]),
+            count(&["body_analyses_reused"]),
+            count(&["declaration_reuse", "durable_records_compared"]),
+            count(&["declaration_reuse", "durable_records_reused"]),
+        ]
+    };
+    let reachable = run_edit(2, 10);
+    let unrelated = run_edit(1, 11);
+    let mut report = Report::new(
+        "rooted-demand warm locality: in-process import-input host \
+         (synthetic accepted reads; no filesystem re-observation)",
+    );
+    for (label, measured, computed, reused) in [
+        ("reachable imported leaf body edit", reachable, 1, 1),
+        ("unrelated imported body edit", unrelated, 0, 2),
+    ] {
+        assert_eq!(
+            measured[0], computed,
+            "{label}: rooted-demand warm computed-body count changed"
+        );
+        assert_eq!(
+            measured[1], reused,
+            "{label}: rooted-demand warm reused-body count changed"
+        );
+        assert_eq!(
+            measured[2], 4,
+            "{label}: rooted-demand declaration-context record count changed"
+        );
+        assert_eq!(
+            measured[3], 4,
+            "{label}: every unchanged declaration-context record must be reusable"
+        );
+        report.push(Row::Met {
+            label: format!(
+                "{label}: computed={} reused={} declaration-context records={}/{} reused",
+                measured[0], measured[1], measured[3], measured[2],
+            ),
+        });
+    }
+    report.emit();
 }
 
 // ---------------------------------------------------------------------------
