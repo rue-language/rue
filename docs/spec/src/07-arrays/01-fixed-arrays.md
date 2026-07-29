@@ -116,10 +116,12 @@ also 8.2:3).
 
 {{ rule(id="7.1:10", cat="dynamic-semantics") }}
 
-For variable indices, bounds **MUST** be checked at runtime, before the element
-is read, at the moment the index navigates into the array (core calculus
-`docs/formal/01-core-calculus.md` §6.5: the check precedes the projection that
-reads the element; see also 8.2:5).
+For variable indices, an out-of-range access **MUST** trap as if the bound were
+tested at the moment the index navigates into the array, before the element is
+read (core calculus `docs/formal/01-core-calculus.md` §6.5: the check precedes
+the projection that reads the element; see also 8.2:5). This constrains
+observable behavior, not emitted code: an implementation may omit or move the
+dynamic test where it proves the trap behavior unchanged, subject to 8.2:9.
 
 {{ rule(id="7.1:11", cat="dynamic-semantics") }}
 
