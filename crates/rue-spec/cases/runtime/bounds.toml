@@ -183,3 +183,60 @@ fn main() -> i32 {
 }
 """
 runtime_error = "index out of bounds"
+
+# =============================================================================
+# Bounds checks are an observable-behavior obligation (8.2:9)
+# =============================================================================
+# 8.2:5 requires an out-of-range access to trap *as if* tested at the point of
+# navigation; it does not require a distinct test instruction per access. 8.2:9
+# bounds what a check-eliding transformation may do. These cases pin the
+# clauses that are observable from source: a trap must not appear on a path the
+# program does not take, and must not disappear from one it does. The
+# no-reorder-across-an-observable-effect clause is enforced by the
+# differential-opt harness (RUE-236) rather than here, since the spec corpus
+# does not assert on interleaved output.
+
+[[case]]
+name = "no_trap_on_untaken_branch"
+spec = ["8.2:9", "7.1:10"]
+description = "An out-of-range access on a branch that is not taken must not trap: a check may not be speculated onto an unexecuted path"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: u64 = 5;
+    if i < 3 { arr[i] } else { 7 }
+}
+"""
+exit_code = 7
+
+[[case]]
+name = "no_trap_on_zero_trip_loop"
+spec = ["8.2:9"]
+description = "An out-of-range access in a loop body that never executes must not trap: a hoisted check may not fire for a zero-trip loop"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let n: u64 = 0;
+    let mut i: u64 = 0;
+    let mut acc: i32 = 9;
+    while i < n {
+        acc = arr[i + 5];
+        i = i + 1;
+    }
+    acc
+}
+"""
+exit_code = 9
+
+[[case]]
+name = "trap_preserved_on_taken_branch"
+spec = ["8.2:9", "8.2:1"]
+description = "An out-of-range access on a branch that is taken must still trap: a transformation may not remove a trap the program would take"
+source = """
+fn main() -> i32 {
+    let arr: [i32; 3] = [10, 20, 30];
+    let i: u64 = 5;
+    if i > 3 { arr[i] } else { 7 }
+}
+"""
+runtime_error = "index out of bounds"

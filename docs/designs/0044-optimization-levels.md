@@ -180,6 +180,17 @@ Two clarifications that keep the invariant honest:
    level may optimize them away or let a fold silently wrap. `constfold` already
    guards these; any future pass inherits the obligation. This is precisely the
    class RUE-348 lived in.
+3. **Bounds *traps* are observable; bounds *checks* are not.** Spec 8.2:5 states
+   the obligation as observable behavior — an out-of-range access traps as if
+   tested at the point of navigation — rather than as a mandated instruction, so
+   a pass may elide, combine, or hoist the dynamic test for an access it proves
+   in range. Spec 8.2:9 fixes the limits: a transformation may not introduce a
+   trap on an execution that would not have trapped (including speculating a
+   check onto an untaken path, or letting a hoisted check fire for a zero-trip
+   loop), may not remove a trap the program would take, may not reorder a trap
+   across an observable effect, and must preserve which access traps first. Any
+   range-analysis or bounds-check-elimination pass cites 8.2:9 and ships with
+   differential coverage for these cases.
 
 The invariant is not merely aspirational: it is **mechanically enforced** by the
 RUE-236 differential-opt harness. Every pass we add at `-O2`/`-O3` must keep the
@@ -242,6 +253,11 @@ coverage. Placement follows the cost/risk triage above:
   **`-O3`**.
 - **Loop optimizations** (invariant hoisting / LICM, unrolling): compile-time and
   size cost, speculative payoff → **`-O3`**.
+- **Range analysis / bounds-check elimination**: removes the dynamic test for
+  accesses proven in range, under the trap-preservation limits of spec 8.2:9
+  (see clarification 3 above) → **`-O2`** for the locally provable cases, with
+  loop-carried range facts arriving alongside the loop passes at **`-O3`**.
+
 - **Vectorization / SIMD**: far future, most speculative, per-backend → **`-O3`**.
 
 ### Where the level knob lives
