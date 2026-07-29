@@ -54,7 +54,6 @@ set -euo pipefail
 # inputs. Nothing here parses output to decide what really ran.
 
 cd "$(dirname "$0")"
-repo_root="$PWD"
 
 requested_test_tier="${RUE_TEST_TIER:-}"
 test_tier="${requested_test_tier:-standard}"
@@ -95,13 +94,6 @@ print_test_suite_result() {
     fi
 }
 trap print_test_suite_result EXIT
-
-REPOSITORY_QUALITY_GATES=(
-    //:tutorial-snippet-tool-tests
-    //:tutorial-snippet-tests
-    //:spec-traceability
-    //:adr-registry-validation
-)
 
 if [[ $# -eq 0 ]]; then
     # Fail closed before executing anything if a target is unowned, multiply
@@ -176,27 +168,22 @@ else
     echo "Running unit tests..."
     ./buck2 test //crates/...
 
-    # Get the path to the rue binary (this also builds it if needed).
-    # scripts/rue-bin resolves it to a stable absolute path.
-    RUE_BINARY="$(./scripts/rue-bin)"
-
+    # RUE-1163: each harness has a command_alias carrying the corpus's declared
+    # inputs, so a filtered run plumbs no environment by hand. The previous
+    # spelling set a smaller set than BUCK does — it never passed
+    # RUE_REAL_STD_PATH, so `real_std` spec and UI cases resolved the standard
+    # library through a cwd-relative fallback that only worked because this
+    # script cd's to the repository root. A filtered run now uses exactly the
+    # inputs //:spec-tests, //:ui-tests, and //:cli-tests use.
     echo "Running spec tests..."
-    RUE_BINARY="$RUE_BINARY" \
-    RUE_SPEC_CASES="crates/rue-spec/cases" \
-    ./buck2 run //crates/rue-spec:rue-spec -- --quiet "$@"
+    ./buck2 run //crates/rue-spec:spec -- --quiet "$@"
 
     echo "Running UI tests..."
-    RUE_BINARY="$RUE_BINARY" \
-    RUE_UI_CASES="crates/rue-ui-tests/cases" \
-    ./buck2 run //crates/rue-ui-tests:rue-ui-tests -- --quiet "$@"
+    ./buck2 run //crates/rue-ui-tests:ui -- --quiet "$@"
 
     echo "Running CLI integration tests..."
-    RUE_BINARY="$RUE_BINARY" \
-    RUE_CLI_CASES="crates/rue-cli-tests/cases" \
-    RUE_EXAMPLES_DIR="$repo_root/examples" \
-    RUE_STD_DIR="std" \
-    ./buck2 run //crates/rue-cli-tests:rue-cli-tests -- --quiet "$@"
+    ./buck2 run //crates/rue-cli-tests:cli -- --quiet "$@"
 
     echo "Running repository quality gates..."
-    ./buck2 test "${REPOSITORY_QUALITY_GATES[@]}"
+    ./buck2 test //:repository-quality-gates
 fi

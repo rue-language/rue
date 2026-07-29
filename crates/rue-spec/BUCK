@@ -16,3 +16,18 @@ filegroup(
     srcs = glob(["cases/**"]),
     visibility = ["PUBLIC"],
 )
+
+# RUE-1163: the developer entry point. Carrying the corpus's declared inputs as
+# `env` here means a filtered run needs no shell to plumb them, and cannot drift
+# from what //:spec-tests runs — `./test.sh <pattern>` used to set a different
+# (smaller) set by hand.
+command_alias(
+    name = "spec",
+    exe = ":rue-spec",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_REAL_STD_PATH": "$(location root//:std)/std",
+        "RUE_SPEC_CASES": "$(location :cases)/cases",
+    },
+    visibility = ["PUBLIC"],
+)

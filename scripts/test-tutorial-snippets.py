@@ -199,10 +199,20 @@ class GateWiringTests(unittest.TestCase):
         self.assertEqual(process.returncode, 1)
         self.assertIn("could not start compiler", process.stderr)
 
-    def test_filtered_wrapper_lists_repository_quality_gates(self):
+    def test_filtered_wrapper_runs_the_repository_quality_gates(self):
+        # RUE-1163: the four gates moved from a bash array in test.sh into the
+        # //:repository-quality-gates test_suite. The contract is unchanged — a
+        # filtered run must still execute the tutorial gates — but it is now
+        # BUCK that says which targets those are, so assert both halves rather
+        # than grepping the script for target names.
         wrapper = (INPUT_ROOT / "test.sh").read_text()
-        self.assertIn("//:tutorial-snippet-tool-tests", wrapper)
-        self.assertIn("//:tutorial-snippet-tests", wrapper)
+        self.assertIn("//:repository-quality-gates", wrapper)
+
+        buck = (INPUT_ROOT / "BUCK").read_text()
+        suite = buck[buck.index('name = "repository-quality-gates"') :]
+        suite = suite[: suite.index(")")]
+        self.assertIn(":tutorial-snippet-tool-tests", suite)
+        self.assertIn(":tutorial-snippet-tests", suite)
 
 
 if __name__ == "__main__":

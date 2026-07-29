@@ -227,11 +227,14 @@ install_cli_path_probe_buck() {
   local sb="$1"
   cat >"$sb/buck2" <<'EOF'
 #!/usr/bin/env bash
-if [ -n "${RUE_EXAMPLES_DIR:-}" ]; then
-  printf 'examples=%s\n' "$RUE_EXAMPLES_DIR" >>"$CLI_LOG"
+# RUE-1163: the corpus environment moved onto the //crates/rue-cli-tests:cli
+# command_alias, so the wrappers hand buck2 nothing but the target and the
+# filter. `$(location root//:examples)` expands to an absolute path there, which
+# is what keeps a filtered examples case readable after the harness chdirs (the
+# RUE-537/RUE-550 property); that is now Buck's guarantee rather than a
+# `$repo_root/...` string built in shell, and //:cli-tests exercises it.
+if [ "${1:-}" = "run" ]; then
   printf 'args=%s\n' "$*" >>"$CLI_LOG"
-  cd "$FAKE_PROBE_DIR"
-  [ -f "$RUE_EXAMPLES_DIR/hello.rue" ] || exit 91
   exit "${FAKE_CLI_EXIT:-0}"
 fi
 exit 0
@@ -251,8 +254,10 @@ test_rue_cli_examples_survive_case_chdir() {
       "$sb/scripts/rue" cli 'cli.examples::hello' ) >/dev/null 2>&1 || rc=$?
   check "scripts/rue cli: filtered run survives the harness cwd change" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
-  check "scripts/rue cli: examples path is anchored at the repository" \
-    "$(grep -Fxq "examples=$sb/examples" "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "scripts/rue cli: delegates to the Buck entry point" \
+    "$(grep -Fq 'run //crates/rue-cli-tests:cli' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "scripts/rue cli: sets no corpus environment of its own" \
+    "$(! grep -Fq 'RUE_EXAMPLES_DIR' "$sb/scripts/rue" && echo 0 || echo 1)"
   check "scripts/rue cli: filter is forwarded" \
     "$(grep -Fq 'cli.examples::hello' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
 
@@ -306,8 +311,10 @@ test_testsh_cli_examples_survive_case_chdir() {
       "$sb/test.sh" 'cli.examples::hello' 2>&1)" || rc=$?
   check "test.sh: filtered run survives the harness cwd change" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
-  check "test.sh: examples path is anchored at the repository" \
-    "$(grep -Fxq "examples=$sb/examples" "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "test.sh: delegates to the Buck entry point" \
+    "$(grep -Fq 'run //crates/rue-cli-tests:cli' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
+  check "test.sh: sets no corpus environment of its own" \
+    "$(! grep -Fq 'RUE_EXAMPLES_DIR' "$sb/test.sh" && echo 0 || echo 1)"
   check "test.sh: CLI filter is forwarded" \
     "$(grep -Fq 'cli.examples::hello' "$sb/cli.log" 2>/dev/null && echo 0 || echo 1)"
   check "test.sh: successful filtered run prints the passed sentinel" \

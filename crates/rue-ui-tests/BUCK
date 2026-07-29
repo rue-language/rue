@@ -18,3 +18,16 @@ filegroup(
     srcs = glob(["cases/**"]),
     visibility = ["PUBLIC"],
 )
+
+# RUE-1163: the developer entry point, carrying the same declared inputs as
+# //:ui-tests so a filtered run cannot drift from the corpus.
+command_alias(
+    name = "ui",
+    exe = ":rue-ui-tests",
+    env = {
+        "RUE_BINARY": "$(exe_target //crates/rue:rue)",
+        "RUE_REAL_STD_PATH": "$(location root//:std)/std",
+        "RUE_UI_CASES": "$(location :cases)/cases",
+    },
+    visibility = ["PUBLIC"],
+)
