@@ -31,8 +31,8 @@ fn include(inout result: Result, borrow value: stress.Result) {
     result.makespan_sum += value.makespan;
     if value.makespan > result.maximum_makespan { result.maximum_makespan = value.makespan; }
     result.digest = mix(result.digest, value.digest);
-    if !value.valid { result.invalid_runs = result.invalid_runs + 1; }
-    if !value.deterministic { result.nondeterministic_runs = result.nondeterministic_runs + 1; }
+    if !value.valid { result.invalid_runs += 1; }
+    if !value.deterministic { result.nondeterministic_runs += 1; }
 }
 
 fn pair(inout result: Result, scale: u64) {

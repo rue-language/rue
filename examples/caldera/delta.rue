@@ -13,7 +13,7 @@ pub fn compare(borrow a: model.World, borrow b: model.World) -> Delta {
         let left = a.entities.get_or(i, model.empty_entity());
         let right = b.entities.get_or(i, model.empty_entity());
         if left.x != right.x || left.y != right.y || left.health != right.health ||
-            left.inventory != right.inventory || left.state != right.state { entities = entities + 1; }
+            left.inventory != right.inventory || left.state != right.state { entities += 1; }
         i += 1;
     }
     entities = entities + if a.entities.len() > b.entities.len() {

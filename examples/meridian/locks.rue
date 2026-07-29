@@ -46,7 +46,7 @@ pub fn audit(borrow database: model.Database) -> Audit {
             }
             j += 1;
         }
-        if reaches(borrow database, i, i, 0) { out.cycles = out.cycles + 1; }
+        if reaches(borrow database, i, i, 0) { out.cycles += 1; }
         i += 1;
     }
     out.valid = out.cycles <= out.transactions;

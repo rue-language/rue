@@ -29,7 +29,7 @@ pub struct Parser {
             self.arena.add(ast.NEG, @intCast(inner), 0)
         } else if t == token.LPAREN {
             let inner = self.parse_expr(0);
-            self.pos = self.pos + 1;   // consume ')'
+            self.pos += 1;   // consume ')'
             inner
         } else {
             @panic("unexpected token in prefix position")

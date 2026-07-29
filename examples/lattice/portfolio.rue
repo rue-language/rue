@@ -68,7 +68,7 @@ fn record(inout summary: Summary, value: metric.Metric, verified: bool) {
     summary.weighted = metric.add(summary.weighted, value.weighted);
     summary.digest = metric.mix(summary.digest, value.tag);
     summary.digest = metric.mix(summary.digest, value.digest);
-    if !verified { summary.verification_failures = summary.verification_failures + 1; }
+    if !verified { summary.verification_failures += 1; }
 }
 
 pub fn analyze(borrow workflow: model.Workflow) -> Summary {

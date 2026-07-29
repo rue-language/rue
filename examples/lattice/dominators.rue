@@ -18,7 +18,7 @@ pub struct Dominators {
 fn filled(count: u64, value: bool) -> Bools {
     let mut result = Bools.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { result.push(value); i = i + 1; }
+    while i < count { result.push(value); i += 1; }
     result
 }
 
@@ -100,7 +100,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Dominators {
         while candidate < size {
             if matrix.get_or(at(size, task, candidate), false) {
                 chain += 1;
-                if candidate != task { strict_pairs = strict_pairs + 1; }
+                if candidate != task { strict_pairs += 1; }
                 digest = @wrapping_mul(digest ^ (task * size + candidate), 1099511628211);
             }
             candidate += 1;

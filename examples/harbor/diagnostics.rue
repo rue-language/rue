@@ -34,7 +34,7 @@ pub fn count_code(borrow scenario: model.Scenario, code: u64) -> u64 {
     let mut i: u64 = 0;
     while i < scenario.diagnostics.len() {
         let diagnostic = scenario.diagnostics.get_or(i, model.Diagnostic { code: 0, subject: 0, detail: 0 });
-        if diagnostic.code == code { count = count + 1; }
+        if diagnostic.code == code { count += 1; }
         i += 1;
     }
     count

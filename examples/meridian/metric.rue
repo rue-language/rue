@@ -45,15 +45,15 @@ pub fn observe(inout value: Metric, observation: u64, weight: u64) {
     value.weighted = add(value.weighted, multiply(observation, weight));
     if observation < value.minimum { value.minimum = observation; }
     if observation > value.maximum { value.maximum = observation; }
-    if observation == 0 { value.zeroes = value.zeroes + 1; }
-    if observation % 2 == 0 { value.even = value.even + 1; }
-    else { value.odd = value.odd + 1; }
+    if observation == 0 { value.zeroes += 1; }
+    if observation % 2 == 0 { value.even += 1; }
+    else { value.odd += 1; }
     value.digest = mix(value.digest, observation);
     value.digest = mix(value.digest, weight);
 }
 
 pub fn warn(inout value: Metric, condition: bool) {
-    if condition { value.warnings = value.warnings + 1; }
+    if condition { value.warnings += 1; }
 }
 
 pub fn finish(inout value: Metric) {

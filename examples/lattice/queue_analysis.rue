@@ -20,7 +20,7 @@ pub struct Analysis {
 fn zeroes(count: u64) -> model.U64s {
     let mut values = model.U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { values.push(0); i = i + 1; }
+    while i < count { values.push(0); i += 1; }
     values
 }
 
@@ -61,17 +61,17 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         if start == model.NONE() {
             unstarted_tasks += 1;
         } else {
-            let delay = if start >= ready { start - ready } else { timing_mismatches = timing_mismatches + 1; 0 };
+            let delay = if start >= ready { start - ready } else { timing_mismatches += 1; 0 };
             queue_delay.set(i, delay);
             total_queue_delay += delay;
-            if delay == 0 { zero_delay_tasks = zero_delay_tasks + 1; }
-            else { delayed_tasks = delayed_tasks + 1; }
+            if delay == 0 { zero_delay_tasks += 1; }
+            else { delayed_tasks += 1; }
             if maximum_queue_task == model.NONE() || delay > maximum_queue_delay {
                 maximum_queue_delay = delay; maximum_queue_task = i;
             }
             if end != model.NONE() {
                 if end >= start { runtime.set(i, end - start); }
-                else { timing_mismatches = timing_mismatches + 1; }
+                else { timing_mismatches += 1; }
             }
         }
         digest = mix(digest, ready); digest = mix(digest, start);

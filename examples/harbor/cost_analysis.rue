@@ -65,7 +65,7 @@ fn add_event(inout centers: CostCenters, index: u64, borrow event: state.Event) 
 fn finalize(inout centers: CostCenters, overhead: u64) -> u64 {
     let mut direct_total: u64 = 0;
     let mut i: u64 = 0;
-    while i < centers.len() { direct_total = add(direct_total, centers.get_or(i, CostCenter { index: i, events: 0, units: 0, distance: 0, direct_cost: 0, allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0 }).direct_cost); i = i + 1; }
+    while i < centers.len() { direct_total = add(direct_total, centers.get_or(i, CostCenter { index: i, events: 0, units: 0, distance: 0, direct_cost: 0, allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0 }).direct_cost); i += 1; }
     let mut most = model.NONE(); let mut most_cost: u64 = 0;
     i = 0;
     while i < centers.len() {
@@ -76,7 +76,7 @@ fn finalize(inout centers: CostCenters, overhead: u64) -> u64 {
         item.cost_per_unit = if item.units == 0 { 0 } else { item.allocated_cost / item.units };
         item.cost_per_distance = if item.distance == 0 { 0 } else { item.allocated_cost / item.distance };
         if item.allocated_cost > most_cost { most = i; most_cost = item.allocated_cost; }
-        centers.set(i, item); i = i + 1;
+        centers.set(i, item); i += 1;
     }
     most
 }
@@ -87,7 +87,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
     let mut demands = blanks(scenario.demands.len());
     let mut cost_by_tag = U64s.new();
     let mut i: u64 = 0;
-    while i <= state.EVENT_UNMET() { cost_by_tag.push(0); i = i + 1; }
+    while i <= state.EVENT_UNMET() { cost_by_tag.push(0); i += 1; }
     let mut total_direct_cost: u64 = 0;
     i = 0;
     while i < sim.log.len() {

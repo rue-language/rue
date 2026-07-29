@@ -151,7 +151,7 @@ fn observe_regions(inout out: metric.Metric, borrow world: model.World) {
             let tile = world.tiles.get_or(i, model.empty_tile());
             if tile.region == region {
                 tiles += 1;
-                if tile.walkable { walkable = walkable + 1; }
+                if tile.walkable { walkable += 1; }
                 resources += tile.resource;
                 elevation += tile.height;
             }

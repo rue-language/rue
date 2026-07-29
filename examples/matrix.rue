@@ -11,7 +11,7 @@ struct Matrix {
     fn trace(borrow self) -> i32 {
         let mut t = 0;
         let mut i = 0;
-        while i < N { t = t + self.data[i][i]; i = i + 1; }
+        while i < N { t += self.data[i][i]; i += 1; }
         t
     }
 }
@@ -19,7 +19,7 @@ struct Matrix {
 fn identity() -> Matrix {
     let mut m = Matrix { data: [[0; N]; N] };
     let mut i = 0;
-    while i < N { m.set(i, i, 1); i = i + 1; }
+    while i < N { m.set(i, i, 1); i += 1; }
     m
 }
 
@@ -31,7 +31,7 @@ fn multiply(a: Matrix, b: Matrix) -> Matrix {
         while c < N {
             let mut acc = 0;
             let mut k = 0;
-            while k < N { acc = acc + a.get(r, k) * b.get(k, c); k = k + 1; }
+            while k < N { acc += a.get(r, k) * b.get(k, c); k += 1; }
             out.set(r, c, acc);
             c += 1;
         }
@@ -47,7 +47,7 @@ fn main() -> i32 {
     let mut r = 0;
     while r < N {
         let mut c = 0;
-        while c < N { a.set(r, c, v); v = v + 1; c = c + 1; }
+        while c < N { a.set(r, c, v); v += 1; c += 1; }
         r += 1;
     }
     // a * identity == a, so trace(a*id) == trace(a) == 1 + 5 + 9 == 15

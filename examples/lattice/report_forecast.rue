@@ -20,7 +20,7 @@ pub fn render(borrow workflow: model.Workflow, seed: u64) -> StrBuf {
         text.append_u64(inout out, value.makespans.get_or(i, 0)); out.push(44);
         text.append_u64(inout out, value.cache_hits.get_or(i, 0)); out.push(44);
         text.append_u64(inout out, value.retries.get_or(i, 0)); out.push(44);
-        text.append_u64(inout out, value.fingerprints.get_or(i, 0)); out.push(10); i = i + 1;
+        text.append_u64(inout out, value.fingerprints.get_or(i, 0)); out.push(10); i += 1;
     }
     out
 }

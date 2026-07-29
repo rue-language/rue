@@ -7,8 +7,8 @@ pub fn new(system: u64) -> Result {
 }
 pub fn record(inout out: Result, eligible: bool, command: bool, value: u64) {
     out.inspected += 1;
-    if eligible { out.eligible = out.eligible + 1; }
-    if command { out.commands = out.commands + 1; }
+    if eligible { out.eligible += 1; }
+    if command { out.commands += 1; }
     out.energy = @wrapping_add(out.energy, value);
     out.digest = metric.mix(out.digest, value + out.inspected * 17);
 }

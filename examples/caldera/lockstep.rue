@@ -11,8 +11,8 @@ pub fn run(borrow baseline: model.World, count: u64) -> Result {
     let mut i: u64 = 0;
     while i < count {
         let a = tick.step(inout left); let b = tick.step(inout right);
-        if a.checksum != b.checksum { out.mismatches = out.mismatches + 1; }
-        out.ticks = out.ticks + 1; i = i + 1;
+        if a.checksum != b.checksum { out.mismatches += 1; }
+        out.ticks += 1; i += 1;
     }
     out.checksum = checksum.world(borrow left);
     out.valid = out.mismatches == 0 && out.checksum == checksum.world(borrow right);

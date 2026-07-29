@@ -41,7 +41,7 @@ fn can_cross(borrow route: model.Route, from: u64, to: u64) -> bool {
 fn reachable_without(borrow scenario: model.Scenario, removed: u64) -> u64 {
     if scenario.locations.len() <= 1 { return 0; }
     let mut start: u64 = 0;
-    while start < scenario.locations.len() && start == removed { start = start + 1; }
+    while start < scenario.locations.len() && start == removed { start += 1; }
     if start >= scenario.locations.len() { return 0; }
     let mut seen = BitSet.new();
     let mut queue = Queue.new();
@@ -119,8 +119,8 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
     while i < scenario.locations.len() {
         let stats = location_stats(borrow scenario, i);
         directed_edges = add(directed_edges, stats.outgoing);
-        if stats.critical { critical_locations = critical_locations + 1; }
-        if stats.neighbors == 0 { isolated_locations = isolated_locations + 1; }
+        if stats.critical { critical_locations += 1; }
+        if stats.neighbors == 0 { isolated_locations += 1; }
         locations.push(stats);
         i += 1;
     }

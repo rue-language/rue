@@ -122,7 +122,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
         total_production = add(total_production, item.projected_production);
         total_requested = add(total_requested, item.requested);
         total_shortage = add(total_shortage, item.shortage);
-        if item.shortage > 0 { scarce_cargoes = scarce_cargoes + 1; }
+        if item.shortage > 0 { scarce_cargoes += 1; }
         cargoes.push(item);
         cargo += 1;
     }

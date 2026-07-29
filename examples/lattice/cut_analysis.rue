@@ -29,7 +29,7 @@ fn leaf_count(borrow workflow: model.Workflow) -> u64 {
     let mut result: u64 = 0;
     let mut i: u64 = 0;
     while i < workflow.tasks.len() {
-        if model.dependent_count(borrow workflow, i) == 0 { result = result + 1; }
+        if model.dependent_count(borrow workflow, i) == 0 { result += 1; }
         i += 1;
     }
     result

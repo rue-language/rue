@@ -98,7 +98,7 @@ fn uncacheable_long_tasks(borrow workflow: model.Workflow, threshold: u64) -> u6
     let mut i: u64 = 0;
     while i < workflow.tasks.len() {
         let task = workflow.tasks.get_or(i, model.empty_task());
-        if task.duration >= threshold && !task.cacheable { count = count + 1; }
+        if task.duration >= threshold && !task.cacheable { count += 1; }
         i += 1;
     }
     count

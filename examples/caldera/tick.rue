@@ -13,7 +13,7 @@ pub fn step(inout world: model.World) -> Result {
     let ai_changes = ai.update(inout world);
     let moved = physics.step(inout world);
     let ledger = economy.step(inout world);
-    if world.tick % 3 == 0 { world.quests_completed = world.quests_completed + 1; }
+    if world.tick % 3 == 0 { world.quests_completed += 1; }
     let captured = snapshot.capture(inout world);
     Result { tick: world.tick, ai_changes: ai_changes, moved: moved,
         produced: ledger.produced, events: world.events.len(),

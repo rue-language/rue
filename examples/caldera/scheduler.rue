@@ -29,9 +29,9 @@ pub fn build(borrow world: model.World) -> Schedule {
             let previous_priority = priority(borrow previous_entity);
             if previous_priority < key_priority ||
                 (previous_priority == key_priority && previous < key) { break; }
-            out.order.set(j, previous); j = j - 1;
+            out.order.set(j, previous); j -= 1;
         }
-        out.order.set(j, key); i = i + 1;
+        out.order.set(j, key); i += 1;
     }
     i = 0;
     let mut last: u64 = 0;

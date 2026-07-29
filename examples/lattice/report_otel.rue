@@ -14,7 +14,7 @@ fn links(inout out: StrBuf, borrow workflow: model.Workflow, task: u64) {
         if edge.after == task {
             if emitted > 0 { out.push(44); }
             text.append_literal(inout out, "{\"spanId\":\""); text.append_u64(inout out, edge.before + 1);
-            text.append_literal(inout out, "\"}"); emitted = emitted + 1;
+            text.append_literal(inout out, "\"}"); emitted += 1;
         }
         i += 1;
     }
@@ -42,7 +42,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
             text.append_literal(inout out, "}},{\"key\":\"lattice.priority\",\"value\":{\"intValue\":\"");
             text.append_u64(inout out, task.priority); text.append_literal(inout out, "\"}},{\"key\":\"lattice.attempts\",\"value\":{\"intValue\":\"");
             text.append_u64(inout out, run.attempts.get_or(i, 0)); text.append_literal(inout out, "\"}}],\"links\":");
-            links(inout out, borrow workflow, i); out.push(125); emitted = emitted + 1;
+            links(inout out, borrow workflow, i); out.push(125); emitted += 1;
         }
         i += 1;
     }

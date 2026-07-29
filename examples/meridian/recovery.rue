@@ -19,7 +19,7 @@ pub fn run(borrow database: model.Database, checkpoint_lsn: u64) -> Recovery {
     while i < database.wal.len() {
         let entry = database.wal.get_or(i, model.empty_wal());
         out.scanned += 1;
-        if entry.lsn <= checkpoint_lsn { out.skipped = out.skipped + 1; }
+        if entry.lsn <= checkpoint_lsn { out.skipped += 1; }
         else if entry.committed {
             out.redone += 1;
             out.checksum = metric.mix(out.checksum, entry.after);

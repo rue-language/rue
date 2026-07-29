@@ -46,7 +46,7 @@ struct ListHeap {
         self.offs.push(self.values.len());
         self.lens.push(len + 1);
         let mut i: u64 = 0;
-        while i < len { self.values.push(self.get(id, i)); i = i + 1; }
+        while i < len { self.values.push(self.get(id, i)); i += 1; }
         self.values.push(value);
         result
     }
@@ -125,7 +125,7 @@ struct VM {
     }
     fn allocate_locals(inout self, count: u64) {
         let mut i: u64 = 0;
-        while i < count { self.stack.push(Self.false_value()); i = i + 1; }
+        while i < count { self.stack.push(Self.false_value()); i += 1; }
     }
 
     fn value_equal(borrow self, a: Value, b: Value) -> bool {
@@ -284,7 +284,7 @@ struct VM {
                     let count: u64 = @intCast(ins.a);
                     let mut elements = Values.new();
                     let mut i: u64 = 0;
-                    while i < count { elements.push(self.pop()); i = i + 1; }
+                    while i < count { elements.push(self.pop()); i += 1; }
                     elements.reverse();
                     let id = self.lists.from_stack(borrow elements, 0, count);
                     self.push(Value { tag: LIST_VALUE, data: @intCast(id) });

@@ -61,14 +61,14 @@ fn blank_hour(time: u64) -> Hour {
 fn fill_hours(duration: u64) -> Hours {
     let mut result = Hours.new();
     let mut time: u64 = 0;
-    while time <= duration { result.push(blank_hour(time)); time = time + 1; }
+    while time <= duration { result.push(blank_hour(time)); time += 1; }
     result
 }
 
 fn fill_tags() -> U64s {
     let mut values = U64s.new();
     let mut i: u64 = 0;
-    while i <= state.EVENT_UNMET() { values.push(0); i = i + 1; }
+    while i <= state.EVENT_UNMET() { values.push(0); i += 1; }
     values
 }
 
@@ -130,7 +130,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
     while i < sim.log.len() {
         let event = sim.log.get_or(i, state.empty_event());
         if i > 0 {
-            if event.time < previous_time { ordering_errors = ordering_errors + 1; }
+            if event.time < previous_time { ordering_errors += 1; }
             record_transition(inout transitions, previous_tag, event.tag);
         }
         if event.time < hours.len() {
@@ -154,8 +154,8 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
     i = 0;
     while i < hours.len() {
         let hour = hours.get_or(i, blank_hour(i));
-        if hour.events == 0 { quiet_hours = quiet_hours + 1; }
-        else { active_hours = active_hours + 1; }
+        if hour.events == 0 { quiet_hours += 1; }
+        else { active_hours += 1; }
         if hour.events > peak_events { peak_events = hour.events; peak_event_hour = i; }
         let throughput = add(hour.outbound_units, hour.inbound_units);
         if throughput > peak_throughput { peak_throughput = throughput; peak_throughput_hour = i; }

@@ -17,7 +17,7 @@ pub struct Order {
 fn zeroes(count: u64) -> U64s {
     let mut values = U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { values.push(0); i = i + 1; }
+    while i < count { values.push(0); i += 1; }
     values
 }
 
@@ -38,7 +38,7 @@ fn outdegree(borrow workflow: model.Workflow, task: u64) -> u64 {
     let mut value: u64 = 0;
     let mut i: u64 = 0;
     while i < workflow.edges.len() {
-        if workflow.edges.get_or(i, model.empty_edge()).before == task { value = value + 1; }
+        if workflow.edges.get_or(i, model.empty_edge()).before == task { value += 1; }
         i += 1;
     }
     value
@@ -49,7 +49,7 @@ pub fn sort(borrow workflow: model.Workflow) -> Order {
     let mut remaining = compute_indegrees(borrow workflow);
     let mut emitted = model.Bools.with_capacity(workflow.tasks.len());
     let mut i: u64 = 0;
-    while i < workflow.tasks.len() { emitted.push(false); i = i + 1; }
+    while i < workflow.tasks.len() { emitted.push(false); i += 1; }
     let mut tasks = U64s.with_capacity(workflow.tasks.len());
 
     while tasks.len() < workflow.tasks.len() {
@@ -91,8 +91,8 @@ pub fn sort(borrow workflow: model.Workflow) -> Order {
     while i < workflow.tasks.len() {
         let inside = original.get_or(i, 0);
         let outside = outdegree(borrow workflow, i);
-        if inside == 0 { roots = roots + 1; }
-        if outside == 0 { leaves = leaves + 1; }
+        if inside == 0 { roots += 1; }
+        if outside == 0 { leaves += 1; }
         if inside > maximum_indegree { maximum_indegree = inside; }
         if outside > maximum_outdegree { maximum_outdegree = outside; }
         i += 1;

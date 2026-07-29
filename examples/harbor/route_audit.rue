@@ -102,7 +102,7 @@ fn audit_path(
     let mut i: u64 = 0;
     while i < path.nodes.len() {
         digest = mix(digest, path.nodes.get_or(i, model.NONE()));
-        if node_repeated(borrow path, i) { result.cycle_errors = result.cycle_errors + 1; }
+        if node_repeated(borrow path, i) { result.cycle_errors += 1; }
         i += 1;
     }
     i = 0;
@@ -113,7 +113,7 @@ fn audit_path(
         let a = path.nodes.get_or(i, model.NONE());
         let b = path.nodes.get_or(i + 1, model.NONE());
         digest = mix(digest, route_index);
-        if !route_connects(route, a, b) { result.direction_errors = result.direction_errors + 1; }
+        if !route_connects(route, a, b) { result.direction_errors += 1; }
         if routing.effective_capacity(borrow scenario, route_index, at) < minimum_capacity {
             result.capacity_errors += 1;
         }
@@ -121,7 +121,7 @@ fn audit_path(
         direct_weight = add(direct_weight, edge);
         i += 1;
     }
-    if direct_weight != expected_weight { result.weight_errors = result.weight_errors + 1; }
+    if direct_weight != expected_weight { result.weight_errors += 1; }
     digest
 }
 

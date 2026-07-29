@@ -26,7 +26,7 @@ struct Parser {
 
     fn advance(inout self) -> token.Token {
         let value = self.peek();
-        if value.kind != token.EOF { self.at = self.at + 1; }
+        if value.kind != token.EOF { self.at += 1; }
         value
     }
 

@@ -125,7 +125,7 @@ pub fn dependency_count(borrow workflow: Workflow, task: u64) -> u64 {
     let mut count: u64 = 0;
     let mut i: u64 = 0;
     while i < workflow.edges.len() {
-        if workflow.edges.get_or(i, empty_edge()).after == task { count = count + 1; }
+        if workflow.edges.get_or(i, empty_edge()).after == task { count += 1; }
         i += 1;
     }
     count
@@ -135,7 +135,7 @@ pub fn dependent_count(borrow workflow: Workflow, task: u64) -> u64 {
     let mut count: u64 = 0;
     let mut i: u64 = 0;
     while i < workflow.edges.len() {
-        if workflow.edges.get_or(i, empty_edge()).before == task { count = count + 1; }
+        if workflow.edges.get_or(i, empty_edge()).before == task { count += 1; }
         i += 1;
     }
     count

@@ -78,7 +78,7 @@ fn segment_count(borrow path: StrBuf) -> u64 {
     let mut count: u64 = 1;
     let mut i: u64 = 0;
     while i < path.len() {
-        if text.byte_of(borrow path, i) == 47 { count = count + 1; }
+        if text.byte_of(borrow path, i) == 47 { count += 1; }
         i += 1;
     }
     count

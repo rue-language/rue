@@ -21,7 +21,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, "\" time=\""); text.append_u64(inout out, task.duration); text.append_literal(inout out, "\">");
         if status == state.FAILED() { text.append_literal(inout out, "<failure message=\"task failed\"/>"); }
         else if status == state.CACHED() { text.append_literal(inout out, "<system-out>cache hit</system-out>"); }
-        text.append_literal(inout out, "</testcase>\n"); i = i + 1;
+        text.append_literal(inout out, "</testcase>\n"); i += 1;
     }
     text.append_literal(inout out, "</testsuite>\n");
     out

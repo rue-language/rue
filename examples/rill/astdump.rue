@@ -54,7 +54,7 @@ fn operator_name(kind: u64) -> StrBuf {
 
 fn indent(inout out: StrBuf, depth: u64) {
     let mut i: u64 = 0;
-    while i < depth { out.push_str("  "); i = i + 1; }
+    while i < depth { out.push_str("  "); i += 1; }
 }
 
 fn append_span(inout out: StrBuf, borrow node: ast.Node) {

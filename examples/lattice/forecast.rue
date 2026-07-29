@@ -53,14 +53,14 @@ pub fn compute(borrow workflow: model.Workflow, base_seed: u64, samples: u64) ->
         let run = schedule.run(borrow workflow, seed);
         seeds.push(seed); makespans.push(run.makespan);
         cache_hits.push(run.cached); retries.push(run.retries);
-        if seen(borrow fingerprints, run.fingerprint) { duplicate_fingerprints = duplicate_fingerprints + 1; }
+        if seen(borrow fingerprints, run.fingerprint) { duplicate_fingerprints += 1; }
         fingerprints.push(run.fingerprint);
         if i == 0 || run.makespan < minimum_makespan { minimum_makespan = run.makespan; }
         if i == 0 || run.makespan > maximum_makespan { maximum_makespan = run.makespan; }
         total_makespan += run.makespan;
         total_cache_hits += run.cached;
         total_retries += run.retries;
-        if run.failed > 0 { failed_samples = failed_samples + 1; }
+        if run.failed > 0 { failed_samples += 1; }
         digest = mix(digest, seed); digest = mix(digest, run.makespan);
         digest = mix(digest, run.cached); digest = mix(digest, run.fingerprint);
         i += 1;

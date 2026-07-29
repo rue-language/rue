@@ -54,7 +54,7 @@ pub struct Result {
 
 fn check(inout out: Result, condition: bool, fingerprint: u64) {
     out.checks += 1; out.digest = metric.mix(out.digest, fingerprint);
-    if !condition { out.failures = out.failures + 1; }
+    if !condition { out.failures += 1; }
 }
 
 pub fn run() -> Result {
@@ -93,7 +93,7 @@ pub fn run() -> Result {
     check(inout out, run_result.valid && world.tick == 4, run_result.checksum);
     let replayed = replay.run(borrow baseline, 4);
     let replay_ok = replay_oracle.agrees(borrow baseline, 4, borrow replayed);
-    if !replay_ok { out.oracle_mismatches = out.oracle_mismatches + 1; }
+    if !replay_ok { out.oracle_mismatches += 1; }
     check(inout out, replay_ok && replayed.final_checksum == checksum.world(borrow world), replayed.timeline_digest);
     check(inout out, rollback.agrees(borrow baseline, 4, checksum.world(borrow world)), replayed.final_checksum);
     let synchronized = lockstep.run(borrow baseline, 4);

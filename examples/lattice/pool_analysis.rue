@@ -28,7 +28,7 @@ pub struct Analysis {
 fn zeroes(count: u64) -> model.U64s {
     let mut values = model.U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { values.push(0); i = i + 1; }
+    while i < count { values.push(0); i += 1; }
     values
 }
 
@@ -103,8 +103,8 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         let edge = workflow.edges.get_or(i, model.empty_edge());
         let before = workflow.tasks.get_or(edge.before, model.empty_task());
         let after = workflow.tasks.get_or(edge.after, model.empty_task());
-        if before.pool == after.pool { same_pool_edges = same_pool_edges + 1; }
-        else { cross_pool_edges = cross_pool_edges + 1; }
+        if before.pool == after.pool { same_pool_edges += 1; }
+        else { cross_pool_edges += 1; }
         i += 1;
     }
     Analysis {

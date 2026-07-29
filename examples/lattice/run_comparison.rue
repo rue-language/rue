@@ -48,7 +48,7 @@ pub fn compare(borrow workflow: model.Workflow, borrow first: state.Run, borrow 
         let second_end = second.ends.get_or(i, model.NONE());
         let changed = first_status != second_status || first.starts.get_or(i, model.NONE()) != second.starts.get_or(i, model.NONE()) ||
             first_end != second_end || first.attempts.get_or(i, 0) != second.attempts.get_or(i, 0);
-        if changed { changed_tasks.push(i); } else { unchanged_count = unchanged_count + 1; }
+        if changed { changed_tasks.push(i); } else { unchanged_count += 1; }
         if first_end != model.NONE() && second_end != model.NONE() {
             if first_end < second_end { faster_tasks.push(i); }
             else if second_end < first_end { slower_tasks.push(i); }

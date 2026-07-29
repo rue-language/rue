@@ -13,7 +13,7 @@ pub fn render(borrow program: bytecode.Program) -> StrBuf {
         else if op.kind == bytecode.MUL() { text.append_literal(inout out, "MUL"); }
         else if op.kind == bytecode.MIX() { text.append_literal(inout out, "MIX"); }
         else { text.append_literal(inout out, "HALT"); }
-        out.push(10); i = i + 1;
+        out.push(10); i += 1;
     }
     out
 }

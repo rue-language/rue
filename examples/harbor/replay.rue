@@ -33,7 +33,7 @@ pub struct Audit {
 
 fn fill(inout values: U64s, count: u64, value: u64) {
     let mut i: u64 = 0;
-    while i < count { values.push(value); i = i + 1; }
+    while i < count { values.push(value); i += 1; }
 }
 
 fn add(a: u64, b: u64) -> u64 {
@@ -45,13 +45,13 @@ fn inventory_index(borrow scenario: model.Scenario, location: u64, cargo: u64) -
 }
 
 fn inventory_add(borrow scenario: model.Scenario, inout snapshot: Snapshot, location: u64, cargo: u64, quantity: u64) {
-    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { snapshot.underflows = snapshot.underflows + 1; return; }
+    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { snapshot.underflows += 1; return; }
     let index = inventory_index(borrow scenario, location, cargo);
     snapshot.inventory.set(index, add(snapshot.inventory.get_or(index, 0), quantity));
 }
 
 fn inventory_take(borrow scenario: model.Scenario, inout snapshot: Snapshot, location: u64, cargo: u64, quantity: u64) {
-    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { snapshot.underflows = snapshot.underflows + 1; return; }
+    if location >= scenario.locations.len() || cargo >= scenario.cargoes.len() { snapshot.underflows += 1; return; }
     let index = inventory_index(borrow scenario, location, cargo);
     let current = snapshot.inventory.get_or(index, 0);
     if quantity > current {
@@ -113,13 +113,13 @@ fn departure_event(borrow scenario: model.Scenario, inout snapshot: Snapshot, ev
 fn arrival_event(inout snapshot: Snapshot, event: state.Event) {
     if event.cargo < snapshot.transit.len() {
         let current = snapshot.transit.get_or(event.cargo, 0);
-        if event.quantity > current { snapshot.underflows = snapshot.underflows + 1; snapshot.transit.set(event.cargo, 0); }
+        if event.quantity > current { snapshot.underflows += 1; snapshot.transit.set(event.cargo, 0); }
         else { snapshot.transit.set(event.cargo, current - event.quantity); }
         snapshot.delivered.set(event.cargo, add(snapshot.delivered.get_or(event.cargo, 0), event.quantity));
     }
     if event.demand < snapshot.demand_remaining.len() {
         let remaining = snapshot.demand_remaining.get_or(event.demand, 0);
-        if event.quantity > remaining { snapshot.underflows = snapshot.underflows + 1; }
+        if event.quantity > remaining { snapshot.underflows += 1; }
         let accepted = if event.quantity < remaining { event.quantity } else { remaining };
         snapshot.demand_remaining.set(event.demand, remaining - accepted);
         snapshot.demand_delivered.set(event.demand, add(snapshot.demand_delivered.get_or(event.demand, 0), accepted));
@@ -132,7 +132,7 @@ pub fn reduce(borrow scenario: model.Scenario, borrow log: state.Events) -> Snap
     let mut i: u64 = 0;
     while i < log.len() {
         let event = log.get_or(i, state.empty_event());
-        if i > 0 && event.time < previous_time { snapshot.ordering_errors = snapshot.ordering_errors + 1; }
+        if i > 0 && event.time < previous_time { snapshot.ordering_errors += 1; }
         previous_time = event.time;
         if event.tag == state.EVENT_SUPPLY() { source_event(borrow scenario, inout snapshot, event, false); }
         else if event.tag == state.EVENT_PRODUCTION() { source_event(borrow scenario, inout snapshot, event, true); }
@@ -155,7 +155,7 @@ fn array_mismatches(borrow a: U64s, borrow b: U64s) -> u64 {
     let n = if a.len() > b.len() { a.len() } else { b.len() };
     let mut i: u64 = 0;
     while i < n {
-        if a.get_or(i, 18446744073709551615) != b.get_or(i, 18446744073709551615) { mismatches = mismatches + 1; }
+        if a.get_or(i, 18446744073709551615) != b.get_or(i, 18446744073709551615) { mismatches += 1; }
         i += 1;
     }
     mismatches
@@ -173,14 +173,14 @@ pub fn audit(borrow scenario: model.Scenario, borrow sim: state.State) -> Audit 
     while i < scenario.cargoes.len() {
         let replay_source = add(add(snapshot.supplied.get_or(i, 0), snapshot.produced.get_or(i, 0)), snapshot.expired.get_or(i, 0));
         let state_source = add(sim.supplied.get_or(i, 0), sim.produced.get_or(i, 0));
-        if replay_source != state_source { cargo_mismatches = cargo_mismatches + 1; }
+        if replay_source != state_source { cargo_mismatches += 1; }
         i += 1;
     }
     let demand_mismatches = array_mismatches(borrow snapshot.demand_remaining, borrow sim.demand_remaining)
         + array_mismatches(borrow snapshot.demand_delivered, borrow sim.demand_delivered);
     let mut metric_mismatches: u64 = 0;
-    if snapshot.total_cost != sim.total_cost { metric_mismatches = metric_mismatches + 1; }
-    if snapshot.total_distance != sim.total_distance { metric_mismatches = metric_mismatches + 1; }
+    if snapshot.total_cost != sim.total_cost { metric_mismatches += 1; }
+    if snapshot.total_distance != sim.total_distance { metric_mismatches += 1; }
     let mismatches = inventory_mismatches + cargo_mismatches + demand_mismatches + metric_mismatches
         + snapshot.ordering_errors + snapshot.underflows;
     Audit {

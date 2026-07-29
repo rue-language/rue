@@ -167,9 +167,9 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State, band_
             unmet: 0, first_arrival: 0, last_arrival: 0,
             weighted_requested: 0, weighted_delivered: 0,
         });
-        if item.delivered == item.requested { complete_demands = complete_demands + 1; }
-        else if item.delivered == 0 { empty_demands = empty_demands + 1; }
-        else { partial_demands = partial_demands + 1; }
+        if item.delivered == item.requested { complete_demands += 1; }
+        else if item.delivered == 0 { empty_demands += 1; }
+        else { partial_demands += 1; }
         let demand = scenario.demands.get_or(i, model.empty_demand());
         deadline_total = add(deadline_total, demand.deadline);
         i += 1;

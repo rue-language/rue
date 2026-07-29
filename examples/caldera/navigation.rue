@@ -26,12 +26,12 @@ pub fn find(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64) -> Pa
     if start == model.NONE() || goal == model.NONE() { return out; }
     let mut distances = model.U64s.new();
     let mut i: u64 = 0;
-    while i < world.tiles.len() { distances.push(model.NONE()); i = i + 1; }
+    while i < world.tiles.len() { distances.push(model.NONE()); i += 1; }
     let mut queue = model.U64s.new();
     distances.set(start, 0); queue.push(start);
     let mut head: u64 = 0;
     while head < queue.len() {
-        let index = queue.get_or(head, model.NONE()); head = head + 1;
+        let index = queue.get_or(head, model.NONE()); head += 1;
         let tile = world.tiles.get_or(index, model.empty_tile());
         let distance = distances.get_or(index, model.NONE());
         out.visited += 1;

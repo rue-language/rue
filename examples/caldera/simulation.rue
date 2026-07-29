@@ -15,7 +15,7 @@ pub fn run(inout world: model.World, count: u64) -> Result {
     let mut i: u64 = 0;
     while i < count {
         let value = tick.step(inout world);
-        out.ticks = out.ticks + 1; out.moved = out.moved + value.moved;
+        out.ticks += 1; out.moved += value.moved;
         out.ai_changes += value.ai_changes;
         out.produced += value.produced;
         if !value.valid { out.valid = false; }

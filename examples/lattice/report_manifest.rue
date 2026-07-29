@@ -19,7 +19,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, "pool "); text.append_u64(inout out, i); out.push(32);
         text.append_id(inout out, borrow workflow, pool.id); out.push(32);
         text.append_u64(inout out, pool.slots); out.push(32); text.append_u64(inout out, pool.cpu); out.push(32);
-        text.append_u64(inout out, pool.memory); out.push(10); i = i + 1;
+        text.append_u64(inout out, pool.memory); out.push(10); i += 1;
     }
     i = 0;
     while i < workflow.tasks.len() {
@@ -29,13 +29,13 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_u64(inout out, task.duration); out.push(32); text.append_u64(inout out, task.cpu); out.push(32);
         text.append_u64(inout out, task.memory); out.push(32); text.append_u64(inout out, task.priority); out.push(32);
         text.append_u64(inout out, run.status.get_or(i, state.FAILED())); out.push(32);
-        text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(10); i = i + 1;
+        text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(10); i += 1;
     }
     i = 0;
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         text.append_literal(inout out, "edge "); text.append_u64(inout out, edge.before);
-        out.push(32); text.append_u64(inout out, edge.after); out.push(10); i = i + 1;
+        out.push(32); text.append_u64(inout out, edge.after); out.push(10); i += 1;
     }
     out
 }

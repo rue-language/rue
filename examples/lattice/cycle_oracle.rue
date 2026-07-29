@@ -7,7 +7,7 @@ const Bools = std.arraybuf.ArrayBuf(bool);
 fn matrix(count: u64) -> Bools {
     let mut values = Bools.with_capacity(count * count);
     let mut i: u64 = 0;
-    while i < count * count { values.push(false); i = i + 1; }
+    while i < count * count { values.push(false); i += 1; }
     values
 }
 
@@ -50,7 +50,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Closure {
     let mut comparable_pairs: u64 = 0;
     i = 0;
     while i < count {
-        if reachable.get_or(i * count + i, false) { cycle_vertices = cycle_vertices + 1; }
+        if reachable.get_or(i * count + i, false) { cycle_vertices += 1; }
         let mut j: u64 = i + 1;
         while j < count {
             if reachable.get_or(i * count + j, false) || reachable.get_or(j * count + i, false) {

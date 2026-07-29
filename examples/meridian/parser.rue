@@ -28,7 +28,7 @@ struct Parser {
 
     fn advance(inout self) -> token.Token {
         let value = self.peek();
-        if value.kind != token.EOF { self.at = self.at + 1; }
+        if value.kind != token.EOF { self.at += 1; }
         value
     }
 
@@ -204,7 +204,7 @@ struct Parser {
             }
             i += 1;
         }
-        if state == 2 { self.database.version = self.database.version + 1; }
+        if state == 2 { self.database.version += 1; }
     }
 
     fn recover(inout self) {

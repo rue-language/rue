@@ -90,11 +90,11 @@ fn capture(borrow scenario: model.Scenario, borrow quantities: U64s, time: u64) 
         while cargo < scenario.cargoes.len() {
             let value = quantities.get_or(index(borrow scenario, location, cargo), 0);
             at_location = add(at_location, value);
-            if value > 0 { occupied_cells = occupied_cells + 1; }
+            if value > 0 { occupied_cells += 1; }
             cargo += 1;
         }
         total_inventory = add(total_inventory, at_location);
-        if at_location > 0 { occupied_locations = occupied_locations + 1; }
+        if at_location > 0 { occupied_locations += 1; }
         if at_location > max_location_inventory {
             max_location_inventory = at_location; max_location = location;
         }
@@ -132,7 +132,7 @@ fn apply_event(borrow scenario: model.Scenario, inout quantities: U64s, inout ce
             turns_numerator: 0, turns_denominator: 0,
         });
         cell.outbound = add(cell.outbound, event.quantity - missing);
-        if missing > 0 { cell.underflows = cell.underflows + 1; }
+        if missing > 0 { cell.underflows += 1; }
         cells.set(at, cell);
         return missing;
     }
@@ -142,7 +142,7 @@ fn apply_event(borrow scenario: model.Scenario, inout quantities: U64s, inout ce
 pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Summary {
     let mut quantities = U64s.new();
     let mut i: u64 = 0;
-    while i < scenario.locations.len() * scenario.cargoes.len() { quantities.push(0); i = i + 1; }
+    while i < scenario.locations.len() * scenario.cargoes.len() { quantities.push(0); i += 1; }
     let mut cells = blank_cells(borrow scenario);
     let mut snapshots = Snapshots.new();
     let mut total_inbound: u64 = 0;
@@ -178,7 +178,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         cell.turns_numerator = cell.outbound;
         cell.turns_denominator = if cell.peak == 0 { 1 } else { cell.peak };
         final_inventory = add(final_inventory, cell.final_quantity);
-        cells.set(i, cell); i = i + 1;
+        cells.set(i, cell); i += 1;
     }
     Summary {
         cells: cells, snapshots: snapshots, total_inbound: total_inbound,

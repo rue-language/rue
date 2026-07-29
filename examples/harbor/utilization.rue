@@ -102,8 +102,8 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
     let mut i: u64 = 0;
     while i < scenario.vehicles.len() {
         let item = one(borrow scenario, borrow sim, i);
-        if item.dispatches > 0 || item.repositions > 0 { active_vehicles = active_vehicles + 1; }
-        else { idle_vehicles = idle_vehicles + 1; }
+        if item.dispatches > 0 || item.repositions > 0 { active_vehicles += 1; }
+        else { idle_vehicles += 1; }
         dispatches = add(dispatches, item.dispatches);
         cargo_units = add(cargo_units, item.cargo_units);
         loaded_distance = add(loaded_distance, item.loaded_distance);

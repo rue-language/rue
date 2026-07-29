@@ -96,12 +96,12 @@ fn source_count(borrow scenario: model.Scenario, cargo: u64) -> u64 {
     let mut count: u64 = 0;
     let mut i: u64 = 0;
     while i < scenario.supplies.len() {
-        if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count = count + 1; }
+        if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count += 1; }
         i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
-        if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count = count + 1; }
+        if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count += 1; }
         i += 1;
     }
     count
@@ -114,7 +114,7 @@ fn lead_time(borrow scenario: model.Scenario, borrow matrix: route_matrix.Matrix
         let supply = scenario.supplies.get_or(i, model.empty_supply());
         if supply.cargo == cargo {
             let value = route_matrix.travel(borrow matrix, supply.location, location);
-            if value != routing.INF() { total = add(total, value); count = count + 1; }
+            if value != routing.INF() { total = add(total, value); count += 1; }
         }
         i += 1;
     }
@@ -174,14 +174,14 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Book {
         let mut cargo: u64 = 0;
         while cargo < scenario.cargoes.len() {
             let item = make_policy(borrow scenario, borrow sim, borrow times, location, cargo);
-            if item.action == ACTION_REORDER() { reorder = reorder + 1; }
-            else if item.action == ACTION_EXPEDITE() { expedite = expedite + 1; }
-            else if item.action == ACTION_REDISTRIBUTE() { redistribute = redistribute + 1; }
-            else { hold = hold + 1; }
+            if item.action == ACTION_REORDER() { reorder += 1; }
+            else if item.action == ACTION_EXPEDITE() { expedite += 1; }
+            else if item.action == ACTION_REDISTRIBUTE() { redistribute += 1; }
+            else { hold += 1; }
             total_order_quantity = add(total_order_quantity, item.order_quantity);
             if item.urgency > maximum_urgency { maximum_urgency = item.urgency; maximum_location = location; maximum_cargo = cargo; }
             digest = mix(digest, item.target_stock); digest = mix(digest, item.order_quantity); digest = mix(digest, item.action);
-            policies.push(item); cargo = cargo + 1;
+            policies.push(item); cargo += 1;
         }
         location += 1;
     }
@@ -213,7 +213,7 @@ pub fn render(borrow scenario: model.Scenario, borrow value: Book) -> StrBuf {
         text.append_u64(inout out, item.average_lead_time); out.push(32); text.append_u64(inout out, item.safety_stock); out.push(32);
         text.append_u64(inout out, item.reorder_point); out.push(32); text.append_u64(inout out, item.target_stock); out.push(32);
         text.append_u64(inout out, item.order_quantity); out.push(32); action_name(inout out, item.action); out.push(32);
-        text.append_u64(inout out, item.urgency); out.push(10); i = i + 1;
+        text.append_u64(inout out, item.urgency); out.push(10); i += 1;
     }
     text.append_literal(inout out, "hold="); text.append_u64(inout out, value.hold);
     text.append_literal(inout out, " reorder="); text.append_u64(inout out, value.reorder);

@@ -21,7 +21,7 @@ pub struct Analysis {
 fn zeroes(count: u64) -> model.U64s {
     let mut values = model.U64s.with_capacity(count);
     let mut i: u64 = 0;
-    while i < count { values.push(0); i = i + 1; }
+    while i < count { values.push(0); i += 1; }
     values
 }
 
@@ -63,7 +63,7 @@ pub fn compute(borrow run: state.Run, requested_windows: u64) -> Analysis {
     while i < windows {
         let count = events_by_window.get_or(i, 0);
         counted_events += count;
-        if count == 0 { quiet_windows = quiet_windows + 1; }
+        if count == 0 { quiet_windows += 1; }
         if count > busiest_events { busiest_events = count; busiest_window = i; }
         digest = mix(digest, count);
         i += 1;

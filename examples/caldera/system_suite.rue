@@ -198,8 +198,8 @@ const system_network_audit = @import("system_network_audit.rue");
 pub struct Summary { systems: u64, inspected: u64, eligible: u64, commands: u64,
     deterministic_mismatches: u64, digest: u64, valid: bool }
 fn include(inout out: Summary, borrow first: result.Result, borrow second: result.Result, verified: bool) {
-    out.systems = out.systems + 1; out.inspected = out.inspected + first.inspected;
-    out.eligible = out.eligible + first.eligible; out.commands = out.commands + first.commands;
+    out.systems += 1; out.inspected += first.inspected;
+    out.eligible += first.eligible; out.commands += first.commands;
     if first.digest != second.digest || first.energy != second.energy || !verified {
         out.deterministic_mismatches += 1;
     }

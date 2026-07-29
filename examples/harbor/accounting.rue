@@ -25,14 +25,14 @@ fn cast(value: u64, inout overflows: u64) -> i64 {
 fn add(a: i64, b: i64, inout overflows: u64) -> i64 {
     match std.math.checked_add(a, b) {
         OptI64.Some(v) => v,
-        OptI64.None => { overflows = overflows + 1; if b >= 0 { 9223372036854775807 } else { -9223372036854775807 - 1 } },
+        OptI64.None => { overflows += 1; if b >= 0 { 9223372036854775807 } else { -9223372036854775807 - 1 } },
     }
 }
 
 fn sub(a: i64, b: i64, inout overflows: u64) -> i64 {
     match std.math.checked_sub(a, b) {
         OptI64.Some(v) => v,
-        OptI64.None => { overflows = overflows + 1; if b < 0 { 9223372036854775807 } else { -9223372036854775807 - 1 } },
+        OptI64.None => { overflows += 1; if b < 0 { 9223372036854775807 } else { -9223372036854775807 - 1 } },
     }
 }
 

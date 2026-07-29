@@ -44,7 +44,7 @@ struct Compiler {
     }
     fn advance(inout self) -> token.Token {
         let t = self.peek();
-        if t.kind != token.EOF { self.at = self.at + 1; }
+        if t.kind != token.EOF { self.at += 1; }
         t
     }
     fn check(borrow self, kind: u64) -> bool { self.peek().kind == kind }

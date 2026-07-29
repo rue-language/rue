@@ -109,11 +109,11 @@ pub fn calculate(borrow scenario: model.Scenario, borrow sim: state.State) -> Sc
     let financial = financial_score(borrow ledger);
     let total = (service * 25 + punctuality * 20 + efficiency * 15 + resilience * 15 + integrity * 15 + financial * 10) / 100;
     let mut warnings: u64 = 0;
-    if demands.unmet > 0 { warnings = warnings + 1; }
-    if resilient.worst_unreachable_pairs > 0 { warnings = warnings + 1; }
-    if inventory.underflows > 0 { warnings = warnings + 1; }
-    if ledger.profit < 0 { warnings = warnings + 1; }
-    if integrity < 100 { warnings = warnings + 1; }
+    if demands.unmet > 0 { warnings += 1; }
+    if resilient.worst_unreachable_pairs > 0 { warnings += 1; }
+    if inventory.underflows > 0 { warnings += 1; }
+    if ledger.profit < 0 { warnings += 1; }
+    if integrity < 100 { warnings += 1; }
     Score {
         service: service, punctuality: punctuality, efficiency: efficiency,
         resilience: resilience, integrity: integrity, financial: financial,

@@ -262,7 +262,7 @@ pub struct Summary { passes: u64, observations: u64, warnings: u64,
     deterministic_mismatches: u64, digest: u64, valid: bool }
 
 fn include(inout out: Summary, borrow first: metric.Metric, borrow second: metric.Metric, verified: bool) {
-    out.passes = out.passes + 1; out.observations = out.observations + first.observations;
+    out.passes += 1; out.observations += first.observations;
     out.warnings += first.warnings;
     if first.digest != second.digest || first.total != second.total || !verified {
         out.deterministic_mismatches += 1;

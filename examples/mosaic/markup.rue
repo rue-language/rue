@@ -10,7 +10,7 @@ const StrBuf = std.strbuf.StrBuf;
 
 fn heading_level(borrow line: StrBuf) -> u64 {
     let mut level: u64 = 0;
-    while level < line.len() && level < 6 && text.byte_of(borrow line, level) == 35 { level = level + 1; }
+    while level < line.len() && level < 6 && text.byte_of(borrow line, level) == 35 { level += 1; }
     if level > 0 && level < line.len() && text.byte_of(borrow line, level) == 32 { level } else { 0 }
 }
 
@@ -22,7 +22,7 @@ fn is_rule(borrow line: StrBuf) -> bool {
     let mut i: u64 = 0;
     while i < line.len() {
         let b = text.byte_of(borrow line, i);
-        if b == first { marks = marks + 1; }
+        if b == first { marks += 1; }
         else if !text.is_space(b) { return false; }
         i += 1;
     }
@@ -39,7 +39,7 @@ fn list_prefix(borrow line: StrBuf) -> u64 {
         if (b == 45 || b == 42 || b == 43) && text.byte_of(borrow line, 1) == 32 { return 2; }
     }
     let mut i: u64 = 0;
-    while i < line.len() && text.is_digit(text.byte_of(borrow line, i)) { i = i + 1; }
+    while i < line.len() && text.is_digit(text.byte_of(borrow line, i)) { i += 1; }
     if i > 0 && i + 1 < line.len() && text.byte_of(borrow line, i) == 46 && text.byte_of(borrow line, i + 1) == 32 { i + 2 } else { 0 }
 }
 
@@ -203,7 +203,7 @@ fn is_table_separator(borrow line: StrBuf) -> bool {
     let mut i: u64 = 0;
     while i < line.len() {
         let b = text.byte_of(borrow line, i);
-        if b == 45 { dashes = dashes + 1; }
+        if b == 45 { dashes += 1; }
         else if b != 124 && b != 58 && !text.is_space(b) { return false; }
         i += 1;
     }
@@ -218,7 +218,7 @@ fn add_table_row(inout site: model.Site, page_index: u64, borrow line_text: StrB
         let bar = text.find_byte(borrow line_text, 124, start);
         let raw = text.slice(borrow line_text, start, bar);
         let cell = text.trim(borrow raw);
-        if cell.len() > 0 { let _ = inline.parse(inout site, page_index, borrow cell, line); cells = cells + 1; }
+        if cell.len() > 0 { let _ = inline.parse(inout site, page_index, borrow cell, line); cells += 1; }
         if bar >= line_text.len() { break; }
         start = bar + 1;
     }
@@ -291,10 +291,10 @@ pub fn parse_page(inout site: model.Site, page_index: u64, source: StrBuf) {
                 line += 1;
             } else if is_fence(borrow current) {
                 let next = parse_fence(inout site, page_index, borrow source, offset, line);
-                while offset < next { offset = text.next_line(borrow source, offset); line = line + 1; }
+                while offset < next { offset = text.next_line(borrow source, offset); line += 1; }
             } else if list_prefix(borrow current) > 0 {
                 let next = parse_list(inout site, page_index, borrow source, offset, line);
-                while offset < next { offset = text.next_line(borrow source, offset); line = line + 1; }
+                while offset < next { offset = text.next_line(borrow source, offset); line += 1; }
             } else if is_rule(borrow current) {
                 site.blocks.push(model.Block { tag: model.BLOCK_RULE(), text_id: model.NONE(), level: 0, first: 0, count: 0, line: line, aux: model.NONE() });
                 offset = text.next_line(borrow source, offset);
@@ -310,10 +310,10 @@ pub fn parse_page(inout site: model.Site, page_index: u64, source: StrBuf) {
                 let next = if next_offset < source.len() { text.line_at(borrow source, next_offset) } else { StrBuf.new() };
                 if text.count_byte(borrow current, 124) > 0 && is_table_separator(borrow next) {
                     let after = parse_table(inout site, page_index, borrow source, offset, line);
-                    while offset < after { offset = text.next_line(borrow source, offset); line = line + 1; }
+                    while offset < after { offset = text.next_line(borrow source, offset); line += 1; }
                 } else {
                     let after = parse_paragraph(inout site, page_index, borrow source, offset, line);
-                    while offset < after { offset = text.next_line(borrow source, offset); line = line + 1; }
+                    while offset < after { offset = text.next_line(borrow source, offset); line += 1; }
                 }
             }
         }

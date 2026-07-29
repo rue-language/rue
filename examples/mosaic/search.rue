@@ -59,7 +59,7 @@ pub fn expected_page_count(borrow site: model.Site) -> u64 {
     let mut n: u64 = 0;
     let mut i: u64 = 0;
     while i < site.pages.len() {
-        if !site.pages.get_or(i, model.empty_page()).draft { n = n + 1; }
+        if !site.pages.get_or(i, model.empty_page()).draft { n += 1; }
         i += 1;
     }
     n

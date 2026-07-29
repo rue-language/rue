@@ -27,8 +27,8 @@ pub fn create(borrow database: model.Database) -> Checkpoint {
     i = 0;
     while i < database.wal.len() {
         let entry = database.wal.get_or(i, model.empty_wal());
-        if entry.lsn > lsn { retained = retained + 1; }
-        if entry.kind == 1 || entry.kind == 2 { dirty = dirty + 1; }
+        if entry.lsn > lsn { retained += 1; }
+        if entry.kind == 1 || entry.kind == 2 { dirty += 1; }
         i += 1;
     }
     let mut checksum = metric.mix(14695981039346656037, lsn);

@@ -51,7 +51,7 @@ pub struct Pool {
     fn grow_slots(inout self, new_cap: u64) {
         let mut fresh = U64s.new();
         let mut i: u64 = 0;
-        while i < new_cap { fresh.push(0); i = i + 1; }
+        while i < new_cap { fresh.push(0); i += 1; }
         let mut id: u64 = 0;
         while id < self.len() {
             let mut slot = self.hash(id) % new_cap;
@@ -115,7 +115,7 @@ pub struct Pool {
     fn append(borrow self, id: u64, inout out: StrBuf) {
         let n = self.string_len(id);
         let mut i: u64 = 0;
-        while i < n { out.push(self.byte_at(id, i)); i = i + 1; }
+        while i < n { out.push(self.byte_at(id, i)); i += 1; }
     }
 
     fn copy(borrow self, id: u64) -> StrBuf {

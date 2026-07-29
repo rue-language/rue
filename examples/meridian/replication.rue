@@ -9,7 +9,7 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
     let mut i: u64 = 0;
     while i < database.replicas.len() {
         let replica = database.replicas.get_or(i, model.empty_replica());
-        if replica.primary { primaries = primaries + 1; }
+        if replica.primary { primaries += 1; }
         metric.observe(inout out, latest - replica.applied_lsn, replica.lag + 1);
         metric.warn(inout out, replica.applied_lsn > latest);
         metric.warn(inout out, replica.lag != latest - replica.applied_lsn);
