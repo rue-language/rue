@@ -37,7 +37,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         metric(inout out, "slots", pool.slots, pools.peak_slots.get_or(i, 0), plan.recommended_slots.get_or(i, 0));
         metric(inout out, "cpu", pool.cpu, pools.peak_cpu.get_or(i, 0), plan.recommended_cpu.get_or(i, 0));
         metric(inout out, "memory", pool.memory, pools.peak_memory.get_or(i, 0), plan.recommended_memory.get_or(i, 0));
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "saturated_pools="); text.append_u64(inout out, plan.saturated_pools);
     text.append_literal(inout out, " slot_increase="); text.append_u64(inout out, plan.total_slot_increase);

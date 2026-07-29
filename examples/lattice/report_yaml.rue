@@ -26,7 +26,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, "\n    attempts: "); text.append_u64(inout out, run.attempts.get_or(i, 0));
         text.append_literal(inout out, "\n    start: "); format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE()));
         text.append_literal(inout out, "\n    end: "); format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE())); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

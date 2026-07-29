@@ -53,7 +53,7 @@ pub fn compute(borrow run: state.Run, requested_windows: u64) -> Analysis {
         else if event.kind == state.EVENT_RETRY() { increment(inout retries_by_window, window); }
         else if event.kind == state.EVENT_CACHE() { increment(inout cache_hits_by_window, window); }
         digest = mix(digest, window); digest = mix(digest, event.kind);
-        i = i + 1;
+        i += 1;
     }
     let mut busiest_window: u64 = 0;
     let mut busiest_events: u64 = 0;
@@ -62,11 +62,11 @@ pub fn compute(borrow run: state.Run, requested_windows: u64) -> Analysis {
     i = 0;
     while i < windows {
         let count = events_by_window.get_or(i, 0);
-        counted_events = counted_events + count;
+        counted_events += count;
         if count == 0 { quiet_windows = quiet_windows + 1; }
         if count > busiest_events { busiest_events = count; busiest_window = i; }
         digest = mix(digest, count);
-        i = i + 1;
+        i += 1;
     }
     Analysis {
         events_by_window: events_by_window, starts_by_window: starts_by_window,

@@ -36,7 +36,7 @@ struct ListHeap {
         let mut i: u64 = 0;
         while i < count {
             self.values.push(stack.get_or(start + i, Value { tag: 0, data: 0 }));
-            i = i + 1;
+            i += 1;
         }
         id
     }
@@ -78,7 +78,7 @@ struct VM {
                 tag: program.global_tags.get_or(i, BOOL),
                 data: program.global_data.get_or(i, 0),
             });
-            i = i + 1;
+            i += 1;
         }
         Self {
             program: program,
@@ -189,7 +189,7 @@ struct VM {
             while i < n {
                 if i > 0 { self.output.push_str(", "); }
                 self.append_value(self.lists.get(id, i));
-                i = i + 1;
+                i += 1;
             }
             self.output.push_str("]");
         }
@@ -229,10 +229,10 @@ struct VM {
         loop {
             if self.failed { return Self.false_value(); }
             if self.steps >= 10000000 { self.fail("instruction limit exceeded"); return Self.false_value(); }
-            self.steps = self.steps + 1;
+            self.steps += 1;
             if self.pc >= self.program.code.len() { self.fail("instruction pointer out of bounds"); return Self.false_value(); }
             let ins = self.program.code.get_or(self.pc, bytecode.Instruction { op: bytecode.HALT, a: 0, b: 0 });
-            self.pc = self.pc + 1;
+            self.pc += 1;
             if ins.op == bytecode.NOP {}
             else if ins.op == bytecode.CONST_INT { self.push(Value { tag: INT, data: ins.a }); }
             else if ins.op == bytecode.CONST_BOOL { self.push(Value { tag: BOOL, data: ins.a }); }

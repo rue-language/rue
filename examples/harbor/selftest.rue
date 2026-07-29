@@ -37,9 +37,9 @@ pub struct Result {
 }
 
 fn record(inout result: Result, condition: bool) {
-    result.checks = result.checks + 1;
+    result.checks += 1;
     if !condition {
-        result.failures = result.failures + 1;
+        result.failures += 1;
         result.last_failed_check = result.checks;
     }
 }
@@ -48,7 +48,7 @@ fn mix(value: u64, next: u64) -> u64 { @wrapping_mul(value ^ next, 1099511628211
 
 fn run_one(inout result: Result, config: stress.Config) {
     let scenario = stress.generate(config);
-    result.scenarios = result.scenarios + 1;
+    result.scenarios += 1;
     record(inout result, scenario.diagnostics.len() == 0);
     record(inout result, scenario.locations.len() >= 4);
     record(inout result, scenario.routes.len() >= scenario.locations.len());
@@ -81,14 +81,14 @@ fn run_one(inout result: Result, config: stress.Config) {
         record(inout result, route_matrix.weight(borrow cost_matrix, i, i) == 0);
         record(inout result, route_matrix.travel(borrow time_matrix, i, i) == 0);
         record(inout result, route_matrix.distance(borrow distance_matrix, i, i) == 0);
-        i = i + 1;
+        i += 1;
     }
 
     let projection = forecast.summarize(borrow scenario);
     record(inout result, projection.cargoes.len() == scenario.cargoes.len());
     let first = simulate.run(borrow scenario);
-    result.simulations = result.simulations + 1;
-    result.events = result.events + first.log.len();
+    result.simulations += 1;
+    result.events += first.log.len();
     let balance = conservation.audit(borrow scenario, borrow first);
     let replayed = replay.audit(borrow scenario, borrow first);
     let served = service.summarize(borrow scenario, borrow first);
@@ -120,8 +120,8 @@ fn run_one(inout result: Result, config: stress.Config) {
     result.digest = mix(result.digest, first_hash);
 
     let second = simulate.run(borrow scenario);
-    result.simulations = result.simulations + 1;
-    result.events = result.events + second.log.len();
+    result.simulations += 1;
+    result.events += second.log.len();
     let second_hash = fingerprint.simulation(borrow second);
     record(inout result, first_hash == second_hash);
     record(inout result, first.log.len() == second.log.len());

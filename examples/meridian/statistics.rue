@@ -9,21 +9,21 @@ pub fn analyze(borrow database: model.Database) -> metric.Metric {
         let table = database.tables.get_or(i, model.empty_table());
         metric.observe(inout out, table.row_count, table.column_count + 1);
         metric.warn(inout out, table.column_count == 0);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.columns.len() {
         let column = database.columns.get_or(i, model.empty_column());
         metric.observe(inout out, column.ordinal + column.kind, if column.unique { 3 } else { 1 });
         metric.warn(inout out, column.kind != model.INT_KIND() && column.kind != model.TEXT_KIND());
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.indexes.len() {
         let index = database.indexes.get_or(i, model.empty_index());
         metric.observe(inout out, index.entries, if index.unique { 5 } else { 2 });
         metric.warn(inout out, index.table == model.NONE() || index.column == model.NONE());
-        i = i + 1;
+        i += 1;
     }
     metric.finish(inout out);
     out

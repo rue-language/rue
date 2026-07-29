@@ -36,7 +36,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         cell(inout out, task.duration); cell(inout out, task.priority); cell(inout out, run.attempts.get_or(i, 0));
         text.append_literal(inout out, "<td>"); format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE())); text.append_literal(inout out, "</td><td>");
         format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE())); text.append_literal(inout out, "</td></tr>");
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "</tbody></table></section><footer><p>fingerprint <code>"); text.append_u64(inout out, run.fingerprint);
     text.append_literal(inout out, "</code></p></footer></body></html>\n");

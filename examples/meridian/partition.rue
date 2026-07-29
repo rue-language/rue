@@ -18,12 +18,12 @@ pub fn audit(borrow database: model.Database, partitions: u64) -> metric.Metric 
         let key = model.cell_number(borrow database, i, table.first_column);
         let selected = partition_for(key, partitions);
         counts.set(selected, counts.get_or(selected, 0) + 1);
-        i = i + 1;
+        i += 1;
     }
     p = 0;
     while p < counts.len() {
         metric.observe(inout out, counts.get_or(p, 0), p + 1);
-        p = p + 1;
+        p += 1;
     }
     metric.warn(inout out, partitions == 0);
     metric.finish(inout out);

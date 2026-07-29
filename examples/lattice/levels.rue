@@ -36,7 +36,7 @@ fn predecessor_level(borrow workflow: model.Workflow, borrow levels: U64s, task:
             let candidate = levels.get_or(edge.before, 0) + 1;
             if candidate > result { result = candidate; }
         }
-        i = i + 1;
+        i += 1;
     }
     result
 }
@@ -54,7 +54,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Layers {
         if level + 1 > depth { depth = level + 1; }
         digest = mix(digest, task);
         digest = mix(digest, level);
-        i = i + 1;
+        i += 1;
     }
     let mut tasks_by_level = zeroes(depth);
     i = 0;
@@ -63,7 +63,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Layers {
         if level < tasks_by_level.len() {
             tasks_by_level.set(level, tasks_by_level.get_or(level, 0) + 1);
         }
-        i = i + 1;
+        i += 1;
     }
     let mut maximum_width: u64 = 0;
     let mut widest_level: u64 = 0;
@@ -72,7 +72,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Layers {
         let width = tasks_by_level.get_or(i, 0);
         if width > maximum_width { maximum_width = width; widest_level = i; }
         digest = mix(digest, width);
-        i = i + 1;
+        i += 1;
     }
     Layers {
         level_by_task: level_by_task,
@@ -101,13 +101,13 @@ pub fn verify(borrow workflow: model.Workflow, borrow layers: Layers) -> bool {
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         if level(borrow layers, edge.before) >= level(borrow layers, edge.after) { return false; }
-        i = i + 1;
+        i += 1;
     }
     let mut total: u64 = 0;
     i = 0;
     while i < layers.tasks_by_level.len() {
-        total = total + width(borrow layers, i);
-        i = i + 1;
+        total += width(borrow layers, i);
+        i += 1;
     }
     total == workflow.tasks.len()
 }

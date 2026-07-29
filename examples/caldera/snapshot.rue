@@ -23,7 +23,7 @@ pub fn audit(borrow world: model.World) -> Audit {
         if i > 0 && item.tick <= previous { out.monotonic = false; }
         previous = item.tick;
         out.digest = metric.mix(out.digest, item.checksum);
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.monotonic && out.snapshots <= world.tick + 1; out
 }

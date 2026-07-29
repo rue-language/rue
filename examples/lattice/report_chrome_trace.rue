@@ -23,9 +23,9 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
             text.append_literal(inout out, ",\"pid\":1,\"tid\":"); text.append_u64(inout out, task.pool);
             text.append_literal(inout out, ",\"args\":{\"priority\":"); text.append_u64(inout out, task.priority);
             text.append_literal(inout out, ",\"attempts\":"); text.append_u64(inout out, run.attempts.get_or(i, 0)); text.append_literal(inout out, "}}");
-            emitted = emitted + 1;
+            emitted += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "]}\n");
     out

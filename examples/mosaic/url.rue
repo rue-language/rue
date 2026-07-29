@@ -79,7 +79,7 @@ fn segment_count(borrow path: StrBuf) -> u64 {
     let mut i: u64 = 0;
     while i < path.len() {
         if text.byte_of(borrow path, i) == 47 { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -91,7 +91,7 @@ fn segment_at(borrow path: StrBuf, wanted: u64) -> StrBuf {
         let slash = text.find_byte(borrow path, 47, start);
         if slash >= path.len() { return StrBuf.new(); }
         start = slash + 1;
-        current = current + 1;
+        current += 1;
     }
     let end = text.find_byte(borrow path, 47, start);
     text.slice(borrow path, start, end)
@@ -111,7 +111,7 @@ pub fn normalize_local(borrow path: StrBuf) -> StrBuf {
         } else {
             kept.push(i);
         }
-        i = i + 1;
+        i += 1;
     }
     let mut out = StrBuf.new();
     i = 0;
@@ -121,9 +121,9 @@ pub fn normalize_local(borrow path: StrBuf) -> StrBuf {
         let mut j: u64 = 0;
         while j < segment.len() {
             out.push(text.byte_of(borrow segment, j));
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -139,7 +139,7 @@ pub fn safe_for_html(borrow value: StrBuf) -> bool {
         if b < 32 || b == 127 {
             return false;
         }
-        i = i + 1;
+        i += 1;
     }
     true
 }

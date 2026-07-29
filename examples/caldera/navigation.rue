@@ -34,7 +34,7 @@ pub fn find(borrow world: model.World, sx: u64, sy: u64, gx: u64, gy: u64) -> Pa
         let index = queue.get_or(head, model.NONE()); head = head + 1;
         let tile = world.tiles.get_or(index, model.empty_tile());
         let distance = distances.get_or(index, model.NONE());
-        out.visited = out.visited + 1;
+        out.visited += 1;
         out.digest = metric.mix(out.digest, index);
         if index == goal { out.reached = true; out.distance = distance; break; }
         visit(borrow world, inout queue, inout distances,

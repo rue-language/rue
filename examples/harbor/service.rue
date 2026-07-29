@@ -60,7 +60,7 @@ fn arrivals_for(borrow scenario: model.Scenario, borrow sim: state.State, demand
             if event.time < first { first = event.time; }
             if event.time > last { last = event.time; }
         }
-        i = i + 1;
+        i += 1;
     }
     let unmet = if delivered < demand.quantity { demand.quantity - delivered } else { 0 };
     DemandService {
@@ -95,7 +95,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         if item.unmet == 0 { complete_demands = complete_demands + 1; }
         if item.unmet == 0 && item.late == 0 { on_time_demands = on_time_demands + 1; }
         demands.push(item);
-        i = i + 1;
+        i += 1;
     }
     Summary {
         demands: demands, requested: requested, delivered: delivered,
@@ -121,7 +121,7 @@ pub fn cargo_totals(borrow scenario: model.Scenario, borrow sim: state.State, ca
             on_time = add(on_time, item.on_time);
             unmet = add(unmet, item.unmet);
         }
-        i = i + 1;
+        i += 1;
     }
     totals.push(requested);
     totals.push(delivered);

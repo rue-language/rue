@@ -59,7 +59,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         add(inout declared_work, task.pool, task.duration);
         add(inout cpu_ticks, task.pool, task.duration * task.cpu);
         add(inout memory_ticks, task.pool, task.duration * task.memory);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < run.events.len() {
@@ -67,7 +67,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         if event.kind == state.EVENT_START() { add(inout starts, event.pool, 1); }
         else if event.kind == state.EVENT_SUCCESS() { add(inout completed, event.pool, 1); }
         else if event.kind == state.EVENT_FAILURE() { add(inout failed, event.pool, 1); }
-        i = i + 1;
+        i += 1;
     }
     let mut slot_pressure = zeroes(count);
     let mut cpu_pressure = zeroes(count);
@@ -94,7 +94,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         }
         digest = mix(digest, assigned_tasks.get_or(i, 0)); digest = mix(digest, declared_work.get_or(i, 0));
         digest = mix(digest, slot_value); digest = mix(digest, cpu_value); digest = mix(digest, memory_value);
-        i = i + 1;
+        i += 1;
     }
     let mut cross_pool_edges: u64 = 0;
     let mut same_pool_edges: u64 = 0;
@@ -105,7 +105,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         let after = workflow.tasks.get_or(edge.after, model.empty_task());
         if before.pool == after.pool { same_pool_edges = same_pool_edges + 1; }
         else { cross_pool_edges = cross_pool_edges + 1; }
-        i = i + 1;
+        i += 1;
     }
     Analysis {
         assigned_tasks: assigned_tasks, declared_work: declared_work,

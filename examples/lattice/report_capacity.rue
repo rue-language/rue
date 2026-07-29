@@ -17,7 +17,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_u64(inout out, pool.slots); out.push(44); text.append_u64(inout out, plan.recommended_slots.get_or(i, 0)); out.push(44);
         text.append_u64(inout out, pool.cpu); out.push(44); text.append_u64(inout out, plan.recommended_cpu.get_or(i, 0)); out.push(44);
         text.append_u64(inout out, pool.memory); out.push(44); text.append_u64(inout out, plan.recommended_memory.get_or(i, 0)); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

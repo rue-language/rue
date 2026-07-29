@@ -19,7 +19,7 @@ pub fn update(inout world: model.World) -> u64 {
         let entity = world.entities.get_or(i, model.empty_entity());
         let decision = choose(borrow world, borrow entity);
         if entity.alive && decision != entity.state {
-            changed = changed + 1;
+            changed += 1;
             world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
                 faction: entity.faction, x: entity.x, y: entity.y,
                 previous_x: entity.previous_x, previous_y: entity.previous_y,
@@ -32,7 +32,7 @@ pub fn update(inout world: model.World) -> u64 {
                 updated_tick: world.tick, alive: entity.alive });
             model.add_event(inout world, 10 + decision, entity.id, entity.goal, decision);
         }
-        i = i + 1;
+        i += 1;
     }
     changed
 }

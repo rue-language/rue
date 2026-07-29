@@ -96,14 +96,14 @@ fn sort(inout tasks: model.U64s, borrow workflow: model.Workflow) {
                 tasks.get_or(candidate, model.NONE()),
                 tasks.get_or(best, model.NONE()),
             ) { best = candidate; }
-            candidate = candidate + 1;
+            candidate += 1;
         }
         if best != position {
             let old = tasks.get_or(position, model.NONE());
             tasks.set(position, tasks.get_or(best, model.NONE()));
             tasks.set(best, old);
         }
-        position = position + 1;
+        position += 1;
     }
 }
 
@@ -124,10 +124,10 @@ pub fn execute(borrow workflow: model.Workflow, borrow run: state.Run, borrow qu
         if matches(borrow workflow, borrow run, borrow query, i) {
             let task = workflow.tasks.get_or(i, model.empty_task());
             tasks.push(i);
-            total_duration = total_duration + task.duration;
-            total_cpu_ticks = total_cpu_ticks + task.duration * task.cpu;
-            total_memory_ticks = total_memory_ticks + task.duration * task.memory;
-            total_priority = total_priority + task.priority;
+            total_duration += task.duration;
+            total_cpu_ticks += task.duration * task.cpu;
+            total_memory_ticks += task.duration * task.memory;
+            total_priority += task.priority;
             if maximum_duration_task == model.NONE() || task.duration > maximum_duration {
                 maximum_duration = task.duration; maximum_duration_task = i;
             }
@@ -135,7 +135,7 @@ pub fn execute(borrow workflow: model.Workflow, borrow run: state.Run, borrow qu
                 maximum_priority = task.priority; maximum_priority_task = i;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     sort(inout tasks, borrow workflow);
     let mut digest: u64 = 14695981039346656037;

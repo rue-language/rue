@@ -32,14 +32,14 @@ fn count(borrow value: StrBuf, needle: StrBuf) -> u64 {
                 yes = false;
                 j = needle.len();
             } else {
-                j = j + 1;
+                j += 1;
             }
         }
         if yes {
-            total = total + 1;
-            i = i + needle.len();
+            total += 1;
+            i += needle.len();
         } else {
-            i = i + 1;
+            i += 1;
         }
     }
     total
@@ -60,9 +60,9 @@ fn expected_block_count(borrow site: model.Site, page_index: u64, tag: u64) -> u
             aux: 0,
         });
         if block.tag == tag {
-            total = total + 1;
+            total += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -82,9 +82,9 @@ fn expected_toc_count(borrow site: model.Site, page_index: u64) -> u64 {
             aux: 0,
         });
         if block.tag == model.BLOCK_HEADING() && block.level >= 2 {
-            total = total + 1;
+            total += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -100,14 +100,14 @@ fn expected_rendered_links(borrow site: model.Site, page_index: u64) -> u64 {
     while pos < site.navigation.len() {
         if site.navigation.get_or(pos, model.NONE()) == page_index {
             if pos > 0 {
-                pager = pager + 1;
+                pager += 1;
             }
             if pos + 1 < site.navigation.len() {
-                pager = pager + 1;
+                pager += 1;
             }
             pos = site.navigation.len();
         } else {
-            pos = pos + 1;
+            pos += 1;
         }
     }
     let toc_links = expected_toc_count(borrow site, page_index);

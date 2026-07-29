@@ -62,7 +62,7 @@ fn node_repeated(borrow path: routing.Path, position: u64) -> bool {
     let mut i: u64 = 0;
     while i < position {
         if path.nodes.get_or(i, model.NONE()) == node { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -78,32 +78,32 @@ fn audit_path(
     inout result: ModeAudit,
 ) -> u64 {
     let mut digest: u64 = 14695981039346656037;
-    result.pairs = result.pairs + 1;
+    result.pairs += 1;
     digest = mix(digest, from); digest = mix(digest, to);
     if !path.reachable {
-        result.unreachable = result.unreachable + 1;
+        result.unreachable += 1;
         if path.nodes.len() != 0 || path.routes.len() != 0 {
-            result.continuity_errors = result.continuity_errors + 1;
+            result.continuity_errors += 1;
         }
         return digest;
     }
-    result.reachable = result.reachable + 1;
+    result.reachable += 1;
     result.total_hops = add(result.total_hops, path.routes.len());
     if path.routes.len() > result.maximum_hops { result.maximum_hops = path.routes.len(); }
     let expected_weight = routing.path_weight(borrow scenario, borrow path, at, mode);
     result.total_weight = add(result.total_weight, expected_weight);
     if path.nodes.len() == 0 || path.nodes.get_or(0, model.NONE()) != from ||
        path.nodes.get_or(path.nodes.len() - 1, model.NONE()) != to {
-        result.endpoint_errors = result.endpoint_errors + 1;
+        result.endpoint_errors += 1;
     }
     if path.nodes.len() != path.routes.len() + 1 {
-        result.continuity_errors = result.continuity_errors + 1;
+        result.continuity_errors += 1;
     }
     let mut i: u64 = 0;
     while i < path.nodes.len() {
         digest = mix(digest, path.nodes.get_or(i, model.NONE()));
         if node_repeated(borrow path, i) { result.cycle_errors = result.cycle_errors + 1; }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     let mut direct_weight: u64 = 0;
@@ -115,11 +115,11 @@ fn audit_path(
         digest = mix(digest, route_index);
         if !route_connects(route, a, b) { result.direction_errors = result.direction_errors + 1; }
         if routing.effective_capacity(borrow scenario, route_index, at) < minimum_capacity {
-            result.capacity_errors = result.capacity_errors + 1;
+            result.capacity_errors += 1;
         }
         let edge = routing.edge_weight(borrow scenario, route_index, at, mode);
         direct_weight = add(direct_weight, edge);
-        i = i + 1;
+        i += 1;
     }
     if direct_weight != expected_weight { result.weight_errors = result.weight_errors + 1; }
     digest
@@ -150,9 +150,9 @@ fn audit_mode(
                 );
                 digest = mix(digest, path_hash);
             }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     result
 }
@@ -202,7 +202,7 @@ pub fn render(borrow value: Audit) -> StrBuf {
         text.append_literal(inout out, " capacity="); text.append_u64(inout out, item.capacity_errors);
         text.append_literal(inout out, " weight="); text.append_u64(inout out, item.weight_errors);
         text.append_literal(inout out, " cycles="); text.append_u64(inout out, item.cycle_errors); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "digest="); text.append_u64(inout out, value.path_digest);
     text.append_literal(inout out, " valid="); text.append_bool(inout out, value.errors == 0); out.push(10);

@@ -50,13 +50,13 @@ fn once(scale: u64) -> Result {
         let query_plan = plan.build(borrow database, borrow query);
         let actual = engine.execute(borrow database, borrow query);
         let expected = row_oracle.execute(borrow database, borrow query);
-        out.result_rows = out.result_rows + actual.rows;
-        out.plan_nodes = out.plan_nodes + query_plan.nodes.len();
+        out.result_rows += actual.rows;
+        out.plan_nodes += query_plan.nodes.len();
         out.digest = metric.mix(out.digest, query_plan.digest);
         out.digest = metric.mix(out.digest, actual.checksum);
         if !plan.verify(borrow query_plan) ||
             !row_oracle.agrees(borrow actual, borrow expected) {
-            out.oracle_mismatches = out.oracle_mismatches + 1;
+            out.oracle_mismatches += 1;
         }
         if q == 0 {
             let reports = report_suite.run(borrow database, borrow query,
@@ -65,7 +65,7 @@ fn once(scale: u64) -> Result {
             out.digest = metric.mix(out.digest, reports.digest);
             if !reports.valid { out.oracle_mismatches = out.oracle_mismatches + 1; }
         }
-        q = q + 1;
+        q += 1;
     }
     let recovered = recovery.run(borrow database, 2);
     out.digest = metric.mix(out.digest, recovered.checksum);

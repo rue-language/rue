@@ -25,7 +25,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE())); out.push(44);
         format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE()));
         text.append_literal(inout out, "\r\n");
-        i = i + 1;
+        i += 1;
     }
     out
 }

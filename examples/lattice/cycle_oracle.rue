@@ -27,7 +27,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Closure {
         if edge.before < count && edge.after < count {
             reachable.set(edge.before * count + edge.after, true);
         }
-        i = i + 1;
+        i += 1;
     }
     let mut middle: u64 = 0;
     while middle < count {
@@ -39,12 +39,12 @@ pub fn compute(borrow workflow: model.Workflow) -> Closure {
                     if reachable.get_or(middle * count + to, false) {
                         reachable.set(from * count + to, true);
                     }
-                    to = to + 1;
+                    to += 1;
                 }
             }
-            from = from + 1;
+            from += 1;
         }
-        middle = middle + 1;
+        middle += 1;
     }
     let mut cycle_vertices: u64 = 0;
     let mut comparable_pairs: u64 = 0;
@@ -54,11 +54,11 @@ pub fn compute(borrow workflow: model.Workflow) -> Closure {
         let mut j: u64 = i + 1;
         while j < count {
             if reachable.get_or(i * count + j, false) || reachable.get_or(j * count + i, false) {
-                comparable_pairs = comparable_pairs + 1;
+                comparable_pairs += 1;
             }
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     Closure {
         reachable: reachable,

@@ -52,7 +52,7 @@ fn location_index(inout scenario: model.Scenario) -> IdMap {
         if model.location_kind(borrow scenario, v.kind) == 0 { error(inout scenario, 202, v.id, "kind must be port, hub, factory, or market"); }
         if v.capacity == 0 { error(inout scenario, 202, v.id, "location capacity must be positive"); }
         if v.handling == 0 { error(inout scenario, 202, v.id, "handling capacity must be positive"); }
-        i = i + 1;
+        i += 1;
     }
     map
 }
@@ -65,7 +65,7 @@ fn cargo_index(inout scenario: model.Scenario) -> IdMap {
         duplicate(inout scenario, inout map, v.id, i);
         if v.id >= scenario.strings.len() || scenario.strings.string_len(v.id) == 0 { error(inout scenario, 101, v.id, "cargo id is required"); }
         if v.weight == 0 { error(inout scenario, 202, v.id, "cargo weight must be positive"); }
-        i = i + 1;
+        i += 1;
     }
     map
 }
@@ -80,7 +80,7 @@ fn check_vehicle_ids(inout scenario: model.Scenario) {
         if v.capacity == 0 { error(inout scenario, 202, v.id, "vehicle capacity must be positive"); }
         if v.speed == 0 { error(inout scenario, 202, v.id, "vehicle speed must be positive"); }
         if v.available > scenario.duration { error(inout scenario, 202, v.id, "vehicle availability exceeds duration"); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -97,7 +97,7 @@ fn routes(inout scenario: model.Scenario, borrow locations: IdMap) {
         if v.capacity == 0 { error(inout scenario, 202, v.from_id, "route capacity must be positive"); }
         if v.travel == 0 { error(inout scenario, 202, v.from_id, "route travel time must be positive"); }
         scenario.routes.set(i, v);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.routes.len() {
@@ -108,9 +108,9 @@ fn routes(inout scenario: model.Scenario, borrow locations: IdMap) {
             if a.from < scenario.locations.len() && a.to < scenario.locations.len() && a.from == b.from && a.to == b.to {
                 error(inout scenario, 200, a.from_id, "duplicate directed route");
             }
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -121,7 +121,7 @@ fn vehicles(inout scenario: model.Scenario, borrow locations: IdMap) {
         v.at = lookup(borrow scenario, borrow locations, v.at_id);
         if v.at == model.NONE() { error(inout scenario, 201, v.id, "vehicle location does not exist"); }
         scenario.vehicles.set(i, v);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -136,7 +136,7 @@ fn supplies(inout scenario: model.Scenario, borrow locations: IdMap, borrow carg
         if v.quantity == 0 { error(inout scenario, 202, v.cargo_id, "supply quantity must be positive"); }
         if v.available > scenario.duration { error(inout scenario, 202, v.cargo_id, "supply availability exceeds duration"); }
         scenario.supplies.set(i, v);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -152,7 +152,7 @@ fn demands(inout scenario: model.Scenario, borrow locations: IdMap, borrow cargo
         if v.deadline == 0 || v.deadline > scenario.duration { error(inout scenario, 202, v.cargo_id, "demand deadline must be within duration"); }
         if v.priority == 0 { error(inout scenario, 202, v.cargo_id, "demand priority must be positive"); }
         scenario.demands.set(i, v);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -168,7 +168,7 @@ fn production(inout scenario: model.Scenario, borrow locations: IdMap, borrow ca
         if v.every == 0 { error(inout scenario, 202, v.cargo_id, "production interval must be positive"); }
         if v.start > v.end || v.end > scenario.duration { error(inout scenario, 202, v.cargo_id, "production window is invalid"); }
         scenario.productions.set(i, v);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -180,7 +180,7 @@ fn disruptions(inout scenario: model.Scenario) {
         if v.start >= v.end || v.end > scenario.duration { model.add_error(inout scenario, 202, "disruption", "time window is invalid"); }
         if v.capacity_percent > 100 { model.add_error(inout scenario, 202, "disruption", "capacity_percent must be at most 100"); }
         if v.cost_percent == 0 || v.cost_percent > 10000 { model.add_error(inout scenario, 202, "disruption", "cost_percent must be in 1..10000"); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -199,7 +199,7 @@ fn connected(inout scenario: model.Scenario) {
             if route.from == at { next = route.to; }
             else if route.to == at { next = route.from; }
             if next < scenario.locations.len() && !seen.test(next) { seen.set(next); queue.enqueue(next); }
-            i = i + 1;
+            i += 1;
         }
     }
     if seen.count() != scenario.locations.len() { model.add_error(inout scenario, 203, "network", "location graph is not weakly connected"); }

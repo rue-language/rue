@@ -31,8 +31,8 @@ pub fn mix(hash: u64, value: u64) -> u64 {
 }
 
 pub fn observe(inout value: Result, item: u64) {
-    value.rows = value.rows + 1;
-    value.sum = value.sum + item;
+    value.rows += 1;
+    value.sum += item;
     if item < value.minimum { value.minimum = item; }
     if item > value.maximum { value.maximum = item; }
     value.checksum = mix(value.checksum, item);

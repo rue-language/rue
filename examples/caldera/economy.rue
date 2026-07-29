@@ -16,18 +16,18 @@ pub fn step(inout world: model.World) -> Ledger {
             let produced = if entity.kind == model.WORKER() { 3 }
                 else if entity.kind == model.BUILDER() { 1 } else { 0 };
             let consumed = if entity.kind == model.GUARD() { 2 } else { 1 };
-            out.produced = out.produced + produced;
-            out.consumed = out.consumed + consumed;
+            out.produced += produced;
+            out.consumed += consumed;
             let next_inventory = entity.inventory + produced;
             let transfer = if next_inventory >= 8 { 4 } else { 0 };
-            out.transfers = out.transfers + transfer;
-            world.resources = world.resources + produced;
+            out.transfers += transfer;
+            world.resources += produced;
             if world.resources >= consumed + transfer {
                 world.resources = world.resources - consumed - transfer;
-                world.treasury = world.treasury + transfer;
+                world.treasury += transfer;
             }
             let credit = transfer / 2;
-            out.credits = out.credits + credit;
+            out.credits += credit;
             world.entities.set(i, model.Entity { id: entity.id, kind: entity.kind,
                 faction: entity.faction, x: entity.x, y: entity.y,
                 previous_x: entity.previous_x, previous_y: entity.previous_y,
@@ -38,7 +38,7 @@ pub fn step(inout world: model.World) -> Ledger {
                 born_tick: entity.born_tick, updated_tick: world.tick, alive: entity.alive });
             out.digest = metric.mix(out.digest, entity.id + produced * 17 + transfer * 31);
         }
-        i = i + 1;
+        i += 1;
     }
     out.valid = world.resources + world.treasury + out.consumed + out.credits >= before;
     out

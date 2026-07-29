@@ -9,7 +9,7 @@ pub struct Result { target_tick: u64, resimulated: u64,
 
 pub fn restore(borrow baseline: model.World, target_tick: u64) -> Result {
     let mut world = world_clone.clone(borrow baseline);
-    world.rollback_count = world.rollback_count + 1;
+    world.rollback_count += 1;
     let count = if target_tick > world.tick { target_tick - world.tick } else { 0 };
     let run = simulation.run(inout world, count);
     Result { target_tick: target_tick, resimulated: count,

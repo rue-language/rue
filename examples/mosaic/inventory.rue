@@ -33,7 +33,7 @@ fn page_has_block(borrow site: model.Site, borrow page: model.Page, tag: u64) ->
         if block.tag == tag {
             return true;
         }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -53,7 +53,7 @@ fn page_has_external(borrow site: model.Site, borrow page: model.Page) -> bool {
         if link.external {
             return true;
         }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -78,32 +78,32 @@ pub fn collect(borrow site: model.Site) -> Inventory {
     while i < site.pages.len() {
         let page = site.pages.get_or(i, model.empty_page());
         if page.draft {
-            value.draft_blocks = value.draft_blocks + page.block_count;
-            value.draft_inlines = value.draft_inlines + page.inline_count;
-            value.draft_links = value.draft_links + page.link_count;
-            value.draft_anchors = value.draft_anchors + page.anchor_count;
+            value.draft_blocks += page.block_count;
+            value.draft_inlines += page.inline_count;
+            value.draft_links += page.link_count;
+            value.draft_anchors += page.anchor_count;
         } else {
-            value.published_blocks = value.published_blocks + page.block_count;
-            value.published_inlines = value.published_inlines + page.inline_count;
-            value.published_links = value.published_links + page.link_count;
-            value.published_anchors = value.published_anchors + page.anchor_count;
+            value.published_blocks += page.block_count;
+            value.published_inlines += page.inline_count;
+            value.published_links += page.link_count;
+            value.published_anchors += page.anchor_count;
             if page_has_block(borrow site, borrow page, model.BLOCK_CODE()) {
-                value.pages_with_code = value.pages_with_code + 1;
+                value.pages_with_code += 1;
             }
             if page_has_block(borrow site, borrow page, model.BLOCK_TABLE()) {
-                value.pages_with_tables = value.pages_with_tables + 1;
+                value.pages_with_tables += 1;
             }
             if page_has_block(borrow site, borrow page, model.BLOCK_LIST()) {
-                value.pages_with_lists = value.pages_with_lists + 1;
+                value.pages_with_lists += 1;
             }
             if page_has_block(borrow site, borrow page, model.BLOCK_QUOTE()) {
-                value.pages_with_quotes = value.pages_with_quotes + 1;
+                value.pages_with_quotes += 1;
             }
             if page_has_external(borrow site, borrow page) {
-                value.pages_with_external_links = value.pages_with_external_links + 1;
+                value.pages_with_external_links += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     value
 }

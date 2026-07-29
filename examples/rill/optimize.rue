@@ -36,10 +36,10 @@ fn fold_triples(inout program: bytecode.Program) -> u64 {
             program.code.set(pc, fold_comparison(op.op, a.a, b.a));
             program.code.set(pc + 1, nop());
             program.code.set(pc + 2, nop());
-            folded = folded + 1;
-            pc = pc + 3;
+            folded += 1;
+            pc += 3;
         } else {
-            pc = pc + 1;
+            pc += 1;
         }
     }
     folded
@@ -54,12 +54,12 @@ fn fold_pairs(inout program: bytecode.Program) -> u64 {
         if value.op == bytecode.CONST_BOOL && op.op == bytecode.NOT {
             program.code.set(pc, boolean(value.a == 0));
             program.code.set(pc + 1, nop());
-            folded = folded + 1;
+            folded += 1;
         } else if op.op == bytecode.JUMP && op.a >= 0 && @intCast(op.a) == pc + 2 {
             program.code.set(pc + 1, nop());
-            folded = folded + 1;
+            folded += 1;
         }
-        pc = pc + 1;
+        pc += 1;
     }
     folded
 }
@@ -67,6 +67,6 @@ fn fold_pairs(inout program: bytecode.Program) -> u64 {
 pub fn optimize(program: bytecode.Program) -> OptimizeResult {
     let mut result = program;
     let mut folded = fold_triples(inout result);
-    folded = folded + fold_pairs(inout result);
+    folded += fold_pairs(inout result);
     OptimizeResult { program: result, folded: folded }
 }

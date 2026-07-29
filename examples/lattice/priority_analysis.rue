@@ -49,7 +49,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         let start = run.starts.get_or(i, 0);
         if start != model.NONE() { weighted_wait = weighted_wait + start * (task.priority + 1); }
         digest = mix(digest, task.priority); digest = mix(digest, start);
-        i = i + 1;
+        i += 1;
     }
     let mut edge_inversions: u64 = 0;
     let mut edge_ties: u64 = 0;
@@ -68,7 +68,7 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         if before.priority < after.priority && before_start != model.NONE() && after_start != model.NONE() &&
             before_start < after_start { start_inversions = start_inversions + 1; }
         digest = mix(digest, edge.before); digest = mix(digest, edge.after);
-        i = i + 1;
+        i += 1;
     }
     Analysis {
         buckets: buckets, edge_inversions: edge_inversions, edge_ties: edge_ties,

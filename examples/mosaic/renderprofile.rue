@@ -25,8 +25,8 @@ pub fn collect(borrow site: model.Site) -> Profile {
         let page = site.pages.get_or(i, model.empty_page());
         if !page.draft {
             let html = template.page(borrow site, i);
-            value.pages = value.pages + 1;
-            value.bytes = value.bytes + html.len();
+            value.pages += 1;
+            value.bytes += html.len();
             if html.len() < value.smallest {
                 value.smallest = html.len();
             }
@@ -35,12 +35,12 @@ pub fn collect(borrow site: model.Site) -> Profile {
             }
             let mut j: u64 = 0;
             while j < html.len() {
-                value.fingerprint = value.fingerprint ^ @intCast(text.byte_of(borrow html, j));
+                value.fingerprint ^= @intCast(text.byte_of(borrow html, j));
                 value.fingerprint = @wrapping_mul(value.fingerprint, 1099511628211);
-                j = j + 1;
+                j += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     if value.pages == 0 {
         value.smallest = 0;

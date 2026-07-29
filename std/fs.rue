@@ -539,7 +539,7 @@ fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
             O.None => 0,
         };
         checked { @byte_write(buf, i, b); };
-        i = i + 1;
+        i += 1;
     }
     checked { @byte_write(buf, n, 0); };
     buf
@@ -622,7 +622,7 @@ pub struct File {
         while i < n {
             let b = checked { @byte_read(tmp, i) };
             buf.push(b);
-            i = i + 1;
+            i += 1;
         }
         checked { @free_bytes(tmp, want, 1); };
         R.Ok(n)
@@ -645,7 +645,7 @@ pub struct File {
         let mut i: u64 = 0;
         while i < n {
             checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
-            i = i + 1;
+            i += 1;
         }
         let addr: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
@@ -672,7 +672,7 @@ pub struct File {
         let mut i: u64 = 0;
         while i < n {
             checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
-            i = i + 1;
+            i += 1;
         }
         let base: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
@@ -696,7 +696,7 @@ pub struct File {
                     checked { @free_bytes(tmp, n, 1); };
                     return R.Err(FileError.Other(0));
                 }
-                off = off + wrote;
+                off += wrote;
             }
         }
         checked { @free_bytes(tmp, n, 1); };

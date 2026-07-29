@@ -35,9 +35,9 @@ pub fn validate(borrow source: StrBuf) -> Result {
     while i < source.len() {
         let first = text.byte_of(borrow source, i);
         if first <= 127 {
-            ascii = ascii + 1;
-            codepoints = codepoints + 1;
-            i = i + 1;
+            ascii += 1;
+            codepoints += 1;
+            i += 1;
         } else if first >= 194 && first <= 223 {
             if i + 1 >= source.len() {
                 return fail(i, codepoints, ascii, multibyte);
@@ -46,9 +46,9 @@ pub fn validate(borrow source: StrBuf) -> Result {
             if !continuation(second) {
                 return fail(i, codepoints, ascii, multibyte);
             }
-            multibyte = multibyte + 1;
-            codepoints = codepoints + 1;
-            i = i + 2;
+            multibyte += 1;
+            codepoints += 1;
+            i += 2;
         } else if first >= 224 && first <= 239 {
             if i + 2 >= source.len() {
                 return fail(i, codepoints, ascii, multibyte);
@@ -64,9 +64,9 @@ pub fn validate(borrow source: StrBuf) -> Result {
             if first == 237 && second > 159 {
                 return fail(i, codepoints, ascii, multibyte);
             }
-            multibyte = multibyte + 1;
-            codepoints = codepoints + 1;
-            i = i + 3;
+            multibyte += 1;
+            codepoints += 1;
+            i += 3;
         } else if first >= 240 && first <= 244 {
             if i + 3 >= source.len() {
                 return fail(i, codepoints, ascii, multibyte);
@@ -83,9 +83,9 @@ pub fn validate(borrow source: StrBuf) -> Result {
             if first == 244 && second > 143 {
                 return fail(i, codepoints, ascii, multibyte);
             }
-            multibyte = multibyte + 1;
-            codepoints = codepoints + 1;
-            i = i + 4;
+            multibyte += 1;
+            codepoints += 1;
+            i += 4;
         } else {
             return fail(i, codepoints, ascii, multibyte);
         }

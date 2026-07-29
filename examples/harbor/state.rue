@@ -96,7 +96,7 @@ pub fn new(borrow scenario: model.Scenario) -> State {
     while i < scenario.demands.len() {
         let demand = scenario.demands.get_or(i, model.empty_demand());
         demand_remaining.set(i, demand.quantity);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.vehicles.len() {
@@ -105,7 +105,7 @@ pub fn new(borrow scenario: model.Scenario) -> State {
         vehicle_available.push(vehicle.available);
         vehicle_distance.push(0);
         vehicle_cost.push(0);
-        i = i + 1;
+        i += 1;
     }
     State {
         now: 0,
@@ -155,7 +155,7 @@ pub fn inventory_add(
     let mut c: u64 = 0;
     while c < scenario.cargoes.len() {
         total_at_location = saturating_add(total_at_location, inventory_get(borrow scenario, borrow value, location, c));
-        c = c + 1;
+        c += 1;
     }
     let room = if total_at_location >= location_record.capacity { 0 } else { location_record.capacity - total_at_location };
     let accepted = if quantity < room { quantity } else { room };
@@ -183,7 +183,7 @@ pub fn cargo_total_inventory(borrow scenario: model.Scenario, borrow value: Stat
     let mut location: u64 = 0;
     while location < scenario.locations.len() {
         total = saturating_add(total, inventory_get(borrow scenario, borrow value, location, cargo));
-        location = location + 1;
+        location += 1;
     }
     total
 }

@@ -15,9 +15,9 @@ pub struct Result {
 }
 
 fn expect(condition: bool, inout result: Result) {
-    result.checks = result.checks + 1;
+    result.checks += 1;
     if !condition {
-        result.failures = result.failures + 1;
+        result.failures += 1;
     }
 }
 

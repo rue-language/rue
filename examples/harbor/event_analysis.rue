@@ -73,28 +73,28 @@ fn fill_tags() -> U64s {
 }
 
 fn apply_event(inout hour: Hour, borrow event: state.Event) {
-    hour.events = hour.events + 1;
+    hour.events += 1;
     hour.cost = add(hour.cost, event.cost);
     hour.distance = add(hour.distance, event.distance);
     if event.tag == state.EVENT_SUPPLY() {
-        hour.supplies = hour.supplies + 1;
+        hour.supplies += 1;
         hour.inbound_units = add(hour.inbound_units, event.quantity);
     } else if event.tag == state.EVENT_PRODUCTION() {
-        hour.productions = hour.productions + 1;
+        hour.productions += 1;
         hour.inbound_units = add(hour.inbound_units, event.quantity);
     } else if event.tag == state.EVENT_DEPARTURE() {
-        hour.departures = hour.departures + 1;
+        hour.departures += 1;
         hour.outbound_units = add(hour.outbound_units, event.quantity);
     } else if event.tag == state.EVENT_ARRIVAL() {
-        hour.arrivals = hour.arrivals + 1;
+        hour.arrivals += 1;
         hour.inbound_units = add(hour.inbound_units, event.quantity);
     } else if event.tag == state.EVENT_REPOSITION() {
-        hour.repositions = hour.repositions + 1;
+        hour.repositions += 1;
     } else if event.tag == state.EVENT_EXPIRED() {
-        hour.expired = hour.expired + 1;
+        hour.expired += 1;
         hour.outbound_units = add(hour.outbound_units, event.quantity);
     } else if event.tag == state.EVENT_UNMET() {
-        hour.unmet = hour.unmet + 1;
+        hour.unmet += 1;
     }
 }
 
@@ -103,7 +103,7 @@ fn transition_index(borrow transitions: Transitions, from_tag: u64, to_tag: u64)
     while i < transitions.len() {
         let item = transitions.get_or(i, Transition { from_tag: 0, to_tag: 0, count: 0 });
         if item.from_tag == from_tag && item.to_tag == to_tag { return i; }
-        i = i + 1;
+        i += 1;
     }
     transitions.len()
 }
@@ -112,7 +112,7 @@ fn record_transition(inout transitions: Transitions, from_tag: u64, to_tag: u64)
     let index = transition_index(borrow transitions, from_tag, to_tag);
     if index < transitions.len() {
         let mut item = transitions.get_or(index, Transition { from_tag: from_tag, to_tag: to_tag, count: 0 });
-        item.count = item.count + 1;
+        item.count += 1;
         transitions.set(index, item);
     } else {
         transitions.push(Transition { from_tag: from_tag, to_tag: to_tag, count: 1 });
@@ -143,7 +143,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         }
         previous_time = event.time;
         previous_tag = event.tag;
-        i = i + 1;
+        i += 1;
     }
     let mut active_hours: u64 = 0;
     let mut quiet_hours: u64 = 0;
@@ -159,7 +159,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         if hour.events > peak_events { peak_events = hour.events; peak_event_hour = i; }
         let throughput = add(hour.outbound_units, hour.inbound_units);
         if throughput > peak_throughput { peak_throughput = throughput; peak_throughput_hour = i; }
-        i = i + 1;
+        i += 1;
     }
     Summary {
         hours: hours, transitions: transitions, counts_by_tag: counts_by_tag,

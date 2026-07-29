@@ -86,11 +86,11 @@ pub fn pow(comptime T: type, base: T, exp: u64) -> T {
     let mut e = exp;
     while e > 0 {
         if e % 2 == 1 {
-            result = result * b;
+            result *= b;
         }
-        e = e / 2;
+        e /= 2;
         if e > 0 {
-            b = b * b;
+            b *= b;
         }
     }
     result
@@ -132,7 +132,7 @@ pub fn is_prime(comptime T: type, n: T) -> bool {
         if n % i == 0 {
             return false;
         }
-        i = i + 1;
+        i += 1;
     }
     true
 }

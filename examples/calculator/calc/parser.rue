@@ -14,7 +14,7 @@ pub struct Parser {
 
     fn next_tag(inout self) -> i64 {
         let t = self.toks.tag_at(self.pos);
-        self.pos = self.pos + 1;
+        self.pos += 1;
         t
     }
 
@@ -59,7 +59,7 @@ pub struct Parser {
             let bp = self.binding_power(tag);
             if bp == 0 { break; }
             if bp <= min_bp { break; }
-            self.pos = self.pos + 1;
+            self.pos += 1;
             let rhs = self.parse_expr(bp);
             let node = self.op_node(tag);
             lhs = self.arena.add(node, @intCast(lhs), @intCast(rhs));

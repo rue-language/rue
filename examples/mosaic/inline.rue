@@ -107,7 +107,7 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow value: StrBuf, line
             let escaped = text.slice(borrow value, i + 1, i + 2);
             let id = site.strings.intern(borrow escaped);
             site.inlines.push(model.Inline { tag: model.INLINE_ESCAPE(), text_id: id, target_id: model.NONE(), line: line });
-            i = i + 2;
+            i += 2;
             plain_start = i;
         } else if b == 91 {
             let after = parse_link(inout site, page_index, borrow value, i, line);
@@ -141,7 +141,7 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow value: StrBuf, line
                 plain_start = i;
             } else { i = i + 1; }
         } else {
-            i = i + 1;
+            i += 1;
         }
     }
     flush_text(inout site, borrow value, plain_start, value.len(), line);
@@ -159,7 +159,7 @@ pub fn word_count(borrow value: StrBuf) -> u64 {
         if text.is_alnum(b) {
             if !inside { words = words + 1; inside = true; }
         } else { inside = false; }
-        i = i + 1;
+        i += 1;
     }
     words
 }

@@ -11,7 +11,7 @@ pub fn append_string(inout out: StrBuf, borrow value: StrBuf) {
     let mut i: u64 = 0;
     while i < value.len() {
         out.push(StrBuf.byte_at_borrowed(borrow value, i));
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -46,9 +46,9 @@ pub fn fnv1a(borrow value: StrBuf) -> u64 {
     let mut hash: u64 = 14695981039346656037;
     let mut i: u64 = 0;
     while i < value.len() {
-        hash = hash ^ @intCast(StrBuf.byte_at_borrowed(borrow value, i));
+        hash ^= @intCast(StrBuf.byte_at_borrowed(borrow value, i));
         hash = @wrapping_mul(hash, 1099511628211);
-        i = i + 1;
+        i += 1;
     }
     hash
 }

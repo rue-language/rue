@@ -140,10 +140,10 @@ pub fn choose(
             while vehicle < scenario.vehicles.len() {
                 let candidate = evaluate_vehicle(borrow scenario, borrow sim, demand_index, source, vehicle, now);
                 if better(borrow candidate, borrow best) { best = candidate; }
-                vehicle = vehicle + 1;
+                vehicle += 1;
             }
         }
-        source = source + 1;
+        source += 1;
     }
     best
 }

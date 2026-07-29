@@ -24,7 +24,7 @@ pub fn scenario(borrow value: model.Scenario) -> u64 {
         let v = value.locations.get_or(i, model.empty_location());
         hash = mix(hash, value.strings.hash(v.id)); hash = mix(hash, value.strings.hash(v.kind)); hash = mix(hash, v.capacity);
         hash = mix(hash, v.handling); hash = mix(hash, signed(v.x)); hash = mix(hash, signed(v.y));
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < value.routes.len() {
@@ -32,20 +32,20 @@ pub fn scenario(borrow value: model.Scenario) -> u64 {
         hash = mix(hash, value.strings.hash(v.from_id)); hash = mix(hash, value.strings.hash(v.to_id)); hash = mix(hash, v.distance);
         hash = mix(hash, v.capacity); hash = mix(hash, v.cost); hash = mix(hash, v.travel);
         hash = mix(hash, if v.bidirectional { 1 } else { 0 });
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < value.cargoes.len() {
         let v = value.cargoes.get_or(i, model.empty_cargo());
         hash = mix(hash, value.strings.hash(v.id)); hash = mix(hash, v.unit_value); hash = mix(hash, v.shelf_life); hash = mix(hash, v.weight);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < value.vehicles.len() {
         let v = value.vehicles.get_or(i, model.empty_vehicle());
         hash = mix(hash, value.strings.hash(v.id)); hash = mix(hash, value.strings.hash(v.at_id));
         hash = mix(hash, v.capacity); hash = mix(hash, v.speed); hash = mix(hash, v.cost); hash = mix(hash, v.available);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < value.supplies.len() {
@@ -100,7 +100,7 @@ pub fn simulation(borrow value: state.State) -> u64 {
         hash = mix(hash, event.cargo); hash = mix(hash, event.quantity); hash = mix(hash, event.from);
         hash = mix(hash, event.to); hash = mix(hash, event.demand); hash = mix(hash, event.cost);
         hash = mix(hash, event.distance); hash = mix(hash, event.travel);
-        i = i + 1;
+        i += 1;
     }
     hash = mix(hash, value.total_cost);
     hash = mix(hash, value.total_distance);

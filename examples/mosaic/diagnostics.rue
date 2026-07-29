@@ -16,7 +16,7 @@ pub fn format(borrow site: model.Site) -> StrBuf {
     while i < site.diagnostics.len() {
         let d = site.diagnostics.get_or(i, model.Diagnostic { code: 0, path_id: 0, line: 0, detail_id: 0 });
         keys.push(key(d, i));
-        i = i + 1;
+        i += 1;
     }
     std.sort.insertion_sort(u64, inout keys);
     let mut out = StrBuf.new();
@@ -28,7 +28,7 @@ pub fn format(borrow site: model.Site) -> StrBuf {
         site.strings.append(d.path_id, inout out);
         if d.line > 0 { out.push(58); out.push_str(@to_string(d.line)); }
         out.push_str(": "); site.strings.append(d.detail_id, inout out); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

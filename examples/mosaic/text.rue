@@ -57,7 +57,7 @@ pub fn starts_with(borrow value: StrBuf, borrow prefix: StrBuf) -> bool {
     let mut i: u64 = 0;
     while i < prefix.len() {
         if byte_of(borrow value, i) != byte_of(borrow prefix, i) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -68,7 +68,7 @@ pub fn ends_with(borrow value: StrBuf, borrow suffix: StrBuf) -> bool {
     let mut i: u64 = 0;
     while i < suffix.len() {
         if byte_of(borrow value, off + i) != byte_of(borrow suffix, i) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -77,7 +77,7 @@ pub fn find_byte(borrow value: StrBuf, needle: u8, start: u64) -> u64 {
     let mut i = start;
     while i < value.len() {
         if byte_of(borrow value, i) == needle { return i; }
-        i = i + 1;
+        i += 1;
     }
     value.len()
 }
@@ -86,7 +86,7 @@ pub fn find_pair(borrow value: StrBuf, a: u8, b: u8, start: u64) -> u64 {
     let mut i = start;
     while i + 1 < value.len() {
         if byte_of(borrow value, i) == a && byte_of(borrow value, i + 1) == b { return i; }
-        i = i + 1;
+        i += 1;
     }
     value.len()
 }
@@ -96,7 +96,7 @@ pub fn count_byte(borrow value: StrBuf, needle: u8) -> u64 {
     let mut i: u64 = 0;
     while i < value.len() {
         if byte_of(borrow value, i) == needle { total = total + 1; }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -129,7 +129,7 @@ pub fn slugify(borrow value: StrBuf) -> StrBuf {
         } else if out.len() > 0 {
             pending_dash = true;
         }
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -147,7 +147,7 @@ pub fn normalize_path(borrow value: StrBuf) -> StrBuf {
             out.push(b);
             last_slash = false;
         }
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -157,7 +157,7 @@ pub fn dirname(borrow value: StrBuf) -> StrBuf {
     let mut i: u64 = 0;
     while i < value.len() {
         if byte_of(borrow value, i) == 47 { last = i; }
-        i = i + 1;
+        i += 1;
     }
     if last == value.len() { StrBuf.new() } else { slice(borrow value, 0, last + 1) }
 }
@@ -182,6 +182,6 @@ pub fn append_escaped_json(borrow value: StrBuf, inout out: StrBuf) {
         else if b == 13 { out.push_str("\\r"); }
         else if b == 9 { out.push_str("\\t"); }
         else { out.push(b); }
-        i = i + 1;
+        i += 1;
     }
 }

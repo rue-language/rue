@@ -70,7 +70,7 @@ fn one(borrow scenario: model.Scenario, cargo: u64) -> CargoForecast {
             if first_supply == model.NONE() || item.available < first_supply { first_supply = item.available; }
             if item.available > last_supply { last_supply = item.available; }
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
@@ -84,7 +84,7 @@ fn one(borrow scenario: model.Scenario, cargo: u64) -> CargoForecast {
                 if final_time > last_supply { last_supply = final_time; }
             }
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.demands.len() {
@@ -94,7 +94,7 @@ fn one(borrow scenario: model.Scenario, cargo: u64) -> CargoForecast {
             if first_deadline == model.NONE() || item.deadline < first_deadline { first_deadline = item.deadline; }
             if item.deadline > last_deadline { last_deadline = item.deadline; }
         }
-        i = i + 1;
+        i += 1;
     }
     let available = add(initial_supply, projected_production);
     CargoForecast {
@@ -124,7 +124,7 @@ pub fn summarize(borrow scenario: model.Scenario) -> Summary {
         total_shortage = add(total_shortage, item.shortage);
         if item.shortage > 0 { scarce_cargoes = scarce_cargoes + 1; }
         cargoes.push(item);
-        cargo = cargo + 1;
+        cargo += 1;
     }
     Summary {
         cargoes: cargoes, total_supply: total_supply,
@@ -139,7 +139,7 @@ fn supply_at(borrow scenario: model.Scenario, cargo: u64, time: u64) -> u64 {
     while i < scenario.supplies.len() {
         let item = scenario.supplies.get_or(i, model.empty_supply());
         if item.cargo == cargo && item.available == time { total = add(total, item.quantity); }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
@@ -147,7 +147,7 @@ fn supply_at(borrow scenario: model.Scenario, cargo: u64, time: u64) -> u64 {
         if item.cargo == cargo && item.every > 0 && time >= item.start && time <= item.end && (time - item.start) % item.every == 0 {
             total = add(total, item.quantity);
         }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -158,7 +158,7 @@ fn demand_at(borrow scenario: model.Scenario, cargo: u64, time: u64) -> u64 {
     while i < scenario.demands.len() {
         let item = scenario.demands.get_or(i, model.empty_demand());
         if item.cargo == cargo && item.deadline == time { total = add(total, item.quantity); }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -177,7 +177,7 @@ pub fn timeline(borrow scenario: model.Scenario, cargo: u64, step: u64) -> Hours
         while at <= end {
             bucket_supply = add(bucket_supply, supply_at(borrow scenario, cargo, at));
             bucket_demand = add(bucket_demand, demand_at(borrow scenario, cargo, at));
-            at = at + 1;
+            at += 1;
         }
         cumulative_supply = add(cumulative_supply, bucket_supply);
         cumulative_demand = add(cumulative_demand, bucket_demand);
@@ -227,7 +227,7 @@ pub fn render(borrow scenario: model.Scenario) -> StrBuf {
         text.append_literal(inout out, " shortage=");
         text.append_u64(inout out, item.shortage);
         out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

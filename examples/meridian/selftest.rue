@@ -43,7 +43,7 @@ pub struct Result {
 }
 
 fn check(inout out: Result, condition: bool, fingerprint: u64) {
-    out.checks = out.checks + 1;
+    out.checks += 1;
     out.digest = metric.mix(out.digest, fingerprint);
     if !condition { out.failures = out.failures + 1; }
 }
@@ -99,13 +99,13 @@ pub fn run() -> Result {
         let query_plan = plan.build(borrow database, borrow query);
         let actual = engine.execute(borrow database, borrow query);
         let expected = row_oracle.execute(borrow database, borrow query);
-        out.plans = out.plans + 1;
-        out.executions = out.executions + 2;
+        out.plans += 1;
+        out.executions += 2;
         check(inout out, plan.verify(borrow query_plan), query_plan.digest);
         check(inout out, actual.valid, actual.checksum);
         check(inout out, row_oracle.agrees(borrow actual, borrow expected),
             metric.mix(actual.checksum, expected.checksum));
-        q = q + 1;
+        q += 1;
     }
 
     let analyses = analysis_suite.run(borrow database);

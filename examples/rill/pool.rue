@@ -42,7 +42,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < n {
             if self.entry_byte(id, i) != Self.byte_of(borrow text, i) { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -53,7 +53,7 @@ pub struct Pool {
         let mut i: u64 = 0;
         while i < n {
             if self.entry_byte(a, i) != self.entry_byte(b, i) { return false; }
-            i = i + 1;
+            i += 1;
         }
         true
     }
@@ -68,7 +68,7 @@ pub struct Pool {
         let mut j: u64 = 0;
         while j < len {
             self.bytes.push(Self.byte_of(borrow text, j));
-            j = j + 1;
+            j += 1;
         }
         self.offs.push(off);
         self.lens.push(len);

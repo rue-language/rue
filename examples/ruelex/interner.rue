@@ -51,7 +51,7 @@ pub struct Interner {
             if a != b {
                 return false;
             }
-            j = j + 1;
+            j += 1;
         }
         true
     }
@@ -64,7 +64,7 @@ pub struct Interner {
             if self.entry_eq(i, borrow key) {
                 return i;
             }
-            i = i + 1;
+            i += 1;
         }
         let off = self.pool.len();
         let len = key.len();
@@ -72,7 +72,7 @@ pub struct Interner {
         while j < len {
             let b = Self.byte_of(borrow key, j);
             self.pool.push(b);
-            j = j + 1;
+            j += 1;
         }
         self.offs.push(off);
         self.lens.push(len);

@@ -10,8 +10,8 @@ fn main() -> i32 {
     let mut sum = 0;
     let mut i = 0;
     while i < 5 {
-        sum = sum + numbers[i];
-        i = i + 1;
+        sum += numbers[i];
+        i += 1;
     }
     @dbg(sum);  // 157
 
@@ -22,7 +22,7 @@ fn main() -> i32 {
         if numbers[i] > max {
             max = numbers[i];
         }
-        i = i + 1;
+        i += 1;
     }
     @dbg(max);  // 64
 
@@ -33,7 +33,7 @@ fn main() -> i32 {
         if numbers[i] < min {
             min = numbers[i];
         }
-        i = i + 1;
+        i += 1;
     }
     @dbg(min);  // 12
 

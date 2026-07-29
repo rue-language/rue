@@ -40,7 +40,7 @@ struct Lexer {
 
     fn advance(inout self) -> u8 {
         let value = self.byte(self.at);
-        self.at = self.at + 1;
+        self.at += 1;
         value
     }
 

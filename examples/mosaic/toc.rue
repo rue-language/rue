@@ -10,7 +10,7 @@ fn anchor_for_block(borrow site: model.Site, page_index: u64, block_index: u64) 
     while i < site.anchors.len() {
         let a = site.anchors.get_or(i, model.Anchor { page: 0, name_id: 0, line: 0, heading_block: 0 });
         if a.page == page_index && a.heading_block == block_index { return a.name_id; }
-        i = i + 1;
+        i += 1;
     }
     model.NONE()
 }
@@ -42,7 +42,7 @@ pub fn render(borrow site: model.Site, page_index: u64) -> StrBuf {
             escape.html_text(borrow title, inout out);
             out.push_str("</a>");
         }
-        i = i + 1;
+        i += 1;
     }
     close_to(inout out, inout level, 0);
     if any { out.push_str("</nav>"); }

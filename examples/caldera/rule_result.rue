@@ -6,7 +6,7 @@ pub fn new(rule: u64) -> Result {
         benefit: 0, digest: metric.mix(14695981039346656037, rule), valid: false }
 }
 pub fn record(inout out: Result, matched: bool, acted: bool, benefit: u64) {
-    out.inspected = out.inspected + 1;
+    out.inspected += 1;
     if matched { out.matches = out.matches + 1; }
     if acted { out.actions = out.actions + 1; }
     out.benefit = @wrapping_add(out.benefit, benefit);

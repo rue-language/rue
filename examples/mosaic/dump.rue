@@ -49,7 +49,7 @@ fn dump_page(borrow site: model.Site, index: u64, inout out: StrBuf) {
         if block.level > 0 { out.push_str(" level="); out.push_str(@to_string(block.level)); }
         if block.text_id != model.NONE() { out.push_str(" text="); quoted_pool(borrow site, block.text_id, inout out); }
         out.push(10);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -61,7 +61,7 @@ fn dump_inlines(borrow site: model.Site, inout out: StrBuf) {
         out.push_str(" text="); quoted_pool(borrow site, node.text_id, inout out);
         if node.tag == model.INLINE_LINK() { out.push_str(" target="); quoted_pool(borrow site, node.target_id, inout out); }
         out.push(10);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -79,7 +79,7 @@ fn dump_links(borrow site: model.Site, inout out: StrBuf) {
         else if link.resolved_page == model.NONE() { out.push_str("none"); }
         else { out.push_str(@to_string(link.resolved_page)); }
         out.push(10);
-        i = i + 1;
+        i += 1;
     }
 }
 

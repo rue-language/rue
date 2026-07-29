@@ -10,14 +10,14 @@ pub fn region(borrow world: model.World, x: i64, y: i64, radius: u64) -> Query {
     let mut i: u64 = 0;
     while i < world.entities.len() {
         let entity = world.entities.get_or(i, model.empty_entity());
-        out.candidates = out.candidates + 1;
+        out.candidates += 1;
         let dx = if entity.x > x { entity.x - x } else { x - entity.x };
         let dy = if entity.y > y { entity.y - y } else { y - entity.y };
         if entity.alive && @intCast(dx + dy) <= radius {
-            out.matches = out.matches + 1;
+            out.matches += 1;
             out.digest = metric.mix(out.digest, entity.id);
         }
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.matches <= out.candidates;
     out
@@ -36,7 +36,7 @@ pub fn nearest(borrow world: model.World, x: i64, y: i64) -> u64 {
             (current == distance && entity.id < best)) {
             best = entity.id; distance = current;
         }
-        i = i + 1;
+        i += 1;
     }
     best
 }

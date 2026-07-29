@@ -60,13 +60,13 @@ fn one(borrow scenario: model.Scenario, borrow sim: state.State, vehicle_index: 
         let event = sim.log.get_or(i, state.empty_event());
         if event.vehicle == vehicle_index {
             if event.tag == state.EVENT_REPOSITION() {
-                repositions = repositions + 1;
+                repositions += 1;
                 empty_distance = add(empty_distance, event.distance);
                 travel_time = add(travel_time, event.travel);
                 operating_cost = add(operating_cost, event.cost);
                 busy_until = if add(event.time, event.travel) > busy_until { add(event.time, event.travel) } else { busy_until };
             } else if event.tag == state.EVENT_DEPARTURE() {
-                dispatches = dispatches + 1;
+                dispatches += 1;
                 cargo_units = add(cargo_units, event.quantity);
                 loaded_distance = add(loaded_distance, event.distance);
                 travel_time = add(travel_time, event.travel);
@@ -76,7 +76,7 @@ fn one(borrow scenario: model.Scenario, borrow sim: state.State, vehicle_index: 
                 busy_until = if add(event.time, event.travel) > busy_until { add(event.time, event.travel) } else { busy_until };
             }
         }
-        i = i + 1;
+        i += 1;
     }
     VehicleUse {
         vehicle: vehicle_index, dispatches: dispatches, repositions: repositions,
@@ -112,7 +112,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         fill_numerator = add(fill_numerator, item.fill_numerator);
         fill_denominator = add(fill_denominator, item.fill_denominator);
         vehicles.push(item);
-        i = i + 1;
+        i += 1;
     }
     Summary {
         vehicles: vehicles, active_vehicles: active_vehicles, idle_vehicles: idle_vehicles,

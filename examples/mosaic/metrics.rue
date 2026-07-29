@@ -32,18 +32,18 @@ pub fn collect(borrow site: model.Site) -> Metrics {
     };
     let mut id: u64 = 0;
     while id < site.strings.len() {
-        value.pooled_bytes = value.pooled_bytes + site.strings.string_len(id);
-        id = id + 1;
+        value.pooled_bytes += site.strings.string_len(id);
+        id += 1;
     }
     let mut i: u64 = 0;
     while i < site.pages.len() {
         let page = site.pages.get_or(i, model.empty_page());
         if page.draft {
-            value.drafts = value.drafts + 1;
+            value.drafts += 1;
         } else {
-            value.published = value.published + 1;
+            value.published += 1;
         }
-        value.words = value.words + page.word_count;
+        value.words += page.word_count;
         if page.word_count > value.max_words {
             value.max_words = page.word_count;
         }
@@ -73,9 +73,9 @@ pub fn collect(borrow site: model.Site) -> Metrics {
             if block.tag == model.BLOCK_HEADING() && block.level > value.heading_depth {
                 value.heading_depth = block.level;
             }
-            b = b + 1;
+            b += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     value
 }

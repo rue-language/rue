@@ -16,13 +16,13 @@ pub fn elect(borrow database: model.Database) -> Election {
     while i < database.replicas.len() {
         let replica = database.replicas.get_or(i, model.empty_replica());
         if replica.healthy {
-            out.candidates = out.candidates + 1;
+            out.candidates += 1;
             if out.winner == model.NONE() || replica.applied_lsn > out.winning_lsn {
                 out.winner = i;
                 out.winning_lsn = replica.applied_lsn;
             }
         } else { out.rejected = out.rejected + 1; }
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.winner != model.NONE() && out.winner < database.replicas.len();
     out

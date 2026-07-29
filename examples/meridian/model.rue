@@ -209,7 +209,7 @@ pub fn find_table(borrow database: Database, name: u64) -> u64 {
         if database.strings.ids_equal(database.tables.get_or(i, empty_table()).name, name) {
             return i;
         }
-        i = i + 1;
+        i += 1;
     }
     NONE()
 }
@@ -219,7 +219,7 @@ pub fn find_column(borrow database: Database, table: u64, name: u64) -> u64 {
     while i < database.columns.len() {
         let column = database.columns.get_or(i, empty_column());
         if column.table == table && database.strings.ids_equal(column.name, name) { return i; }
-        i = i + 1;
+        i += 1;
     }
     NONE()
 }
@@ -235,7 +235,7 @@ pub fn cell_number(borrow database: Database, row: u64, column: u64) -> u64 {
     while i < item.cell_count {
         let cell = database.cells.get_or(item.first_cell + i, empty_cell());
         if cell.column == column && !cell.is_null { return cell.number; }
-        i = i + 1;
+        i += 1;
     }
     0
 }
@@ -246,7 +246,7 @@ pub fn table_rows(borrow database: Database, table: u64, snapshot: u64) -> u64 {
     while i < database.rows.len() {
         let row = database.rows.get_or(i, empty_row());
         if row.table == table && visible(borrow row, snapshot) { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -256,7 +256,7 @@ pub fn table_cells(borrow database: Database, table: u64) -> u64 {
     let mut i: u64 = 0;
     while i < database.cells.len() {
         if database.cells.get_or(i, empty_cell()).table == table { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -266,7 +266,7 @@ pub fn has_index(borrow database: Database, table: u64, column: u64) -> bool {
     while i < database.indexes.len() {
         let index = database.indexes.get_or(i, empty_index());
         if index.table == table && index.column == column { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }

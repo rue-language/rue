@@ -263,9 +263,9 @@ pub struct Summary { passes: u64, observations: u64, warnings: u64,
 
 fn include(inout out: Summary, borrow first: metric.Metric, borrow second: metric.Metric, verified: bool) {
     out.passes = out.passes + 1; out.observations = out.observations + first.observations;
-    out.warnings = out.warnings + first.warnings;
+    out.warnings += first.warnings;
     if first.digest != second.digest || first.total != second.total || !verified {
-        out.deterministic_mismatches = out.deterministic_mismatches + 1;
+        out.deterministic_mismatches += 1;
     }
     out.digest = metric.mix(out.digest, first.digest);
 }

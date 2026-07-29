@@ -78,17 +78,17 @@ pub fn production() -> Policy {
 fn mix(hash: u64, value: u64) -> u64 { @wrapping_mul(hash ^ value, 1099511628211) }
 
 fn maximum(inout result: Evaluation, code: u64, actual: u64, expected: u64, task: u64) {
-    result.checks = result.checks + 1;
+    result.checks += 1;
     if expected != model.NONE() && actual > expected {
-        result.failures = result.failures + 1;
+        result.failures += 1;
         result.violations.push(Violation { code: code, actual: actual, expected: expected, task: task, pool: model.NONE() });
     }
 }
 
 fn minimum(inout result: Evaluation, code: u64, actual: u64, expected: u64) {
-    result.checks = result.checks + 1;
+    result.checks += 1;
     if actual < expected {
-        result.failures = result.failures + 1;
+        result.failures += 1;
         result.violations.push(Violation { code: code, actual: actual, expected: expected, task: model.NONE(), pool: model.NONE() });
     }
 }
@@ -99,7 +99,7 @@ fn uncacheable_long_tasks(borrow workflow: model.Workflow, threshold: u64) -> u6
     while i < workflow.tasks.len() {
         let task = workflow.tasks.get_or(i, model.empty_task());
         if task.duration >= threshold && !task.cacheable { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }

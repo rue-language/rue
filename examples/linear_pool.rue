@@ -14,13 +14,13 @@ struct Pool {
 
     fn acquire(inout self) -> Token {
         let id = self.next;
-        self.next = self.next + 1;
-        self.outstanding = self.outstanding + 1;
+        self.next += 1;
+        self.outstanding += 1;
         Token { id: id }
     }
 
     fn release(inout self, t: Token) -> i64 {
-        self.outstanding = self.outstanding - 1;
+        self.outstanding -= 1;
         t.id
     }
 }

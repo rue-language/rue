@@ -59,7 +59,7 @@ pub fn effective_capacity(borrow scenario: model.Scenario, route_index: u64, at:
         if item.route == route_index && disruption_active(borrow item, at) {
             capacity = mul_percent(capacity, item.capacity_percent);
         }
-        i = i + 1;
+        i += 1;
     }
     capacity
 }
@@ -73,7 +73,7 @@ pub fn effective_cost(borrow scenario: model.Scenario, route_index: u64, at: u64
         if item.route == route_index && disruption_active(borrow item, at) {
             cost = mul_percent(cost, item.cost_percent);
         }
-        i = i + 1;
+        i += 1;
     }
     cost
 }
@@ -130,7 +130,7 @@ fn relax_from(
                 queue.push(candidate, next);
             }
         }
-        route_index = route_index + 1;
+        route_index += 1;
     }
 }
 
@@ -147,7 +147,7 @@ fn summarize(borrow scenario: model.Scenario, inout path: Path) {
         path.distance = add_saturating(path.distance, route.distance);
         path.travel = add_saturating(path.travel, route.travel);
         if route.capacity < path.bottleneck { path.bottleneck = route.capacity; }
-        i = i + 1;
+        i += 1;
     }
     if path.routes.len() == 0 { path.bottleneck = 0; }
 }
@@ -172,7 +172,7 @@ fn reconstruct(
         routes.push_front(route);
         cursor = parent;
         nodes.push_front(cursor);
-        guard = guard + 1;
+        guard += 1;
     }
     if cursor != from { return path; }
     while !nodes.is_empty() {
@@ -246,7 +246,7 @@ pub fn path_weight(borrow scenario: model.Scenario, borrow path: Path, now: u64,
     let mut i: u64 = 0;
     while i < path.routes.len() {
         total = add_saturating(total, edge_weight(borrow scenario, path.routes.get_or(i, model.NONE()), now, mode));
-        i = i + 1;
+        i += 1;
     }
     total
 }

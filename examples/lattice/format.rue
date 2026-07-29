@@ -45,7 +45,7 @@ pub fn csv_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
         let byte = workflow.strings.byte_at(id, i);
         if byte == 34 { out.push(34); out.push(34); }
         else { out.push(byte); }
-        i = i + 1;
+        i += 1;
     }
     out.push(34);
 }
@@ -59,7 +59,7 @@ pub fn dot_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) {
         else if byte == 92 { text.append_literal(inout out, "\\\\"); }
         else if byte == 10 { text.append_literal(inout out, "\\n"); }
         else { out.push(byte); }
-        i = i + 1;
+        i += 1;
     }
     out.push(34);
 }
@@ -71,7 +71,7 @@ pub fn markdown_id(inout out: StrBuf, borrow workflow: model.Workflow, id: u64) 
         if byte == 124 { text.append_literal(inout out, "\\|"); }
         else if byte == 10 { text.append_literal(inout out, "<br>"); }
         else { out.push(byte); }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -80,6 +80,6 @@ pub fn append_bar(inout out: StrBuf, numerator: u64, denominator: u64, width: u6
     let mut i: u64 = 0;
     while i < width {
         if i < filled { out.push(35); } else { out.push(46); }
-        i = i + 1;
+        i += 1;
     }
 }

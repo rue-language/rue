@@ -54,7 +54,7 @@ fn apply_sources(borrow scenario: model.Scenario, inout sim: state.State, now: u
         if source.available == now {
             record_source(borrow scenario, inout sim, state.EVENT_SUPPLY(), source.location, source.cargo, source.quantity, now, false);
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
@@ -62,7 +62,7 @@ fn apply_sources(borrow scenario: model.Scenario, inout sim: state.State, now: u
         if source.every > 0 && now >= source.start && now <= source.end && (now - source.start) % source.every == 0 {
             record_source(borrow scenario, inout sim, state.EVENT_PRODUCTION(), source.location, source.cargo, source.quantity, now, true);
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -72,7 +72,7 @@ fn apply_arrival(inout sim: state.State, event: state.Event) {
     let mut actual = event;
     actual.quantity = delivered;
     state.log(inout sim, actual);
-    sim.arrivals = sim.arrivals + 1;
+    sim.arrivals += 1;
 }
 
 fn process_arrivals(inout sim: state.State, inout queue: EventQueue, now: u64) {
@@ -115,7 +115,7 @@ fn dispatch(
             demand: model.NONE(), cost: decision.reposition_cost,
             distance: decision.reposition_distance, travel: decision.reposition_travel,
         });
-        sim.repositions = sim.repositions + 1;
+        sim.repositions += 1;
     }
     state.log(inout sim, state.Event {
         tag: state.EVENT_DEPARTURE(), time: decision.depart,
@@ -134,7 +134,7 @@ fn dispatch(
     sim.vehicle_available.set(decision.vehicle, decision.arrival);
     state.mark_transit(inout sim, decision.cargo, reserved);
     state.add_vehicle_work(inout sim, decision.vehicle, planner.decision_distance(borrow decision), planner.decision_cost(borrow decision));
-    sim.dispatches = sim.dispatches + 1;
+    sim.dispatches += 1;
     true
 }
 
@@ -146,7 +146,7 @@ fn rank_demands(borrow scenario: model.Scenario, borrow sim: state.State, now: u
         if state.demand_open(borrow sim, i) > 0 && now <= demand.deadline {
             queue.push(demand_rank(demand), i);
         }
-        i = i + 1;
+        i += 1;
     }
     queue
 }
@@ -174,7 +174,7 @@ fn plan_hour(
                 }
             }
         }
-        attempts = attempts + 1;
+        attempts += 1;
     }
 }
 
@@ -190,7 +190,7 @@ fn mark_unmet(borrow scenario: model.Scenario, inout sim: state.State) {
                 to: demand.location, demand: i, cost: 0, distance: 0, travel: 0,
             });
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -203,7 +203,7 @@ pub fn run(borrow scenario: model.Scenario) -> state.State {
         process_arrivals(inout sim, inout events, now);
         apply_sources(borrow scenario, inout sim, now);
         if now < scenario.duration { plan_hour(borrow scenario, inout sim, inout events, now); }
-        now = now + 1;
+        now += 1;
     }
     mark_unmet(borrow scenario, inout sim);
     sim

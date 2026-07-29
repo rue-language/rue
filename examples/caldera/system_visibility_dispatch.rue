@@ -39,7 +39,7 @@ fn inspect_entities(inout out: result.Result, borrow world: model.World) {
         let eligible = eligible_entity(borrow world, borrow entity);
         let command = eligible && (entity.id + FOCUS() + world.tick) % 2 == 0;
         result.record(inout out, eligible, command, entity_value(borrow world, borrow entity));
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -51,7 +51,7 @@ fn inspect_tiles(inout out: result.Result, borrow world: model.World) {
         let command = eligible && tile.resource > FOCUS() % 17;
         result.record(inout out, eligible, command,
             tile.height + tile.resource + tile.terrain * 11 + i % 97);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -62,7 +62,7 @@ fn inspect_timeline(inout out: result.Result, borrow world: model.World) {
         let eligible = (event.kind + FOCUS()) % 4 == 0;
         result.record(inout out, eligible, eligible && event.value > 0,
             event.sequence + event.actor % 257 + event.value);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < world.commands.len() {
@@ -70,7 +70,7 @@ fn inspect_timeline(inout out: result.Result, borrow world: model.World) {
         let eligible = command.accepted && (command.kind + FOCUS()) % 3 == 0;
         result.record(inout out, eligible, eligible,
             command.tick + command.actor % 251 + command.value);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -83,12 +83,12 @@ fn inspect_regions(inout out: result.Result, borrow world: model.World) {
         while i < world.tiles.len() {
             let tile = world.tiles.get_or(i, model.empty_tile());
             if tile.region == region { tiles = tiles + 1; resources = resources + tile.resource; }
-            i = i + 1;
+            i += 1;
         }
         let eligible = tiles > 0 && (region + FOCUS()) % 4 == 0;
         result.record(inout out, eligible, eligible && resources > tiles,
             resources + tiles * 13 + region);
-        region = region + 1;
+        region += 1;
     }
 }
 

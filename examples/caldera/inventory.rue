@@ -8,7 +8,7 @@ pub fn audit(borrow world: model.World) -> metric.Metric {
         let entity = world.entities.get_or(i, model.empty_entity());
         metric.observe(inout out, entity.inventory, entity.kind + 1);
         metric.warn(inout out, entity.inventory > 1000000);
-        i = i + 1;
+        i += 1;
     }
     metric.finish(inout out); out
 }

@@ -88,16 +88,16 @@ fn compare_matrices(
                 let a = route_matrix.weight(borrow before, from, to);
                 let b = route_matrix.weight(borrow during, from, to);
                 if a == routing.INF() && b != routing.INF() {
-                    result.newly_reachable = result.newly_reachable + 1;
+                    result.newly_reachable += 1;
                     result.during_total = add(result.during_total, b);
                 } else if a != routing.INF() && b == routing.INF() {
-                    result.newly_unreachable = result.newly_unreachable + 1;
+                    result.newly_unreachable += 1;
                     result.before_total = add(result.before_total, a);
                 } else if a != routing.INF() && b != routing.INF() {
                     result.before_total = add(result.before_total, a);
                     result.during_total = add(result.during_total, b);
                     if b > a {
-                        result.increased = result.increased + 1;
+                        result.increased += 1;
                         let increase = b - a;
                         if increase > result.largest_increase {
                             result.largest_increase = increase;
@@ -105,17 +105,17 @@ fn compare_matrices(
                             result.largest_to = to;
                         }
                     } else if b < a {
-                        result.decreased = result.decreased + 1;
+                        result.decreased += 1;
                     } else {
-                        result.unchanged = result.unchanged + 1;
+                        result.unchanged += 1;
                     }
                 } else {
-                    result.unchanged = result.unchanged + 1;
+                    result.unchanged += 1;
                 }
             }
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     if result.during_total > result.before_total {
         result.added_weight = result.during_total - result.before_total;
@@ -159,9 +159,9 @@ pub fn compare(borrow scenario: model.Scenario) -> Comparison {
                 worst_added_weight = delta.added_weight;
             }
             deltas.push(delta);
-            mode_index = mode_index + 1;
+            mode_index += 1;
         }
-        disruption_index = disruption_index + 1;
+        disruption_index += 1;
     }
     Comparison {
         deltas: deltas, variants: scenario.disruptions.len(),
@@ -204,7 +204,7 @@ pub fn render(borrow scenario: model.Scenario, borrow value: Comparison) -> StrB
             text.append_literal(inout out, ")");
         }
         out.push(10);
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "total_added_weight="); text.append_u64(inout out, value.total_added_weight);
     text.append_literal(inout out, " digest="); text.append_u64(inout out, value.digest); out.push(10);

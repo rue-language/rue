@@ -88,7 +88,7 @@ fn add_locations(inout scenario: model.Scenario, count: u64) {
             handling: 200 + (i % 5) * 40,
             x: @intCast((i % 8) * 11), y: @intCast((i / 8) * 13),
         });
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -108,7 +108,7 @@ fn add_routes(inout scenario: model.Scenario, count: u64) {
     let mut i: u64 = 0;
     while i < count {
         push_route(inout scenario, i, (i + 1) % count, i * 3 + 1, true);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < count {
@@ -116,12 +116,12 @@ fn add_routes(inout scenario: model.Scenario, count: u64) {
         if across != i && across != (i + 1) % count {
             push_route(inout scenario, i, across, i * 7 + 2, i % 2 == 0);
         }
-        i = i + 2;
+        i += 2;
     }
     i = 1;
     while i + 3 < count {
         push_route(inout scenario, i, i + 3, i * 11 + 3, true);
-        i = i + 3;
+        i += 3;
     }
 }
 
@@ -134,7 +134,7 @@ fn add_cargoes(inout scenario: model.Scenario, count: u64) {
             id: id, unit_value: 4 + (i % 11), shelf_life: 12 + (i % 5) * 12,
             weight: 1 + (i % 4),
         });
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -149,7 +149,7 @@ fn add_vehicles(inout scenario: model.Scenario, count: u64) {
             id: id, at_id: location.id, at: at, capacity: 25 + (i % 5) * 10,
             speed: 1 + (i % 3), cost: 1 + (i % 4), available: i % 3,
         });
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -171,7 +171,7 @@ fn add_supplies(inout scenario: model.Scenario) {
             location: second_location, cargo: cargo,
             quantity: 180 + cargo * 20, available: 6 + cargo % 5,
         });
-        cargo = cargo + 1;
+        cargo += 1;
     }
 }
 
@@ -189,7 +189,7 @@ fn add_demands(inout scenario: model.Scenario, count: u64) {
             deadline: 4 + (i * 3) % (scenario.duration - 4),
             priority: 1 + (i % 5),
         });
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -205,7 +205,7 @@ fn add_production(inout scenario: model.Scenario) {
             quantity: 10 + (cargo % 5) * 3, every: 6 + cargo % 4,
             start: 3 + cargo % 3, end: scenario.duration - 1,
         });
-        cargo = cargo + 2;
+        cargo += 2;
     }
 }
 
@@ -220,7 +220,7 @@ fn add_disruptions(inout scenario: model.Scenario) {
                 cost_percent: 110 + route % 90,
             });
         }
-        route = route + 1;
+        route += 1;
     }
 }
 

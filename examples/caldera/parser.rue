@@ -67,7 +67,7 @@ pub fn parse(tokens: token.Tokens) -> scenario.Scenario {
             out.expected_entities = take(inout state, token.NUMBER()).number;
             let _ = take(inout state, token.SEMI());
         } else {
-            state.errors = state.errors + 1;
+            state.errors += 1;
             while peek(borrow state).kind != token.SEMI() &&
                 peek(borrow state).kind != token.EOF() { let _ = advance(inout state); }
             if peek(borrow state).kind == token.SEMI() { let _ = advance(inout state); }

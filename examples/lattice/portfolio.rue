@@ -61,7 +61,7 @@ pub struct Summary {
 }
 
 fn record(inout summary: Summary, value: metric.Metric, verified: bool) {
-    summary.passes = summary.passes + 1;
+    summary.passes += 1;
     summary.observations = metric.add(summary.observations, value.observations);
     summary.warnings = metric.add(summary.warnings, value.warnings);
     summary.sum = metric.add(summary.sum, value.sum);

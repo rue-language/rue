@@ -123,30 +123,30 @@ pub fn build(borrow scenario: model.Scenario) -> Plan {
                             );
                             let base = baseline_cost(borrow scenario, from, to, before, capacity);
                             if item.reachable {
-                                reachable = reachable + 1;
+                                reachable += 1;
                                 total_cost = add(total_cost, item.cost);
                                 if base != routing.INF() && item.cost > base { degraded = degraded + 1; }
                             } else {
-                                isolated = isolated + 1;
-                                local_isolated = local_isolated + 1;
+                                isolated += 1;
+                                local_isolated += 1;
                             }
                             digest = mix(digest, item.cost);
                             digest = mix(digest, item.bottleneck);
                             options.push(item);
                         }
-                        to = to + 1;
+                        to += 1;
                     }
-                    from = from + 1;
+                    from += 1;
                 }
-                capacity_index = capacity_index + 1;
+                capacity_index += 1;
             }
-            time_index = time_index + 1;
+            time_index += 1;
         }
         if worst_disruption == model.NONE() || local_isolated > worst_isolated {
             worst_disruption = disruption_index;
             worst_isolated = local_isolated;
         }
-        disruption_index = disruption_index + 1;
+        disruption_index += 1;
     }
     Plan {
         options: options, windows: scenario.disruptions.len(),
@@ -187,9 +187,9 @@ pub fn render(borrow scenario: model.Scenario, borrow plan: Plan) -> StrBuf {
             text.append_literal(inout out, " capacity="); text.append_u64(inout out, item.minimum_capacity);
             text.append_literal(inout out, " from="); append_location(inout out, borrow scenario, item.from);
             text.append_literal(inout out, " to="); append_location(inout out, borrow scenario, item.to); out.push(10);
-            shown = shown + 1;
+            shown += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     if shown == 0 { text.append_literal(inout out, "  none\n"); }
     out

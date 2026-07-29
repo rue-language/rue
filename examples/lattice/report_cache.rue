@@ -23,7 +23,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_literal(inout out, " eligible="); text.append_u64(inout out, cache.cacheable_by_pool.get_or(i, 0));
         text.append_literal(inout out, " hits="); text.append_u64(inout out, cache.hits_by_pool.get_or(i, 0));
         text.append_literal(inout out, " misses="); text.append_u64(inout out, cache.misses_by_pool.get_or(i, 0)); out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

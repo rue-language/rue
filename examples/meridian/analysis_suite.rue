@@ -130,16 +130,16 @@ fn empty() -> Result {
 }
 
 fn include(inout out: Result, borrow first: metric.Metric, borrow second: metric.Metric, verified: bool) {
-    out.passes = out.passes + 1;
-    out.observations = out.observations + first.observations;
-    out.warnings = out.warnings + first.warnings;
+    out.passes += 1;
+    out.observations += first.observations;
+    out.warnings += first.warnings;
     out.digest = metric.mix(out.digest, first.tag);
     out.digest = metric.mix(out.digest, first.digest);
     if !verified || !metric.valid(borrow first) { out.failures = out.failures + 1; }
     if first.digest != second.digest || first.observations != second.observations ||
         first.warnings != second.warnings {
         out.deterministic = false;
-        out.failures = out.failures + 1;
+        out.failures += 1;
     }
 }
 

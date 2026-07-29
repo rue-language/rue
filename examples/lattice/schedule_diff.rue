@@ -40,7 +40,7 @@ pub fn compare(borrow workflow: model.Workflow, borrow first: state.Run, borrow 
         if first.attempts.get_or(i, 0) != second.attempts.get_or(i, 0) { attempt_changes = attempt_changes + 1; }
         digest = mix(digest, first.status.get_or(i, 0)); digest = mix(digest, second.status.get_or(i, 0));
         digest = mix(digest, first.starts.get_or(i, 0)); digest = mix(digest, second.starts.get_or(i, 0));
-        i = i + 1;
+        i += 1;
     }
     let limit = if first.events.len() < second.events.len() { first.events.len() } else { second.events.len() };
     let mut common_event_prefix: u64 = 0;

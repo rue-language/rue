@@ -15,11 +15,11 @@ fn power(base: i32, exp: i32) -> i32 {
     while e > 0 {
         // If the current bit is set, multiply result by current power
         if e % 2 == 1 {
-            result = result * b;
+            result *= b;
         }
         // Square the base and halve the exponent
-        b = b * b;
-        e = e / 2;
+        b *= b;
+        e /= 2;
     }
 
     result

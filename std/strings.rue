@@ -73,7 +73,7 @@ pub fn parse_int(s: StrBuf) -> option.Option(i64) {
                 return O.None;
             },
         }
-        i = i + 1;
+        i += 1;
     }
     if neg {
         O.Some(-acc)
@@ -92,7 +92,7 @@ pub fn find(s: StrBuf, byte: u8) -> option.Option(u64) {
         if c == byte {
             return O.Some(i);
         }
-        i = i + 1;
+        i += 1;
     }
     O.None
 }
@@ -102,7 +102,7 @@ pub fn rfind(s: StrBuf, byte: u8) -> option.Option(u64) {
     let O = option.Option(u64);
     let mut i = s.len();
     while i > 0 {
-        i = i - 1;
+        i -= 1;
         let c = bounded_byte_at(borrow s, i);
         if c == byte {
             return O.Some(i);
@@ -119,9 +119,9 @@ pub fn count(s: StrBuf, byte: u8) -> u64 {
     while i < n {
         let cur = bounded_byte_at(borrow s, i);
         if cur == byte {
-            c = c + 1;
+            c += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     c
 }
@@ -144,7 +144,7 @@ pub fn trim_start(s: StrBuf) -> StrBuf {
     while scanning && start < n {
         let c = bounded_byte_at(borrow s, start);
         if ascii.is_whitespace(c) {
-            start = start + 1;
+            start += 1;
         } else {
             scanning = false;
         }
@@ -154,7 +154,7 @@ pub fn trim_start(s: StrBuf) -> StrBuf {
     while i < n {
         let c = bounded_byte_at(borrow s, i);
         out.push(c);
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -167,7 +167,7 @@ pub fn trim_end(s: StrBuf) -> StrBuf {
     while scanning && end > 0 {
         let c = bounded_byte_at(borrow s, end - 1);
         if ascii.is_whitespace(c) {
-            end = end - 1;
+            end -= 1;
         } else {
             scanning = false;
         }
@@ -177,7 +177,7 @@ pub fn trim_end(s: StrBuf) -> StrBuf {
     while i < end {
         let c = bounded_byte_at(borrow s, i);
         out.push(c);
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -190,7 +190,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
     while sc && start < n {
         let c = bounded_byte_at(borrow s, start);
         if ascii.is_whitespace(c) {
-            start = start + 1;
+            start += 1;
         } else {
             sc = false;
         }
@@ -200,7 +200,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
     while ec && end > start {
         let c = bounded_byte_at(borrow s, end - 1);
         if ascii.is_whitespace(c) {
-            end = end - 1;
+            end -= 1;
         } else {
             ec = false;
         }
@@ -210,7 +210,7 @@ pub fn trim(s: StrBuf) -> StrBuf {
     while i < end {
         let c = bounded_byte_at(borrow s, i);
         out.push(c);
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -225,9 +225,9 @@ pub fn repeat(s: StrBuf, n: u64) -> StrBuf {
         while i < len {
             let c = bounded_byte_at(borrow s, i);
             out.push(c);
-            i = i + 1;
+            i += 1;
         }
-        k = k + 1;
+        k += 1;
     }
     out
 }
@@ -236,7 +236,7 @@ pub fn repeat(s: StrBuf, n: u64) -> StrBuf {
 pub fn count_chars(s: StrBuf) -> u64 {
     let mut count: u64 = 0;
     for _scalar in s.chars() {
-        count = count + 1;
+        count += 1;
     }
     count
 }
@@ -246,7 +246,7 @@ pub fn count_chars(s: StrBuf) -> u64 {
 pub fn count_chars_lossy(s: StrBuf) -> u64 {
     let mut count: u64 = 0;
     for _scalar in s.chars_lossy() {
-        count = count + 1;
+        count += 1;
     }
     count
 }

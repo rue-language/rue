@@ -74,7 +74,7 @@ fn demand_at(borrow scenario: model.Scenario, location: u64, cargo: u64) -> u64 
     while i < scenario.demands.len() {
         let item = scenario.demands.get_or(i, model.empty_demand());
         if item.location == location && item.cargo == cargo { total = add(total, item.quantity); }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -87,7 +87,7 @@ fn inbound_at(borrow sim: state.State, location: u64, cargo: u64) -> u64 {
         if event.tag == state.EVENT_ARRIVAL() && event.to == location && event.cargo == cargo {
             total = add(total, event.quantity);
         }
-        i = i + 1;
+        i += 1;
     }
     total
 }
@@ -97,12 +97,12 @@ fn source_count(borrow scenario: model.Scenario, cargo: u64) -> u64 {
     let mut i: u64 = 0;
     while i < scenario.supplies.len() {
         if scenario.supplies.get_or(i, model.empty_supply()).cargo == cargo { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.productions.len() {
         if scenario.productions.get_or(i, model.empty_production()).cargo == cargo { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -116,7 +116,7 @@ fn lead_time(borrow scenario: model.Scenario, borrow matrix: route_matrix.Matrix
             let value = route_matrix.travel(borrow matrix, supply.location, location);
             if value != routing.INF() { total = add(total, value); count = count + 1; }
         }
-        i = i + 1;
+        i += 1;
     }
     if count == 0 { scenario.duration } else { total / count }
 }
@@ -183,7 +183,7 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Book {
             digest = mix(digest, item.target_stock); digest = mix(digest, item.order_quantity); digest = mix(digest, item.action);
             policies.push(item); cargo = cargo + 1;
         }
-        location = location + 1;
+        location += 1;
     }
     Book { policies: policies, locations: scenario.locations.len(), cargoes: scenario.cargoes.len(),
         reorder: reorder, expedite: expedite, redistribute: redistribute, hold: hold,

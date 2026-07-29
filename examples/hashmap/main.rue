@@ -8,21 +8,21 @@ fn main() -> i32 {
     let mut k: i64 = 0;
     while k < 200 {
         m.insert(k * 7 - 300, k * k);
-        k = k + 1;
+        k += 1;
     }
     @assert(m.len() == 200, "len after inserts");
     // Overwrite half
     k = 0;
     while k < 100 {
         m.insert(k * 7 - 300, k);
-        k = k + 1;
+        k += 1;
     }
     @assert(m.len() == 200, "len after overwrites");
     // Remove a third
     k = 0;
     while k < 66 {
         m.remove(k * 3 * 7 - 300);
-        k = k + 1;
+        k += 1;
     }
     // Spot checks
     match m.get(0 - 300) {

@@ -24,11 +24,11 @@ fn count_neighbors(g: [[i32; W]; H], y: i32, x: i32) -> i32 {
         let mut dx = -1;
         while dx <= 1 {
             if dy != 0 || dx != 0 {
-                total = total + alive_at(g, y + dy, x + dx);
+                total += alive_at(g, y + dy, x + dx);
             }
-            dx = dx + 1;
+            dx += 1;
         }
-        dy = dy + 1;
+        dy += 1;
     }
     total
 }
@@ -48,9 +48,9 @@ fn step(g: [[i32; W]; H]) -> [[i32; W]; H] {
             } else {
                 if n == 3 { next[y][x] = 1; }
             }
-            x = x + 1;
+            x += 1;
         }
-        y = y + 1;
+        y += 1;
     }
     next
 }
@@ -61,10 +61,10 @@ fn population(g: [[i32; W]; H]) -> i32 {
     while y < H {
         let mut x = 0;
         while x < W {
-            total = total + g[y][x];
-            x = x + 1;
+            total += g[y][x];
+            x += 1;
         }
-        y = y + 1;
+        y += 1;
     }
     total
 }
@@ -85,7 +85,7 @@ fn main() -> i32 {
     while gen < 8 {
         @dbg(population(g));
         g = step(g);
-        gen = gen + 1;
+        gen += 1;
     }
 
     population(g)

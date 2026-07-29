@@ -44,7 +44,7 @@ pub fn parse(borrow source: StrBuf, lexed: ast.Lexed) -> ast.Parsed {
                 name_end: 0,
                 filter: ast.FILTER_NONE(),
             });
-            i = i + 1;
+            i += 1;
         } else if current.tag == ast.TOKEN_OPEN() {
             let name = token(borrow lexed.tokens, i + 1);
             if name.tag != ast.TOKEN_IDENT() {
@@ -61,7 +61,7 @@ pub fn parse(borrow source: StrBuf, lexed: ast.Lexed) -> ast.Parsed {
                 if filter == 999 {
                     return ast.Parsed { nodes: nodes, ok: false, error_offset: filter_token.start };
                 }
-                close_index = close_index + 2;
+                close_index += 2;
             }
             let close = token(borrow lexed.tokens, close_index);
             if close.tag != ast.TOKEN_CLOSE() {

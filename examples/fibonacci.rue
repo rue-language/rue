@@ -14,7 +14,7 @@ fn fib(n: i32) -> i32 {
             let next = a + b;
             a = b;
             b = next;
-            i = i + 1;
+            i += 1;
         }
         b
     }
@@ -34,7 +34,7 @@ fn main() -> i32 {
     let mut i = 0;
     while i < 20 {
         @dbg(fib(i));
-        i = i + 1;
+        i += 1;
     }
 
     // Return fib(10) = 55

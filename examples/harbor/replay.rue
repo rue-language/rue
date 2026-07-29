@@ -55,7 +55,7 @@ fn inventory_take(borrow scenario: model.Scenario, inout snapshot: Snapshot, loc
     let index = inventory_index(borrow scenario, location, cargo);
     let current = snapshot.inventory.get_or(index, 0);
     if quantity > current {
-        snapshot.underflows = snapshot.underflows + 1;
+        snapshot.underflows += 1;
         snapshot.inventory.set(index, 0);
     } else { snapshot.inventory.set(index, current - quantity); }
 }
@@ -80,7 +80,7 @@ fn new_snapshot(borrow scenario: model.Scenario) -> Snapshot {
         let demand = scenario.demands.get_or(i, model.empty_demand());
         demand_remaining.push(demand.quantity);
         demand_delivered.push(0);
-        i = i + 1;
+        i += 1;
     }
     Snapshot {
         inventory: inventory, transit: transit, supplied: supplied, produced: produced,
@@ -144,8 +144,8 @@ pub fn reduce(borrow scenario: model.Scenario, borrow log: state.Events) -> Snap
         } else if event.tag == state.EVENT_EXPIRED() && event.cargo < snapshot.expired.len() {
             snapshot.expired.set(event.cargo, add(snapshot.expired.get_or(event.cargo, 0), event.quantity));
         }
-        snapshot.events = snapshot.events + 1;
-        i = i + 1;
+        snapshot.events += 1;
+        i += 1;
     }
     snapshot
 }
@@ -156,7 +156,7 @@ fn array_mismatches(borrow a: U64s, borrow b: U64s) -> u64 {
     let mut i: u64 = 0;
     while i < n {
         if a.get_or(i, 18446744073709551615) != b.get_or(i, 18446744073709551615) { mismatches = mismatches + 1; }
-        i = i + 1;
+        i += 1;
     }
     mismatches
 }
@@ -165,8 +165,8 @@ pub fn audit(borrow scenario: model.Scenario, borrow sim: state.State) -> Audit 
     let snapshot = reduce(borrow scenario, borrow sim.log);
     let inventory_mismatches = array_mismatches(borrow snapshot.inventory, borrow sim.inventory);
     let mut cargo_mismatches = array_mismatches(borrow snapshot.transit, borrow sim.in_transit);
-    cargo_mismatches = cargo_mismatches + array_mismatches(borrow snapshot.delivered, borrow sim.delivered);
-    cargo_mismatches = cargo_mismatches + array_mismatches(borrow snapshot.expired, borrow sim.expired);
+    cargo_mismatches += array_mismatches(borrow snapshot.delivered, borrow sim.delivered);
+    cargo_mismatches += array_mismatches(borrow snapshot.expired, borrow sim.expired);
     // Source metrics include capacity-rejected source units; replay sees those
     // in separate expired events, so accepted + rejected is compared here.
     let mut i: u64 = 0;
@@ -174,7 +174,7 @@ pub fn audit(borrow scenario: model.Scenario, borrow sim: state.State) -> Audit 
         let replay_source = add(add(snapshot.supplied.get_or(i, 0), snapshot.produced.get_or(i, 0)), snapshot.expired.get_or(i, 0));
         let state_source = add(sim.supplied.get_or(i, 0), sim.produced.get_or(i, 0));
         if replay_source != state_source { cargo_mismatches = cargo_mismatches + 1; }
-        i = i + 1;
+        i += 1;
     }
     let demand_mismatches = array_mismatches(borrow snapshot.demand_remaining, borrow sim.demand_remaining)
         + array_mismatches(borrow snapshot.demand_delivered, borrow sim.demand_delivered);

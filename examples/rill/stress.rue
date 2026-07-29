@@ -37,7 +37,7 @@ pub fn generate(count: u64) -> StrBuf {
     let mut i: u64 = 0;
     while i < count {
         append_function(inout out, i, count);
-        i = i + 1;
+        i += 1;
     }
     out.push_str("fn main() {\n");
     out.push_str("  let answer = step0(0);\n");

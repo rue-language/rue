@@ -63,7 +63,7 @@ fn observe_entities(inout out: metric.Metric, borrow world: model.World) {
         metric.observe(inout out, entity_projection(borrow world, i), (i % 11) + 1);
         metric.warn(inout out, item.alive && (item.x < 0 || item.y < 0 ||
             @intCast(item.x) >= world.width || @intCast(item.y) >= world.height));
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -73,7 +73,7 @@ fn observe_tiles(inout out: metric.Metric, borrow world: model.World) {
         let item = world.tiles.get_or(i, model.empty_tile());
         metric.observe(inout out, tile_projection(borrow world, i), (i % 13) + 1);
         metric.warn(inout out, item.x >= world.width || item.y >= world.height);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -82,18 +82,18 @@ fn observe_timeline(inout out: metric.Metric, borrow world: model.World) {
     while i < world.events.len() {
         metric.observe(inout out, event_projection(borrow world, i), (i % 5) + 1);
         metric.warn(inout out, world.events.get_or(i, model.empty_event()).tick > world.tick);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < world.commands.len() {
         metric.observe(inout out, command_projection(borrow world, i), (i % 7) + 1);
         metric.warn(inout out, world.commands.get_or(i, model.empty_command()).tick > world.tick);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < world.snapshots.len() {
         metric.observe(inout out, snapshot_projection(borrow world, i), i + 1);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -108,9 +108,9 @@ fn observe_pairs(inout out: metric.Metric, borrow world: model.World) {
             let dy = if left.y > right.y { left.y - right.y } else { right.y - left.y };
             metric.observe(inout out, @intCast(dx + dy) +
                 left.faction * 3 + right.faction * 5 + MODE(), i + j + 1);
-            j = j + 1;
+            j += 1;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -125,17 +125,17 @@ fn observe_factions(inout out: metric.Metric, borrow world: model.World) {
         while i < world.entities.len() {
             let entity = world.entities.get_or(i, model.empty_entity());
             if entity.faction == faction && entity.alive {
-                agents = agents + 1;
-                health = health + entity.health;
-                energy = energy + entity.energy;
-                inventory = inventory + entity.inventory;
+                agents += 1;
+                health += entity.health;
+                energy += entity.energy;
+                inventory += entity.inventory;
             }
-            i = i + 1;
+            i += 1;
         }
         let projection = agents * (MODE() % 11 + 1) + health * 3 +
             energy * 5 + inventory * 7 + faction;
         metric.observe(inout out, projection, faction + MODE() % 5 + 1);
-        faction = faction + 1;
+        faction += 1;
     }
 }
 
@@ -150,17 +150,17 @@ fn observe_regions(inout out: metric.Metric, borrow world: model.World) {
         while i < world.tiles.len() {
             let tile = world.tiles.get_or(i, model.empty_tile());
             if tile.region == region {
-                tiles = tiles + 1;
+                tiles += 1;
                 if tile.walkable { walkable = walkable + 1; }
-                resources = resources + tile.resource;
-                elevation = elevation + tile.height;
+                resources += tile.resource;
+                elevation += tile.height;
             }
-            i = i + 1;
+            i += 1;
         }
         let projection = tiles * (MODE() % 13 + 1) + walkable * 3 +
             resources * 5 + elevation * 7 + region;
         metric.observe(inout out, projection, region % 7 + 1);
-        region = region + 1;
+        region += 1;
     }
 }
 

@@ -54,7 +54,7 @@ pub fn Deque(comptime T: type) -> type {
                 // `cap > 0` here whenever `count > 0`, so no divide-by-zero.
                 let idx = (self.head + i) % self.cap;
                 nb.push(self.buf.get_or(idx, self.filler));
-                i = i + 1;
+                i += 1;
             }
             while nb.len() < new_cap {
                 nb.push(self.filler);
@@ -78,7 +78,7 @@ pub fn Deque(comptime T: type) -> type {
             self._ensure_room();
             let idx = (self.head + self.count) % self.cap;
             self.buf.set(idx, x);
-            self.count = self.count + 1;
+            self.count += 1;
         }
 
         // Prepend `x` at the front.
@@ -86,7 +86,7 @@ pub fn Deque(comptime T: type) -> type {
             self._ensure_room();
             self.head = (self.head + self.cap - 1) % self.cap;
             self.buf.set(self.head, x);
-            self.count = self.count + 1;
+            self.count += 1;
         }
 
         // Remove and return the front element, or `None` when empty.
@@ -97,7 +97,7 @@ pub fn Deque(comptime T: type) -> type {
             } else {
                 let v = self.buf.get_or(self.head, self.filler);
                 self.head = (self.head + 1) % self.cap;
-                self.count = self.count - 1;
+                self.count -= 1;
                 O.Some(v)
             }
         }
@@ -108,7 +108,7 @@ pub fn Deque(comptime T: type) -> type {
             if self.count == 0 {
                 O.None
             } else {
-                self.count = self.count - 1;
+                self.count -= 1;
                 let idx = (self.head + self.count) % self.cap;
                 O.Some(self.buf.get_or(idx, self.filler))
             }

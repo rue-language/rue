@@ -79,18 +79,18 @@ pub fn audit(borrow workflow: model.Workflow, borrow run: state.Run) -> Audit {
         }
         digest = mix(digest, event.kind); digest = mix(digest, event.time);
         digest = mix(digest, event.pool); digest = mix(digest, event.cpu); digest = mix(digest, event.memory);
-        i = i + 1;
+        i += 1;
     }
     let mut terminal_active: u64 = 0;
     i = 0;
     while i < count {
-        terminal_active = terminal_active + active_slots.get_or(i, 0);
-        terminal_active = terminal_active + active_cpu.get_or(i, 0);
-        terminal_active = terminal_active + active_memory.get_or(i, 0);
+        terminal_active += active_slots.get_or(i, 0);
+        terminal_active += active_cpu.get_or(i, 0);
+        terminal_active += active_memory.get_or(i, 0);
         digest = mix(digest, maximum_slots.get_or(i, 0));
         digest = mix(digest, maximum_cpu.get_or(i, 0));
         digest = mix(digest, maximum_memory.get_or(i, 0));
-        i = i + 1;
+        i += 1;
     }
     let ok = underflows == 0 && slot_violations == 0 && cpu_violations == 0 &&
         memory_violations == 0 && terminal_active == 0;
@@ -112,7 +112,7 @@ pub fn verify(borrow workflow: model.Workflow, borrow audit: Audit) -> bool {
         if audit.maximum_slots.get_or(i, 0) > pool.slots { return false; }
         if audit.maximum_cpu.get_or(i, 0) > pool.cpu { return false; }
         if audit.maximum_memory.get_or(i, 0) > pool.memory { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }

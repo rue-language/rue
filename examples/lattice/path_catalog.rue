@@ -26,7 +26,7 @@ fn zeroes(count: u64) -> model.U64s {
 fn saturating_add(left: u64, right: u64, inout saturated: u64) -> u64 {
     let sum = @wrapping_add(left, right);
     if sum < left || sum < right {
-        saturated = saturated + 1;
+        saturated += 1;
         18446744073709551615
     } else { sum }
 }
@@ -35,7 +35,7 @@ fn saturating_multiply(left: u64, right: u64, inout saturated: u64) -> u64 {
     if left == 0 || right == 0 { return 0; }
     let product = @wrapping_mul(left, right);
     if product / left != right {
-        saturated = saturated + 1;
+        saturated += 1;
         18446744073709551615
     } else { product }
 }
@@ -56,19 +56,19 @@ pub fn compute(borrow workflow: model.Workflow) -> Catalog {
         while edge_index < workflow.edges.len() {
             let edge = workflow.edges.get_or(edge_index, model.empty_edge());
             if edge.after == task {
-                predecessors = predecessors + 1;
+                predecessors += 1;
                 paths = saturating_add(paths, paths_from_roots.get_or(edge.before, 0), inout saturated_additions);
             }
-            edge_index = edge_index + 1;
+            edge_index += 1;
         }
         if predecessors == 0 { paths = 1; }
         paths_from_roots.set(task, paths);
-        position = position + 1;
+        position += 1;
     }
 
     position = order.tasks.len();
     while position > 0 {
-        position = position - 1;
+        position -= 1;
         let task = order.tasks.get_or(position, model.NONE());
         let mut paths: u64 = 0;
         let mut successors: u64 = 0;
@@ -76,10 +76,10 @@ pub fn compute(borrow workflow: model.Workflow) -> Catalog {
         while edge_index < workflow.edges.len() {
             let edge = workflow.edges.get_or(edge_index, model.empty_edge());
             if edge.before == task {
-                successors = successors + 1;
+                successors += 1;
                 paths = saturating_add(paths, paths_to_leaves.get_or(edge.after, 0), inout saturated_additions);
             }
-            edge_index = edge_index + 1;
+            edge_index += 1;
         }
         if successors == 0 { paths = 1; }
         paths_to_leaves.set(task, paths);
@@ -100,14 +100,14 @@ pub fn compute(borrow workflow: model.Workflow) -> Catalog {
         paths_through_task.set(i, through);
         if model.dependency_count(borrow workflow, i) == 0 { roots = roots + 1; }
         if model.dependent_count(borrow workflow, i) == 0 {
-            leaves = leaves + 1;
+            leaves += 1;
             total_paths = saturating_add(total_paths, from, inout saturated_additions);
         }
         if maximum_through_task == model.NONE() || through > maximum_through {
             maximum_through = through; maximum_through_task = i;
         }
         digest = mix(digest, from); digest = mix(digest, to); digest = mix(digest, through);
-        i = i + 1;
+        i += 1;
     }
     Catalog {
         paths_from_roots: paths_from_roots, paths_to_leaves: paths_to_leaves,

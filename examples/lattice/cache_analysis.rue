@@ -48,24 +48,24 @@ pub fn compute(borrow workflow: model.Workflow, borrow run: state.Run) -> Analys
         let task = workflow.tasks.get_or(i, model.empty_task());
         let status = run.status.get_or(i, state.FAILED());
         if task.cacheable {
-            declared_cacheable = declared_cacheable + 1;
+            declared_cacheable += 1;
             add(inout cacheable_by_pool, task.pool);
             if status == state.CACHED() {
-                observed_hits = observed_hits + 1;
+                observed_hits += 1;
                 add(inout hits_by_pool, task.pool);
-                saved_duration = saved_duration + task.duration;
-                saved_cpu_ticks = saved_cpu_ticks + task.duration * task.cpu;
-                saved_memory_ticks = saved_memory_ticks + task.duration * task.memory;
+                saved_duration += task.duration;
+                saved_cpu_ticks += task.duration * task.cpu;
+                saved_memory_ticks += task.duration * task.memory;
             } else {
-                observed_misses = observed_misses + 1;
+                observed_misses += 1;
                 add(inout misses_by_pool, task.pool);
             }
         } else if status == state.CACHED() {
-            invalid_hits = invalid_hits + 1;
+            invalid_hits += 1;
         }
         digest = mix(digest, i); digest = mix(digest, status);
         digest = mix(digest, if task.cacheable { 1 } else { 0 });
-        i = i + 1;
+        i += 1;
     }
     let hit_rate_millis = if declared_cacheable == 0 { 0 }
         else { (observed_hits * 1000) / declared_cacheable };

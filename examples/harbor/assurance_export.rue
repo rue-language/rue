@@ -48,7 +48,7 @@ fn route_rows(inout out: StrBuf, borrow audit: route_audit.Audit) {
         number(inout out, item.endpoint_errors); comma(inout out); number(inout out, item.continuity_errors); comma(inout out);
         number(inout out, item.direction_errors); comma(inout out); number(inout out, item.capacity_errors); comma(inout out);
         number(inout out, item.weight_errors); comma(inout out); number(inout out, item.cycle_errors); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -69,7 +69,7 @@ fn contingency_rows(inout out: StrBuf, borrow plan: contingency.Plan) {
         if item.cost == routing.INF() { text.append_literal(inout out, "unreachable"); } else { number(inout out, item.cost); }
         comma(inout out); number(inout out, item.travel); comma(inout out); number(inout out, item.distance); comma(inout out);
         number(inout out, item.hops); comma(inout out); number(inout out, item.bottleneck); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -95,7 +95,7 @@ fn comparison_rows(inout out: StrBuf, borrow comparison: scenario_compare.Compar
         number(inout out, item.during_total); comma(inout out); number(inout out, item.added_weight); comma(inout out);
         number(inout out, item.largest_increase); comma(inout out); number(inout out, item.largest_from); comma(inout out);
         number(inout out, item.largest_to); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -113,7 +113,7 @@ fn risk_rows(inout out: StrBuf, borrow risks: risk_register.Register) {
         number(inout out, item.likelihood); comma(inout out); number(inout out, item.exposure); comma(inout out);
         number(inout out, item.score); comma(inout out); number(inout out, item.evidence); comma(inout out);
         number(inout out, item.mitigation); newline(inout out);
-        i = i + 1;
+        i += 1;
     }
 }
 

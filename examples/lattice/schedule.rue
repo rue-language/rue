@@ -9,7 +9,7 @@ fn dependencies_done(borrow workflow: model.Workflow, borrow run: state.Run, tas
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         if edge.after == task && !state.successful(run.status.get_or(edge.before, state.FAILED())) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -19,7 +19,7 @@ fn dependency_failed(borrow workflow: model.Workflow, borrow run: state.Run, tas
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         if edge.after == task && run.status.get_or(edge.before, state.FAILED()) == state.FAILED() { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -36,7 +36,7 @@ fn pool_usage(borrow workflow: model.Workflow, borrow run: state.Run, pool: u64,
                 else { value = value + task.memory; }
             }
         }
-        i = i + 1;
+        i += 1;
     }
     value
 }
@@ -77,19 +77,19 @@ fn complete(inout run: state.Run, borrow workflow: model.Workflow, time: u64) {
                 if attempt <= task.retries {
                     run.status.set(i, state.PENDING());
                     run.next_ready.set(i, time + attempt);
-                    run.retries = run.retries + 1;
+                    run.retries += 1;
                     emit(inout run, state.EVENT_RETRY(), time, i, task.pool, attempt, task.cpu, task.memory);
                 } else {
                     run.status.set(i, state.FAILED());
-                    run.failed = run.failed + 1;
+                    run.failed += 1;
                 }
             } else {
                 run.status.set(i, state.SUCCEEDED());
-                run.succeeded = run.succeeded + 1;
+                run.succeeded += 1;
                 emit(inout run, state.EVENT_SUCCESS(), time, i, task.pool, attempt, task.cpu, task.memory);
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -102,11 +102,11 @@ fn block_failed_dependents(inout run: state.Run, borrow workflow: model.Workflow
             if run.status.get_or(i, state.FAILED()) == state.PENDING() && dependency_failed(borrow workflow, borrow run, i) {
                 let task = workflow.tasks.get_or(i, model.empty_task());
                 run.status.set(i, state.FAILED());
-                run.failed = run.failed + 1;
+                run.failed += 1;
                 emit(inout run, state.EVENT_BLOCKED(), time, i, task.pool, 0, task.cpu, task.memory);
                 changed = true;
             }
-            i = i + 1;
+            i += 1;
         }
     }
 }
@@ -131,7 +131,7 @@ fn pick_ready(borrow workflow: model.Workflow, borrow run: state.Run, time: u64)
             better(borrow workflow, i, best) {
             best = i;
         }
-        i = i + 1;
+        i += 1;
     }
     best
 }
@@ -140,7 +140,7 @@ fn has_running(borrow run: state.Run) -> bool {
     let mut i: u64 = 0;
     while i < run.status.len() {
         if run.status.get_or(i, state.FAILED()) == state.RUNNING() { return true; }
-        i = i + 1;
+        i += 1;
     }
     false
 }
@@ -149,7 +149,7 @@ fn all_terminal(borrow run: state.Run) -> bool {
     let mut i: u64 = 0;
     while i < run.status.len() {
         if !state.terminal(run.status.get_or(i, state.FAILED())) { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }
@@ -161,7 +161,7 @@ fn count_waits(inout run: state.Run, borrow workflow: model.Workflow, time: u64)
             if !dependencies_done(borrow workflow, borrow run, i) { run.dependency_waits = run.dependency_waits + 1; }
             else if !fits(borrow workflow, borrow run, i) { run.resource_waits = run.resource_waits + 1; }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -180,7 +180,7 @@ pub fn run(borrow workflow: model.Workflow, cache_seed: u64) -> state.Run {
                 result.status.set(task_index, state.CACHED());
                 result.starts.set(task_index, time);
                 result.ends.set(task_index, time);
-                result.cached = result.cached + 1;
+                result.cached += 1;
                 emit(inout result, state.EVENT_CACHE(), time, task_index, task.pool, 0, task.cpu, task.memory);
             } else {
                 let attempt = result.attempts.get_or(task_index, 0) + 1;
@@ -188,7 +188,7 @@ pub fn run(borrow workflow: model.Workflow, cache_seed: u64) -> state.Run {
                 result.status.set(task_index, state.RUNNING());
                 if result.starts.get_or(task_index, model.NONE()) == model.NONE() { result.starts.set(task_index, time); }
                 result.ends.set(task_index, time + task.duration);
-                result.starts_count = result.starts_count + 1;
+                result.starts_count += 1;
                 emit(inout result, state.EVENT_START(), time, task_index, task.pool, attempt, task.cpu, task.memory);
                 started = true;
             }

@@ -34,7 +34,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
         text.append_u64(inout out, run.attempts.get_or(i, 0)); out.push(124);
         format.append_optional_u64(inout out, run.starts.get_or(i, model.NONE())); out.push(124);
         format.append_optional_u64(inout out, run.ends.get_or(i, model.NONE())); text.append_literal(inout out, "|\n");
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "\n## Scheduler counters\n\n| Counter | Value |\n|---|---:|\n");
     text.append_literal(inout out, "| Succeeded |"); text.append_u64(inout out, run.succeeded); text.append_literal(inout out, "|\n");

@@ -64,7 +64,7 @@ pub fn audit(borrow workflow: model.Workflow, borrow run: state.Run) -> Audit {
                 status.set(event.task, state.FAILED()); failed = failed + 1;
             } else { transition_errors = transition_errors + 1; }
         }
-        i = i + 1;
+        i += 1;
     }
     let mut terminal_mismatches: u64 = 0;
     i = 0;
@@ -74,9 +74,9 @@ pub fn audit(borrow workflow: model.Workflow, borrow run: state.Run) -> Audit {
         if expected != actual { terminal_mismatches = terminal_mismatches + 1; }
         if actual == state.FAILED() && expected == state.FAILED() {
             // A failed task may come from exhaustion rather than BLOCKED.
-            failed = failed + 1;
+            failed += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     let ok = ordering_errors == 0 && transition_errors == 0 &&
         attempt_errors == 0 && terminal_mismatches == 0;

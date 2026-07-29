@@ -15,7 +15,7 @@ pub fn build(borrow world: model.World) -> Schedule {
     let mut i: u64 = 0;
     while i < world.entities.len() {
         if world.entities.get_or(i, model.empty_entity()).alive { out.order.push(i); }
-        i = i + 1;
+        i += 1;
     }
     i = 1;
     while i < out.order.len() {
@@ -41,7 +41,7 @@ pub fn build(borrow world: model.World) -> Schedule {
         let current = priority(borrow current_entity);
         if i > 0 && current < last { out.valid = false; return out; }
         last = current; out.digest = metric.mix(out.digest, index);
-        i = i + 1;
+        i += 1;
     }
     out.valid = out.order.len() == model.alive_count(borrow world);
     out

@@ -38,7 +38,7 @@ fn blank_inventory() -> Inventory {
 fn line_heading(borrow line: StrBuf) -> bool {
     let mut i: u64 = 0;
     while i < line.len() && i < 6 && text.byte_of(borrow line, i) == 35 {
-        i = i + 1;
+        i += 1;
     }
     i > 0 && i < line.len() && text.byte_of(borrow line, i) == 32
 }
@@ -59,7 +59,7 @@ fn line_list_item(borrow line: StrBuf) -> bool {
     }
     let mut i: u64 = 0;
     while i < line.len() && text.is_digit(text.byte_of(borrow line, i)) {
-        i = i + 1;
+        i += 1;
     }
     i > 0 && i + 1 < line.len() && text.byte_of(borrow line, i) == 46 && text.byte_of(borrow line, i + 1) == 32
 }
@@ -77,11 +77,11 @@ fn line_rule(borrow line: StrBuf) -> bool {
     while i < line.len() {
         let b = text.byte_of(borrow line, i);
         if b == marker {
-            count = count + 1;
+            count += 1;
         } else if !text.is_space(b) {
             return false;
         }
-        i = i + 1;
+        i += 1;
     }
     count >= 3
 }
@@ -91,22 +91,22 @@ fn links_on_line(borrow line: StrBuf) -> u64 {
     let mut i: u64 = 0;
     while i < line.len() {
         if text.byte_of(borrow line, i) == 92 {
-            i = i + 2;
+            i += 2;
         } else if text.byte_of(borrow line, i) == 91 {
             let close = text.find_byte(borrow line, 93, i + 1);
             if close + 1 < line.len() && text.byte_of(borrow line, close + 1) == 40 {
                 let target_close = text.find_byte(borrow line, 41, close + 2);
                 if target_close < line.len() {
-                    count = count + 1;
+                    count += 1;
                     i = target_close + 1;
                 } else {
-                    i = i + 1;
+                    i += 1;
                 }
             } else {
-                i = i + 1;
+                i += 1;
             }
         } else {
-            i = i + 1;
+            i += 1;
         }
     }
     count
@@ -119,13 +119,13 @@ fn words_on_line(borrow line: StrBuf) -> u64 {
     while i < line.len() {
         if text.is_alnum(text.byte_of(borrow line, i)) {
             if !inside {
-                count = count + 1;
+                count += 1;
                 inside = true;
             }
         } else {
             inside = false;
         }
-        i = i + 1;
+        i += 1;
     }
     count
 }
@@ -153,34 +153,34 @@ pub fn scan(borrow source: StrBuf) -> Inventory {
     let mut previous_had_pipes = false;
     while offset < source.len() {
         let line = text.line_at(borrow source, offset);
-        result.lines = result.lines + 1;
+        result.lines += 1;
         if line_fence(borrow line) {
             if in_fence {
                 in_fence = false;
             } else {
                 in_fence = true;
-                result.fences = result.fences + 1;
+                result.fences += 1;
             }
         } else if !in_fence {
             if line_heading(borrow line) {
-                result.headings = result.headings + 1;
+                result.headings += 1;
             }
             if line_list_item(borrow line) {
-                result.list_items = result.list_items + 1;
+                result.list_items += 1;
             }
             if line.len() > 0 && text.byte_of(borrow line, 0) == 62 {
-                result.quotes = result.quotes + 1;
+                result.quotes += 1;
             }
             if line_rule(borrow line) {
-                result.rules = result.rules + 1;
+                result.rules += 1;
             }
             let pipes = text.count_byte(borrow line, 124) > 0;
             if previous_had_pipes && pipes && text.count_byte(borrow line, 45) >= 3 {
-                result.tables = result.tables + 1;
+                result.tables += 1;
             }
             previous_had_pipes = pipes;
-            result.links = result.links + links_on_line(borrow line);
-            result.words = result.words + words_on_line(borrow line);
+            result.links += links_on_line(borrow line);
+            result.words += words_on_line(borrow line);
         }
         offset = text.next_line(borrow source, offset);
     }
@@ -194,9 +194,9 @@ fn actual_blocks(borrow site: model.Site, page_index: u64, tag: u64) -> u64 {
     let mut i = page.block_start;
     while i < page.block_start + page.block_count {
         if site.blocks.get_or(i, model.Block { tag: 0, text_id: 0, level: 0, first: 0, count: 0, line: 0, aux: 0 }).tag == tag {
-            count = count + 1;
+            count += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     count
 }

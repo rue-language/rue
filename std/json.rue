@@ -47,7 +47,7 @@ fn skip_space(borrow input: StrBuf, inout at: u64) {
     while at < input.len() {
         let b = byte(borrow input, at);
         if b == 32 || b == 9 || b == 10 || b == 13 {
-            at = at + 1;
+            at += 1;
         } else {
             return;
         }
@@ -69,8 +69,8 @@ fn parse_literal(
         if byte(borrow input, at) != expected[i] {
             return R.Err(ParseError.UnexpectedByte(at));
         }
-        at = at + 1;
-        i = i + 1;
+        at += 1;
+        i += 1;
     }
     R.Ok(value)
 }
@@ -101,8 +101,8 @@ fn parse_hex4(borrow input: StrBuf, inout at: u64) -> result.Result(u64, ParseEr
             return R.Err(ParseError.InvalidUnicode(start));
         }
         value = value * 16 + @intCast(digit);
-        at = at + 1;
-        i = i + 1;
+        at += 1;
+        i += 1;
     }
     R.Ok(value)
 }
@@ -144,7 +144,7 @@ fn parse_unicode_escape(
         if at + 2 > input.len() || byte(borrow input, at) != 92 || byte(borrow input, at + 1) != 117 {
             return R.Err(ParseError.InvalidUnicode(position));
         }
-        at = at + 2;
+        at += 2;
         let second = match parse_hex4(borrow input, inout at) {
             result.Result(u64, ParseError).Ok(v) => v,
             result.Result(u64, ParseError).Err(e) => return R.Err(e),
@@ -210,14 +210,14 @@ fn copy_utf8(
         if !continuation(byte(borrow input, at + i)) {
             return R.Err(ParseError.InvalidUnicode(at + i));
         }
-        i = i + 1;
+        i += 1;
     }
     out.push(lead);
     i = 0;
     while i < needed {
         out.push(byte(borrow input, at));
-        at = at + 1;
-        i = i + 1;
+        at += 1;
+        i += 1;
     }
     R.Ok(())
 }
@@ -228,11 +228,11 @@ fn parse_string(borrow input: StrBuf, inout at: u64) -> StringResult {
     if at >= input.len() || byte(borrow input, at) != 34 {
         return R.Err(ParseError.UnexpectedByte(at));
     }
-    at = at + 1;
+    at += 1;
     let mut out = StrBuf.new();
     while at < input.len() {
         let b = byte(borrow input, at);
-        at = at + 1;
+        at += 1;
         if b == 34 {
             return R.Ok(out);
         }
@@ -252,7 +252,7 @@ fn parse_string(borrow input: StrBuf, inout at: u64) -> StringResult {
             }
             let escape_at = at - 1;
             let e = byte(borrow input, at);
-            at = at + 1;
+            at += 1;
             if e == 34 || e == 92 || e == 47 {
                 out.push(e);
             } else if e == 98 {
@@ -281,7 +281,7 @@ fn parse_string(borrow input: StrBuf, inout at: u64) -> StringResult {
 fn consume_digits(borrow input: StrBuf, inout at: u64) -> u64 {
     let start = at;
     while at < input.len() && is_digit(byte(borrow input, at)) {
-        at = at + 1;
+        at += 1;
     }
     at - start
 }
@@ -290,13 +290,13 @@ fn parse_number(borrow input: StrBuf, inout at: u64) -> ParseResult {
     let R = ParseResult;
     let start = at;
     if byte(borrow input, at) == 45 {
-        at = at + 1;
+        at += 1;
         if at >= input.len() {
             return R.Err(ParseError.InvalidNumber(start));
         }
     }
     if byte(borrow input, at) == 48 {
-        at = at + 1;
+        at += 1;
         if at < input.len() && is_digit(byte(borrow input, at)) {
             return R.Err(ParseError.InvalidNumber(at));
         }
@@ -306,7 +306,7 @@ fn parse_number(borrow input: StrBuf, inout at: u64) -> ParseResult {
         return R.Err(ParseError.InvalidNumber(at));
     }
     if at < input.len() && byte(borrow input, at) == 46 {
-        at = at + 1;
+        at += 1;
         if consume_digits(borrow input, inout at) == 0 {
             return R.Err(ParseError.InvalidNumber(at));
         }
@@ -314,11 +314,11 @@ fn parse_number(borrow input: StrBuf, inout at: u64) -> ParseResult {
     if at < input.len() {
         let e = byte(borrow input, at);
         if e == 101 || e == 69 {
-            at = at + 1;
+            at += 1;
             if at < input.len() {
                 let sign = byte(borrow input, at);
                 if sign == 43 || sign == 45 {
-                    at = at + 1;
+                    at += 1;
                 }
             }
             if consume_digits(borrow input, inout at) == 0 {
@@ -333,10 +333,10 @@ fn parse_array(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult {
     let R = ParseResult;
     let Items = arraybuf.ArrayBuf(Json);
     let mut items = Items.new();
-    at = at + 1;
+    at += 1;
     skip_space(borrow input, inout at);
     if at < input.len() && byte(borrow input, at) == 93 {
-        at = at + 1;
+        at += 1;
         return R.Ok(Json.Array(items));
     }
     loop {
@@ -350,7 +350,7 @@ fn parse_array(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult {
             return R.Err(ParseError.UnexpectedEnd(at));
         }
         let delimiter = byte(borrow input, at);
-        at = at + 1;
+        at += 1;
         if delimiter == 93 {
             return R.Ok(Json.Array(items));
         }
@@ -367,10 +367,10 @@ fn parse_object(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult 
     let Values = arraybuf.ArrayBuf(Json);
     let mut keys = Keys.new();
     let mut values = Values.new();
-    at = at + 1;
+    at += 1;
     skip_space(borrow input, inout at);
     if at < input.len() && byte(borrow input, at) == 125 {
-        at = at + 1;
+        at += 1;
         return R.Ok(Json.Object(Object { keys: keys, values: values }));
     }
     loop {
@@ -388,7 +388,7 @@ fn parse_object(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult 
         if byte(borrow input, at) != 58 {
             return R.Err(ParseError.UnexpectedByte(at));
         }
-        at = at + 1;
+        at += 1;
         let value = match parse_value(borrow input, inout at, depth + 1) {
             ParseResult.Ok(v) => v,
             ParseResult.Err(e) => return R.Err(e),
@@ -400,7 +400,7 @@ fn parse_object(borrow input: StrBuf, inout at: u64, depth: u64) -> ParseResult 
             return R.Err(ParseError.UnexpectedEnd(at));
         }
         let delimiter = byte(borrow input, at);
-        at = at + 1;
+        at += 1;
         if delimiter == 125 {
             return R.Ok(Json.Object(Object { keys: keys, values: values }));
         }
@@ -490,7 +490,7 @@ fn write_string(value: StrBuf, inout out: StrBuf) {
         } else {
             out.push(b);
         }
-        i = i + 1;
+        i += 1;
     }
     out.push(34);
 }

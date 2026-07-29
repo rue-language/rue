@@ -53,7 +53,7 @@ fn tokenize(input: StrBuf, inout tokens: std.arraybuf.ArrayBuf(Token)) -> LexErr
         let byte = input[index];
 
         if is_ascii_whitespace(byte) {
-            index = index + 1;
+            index += 1;
         } else if is_ascii_digit(byte) {
             let start = index;
             let mut value: i64 = 0;
@@ -70,28 +70,28 @@ fn tokenize(input: StrBuf, inout tokens: std.arraybuf.ArrayBuf(Token)) -> LexErr
                 }
 
                 value = value * 10 + digit;
-                index = index + 1;
+                index += 1;
             }
 
             tokens.push(Token.Number(value, start + 1));
         } else if byte == 43 {
             tokens.push(Token.Plus(index + 1));
-            index = index + 1;
+            index += 1;
         } else if byte == 45 {
             tokens.push(Token.Minus(index + 1));
-            index = index + 1;
+            index += 1;
         } else if byte == 42 {
             tokens.push(Token.Star(index + 1));
-            index = index + 1;
+            index += 1;
         } else if byte == 47 {
             tokens.push(Token.Slash(index + 1));
-            index = index + 1;
+            index += 1;
         } else if byte == 40 {
             tokens.push(Token.LParen(index + 1));
-            index = index + 1;
+            index += 1;
         } else if byte == 41 {
             tokens.push(Token.RParen(index + 1));
-            index = index + 1;
+            index += 1;
         } else {
             return LexError.UnexpectedByte(index + 1, byte);
         }
@@ -149,17 +149,17 @@ struct Parser {
 
         match token {
             Token.Number(value, _position) => {
-                self.index = self.index + 1;
+                self.index += 1;
                 OptInt.Some(value)
             },
             Token.LParen(_position) => {
-                self.index = self.index + 1;
+                self.index += 1;
                 let value = self.parse_expression()?;
                 let close = self.current();
 
                 match close {
                     Token.RParen(_close_position) => {
-                        self.index = self.index + 1;
+                        self.index += 1;
                         OptInt.Some(value)
                     },
                     _ => self.fail(ParseError.ExpectedRParen(token_position(close))),
@@ -176,17 +176,17 @@ struct Parser {
         loop {
             match self.current() {
                 Token.Star(_position) => {
-                    self.index = self.index + 1;
+                    self.index += 1;
                     let right = self.parse_primary()?;
-                    value = value * right;
+                    value *= right;
                 },
                 Token.Slash(position) => {
-                    self.index = self.index + 1;
+                    self.index += 1;
                     let right = self.parse_primary()?;
                     if right == 0 {
                         return self.fail(ParseError.DivisionByZero(position));
                     }
-                    value = value / right;
+                    value /= right;
                 },
                 _ => break,
             }
@@ -202,14 +202,14 @@ struct Parser {
         loop {
             match self.current() {
                 Token.Plus(_position) => {
-                    self.index = self.index + 1;
+                    self.index += 1;
                     let right = self.parse_product()?;
-                    value = value + right;
+                    value += right;
                 },
                 Token.Minus(_position) => {
-                    self.index = self.index + 1;
+                    self.index += 1;
                     let right = self.parse_product()?;
-                    value = value - right;
+                    value -= right;
                 },
                 _ => break,
             }

@@ -44,7 +44,7 @@ fn blanks(count: u64) -> CostCenters {
             index: i, events: 0, units: 0, distance: 0, direct_cost: 0,
             allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0,
         });
-        i = i + 1;
+        i += 1;
     }
     values
 }
@@ -55,7 +55,7 @@ fn add_event(inout centers: CostCenters, index: u64, borrow event: state.Event) 
         index: index, events: 0, units: 0, distance: 0, direct_cost: 0,
         allocated_cost: 0, cost_per_unit: 0, cost_per_distance: 0,
     });
-    item.events = item.events + 1;
+    item.events += 1;
     item.units = add(item.units, event.quantity);
     item.distance = add(item.distance, event.distance);
     item.direct_cost = add(item.direct_cost, event.cost);
@@ -97,7 +97,7 @@ pub fn summarize(borrow scenario: model.Scenario, borrow sim: state.State) -> Su
         add_event(inout demands, event.demand, borrow event);
         if event.tag < cost_by_tag.len() { cost_by_tag.set(event.tag, add(cost_by_tag.get_or(event.tag, 0), event.cost)); }
         total_direct_cost = add(total_direct_cost, event.cost);
-        i = i + 1;
+        i += 1;
     }
     let overhead = if sim.total_cost > total_direct_cost { sim.total_cost - total_direct_cost } else { 0 };
     let most_expensive_vehicle = finalize(inout vehicles, overhead);

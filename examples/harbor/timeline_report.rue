@@ -44,7 +44,7 @@ fn cargo_forecast(inout out: StrBuf, borrow scenario: model.Scenario, cargo: u64
         text.append_u64(inout out, value.cumulative_supply); out.push(44);
         text.append_u64(inout out, value.cumulative_demand); out.push(44);
         text.append_i64(inout out, value.net); out.push(10);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -59,7 +59,7 @@ pub fn render(borrow scenario: model.Scenario, borrow sim: state.State) -> StrBu
             arrivals: 0, repositions: 0, expired: 0, unmet: 0,
             outbound_units: 0, inbound_units: 0, cost: 0, distance: 0,
         }));
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < scenario.cargoes.len() { cargo_forecast(inout out, borrow scenario, i); i = i + 1; }

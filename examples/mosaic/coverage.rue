@@ -59,25 +59,25 @@ pub fn collect(borrow site: model.Site) -> Coverage {
         });
         block_kinds.set(block.tag);
         if block.tag == model.BLOCK_PARAGRAPH() {
-            value.paragraphs = value.paragraphs + 1;
+            value.paragraphs += 1;
         } else if block.tag == model.BLOCK_HEADING() {
-            value.headings = value.headings + 1;
+            value.headings += 1;
         } else if block.tag == model.BLOCK_CODE() {
-            value.code_blocks = value.code_blocks + 1;
+            value.code_blocks += 1;
         } else if block.tag == model.BLOCK_LIST() {
-            value.lists = value.lists + 1;
+            value.lists += 1;
         } else if block.tag == model.BLOCK_ITEM() {
-            value.list_items = value.list_items + 1;
+            value.list_items += 1;
         } else if block.tag == model.BLOCK_QUOTE() {
-            value.quotes = value.quotes + 1;
+            value.quotes += 1;
         } else if block.tag == model.BLOCK_RULE() {
-            value.rules = value.rules + 1;
+            value.rules += 1;
         } else if block.tag == model.BLOCK_TABLE() {
-            value.tables = value.tables + 1;
+            value.tables += 1;
         } else if block.tag == model.BLOCK_TABLE_ROW() {
-            value.table_rows = value.table_rows + 1;
+            value.table_rows += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < site.inlines.len() {
@@ -89,19 +89,19 @@ pub fn collect(borrow site: model.Site) -> Coverage {
         });
         inline_kinds.set(node.tag);
         if node.tag == model.INLINE_TEXT() {
-            value.text_inlines = value.text_inlines + 1;
+            value.text_inlines += 1;
         } else if node.tag == model.INLINE_EMPHASIS() {
-            value.emphasis = value.emphasis + 1;
+            value.emphasis += 1;
         } else if node.tag == model.INLINE_STRONG() {
-            value.strong = value.strong + 1;
+            value.strong += 1;
         } else if node.tag == model.INLINE_CODE() {
-            value.code_inlines = value.code_inlines + 1;
+            value.code_inlines += 1;
         } else if node.tag == model.INLINE_LINK() {
-            value.link_inlines = value.link_inlines + 1;
+            value.link_inlines += 1;
         } else if node.tag == model.INLINE_ESCAPE() {
-            value.escapes = value.escapes + 1;
+            value.escapes += 1;
         }
-        i = i + 1;
+        i += 1;
     }
     value.exercised_block_kinds = block_kinds.count();
     value.exercised_inline_kinds = inline_kinds.count();

@@ -14,7 +14,7 @@ pub struct Graph {
         let mut i: u64 = 0;
         while i < n {
             head.push(0 - 1);
-            i = i + 1;
+            i += 1;
         }
         Self { n: n, head: head, to: Ints.new(), weight: Ints.new(), next: Ints.new() }
     }

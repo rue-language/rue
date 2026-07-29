@@ -23,7 +23,7 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
             metric.observe(inout out, query.order_column, 13);
         }
         metric.warn(inout out, query.table >= database.tables.len());
-        i = i + 1;
+        i += 1;
     }
     metric.finish(inout out);
     out

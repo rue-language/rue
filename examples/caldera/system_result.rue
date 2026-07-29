@@ -6,7 +6,7 @@ pub fn new(system: u64) -> Result {
         energy: 0, digest: metric.mix(14695981039346656037, system), valid: false }
 }
 pub fn record(inout out: Result, eligible: bool, command: bool, value: u64) {
-    out.inspected = out.inspected + 1;
+    out.inspected += 1;
     if eligible { out.eligible = out.eligible + 1; }
     if command { out.commands = out.commands + 1; }
     out.energy = @wrapping_add(out.energy, value);

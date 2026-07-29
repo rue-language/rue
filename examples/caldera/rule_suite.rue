@@ -104,7 +104,7 @@ fn include(inout out: Summary, borrow first: result.Result, borrow second: resul
     out.rules = out.rules + 1; out.inspected = out.inspected + first.inspected;
     out.matches = out.matches + first.matches; out.actions = out.actions + first.actions;
     if first.digest != second.digest || first.benefit != second.benefit || !verified {
-        out.deterministic_mismatches = out.deterministic_mismatches + 1;
+        out.deterministic_mismatches += 1;
     }
     out.digest = metric.mix(out.digest, first.digest);
 }

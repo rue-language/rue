@@ -13,7 +13,7 @@ fn allowed(borrow b: Board, row: u64, col: u64, val: i64) -> bool {
     while i < 9 {
         if b.cells[row][i] == val { ok = false; }
         if b.cells[i][col] == val { ok = false; }
-        i = i + 1;
+        i += 1;
     }
     // 3x3 box.
     let box_r = (row / 3) * 3;
@@ -23,9 +23,9 @@ fn allowed(borrow b: Board, row: u64, col: u64, val: i64) -> bool {
         let mut c: u64 = 0;
         while c < 3 {
             if b.cells[box_r + r][box_c + c] == val { ok = false; }
-            c = c + 1;
+            c += 1;
         }
-        r = r + 1;
+        r += 1;
     }
     ok
 }
@@ -50,7 +50,7 @@ pub fn solve(inout b: Board, pos: u64) -> bool {
                     }
                     b.cells[row][col] = 0;
                 }
-                val = val + 1;
+                val += 1;
             }
             solved
         }
@@ -74,17 +74,17 @@ pub fn is_valid(borrow b: Board) -> bool {
         let mut col_prod: i64 = 1;
         let mut v: u64 = 0;
         while v < 9 {
-            row_sum = row_sum + b.cells[u][v];
-            col_sum = col_sum + b.cells[v][u];
-            row_prod = row_prod * b.cells[u][v];
-            col_prod = col_prod * b.cells[v][u];
-            v = v + 1;
+            row_sum += b.cells[u][v];
+            col_sum += b.cells[v][u];
+            row_prod *= b.cells[u][v];
+            col_prod *= b.cells[v][u];
+            v += 1;
         }
         if row_sum != 45 { ok = false; }
         if col_sum != 45 { ok = false; }
         if row_prod != 362880 { ok = false; }
         if col_prod != 362880 { ok = false; }
-        u = u + 1;
+        u += 1;
     }
     ok
 }

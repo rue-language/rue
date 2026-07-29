@@ -16,7 +16,7 @@ fn links(inout out: StrBuf, borrow workflow: model.Workflow, task: u64) {
             text.append_literal(inout out, "{\"spanId\":\""); text.append_u64(inout out, edge.before + 1);
             text.append_literal(inout out, "\"}"); emitted = emitted + 1;
         }
-        i = i + 1;
+        i += 1;
     }
     out.push(93);
 }
@@ -44,7 +44,7 @@ pub fn render(borrow workflow: model.Workflow, borrow run: state.Run) -> StrBuf 
             text.append_u64(inout out, run.attempts.get_or(i, 0)); text.append_literal(inout out, "\"}}],\"links\":");
             links(inout out, borrow workflow, i); out.push(125); emitted = emitted + 1;
         }
-        i = i + 1;
+        i += 1;
     }
     text.append_literal(inout out, "]}]}]}\n");
     out

@@ -57,7 +57,7 @@ fn normalize_word(borrow value: StrBuf, start: u64, end: u64) -> StrBuf {
         if text.is_alnum(b) {
             out.push(text.lowercase(b));
         }
-        i = i + 1;
+        i += 1;
     }
     out
 }
@@ -71,7 +71,7 @@ fn add_term(
     if word.len() < 2 || stop_word(borrow word) {
         return;
     }
-    index.total_tokens = index.total_tokens + 1;
+    index.total_tokens += 1;
     match lookup.get(borrow word) {
         OptU64.Some(id) => {
             let count = index.counts.get_or(id, 0);
@@ -113,7 +113,7 @@ fn scan_text(
             add_term(inout index, inout lookup, borrow word, page_index);
             inside = false;
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -146,10 +146,10 @@ pub fn build(borrow site: model.Site) -> Index {
                     let value = site.strings.copy(block.text_id);
                     scan_text(inout index, inout lookup, borrow value, page_index);
                 }
-                block_index = block_index + 1;
+                block_index += 1;
             }
         }
-        page_index = page_index + 1;
+        page_index += 1;
     }
     index
 }
@@ -164,14 +164,14 @@ fn ranked_ids(borrow index: Index) -> model.U64s {
     let mut i: u64 = 0;
     while i < index.terms.len() {
         keys.push(ranking_key(index.counts.get_or(i, 0), i));
-        i = i + 1;
+        i += 1;
     }
     std.sort.quicksort(u64, inout keys);
     let mut ids = model.U64s.new();
     i = 0;
     while i < keys.len() {
         ids.push(keys.get_or(i, 0) % 1000000);
-        i = i + 1;
+        i += 1;
     }
     ids
 }
@@ -192,7 +192,7 @@ pub fn append_top_json(borrow index: Index, limit: u64, inout out: StrBuf) {
         out.push_str(",\"count\":");
         out.push_str(@to_string(index.counts.get_or(id, 0)));
         out.push(125);
-        i = i + 1;
+        i += 1;
     }
     out.push(93);
 }

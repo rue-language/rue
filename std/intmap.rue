@@ -70,9 +70,9 @@ pub fn IntMap(comptime V: type) -> type {
             } else {
                 @intCast(k)
             };
-            h = h ^ (h >> 33);
-            h = h ^ (h >> 17);
-            h = h ^ (h >> 29);
+            h ^= (h >> 33);
+            h ^= (h >> 17);
+            h ^= (h >> 29);
             h % self.cap
         }
 
@@ -89,7 +89,7 @@ pub fn IntMap(comptime V: type) -> type {
                 nk.push(0);
                 nv.push(self.filler);
                 ns.push(_EMPTY());
-                i = i + 1;
+                i += 1;
             }
             // Move existing entries over.
             let old_cap = self.cap;
@@ -104,9 +104,9 @@ pub fn IntMap(comptime V: type) -> type {
                     } else {
                         @intCast(k)
                     };
-                    h = h ^ (h >> 33);
-                    h = h ^ (h >> 17);
-                    h = h ^ (h >> 29);
+                    h ^= (h >> 33);
+                    h ^= (h >> 17);
+                    h ^= (h >> 29);
                     let mut idx = h % new_cap;
                     while ns.get_or(idx, _EMPTY()) == _OCCUPIED() {
                         idx = (idx + 1) % new_cap;
@@ -115,7 +115,7 @@ pub fn IntMap(comptime V: type) -> type {
                     nv.set(idx, v);
                     ns.set(idx, _OCCUPIED());
                 }
-                j = j + 1;
+                j += 1;
             }
             self.keys = nk;
             self.vals = nv;
@@ -150,7 +150,7 @@ pub fn IntMap(comptime V: type) -> type {
                     self.keys.set(target, k);
                     self.vals.set(target, v);
                     self.states.set(target, _OCCUPIED());
-                    self.count = self.count + 1;
+                    self.count += 1;
                     return;
                 } else if st == _OCCUPIED() {
                     if self.keys.get_or(idx, 0) == k {
@@ -163,14 +163,14 @@ pub fn IntMap(comptime V: type) -> type {
                     }
                 }
                 idx = (idx + 1) % self.cap;
-                probes = probes + 1;
+                probes += 1;
             }
             // Every slot was probed without finding an EMPTY slot or matching
             // key. Growth keeps `count` below `cap`, so reuse the first tombstone.
             self.keys.set(first_tomb, k);
             self.vals.set(first_tomb, v);
             self.states.set(first_tomb, _OCCUPIED());
-            self.count = self.count + 1;
+            self.count += 1;
         }
 
         // The value for `k`, or `None`.
@@ -188,7 +188,7 @@ pub fn IntMap(comptime V: type) -> type {
                     }
                 }
                 idx = (idx + 1) % self.cap;
-                probes = probes + 1;
+                probes += 1;
             }
             O.None
         }
@@ -212,12 +212,12 @@ pub fn IntMap(comptime V: type) -> type {
                 } else if st == _OCCUPIED() {
                     if self.keys.get_or(idx, 0) == k {
                         self.states.set(idx, _TOMBSTONE());
-                        self.count = self.count - 1;
+                        self.count -= 1;
                         return true;
                     }
                 }
                 idx = (idx + 1) % self.cap;
-                probes = probes + 1;
+                probes += 1;
             }
             false
         }

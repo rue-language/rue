@@ -13,10 +13,10 @@ pub fn audit(borrow database: model.Database) -> metric.Metric {
             if model.visible(borrow row, snapshot) { visible_rows = visible_rows + 1; }
             metric.warn(inout out, row.version_deleted != model.NONE() &&
                 row.version_deleted < row.version_created);
-            i = i + 1;
+            i += 1;
         }
         metric.observe(inout out, visible_rows, snapshot + 1);
-        snapshot = snapshot + 1;
+        snapshot += 1;
     }
     metric.finish(inout out);
     out

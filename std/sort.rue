@@ -51,12 +51,12 @@ pub fn insertion_sort(comptime T: type, inout xs: arraybuf.ArrayBuf(T)) {
             let cur = xs.get_or(j, 0);
             if cur < prev {
                 swap_at(T, inout xs, j - 1, j);
-                j = j - 1;
+                j -= 1;
             } else {
                 j = 0;
             }
         }
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -73,9 +73,9 @@ fn qsort_range(comptime T: type, inout xs: arraybuf.ArrayBuf(T), lo: u64, hi: u6
         let vj = xs.get_or(j, 0);
         if vj < pivot {
             swap_at(T, inout xs, store, j);
-            store = store + 1;
+            store += 1;
         }
-        j = j + 1;
+        j += 1;
     }
     swap_at(T, inout xs, store, hi);
     if store > lo {
@@ -105,7 +105,7 @@ pub fn is_sorted(comptime T: type, borrow xs: arraybuf.ArrayBuf(T)) -> bool {
         if cur < prev {
             return false;
         }
-        i = i + 1;
+        i += 1;
     }
     true
 }

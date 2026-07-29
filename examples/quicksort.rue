@@ -20,9 +20,9 @@ fn partition(inout arr: [i32; 10], low: u64, high: u64) -> u64 {
             let temp = arr[i];
             arr[i] = arr[j];
             arr[j] = temp;
-            i = i + 1;
+            i += 1;
         }
-        j = j + 1;
+        j += 1;
     }
 
     // Move pivot to its correct position
@@ -53,7 +53,7 @@ fn print_array(borrow arr: [i32; 10]) {
     let mut i: u64 = 0;
     while i < 10 {
         @dbg(arr[i]);
-        i = i + 1;
+        i += 1;
     }
 }
 

@@ -51,7 +51,7 @@ fn push_path(inout matrix: Matrix, from: u64, to: u64, borrow path: routing.Path
     matrix.bottlenecks.push(if path.reachable { path.bottleneck } else { 0 });
     if from != to {
         if path.reachable {
-            matrix.reachable_pairs = matrix.reachable_pairs + 1;
+            matrix.reachable_pairs += 1;
             matrix.total_weight = add(matrix.total_weight, weight);
             if weight > matrix.diameter {
                 matrix.diameter = weight;
@@ -59,7 +59,7 @@ fn push_path(inout matrix: Matrix, from: u64, to: u64, borrow path: routing.Path
                 matrix.diameter_to = to;
             }
         } else {
-            matrix.unreachable_pairs = matrix.unreachable_pairs + 1;
+            matrix.unreachable_pairs += 1;
         }
     }
 }
@@ -76,9 +76,9 @@ pub fn compute(borrow scenario: model.Scenario, at: u64, minimum_capacity: u64, 
             let path = routing.shortest(borrow scenario, from, to, at, minimum_capacity, mode);
             let weight = routing.path_weight(borrow scenario, borrow path, at, mode);
             push_path(inout matrix, from, to, borrow path, weight);
-            to = to + 1;
+            to += 1;
         }
-        from = from + 1;
+        from += 1;
     }
     matrix
 }
@@ -118,7 +118,7 @@ pub fn row_reachable(borrow matrix: Matrix, from: u64) -> u64 {
     let mut to: u64 = 0;
     while to < matrix.size {
         if from != to && weight(borrow matrix, from, to) != routing.INF() { count = count + 1; }
-        to = to + 1;
+        to += 1;
     }
     count
 }
@@ -132,9 +132,9 @@ pub fn row_average(borrow matrix: Matrix, from: u64) -> u64 {
         let value = weight(borrow matrix, from, to);
         if from != to && value != routing.INF() {
             total = add(total, value);
-            count = count + 1;
+            count += 1;
         }
-        to = to + 1;
+        to += 1;
     }
     if count == 0 { 0 } else { total / count }
 }
@@ -152,7 +152,7 @@ pub fn central_location(borrow matrix: Matrix) -> u64 {
             best_reachable = reachable;
             best_average = average;
         }
-        from = from + 1;
+        from += 1;
     }
     best
 }
@@ -173,7 +173,7 @@ pub fn render(borrow scenario: model.Scenario, borrow matrix: Matrix) -> StrBuf 
         out.push(9);
         let location = scenario.locations.get_or(to, model.empty_location());
         text.append_id(inout out, borrow scenario, location.id);
-        to = to + 1;
+        to += 1;
     }
     out.push(10);
     let mut from: u64 = 0;
@@ -184,10 +184,10 @@ pub fn render(borrow scenario: model.Scenario, borrow matrix: Matrix) -> StrBuf 
         while to < matrix.size {
             out.push(9);
             append_cell(inout out, weight(borrow matrix, from, to));
-            to = to + 1;
+            to += 1;
         }
         out.push(10);
-        from = from + 1;
+        from += 1;
     }
     text.append_literal(inout out, "reachable_pairs=");
     text.append_u64(inout out, matrix.reachable_pairs);

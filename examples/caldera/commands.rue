@@ -21,7 +21,7 @@ pub fn accepted(borrow world: model.World) -> u64 {
     let mut i: u64 = 0;
     while i < world.commands.len() {
         if world.commands.get_or(i, model.empty_command()).accepted { count = count + 1; }
-        i = i + 1;
+        i += 1;
     }
     count
 }

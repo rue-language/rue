@@ -73,7 +73,7 @@ fn find_arrival(borrow sim: state.State, departure_index: u64, borrow departure:
     while i < sim.log.len() {
         let candidate = sim.log.get_or(i, state.empty_event());
         if is_same_shipment(borrow departure, borrow candidate) { return i; }
-        i = i + 1;
+        i += 1;
     }
     model.NONE()
 }
@@ -128,10 +128,10 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Manife
         let event = sim.log.get_or(i, state.empty_event());
         if event.tag == state.EVENT_ARRIVAL() { arrivals = arrivals + 1; }
         if event.tag == state.EVENT_DEPARTURE() {
-            departures = departures + 1;
+            departures += 1;
             let item = from_departure(borrow scenario, borrow sim, i, event);
             if item.matched {
-                matched = matched + 1;
+                matched += 1;
                 if item.on_time { on_time = on_time + 1; } else { late = late + 1; }
                 if item.arrive < item.depart { ordering_errors = ordering_errors + 1; }
             } else { unmatched = unmatched + 1; }
@@ -144,7 +144,7 @@ pub fn build(borrow scenario: model.Scenario, borrow sim: state.State) -> Manife
             digest = mix(digest, item.quantity); digest = mix(digest, item.arrive);
             shipments.push(item);
         }
-        i = i + 1;
+        i += 1;
     }
     Manifest {
         shipments: shipments, departures: departures, arrivals: arrivals,

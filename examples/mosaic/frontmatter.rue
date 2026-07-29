@@ -26,7 +26,7 @@ fn parse_u64(borrow value: StrBuf) -> u64 {
         let b = text.byte_of(borrow value, i);
         if !text.is_digit(b) { return model.NONE(); }
         n = n * 10 + @intCast(b - 48);
-        i = i + 1;
+        i += 1;
     }
     n
 }
@@ -99,7 +99,7 @@ pub fn parse(inout site: model.Site, page_index: u64, borrow source: StrBuf) -> 
             }
         }
         offset = text.next_line(borrow source, offset);
-        line = line + 1;
+        line += 1;
     }
     let page = site.pages.get_or(page_index, model.empty_page());
     model.add_error(inout site, 201, page.source_id, 1, "unterminated front matter");

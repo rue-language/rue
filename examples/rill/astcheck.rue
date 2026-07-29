@@ -102,7 +102,7 @@ struct Checker {
         let mut i: u64 = 0;
         while i < self.states.len() {
             if self.states.get_or(i, 0) == 0 { self.report(i, "node is unreachable from program root"); }
-            i = i + 1;
+            i += 1;
         }
     }
 }

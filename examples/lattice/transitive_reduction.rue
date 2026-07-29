@@ -29,7 +29,7 @@ fn alternate_path(
             cycle_oracle.reaches(borrow closure, middle, target.after) {
             return true;
         }
-        middle = middle + 1;
+        middle += 1;
     }
     false
 }
@@ -57,7 +57,7 @@ pub fn compute(borrow workflow: model.Workflow) -> Reduction {
         }
         digest = mix(digest, edge.before);
         digest = mix(digest, edge.after);
-        i = i + 1;
+        i += 1;
     }
     let essential_count = essential.len();
     let redundant_count = redundant.len();
@@ -77,12 +77,12 @@ pub fn verify(borrow workflow: model.Workflow, borrow reduction: Reduction) -> b
     let mut i: u64 = 0;
     while i < reduction.essential.len() {
         if reduction.essential.get_or(i, model.NONE()) >= workflow.edges.len() { return false; }
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < reduction.redundant.len() {
         if reduction.redundant.get_or(i, model.NONE()) >= workflow.edges.len() { return false; }
-        i = i + 1;
+        i += 1;
     }
     true
 }

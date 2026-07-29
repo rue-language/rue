@@ -77,19 +77,19 @@ fn observe_catalog(inout out: metric.Metric, borrow database: model.Database) {
     let mut i: u64 = 0;
     while i < database.tables.len() {
         metric.observe(inout out, table_projection(borrow database, i), i + MODE());
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.columns.len() {
         metric.observe(inout out, column_projection(borrow database, i), i + 1);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.indexes.len() {
         let item = database.indexes.get_or(i, model.empty_index());
         metric.observe(inout out, item.entries + item.column + MODE(), if item.unique { 5 } else { 2 });
         metric.warn(inout out, item.table >= database.tables.len());
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -98,12 +98,12 @@ fn observe_storage(inout out: metric.Metric, borrow database: model.Database) {
     while i < database.rows.len() {
         metric.observe(inout out, row_projection(borrow database, i), (i % 7) + 1);
         metric.warn(inout out, database.rows.get_or(i, model.empty_row()).table >= database.tables.len());
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.cells.len() {
         metric.observe(inout out, cell_projection(borrow database, i), (i % 11) + 1);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -111,22 +111,22 @@ fn observe_operations(inout out: metric.Metric, borrow database: model.Database)
     let mut i: u64 = 0;
     while i < database.queries.len() {
         metric.observe(inout out, query_projection(borrow database, i), i + 1);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.transactions.len() {
         metric.observe(inout out, transaction_projection(borrow database, i), i + 2);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.wal.len() {
         metric.observe(inout out, wal_projection(borrow database, i), i + 3);
-        i = i + 1;
+        i += 1;
     }
     i = 0;
     while i < database.replicas.len() {
         metric.observe(inout out, replica_projection(borrow database, i), i + 4);
-        i = i + 1;
+        i += 1;
     }
 }
 
@@ -141,9 +141,9 @@ fn observe_pairs(inout out: metric.Metric, borrow database: model.Database) {
                 metric.observe(inout out,
                     (table.row_count + 1) * (index.entries + 1) + MODE(), t + x + 1);
             }
-            x = x + 1;
+            x += 1;
         }
-        t = t + 1;
+        t += 1;
     }
 }
 

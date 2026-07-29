@@ -19,7 +19,7 @@ pub fn render(borrow database: model.Database) -> StrBuf {
         text.append_literal(inout out, ": ");
         text.append_id(inout out, borrow database, item.detail);
         out.push(10);
-        i = i + 1;
+        i += 1;
     }
     out
 }

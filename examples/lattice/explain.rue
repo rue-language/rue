@@ -67,7 +67,7 @@ fn event_counts(borrow run: state.Run, task: u64) -> model.U64s {
         if event.task == task && event.kind < counts.len() {
             counts.set(event.kind, counts.get_or(event.kind, 0) + 1);
         }
-        i = i + 1;
+        i += 1;
     }
     counts
 }
@@ -85,12 +85,12 @@ fn one(
     while i < workflow.edges.len() {
         let edge = workflow.edges.get_or(i, model.empty_edge());
         if edge.after == task {
-            dependencies = dependencies + 1;
+            dependencies += 1;
             let dependency_status = run.status.get_or(edge.before, state.FAILED());
             if state.successful(dependency_status) { successful_dependencies = successful_dependencies + 1; }
             else if dependency_status == state.FAILED() { failed_dependencies = failed_dependencies + 1; }
         }
-        i = i + 1;
+        i += 1;
     }
     let counts = event_counts(borrow run, task);
     let status = run.status.get_or(task, state.FAILED());

@@ -25,15 +25,15 @@ pub fn inspect(borrow site: model.Site) -> Health {
     while i < site.pages.len() {
         let page = site.pages.get_or(i, model.empty_page());
         if !page.draft {
-            published = published + 1;
+            published += 1;
             if page.title_id != model.NONE() && site.strings.string_len(page.title_id) > 0 {
-                titled = titled + 1;
+                titled += 1;
             }
             if page.description_id != model.NONE() && site.strings.string_len(page.description_id) > 0 {
-                described = described + 1;
+                described += 1;
             }
         }
-        i = i + 1;
+        i += 1;
     }
     let valid = site.diagnostics.len() == 0;
     let feature_complete = coverage.complete(borrow features);
@@ -41,22 +41,22 @@ pub fn inspect(borrow site: model.Site) -> Health {
     let every_link_resolved = links.unresolved == 0;
     let mut score: u64 = 0;
     if valid {
-        score = score + 40;
+        score += 40;
     }
     if feature_complete {
-        score = score + 20;
+        score += 20;
     }
     if every_page_navigable {
-        score = score + 10;
+        score += 10;
     }
     if every_link_resolved {
-        score = score + 10;
+        score += 10;
     }
     if titled == published {
-        score = score + 10;
+        score += 10;
     }
     if described == published {
-        score = score + 10;
+        score += 10;
     }
     Health {
         valid: valid,
