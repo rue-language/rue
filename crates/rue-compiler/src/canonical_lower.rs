@@ -3,8 +3,6 @@
 use std::cell::RefCell;
 use std::ops::Range;
 
-#[cfg(test)]
-use rue_error::CompileResult;
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
 use rue_rir::{AstGen, InstRef, Rir, RirEditor, RirValidationContext, ValidatedRir};
@@ -181,102 +179,6 @@ impl CanonicalRirOutput {
             extra,
         }
     }
-}
-
-/// Lower canonical module views in stable `ModuleId` order into one RIR.
-#[cfg(test)]
-pub fn lower_canonical_rir(merged: &CanonicalMergedProgram) -> CompileResult<CanonicalRirOutput> {
-    lower_canonical_rir_with_work(merged).map_err(|(error, _)| error)
-}
-
-#[cfg(test)]
-pub(crate) fn lower_canonical_rir_with_work(
-    merged: &CanonicalMergedProgram,
-) -> Result<CanonicalRirOutput, (CompileError, CanonicalRirWork)> {
-    let ast = merged.ast();
-    let symbols = SemanticSymbolUniverse::from_modules(ast.modules());
-    let mut module_ranges = Vec::with_capacity(ast.modules().len());
-    let mut work = CanonicalRirWork::default();
-    let mut editor = RirEditor::new();
-    for module in ast.modules() {
-        let lowered =
-            lower_module_rir_with_work(module.clone()).map_err(|(error, module_work)| {
-                work.accumulate(module_work);
-                (error, work)
-            })?;
-        work.accumulate(lowered.work());
-        let appended = editor
-            .append_remapped(&lowered.rir, |local| {
-                let text = lowered
-                    .symbols
-                    .interner()
-                    .try_resolve(&local)
-                    .expect("validated module RIR symbol belongs to its module universe");
-                symbols.interner().get_or_intern(text)
-            })
-            .map_err(|error| {
-                (
-                    CompileError::new(
-                        ErrorKind::InternalError(format!("RIR module projection failed: {error}")),
-                        rue_span::Span::new(0, 0),
-                    ),
-                    work,
-                )
-            })?;
-        module_ranges.push(CanonicalRirModuleRange {
-            file_id: module.file_id(),
-            instructions: appended.instructions,
-            extra: appended.extra,
-        });
-    }
-    let sources: Vec<CanonicalRirSource> = ast
-        .modules()
-        .iter()
-        .map(|module| {
-            u32::try_from(module.source_text().len())
-                .map(|length| CanonicalRirSource {
-                    file_id: module.file_id(),
-                    revision: module.revision().clone(),
-                    length,
-                })
-                .map_err(|_| {
-                    CompileError::new(
-                        ErrorKind::InternalError(
-                            "canonical source length exceeds RIR span capacity".to_string(),
-                        ),
-                        rue_span::Span::new(0, 0),
-                    )
-                })
-        })
-        .collect::<Result<_, _>>()
-        .map_err(|error| (error, work))?;
-    let source_lengths = sources
-        .iter()
-        .map(|source| (source.file_id, source.length))
-        .collect::<Vec<_>>();
-    let validation = RirValidationContext {
-        symbol_count: symbols.interner().len(),
-        source_lengths: &source_lengths,
-    };
-    let rir = ValidatedRir::finish(editor, &validation).map_err(|error| {
-        (
-            CompileError::new(
-                ErrorKind::InternalError(format!("RIR payload validation failed: {error}")),
-                rue_span::Span::new(0, 0),
-            ),
-            work,
-        )
-    })?;
-
-    work.semantic_strings_retained = symbols.interner().len();
-    Ok(CanonicalRirOutput {
-        source_revision: ast.source_revision().clone(),
-        rir,
-        symbols,
-        work,
-        module_ranges,
-        sources,
-    })
 }
 
 impl CanonicalRirWork {
@@ -520,7 +422,7 @@ mod tests {
 
     use super::*;
     use crate::parsed_modules::{ParsedProgram, parse_source_snapshot_modules};
-    use crate::{SourceMetadata, SourceSnapshot, merge_parsed_modules};
+    use crate::{SourceMetadata, SourceSnapshot};
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -574,10 +476,10 @@ mod tests {
             ],
             1,
         );
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
-        let output = lower_canonical_rir(&merged).unwrap();
-        let rendered = print(&output);
+        let stages = crate::test_support::test_frontend_stages(&source).unwrap();
+        let merged = &stages.merged;
+        let output = &stages.rir;
+        let rendered = print(output);
 
         assert!(rendered.contains("alpha"));
         assert!(rendered.contains("beta"));
@@ -604,8 +506,7 @@ mod tests {
     #[test]
     fn projection_failure_preserves_incoming_query_work() {
         let source = snapshot(&[(1, "/main.rue", "main.rue", "fn main() -> i32 { 0 }")], 1);
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let merged = merge_parsed_modules(&parsed).unwrap();
+        let merged = crate::test_support::test_merged_program(&source).unwrap();
         let query_work = CanonicalRirWork {
             modules_visited: 1,
             items_visited: 1,
@@ -616,8 +517,11 @@ mod tests {
         assert_eq!(failure_work, query_work);
     }
 
+    /// Lowering consumes whatever module order [`ParsedProgram`] publishes, and
+    /// that order is canonical regardless of assembly order — so a reversed
+    /// module vector cannot reach lowering as a different program.
     #[test]
-    fn reordered_arc_assembly_has_identical_rir_and_work() {
+    fn reordered_arc_assembly_publishes_one_canonical_module_order() {
         let source = snapshot(
             &[
                 (8, "/z.rue", "z.rue", "fn zed() {}"),
@@ -629,11 +533,16 @@ mod tests {
         let mut modules = first.modules().to_vec();
         modules.reverse();
         let second = ParsedProgram::new(first.root().clone(), modules).unwrap();
-        let first = lower_canonical_rir(&merge_parsed_modules(&first).unwrap()).unwrap();
-        let second = lower_canonical_rir(&merge_parsed_modules(&second).unwrap()).unwrap();
 
-        assert_eq!(print(&first), print(&second));
-        assert_eq!(first.work(), second.work());
+        assert!(
+            first
+                .modules()
+                .iter()
+                .zip(second.modules())
+                .all(|(left, right)| Arc::ptr_eq(left, right))
+        );
+        let rir = crate::test_support::test_canonical_rir(&source).unwrap();
+        assert_eq!(rir.source_revision(), second.source_revision());
     }
 
     #[test]
@@ -655,8 +564,7 @@ mod tests {
             ],
             8,
         );
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let canonical = lower_canonical_rir(&merge_parsed_modules(&parsed).unwrap()).unwrap();
+        let canonical = crate::test_support::test_canonical_rir(&source).unwrap();
         let semantic = print(&canonical);
         let presentation = print_in_snapshot_order(&canonical, &source);
         assert!(semantic.find("alpha").unwrap() < semantic.find("zed").unwrap());
@@ -680,10 +588,8 @@ mod tests {
             ],
             91,
         );
-        let lower = |source: &SourceSnapshot| {
-            let parsed = parse_source_snapshot_modules(source).unwrap();
-            lower_canonical_rir(&merge_parsed_modules(&parsed).unwrap()).unwrap()
-        };
+        let lower =
+            |source: &SourceSnapshot| crate::test_support::test_canonical_rir(source).unwrap();
         let first_rir = lower(&first);
         let relocated_rir = lower(&relocated);
 
@@ -754,8 +660,7 @@ mod tests {
             ],
             2,
         );
-        let parsed = parse_source_snapshot_modules(&source).unwrap();
-        let canonical = lower_canonical_rir(&merge_parsed_modules(&parsed).unwrap()).unwrap();
+        let canonical = crate::test_support::test_canonical_rir(&source).unwrap();
         let rendered = print(&canonical);
 
         assert!(canonical.work().symbol_fields_translated > 40);

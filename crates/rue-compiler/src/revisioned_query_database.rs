@@ -19456,14 +19456,14 @@ pub(crate) mod test_support {
     pub(crate) fn production_declarations(
         snapshot: &SourceSnapshot,
     ) -> Arc<[crate::durable_semantics::DurableDeclarationSemantic]> {
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::test_support::test_import_graph(snapshot).unwrap();
         let (_definitions, query_declarations, _work) =
             crate::bound_definitions::bind_canonical_declaration_semantics(
-                &merged,
-                &rir,
+                merged,
+                rir,
                 crate::PreviewFeatures::default(),
                 rue_target::Target::X86_64Linux,
                 &imports,
@@ -20800,9 +20800,9 @@ fn main() -> i32 {
     fn retired_declaration_exports(
         source: &SourceSnapshot,
     ) -> Vec<rue_air::SemanticDeclarationExport> {
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(source).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(source).unwrap();
+        let _merged = &stages.merged;
+        let rir = &stages.rir;
         let bound = rue_air::Sema::new_synthetic(
             rir.rir(),
             rir.semantic_symbols().interner(),
@@ -20816,9 +20816,9 @@ fn main() -> i32 {
     }
 
     fn retired_declaration_failure(source: &SourceSnapshot) -> String {
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(source).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(source).unwrap();
+        let _merged = &stages.merged;
+        let rir = &stages.rir;
         let errors = match rue_air::Sema::new_synthetic(
             rir.rir(),
             rir.semantic_symbols().interner(),
@@ -21271,9 +21271,9 @@ fn main() -> i32 {
             )],
             1,
         );
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&source).unwrap();
+        let _merged = &stages.merged;
+        let rir = &stages.rir;
         let retired = rue_air::Sema::new_synthetic(
             rir.rir(),
             rir.semantic_symbols().interner(),
@@ -28079,13 +28079,13 @@ fn main() -> i32 {
 
         // Independently bind the same source through the declaration path. This
         // is the oracle side of the comparison, not the queried durable terminal.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -28285,13 +28285,13 @@ fn main() -> i32 {
         .expect("trusted-strbuf snapshot is valid");
 
         // The live epoch, through the production declaration-bind path.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -28476,13 +28476,13 @@ fn main() -> i32 {
 
         // The LIVE epoch, bound through the production declaration path — the
         // INDEPENDENT side the provider assembly is compared against.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -28633,13 +28633,13 @@ fn main() -> i32 {
             .key
             .clone();
 
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -28713,13 +28713,13 @@ fn main() -> i32 {
         let decls = production_declarations(&snapshot);
         let box_key = durable_decl(&decls, Kind::Struct, "Box").key.clone();
 
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -28828,13 +28828,13 @@ fn main() -> i32 {
 
         // The LIVE epoch, bound through the production declaration path — the
         // INDEPENDENT side the provider assembly is compared against.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -29268,8 +29268,8 @@ fn main() -> i32 {
 
         // Independently produce the durable declaration set + the durable
         // anonymous nominal (the pool's inputs) through the nucleus projection.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
         let mut proj_db = RevisionedQueryDatabase::default();
         let proj_revision = revision_for(&mut proj_db, &snapshot);
         let projection = proj_db
@@ -29300,11 +29300,11 @@ fn main() -> i32 {
         // The LIVE epoch, bound through the production declaration path — the
         // INDEPENDENT comparison side. Its anonymous materialization is the epoch's
         // own `find_or_create_anon_struct`, populated during the same bind.
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -29408,8 +29408,8 @@ fn main() -> i32 {
 
         // Independently produce the durable declaration set + the durable
         // anonymous nominal (the pool's inputs) through the nucleus projection.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
         let mut proj_db = RevisionedQueryDatabase::default();
         let proj_revision = revision_for(&mut proj_db, &snapshot);
         let projection = proj_db
@@ -29439,11 +29439,11 @@ fn main() -> i32 {
         // The LIVE epoch, bound through the production declaration path — the
         // INDEPENDENT comparison side. Its anonymous materialization is the
         // epoch's own `find_or_create_anon_enum`, populated during the same bind.
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -29594,9 +29594,9 @@ fn main() -> i32 {
         )
         .unwrap();
 
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
 
         let configuration = semantic_configuration();
         let demands = [
@@ -29661,8 +29661,8 @@ fn main() -> i32 {
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let (bound, definitions) =
             crate::canonical_semantic::bind_query_owned_declarations_with_definitions_for_test(
-                &merged,
-                &rir,
+                merged,
+                rir,
                 crate::PreviewFeatures::default(),
                 rue_target::Target::X86_64Linux,
                 &imports,
@@ -29670,7 +29670,7 @@ fn main() -> i32 {
             .expect("declarations bind");
         let (nominal_exports, pair_exports) =
             crate::durable_semantics::project_durable_option_registry(
-                &merged,
+                merged,
                 &definitions,
                 &resolution,
             )
@@ -29838,13 +29838,13 @@ fn main() -> i32 {
 
         // The LIVE epoch, bound through the production declaration path with the
         // slices preview enabled.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             slices.clone(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -30115,13 +30115,13 @@ fn main() -> i32 {
 
         // LIVE epoch side: production parsing/lowering/import registration and
         // declaration binding, independent of the pool's durable adapter.
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::test_support::test_import_graph(&snapshot).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -30323,13 +30323,13 @@ fn main() -> i32 {
         let point_key = durable_decl(&decls, Kind::Struct, "Point").key.clone();
         let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
 
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -30414,13 +30414,13 @@ fn main() -> i32 {
         let color_key = durable_decl(&decls, Kind::Enum, "Color").key.clone();
         let limit_key = durable_decl(&decls, Kind::ValueConst, "LIMIT").key.clone();
 
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -30627,13 +30627,13 @@ fn main() -> i32 {
         )
         .expect("two-file snapshot is valid");
 
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(&snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
-        let rir = crate::lower_canonical_rir(&merged).unwrap();
+        let stages = crate::test_support::test_frontend_stages(&snapshot).unwrap();
+        let merged = &stages.merged;
+        let rir = &stages.rir;
         let imports = crate::import_graph::import_free_canonical_graph(merged.ast()).unwrap();
         let bound = crate::canonical_semantic::bind_query_owned_declarations_for_test(
-            &merged,
-            &rir,
+            merged,
+            rir,
             crate::PreviewFeatures::default(),
             rue_target::Target::X86_64Linux,
             &imports,
@@ -32624,8 +32624,7 @@ fn main() -> i32 {
         revision: Revision,
         snapshot: &SourceSnapshot,
     ) -> Arc<[crate::durable_semantics::DurableAnonymousNominal]> {
-        let parsed = crate::parsed_modules::parse_source_snapshot_modules(snapshot).unwrap();
-        let merged = crate::merge_parsed_modules(&parsed).unwrap();
+        let merged = crate::test_support::test_merged_program(snapshot).unwrap();
         database
             .projected_declaration_semantics(
                 revision,

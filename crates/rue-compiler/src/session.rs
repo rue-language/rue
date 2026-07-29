@@ -14238,9 +14238,9 @@ fn main() -> i32 { 0 }
             "drop fn Missing(self) {} fn main() {}",
         ] {
             let source = snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
-            let parsed = crate::parsed_modules::parse_source_snapshot_modules(&source).unwrap();
-            let merged = crate::merge_parsed_modules(&parsed).unwrap();
-            let rir = crate::lower_canonical_rir(&merged).unwrap();
+            let stages = crate::test_support::test_frontend_stages(&source).unwrap();
+            let _merged = &stages.merged;
+            let rir = &stages.rir;
             let retired = match rue_air::Sema::new_synthetic(
                 rir.rir(),
                 rir.semantic_symbols().interner(),

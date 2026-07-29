@@ -62,6 +62,49 @@ pub(crate) fn test_codegen_state(state: &CompileState, target: Target) -> MultiE
     .map(drop)
 }
 
+/// The canonical merge and RIR artifacts for `snapshot`.
+///
+/// Lower-layer unit tests that need a merged program or a whole-program RIR
+/// take them from the session queries production uses, so a fixture never
+/// exercises an assembly production does not perform. Both come from one
+/// session because the RIR query consumes the merge terminal.
+///
+/// The fixture is published as declared, not through a discovery epoch: merge
+/// and lowering do not consume the import graph, and a fixture that names its
+/// own physical paths must keep them for identity-sensitive assertions.
+pub(crate) struct TestFrontendStages {
+    pub(crate) merged: std::sync::Arc<CanonicalMergedProgram>,
+    pub(crate) rir: std::sync::Arc<CanonicalRirOutput>,
+}
+
+pub(crate) fn test_frontend_stages(
+    snapshot: &SourceSnapshot,
+) -> MultiErrorResult<TestFrontendStages> {
+    let mut session = CompilerSession::new();
+    session.update(snapshot).into_owner_result()?;
+    let merged = session.merge()?;
+    let rir = session.canonical_rir()?;
+    Ok(TestFrontendStages { merged, rir })
+}
+
+/// The canonical merged program for `snapshot`.
+pub(crate) fn test_merged_program(
+    snapshot: &SourceSnapshot,
+) -> MultiErrorResult<std::sync::Arc<CanonicalMergedProgram>> {
+    let mut session = CompilerSession::new();
+    session.update(snapshot).into_owner_result()?;
+    session.merge()
+}
+
+/// The canonical whole-program RIR for `snapshot`.
+pub(crate) fn test_canonical_rir(
+    snapshot: &SourceSnapshot,
+) -> MultiErrorResult<std::sync::Arc<CanonicalRirOutput>> {
+    let mut session = CompilerSession::new();
+    session.update(snapshot).into_owner_result()?;
+    session.canonical_rir()
+}
+
 pub(crate) fn test_frontend_snapshot(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
