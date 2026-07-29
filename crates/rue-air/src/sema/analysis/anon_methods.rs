@@ -35,10 +35,25 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 has_self,
                 self_mode,
                 self_is_mut,
+                returns_borrow,
                 ..
             } = &method_inst.data
             {
                 let key = (struct_id, *method_name);
+
+                // Place-returning accessors (ADR-0062) are phase-1 restricted
+                // to named structs: anonymous-struct method identity is
+                // signature-structural and the provider path registers these
+                // methods without body handles, so an accessor here could not
+                // inline. Rejected until a later phase widens the surface.
+                if *returns_borrow {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorRequiresBorrowSelf {
+                            found: "a method on an anonymous struct type".to_string(),
+                        },
+                        method_inst.span,
+                    ));
+                }
 
                 // Check for duplicate methods
                 if self.has_method(key) {
@@ -87,6 +102,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         return_type: ret_type,
                         body: *body,
                         span: method_inst.span,
+                        returns_borrow: false,
                     },
                 );
                 self.index_anonymous_callable_method(struct_id, *method_name, *has_self);
@@ -126,10 +142,17 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 has_self,
                 self_mode,
                 self_is_mut,
+                returns_borrow,
                 ..
             } = &method_inst.data
             {
                 let key = (struct_id, *method_name);
+
+                // Accessors are not supported on anonymous structs (ADR-0062
+                // phase 1); fall back so the compile-time path reports it.
+                if *returns_borrow {
+                    return None;
+                }
 
                 // Check for duplicate methods - return None in comptime context
                 if self.has_method(key) {
@@ -181,6 +204,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                         return_type: ret_type,
                         body: *body,
                         span: method_inst.span,
+                        returns_borrow: false,
                     },
                 );
                 self.index_anonymous_callable_method(struct_id, *method_name, *has_self);
@@ -227,6 +251,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                 has_self,
                 self_mode,
                 self_is_mut,
+                returns_borrow,
                 ..
             } = &instruction.data
             else {
@@ -247,6 +272,9 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                     .all(|(parameter, comptime)| parameter.is_comptime == *comptime)
                 || !seen.insert(*name)
                 || self.has_method((struct_id, *name))
+                // Accessors are not supported on anonymous structs (ADR-0062
+                // phase 1).
+                || *returns_borrow
             {
                 return None;
             }
@@ -272,6 +300,7 @@ impl<'a, D: crate::sema::DeclarationPhase> crate::sema::Sema<'a, D> {
                     return_type: materialize(&signature.return_type, struct_type)?,
                     body: *body,
                     span: instruction.span,
+                    returns_borrow: false,
                 },
             ));
         }

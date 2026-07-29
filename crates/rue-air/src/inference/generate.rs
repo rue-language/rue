@@ -1454,6 +1454,19 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Concrete(Type::NEVER)
             }
 
+            // Accessor yield (ADR-0062): the yielded place must have the
+            // accessor's declared element type `T` (the function's return
+            // type); the `yield` itself diverges like `return`.
+            InstData::Yield(value) => {
+                let value_info = self.generate(*value, ctx);
+                self.add_constraint(Constraint::equal(
+                    value_info.ty,
+                    InferType::Concrete(ctx.return_type),
+                    span,
+                ));
+                InferType::Concrete(Type::NEVER)
+            }
+
             // Function call
             InstData::Call { name, args } => {
                 let alias_target = self.const_function_alias((span.file_id, *name));

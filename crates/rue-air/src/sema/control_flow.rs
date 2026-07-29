@@ -14,6 +14,7 @@ use rue_span::Span;
 
 use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
+use super::call_resolution::CallResolutionFacts;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue, LocalVar};
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
@@ -102,6 +103,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::Ret(inner) => {
                 self.analyze_return(air, inner.as_ref().copied(), inst.span, ctx)
             }
+
+            InstData::Yield(operand) => self.analyze_yield(air, *operand, inst_ref, inst.span, ctx),
 
             InstData::Block { instructions } => {
                 self.analyze_block(air, instructions, inst.span, ctx)
@@ -1346,6 +1349,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // A `?` early return is a non-diverging exit that bypasses an
+        // accessor body's single trailing `yield` (ADR-0062 phase 1).
+        if ctx.accessor_trailing_yield.is_some() {
+            return Err(CompileError::new(ErrorKind::AccessorBodyMissingYield, span)
+                .with_note("an accessor body cannot contain `?`; guards may only diverge or fall through to the trailing `yield`"));
+        }
         let return_type = ctx.return_type;
 
         // Analyze the operand first, then dispatch on ITS shape (Option vs
@@ -1765,6 +1774,132 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Analyze a return statement.
+    /// Analyze a `yield` — the exit form of a `-> borrow T` accessor body
+    /// (ADR-0062). Outside an accessor body it is E0256; inside one, only the
+    /// body's single trailing `yield` is legal (E0254 otherwise). The
+    /// trailing `yield` of an *inlined* accessor body never reaches this
+    /// dispatch — call-site expansion consumes it directly as a place — so
+    /// this arm covers the standalone compilation of the accessor itself,
+    /// where the yielded place is validated and the exit lowers to an
+    /// unreachable trap (every real call site inlines the body; no
+    /// out-of-line accessor is ever invoked, which is what keeps this
+    /// construct free of any new call shape or ABI).
+    fn analyze_yield(
+        &mut self,
+        air: &mut Air,
+        operand: InstRef,
+        inst_ref: InstRef,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        self.require_preview(
+            rue_error::PreviewFeature::BorrowAccessors,
+            "a `yield` accessor exit",
+            span,
+        )?;
+        let Some(trailing) = ctx.accessor_trailing_yield else {
+            return Err(CompileError::new(ErrorKind::YieldOutsideAccessor, span));
+        };
+        if trailing != inst_ref {
+            return Err(CompileError::new(ErrorKind::AccessorBodyMissingYield, span)
+                .with_note("this `yield` is not the single trailing exit of the accessor body"));
+        }
+
+        // The yielded place must be a projection chain rooted at the receiver
+        // parameter (E0255). Checked syntactically before the operand is read
+        // so a local or temporary is named as such rather than surfacing as a
+        // downstream ownership error.
+        self.check_yield_rooted_at_receiver(operand, ctx)?;
+
+        // Read the place non-consumingly: this type-checks the projection
+        // (including index expressions) and marks its variables used. The
+        // read is emitted as a statement of the trap block below so the AIR
+        // stays fully referenced.
+        let read = self.analyze_inst_for_projection(air, operand, ctx)?;
+        if !ctx.return_type.is_error()
+            && !read.ty.is_error()
+            && !self.types_compatible(read.ty, ctx.return_type)
+        {
+            return Err(CompileError::new(
+                ErrorKind::TypeMismatch {
+                    expected: ctx
+                        .return_type
+                        .safe_name_with_pool(Some(self.body_type_pool())),
+                    found: read.ty.safe_name_with_pool(Some(self.body_type_pool())),
+                },
+                span,
+            ));
+        }
+
+        let trap = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::PanicNoMessage),
+            self.known_symbols().panic,
+            &[],
+            Type::NEVER,
+            span,
+        )?;
+        let air_ref = air.add_block(&[read.air_ref], trap, Type::NEVER, span)?;
+        Ok(AnalysisResult::new(air_ref, Type::NEVER))
+    }
+
+    /// Walk a yield operand's projection chain to its root and require that
+    /// root to be the receiver parameter `self` (ADR-0062, E0255). A nested
+    /// method-call link is legal only when it is itself an accessor.
+    fn check_yield_rooted_at_receiver(
+        &mut self,
+        operand: InstRef,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<()> {
+        let self_sym = self.body_interner().get_or_intern("self");
+        let mut current = operand;
+        loop {
+            let inst = self.body_rir_ref().get(current);
+            let span = inst.span;
+            match &inst.data {
+                InstData::VarRef { name, .. } => {
+                    if *name == self_sym {
+                        return Ok(());
+                    }
+                    let found =
+                        format!("a place rooted at `{}`", self.body_interner().resolve(name));
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorYieldNotReceiverRooted { found },
+                        span,
+                    ));
+                }
+                InstData::FieldGet { base, .. } => current = *base,
+                InstData::IndexGet { base, .. } => current = *base,
+                InstData::MethodCall {
+                    receiver, method, ..
+                } => {
+                    let is_accessor = ctx
+                        .resolved_type_of(*receiver)
+                        .and_then(|ty| ty.as_struct())
+                        .and_then(|struct_id| self.call_facts().method_info(struct_id, *method))
+                        .is_some_and(|info| info.returns_borrow);
+                    if !is_accessor {
+                        return Err(CompileError::new(
+                            ErrorKind::AccessorYieldNotReceiverRooted {
+                                found: "a method-call result that is not an accessor projection"
+                                    .to_string(),
+                            },
+                            span,
+                        ));
+                    }
+                    current = *receiver;
+                }
+                _ => {
+                    return Err(CompileError::new(
+                        ErrorKind::AccessorYieldNotReceiverRooted {
+                            found: "a value expression".to_string(),
+                        },
+                        span,
+                    ));
+                }
+            }
+        }
+    }
+
     fn analyze_return(
         &mut self,
         air: &mut Air,
@@ -1772,6 +1907,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        // An accessor body has exactly one exit form — its trailing `yield`
+        // (ADR-0062 phase 1); an early `return` would be a non-diverging exit
+        // that bypasses it.
+        if ctx.accessor_trailing_yield.is_some() {
+            return Err(CompileError::new(ErrorKind::AccessorBodyMissingYield, span)
+                .with_note("an accessor body cannot contain `return`; guards may only diverge or fall through to the trailing `yield`"));
+        }
         let inner_air_ref = if let Some(inner) = inner {
             // Explicit return with value. A `str`-returning function
             // (ADR-0043 Phase 3, RUE-324) supplies `str` as the expected type so
@@ -1802,6 +1944,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     ctx,
                 )?;
             }
+
+            // An accessor result is a second-class borrowed place scoped to
+            // its full expression (ADR-0062); returning it would let the
+            // loan escape the receiver access that justifies it.
+            self.reject_accessor_result_escape(
+                inner,
+                super::analysis::AccessorEscapeSite::Return,
+                span,
+                ctx,
+            )?;
 
             // Type check: returned value must match function's return type.
             if !ctx.return_type.is_error()
@@ -1870,11 +2022,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let recovery_checkpoint = self
                 .body_analysis_error_recovery()
                 .then(|| (air.checkpoint(), ctx.clone()));
+            // Each non-tail statement is a full expression: accessor-result
+            // loans taken inside it (ADR-0062) end when it does. Loans taken
+            // by an *enclosing* statement (this block nested inside an
+            // expression) stay live across it, so this truncates rather than
+            // clears. The tail expression's loans are part of the enclosing
+            // full expression and survive the block.
+            let expression_loans_before = ctx.expression_loans.len();
             let outcome = if is_last {
                 self.analyze_inst(air, inst_ref, ctx)
             } else {
                 ctx.with_expected_type(None, |ctx| self.analyze_inst(air, inst_ref, ctx))
             };
+            if !is_last {
+                ctx.expression_loans.truncate(expression_loans_before);
+            }
             let result = match outcome {
                 Ok(result) => result,
                 Err(error) if self.body_analysis_error_recovery() => {

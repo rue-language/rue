@@ -129,6 +129,62 @@ impl ErrorCode {
     /// arguments and consumes either its status code or the unit value, so a
     /// different source signature would violate the entry ABI.
     pub const INVALID_MAIN_SIGNATURE: Self = Self(211);
+    // E0250-E0260 form the borrow-accessor block (ADR-0062, RUE-662). The
+    // ownership/borrow family's E04xx band is at its ceiling (E0499), so
+    // accessor diagnostics live here in the semantic band instead.
+    /// An accessor result (`v.get_ref(i)`) was returned from the enclosing
+    /// function. The result is a second-class borrowed place scoped to the
+    /// enclosing full expression (ADR-0062); returning it would let the loan
+    /// outlive the receiver access that justifies it.
+    pub const ACCESSOR_RESULT_RETURNED: Self = Self(250);
+    /// An accessor result was stored — assigned to a variable, field, or
+    /// element. The result is a second-class borrowed place (ADR-0062); a
+    /// stored copy would be a stored borrow, which Rue does not have.
+    pub const ACCESSOR_RESULT_STORED: Self = Self(251);
+    /// An accessor result was bound by a plain `let`. The result's extent is
+    /// the enclosing full expression (ADR-0062), so a binding would outlive
+    /// the loan. Use the result directly within one expression instead.
+    pub const ACCESSOR_RESULT_BOUND: Self = Self(252);
+    /// An accessor result was captured into an aggregate (struct literal or
+    /// array literal). The result is a second-class borrowed place
+    /// (ADR-0062); an aggregate member holding it would be a stored borrow.
+    pub const ACCESSOR_RESULT_CAPTURED: Self = Self(253);
+    /// An accessor body's non-diverging control flow does not end in the
+    /// single trailing `yield` (ADR-0062 phase 1): the final statement is not
+    /// a `yield`, a `yield` appears before the end, or the body contains a
+    /// `return`/`?` exit. Guards before the yield may only diverge (trap,
+    /// `@panic`) or fall through.
+    pub const ACCESSOR_BODY_MISSING_YIELD: Self = Self(254);
+    /// The operand of an accessor's `yield` is not a place rooted at the
+    /// receiver parameter (`self`). An accessor hands out a projection of its
+    /// receiver (ADR-0062); yielding a local, temporary, or unrelated place
+    /// would dangle once the accessor's frame is gone.
+    pub const ACCESSOR_YIELD_NOT_RECEIVER_ROOTED: Self = Self(255);
+    /// A `yield` expression appears outside the body of a `-> borrow T`
+    /// accessor. `yield` is the accessor body's exit form (ADR-0062).
+    pub const YIELD_OUTSIDE_ACCESSOR: Self = Self(256);
+    /// A `-> borrow T` result on a declaration that is not a `borrow self`
+    /// method: a free function, an associated function, or a method with a
+    /// by-value or `mut self` receiver. Phase 1 accessors are read-only
+    /// projections of a shared receiver borrow (ADR-0062); `inout self`
+    /// accessors are the phase-2 follow-up (RUE-1016).
+    pub const ACCESSOR_REQUIRES_BORROW_SELF: Self = Self(257);
+    /// A value with drop glue was read out of an accessor result by value.
+    /// The result is a borrowed place, not an owner (ADR-0062); copying a
+    /// drop-glue value out of it would mint an aliasing second owner — the
+    /// same double-free the E0711 gate closes (RUE-651). Only trivially
+    /// droppable element values may be read out by value.
+    pub const ACCESSOR_RESULT_MOVED: Self = Self(258);
+    /// A root was used exclusively (`inout`, mutation, or move) in the same
+    /// full expression in which an accessor result borrows it. The accessor
+    /// result's shared loan spans the enclosing full expression (ADR-0062),
+    /// so the exclusive use violates the law of exclusivity.
+    pub const ACCESSOR_LOAN_CONFLICT: Self = Self(259);
+    /// An accessor declares a parameter mode other than by-value (`borrow`,
+    /// `inout`, or `comptime` on a non-receiver parameter). Phase 1 accessor
+    /// arguments are by-value guard inputs (ADR-0062); by-ref accessor
+    /// parameters are deferred with the coroutine form (RUE-1012).
+    pub const ACCESSOR_PARAM_MODE_UNSUPPORTED: Self = Self(260);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -555,6 +611,11 @@ pub enum PreviewFeature {
     /// linking (ADR-0064, RUE-1055). Gated until every phase of the guaranteed
     /// target-C boundary is proven on both backends.
     CFfi,
+    /// Place-returning borrow accessors (ADR-0062, RUE-662): methods with a
+    /// `-> borrow T` result whose `yield`-body hands out a second-class borrow
+    /// of a projection of the receiver. Gated until mutable accessors and std
+    /// adoption complete the rollout (RUE-1015).
+    BorrowAccessors,
 }
 
 /// Error returned when parsing a preview feature name fails.
@@ -577,6 +638,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "test_infra",
             PreviewFeature::Slices => "slices",
             PreviewFeature::CFfi => "c_ffi",
+            PreviewFeature::BorrowAccessors => "borrow_accessors",
         }
     }
 
@@ -587,6 +649,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra => "ADR-0005",
             PreviewFeature::Slices => "ADR-0043",
             PreviewFeature::CFfi => "ADR-0064",
+            PreviewFeature::BorrowAccessors => "ADR-0062",
         }
     }
 
@@ -596,6 +659,7 @@ impl PreviewFeature {
             PreviewFeature::TestInfra,
             PreviewFeature::Slices,
             PreviewFeature::CFfi,
+            PreviewFeature::BorrowAccessors,
         ]
     }
 
@@ -621,6 +685,7 @@ impl std::str::FromStr for PreviewFeature {
             "test_infra" => Ok(PreviewFeature::TestInfra),
             "slices" => Ok(PreviewFeature::Slices),
             "c_ffi" => Ok(PreviewFeature::CFfi),
+            "borrow_accessors" => Ok(PreviewFeature::BorrowAccessors),
             _ => Err(ParsePreviewFeatureError(s.to_string())),
         }
     }
@@ -1421,6 +1486,63 @@ pub enum ErrorKind {
     /// variable moved-from)
     #[error("cannot move out of inout parameter '{variable}'")]
     MoveOutOfInout { variable: String },
+    /// An accessor result was returned from the enclosing function
+    /// (ADR-0062: the borrowed place is scoped to its full expression).
+    #[error(
+        "cannot return an accessor result: `{method}` yields a second-class borrow of `{root}`, valid only within the calling expression"
+    )]
+    AccessorResultReturned { method: String, root: String },
+    /// An accessor result was assigned into a variable, field, or element.
+    #[error(
+        "cannot store an accessor result: `{method}` yields a second-class borrow of `{root}`, valid only within the calling expression"
+    )]
+    AccessorResultStored { method: String, root: String },
+    /// An accessor result was bound by a plain `let`.
+    #[error(
+        "cannot bind an accessor result with `let`: `{method}` yields a second-class borrow of `{root}`, valid only within the calling expression"
+    )]
+    AccessorResultBound { method: String, root: String },
+    /// An accessor result was captured into a struct or array literal.
+    #[error(
+        "cannot capture an accessor result in an aggregate: `{method}` yields a second-class borrow of `{root}`, valid only within the calling expression"
+    )]
+    AccessorResultCaptured { method: String, root: String },
+    /// An accessor body's non-diverging control flow does not end in the
+    /// single trailing `yield` (ADR-0062 phase 1).
+    #[error(
+        "an accessor body must end in a single trailing `yield`: every non-diverging path must fall through to it, and no code may follow it"
+    )]
+    AccessorBodyMissingYield,
+    /// The operand of an accessor's `yield` is not a place rooted at the
+    /// receiver parameter.
+    #[error("an accessor must yield a place rooted at `self`, not {found}")]
+    AccessorYieldNotReceiverRooted { found: String },
+    /// A `yield` expression outside an accessor body.
+    #[error("`yield` is only valid inside the body of a `-> borrow` accessor")]
+    YieldOutsideAccessor,
+    /// A `-> borrow T` result on a declaration that is not a `borrow self`
+    /// method.
+    #[error("a `-> borrow` accessor requires a `borrow self` receiver, but this is {found}")]
+    AccessorRequiresBorrowSelf { found: String },
+    /// A drop-glue value read out of an accessor result by value.
+    #[error(
+        "cannot copy a value of type `{ty}` out of an accessor result: it owns resources (has drop glue), and the result is a borrow, not an owner"
+    )]
+    AccessorResultMoved { ty: String },
+    /// Exclusive use of a root while an accessor result borrows it in the
+    /// same full expression.
+    #[error(
+        "cannot use '{variable}' {conflict} while an accessor result borrows it in the same expression"
+    )]
+    AccessorLoanConflict {
+        variable: String,
+        conflict: &'static str,
+    },
+    /// An accessor parameter with a non-by-value mode.
+    #[error(
+        "an accessor parameter must be by-value: `{mode}` accessor parameters are not supported"
+    )]
+    AccessorParamModeUnsupported { mode: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;
     /// moving `self` to a new owner (a call argument, another binding, ...)
@@ -1869,6 +1991,23 @@ impl ErrorKind {
             ErrorKind::MoveOutOfBorrow { .. } => ErrorCode::MOVE_OUT_OF_BORROW,
             ErrorKind::BorrowInoutConflict { .. } => ErrorCode::BORROW_INOUT_CONFLICT,
             ErrorKind::MoveWhileCallLoaned { .. } => ErrorCode::MOVE_WHILE_CALL_LOANED,
+            ErrorKind::AccessorResultReturned { .. } => ErrorCode::ACCESSOR_RESULT_RETURNED,
+            ErrorKind::AccessorResultStored { .. } => ErrorCode::ACCESSOR_RESULT_STORED,
+            ErrorKind::AccessorResultBound { .. } => ErrorCode::ACCESSOR_RESULT_BOUND,
+            ErrorKind::AccessorResultCaptured { .. } => ErrorCode::ACCESSOR_RESULT_CAPTURED,
+            ErrorKind::AccessorBodyMissingYield => ErrorCode::ACCESSOR_BODY_MISSING_YIELD,
+            ErrorKind::AccessorYieldNotReceiverRooted { .. } => {
+                ErrorCode::ACCESSOR_YIELD_NOT_RECEIVER_ROOTED
+            }
+            ErrorKind::YieldOutsideAccessor => ErrorCode::YIELD_OUTSIDE_ACCESSOR,
+            ErrorKind::AccessorRequiresBorrowSelf { .. } => {
+                ErrorCode::ACCESSOR_REQUIRES_BORROW_SELF
+            }
+            ErrorKind::AccessorResultMoved { .. } => ErrorCode::ACCESSOR_RESULT_MOVED,
+            ErrorKind::AccessorLoanConflict { .. } => ErrorCode::ACCESSOR_LOAN_CONFLICT,
+            ErrorKind::AccessorParamModeUnsupported { .. } => {
+                ErrorCode::ACCESSOR_PARAM_MODE_UNSUPPORTED
+            }
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::UnexpectedCallArgumentMode { .. } => {
@@ -2785,7 +2924,7 @@ mod tests {
     #[test]
     fn test_preview_feature_all_names() {
         let names = PreviewFeature::all_names();
-        assert_eq!(names, "test_infra, slices, c_ffi");
+        assert_eq!(names, "test_infra, slices, c_ffi, borrow_accessors");
     }
 
     #[test]

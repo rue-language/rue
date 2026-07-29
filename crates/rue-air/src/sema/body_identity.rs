@@ -2192,6 +2192,9 @@ pub(in crate::sema) struct MethodIdentityHandle {
     pub body: InstRef,
     pub span: Span,
     pub self_is_mut: bool,
+    /// Whether the declaration is a `-> borrow T` accessor (ADR-0062);
+    /// carried from the RIR `FnDecl` like `self_is_mut`.
+    pub returns_borrow: bool,
 }
 
 impl<K, M, S> BodyIdentityPool<K, M, S>
@@ -2264,6 +2267,7 @@ where
             return_type: signature.return_type,
             body: handle.body,
             span: handle.span,
+            returns_borrow: handle.returns_borrow,
         })
     }
 
@@ -2278,6 +2282,11 @@ where
             self_mode: signature.self_mode,
             params: signature.params,
             return_type: signature.return_type,
+            // The durable callable signature does not carry the accessor
+            // flag; call sites that need it resolve the full method record
+            // (with its RIR handle) instead, so this signature-only subset
+            // stays conservative.
+            returns_borrow: false,
         })
     }
 
@@ -2871,6 +2880,7 @@ mod tests {
             return_type: Type::I32,
             body: InstRef::from_raw(body),
             span: Span::with_file(owner.0, 1, 2),
+            returns_borrow: false,
         };
         let named = info(10);
         let anonymous = info(11);
@@ -3388,6 +3398,7 @@ mod tests {
             body: InstRef::from_raw(201),
             span: Span::with_file(FileId::new(3), 1, 4),
             self_is_mut: true,
+            returns_borrow: false,
         }
     }
 
@@ -5569,7 +5580,10 @@ mod tests {
     fn method_handle_from_rir(sema: &BodySema<'_>, declaration: InstRef) -> MethodIdentityHandle {
         let inst = sema.rir.get(declaration);
         let InstData::FnDecl {
-            body, self_is_mut, ..
+            body,
+            self_is_mut,
+            returns_borrow,
+            ..
         } = &inst.data
         else {
             panic!("method declaration must be a FnDecl");
@@ -5578,6 +5592,7 @@ mod tests {
             body: *body,
             span: inst.span,
             self_is_mut: *self_is_mut,
+            returns_borrow: *returns_borrow,
         }
     }
 

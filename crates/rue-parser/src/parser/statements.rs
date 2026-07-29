@@ -554,13 +554,14 @@ fn is_control_flow(expr: &Expr) -> bool {
             | Expr::Break(_)
             | Expr::Continue(_)
             | Expr::Return(_)
+            | Expr::Yield(_)
             | Expr::Block(_)
     )
 }
 fn is_diverging(expr: &Expr) -> bool {
     matches!(
         expr,
-        Expr::Break(_) | Expr::Continue(_) | Expr::Return(_) | Expr::Loop(_)
+        Expr::Break(_) | Expr::Continue(_) | Expr::Return(_) | Expr::Yield(_) | Expr::Loop(_)
     )
 }
 

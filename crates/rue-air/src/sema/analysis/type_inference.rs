@@ -644,7 +644,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // operands through here (RUE-165). Constants inline a fresh
                 // value, so there is no move state to preserve, and unknown
                 // names still get E0201 from the fallback.
-                let resolved_ty = ctx.resolved_types.get(&inst_ref).copied();
+                let resolved_ty = ctx.resolved_type_of(inst_ref);
                 return self.analyze_var_ref(
                     air,
                     *name,
@@ -902,6 +902,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Ok(AnalysisResult::new(air_ref, element_type));
         }
 
+        // A `-> borrow T` accessor call is a place in projection position
+        // (ADR-0062): read it through the traced place, so comparing or
+        // projecting a drop-glue element borrows rather than copies it.
+        if matches!(&inst.data, InstData::MethodCall { .. })
+            && self.place_root_with_accessors(inst_ref, ctx).is_some()
+            && let Some(result) = self.try_read_traced_place(air, inst_ref, inst.span, ctx)?
+        {
+            return Ok(result);
+        }
+
         // For other expressions, use the normal analyze_inst
         // (they will trigger move semantics as expected)
         self.analyze_inst(air, inst_ref, ctx)
@@ -918,7 +928,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         context: &str,
     ) -> CompileResult<Type> {
-        ctx.resolved_types.get(&inst_ref).copied().ok_or_else(|| {
+        ctx.resolved_type_of(inst_ref).ok_or_else(|| {
             CompileError::new(
                 ErrorKind::InternalError(format!(
                     "type inference did not resolve type for {} (instruction {:?})",

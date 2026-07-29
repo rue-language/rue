@@ -1675,6 +1675,7 @@ fn walk_expr(
                 walk_expr(value, module, resolver, imports)?;
             }
         }
+        Expr::Yield(value) => walk_expr(&value.value, module, resolver, imports)?,
         Expr::StructLit(value) => {
             if let Some(base) = &value.base {
                 walk_expr(base, module, resolver, imports)?;

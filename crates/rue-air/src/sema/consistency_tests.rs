@@ -336,6 +336,7 @@ mod tests {
                         is_destructor,
                         allow_unused_variable,
                         self_is_mut,
+                        is_accessor,
                     )"
             ),
             "analyze_function_internal must be exactly one forwarding expression"

@@ -1370,11 +1370,29 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         let InstData::FnDecl {
             params: rir_params_range,
             directives: directives_range,
+            returns_borrow,
             ..
         } = &self.rir.get(declaration).data
         else {
             unreachable!()
         };
+        // A `-> borrow T` result is the accessor form (ADR-0062) and exists
+        // only on `borrow self` methods; a free or associated function cannot
+        // hand out a receiver projection. Gate first so an ungated program
+        // reports E1100 rather than the shape error.
+        if *returns_borrow {
+            self.require_preview(
+                PreviewFeature::BorrowAccessors,
+                "a `-> borrow` accessor",
+                span,
+            )?;
+            return Err(CompileError::new(
+                ErrorKind::AccessorRequiresBorrowSelf {
+                    found: "a free function".to_string(),
+                },
+                span,
+            ));
+        }
         let params = self.rir.params(rir_params_range);
         let directives = self.rir.directives(directives_range);
         let allow_unused_function = self.has_allow_directive(directives.iter(), "unused_function");
@@ -1641,6 +1659,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 has_self,
                 self_mode,
                 self_is_mut,
+                returns_borrow,
                 ..
             } = &method_inst.data
             {
@@ -1675,6 +1694,75 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 let param_names: Vec<Spur> = params.iter().map(|p| p.name).collect();
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
+
+                // Place-returning borrow accessors (ADR-0062, RUE-662):
+                // `-> borrow T` is gated behind the `borrow_accessors` preview
+                // and requires a shared `borrow self` receiver (phase 1;
+                // `inout self` accessors are RUE-1016). Accessor parameters
+                // are by-value guard inputs.
+                if *returns_borrow {
+                    self.require_preview(
+                        PreviewFeature::BorrowAccessors,
+                        "a `-> borrow` accessor",
+                        method_inst.span,
+                    )?;
+                    if !*has_self {
+                        return Err(CompileError::new(
+                            ErrorKind::AccessorRequiresBorrowSelf {
+                                found: "an associated function with no receiver".to_string(),
+                            },
+                            method_inst.span,
+                        ));
+                    }
+                    match self_mode {
+                        RirParamMode::Borrow => {}
+                        RirParamMode::Inout => {
+                            return Err(CompileError::new(
+                                ErrorKind::AccessorRequiresBorrowSelf {
+                                    found: "an `inout self` receiver".to_string(),
+                                },
+                                method_inst.span,
+                            )
+                            .with_note(
+                                "mutable accessors (`inout self` -> exclusive result) are a \
+                                 later phase (RUE-1016)",
+                            ));
+                        }
+                        RirParamMode::Normal => {
+                            return Err(CompileError::new(
+                                ErrorKind::AccessorRequiresBorrowSelf {
+                                    found: "a by-value `self` receiver".to_string(),
+                                },
+                                method_inst.span,
+                            ));
+                        }
+                    }
+                    for param in params.iter() {
+                        if param.mode != RirParamMode::Normal {
+                            return Err(CompileError::new(
+                                ErrorKind::AccessorParamModeUnsupported {
+                                    mode: format!(
+                                        "`{}`",
+                                        match param.mode {
+                                            RirParamMode::Inout => "inout",
+                                            RirParamMode::Borrow => "borrow",
+                                            RirParamMode::Normal => unreachable!(),
+                                        }
+                                    ),
+                                },
+                                param.span,
+                            ));
+                        }
+                        if param.is_comptime {
+                            return Err(CompileError::new(
+                                ErrorKind::AccessorParamModeUnsupported {
+                                    mode: "`comptime`".to_string(),
+                                },
+                                param.span,
+                            ));
+                        }
+                    }
+                }
                 // `Self` in a method signature (parameter or return position)
                 // resolves to the enclosing struct's type, just like the
                 // receiver does. Named-struct inline methods reach this path;
@@ -1705,6 +1793,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                         return_type: ret_type,
                         body: *body,
                         span: method_inst.span,
+                        returns_borrow: *returns_borrow,
                     },
                 );
                 self.named_method_declarations.insert(key, method_ref);

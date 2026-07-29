@@ -701,6 +701,7 @@ impl<'a> AstGen<'a> {
                 has_self,
                 self_mode,
                 self_is_mut,
+                method.borrow_return.is_some(),
                 method.span,
             )
             .record_failure(&mut self.payload_error);
@@ -809,6 +810,7 @@ impl<'a> AstGen<'a> {
                 false,
                 RirParamMode::Normal,
                 false,
+                func.borrow_return.is_some(),
                 func.span,
             )
             .record_failure(&mut self.payload_error);
@@ -871,6 +873,7 @@ impl<'a> AstGen<'a> {
                 body,
                 false,
                 RirParamMode::Normal,
+                false,
                 false,
                 foreign.span,
             )
@@ -1079,6 +1082,16 @@ impl<'a> AstGen<'a> {
                 self.rir.add_inst(Inst {
                     data: InstData::Ret(value),
                     span: return_expr.span,
+                })
+            }
+            Expr::Yield(yield_expr) => {
+                let value = self.gen_expr_at(
+                    crate::RirStructuralPathSegment::Operand(0),
+                    &yield_expr.value,
+                );
+                self.rir.add_inst(Inst {
+                    data: InstData::Yield(value),
+                    span: yield_expr.span,
                 })
             }
             Expr::StructLit(struct_lit) => {

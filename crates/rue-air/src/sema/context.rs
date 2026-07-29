@@ -5,12 +5,14 @@
 //! state tracking for affine types.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::CompileWarning;
 use rue_rir::RirParamMode;
 use rue_span::{FileId, Span};
 
+use crate::inst::{AirPlaceBase, AirProjection};
 use crate::scope::ScopedContext;
 use crate::types::{StructId, Type};
 
@@ -330,6 +332,34 @@ impl CallLoanKind {
     }
 }
 
+/// One projection step of a [`PlaceAlias`], mirroring the metadata the place
+/// tracer collects (see `analysis::ownership::ProjectionInfo`) in an owned,
+/// clonable form.
+#[derive(Debug, Clone)]
+pub(crate) struct AliasProjection {
+    pub proj: AirProjection,
+    pub result_type: Type,
+    pub field_name: Option<Spur>,
+    pub const_index: Option<i64>,
+    pub index_segment: Option<Spur>,
+}
+
+/// A name bound to a caller place during accessor inlining (ADR-0062).
+///
+/// While a `-> borrow T` accessor call is expanded at its call site, the
+/// accessor body's `self` resolves to the *caller's* receiver place: the
+/// place tracer substitutes this alias where the body says `self`, so
+/// `self.f` composes to `<receiver place>.f` rooted at the caller's own
+/// root variable. The alias is a shared borrow: places reached through it
+/// are read-only and never moved out of.
+#[derive(Debug, Clone)]
+pub(crate) struct PlaceAlias {
+    pub base: AirPlaceBase,
+    pub base_type: Type,
+    pub projections: Vec<AliasProjection>,
+    pub root_var: Spur,
+}
+
 /// Context for analyzing instructions within a function.
 ///
 /// Bundles together the mutable state that needs to be threaded through
@@ -476,6 +506,37 @@ pub(crate) struct AnalysisContext<'a> {
     /// `Option(T)` (RUE-6, ADR-0038). Context never selects that nominal. Left
     /// `None` everywhere else, so no other analysis is affected.
     pub expected_type: Option<Type>,
+    /// The shared inference context for this body, threaded here so accessor
+    /// call expansion (ADR-0062) can run type inference for the accessor's
+    /// body on demand before splicing it into the caller.
+    pub infer_ctx: &'a super::inference_ctx::InferenceContext,
+    /// When analyzing a `-> borrow T` accessor body, the body block's single
+    /// trailing `yield` instruction — the only `yield` the body may contain.
+    /// `None` outside accessor bodies; a `yield` analyzed while this is
+    /// `None` is E0256, and one that is not this exact instruction is E0254.
+    pub accessor_trailing_yield: Option<InstRef>,
+    /// RIR method-call instructions that expanded as accessor calls in this
+    /// body (ADR-0062), mapped to the accessor's method name and receiver
+    /// root. Escape-shape checks (`return`/`let`/store/aggregate capture)
+    /// consult this after analyzing an operand to reject binding a borrowed
+    /// place beyond its full expression, naming the offending accessor.
+    pub accessor_call_insts: HashMap<InstRef, (Spur, Spur)>,
+    /// Active accessor-result loans for the current full expression
+    /// (ADR-0062): each entry is the receiver root of an expanded accessor
+    /// call, shared mode, together with the call span. The statement loop
+    /// truncates this to its pre-statement length after every statement, so
+    /// an entry's extent is exactly the enclosing full expression. An
+    /// exclusive use of a listed root within that extent is E0259.
+    pub expression_loans: Vec<(Spur, Span)>,
+    /// Resolved-type overlays for accessor bodies currently being inlined,
+    /// innermost last. `resolved_type_of` consults these before the body's
+    /// own `resolved_types`, letting the caller's analysis walk accessor-body
+    /// instructions that the caller's inference never visited.
+    pub inline_resolved_types: Vec<Arc<HashMap<InstRef, Type>>>,
+    /// Names bound to caller places during accessor inlining (`self` inside
+    /// an inlined accessor body). Scoped save/restore is handled by the
+    /// expansion itself.
+    pub place_aliases: HashMap<Spur, PlaceAlias>,
     /// True only while analyzing the operand of a `?` expression (RUE-318). The
     /// `?` site cannot supply an `expected_type` for a *bare* fallible intrinsic
     /// (`@read_line()?` / `@parse_i64(s)?`): the enclosing function's `Option(U)`
@@ -684,8 +745,25 @@ impl<'a> AnalysisContext<'a> {
             in_loop_move_recheck: true,
             iter_borrows: self.iter_borrows.clone(),
             expected_type: None,
+            infer_ctx: self.infer_ctx,
+            accessor_trailing_yield: self.accessor_trailing_yield,
+            accessor_call_insts: self.accessor_call_insts.clone(),
+            expression_loans: self.expression_loans.clone(),
+            inline_resolved_types: self.inline_resolved_types.clone(),
+            place_aliases: self.place_aliases.clone(),
             try_operand: false,
         }
+    }
+
+    /// Look up an instruction's inferred type, consulting the accessor-inline
+    /// overlays (innermost first) before the body's own inference results.
+    pub fn resolved_type_of(&self, inst_ref: InstRef) -> Option<Type> {
+        for overlay in self.inline_resolved_types.iter().rev() {
+            if let Some(ty) = overlay.get(&inst_ref) {
+                return Some(*ty);
+            }
+        }
+        self.resolved_types.get(&inst_ref).copied()
     }
 
     /// Merge move states from two branches.

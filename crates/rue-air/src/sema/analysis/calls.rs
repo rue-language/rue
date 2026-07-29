@@ -76,6 +76,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         param_modes: &[RirParamMode],
         span: Span,
         check_exclusive: bool,
+        ctx: &AnalysisContext,
     ) -> CompileResult<()> {
         let args = self.body_rir_ref().call_args(args_range).to_vec();
         if args.len() != param_types.len() {
@@ -90,7 +91,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         debug_assert_eq!(param_types.len(), param_modes.len());
         self.validate_explicit_call_modes(&args, param_modes.iter().copied())?;
         if check_exclusive {
-            self.check_exclusive_access(&args, span)?;
+            self.check_exclusive_access(&args, span, ctx)?;
         }
         Ok(())
     }
@@ -100,7 +101,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// check because inference cannot recover their defining file; ordinary
     /// and specialized calls preserve their inferred/comptime and physical
     /// view types here.
-    fn analyze_call_operands(
+    pub(super) fn analyze_call_operands(
         &mut self,
         air: &mut Air,
         args_range: &rue_rir::RirCallArgsRange,
@@ -217,7 +218,25 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 receiver,
                 method,
                 args,
-            } => self.analyze_method_call(air, *receiver, *method, args, inst.span, ctx),
+            } => {
+                // A `-> borrow T` accessor call inlines to its guards plus
+                // the yielded place (ADR-0062); in value position the place
+                // is read. Intercepted before ordinary method dispatch so
+                // the receiver is traced as a place, never read as a value.
+                if let Some(struct_id) = self
+                    .peek_place_type(*receiver, ctx)
+                    .and_then(|ty| ty.as_struct())
+                    && self
+                        .call_facts()
+                        .method_info(struct_id, *method)
+                        .is_some_and(|info| info.returns_borrow)
+                {
+                    return self.analyze_accessor_call_value(
+                        air, inst_ref, *receiver, struct_id, *method, args, inst.span, ctx,
+                    );
+                }
+                self.analyze_method_call(air, *receiver, *method, args, inst.span, ctx)
+            }
 
             _ => Err(CompileError::new(
                 ErrorKind::InternalError(format!(
@@ -380,7 +399,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_comptime = param_data.comptime().to_vec();
         let param_names = param_data.names().to_vec();
 
-        self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
+        self.validate_call_contract(args_range, &param_types, &param_modes, span, true, ctx)?;
         // The declaration, visibility, checked-call policy, and explicit call
         // contract have all selected this exact callable. Record before
         // operand analysis so a later argument diagnostic retains the edge.
@@ -768,7 +787,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
         let args = self.body_rir_ref().call_args(args_range).to_vec();
-        let receiver_var = self.extract_root_variable(receiver);
+        // An accessor-call receiver chain (`v.get_ref(i).len()`, ADR-0062)
+        // roots at the accessor's own receiver root: the chain is a place.
+        let receiver_var = self
+            .extract_root_variable(receiver)
+            .or_else(|| self.place_root_with_accessors(receiver, ctx));
         let method_name_str = self.body_interner().resolve(&method).to_string();
 
         // `Type.function(args)` is an associated-function call / enum
@@ -815,7 +838,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // inferred type — otherwise `str.len()` would miss this route.
         let receiver_slice_ty = receiver_var
             .and_then(|_| self.peek_place_type(receiver, ctx))
-            .or_else(|| ctx.resolved_types.get(&receiver).copied());
+            .or_else(|| ctx.resolved_type_of(receiver));
         if receiver_slice_ty.is_some_and(|ty| self.slice_element_type(ty).is_some()) {
             return self.analyze_slice_method(
                 air,
@@ -1003,6 +1026,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &method_param_modes,
             span,
             false,
+            ctx,
         )?;
         self.record_body_method_dependency(method_key);
 
@@ -1039,9 +1063,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 receiver_result = AnalysisResult::new(borrowed, receiver_result.ty);
                 receiver_temp_scope = temp_scope;
             }
+            // An inlined accessor receiver arrives as a guards block whose
+            // tail is the place read (ADR-0062); peel it for the address
+            // check, exactly like the `inout str` view materialization.
+            let receiver_addressable_probe = if ctx.accessor_call_insts.contains_key(&receiver) {
+                self.peel_projected_rvalue_scope(air, receiver_result.air_ref)
+                    .0
+            } else {
+                receiver_result.air_ref
+            };
             self.require_addressable_read(
                 air,
-                receiver_result.air_ref,
+                receiver_addressable_probe,
                 receiver_mode == AirArgMode::Inout,
                 self.body_rir_ref().get(receiver).span,
             )?;
@@ -1101,7 +1134,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     },
                 });
                 excl_args.extend(args.iter().map(|arg| *arg));
-                self.check_exclusive_access(&excl_args, span)?;
+                self.check_exclusive_access(&excl_args, span, ctx)?;
 
                 // By-ref receivers are borrows, not moves. The receiver was
                 // already analyzed under `byref_arg_root` above (RUE-254), so no
@@ -1119,7 +1152,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         } else {
             // Check for exclusive access violation (by-value receiver)
-            self.check_exclusive_access(&args, span)?;
+            self.check_exclusive_access(&args, span, ctx)?;
         }
 
         // Analyze arguments - receiver first, then remaining args.
@@ -1133,7 +1166,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             mode: receiver_mode,
         }];
         let receiver_frame = match (receiver_mode, receiver_var) {
-            (AirArgMode::Inout, Some(root)) => Some(vec![(root, CallLoanKind::Inout)]),
+            (AirArgMode::Inout, Some(root)) => {
+                // An `inout self` receiver on a root an accessor result
+                // borrows in the same full expression violates exclusivity
+                // (ADR-0062, E0259).
+                self.reject_accessor_loan_conflict(root, "as an `inout self` receiver", span, ctx)?;
+                Some(vec![(root, CallLoanKind::Inout)])
+            }
             (AirArgMode::Borrow, Some(root)) => Some(vec![(root, CallLoanKind::Borrow)]),
             _ => None,
         };
@@ -1289,7 +1328,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             );
         }
 
-        self.validate_call_contract(args_range, &param_types, &param_modes, span, true)?;
+        self.validate_call_contract(args_range, &param_types, &param_modes, span, true, ctx)?;
         self.record_body_callable_dependency(function_key);
 
         // Analyze arguments (the per-pipeline recursion seam). Module-qualified
@@ -1436,6 +1475,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             &method_param_modes,
             span,
             true,
+            ctx,
         )?;
         self.record_body_method_dependency(method_key);
 

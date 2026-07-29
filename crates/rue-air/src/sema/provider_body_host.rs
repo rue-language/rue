@@ -1152,7 +1152,18 @@ where
             (None, Some(key)) => (key, false),
             _ => return None,
         };
-        let info = self.calls.method_signature_info(&key)?;
+        // The signature-only durable subset cannot carry the `-> borrow T`
+        // accessor flag (ADR-0062); recover it from the owning struct's
+        // request-local RIR declaration when that declaration is present.
+        // (Provider body requests currently prune type declarations from
+        // their RIR, so this recovery only fires on hosts whose request
+        // carries the owner — see the RUE-662 provider-path limitation.)
+        let mut info = self.calls.method_signature_info(&key)?;
+        if let Some(method_ref) = self.rir_struct_method_decl(struct_id, symbol)
+            && let InstData::FnDecl { returns_borrow, .. } = &self.rir.rir().get(method_ref).data
+        {
+            info.returns_borrow = *returns_borrow;
+        }
         let callable_owner = self.type_pool.struct_symbol_name(struct_id);
         let full_name = if has_self {
             format!("{callable_owner}.{name}")
@@ -1178,6 +1189,52 @@ where
             .borrow_mut()
             .insert((struct_id, symbol), info);
         Some(info)
+    }
+
+    /// Locate a named method's `FnDecl` by walking the request-local RIR's
+    /// struct declarations. The provider's request RIR carries the owning
+    /// `StructDecl` (types are part of every consumer's inputs) even when the
+    /// method's own body query is a different request, so this is the one
+    /// resolution path that can recover declaration-level facts — like the
+    /// `-> borrow T` accessor flag (ADR-0062) — that the durable signature
+    /// subset does not carry.
+    fn rir_struct_method_decl(&self, struct_id: StructId, method: Spur) -> Option<InstRef> {
+        let struct_def = self.type_pool.struct_def(struct_id);
+        // The RIR names structs by their source name; qualify by declaring
+        // file below so same-named structs in sibling files cannot collide.
+        // Translate lookups through strings so a distinct semantic interner
+        // cannot skew the Spurs.
+        let owner_file = struct_def.file_id;
+        // A cross-file-unique pool name is `Source$escaped_file`; the RIR
+        // declaration carries the bare source name ('$' cannot appear in a
+        // source identifier).
+        let source_name = struct_def
+            .name
+            .split('$')
+            .next()
+            .expect("split yields at least one segment");
+        let owner_sym = self.rir.rir_interner().get(source_name)?;
+        let method_sym = self
+            .rir
+            .rir_interner()
+            .get(self.interner.resolve(&method))?;
+        let rir = self.rir.rir();
+        for index in 0..rir.len() {
+            let inst_ref = InstRef::from_raw(index as u32);
+            if let InstData::StructDecl { name, methods, .. } = &rir.get(inst_ref).data
+                && *name == owner_sym
+                && rir.get(inst_ref).span.file_id == owner_file
+            {
+                for method_ref in rir.struct_methods(methods) {
+                    if let InstData::FnDecl { name, .. } = &rir.get(method_ref).data
+                        && *name == method_sym
+                    {
+                        return Some(method_ref);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn named_method_definition(&self, struct_id: StructId, symbol: Spur) -> Option<K> {
@@ -2046,6 +2103,9 @@ where
                     self_mode: method.self_mode,
                     params,
                     return_type,
+                    // Anonymous-struct methods cannot be accessors (ADR-0062
+                    // phase 1 rejects them at declaration).
+                    returns_borrow: false,
                 },
             ));
             signatures.push(super::AnonMethodSig {
@@ -2125,6 +2185,9 @@ where
                     struct_type: owner_type,
                     has_self: method.has_self,
                     self_mode: method.self_mode,
+                    // Anonymous-struct methods cannot be accessors (ADR-0062
+                    // phase 1 rejects them at declaration).
+                    returns_borrow: false,
                     params: self.state.allocate_params(
                         (0..method.parameters.len())
                             .map(|index| self.interner.get_or_intern(&format!("arg{index}"))),
@@ -2307,6 +2370,29 @@ where
     }
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.method_info_for_symbol(struct_id, name)
+    }
+    fn call_accessor_body(&self, struct_id: StructId, name: Spur) -> Option<(InstRef, Span)> {
+        // Accessor bodies (ADR-0062) are spliced at the call site, so the
+        // provider resolves the declaring `FnDecl` from the request-local RIR
+        // — named methods only; anonymous-struct accessors are rejected at
+        // declaration.
+        if let Some(info) = self
+            .endpoint
+            .method_info(struct_id, name)
+            .filter(|info| info.returns_borrow)
+        {
+            return Some((info.body, info.span));
+        }
+        let method_ref = self.rir_struct_method_decl(struct_id, name)?;
+        let inst = self.rir.rir().get(method_ref);
+        match &inst.data {
+            InstData::FnDecl {
+                returns_borrow: true,
+                body,
+                ..
+            } => Some((*body, inst.span)),
+            _ => None,
+        }
     }
     fn call_named_method_declaration(
         &self,
@@ -4107,7 +4193,7 @@ where
                         name.to_owned(),
                     ))
                 })?;
-            let (params, return_type, body, has_self, self_mode, self_is_mut) =
+            let (params, return_type, body, has_self, self_mode, self_is_mut, returns_borrow) =
                 match &host.rir.rir().get(declaration).data {
                     InstData::FnDecl {
                         params,
@@ -4116,6 +4202,7 @@ where
                         has_self,
                         self_mode,
                         self_is_mut,
+                        returns_borrow,
                         ..
                     } => (
                         params.clone(),
@@ -4124,6 +4211,7 @@ where
                         *has_self,
                         *self_mode,
                         *self_is_mut,
+                        *returns_borrow,
                     ),
                     _ => unreachable!("registered provider member points at FnDecl"),
                 };
@@ -4170,6 +4258,7 @@ where
                     has_self,
                     self_mode,
                     self_is_mut,
+                    returns_borrow,
                 )?,
                 body_span,
             )

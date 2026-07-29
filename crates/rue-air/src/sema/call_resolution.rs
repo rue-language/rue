@@ -20,7 +20,7 @@ use std::hash::Hash;
 
 use lasso::Spur;
 use rue_rir::{InstData, InstRef};
-use rue_span::FileId;
+use rue_span::{FileId, Span};
 
 use super::body_identity::{
     BodyRirView, DurableCallableSource, DurableNominalSource, FunctionIdentityHandle,
@@ -69,6 +69,14 @@ pub(crate) trait CallResolutionFacts {
     /// anonymous table then the named table. Mirrors `Sema::method_info`.
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
 
+    /// The body handle and declaration span of a `-> borrow T` accessor
+    /// method (ADR-0062). Accessor calls are required-inlineable: the call
+    /// site splices the body's guards and yielded place instead of emitting a
+    /// call, so — uniquely among call facts — the accessor's RIR body is part
+    /// of the call-site contract. `None` for non-accessors and for owners
+    /// whose bodies are not resolvable in this host.
+    fn accessor_body(&self, struct_id: StructId, name: Spur) -> Option<(InstRef, Span)>;
+
     /// The named-method RIR declaration for the durable-available
     /// `(owner_file, owner_type_name, method_name)` preimage. Mirrors
     /// `structs_by_file_name.get` followed by `named_method_declarations.get`.
@@ -94,6 +102,7 @@ pub(super) trait CallResolutionFactSource {
     fn call_value_const(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn call_module_binding(&self, file: FileId, name: Spur) -> Option<ConstInfo>;
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo>;
+    fn call_accessor_body(&self, struct_id: StructId, name: Spur) -> Option<(InstRef, Span)>;
     fn call_named_method_declaration(
         &self,
         file: FileId,
@@ -140,6 +149,12 @@ impl<D: DeclarationPhase> CallResolutionFactSource for Sema<'_, D> {
         self.method_info((struct_id, name))
             .copied()
             .map(MethodCallInfo::from_body)
+    }
+
+    fn call_accessor_body(&self, struct_id: StructId, name: Spur) -> Option<(InstRef, Span)> {
+        self.method_info((struct_id, name))
+            .filter(|info| info.returns_borrow)
+            .map(|info| (info.body, info.span))
     }
 
     fn call_named_method_declaration(
@@ -196,6 +211,9 @@ impl<H: super::fact_mode::BodyAnalysisReadHost> CallResolutionFacts for EpochFac
     }
     fn method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.host.call_method_info(struct_id, name)
+    }
+    fn accessor_body(&self, struct_id: StructId, name: Spur) -> Option<(InstRef, Span)> {
+        self.host.call_accessor_body(struct_id, name)
     }
     fn named_method_declaration(&self, file: FileId, ty: Spur, method: Spur) -> Option<InstRef> {
         self.host.call_named_method_declaration(file, ty, method)
@@ -558,7 +576,10 @@ where
     fn method_handle(&self, declaration: InstRef) -> Option<MethodIdentityHandle> {
         let inst = self.rir.rir().get(declaration);
         let InstData::FnDecl {
-            body, self_is_mut, ..
+            body,
+            self_is_mut,
+            returns_borrow,
+            ..
         } = &inst.data
         else {
             return None;
@@ -567,6 +588,7 @@ where
             body: *body,
             span: inst.span,
             self_is_mut: *self_is_mut,
+            returns_borrow: *returns_borrow,
         })
     }
 

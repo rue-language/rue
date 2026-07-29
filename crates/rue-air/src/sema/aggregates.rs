@@ -534,6 +534,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 self.analyze_inst(air, field_value, ctx)?
             };
 
+            // An accessor result is a second-class borrowed place (ADR-0062):
+            // capturing it as an aggregate member would store the borrow.
+            self.reject_accessor_result_escape(
+                field_value,
+                super::analysis::AccessorEscapeSite::Capture,
+                span,
+                ctx,
+            )?;
+
             // Two-types model (ADR-0043, RUE-386): storing into a first-class
             // `str` field must not smuggle a borrowed `str` view (a
             // `borrow`/`inout str` parameter) into the aggregate — the view
@@ -1106,7 +1115,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the comptime-only `type`, would reach the intern pool and panic
         // (RUE-253).
         for elem_ref in &elem_refs {
-            if let Some(elem_ty) = ctx.resolved_types.get(elem_ref).copied() {
+            if let Some(elem_ty) = ctx.resolved_type_of(*elem_ref) {
                 self.reject_non_runtime_array_element(elem_ty, span)?;
             }
         }
@@ -1168,6 +1177,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let mut air_elems = Vec::with_capacity(elem_refs.len());
         for elem_ref in elem_refs {
             let elem_result = self.analyze_inst(air, elem_ref, ctx)?;
+            // An accessor result cannot be captured as an array element
+            // (ADR-0062): the member would store a second-class borrow.
+            self.reject_accessor_result_escape(
+                elem_ref,
+                super::analysis::AccessorEscapeSite::Capture,
+                span,
+                ctx,
+            )?;
             air_elems.push(elem_result.air_ref);
         }
 
@@ -1201,7 +1218,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // runtime representation. Reject it (E1200 / E0206) before the preview
         // gate below and before the comptime-only/module element type would
         // reach the intern pool and panic (RUE-253, RUE-265).
-        if let Some(value_ty) = ctx.resolved_types.get(&value_ref).copied() {
+        if let Some(value_ty) = ctx.resolved_type_of(value_ref) {
             self.reject_non_runtime_array_element(value_ty, span)?;
         }
 
@@ -1249,6 +1266,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Evaluate the repeated value exactly once.
         let value_result = self.analyze_inst(air, value_ref, ctx)?;
+        // An accessor result cannot seed an array-repeat literal (ADR-0062).
+        self.reject_accessor_result_escape(
+            value_ref,
+            super::analysis::AccessorEscapeSite::Capture,
+            span,
+            ctx,
+        )?;
 
         // Desugar to ArrayInit: `length` elements, each the single value.
         let elem_refs = vec![value_result.air_ref; length as usize];
