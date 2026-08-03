@@ -2130,6 +2130,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             infer_ctx,
             accessor_trailing_yield: None,
             accessor_call_insts: HashMap::new(),
+            accessor_expansion_stack: Vec::new(),
             expression_loans: Vec::new(),
             inline_resolved_types: Vec::new(),
             place_aliases: HashMap::new(),

@@ -115,3 +115,11 @@ Accessors are required-inlineable by design: no calling convention for
 "returning a place" exists, which is the forward-compatibility contract that
 keeps the future coroutine-accessor generalization (RUE-1012) free to choose
 its own call shape.
+
+{{ rule(id="6.6:14", cat="legality-rule") }}
+
+Accessor expansion **MUST** be acyclic: an accessor body **MUST NOT** call an
+accessor whose expansion encloses it, whether directly (`fn xr(borrow self) ->
+borrow i64 { yield self.xr(); }`) or through a chain of other accessors
+(E0261). Because the call is the inlined body (6.6:12), a cycle has no finite
+expansion. The rejection names the recursive call.

@@ -896,6 +896,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// `ctx.expression_loans`); and the accessor body must be well-formed —
     /// guards may diverge, and the single trailing `yield` names a place
     /// rooted at the receiver.
+    ///
+    /// Expansion is acyclic (6.6:14, E0261): while an accessor's body is
+    /// being inlined it is recorded on `ctx.accessor_expansion_stack`, and a
+    /// call naming an accessor already on that stack is rejected — inlining a
+    /// cycle has no fixed point. The marker covers the body only; the
+    /// receiver and argument traces are caller syntax, so a finite chain like
+    /// `v.get_ref(i).get_ref(j)` is unaffected.
     #[allow(clippy::too_many_arguments)]
     fn expand_accessor_call(
         &mut self,
@@ -908,6 +915,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<PlaceTrace> {
+        if ctx.accessor_expansion_stack.contains(&(struct_id, method)) {
+            return Err(CompileError::new(
+                ErrorKind::AccessorRecursion {
+                    method: self.body_interner().resolve(&method).to_string(),
+                },
+                span,
+            )
+            .with_note(
+                "an accessor call is expanded by inlining its body at the call site, so a cycle of accessor calls has no finite expansion",
+            ));
+        }
         let info = self
             .call_facts()
             .method_info(struct_id, method)
@@ -1040,7 +1058,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Locate the body's guard statements and trailing yield. The shape
         // (single trailing `yield`) is the accessor's well-formedness rule;
         // it is re-checked here because a caller may analyze before the
-        // accessor's own standalone analysis runs.
+        // accessor's own standalone analysis runs. This accessor is on the
+        // in-progress stack for exactly the body's analysis, so a call it
+        // makes back into an enclosing accessor is E0261 rather than an
+        // unbounded re-expansion.
+        ctx.accessor_expansion_stack.push((struct_id, method));
         let expansion = (|| -> CompileResult<PlaceTrace> {
             // A single-statement body lowers to the instruction itself.
             let body_insts = match &self.body_rir_ref().get(body).data {
@@ -1122,6 +1144,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         })();
 
         // Unwind the inline scope regardless of outcome.
+        ctx.accessor_expansion_stack.pop();
         match saved_alias {
             Some(alias) => {
                 ctx.place_aliases.insert(self_sym, alias);

@@ -129,7 +129,7 @@ impl ErrorCode {
     /// arguments and consumes either its status code or the unit value, so a
     /// different source signature would violate the entry ABI.
     pub const INVALID_MAIN_SIGNATURE: Self = Self(211);
-    // E0250-E0260 form the borrow-accessor block (ADR-0062, RUE-662). The
+    // E0250-E0261 form the borrow-accessor block (ADR-0062, RUE-662). The
     // ownership/borrow family's E04xx band is at its ceiling (E0499), so
     // accessor diagnostics live here in the semantic band instead.
     /// An accessor result (`v.get_ref(i)`) was returned from the enclosing
@@ -185,6 +185,12 @@ impl ErrorCode {
     /// arguments are by-value guard inputs (ADR-0062); by-ref accessor
     /// parameters are deferred with the coroutine form (RUE-1012).
     pub const ACCESSOR_PARAM_MODE_UNSUPPORTED: Self = Self(260);
+    /// An accessor call re-entered an accessor whose expansion is already in
+    /// progress: `fn xr(borrow self) -> borrow i64 { yield self.xr(); }`, or
+    /// the same cycle through several accessors. An accessor call compiles by
+    /// inlining its body at the call site (ADR-0062), so an accessor-call
+    /// cycle has no finite expansion.
+    pub const ACCESSOR_RECURSION: Self = Self(261);
 
     // ========================================================================
     // Struct/enum errors (E0400-E0499)
@@ -1543,6 +1549,11 @@ pub enum ErrorKind {
         "an accessor parameter must be by-value: `{mode}` accessor parameters are not supported"
     )]
     AccessorParamModeUnsupported { mode: String },
+    /// An accessor call re-entered an accessor already being expanded.
+    #[error(
+        "recursive accessor `{method}`: an accessor may not invoke itself, directly or through other accessors, in its own body"
+    )]
+    AccessorRecursion { method: String },
     /// Cannot move `self` out of a destructor body (RUE-139). The compiler
     /// drops a value by running its destructor and THEN dropping its fields;
     /// moving `self` to a new owner (a call argument, another binding, ...)
@@ -2008,6 +2019,7 @@ impl ErrorKind {
             ErrorKind::AccessorParamModeUnsupported { .. } => {
                 ErrorCode::ACCESSOR_PARAM_MODE_UNSUPPORTED
             }
+            ErrorKind::AccessorRecursion { .. } => ErrorCode::ACCESSOR_RECURSION,
             ErrorKind::InoutKeywordMissing => ErrorCode::INOUT_KEYWORD_MISSING,
             ErrorKind::BorrowKeywordMissing => ErrorCode::BORROW_KEYWORD_MISSING,
             ErrorKind::UnexpectedCallArgumentMode { .. } => {

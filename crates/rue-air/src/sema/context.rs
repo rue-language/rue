@@ -521,6 +521,12 @@ pub(crate) struct AnalysisContext<'a> {
     /// consult this after analyzing an operand to reject binding a borrowed
     /// place beyond its full expression, naming the offending accessor.
     pub accessor_call_insts: HashMap<InstRef, (Spur, Spur)>,
+    /// Accessors whose inline expansion is in progress, outermost first. An
+    /// accessor call compiles by inlining its body (ADR-0062), so a call that
+    /// names an accessor already on this stack has no finite expansion and is
+    /// E0261 — the acyclicity rule that makes required-inlineability
+    /// well-founded.
+    pub accessor_expansion_stack: Vec<(StructId, Spur)>,
     /// Active accessor-result loans for the current full expression
     /// (ADR-0062): each entry is the receiver root of an expanded accessor
     /// call, shared mode, together with the call span. The statement loop
@@ -748,6 +754,7 @@ impl<'a> AnalysisContext<'a> {
             infer_ctx: self.infer_ctx,
             accessor_trailing_yield: self.accessor_trailing_yield,
             accessor_call_insts: self.accessor_call_insts.clone(),
+            accessor_expansion_stack: self.accessor_expansion_stack.clone(),
             expression_loans: self.expression_loans.clone(),
             inline_resolved_types: self.inline_resolved_types.clone(),
             place_aliases: self.place_aliases.clone(),
