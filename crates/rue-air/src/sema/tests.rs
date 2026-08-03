@@ -3977,6 +3977,85 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn accessor_cannot_yield_a_call_to_itself() {
+        // 6.6:14: the call is the inlined body, so a self-call in yield
+        // position has no finite expansion (E0261) rather than a compiler
+        // stack overflow (RUE-1211).
+        let source = "
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.xr();
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}";
+        let errors = compile_with_accessors(source).expect_err("self-recursive accessor");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorRecursion { .. }))
+        );
+    }
+
+    #[test]
+    fn accessor_cannot_call_itself_from_a_guard() {
+        // The cycle is rejected wherever the re-entrant call appears, not
+        // only in yield position (RUE-1211).
+        let source = "
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        let _ = self.xr();
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}";
+        let errors = compile_with_accessors(source).expect_err("self-recursive accessor guard");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorRecursion { .. }))
+        );
+    }
+
+    #[test]
+    fn mutually_recursive_accessors_are_rejected() {
+        // A cycle through several accessors is the same non-terminating
+        // expansion as a direct self-call, and is rejected at the point the
+        // expansion re-enters an accessor already on the stack (6.6:14).
+        let source = "
+struct P {
+    x: i64,
+
+    fn a(borrow self) -> borrow i64 {
+        yield self.b();
+    }
+
+    fn b(borrow self) -> borrow i64 {
+        yield self.a();
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.a() == 1 { 0 } else { 1 }
+}";
+        let errors = compile_with_accessors(source).expect_err("mutually recursive accessors");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorRecursion { .. }))
+        );
+    }
+
+    #[test]
     fn yield_outside_accessor_is_rejected() {
         let errors =
             compile_with_accessors("fn main() -> i32 { yield 1; }").expect_err("stray yield");
