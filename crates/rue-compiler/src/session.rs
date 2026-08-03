@@ -4570,6 +4570,45 @@ impl CompilerSession {
                 else {
                     unreachable!("BodyAnalysisBundle publishes typed values")
                 };
+                let needs_source_locator = match &analysis.transaction {
+                    crate::body_query::BodyTransaction::DeterministicFailure { .. } => true,
+                    crate::body_query::BodyTransaction::Success { body, .. } => matches!(
+                        body.as_ref(),
+                        crate::body_query::CanonicalBody::Anonymous { .. }
+                    ),
+                    crate::body_query::BodyTransaction::Control(_) => false,
+                };
+                let current_source_locator = if needs_source_locator {
+                    let locator = self
+                        .queries
+                        .revisioned
+                        .body_source_locator_projection(
+                            runtime_revision,
+                            key.clone(),
+                            cancellation.clone(),
+                        )
+                        .map_err(SemanticRequestControl::Abort)?;
+                    let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
+                        unreachable!("BodySourceLocator publishes typed values")
+                    };
+                    locator.clone()
+                } else {
+                    None
+                };
+                let projected_transaction;
+                let transaction = if matches!(
+                    &analysis.transaction,
+                    crate::body_query::BodyTransaction::DeterministicFailure { .. }
+                ) {
+                    projected_transaction =
+                        crate::revisioned_query_database::project_transaction_diagnostics(
+                            analysis.transaction.clone(),
+                            current_source_locator.as_ref(),
+                        );
+                    &projected_transaction
+                } else {
+                    &analysis.transaction
+                };
                 let computed = matches!(
                     closure_request.execution_for(key),
                     rue_query::RequestExecution::Computed
@@ -4580,7 +4619,6 @@ impl CompilerSession {
                 } else {
                     queried_body_work.body_analyses_reused += 1;
                 }
-                let transaction = &analysis.transaction;
                 if computed {
                     let specialized =
                         matches!(instance, crate::FunctionInstanceKey::Specialization { .. });
@@ -4743,7 +4781,7 @@ impl CompilerSession {
                             );
                             continue;
                         };
-                        let Some(source) = analysis.source_locator.as_ref() else {
+                        let Some(source) = current_source_locator.as_ref() else {
                             body_query_errors.insert(
                                 instance.clone(),
                                 crate::CompileErrors::from(
@@ -5581,6 +5619,66 @@ mod tests {
             unreachable!("BodyTransaction publishes typed values")
         };
         (terminal.stamp(), terminal.kind(), transaction.clone())
+    }
+
+    fn retained_body_closure_stamps(
+        session: &CompilerSession,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> (u64, u64) {
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let crate::FunctionInstanceKey::Definition(definition) = &key.instance else {
+            panic!("test closure root must be an ordinary definition")
+        };
+        let request = session
+            .queries
+            .revisioned
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: Arc::from([definition.module().clone()]),
+                    roots: Arc::from([key.instance.clone()]),
+                    configuration: key.configuration.clone(),
+                },
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        let body = output
+            .bodies
+            .iter()
+            .find(|body| body.key == *key)
+            .expect("test closure contains its root body");
+        (request.terminal.stamp(), body.bundle.stamp())
+    }
+
+    fn retained_body_source_locator(
+        session: &CompilerSession,
+        key: &crate::body_query::BodyQueryKey,
+    ) -> (u64, crate::body_query::BodySourceLocator) {
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let terminal = session
+            .queries
+            .revisioned
+            .body_source_locator_projection(
+                revision,
+                key.clone(),
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap();
+        let rue_query::QueryOutcome::Success(Some(locator)) = terminal.outcome() else {
+            panic!("ordinary test body has a current source locator")
+        };
+        (terminal.stamp(), locator.clone())
     }
 
     fn retained_body_dependency_nodes(
@@ -8138,6 +8236,8 @@ mod tests {
         session.update(&first).into_result().unwrap();
         let first_errors = session.canonical_semantic(&options).unwrap_err();
         let (first_stamp, _, _) = retained_body_transaction(&session, &key);
+        let first_closure_stamps = retained_body_closure_stamps(&session, &key);
+        let (first_locator_stamp, _) = retained_body_source_locator(&session, &key);
         assert_eq!(
             first_errors
                 .first()
@@ -8150,9 +8250,19 @@ mod tests {
         session.update(&shifted).into_result().unwrap();
         let shifted_errors = session.canonical_semantic(&options).unwrap_err();
         let (shifted_stamp, _, _) = retained_body_transaction(&session, &key);
+        let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
+        let (shifted_locator_stamp, _) = retained_body_source_locator(&session, &key);
         assert_eq!(
             shifted_stamp, first_stamp,
             "a locator-only edit must reuse the semantic body transaction",
+        );
+        assert_eq!(
+            shifted_closure_stamps, first_closure_stamps,
+            "positioned diagnostic payload must not restamp the semantic body closure",
+        );
+        assert_ne!(
+            shifted_locator_stamp, first_locator_stamp,
+            "diagnostics obtain the shifted position from the independent locator projection",
         );
         let shifted_span = shifted_errors
             .first()
@@ -8163,6 +8273,69 @@ mod tests {
             u32::try_from(shifted_text.find("missing_name").unwrap()).unwrap(),
         );
         assert_eq!(shifted_span.file_id, crate::FileId::new(1));
+    }
+
+    #[test]
+    fn whitespace_above_definition_reuses_semantic_shards_and_body_closure() {
+        let first_text = "fn main() -> i32 { 0 }";
+        let shifted_text = "// position-only leading trivia\n\nfn main() -> i32 { 0 }";
+        let first = snapshot(&[(1, "/p/main.rue", "main.rue", first_text)], 1);
+        let shifted = snapshot(&[(1, "/p/main.rue", "main.rue", shifted_text)], 1);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+
+        session.update(&first).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let key = body_query_key(&mut session, &options, "main");
+        let first_body_stamps = retained_body_query_stamps(&session, &key);
+        let first_closure_stamps = retained_body_closure_stamps(&session, &key);
+        let (first_locator_stamp, first_locator) = retained_body_source_locator(&session, &key);
+
+        session.update(&shifted).into_result().unwrap();
+        let warm = session.canonical_semantic(&options).unwrap();
+        let shifted_body_stamps = retained_body_query_stamps(&session, &key);
+        let shifted_closure_stamps = retained_body_closure_stamps(&session, &key);
+        let (shifted_locator_stamp, shifted_locator) = retained_body_source_locator(&session, &key);
+
+        assert_eq!(
+            shifted_body_stamps, first_body_stamps,
+            "position-only edits keep the body transaction and its semantic projections green",
+        );
+        assert_eq!(
+            shifted_closure_stamps, first_closure_stamps,
+            "the aggregate body-analysis bundle and body closure stay green",
+        );
+        assert_ne!(
+            shifted_locator_stamp, first_locator_stamp,
+            "the independently stamped source-locator projection refreshes",
+        );
+        assert_eq!(first_locator.declaration_start, 0);
+        assert_eq!(
+            shifted_locator.declaration_start,
+            u32::try_from(shifted_text.find("fn main").unwrap()).unwrap(),
+        );
+        assert_eq!(
+            shifted_locator.body_start,
+            u32::try_from(shifted_text.find("{ 0 }").unwrap()).unwrap(),
+        );
+        assert_eq!(warm.work().body_analysis.body_analyses_computed, 0);
+        assert_eq!(warm.work().body_analysis.body_analyses_reused, 1);
+
+        let merge = session.unstable_metrics().merge_metrics();
+        assert_eq!(merge.definition_shards_indexed, 1);
+        assert_eq!(merge.definition_shards_reused, 1);
+        assert_eq!(merge.definition_shards_rebuilt, 0);
+        let merged = session.merge().unwrap();
+        let main = merged
+            .definitions()
+            .definitions()
+            .find(|definition| definition.name_key().name() == "main")
+            .unwrap();
+        assert_eq!(
+            main.declaration_span().start,
+            u32::try_from(shifted_text.find("fn main").unwrap()).unwrap(),
+            "reusing the position-free shard must still rebuild current navigation records",
+        );
     }
 
     #[test]

@@ -21,6 +21,77 @@ pub(crate) struct BodyRelativeRange {
     pub(crate) end: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyDiagnosticOffset {
+    Declaration(u32),
+    Body(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BodyDiagnosticCoordinate {
+    Relative {
+        start: BodyDiagnosticOffset,
+        end: BodyDiagnosticOffset,
+    },
+    Preserved {
+        file_id: rue_span::FileId,
+        start: u32,
+        end: u32,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BodyDiagnosticBasis {
+    pub(crate) coordinates: Arc<[BodyDiagnosticCoordinate]>,
+}
+
+pub(crate) fn relative_body_diagnostics(
+    errors: crate::CompileErrors,
+    source: &BodySourceLocator,
+) -> (crate::CompileErrors, BodyDiagnosticBasis) {
+    let mut coordinates = Vec::new();
+    let errors = errors.map_spans(|span| {
+        let coordinate = if span.file_id == source.file_id
+            && span.start >= source.declaration_start
+            && span.end <= source.body_end
+        {
+            let offset = |position| {
+                if position >= source.body_start {
+                    BodyDiagnosticOffset::Body(position - source.body_start)
+                } else {
+                    BodyDiagnosticOffset::Declaration(position - source.declaration_start)
+                }
+            };
+            BodyDiagnosticCoordinate::Relative {
+                start: offset(span.start),
+                end: offset(span.end),
+            }
+        } else {
+            BodyDiagnosticCoordinate::Preserved {
+                file_id: span.file_id,
+                start: span.start,
+                end: span.end,
+            }
+        };
+        coordinates.push(coordinate);
+
+        // The typed coordinate stream owns every location. Erasing the payload
+        // prevents stale absolute positions from entering semantic equality and
+        // makes projection independent of any otherwise-valid FileId value.
+        let mut erased = span;
+        erased.file_id = rue_span::FileId::DEFAULT;
+        erased.start = 0;
+        erased.end = 0;
+        erased
+    });
+    (
+        errors,
+        BodyDiagnosticBasis {
+            coordinates: coordinates.into(),
+        },
+    )
+}
+
 pub(crate) fn body_source_locator_equal(
     left: &Option<BodySourceLocator>,
     right: &Option<BodySourceLocator>,
@@ -238,7 +309,7 @@ pub(crate) enum BodyTransaction {
     },
     DeterministicFailure {
         errors: crate::CompileErrors,
-        diagnostic_basis: Option<BodySourceLocator>,
+        diagnostic_basis: Option<BodyDiagnosticBasis>,
         references: BodyReferences,
         lookup_observations: BodyLookupObservations,
     },
@@ -247,29 +318,15 @@ pub(crate) enum BodyTransaction {
 
 #[derive(Debug, Clone)]
 pub(crate) struct BodyAnalysisBundle {
+    // This aggregate is semantic-only so its enclosing BodyClosure can stay
+    // green across relocation. Presentation consumers request the exact
+    // BodySourceLocator projection for their current revision.
     pub(crate) transaction: BodyTransaction,
     pub(crate) produced_anonymous: Option<ProducedAnonymous>,
-    pub(crate) source_locator: Option<BodySourceLocator>,
 }
 
 pub(crate) fn analysis_bundle_equal(left: &BodyAnalysisBundle, right: &BodyAnalysisBundle) -> bool {
-    let transaction_equal = match (&left.transaction, &right.transaction) {
-        (
-            BodyTransaction::DeterministicFailure {
-                errors: left_errors,
-                references: left_references,
-                ..
-            },
-            BodyTransaction::DeterministicFailure {
-                errors: right_errors,
-                references: right_references,
-                ..
-            },
-        ) => left_errors == right_errors && left_references == right_references,
-        (left, right) => transaction_equal(left, right),
-    };
-    transaction_equal
-        && left.source_locator == right.source_locator
+    transaction_equal(&left.transaction, &right.transaction)
         && match (&left.produced_anonymous, &right.produced_anonymous) {
             (Some(left), Some(right)) => produced_anonymous_equal(left, right),
             (None, None) => true,
@@ -508,15 +565,21 @@ pub(crate) fn transaction_equal(left: &BodyTransaction, right: &BodyTransaction)
         (
             BodyTransaction::DeterministicFailure {
                 errors: left_errors,
+                diagnostic_basis: left_basis,
                 references: left_references,
                 ..
             },
             BodyTransaction::DeterministicFailure {
                 errors: right_errors,
+                diagnostic_basis: right_basis,
                 references: right_references,
                 ..
             },
-        ) => left_errors == right_errors && left_references == right_references,
+        ) => {
+            left_errors == right_errors
+                && left_basis == right_basis
+                && left_references == right_references
+        }
         (
             BodyTransaction::Control(BodyTransactionControl::DeferredAnonymousProducers(left)),
             BodyTransaction::Control(BodyTransactionControl::DeferredAnonymousProducers(right)),

@@ -225,6 +225,8 @@ pub(crate) struct RevisionedQueryDatabase {
     raw_declaration_bodies: QueryFamily<RawDeclarationBodyQueryKey, RawDeclarationBodyQueryValue>,
     #[allow(dead_code)]
     body_inputs: QueryFamily<crate::body_query::BodyQueryKey, crate::body_query::BodyInputValue>,
+    body_source_locators:
+        QueryFamily<crate::body_query::BodyQueryKey, Option<crate::body_query::BodySourceLocator>>,
     // The registered `body-toolchain-demands` node (RUE-1112). It projects one
     // reached body's exact raw declaration body to the sorted, deduplicated set
     // of trusted toolchain modules its fallible intrinsics demand plus the
@@ -1919,7 +1921,7 @@ fn module_input_view(
         .ok_or(QueryAbort::UnpublishedRevision(revision))
 }
 
-fn project_transaction_diagnostics(
+pub(crate) fn project_transaction_diagnostics(
     transaction: crate::body_query::BodyTransaction,
     current: Option<&crate::body_query::BodySourceLocator>,
 ) -> crate::body_query::BodyTransaction {
@@ -1931,43 +1933,75 @@ fn project_transaction_diagnostics(
             references,
             lookup_observations,
         } => {
-            let errors = match (diagnostic_basis.as_ref(), current) {
-                (Some(basis), Some(current)) => errors.map_spans(|span| {
-                    if span.file_id != basis.file_id
-                        || span.start < basis.declaration_start
-                        || span.end > basis.body_end
-                    {
-                        return span;
-                    }
-                    let project = |offset: u32| {
-                        if offset >= basis.body_start {
-                            current
-                                .body_start
-                                .saturating_add(offset - basis.body_start)
-                                .min(current.body_end)
-                        } else {
-                            current
-                                .declaration_start
-                                .saturating_add(offset - basis.declaration_start)
-                                .min(current.declaration_end)
+            let errors = if let Some(basis) = diagnostic_basis.as_ref() {
+                let mut coordinates = basis.coordinates.iter();
+                let errors = errors.map_spans(|mut span| {
+                    let coordinate = coordinates
+                        .next()
+                        .expect("body diagnostic coordinates match diagnostic spans");
+                    match coordinate {
+                        crate::body_query::BodyDiagnosticCoordinate::Relative { start, end } => {
+                            let Some(current) = current else {
+                                return span;
+                            };
+                            let project =
+                                |offset: &crate::body_query::BodyDiagnosticOffset| match offset {
+                                    crate::body_query::BodyDiagnosticOffset::Declaration(
+                                        offset,
+                                    ) => current
+                                        .declaration_start
+                                        .saturating_add(*offset)
+                                        .min(current.declaration_end),
+                                    crate::body_query::BodyDiagnosticOffset::Body(offset) => {
+                                        current
+                                            .body_start
+                                            .saturating_add(*offset)
+                                            .min(current.body_end)
+                                    }
+                                };
+                            span.file_id = current.file_id;
+                            span.start = project(start);
+                            span.end = project(end);
+                            span
                         }
-                    };
-                    rue_span::Span::with_file(
-                        current.file_id,
-                        project(span.start),
-                        project(span.end),
-                    )
-                }),
-                _ => errors,
+                        crate::body_query::BodyDiagnosticCoordinate::Preserved {
+                            file_id,
+                            start,
+                            end,
+                        } => {
+                            span.file_id = *file_id;
+                            span.start = *start;
+                            span.end = *end;
+                            span
+                        }
+                    }
+                });
+                errors
+            } else {
+                errors
             };
             BodyTransaction::DeterministicFailure {
                 errors,
-                diagnostic_basis: current.cloned().or(diagnostic_basis),
+                diagnostic_basis,
                 references,
                 lookup_observations,
             }
         }
         other => other,
+    }
+}
+
+fn body_failure_with_source(
+    error: crate::CompileError,
+    source: &crate::body_query::BodySourceLocator,
+) -> crate::body_query::BodyTransaction {
+    let (errors, diagnostic_basis) =
+        crate::body_query::relative_body_diagnostics(crate::CompileErrors::from(error), source);
+    crate::body_query::BodyTransaction::DeterministicFailure {
+        errors,
+        diagnostic_basis: Some(diagnostic_basis),
+        references: crate::body_query::BodyReferences(Arc::from([])),
+        lookup_observations: crate::body_query::BodyLookupObservations::default(),
     }
 }
 
@@ -12582,7 +12616,6 @@ impl RevisionedQueryDatabase {
         let transactions_for_analysis_bundle = body_transactions.clone();
         let produced_for_analysis_bundle = body_produced_anonymous.clone();
         let canonical_for_analysis_bundle = canonical_bodies.clone();
-        let locators_for_analysis_bundle = body_source_locators.clone();
         let body_analysis_bundles = runtime
             .family_with_equality_and_evaluator(
                 "compiler.body-analysis-bundle",
@@ -12595,14 +12628,7 @@ impl RevisionedQueryDatabase {
                     else {
                         unreachable!("BodyTransaction publishes typed values")
                     };
-                    let current =
-                        context.query_registered(&locators_for_analysis_bundle, key.clone())?;
-                    let current = match current.outcome() {
-                        rue_query::QueryOutcome::Success(Some(locator)) => Some(locator),
-                        _ => None,
-                    };
-                    let transaction = project_transaction_diagnostics(transaction.clone(), current);
-                    let produced_anonymous = match &transaction {
+                    let produced_anonymous = match transaction {
                         crate::body_query::BodyTransaction::Success { .. } => {
                             let produced = context
                                 .query_registered(&produced_for_analysis_bundle, key.clone())?;
@@ -12631,9 +12657,8 @@ impl RevisionedQueryDatabase {
                         QueryTerminalKind::Failure
                     };
                     Ok(QueryOutput::success(crate::body_query::BodyAnalysisBundle {
-                        transaction,
+                        transaction: transaction.clone(),
                         produced_anonymous,
-                        source_locator: current.cloned(),
                     })
                     .with_terminal_kind(terminal_kind))
                 },
@@ -13740,6 +13765,7 @@ impl RevisionedQueryDatabase {
             #[cfg(test)]
             raw_declaration_bodies: raw_declaration_bodies.clone(),
             body_inputs,
+            body_source_locators,
             body_toolchain_demands,
             body_transactions,
             canonical_bodies,
@@ -15033,12 +15059,7 @@ impl BodyTransactionEvaluator {
                             }
                         }
                     }
-                    Err(error) => crate::body_query::BodyTransaction::DeterministicFailure {
-                        diagnostic_basis: Some(input.source.clone()),
-                        errors: crate::CompileErrors::from(error),
-                        references: crate::body_query::BodyReferences(Arc::from([])),
-                        lookup_observations: crate::body_query::BodyLookupObservations::default(),
-                    },
+                    Err(error) => body_failure_with_source(error, &input.source),
                 }
             } else if let crate::FunctionInstanceKey::Specialization { base: _, arguments } =
                 &key.instance
@@ -15304,12 +15325,7 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(error) => crate::body_query::BodyTransaction::DeterministicFailure {
-                        diagnostic_basis: Some(input.source.clone()),
-                        errors: crate::CompileErrors::from(error),
-                        references: crate::body_query::BodyReferences(Arc::from([])),
-                        lookup_observations: crate::body_query::BodyLookupObservations::default(),
-                    },
+                    Err(error) => body_failure_with_source(error, &input.source),
                 }
             } else if let crate::FunctionInstanceKey::AnonymousMember { owner, member } =
                 &key.instance
@@ -15370,7 +15386,6 @@ impl BodyTransactionEvaluator {
                     source_length: source_basis.source_length,
                 };
                 let producer_fragment_start = source_basis.body_start;
-                let diagnostic_basis = Some(source_basis.clone());
                 let lowering = match lower_anonymous_member_body_input(
                     member_input,
                     member,
@@ -15518,12 +15533,7 @@ impl BodyTransactionEvaluator {
                             },
                         }
                     }
-                    Err(error) => crate::body_query::BodyTransaction::DeterministicFailure {
-                        diagnostic_basis,
-                        errors: crate::CompileErrors::from(error),
-                        references: crate::body_query::BodyReferences(Arc::from([])),
-                        lookup_observations: crate::body_query::BodyLookupObservations::default(),
-                    },
+                    Err(error) => body_failure_with_source(error, source_basis),
                 }
             } else {
                 crate::body_query::BodyTransaction::DeterministicFailure {
@@ -15831,6 +15841,22 @@ impl RevisionedQueryDatabase {
     ) -> Result<Arc<rue_query::QueryTerminal<crate::body_query::CanonicalBody>>, QueryAbort> {
         self.runtime
             .request_registered(&self.canonical_bodies, revision, key, cancellation)
+            .into_result()
+    }
+
+    /// Request the current presentation locator for one body independently of
+    /// its retained semantic transaction and aggregate body closure.
+    pub(crate) fn body_source_locator_projection(
+        &self,
+        revision: Revision,
+        key: crate::body_query::BodyQueryKey,
+        cancellation: CancellationToken,
+    ) -> Result<
+        Arc<rue_query::QueryTerminal<Option<crate::body_query::BodySourceLocator>>>,
+        QueryAbort,
+    > {
+        self.runtime
+            .request_registered(&self.body_source_locators, revision, key, cancellation)
             .into_result()
     }
 
@@ -33557,6 +33583,149 @@ fn main() -> i32 {
                 "BodyInput evaluator boundary contains banned artifact `{banned}`"
             );
         }
+    }
+
+    #[test]
+    fn anonymous_member_body_anchors_are_producer_fragment_relative() {
+        let first_text = "// unrelated leading source\nfn Box() -> type {\n    struct { fn get(self) -> i32 { 7 } }\n}";
+        let shifted_text = "// another position-only line\n// unrelated leading source\nfn Box() -> type {\n    struct { fn get(self) -> i32 { 7 } }\n}";
+        let source = |text| source_snapshot(&[(1, "/main.rue", "main.rue", text)], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let producer = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(free_function_instance(&module, "Box")),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        let key = crate::body_query::BodyQueryKey {
+            instance: producer,
+            configuration: semantic_configuration(),
+        };
+        let member_syntax =
+            |terminal: &rue_query::QueryTerminal<crate::body_query::ProducedAnonymous>| {
+                let rue_query::QueryOutcome::Success(
+                    crate::body_query::ProducedAnonymous::Produced(produced),
+                ) = terminal.outcome()
+                else {
+                    panic!("anonymous producer did not publish its member syntax")
+                };
+                produced
+                    .0
+                    .iter()
+                    .find_map(|nominal| {
+                        let crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                            methods,
+                            ..
+                        } = &nominal.shape
+                        else {
+                            return None;
+                        };
+                        methods
+                            .iter()
+                            .find(|method| method.name.as_ref() == "get")?
+                            .body
+                            .clone()
+                    })
+                    .expect("producer publishes the anonymous get body")
+            };
+
+        let mut database = RevisionedQueryDatabase::default();
+        let first_source = source(first_text);
+        let first_revision = revision_for(&mut database, &first_source);
+        let first = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            first_revision,
+            key.clone(),
+            CancellationToken::new(),
+        );
+        let first_terminal = first.terminal().unwrap();
+        let first_syntax = member_syntax(first_terminal);
+        let producer_fragment_start = first_text.find("{\n    struct").unwrap();
+        let declaration_start = first_text.find("fn get").unwrap() - producer_fragment_start;
+        let body_start = first_text.find("{ 7 }").unwrap() - producer_fragment_start;
+        assert_eq!(
+            first_syntax.declaration_start,
+            u32::try_from(declaration_start).unwrap(),
+        );
+        assert_eq!(first_syntax.body_start, u32::try_from(body_start).unwrap());
+        assert_eq!(
+            first_syntax.body_end,
+            u32::try_from(body_start + "{ 7 }".len()).unwrap(),
+        );
+
+        let shifted_source = source(shifted_text);
+        let shifted_revision = revision_for(&mut database, &shifted_source);
+        let shifted = database.runtime.request_registered(
+            &database.body_produced_anonymous,
+            shifted_revision,
+            key,
+            CancellationToken::new(),
+        );
+        let shifted_terminal = shifted.terminal().unwrap();
+        assert_eq!(
+            shifted_terminal.stamp(),
+            first_terminal.stamp(),
+            "moving the producer in its module must not restamp its member syntax",
+        );
+        assert_eq!(member_syntax(shifted_terminal), first_syntax);
+    }
+
+    #[test]
+    fn body_diagnostic_projection_preserves_nonlocal_and_unknown_spans() {
+        let source = crate::body_query::BodySourceLocator {
+            file_id: FileId::new(7),
+            physical_path: Arc::from("/old/main.rue"),
+            source_length: 180,
+            declaration_start: 100,
+            declaration_end: 150,
+            body_start: 120,
+            body_end: 145,
+        };
+        let local = crate::Span::with_file(source.file_id, 125, 128);
+        let absolute = crate::Span::with_file(FileId::new(8), 4, 6);
+        let unknown = crate::Span::new(2, 3);
+        let empty_unknown = crate::Span::default();
+        let mut errors = crate::CompileErrors::new();
+        for span in [local, absolute, unknown, empty_unknown] {
+            errors.push(crate::CompileError::new(
+                crate::ErrorKind::InvalidInteger,
+                span,
+            ));
+        }
+        let (errors, diagnostic_basis) =
+            crate::body_query::relative_body_diagnostics(errors, &source);
+        let transaction = crate::body_query::BodyTransaction::DeterministicFailure {
+            errors,
+            diagnostic_basis: Some(diagnostic_basis),
+            references: crate::body_query::BodyReferences(Arc::from([])),
+            lookup_observations: crate::body_query::BodyLookupObservations::default(),
+        };
+
+        let current = crate::body_query::BodySourceLocator {
+            file_id: FileId::new(9),
+            physical_path: Arc::from("/current/main.rue"),
+            source_length: 280,
+            declaration_start: 200,
+            declaration_end: 250,
+            body_start: 220,
+            body_end: 245,
+        };
+        let crate::body_query::BodyTransaction::DeterministicFailure { errors, .. } =
+            project_transaction_diagnostics(transaction, Some(&current))
+        else {
+            panic!("diagnostic projection preserves the transaction variant")
+        };
+        let projected: Vec<_> = errors
+            .iter()
+            .map(|error| error.span().expect("test diagnostics have primary spans"))
+            .collect();
+        assert_eq!(
+            projected,
+            [
+                crate::Span::with_file(current.file_id, 225, 228),
+                absolute,
+                unknown,
+                empty_unknown,
+            ]
+        );
     }
 
     #[test]

@@ -178,7 +178,8 @@ pub struct DefinitionShardWork {
 #[derive(Debug, Clone)]
 pub struct DefinitionShard {
     key: ModuleId,
-    file_id: FileId,
+    // Reuse-critical facts only. Current file IDs and spans are projected from
+    // the successor ModuleIndex when DefinitionRecords are materialized.
     records: Arc<[DefinitionShardRecord]>,
 }
 
@@ -188,18 +189,14 @@ struct DefinitionShardRecord {
     kind: DefinitionKind,
     visibility: Option<Visibility>,
     name: Arc<str>,
-    name_span: Span,
-    declaration_span: Span,
 }
 
 impl DefinitionShard {
     fn matches_index(
         &self,
-        module: &crate::parsed_modules::ParsedModule,
         index: &crate::revisioned_query_database::ProjectedModuleIndex,
     ) -> bool {
-        self.file_id == module.file_id()
-            && self.records.len() == index.definitions.len()
+        self.records.len() == index.definitions.len()
             && self
                 .records
                 .iter()
@@ -209,8 +206,6 @@ impl DefinitionShard {
                         && record.kind == candidate.kind
                         && record.visibility == candidate.visibility
                         && record.name == candidate.name
-                        && record.name_span == candidate.name_span
-                        && record.declaration_span == candidate.declaration_span
                 })
     }
 }
@@ -302,8 +297,6 @@ impl DefinitionSnapshot {
                         kind: candidate.kind,
                         visibility: candidate.visibility,
                         name: candidate.name.clone(),
-                        name_span: candidate.name_span,
-                        declaration_span: candidate.declaration_span,
                     })
                     .collect::<Vec<_>>()
             };
@@ -315,7 +308,7 @@ impl DefinitionSnapshot {
                         .ok()
                         .map(|position| snapshot.shards[position].clone())
                 })
-                .filter(|shard| shard.matches_index(module, index));
+                .filter(|shard| shard.matches_index(index));
             let shard = if let Some(shard) = shard {
                 work.shards_reused += 1;
                 shard
@@ -323,12 +316,16 @@ impl DefinitionSnapshot {
                 work.shards_rebuilt += 1;
                 Arc::new(DefinitionShard {
                     key: module.module_id().clone(),
-                    file_id: module.file_id(),
                     records: candidate_records().into(),
                 })
             };
             let mut definitions = Vec::with_capacity(shard.records.len());
-            for (definition_index, candidate) in shard.records.iter().enumerate() {
+            for (definition_index, (candidate, current)) in shard
+                .records
+                .iter()
+                .zip(index.definitions.iter())
+                .enumerate()
+            {
                 let id = DefinitionId {
                     module_index,
                     definition_index,
@@ -348,8 +345,8 @@ impl DefinitionSnapshot {
                     kind: candidate.kind,
                     visibility: candidate.visibility,
                     file_id: module.file_id(),
-                    name_span: candidate.name_span,
-                    declaration_span: candidate.declaration_span,
+                    name_span: current.name_span,
+                    declaration_span: current.declaration_span,
                 });
             }
             modules.push(ModuleDefinition {
