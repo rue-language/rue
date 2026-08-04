@@ -3260,7 +3260,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     }
                     Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
                         file_id: def.file_id,
-                        name: Arc::from(def.name),
+                        name: Arc::from(def.name.as_str()),
                         kind: StableDefinitionKind::Struct,
                     }))
                 }
@@ -3276,7 +3276,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 } else {
                     Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
                         file_id: def.file_id,
-                        name: Arc::from(def.name),
+                        name: Arc::from(def.name.as_str()),
                         kind: StableDefinitionKind::Enum,
                     }))
                 }
@@ -3489,8 +3489,13 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     let def = self.type_pool.struct_def(sid);
                     let fields = def
                         .fields
-                        .into_iter()
-                        .map(|f| Ok((Arc::from(f.name), self.export_type(f.ty, &mut Vec::new())?)))
+                        .iter()
+                        .map(|f| {
+                            Ok((
+                                Arc::from(f.name.as_str()),
+                                self.export_type(f.ty, &mut Vec::new())?,
+                            ))
+                        })
                         .collect::<Result<Vec<_>, _>>()?;
                     SemanticDeclarationPayload::Struct {
                         fields: fields.into(),

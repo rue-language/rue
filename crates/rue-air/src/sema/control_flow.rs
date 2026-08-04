@@ -1276,7 +1276,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(super::analysis::non_exhaustive_match_error(
                 span,
                 scrutinee_type,
-                enum_def.as_ref(),
+                enum_def.as_deref(),
                 |i| covered_variants.contains_key(&i),
                 bool_true_covered,
                 bool_false_covered,

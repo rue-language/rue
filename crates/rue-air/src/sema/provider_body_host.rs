@@ -389,7 +389,7 @@ where
         if def.is_builtin || def.name == "str" {
             return Ok(crate::NominalInstanceKey::Builtin {
                 kind: crate::AnonymousNominalKind::Struct,
-                name: def.name.into(),
+                name: def.name.as_str().into(),
             });
         }
         let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
@@ -410,7 +410,7 @@ where
         {
             return Ok(crate::NominalInstanceKey::Builtin {
                 kind: crate::AnonymousNominalKind::Enum,
-                name: def.name.into(),
+                name: def.name.as_str().into(),
             });
         }
         if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
@@ -2046,7 +2046,7 @@ where
         if methods.is_empty() {
             return Some(());
         }
-        let owner_name = self.type_pool.struct_def(struct_id).name;
+        let owner_name = self.type_pool.struct_def(struct_id).name.clone();
         let mut infos = Vec::with_capacity(methods.len());
         let mut signatures = Vec::with_capacity(methods.len());
         for method in methods {
@@ -2163,7 +2163,7 @@ where
         if methods.is_empty() {
             return Some(());
         }
-        let owner_name = self.type_pool.struct_def(struct_id).name;
+        let owner_name = self.type_pool.struct_def(struct_id).name.clone();
         for method in methods {
             let name = self.interner.get_or_intern(method.name.as_ref());
             let callable_name = if method.has_self {

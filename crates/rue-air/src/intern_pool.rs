@@ -224,23 +224,32 @@ impl ValidationMode {
 /// Data for a struct type in the intern pool.
 ///
 /// The pool entry for a nominal struct and its definition.
+///
+/// The definition is held behind an `Arc` because it is effectively immutable
+/// once installed: only destructor assignment, destructor requalification, and
+/// the linearity marker write to it, each once per nominal during declaration
+/// finalization (through `Arc::make_mut`). Every other read — including the
+/// mutable pool's `struct_def` accessors, which cannot hand out a borrow across
+/// their `RwLock` — is a refcount bump instead of a deep clone of the name,
+/// field vector, and per-field names (RUE-1147).
 #[derive(Debug, Clone)]
 pub struct StructData {
     /// The name symbol (interned string).
     pub name: Spur,
     /// The canonical struct definition stored at this pool index.
-    pub def: StructDef,
+    pub def: Arc<StructDef>,
 }
 
 /// Data for an enum type in the intern pool.
 ///
-/// The pool entry for a nominal enum and its definition.
+/// The pool entry for a nominal enum and its definition. The definition is
+/// `Arc`-held for the same reason as [`StructData::def`].
 #[derive(Debug, Clone)]
 pub struct EnumData {
     /// The name symbol (interned string).
     pub name: Spur,
     /// The canonical enum definition stored at this pool index.
-    pub def: EnumDef,
+    pub def: Arc<EnumDef>,
 }
 
 /// Declaration-only struct metadata available before field resolution.
@@ -907,7 +916,7 @@ impl TypeInternPoolInner {
                 && value.carries_linear
                 && let TypeData::Struct(data) = self.entry_mut(index)
             {
-                data.def.is_linear = true;
+                Arc::make_mut(&mut data.def).is_linear = true;
             }
         }
         for (index, value) in facts.into_iter().enumerate() {
@@ -992,6 +1001,15 @@ impl TypeInternPoolInner {
     }
 
     fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
+        self.try_struct_def_arc(id).map(Arc::as_ref)
+    }
+
+    /// The shared handle behind a completed struct definition.
+    ///
+    /// Callers that cannot hold a borrow — the mutable pool's accessors, which
+    /// would otherwise leak `RwLock` scope — clone this handle instead of the
+    /// definition it points at.
+    fn try_struct_def_arc(&self, id: StructId) -> Option<&Arc<StructDef>> {
         match self.try_entry(id.0 as usize)? {
             TypeData::Struct(data) => Some(&data.def),
             _ => None,
@@ -1041,7 +1059,7 @@ impl TypeInternPoolInner {
     fn struct_def_mut(&mut self, id: StructId) -> &mut StructDef {
         let pool_index = id.pool_index() as usize;
         match self.try_entry_mut(pool_index) {
-            Some(TypeData::Struct(data)) => &mut data.def,
+            Some(TypeData::Struct(data)) => Arc::make_mut(&mut data.def),
             other => panic!(
                 "Expected complete struct at pool index {}, got {:?}",
                 pool_index, other
@@ -1050,6 +1068,12 @@ impl TypeInternPoolInner {
     }
 
     fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
+        self.try_enum_def_arc(id).map(Arc::as_ref)
+    }
+
+    /// The shared handle behind a completed enum definition. See
+    /// [`TypeInternPoolInner::try_struct_def_arc`].
+    fn try_enum_def_arc(&self, id: EnumId) -> Option<&Arc<EnumDef>> {
         match self.try_entry(id.0 as usize)? {
             TypeData::Enum(data) => Some(&data.def),
             _ => None,
@@ -1438,12 +1462,12 @@ impl TypeInternPoolInner {
     /// to the maximum field alignment (minimum 1), and size rounded up to that
     /// alignment (so `stride == size`).
     fn compact_struct_layout(&self, struct_id: StructId) -> CompactAggregateLayout {
-        let fields = self.struct_def(struct_id).fields.clone();
+        let fields = &self.struct_def(struct_id).fields;
         let mut field_offsets = Vec::with_capacity(fields.len());
         let mut padding_ranges = Vec::new();
         let mut offset = 0u64;
         let mut alignment = 1u64;
-        for field in &fields {
+        for field in fields {
             let (field_size, field_align) = self.compact_size_align(field.ty);
             let placed = align_up(offset, field_align);
             if placed > offset {
@@ -1622,7 +1646,7 @@ impl TypeInternPoolInner {
         match ty.kind() {
             TypeKind::Struct(id) => {
                 let layout = self.compact_struct_layout(id);
-                let fields = self.struct_def(id).fields.clone();
+                let fields = &self.struct_def(id).fields;
                 for (field, &offset) in fields.iter().zip(layout.field_offsets.iter()) {
                     self.collect_compact_leaf_ranges(field.ty, base + offset, out);
                 }
@@ -1968,13 +1992,16 @@ impl TypeInternPool {
         let struct_id = StructId::from_pool_index(pool_index);
         let ty = Type::new_struct(struct_id);
 
-        let mut entry = TypeData::Struct(StructData { name, def });
+        let mut entry = TypeData::Struct(StructData {
+            name,
+            def: Arc::new(def),
+        });
         let facts = inner.incremental_facts(&entry);
         if facts.is_some_and(|facts| facts.carries_linear) {
             let TypeData::Struct(data) = &mut entry else {
                 unreachable!()
             };
-            data.def.is_linear = true;
+            Arc::make_mut(&mut data.def).is_linear = true;
         }
         inner.push_entry(entry, facts);
         inner.struct_by_file_name.insert(key, ty);
@@ -2007,7 +2034,10 @@ impl TypeInternPool {
         let pool_index = inner.next_pool_index();
         let ty = Type::new_struct(StructId::from_pool_index(pool_index));
         inner.push_entry(
-            TypeData::DeclaredStruct(StructData { name, def: shell }),
+            TypeData::DeclaredStruct(StructData {
+                name,
+                def: Arc::new(shell),
+            }),
             None,
         );
         inner.struct_by_file_name.insert(key, ty);
@@ -2086,13 +2116,16 @@ impl TypeInternPool {
 
         // Update the placeholder with actual data
         let key = (def.file_id, name);
-        let mut entry = TypeData::Struct(StructData { name, def });
+        let mut entry = TypeData::Struct(StructData {
+            name,
+            def: Arc::new(def),
+        });
         let facts = inner.incremental_facts(&entry);
         if facts.is_some_and(|facts| facts.carries_linear) {
             let TypeData::Struct(data) = &mut entry else {
                 unreachable!()
             };
-            data.def.is_linear = true;
+            Arc::make_mut(&mut data.def).is_linear = true;
         }
         *inner.entry_mut(pool_index) = entry;
         inner.set_facts(pool_index, facts);
@@ -2123,7 +2156,7 @@ impl TypeInternPool {
                 );
                 *entry = TypeData::Struct(StructData {
                     name: data.name,
-                    def,
+                    def: Arc::new(def),
                 });
             }
             other => panic!(
@@ -2170,7 +2203,10 @@ impl TypeInternPool {
         let enum_id = EnumId::from_pool_index(pool_index);
         let ty = Type::new_enum(enum_id);
 
-        let entry = TypeData::Enum(EnumData { name, def });
+        let entry = TypeData::Enum(EnumData {
+            name,
+            def: Arc::new(def),
+        });
         let facts = inner.incremental_facts(&entry);
         inner.push_entry(entry, facts);
         inner.enum_by_file_name.insert(key, ty);
@@ -2202,7 +2238,13 @@ impl TypeInternPool {
 
         let pool_index = inner.next_pool_index();
         let ty = Type::new_enum(EnumId::from_pool_index(pool_index));
-        inner.push_entry(TypeData::DeclaredEnum(EnumData { name, def: shell }), None);
+        inner.push_entry(
+            TypeData::DeclaredEnum(EnumData {
+                name,
+                def: Arc::new(shell),
+            }),
+            None,
+        );
         inner.enum_by_file_name.insert(key, ty);
         (EnumId::from_pool_index(pool_index), true)
     }
@@ -2227,7 +2269,7 @@ impl TypeInternPool {
                 );
                 *entry = TypeData::Enum(EnumData {
                     name: data.name,
-                    def,
+                    def: Arc::new(def),
                 });
             }
             other => panic!(
@@ -2413,7 +2455,7 @@ impl TypeInternPool {
     }
 
     /// Get the struct definition if this is a struct type.
-    pub fn get_struct_def(&self, ty: Type) -> Option<StructDef> {
+    pub fn get_struct_def(&self, ty: Type) -> Option<Arc<StructDef>> {
         match self.get(ty)? {
             TypeData::Struct(data) => Some(data.def),
             _ => None,
@@ -2421,7 +2463,7 @@ impl TypeInternPool {
     }
 
     /// Get the enum definition if this is an enum type.
-    pub fn get_enum_def(&self, ty: Type) -> Option<EnumDef> {
+    pub fn get_enum_def(&self, ty: Type) -> Option<Arc<EnumDef>> {
         match self.get(ty)? {
             TypeData::Enum(data) => Some(data.def),
             _ => None,
@@ -2445,25 +2487,28 @@ impl TypeInternPool {
 
     /// Get a struct definition by StructId.
     ///
-    /// This method resolves the pool-issued identity and returns a clone of its
-    /// definition.
+    /// This method resolves the pool-issued identity and returns the shared
+    /// handle to its definition. The `RwLock` is released before the handle is
+    /// returned, so the read costs one refcount bump rather than a deep clone
+    /// of the definition (RUE-1147). [`FrozenTypeInternPool::struct_def`] is
+    /// the borrow-returning counterpart for consumers that own the pool.
     ///
     /// # Panics
     ///
     /// Panics if the StructId doesn't correspond to a struct in the pool.
     #[track_caller]
-    pub fn struct_def(&self, struct_id: StructId) -> StructDef {
+    pub fn struct_def(&self, struct_id: StructId) -> Arc<StructDef> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        match inner.try_struct_def(struct_id) {
-            Some(def) => def.clone(),
+        match inner.try_struct_def_arc(struct_id) {
+            Some(def) => Arc::clone(def),
             None => panic!("Expected complete struct at pool index {}", struct_id.0),
         }
     }
 
     /// Get a struct definition without panicking on an invalid or wrong-kind ID.
-    pub fn try_struct_def(&self, struct_id: StructId) -> Option<StructDef> {
+    pub fn try_struct_def(&self, struct_id: StructId) -> Option<Arc<StructDef>> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.try_struct_def(struct_id).cloned()
+        inner.try_struct_def_arc(struct_id).map(Arc::clone)
     }
 
     pub(crate) fn struct_declaration_metadata(
@@ -2575,25 +2620,26 @@ impl TypeInternPool {
 
     /// Get an enum definition by EnumId.
     ///
-    /// This method resolves the pool-issued identity and returns a clone of its
-    /// definition.
+    /// This method resolves the pool-issued identity and returns the shared
+    /// handle to its definition, on the same terms as
+    /// [`Self::struct_def`] (RUE-1147).
     ///
     /// # Panics
     ///
     /// Panics if the EnumId doesn't correspond to an enum in the pool.
     #[track_caller]
-    pub fn enum_def(&self, enum_id: EnumId) -> EnumDef {
+    pub fn enum_def(&self, enum_id: EnumId) -> Arc<EnumDef> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        match inner.try_enum_def(enum_id) {
-            Some(def) => def.clone(),
+        match inner.try_enum_def_arc(enum_id) {
+            Some(def) => Arc::clone(def),
             None => panic!("Expected complete enum at pool index {}", enum_id.0),
         }
     }
 
     /// Get an enum definition without panicking on an invalid or wrong-kind ID.
-    pub fn try_enum_def(&self, enum_id: EnumId) -> Option<EnumDef> {
+    pub fn try_enum_def(&self, enum_id: EnumId) -> Option<Arc<EnumDef>> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.try_enum_def(enum_id).cloned()
+        inner.try_enum_def_arc(enum_id).map(Arc::clone)
     }
 
     pub(crate) fn enum_variant_count(&self, enum_id: EnumId) -> Option<usize> {
