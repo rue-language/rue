@@ -61,3 +61,19 @@ compiler enforces no lifetime, exclusivity, aliasing, or destructor guarantee on
 a pointer handed to or received from C; honoring the foreign side's ownership and
 lifetime contract is the programmer's responsibility, exactly as for the raw
 pointer and heap intrinsics of § 9.2.
+
+## Foreign redeclaration
+
+{{ rule(id="9.3:5", cat="normative") }}
+
+A foreign declaration describes an external C symbol rather than defining a Rue
+function, so the same symbol **MAY** be declared in more than one module of a
+program; all such declarations name one symbol, and one definition is linked in.
+Every declaration of one symbol **MUST** declare the same signature: the same
+number of parameters, pairwise-equal parameter types and passing modes, and the
+same return type. Parameter names are not part of the signature, and types are
+compared as resolved in each declaring module, so a nominal type declared
+separately in two modules is two distinct types even under one name. A program
+in which two foreign declarations of one symbol disagree is ill-formed and is
+rejected at compile time, naming both declaration sites; a redeclaration that
+agrees is accepted, as in C.

@@ -4551,4 +4551,188 @@ fn main() -> i32 {{
             ["c_answer", "__rue_fn_pkg_2fmain_2erue__rue_answer"]
         );
     }
+
+    // =========================================================================
+    // Foreign redeclaration (spec 9.3:5, RUE-1218)
+    // =========================================================================
+    // Because a foreign declaration's identity is the raw C symbol it names,
+    // two modules declaring the same C function land on one signature key.
+    // Identical redeclarations are legal (C's rule); disagreeing ones must be
+    // rejected instead of letting the last-installed signature silently win.
+
+    /// Bind the declarations of a multi-module program with the `c_ffi`
+    /// preview enabled. The first file is the root module.
+    fn bind_foreign_program(files: &[(&str, FileId, &str)]) -> MultiErrorResult<()> {
+        let sources = files
+            .iter()
+            .map(|&(source, file_id, _)| (source, file_id))
+            .collect::<Vec<_>>();
+        let (rir, interner) = lower_files(&sources);
+        let mut features = PreviewFeatures::new();
+        features.insert(PreviewFeature::CFfi);
+        let mut sema = Sema::new_synthetic(&rir, &interner, features);
+        sema.set_root_file_id(files[0].1);
+        sema.set_symbol_paths(
+            files
+                .iter()
+                .map(|&(_, file_id, path)| (file_id, path.to_owned()))
+                .collect::<HashMap<_, _>>(),
+        );
+        sema.bind_declarations().map(|_| ())
+    }
+
+    const FOREIGN_ROOT: (&str, FileId, &str) =
+        ("fn main() -> i32 { 0 }", FileId::new(1), "pkg/main.rue");
+
+    #[test]
+    fn conflicting_foreign_redeclarations_name_both_declaration_sites() {
+        let errors = bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn shared(x: i64) -> i64; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+            (
+                "extern \"C\" { fn shared() -> bool; }",
+                FileId::new(3),
+                "pkg/right.rue",
+            ),
+        ])
+        .expect_err("disagreeing declarations of one C symbol are rejected");
+        let error = errors
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::ForeignSignatureConflict(_)))
+            .expect("the conflict is reported as E1107");
+        let ErrorKind::ForeignSignatureConflict(payload) = &error.kind else {
+            unreachable!("just matched")
+        };
+        assert_eq!(payload.symbol, "shared");
+        assert_eq!(payload.declared, "fn() -> bool");
+        assert_eq!(payload.previously_declared, "fn(i64) -> i64");
+        // The primary span is the later declaration; the earlier one is a
+        // secondary label, so both sites are named.
+        assert_eq!(error.span().map(|span| span.file_id), Some(FileId::new(3)));
+        assert!(
+            error
+                .diagnostic()
+                .labels
+                .iter()
+                .any(|label| label.span.file_id == FileId::new(2)),
+            "the earlier declaration is labelled: {:?}",
+            error.diagnostic().labels
+        );
+    }
+
+    #[test]
+    fn identical_foreign_redeclarations_are_legal() {
+        // Parameter names are not part of a C symbol's contract, so the two
+        // declarations agree.
+        bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn shared(x: i64) -> i64; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+            (
+                "extern \"C\" { fn shared(y: i64) -> i64; }",
+                FileId::new(3),
+                "pkg/right.rue",
+            ),
+        ])
+        .expect("an identical redeclaration is legal, as in C");
+    }
+
+    #[test]
+    fn a_lone_foreign_declaration_is_unaffected() {
+        bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn shared(x: i64) -> i64; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+        ])
+        .expect("one foreign declaration has nothing to conflict with");
+    }
+
+    #[test]
+    fn a_same_named_ordinary_function_is_not_a_foreign_redeclaration() {
+        // An ordinary function's identity is module-qualified (RUE-1125), so it
+        // never occupies the C symbol's key and the rule does not apply to it.
+        bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn shared(x: i64) -> i64; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+            (
+                "pub fn shared() -> bool { true }",
+                FileId::new(3),
+                "pkg/right.rue",
+            ),
+        ])
+        .expect("a module-local Rue function is a different declaration entirely");
+    }
+
+    #[test]
+    fn foreign_redeclarations_disagreeing_only_in_parameter_mode_are_rejected() {
+        let errors = bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn shared(x: i64) -> i64; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+            (
+                "extern \"C\" { fn shared(borrow x: i64) -> i64; }",
+                FileId::new(3),
+                "pkg/right.rue",
+            ),
+        ])
+        .expect_err("passing mode is part of the declared signature");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::ForeignSignatureConflict(_))),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn same_spelled_foreign_signatures_over_distinct_nominals_are_rejected() {
+        // The comparison is on resolved types, not source text: each module's
+        // `Point` is its own nominal type even though both spell it the same.
+        let errors = bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "@repr(c)\n\
+                 pub struct Point { x: i32, y: i32 }\n\
+                 extern \"C\" { fn takes(p: Point) -> i32; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+            (
+                "@repr(c)\n\
+                 pub struct Point { x: i64 }\n\
+                 extern \"C\" { fn takes(p: Point) -> i32; }",
+                FileId::new(3),
+                "pkg/right.rue",
+            ),
+        ])
+        .expect_err("two distinct nominal types are two distinct signatures");
+        let error = errors
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::ForeignSignatureConflict(_)))
+            .expect("the conflict is reported as E1107");
+        assert!(
+            error.diagnostic().notes.iter().any(|note| note
+                .0
+                .contains("spelled alike but resolve to different types")),
+            "the diagnostic explains why two identical spellings disagree: {:?}",
+            error.diagnostic().notes
+        );
+    }
 }

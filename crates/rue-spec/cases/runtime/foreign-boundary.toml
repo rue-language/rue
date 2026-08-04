@@ -1,0 +1,68 @@
+# Foreign-boundary semantics (§ 9.3, ADR-0064, `c_ffi` preview).
+#
+# Most of § 9.3 is not coverable here: the abort-at-boundary proof needs a C
+# caller linked to a Rue export, and the reverse-direction and ownership rules
+# describe undefined / programmer-responsibility behavior (see
+# KNOWN_UNCOVERED_NORMATIVE). The redeclaration rule is an ordinary
+# compile-time rejection, so it is pinned directly.
+
+[section]
+id = "runtime.foreign_boundary"
+spec_chapter = "9.3"
+name = "Foreign-Boundary Semantics"
+description = "Rules governing the target-C foreign boundary: foreign redeclaration agreement."
+
+# =============================================================================
+# Foreign redeclaration (9.3:5, RUE-1218)
+# =============================================================================
+
+[[case]]
+name = "foreign_redeclaration_must_agree"
+spec = ["9.3:5"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "Two modules declaring one C symbol with disagreeing signatures is rejected, naming both sites"
+source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 { 0 }
+"""
+aux_files = { "a.rue" = """
+extern "C" {
+    fn shared(x: i64) -> i64;
+}
+""", "b.rue" = """
+extern "C" {
+    fn shared() -> bool;
+}
+""" }
+compile_fail = true
+error_contains = [
+    "E1107",
+    "conflicting signatures",
+    "shared",
+]
+
+[[case]]
+name = "foreign_redeclaration_that_agrees_is_accepted"
+spec = ["9.3:5"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "An identical redeclaration of one C symbol is legal, as in C; parameter names are not part of the signature"
+source = """
+const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 { 0 }
+"""
+aux_files = { "a.rue" = """
+extern "C" {
+    fn shared(x: i64) -> i64;
+}
+""", "b.rue" = """
+extern "C" {
+    fn shared(y: i64) -> i64;
+}
+""" }
+exit_code = 0
