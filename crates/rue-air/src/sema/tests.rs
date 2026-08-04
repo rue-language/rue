@@ -4167,6 +4167,142 @@ fn main() -> i32 { 0 }";
         );
     }
 
+    // ------------------------------------------------------------------
+    // Declared but never called (RUE-1212). 6.6:3-6.6:5 are legality rules
+    // on the declaration and hold with no call site anywhere, as does the
+    // trailing-exit half of 6.6:6, which the declaration's body shape
+    // decides. The rest of 6.6:6 and 6.6:7 need the per-instruction body
+    // analysis, which runs only for a demanded body; those are covered with
+    // a call site above.
+    // ------------------------------------------------------------------
+
+    const UNCALLED_MAIN: &str = "\nfn main() -> i32 { 0 }";
+
+    #[test]
+    fn uncalled_accessor_declaration_requires_preview() {
+        // 6.6:3 on a method: the accessor surface is gated even when the
+        // program never calls the accessor.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {{
+        yield self.x;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_to_air(&source).expect_err("the gate is off");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::PreviewFeatureRequired { feature, .. }
+                if *feature == PreviewFeature::BorrowAccessors
+        )));
+    }
+
+    #[test]
+    fn uncalled_accessor_receiver_mode_is_rejected() {
+        // 6.6:4 with no call site.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(inout self) -> borrow i64 {{
+        yield self.x;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("inout self accessor");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorRequiresBorrowSelf { found } if found == "an `inout self` receiver"
+        )));
+    }
+
+    #[test]
+    fn uncalled_associated_function_accessor_is_rejected() {
+        // 6.6:4: an associated function has no receiver to project from.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(k: i64) -> borrow i64 {{
+        yield k;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("associated fn accessor");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorRequiresBorrowSelf { found }
+                if found == "an associated function with no receiver"
+        )));
+    }
+
+    #[test]
+    fn uncalled_accessor_parameter_mode_is_rejected() {
+        // 6.6:5 with no call site.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(borrow self, borrow k: i64) -> borrow i64 {{
+        yield self.x;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("borrow accessor param");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorParamModeUnsupported { .. }))
+        );
+    }
+
+    #[test]
+    fn uncalled_accessor_body_requires_a_trailing_yield() {
+        // 6.6:6 with no call site. Which instruction is the trailing exit is
+        // decidable from the RIR, so this half of the rule holds without body
+        // analysis; rejecting the other exits still needs a demanded body.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {{
+        self.x
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("missing yield");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorBodyMissingYield))
+        );
+    }
+
+    #[test]
+    fn uncalled_legal_accessor_declaration_compiles() {
+        // Control: a well-formed accessor nothing calls is legal, so the
+        // unconditional declaration rules must not reject it.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {{
+        yield self.x;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        compile_with_accessors(&source).expect("a legal uncalled accessor compiles");
+    }
+
     #[test]
     fn accessor_guards_execute_before_the_read() {
         // The inlined guards must be part of the caller's AIR: the bounds

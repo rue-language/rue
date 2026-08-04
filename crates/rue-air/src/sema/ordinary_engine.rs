@@ -2146,9 +2146,17 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             // Declaration shape (ADR-0062 phase 1), re-checked at the engine
             // so it holds on every host that analyzes the body: the receiver
             // is a shared `borrow self`, and value parameters are plain
-            // by-value guard inputs. The epoch declaration collector reports
-            // the same errors earlier when it runs.
+            // by-value guard inputs. Predeclaration reports the same errors
+            // over the whole program before any body is demanded.
             let body_span = self.body_rir_ref().get(body).span;
+            // The `-> borrow` result position alone demands the preview
+            // (6.6:3), so an ungated program reports E1100 rather than a shape
+            // error about a form it cannot name yet.
+            self.require_preview(
+                rue_error::PreviewFeature::BorrowAccessors,
+                "a `-> borrow` accessor",
+                body_span,
+            )?;
             let self_sym_check = self.storage.body_interner().get_or_intern("self");
             match params
                 .iter()
@@ -2212,30 +2220,10 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 }
             }
 
-            // A single-statement body lowers to the instruction itself; a
-            // multi-statement body lowers to a block whose last instruction
-            // is the trailing exit.
-            let trailing = match &self.body_rir_ref().get(body).data {
-                rue_rir::InstData::Block { instructions } => self
-                    .body_rir_ref()
-                    .block_insts(instructions)
-                    .values()
-                    .last(),
-                _ => Some(body),
-            };
-            let trailing_yield = trailing.filter(|inst_ref| {
-                matches!(
-                    self.body_rir_ref().get(*inst_ref).data,
-                    rue_rir::InstData::Yield(_)
-                )
-            });
-            let Some(trailing_yield) = trailing_yield else {
-                return Err(CompileError::new(
-                    ErrorKind::AccessorBodyMissingYield,
-                    self.body_rir_ref().get(body).span,
-                ));
-            };
-            ctx.accessor_trailing_yield = Some(trailing_yield);
+            ctx.accessor_trailing_yield = Some(super::declarations::accessor_trailing_yield(
+                self.body_rir_ref(),
+                body,
+            )?);
         }
 
         // ======================================================================

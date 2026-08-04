@@ -2823,37 +2823,19 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
-    /// Reject a free function whose declared result is `-> borrow T`. The
-    /// accessor form (ADR-0062) hands out a projection of its receiver, so it
-    /// exists only on `borrow self` methods and a free function is the first
-    /// entry in the 6.6:4 rejection list. The result position alone also
-    /// demands the preview (6.6:3), so the gate runs first and an ungated
-    /// program reports E1100 rather than the shape error.
-    ///
-    /// The declaring `FnDecl` is the only carrier of this flag: the durable
-    /// signature records the result type's source spelling, which never
-    /// contains the result-position `borrow` qualifier.
+    /// Apply the 6.6:3-6.6:5 accessor declaration rules to a free function
+    /// whose body this host is about to analyze. Predeclaration already ran
+    /// them over every declaration in the program; repeating them at the body
+    /// entry keeps a host that analyzes a body it did not predeclare from
+    /// admitting `-> borrow T` on a receiverless callable.
     fn reject_free_function_accessor(&self, declaration: InstRef) -> CompileResult<()> {
-        let inst = self.rir.rir().get(declaration);
-        let InstData::FnDecl {
-            returns_borrow: true,
-            ..
-        } = &inst.data
-        else {
-            return Ok(());
-        };
-        let span = inst.span;
-        self.require_preview(
-            rue_error::PreviewFeature::BorrowAccessors,
-            "a `-> borrow` accessor",
-            span,
-        )?;
-        Err(CompileError::new(
-            rue_error::ErrorKind::AccessorRequiresBorrowSelf {
-                found: "a free function".to_string(),
-            },
-            span,
-        ))
+        super::declarations::check_accessor_declaration_shape(
+            self.rir.rir(),
+            declaration,
+            None,
+            false,
+            &self.preview,
+        )
     }
 
     fn resolve_array_length_in_file(

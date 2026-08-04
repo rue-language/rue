@@ -603,6 +603,34 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
         std::collections::BTreeSet<anon_structs::IssuedAnonymousNominalKey>,
 }
 
+/// Reject a use of an incomplete language feature that the request did not
+/// enable (`docs/designs/0005-preview-features.md`). Declaration rules run
+/// before a `Sema` phase is available, so the gate is a free function over the
+/// request's feature set.
+pub(crate) fn require_preview_feature(
+    preview_features: &rue_error::PreviewFeatures,
+    feature: rue_error::PreviewFeature,
+    what: &str,
+    span: Span,
+) -> rue_error::CompileResult<()> {
+    if preview_features.contains(&feature) {
+        Ok(())
+    } else {
+        Err(rue_error::CompileError::new(
+            rue_error::ErrorKind::PreviewFeatureRequired {
+                feature,
+                what: what.to_string(),
+            },
+            span,
+        )
+        .with_help(format!(
+            "use `--preview {}` to enable this feature ({})",
+            feature.name(),
+            feature.adr()
+        )))
+    }
+}
+
 impl<D: DeclarationPhase> std::ops::Deref for Sema<'_, D> {
     type Target = DeclarationNamespace;
 
@@ -915,22 +943,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         what: &str,
         span: Span,
     ) -> rue_error::CompileResult<()> {
-        if self.preview_features.contains(&feature) {
-            Ok(())
-        } else {
-            Err(rue_error::CompileError::new(
-                rue_error::ErrorKind::PreviewFeatureRequired {
-                    feature,
-                    what: what.to_string(),
-                },
-                span,
-            )
-            .with_help(format!(
-                "use `--preview {}` to enable this feature ({})",
-                feature.name(),
-                feature.adr()
-            )))
-        }
+        require_preview_feature(&self.preview_features, feature, what, span)
     }
 
     pub(crate) fn collect_free_function_signature_during_binding(
@@ -1431,12 +1444,41 @@ impl<'a> Sema<'a, MutableDeclarations> {
         binding_work.callable_value_shells_predeclared = pending_payloads.len();
         binding_work.indexed_declaration_records_visited =
             pending_payloads.len() + pending_nominals.len();
+        self.check_accessor_declaration_shapes(&pending_payloads)?;
         Ok(DeclarationShells {
             sema: self,
             binding_work,
             pending_payloads,
             pending_nominals,
         })
+    }
+
+    /// Reject every ill-formed `-> borrow T` accessor declaration in the
+    /// program (6.6:3-6.6:5, ADR-0062).
+    ///
+    /// Predeclaration is the one point every producer reaches for every
+    /// declaration the program contains, whether or not anything calls it.
+    /// The driver analyzes bodies only on demand, so a rule that runs from a
+    /// body would let an uncalled accessor escape the preview gate entirely.
+    fn check_accessor_declaration_shapes(
+        &self,
+        pending_payloads: &[binding_manifest::PendingDeclarationPayload],
+    ) -> MultiErrorResult<()> {
+        for pending in pending_payloads {
+            let body = match pending.source {
+                binding_manifest::DeclarationPayloadSource::Callable { body } => Some(body),
+                _ => None,
+            };
+            declarations::check_accessor_declaration_shape(
+                self.rir,
+                pending.declaration,
+                body,
+                pending.shell.identity.owner.is_some(),
+                &self.preview_features,
+            )
+            .map_err(CompileErrors::from)?;
+        }
+        Ok(())
     }
 
     /// Import query-owned, position-free declaration shells and attach them to
@@ -1462,6 +1504,7 @@ impl<'a> Sema<'a, MutableDeclarations> {
         binding_work.callable_value_shells_predeclared = pending_payloads.len();
         binding_work.indexed_declaration_records_visited =
             pending_payloads.len() + pending_nominals.len();
+        self.check_accessor_declaration_shapes(&pending_payloads)?;
         Ok(DeclarationShells {
             sema: self,
             binding_work,
