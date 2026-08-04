@@ -1035,13 +1035,10 @@ pub(crate) fn pre_link_object_bytes_with_session(
     let semantic = session.canonical_semantic(options)?;
     drop(_rir_span);
     let rir = semantic.rir_owner();
-    let foreign_symbols =
-        crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
         crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
     let units = session.codegen_units(
         &semantic,
-        &foreign_symbols,
         options,
         rue_codegen::BackendArtifactRequest::default(),
     )?;
@@ -1086,13 +1083,10 @@ pub(crate) fn compile_with_session(
     drop(_rir_span);
     let rir = semantic.rir_owner();
     let session_work = session.work().clone();
-    let foreign_symbols =
-        crate::backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
     let export_symbols =
         crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
     let units = session.codegen_units(
         &semantic,
-        &foreign_symbols,
         options,
         rue_codegen::BackendArtifactRequest::default(),
     )?;

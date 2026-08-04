@@ -5,6 +5,7 @@
 /// Collect the raw C symbol names of every `extern "C"` foreign declaration in
 /// the lowered program (ADR-0064 C FFI). These are the undefined symbols a call
 /// site references and the linker resolves from a supplied static archive.
+#[cfg(test)]
 pub(crate) fn collect_foreign_symbols(rir: &rue_rir::Rir, interner: &ThreadedRodeo) -> Vec<String> {
     rir.iter()
         .filter_map(|(_, inst)| match &inst.data {
@@ -43,6 +44,7 @@ pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRode
 /// and the linker satisfies it from a static archive. The identity mapping also
 /// lets `validate_production_call_relocations` recognize the raw name as a
 /// declared foreign call rather than an unresolved glue symbol.
+#[cfg(test)]
 pub(crate) fn foreign_call_symbol_mappings(
     functions: &[FunctionWithCfg],
     foreign_symbols: &[String],

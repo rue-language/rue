@@ -192,6 +192,61 @@ fn live_primitive(ty: &CanonicalType) -> Option<Type> {
     })
 }
 
+fn foreign_callable_symbol(callable: &crate::FunctionInstanceKey) -> Option<String> {
+    match callable {
+        crate::FunctionInstanceKey::Definition(definition) => Some(definition.name().to_owned()),
+        crate::FunctionInstanceKey::Specialization { base, .. } => foreign_callable_symbol(base),
+        crate::FunctionInstanceKey::AnonymousMember { .. }
+        | crate::FunctionInstanceKey::DropGlue(_) => None,
+    }
+}
+
+fn canonical_type_instance(ty: &CanonicalType) -> Option<crate::TypeInstanceKey> {
+    Some(match ty {
+        CanonicalType::I8 => crate::TypeInstanceKey::I8,
+        CanonicalType::I16 => crate::TypeInstanceKey::I16,
+        CanonicalType::I32 => crate::TypeInstanceKey::I32,
+        CanonicalType::I64 => crate::TypeInstanceKey::I64,
+        CanonicalType::U8 => crate::TypeInstanceKey::U8,
+        CanonicalType::U16 => crate::TypeInstanceKey::U16,
+        CanonicalType::U32 => crate::TypeInstanceKey::U32,
+        CanonicalType::U64 => crate::TypeInstanceKey::U64,
+        CanonicalType::Bool => crate::TypeInstanceKey::Bool,
+        CanonicalType::Unit => crate::TypeInstanceKey::Unit,
+        CanonicalType::Never => crate::TypeInstanceKey::Never,
+        CanonicalType::ComptimeType => crate::TypeInstanceKey::ComptimeType,
+        CanonicalType::BuiltinNominal { kind, name } => crate::TypeInstanceKey::BuiltinNominal {
+            kind: match kind {
+                rue_air::SemanticImportNominalKind::Struct => crate::AnonymousNominalKind::Struct,
+                rue_air::SemanticImportNominalKind::Enum => crate::AnonymousNominalKind::Enum,
+            },
+            name: name.clone(),
+        },
+        CanonicalType::Nominal(definition) => {
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(definition.clone()))
+        }
+        CanonicalType::AnonymousNominal(identity) => {
+            crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(identity.clone()))
+        }
+        CanonicalType::Array { element, len } => crate::TypeInstanceKey::Array {
+            element: Box::new(canonical_type_instance(element)?),
+            len: *len,
+        },
+        CanonicalType::PtrConst(element) => {
+            crate::TypeInstanceKey::PtrConst(Box::new(canonical_type_instance(element)?))
+        }
+        CanonicalType::PtrMut(element) => {
+            crate::TypeInstanceKey::PtrMut(Box::new(canonical_type_instance(element)?))
+        }
+        CanonicalType::Slice { element, name } => crate::TypeInstanceKey::Slice {
+            element: Box::new(canonical_type_instance(element)?),
+            name: name.clone(),
+        },
+        CanonicalType::Module(module) => crate::TypeInstanceKey::Module(module.clone()),
+        CanonicalType::GenericParameter(index) => crate::TypeInstanceKey::GenericParameter(*index),
+    })
+}
+
 fn deduplicate_type_mappings(
     mappings: Vec<(Type, CanonicalType)>,
 ) -> Result<Vec<(Type, CanonicalType)>, CfgDomainFailure> {
@@ -415,13 +470,191 @@ impl CfgDomainProjection {
         self.types.iter().map(|(_, stable)| stable)
     }
 
-    pub(crate) fn stable_callables(&self) -> impl Iterator<Item = crate::FunctionInstanceKey> + '_ {
-        self.symbols.iter().filter_map(|(_, symbol)| match symbol {
-            StableCfgSymbol::Callable(callable) => Some(callable.clone()),
-            StableCfgSymbol::Specialization(identity) => {
-                crate::semantic_identity::function_instance_from_specialization(identity)
+    /// Return the stable callable identities of the source-language calls that
+    /// actually survived AIR lowering into this CFG. The durable symbol domain
+    /// is deliberately broader: it also closes over compile-time constructors
+    /// and cleanup aliases that may never become runtime call instructions.
+    pub(crate) fn runtime_callables(
+        &self,
+        cfg: &rue_cfg::Cfg,
+    ) -> Result<std::collections::BTreeSet<crate::FunctionInstanceKey>, CfgDomainFailure> {
+        let mut callables = std::collections::BTreeSet::new();
+        for block in cfg.blocks() {
+            for value in &block.insts {
+                let rue_cfg::CfgInstData::Call {
+                    runtime: None,
+                    name,
+                    ..
+                } = &cfg.get_inst(*value).data
+                else {
+                    continue;
+                };
+                let stable = self
+                    .symbols
+                    .iter()
+                    .find_map(|(live, stable)| (live == name).then_some(stable))
+                    .ok_or(CfgDomainFailure::MissingSymbol)?;
+                let callable = match stable {
+                    StableCfgSymbol::Callable(callable) => callable.clone(),
+                    StableCfgSymbol::Specialization(identity) => {
+                        crate::semantic_identity::function_instance_from_specialization(identity)
+                            .ok_or(CfgDomainFailure::Shape)?
+                    }
+                    StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => {
+                        return Err(CfgDomainFailure::Shape);
+                    }
+                };
+                callables.insert(callable);
             }
-            StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => None,
+        }
+        Ok(callables)
+    }
+
+    /// Project the exact machine-symbol domain consumed by code generation.
+    ///
+    /// The live names remain paired with the CFG/interner that issued them,
+    /// while callable identities and ABI facts determine their durable machine
+    /// names. This keeps codegen independent of a whole-program resolver and
+    /// makes foreign classification an exact per-CFG dependency.
+    pub(crate) fn codegen_domain(
+        &self,
+        function: &crate::FunctionInstanceKey,
+        source_name: &str,
+        type_pool: &rue_air::FrozenTypeInternPool,
+        interner: &lasso::ThreadedRodeo,
+        call_abis: &std::collections::BTreeMap<
+            crate::FunctionInstanceKey,
+            crate::type_queries::CallAbiFacts,
+        >,
+    ) -> Result<crate::cfg_query::CfgCodegenDomain, CfgDomainFailure> {
+        let defined_symbol: Arc<str> = if source_name == "main" {
+            Arc::from("main")
+        } else {
+            Arc::from(crate::StableSymbolEncoder::encode(
+                &crate::StableSymbolId::Callable(crate::StableCallableId::Function(
+                    function.clone(),
+                )),
+            ))
+        };
+        let mut symbol_mappings = std::collections::BTreeMap::new();
+        let mut foreign_symbols = std::collections::BTreeSet::new();
+        for (live, stable) in &self.symbols {
+            let source = interner.resolve(live).to_owned();
+            let (machine, foreign) = match stable {
+                StableCfgSymbol::Callable(callable) => {
+                    let foreign = call_abis.get(callable).is_some_and(|facts| {
+                        matches!(
+                            facts.convention,
+                            crate::type_queries::CallAbiConvention::TargetC(_)
+                        )
+                    });
+                    let machine = if foreign {
+                        foreign_callable_symbol(callable).ok_or(CfgDomainFailure::Shape)?
+                    } else if source == "main" {
+                        source.clone()
+                    } else {
+                        crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                            crate::StableCallableId::Function(callable.clone()),
+                        ))
+                    };
+                    (machine, foreign)
+                }
+                StableCfgSymbol::Specialization(identity) => {
+                    let callable =
+                        crate::semantic_identity::function_instance_from_specialization(identity)
+                            .ok_or(CfgDomainFailure::Shape)?;
+                    let foreign = call_abis.get(&callable).is_some_and(|facts| {
+                        matches!(
+                            facts.convention,
+                            crate::type_queries::CallAbiConvention::TargetC(_)
+                        )
+                    });
+                    let machine = if foreign {
+                        foreign_callable_symbol(&callable).ok_or(CfgDomainFailure::Shape)?
+                    } else if source == "main" {
+                        source.clone()
+                    } else {
+                        crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                            crate::StableCallableId::Function(callable),
+                        ))
+                    };
+                    (machine, foreign)
+                }
+                StableCfgSymbol::Runtime(symbol) | StableCfgSymbol::Intrinsic(symbol) => {
+                    (symbol.to_string(), false)
+                }
+            };
+            if foreign {
+                foreign_symbols.insert(machine.clone());
+            }
+            if let Some(previous) = symbol_mappings.insert(source, machine.clone())
+                && previous != machine
+            {
+                return Err(CfgDomainFailure::Shape);
+            }
+        }
+        // Cleanup elaboration may synthesize destructor and drop-glue calls
+        // from aggregate metadata after AIR symbol collection. Project those
+        // exact aliases from the same local type pool and stable type domain.
+        for (current, stable) in &self.types {
+            let Some(owner) = canonical_type_instance(stable) else {
+                continue;
+            };
+            let drop_glue_source = match current.kind() {
+                TypeKind::Struct(id) => {
+                    if let (Some(source), CanonicalType::AnonymousNominal(identity)) =
+                        (&type_pool.struct_def(id).destructor, stable)
+                    {
+                        let callable = crate::FunctionInstanceKey::AnonymousMember {
+                            owner: Box::new(crate::TypeInstanceKey::Nominal(
+                                crate::NominalInstanceKey::Anonymous(identity.clone()),
+                            )),
+                            member: crate::AnonymousMemberKey {
+                                kind: crate::AnonymousMemberKind::Destructor,
+                                name: Arc::from("__drop"),
+                            },
+                        };
+                        let machine =
+                            crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                                crate::StableCallableId::Function(callable),
+                            ));
+                        if let Some(previous) =
+                            symbol_mappings.insert(source.clone(), machine.clone())
+                            && previous != machine
+                        {
+                            return Err(CfgDomainFailure::Shape);
+                        }
+                    }
+                    Some(rue_air::drop_glue_names::struct_drop_glue_name(
+                        id, type_pool,
+                    ))
+                }
+                TypeKind::Enum(id) => {
+                    Some(rue_air::drop_glue_names::enum_drop_glue_name(id, type_pool))
+                }
+                TypeKind::Array(id) => Some(rue_air::drop_glue_names::array_drop_glue_name(
+                    id, type_pool,
+                )),
+                _ => None,
+            };
+            let Some(drop_glue_source) = drop_glue_source else {
+                continue;
+            };
+            let machine = crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                crate::StableCallableId::Function(crate::FunctionInstanceKey::DropGlue(Box::new(
+                    owner,
+                ))),
+            ));
+            if let Some(previous) = symbol_mappings.insert(drop_glue_source, machine.clone())
+                && previous != machine
+            {
+                return Err(CfgDomainFailure::Shape);
+            }
+        }
+        Ok(crate::cfg_query::CfgCodegenDomain {
+            defined_symbol,
+            symbol_mappings: Arc::new(symbol_mappings),
+            foreign_symbols: Arc::new(foreign_symbols),
         })
     }
 
@@ -734,6 +967,25 @@ impl CfgDomainProjection {
                         let symbol = interner.get_or_intern(name);
                         if let Some(callable) = stable_callable(symbol) {
                             symbols.push((symbol, StableCfgSymbol::Callable(callable)));
+                        } else if let Some(CanonicalType::AnonymousNominal(owner)) =
+                            types.iter().find_map(|(candidate, stable)| {
+                                (*candidate == current).then_some(stable)
+                            })
+                        {
+                            symbols.push((
+                                symbol,
+                                StableCfgSymbol::Callable(
+                                    crate::FunctionInstanceKey::AnonymousMember {
+                                        owner: Box::new(crate::TypeInstanceKey::Nominal(
+                                            crate::NominalInstanceKey::Anonymous(owner.clone()),
+                                        )),
+                                        member: crate::AnonymousMemberKey {
+                                            kind: crate::AnonymousMemberKind::Destructor,
+                                            name: Arc::from("__drop"),
+                                        },
+                                    },
+                                ),
+                            ));
                         } else {
                             incomplete = true;
                         }

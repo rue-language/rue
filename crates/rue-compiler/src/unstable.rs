@@ -711,14 +711,8 @@ impl crate::CompilerSession {
                     _ => None,
                 };
                 if let Some(backend_request) = backend_request {
-                    let foreign_symbols =
-                        crate::backend::collect_foreign_symbols(rir.rir(), interner);
-                    let products = self.codegen_products(
-                        &semantic,
-                        &foreign_symbols,
-                        request.options,
-                        backend_request,
-                    )?;
+                    let products =
+                        self.codegen_products(&semantic, request.options, backend_request)?;
                     for product in products {
                         match stage {
                             PresentationStage::Lowering => {
@@ -863,7 +857,6 @@ mod codegen_unit_tests {
         first_emit
             .codegen_products(
                 &semantic,
-                &[],
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -883,7 +876,6 @@ mod codegen_unit_tests {
         first_link
             .codegen_products(
                 &semantic,
-                &[],
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -913,7 +905,6 @@ mod codegen_unit_tests {
             session
                 .codegen_products(
                     &semantic,
-                    &[],
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
@@ -950,7 +941,6 @@ mod codegen_unit_tests {
         let before = session
             .codegen_products(
                 &semantic,
-                &[],
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -972,7 +962,6 @@ mod codegen_unit_tests {
         let after = session
             .codegen_products(
                 &semantic,
-                &[],
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -1014,7 +1003,6 @@ mod codegen_unit_tests {
             let first = session
                 .codegen_products(
                     &semantic,
-                    &[],
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
@@ -1022,7 +1010,6 @@ mod codegen_unit_tests {
             let second = session
                 .codegen_products(
                     &semantic,
-                    &[],
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
@@ -1077,7 +1064,6 @@ mod codegen_unit_tests {
             let products = session
                 .codegen_products(
                     &semantic,
-                    &[],
                     &options,
                     rue_codegen::BackendArtifactRequest {
                         asm: true,
@@ -1119,7 +1105,6 @@ mod codegen_unit_tests {
         let before = session
             .codegen_products(
                 &semantic,
-                &[],
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -1139,7 +1124,6 @@ mod codegen_unit_tests {
         let after = session
             .codegen_products(
                 &semantic,
-                &[],
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
