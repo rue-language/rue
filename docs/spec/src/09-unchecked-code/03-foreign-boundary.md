@@ -77,3 +77,18 @@ separately in two modules is two distinct types even under one name. A program
 in which two foreign declarations of one symbol disagree is ill-formed and is
 rejected at compile time, naming both declaration sites; a redeclaration that
 agrees is accepted, as in C.
+
+## The program entry point is not a foreign function
+
+{{ rule(id="9.3:6", cat="legality-rule") }}
+
+A foreign declaration **MUST NOT** name `main`, and a `pub extern "C" fn` export
+**MUST NOT** be named `main`. The `main` symbol is the program's own entry point,
+reserved for the runtime start glue that invokes the root module's `main`
+(§ 6.1:38); no external definition of it can be linked in. Because a foreign
+declaration names the C symbol it declares, `extern "C" { fn main(...); }` would
+otherwise bind the program's own entry point — in the root module colliding with
+its definition, and in any other module resolving a call through the declaration
+back into `main` itself. The rule applies in every module and for every declared
+signature, including one that agrees with the entry point's; a program containing
+such a declaration or export is ill-formed and is rejected at compile time.

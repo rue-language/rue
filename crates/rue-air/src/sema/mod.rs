@@ -1445,7 +1445,7 @@ impl<'a> Sema<'a, MutableDeclarations> {
         binding_work.callable_value_shells_predeclared = pending_payloads.len();
         binding_work.indexed_declaration_records_visited =
             pending_payloads.len() + pending_nominals.len();
-        self.check_accessor_declaration_shapes(&pending_payloads)?;
+        self.check_declaration_shapes(&pending_payloads)?;
         Ok(DeclarationShells {
             sema: self,
             binding_work,
@@ -1454,14 +1454,16 @@ impl<'a> Sema<'a, MutableDeclarations> {
         })
     }
 
-    /// Reject every ill-formed `-> borrow T` accessor declaration in the
-    /// program (6.6:3-6.6:5, ADR-0062).
+    /// Reject every declaration whose legality is decided by its own shape,
+    /// before any signature type is resolved: ill-formed `-> borrow T`
+    /// accessors (6.6:3-6.6:5, ADR-0062) and `extern "C"` declarations of the
+    /// program entry symbol (9.3:6, RUE-1220).
     ///
     /// Predeclaration is the one point every producer reaches for every
     /// declaration the program contains, whether or not anything calls it.
     /// The driver analyzes bodies only on demand, so a rule that runs from a
     /// body would let an uncalled accessor escape the preview gate entirely.
-    fn check_accessor_declaration_shapes(
+    fn check_declaration_shapes(
         &self,
         pending_payloads: &[binding_manifest::PendingDeclarationPayload],
     ) -> MultiErrorResult<()> {
@@ -1478,6 +1480,8 @@ impl<'a> Sema<'a, MutableDeclarations> {
                 &self.preview_features,
             )
             .map_err(CompileErrors::from)?;
+            self.check_foreign_entry_point_declaration(pending.declaration)
+                .map_err(CompileErrors::from)?;
         }
         Ok(())
     }
@@ -1505,7 +1509,7 @@ impl<'a> Sema<'a, MutableDeclarations> {
         binding_work.callable_value_shells_predeclared = pending_payloads.len();
         binding_work.indexed_declaration_records_visited =
             pending_payloads.len() + pending_nominals.len();
-        self.check_accessor_declaration_shapes(&pending_payloads)?;
+        self.check_declaration_shapes(&pending_payloads)?;
         Ok(DeclarationShells {
             sema: self,
             binding_work,

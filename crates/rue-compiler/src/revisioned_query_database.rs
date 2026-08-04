@@ -17335,6 +17335,22 @@ impl RevisionedQueryDatabase {
                         ..
                     } = &signature.signature
                     {
+                        // A foreign declaration names the C symbol it declares,
+                        // so `extern "C" fn main` binds the program's own entry
+                        // point rather than anything external (spec 9.3:6).
+                        // Checked before the redeclaration comparison: signature
+                        // agreement with the entry point is not a defence.
+                        if declaration.name.as_ref() == "main" {
+                            return Err(SemanticNucleusBatchFailure::Stable {
+                                declaration: None,
+                                failure: Box::new(
+                                    crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticAtDeclaration {
+                                        kind: rue_error::ErrorKind::ForeignEntryPointDeclaration,
+                                        declaration: declaration.clone(),
+                                    },
+                                ),
+                            });
+                        }
                         if let Some((previous, previous_parameters, previous_result)) =
                             foreign_declarations.get(&declaration.name)
                             && !foreign_signatures_agree(

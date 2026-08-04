@@ -4551,4 +4551,158 @@ fn main() -> i32 {{
             ["c_answer", "__rue_fn_pkg_2fmain_2erue__rue_answer"]
         );
     }
+
+    // =========================================================================
+    // Foreign declarations of the entry point: shared binding helper
+    // =========================================================================
+
+    /// Bind the declarations of a multi-module program with the `c_ffi`
+    /// preview enabled. The first file is the root module.
+    fn bind_foreign_program(files: &[(&str, FileId, &str)]) -> MultiErrorResult<()> {
+        let sources = files
+            .iter()
+            .map(|&(source, file_id, _)| (source, file_id))
+            .collect::<Vec<_>>();
+        let (rir, interner) = lower_files(&sources);
+        let mut features = PreviewFeatures::new();
+        features.insert(PreviewFeature::CFfi);
+        let mut sema = Sema::new_synthetic(&rir, &interner, features);
+        sema.set_root_file_id(files[0].1);
+        sema.set_symbol_paths(
+            files
+                .iter()
+                .map(|&(_, file_id, path)| (file_id, path.to_owned()))
+                .collect::<HashMap<_, _>>(),
+        );
+        sema.bind_declarations().map(|_| ())
+    }
+
+    const FOREIGN_ROOT: (&str, FileId, &str) =
+        ("fn main() -> i32 { 0 }", FileId::new(1), "pkg/main.rue");
+
+    // =========================================================================
+    // Foreign declaration of the entry point (spec 9.3:6, RUE-1220)
+    // =========================================================================
+    // `main` is the program's own entry symbol, reserved for the runtime start
+    // glue (6.1:38). A foreign declaration names the C symbol it declares
+    // (RUE-1125), so an `extern "C"` declaration of `main` would bind that
+    // entry point rather than anything external. Rejected in every module and
+    // for every signature — signature agreement is not a defence, which is why
+    // the RUE-1218 conflict rule cannot reach it.
+
+    fn expect_foreign_entry_point_error(errors: &CompileErrors) -> &rue_error::CompileError {
+        errors
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::ForeignEntryPointDeclaration))
+            .unwrap_or_else(|| panic!("the declaration is rejected as E1108: {errors:?}"))
+    }
+
+    #[test]
+    fn a_foreign_declaration_of_main_in_another_module_is_rejected() {
+        // The RUE-1220 repro: without this rule the declaration takes the bare
+        // `main` symbol and a call through it recurses into the program's own
+        // entry point (verified stack overflow at runtime).
+        let errors = bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn main() -> i32; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+        ])
+        .expect_err("a foreign declaration may not name the program entry point");
+        let error = expect_foreign_entry_point_error(&errors);
+        assert_eq!(error.span().map(|span| span.file_id), Some(FileId::new(2)));
+        assert_eq!(
+            error.kind.code(),
+            rue_error::ErrorCode::FOREIGN_ENTRY_POINT_DECLARATION
+        );
+    }
+
+    #[test]
+    fn a_foreign_declaration_of_main_in_the_root_module_is_rejected() {
+        // The root module is where `main` legitimately lives, so this is the
+        // case a "collides with another declaration" rule would miss when the
+        // root has no `main` of its own: the symbol is reserved regardless.
+        let errors = bind_foreign_program(&[(
+            "extern \"C\" { fn main() -> i32; }\n\
+             fn other() -> i32 { 0 }",
+            FileId::new(1),
+            "pkg/main.rue",
+        )])
+        .expect_err("the entry symbol is reserved in the root module too");
+        let error = expect_foreign_entry_point_error(&errors);
+        assert_eq!(error.span().map(|span| span.file_id), Some(FileId::new(1)));
+    }
+
+    #[test]
+    fn a_foreign_declaration_of_main_matching_the_entry_signature_is_still_rejected() {
+        // `fn main() -> i32` is exactly the root entry point's signature, so no
+        // signature-agreement rule can reject it; the name alone is the fault.
+        bind_foreign_program(&[
+            ("fn main() -> i32 { 0 }", FileId::new(1), "pkg/main.rue"),
+            (
+                "extern \"C\" { fn main() -> i32; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+        ])
+        .expect_err("agreement with the entry point's signature is not a defence");
+    }
+
+    #[test]
+    fn an_ungated_foreign_declaration_of_main_reports_the_preview_gate() {
+        // The gate that owns every `extern "C"` form reports first: a program
+        // without `c_ffi` cannot name the form this rule is about.
+        let (rir, interner) =
+            lower_files(&[("extern \"C\" { fn main() -> i32; }", FileId::new(1))]);
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
+        sema.set_root_file_id(FileId::new(1));
+        let errors = sema
+            .bind_declarations()
+            .map(|_| ())
+            .expect_err("an ungated `extern \"C\"` declaration is rejected");
+        assert!(
+            errors
+                .iter()
+                .all(|error| !matches!(error.kind, ErrorKind::ForeignEntryPointDeclaration))
+                && errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ErrorKind::PreviewFeatureRequired { .. })),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
+    fn a_foreign_declaration_of_another_symbol_is_unaffected() {
+        bind_foreign_program(&[
+            FOREIGN_ROOT,
+            (
+                "extern \"C\" { fn mainly(x: i64) -> i64; }",
+                FileId::new(2),
+                "pkg/left.rue",
+            ),
+        ])
+        .expect("the rule names the entry symbol exactly, not anything resembling it");
+    }
+
+    #[test]
+    fn an_ordinary_main_in_another_module_stays_legal_and_mangled() {
+        // A non-extern `main` outside the root is an ordinary namespaced
+        // function (6.1:38, RUE-1125): it never takes the entry symbol, so it
+        // has nothing to collide with and this rule does not apply to it.
+        bind_foreign_program(&[
+            FOREIGN_ROOT,
+            ("pub fn main() -> i32 { 7 }", FileId::new(2), "pkg/left.rue"),
+        ])
+        .expect("an ordinary non-root `main` is an ordinary function");
+        let symbols = internal_symbols(
+            &[
+                IDENTITY_ROOT,
+                ("pub fn main() -> i32 { 7 }", FileId::new(2), "pkg/left.rue"),
+            ],
+            &[("main", FileId::new(1)), ("main", FileId::new(2))],
+        );
+        assert_eq!(symbols, ["main", "__rue_fn_pkg_2fleft_2erue__main"]);
+    }
 }
