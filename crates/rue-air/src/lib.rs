@@ -133,7 +133,9 @@ pub use semantic_import::{
     SEMANTIC_IMPORT_CONST_KINDS, SEMANTIC_IMPORT_TYPE_KINDS, SemanticImportConstKind,
     SemanticImportConstValue, SemanticImportEpoch, SemanticImportFailure, SemanticImportNominal,
     SemanticImportNominalKind, SemanticImportType, SemanticImportTypeFold, SemanticImportTypeKind,
-    SemanticImportedConstValue, SemanticImportedType,
+    SemanticImportedConstValue, SemanticImportedType, SemanticLocalCallable,
+    SemanticLocalCompleteness, SemanticLocalMaterialization, SemanticLocalNominal,
+    SemanticLocalNominalShape,
 };
 pub use semantic_type_resolution::{
     SemanticComptimeCallExpectation, SemanticComptimeCallResult, SemanticModuleBinding,

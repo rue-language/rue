@@ -17,7 +17,7 @@ use crate::{
     ConstValue, EnumDef, EnumId, FunctionInstanceKey, ModuleId, ModuleRegistry, NominalInstanceKey,
     SemanticBody, SemanticBodyImportFailure, SemanticBodyInstData, SemanticBodyPattern,
     SemanticBodyProjection, SemanticImportedBody, StructDef, StructField, StructId, Type,
-    TypeInternPool,
+    TypeInstanceKey, TypeInternPool,
 };
 use rue_span::Span;
 
@@ -373,6 +373,184 @@ pub enum SemanticImportFailure {
     NominalAlreadyComplete,
     ForeignLocalType,
     ForeignLocalValue,
+    DuplicateCallable,
+    DuplicateCallableLocalIdentity,
+    DuplicateModule,
+    BuiltinNominalShadow,
+    MissingBodyIdentity,
+    IncompleteMaterialization,
+}
+
+/// One exact nominal fact supplied to a body-local semantic epoch.
+///
+/// The key supplies named and producer-owned anonymous identities. Builtin
+/// identities are epoch-owned and must not appear in this input; fixed builtins
+/// and dynamic `Str(N)` instances resolve through the canonical builtin
+/// registry and issuing type pool. A local epoch may materialize supplied
+/// anonymous structs/enums, but never invent their identity or rediscover their
+/// shape from a whole-program semantic universe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticLocalNominal<K, M> {
+    pub key: NominalInstanceKey<K, M>,
+    pub module_path: Arc<str>,
+    pub name: Arc<str>,
+    pub kind: SemanticImportNominalKind,
+    pub is_public: bool,
+    pub lang_item: Option<crate::LangItem>,
+    pub shape: SemanticLocalNominalShape<K, M>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SemanticLocalNominalShape<K, M> {
+    Struct {
+        fields: Arc<[(Arc<str>, SemanticImportType<K, M>)]>,
+        is_copy: bool,
+        is_linear: bool,
+        destructor: Option<FunctionInstanceKey<K, M>>,
+    },
+    Enum {
+        variants: Arc<[(Arc<str>, Arc<[SemanticImportType<K, M>]>)]>,
+    },
+}
+
+/// One exact callable symbol fact supplied to a body-local semantic epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticLocalCallable<K, M> {
+    pub key: FunctionInstanceKey<K, M>,
+    pub symbol: Arc<str>,
+}
+
+fn nominal_import_type<K, M>(key: NominalInstanceKey<K, M>) -> SemanticImportType<K, M> {
+    match key {
+        NominalInstanceKey::Builtin { kind, name } => SemanticImportType::BuiltinNominal {
+            name,
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => SemanticImportNominalKind::Enum,
+            },
+        },
+        NominalInstanceKey::Named(key) => SemanticImportType::Nominal(key),
+        NominalInstanceKey::Anonymous(key) => SemanticImportType::AnonymousNominal(key),
+    }
+}
+
+fn import_type_identity<K: Clone, M: Clone>(
+    ty: &SemanticImportType<K, M>,
+) -> TypeInstanceKey<K, M> {
+    use SemanticImportType as S;
+    match ty {
+        S::I8 => TypeInstanceKey::I8,
+        S::I16 => TypeInstanceKey::I16,
+        S::I32 => TypeInstanceKey::I32,
+        S::I64 => TypeInstanceKey::I64,
+        S::U8 => TypeInstanceKey::U8,
+        S::U16 => TypeInstanceKey::U16,
+        S::U32 => TypeInstanceKey::U32,
+        S::U64 => TypeInstanceKey::U64,
+        S::Bool => TypeInstanceKey::Bool,
+        S::Unit => TypeInstanceKey::Unit,
+        S::Never => TypeInstanceKey::Never,
+        S::ComptimeType => TypeInstanceKey::ComptimeType,
+        S::BuiltinNominal { name, kind } => TypeInstanceKey::BuiltinNominal {
+            name: name.clone(),
+            kind: match kind {
+                SemanticImportNominalKind::Struct => crate::AnonymousNominalKind::Struct,
+                SemanticImportNominalKind::Enum => crate::AnonymousNominalKind::Enum,
+            },
+        },
+        S::Nominal(key) => TypeInstanceKey::Nominal(NominalInstanceKey::Named(key.clone())),
+        S::AnonymousNominal(key) => {
+            TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(key.clone()))
+        }
+        S::Array { element, len } => TypeInstanceKey::Array {
+            element: Box::new(import_type_identity(element)),
+            len: *len,
+        },
+        S::PtrConst(inner) => TypeInstanceKey::PtrConst(Box::new(import_type_identity(inner))),
+        S::PtrMut(inner) => TypeInstanceKey::PtrMut(Box::new(import_type_identity(inner))),
+        S::Slice { element, name } => TypeInstanceKey::Slice {
+            element: Box::new(import_type_identity(element)),
+            name: name.clone(),
+        },
+        S::Module(module) => TypeInstanceKey::Module(module.clone()),
+        S::GenericParameter(index) => TypeInstanceKey::GenericParameter(*index),
+    }
+}
+
+fn specialization_key<K: Clone, M: Clone>(
+    identity: &crate::SemanticSpecializationIdentity<K, M>,
+) -> FunctionInstanceKey<K, M> {
+    let values = identity
+        .value_arguments
+        .iter()
+        .map(|value| match value {
+            SemanticImportConstValue::Integer(value) => {
+                crate::CanonicalArgumentValue::Integer(*value)
+            }
+            SemanticImportConstValue::Bool(value) => crate::CanonicalArgumentValue::Bool(*value),
+            SemanticImportConstValue::Type(value) => {
+                crate::CanonicalArgumentValue::Type(Box::new(import_type_identity(value)))
+            }
+            SemanticImportConstValue::Function(value) => crate::CanonicalArgumentValue::Function(
+                Box::new(FunctionInstanceKey::Definition(value.clone())),
+            ),
+            SemanticImportConstValue::Unit => crate::CanonicalArgumentValue::Unit,
+            SemanticImportConstValue::String(value) => {
+                crate::CanonicalArgumentValue::String(value.clone())
+            }
+        })
+        .collect::<Vec<_>>();
+    FunctionInstanceKey::Specialization {
+        base: Box::new(FunctionInstanceKey::Definition(identity.base.clone())),
+        arguments: crate::CanonicalArguments {
+            types: identity
+                .type_arguments
+                .iter()
+                .map(import_type_identity)
+                .collect::<Vec<_>>()
+                .into(),
+            values: values.into(),
+        },
+    }
+}
+
+/// Completeness witness retained with an owned local materialization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SemanticLocalCompleteness {
+    nominals_declared: usize,
+    nominals_completed: usize,
+    callables_registered: usize,
+    modules_registered: usize,
+}
+
+impl SemanticLocalCompleteness {
+    pub fn is_complete(self) -> bool {
+        self.nominals_declared == self.nominals_completed
+    }
+}
+
+/// An owned, body-local semantic artifact suitable for a future CFG query.
+///
+/// Compact AIR indexes never escape without the exact pool/interner which
+/// issued them.  Stable identities remain alongside the local aggregate map;
+/// the epoch is a computation helper, not a retained semantic authority.
+pub struct SemanticLocalMaterialization<K, M> {
+    pub identity: FunctionInstanceKey<K, M>,
+    pub name: String,
+    pub callable_kind: crate::AnalyzedCallableKind,
+    pub air: crate::ValidatedAir,
+    pub local_atoms: Vec<crate::LocalAtomRecord<K, M>>,
+    pub num_locals: u32,
+    pub num_param_slots: u32,
+    pub param_modes: crate::ParamSlotModes,
+    pub allow_unreachable_code: bool,
+    pub type_pool: crate::FrozenTypeInternPool,
+    pub interner: Arc<ThreadedRodeo>,
+    pub aggregate_types: std::collections::HashMap<crate::Type, TypeInstanceKey<K, M>>,
+    pub strings: Vec<String>,
+    pub warnings: Arc<[rue_error::CompileWarning]>,
+    pub body_span: Span,
+    pub completeness: SemanticLocalCompleteness,
 }
 
 /// An AIR type branded with the import epoch which issued it.
@@ -419,10 +597,11 @@ pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     interner: ThreadedRodeo,
     type_pool: TypeInternPool,
     module_registry: ModuleRegistry,
-    nominals: BTreeMap<K, LocalNominal>,
-    functions: BTreeMap<K, Spur>,
+    nominals: BTreeMap<NominalInstanceKey<K, M>, LocalNominal>,
+    functions: BTreeMap<FunctionInstanceKey<K, M>, Spur>,
     modules: BTreeMap<M, ModuleId>,
     builtins: BTreeMap<(Arc<str>, SemanticImportNominalKind), LocalNominal>,
+    local_completeness: Option<SemanticLocalCompleteness>,
 }
 
 impl<K, M> SemanticImportEpoch<K, M>
@@ -469,47 +648,22 @@ where
                 self.import_type_local_with(ty, type_pool, None)
                     .map_err(Into::into)
             },
-            |key| match key {
-                NominalInstanceKey::Builtin { .. } => Err(SemanticBodyImportFailure::Semantic(
-                    SemanticImportFailure::MissingNominal,
-                )),
-                NominalInstanceKey::Named(key) => match self.nominals.get(key) {
-                    Some(LocalNominal::Struct(id)) => Ok(*id),
-                    Some(LocalNominal::Enum(_)) => Err(SemanticBodyImportFailure::WrongNominalKind),
-                    None => Err(SemanticBodyImportFailure::Semantic(
-                        SemanticImportFailure::MissingNominal,
-                    )),
-                },
-                NominalInstanceKey::Anonymous(_) => Err(SemanticBodyImportFailure::Semantic(
-                    SemanticImportFailure::MissingNominal,
-                )),
+            |key| match self.resolve_nominal_in_pool(type_pool, key)? {
+                LocalNominal::Struct(id) => Ok(id),
+                LocalNominal::Enum(_) => Err(SemanticBodyImportFailure::WrongNominalKind),
+            },
+            |key| match self.resolve_nominal_in_pool(type_pool, key)? {
+                LocalNominal::Enum(id) => Ok(id),
+                LocalNominal::Struct(_) => Err(SemanticBodyImportFailure::WrongNominalKind),
             },
             |key| match key {
-                NominalInstanceKey::Builtin { .. } => Err(SemanticBodyImportFailure::Semantic(
-                    SemanticImportFailure::MissingNominal,
-                )),
-                NominalInstanceKey::Named(key) => match self.nominals.get(key) {
-                    Some(LocalNominal::Enum(id)) => Ok(*id),
-                    Some(LocalNominal::Struct(_)) => {
-                        Err(SemanticBodyImportFailure::WrongNominalKind)
-                    }
-                    None => Err(SemanticBodyImportFailure::Semantic(
-                        SemanticImportFailure::MissingNominal,
+                FunctionInstanceKey::Definition(key) => self
+                    .functions
+                    .get(&FunctionInstanceKey::Definition(key.clone()))
+                    .copied()
+                    .ok_or(SemanticBodyImportFailure::Semantic(
+                        SemanticImportFailure::MissingFunction,
                     )),
-                },
-                NominalInstanceKey::Anonymous(_) => Err(SemanticBodyImportFailure::Semantic(
-                    SemanticImportFailure::MissingNominal,
-                )),
-            },
-            |key| match key {
-                FunctionInstanceKey::Definition(key) => {
-                    self.functions
-                        .get(key)
-                        .copied()
-                        .ok_or(SemanticBodyImportFailure::Semantic(
-                            SemanticImportFailure::MissingFunction,
-                        ))
-                }
                 _ => Err(SemanticBodyImportFailure::Semantic(
                     SemanticImportFailure::MissingFunction,
                 )),
@@ -989,7 +1143,10 @@ where
                 return Err(SemanticImportFailure::DuplicateFunctionLocalIdentity);
             }
             let symbol = interner.get_or_intern(name.as_ref());
-            if functions.insert(key, symbol).is_some() {
+            if functions
+                .insert(FunctionInstanceKey::Definition(key), symbol)
+                .is_some()
+            {
                 return Err(SemanticImportFailure::DuplicateFunction);
             }
         }
@@ -1010,7 +1167,7 @@ where
         let mut local = BTreeMap::new();
         let mut local_identities = std::collections::BTreeSet::new();
         for nominal in nominals {
-            if local.contains_key(&nominal.key) {
+            if local.contains_key(&NominalInstanceKey::Named(nominal.key.clone())) {
                 return Err(SemanticImportFailure::DuplicateNominal);
             }
             if !local_identities.insert((
@@ -1057,7 +1214,7 @@ where
                     LocalNominal::Enum(id)
                 }
             };
-            local.insert(nominal.key, value);
+            local.insert(NominalInstanceKey::Named(nominal.key), value);
         }
         // Ordinary sema registers source nominals before lazily creating the
         // stable core `str` identity. Preserve that order so a fresh epoch's
@@ -1100,6 +1257,265 @@ where
             functions,
             modules,
             builtins,
+            local_completeness: None,
+        })
+    }
+
+    /// Construct a body-local epoch from exact query-owned facts.
+    ///
+    /// All nominal shells are declared before any shape is completed, so
+    /// recursive aggregates are supported without widening the input to a
+    /// reachable-program universe. Duplicate identities and duplicate local
+    /// symbols fail before a body can be imported.
+    pub fn new_local(
+        mut nominals: Vec<SemanticLocalNominal<K, M>>,
+        mut callables: Vec<SemanticLocalCallable<K, M>>,
+        modules: Vec<M>,
+    ) -> Result<Self, SemanticImportFailure>
+    where
+        K: Eq,
+        M: Clone + Eq,
+    {
+        nominals.sort_by(|left, right| left.key.cmp(&right.key));
+        callables.sort_by(|left, right| left.key.cmp(&right.key));
+        if nominals
+            .iter()
+            .any(|nominal| matches!(nominal.key, NominalInstanceKey::Builtin { .. }))
+        {
+            return Err(SemanticImportFailure::BuiltinNominalShadow);
+        }
+        let mut modules = modules;
+        modules.sort();
+        if modules.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(SemanticImportFailure::DuplicateModule);
+        }
+        let mut epoch = Self::new(Vec::new(), Vec::new(), modules)?;
+
+        let mut callable_symbols = std::collections::BTreeSet::new();
+        for callable in &callables {
+            if !callable_symbols.insert(callable.symbol.clone()) {
+                return Err(SemanticImportFailure::DuplicateCallableLocalIdentity);
+            }
+            let symbol = epoch.interner.get_or_intern(callable.symbol.as_ref());
+            if epoch
+                .functions
+                .insert(callable.key.clone(), symbol)
+                .is_some()
+            {
+                return Err(SemanticImportFailure::DuplicateCallable);
+            }
+        }
+
+        let mut module_files = BTreeMap::<Arc<str>, FileId>::new();
+        for nominal in &nominals {
+            let next = u32::try_from(module_files.len() + 1).expect("too many local modules");
+            module_files
+                .entry(nominal.module_path.clone())
+                .or_insert(FileId::new(next));
+        }
+        epoch.type_pool.set_symbol_paths(
+            module_files
+                .iter()
+                .map(|(path, file)| (*file, path.to_string()))
+                .collect(),
+        );
+        let mut local_identities = std::collections::BTreeSet::new();
+        for nominal in &nominals {
+            if epoch.nominals.contains_key(&nominal.key) {
+                return Err(SemanticImportFailure::DuplicateNominal);
+            }
+            if !local_identities.insert((
+                nominal.kind,
+                nominal.module_path.clone(),
+                nominal.name.clone(),
+            )) {
+                return Err(SemanticImportFailure::DuplicateNominalLocalIdentity);
+            }
+            let file_id = module_files[&nominal.module_path];
+            let symbol = epoch.interner.get_or_intern(nominal.name.as_ref());
+            let local = match nominal.kind {
+                SemanticImportNominalKind::Struct => {
+                    let (id, _) = epoch.type_pool.declare_struct(
+                        symbol,
+                        StructDef {
+                            name: nominal.name.to_string(),
+                            fields: Vec::new(),
+                            is_copy: false,
+                            is_linear: false,
+                            destructor: None,
+                            is_builtin: false,
+                            is_pub: nominal.is_public,
+                            file_id,
+                        },
+                    );
+                    if let Some(lang_item) = nominal.lang_item {
+                        epoch.type_pool.set_struct_lang_item(id, lang_item);
+                    }
+                    LocalNominal::Struct(id)
+                }
+                SemanticImportNominalKind::Enum => {
+                    if nominal.lang_item.is_some() {
+                        return Err(SemanticImportFailure::NominalKindMismatch);
+                    }
+                    let (id, _) = epoch.type_pool.declare_enum(
+                        symbol,
+                        EnumDef {
+                            name: nominal.name.to_string(),
+                            variants: Vec::new(),
+                            variant_payloads: Vec::new(),
+                            is_pub: nominal.is_public,
+                            file_id,
+                        },
+                    );
+                    LocalNominal::Enum(id)
+                }
+            };
+            epoch.nominals.insert(nominal.key.clone(), local);
+        }
+
+        for nominal in &nominals {
+            match &nominal.shape {
+                SemanticLocalNominalShape::Struct {
+                    fields,
+                    is_copy,
+                    is_linear,
+                    destructor,
+                } => {
+                    epoch.complete_nominal_struct(&nominal.key, fields, *is_copy, *is_linear)?;
+                    if let Some(destructor) = destructor {
+                        let symbol = epoch
+                            .functions
+                            .get(destructor)
+                            .copied()
+                            .ok_or(SemanticImportFailure::MissingFunction)?;
+                        let Some(LocalNominal::Struct(id)) = epoch.nominals.get(&nominal.key)
+                        else {
+                            return Err(SemanticImportFailure::NominalKindMismatch);
+                        };
+                        epoch
+                            .type_pool
+                            .set_struct_destructor(*id, epoch.interner.resolve(&symbol).to_owned());
+                    }
+                }
+                SemanticLocalNominalShape::Enum { variants } => {
+                    epoch.complete_nominal_enum(&nominal.key, variants)?
+                }
+            }
+        }
+        epoch.local_completeness = Some(SemanticLocalCompleteness {
+            nominals_declared: nominals.len(),
+            nominals_completed: nominals.len(),
+            callables_registered: callables.len(),
+            modules_registered: epoch.modules.len(),
+        });
+        Ok(epoch)
+    }
+
+    /// Consume this exact local epoch into an owned function artifact.
+    pub fn materialize_local_body(
+        self,
+        identity: FunctionInstanceKey<K, M>,
+        callable_kind: crate::AnalyzedCallableKind,
+        body: &SemanticBody<K, M>,
+        body_span: Span,
+    ) -> Result<SemanticLocalMaterialization<K, M>, SemanticBodyImportFailure>
+    where
+        K: Eq + Hash,
+        M: Clone + Eq + Hash,
+    {
+        let completeness = self
+            .local_completeness
+            .ok_or(SemanticBodyImportFailure::Semantic(
+                SemanticImportFailure::IncompleteMaterialization,
+            ))?;
+        if !completeness.is_complete()
+            || completeness.nominals_declared != self.nominals.len()
+            || completeness.callables_registered != self.functions.len()
+            || completeness.modules_registered != self.modules.len()
+        {
+            return Err(SemanticBodyImportFailure::Semantic(
+                SemanticImportFailure::IncompleteMaterialization,
+            ));
+        }
+        let name =
+            self.functions
+                .get(&identity)
+                .copied()
+                .ok_or(SemanticBodyImportFailure::Semantic(
+                    SemanticImportFailure::MissingBodyIdentity,
+                ))?;
+        let imported = Self::import_body_with(
+            body,
+            body_span,
+            &self.type_pool,
+            true,
+            |ty| self.import_type_local(ty).map_err(Into::into),
+            |key| match self.resolve_nominal_in_pool(&self.type_pool, key)? {
+                LocalNominal::Struct(id) => Ok(id),
+                LocalNominal::Enum(_) => Err(SemanticBodyImportFailure::WrongNominalKind),
+            },
+            |key| match self.resolve_nominal_in_pool(&self.type_pool, key)? {
+                LocalNominal::Enum(id) => Ok(id),
+                LocalNominal::Struct(_) => Err(SemanticBodyImportFailure::WrongNominalKind),
+            },
+            |key| {
+                self.functions
+                    .get(key)
+                    .copied()
+                    .ok_or(SemanticBodyImportFailure::Semantic(
+                        SemanticImportFailure::MissingFunction,
+                    ))
+            },
+            |specialization| {
+                let key = specialization_key(specialization);
+                let symbol = self.functions.get(&key).copied().ok_or(
+                    SemanticBodyImportFailure::Semantic(SemanticImportFailure::MissingFunction),
+                )?;
+                Ok((symbol, Vec::new(), Vec::new()))
+            },
+            |value| self.interner.get_or_intern(value),
+        )?;
+        let mut aggregate_types = std::collections::HashMap::new();
+        let type_snapshot = self.type_pool.clone().freeze();
+        for ty in type_snapshot.all_types() {
+            if matches!(
+                ty.kind(),
+                crate::TypeKind::Struct(_) | crate::TypeKind::Enum(_) | crate::TypeKind::Array(_)
+            ) {
+                let stable = self
+                    .export_type_local(ty)
+                    .map_err(SemanticBodyImportFailure::Semantic)?;
+                aggregate_types.insert(ty, import_type_identity(&stable));
+            }
+        }
+        let SemanticImportedBody {
+            air,
+            strings,
+            local_atoms,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            allow_unreachable_code,
+            warnings,
+            method_references: _,
+        } = imported;
+        Ok(SemanticLocalMaterialization {
+            identity,
+            name: self.interner.resolve(&name).to_owned(),
+            callable_kind,
+            air,
+            local_atoms,
+            num_locals,
+            num_param_slots,
+            param_modes,
+            allow_unreachable_code,
+            type_pool: self.type_pool.freeze(),
+            interner: Arc::new(self.interner),
+            aggregate_types,
+            strings,
+            warnings,
+            body_span,
+            completeness,
         })
     }
 
@@ -1112,6 +1528,89 @@ where
                 epoch: self.epoch.clone(),
                 value,
             })
+    }
+
+    fn resolve_builtin_nominal_in_pool(
+        &self,
+        type_pool: &TypeInternPool,
+        name: &Arc<str>,
+        kind: SemanticImportNominalKind,
+    ) -> Result<LocalNominal, SemanticImportFailure> {
+        if name
+            .strip_prefix("Str(")
+            .and_then(|name| name.strip_suffix(')'))
+            .and_then(|capacity| capacity.parse::<u64>().ok())
+            .is_some()
+        {
+            if kind != SemanticImportNominalKind::Struct {
+                return Err(SemanticImportFailure::BuiltinNominalKindMismatch);
+            }
+            let symbol = self.interner.get_or_intern(name.as_ref());
+            if let Some(existing) = type_pool.get_struct_by_file_name(FileId::DEFAULT, symbol) {
+                return Ok(LocalNominal::Struct(
+                    existing
+                        .as_struct()
+                        .expect("fixed string lookup returns a struct"),
+                ));
+            }
+            let pointer = type_pool.intern_ptr_const_from_type(Type::U8);
+            let (id, _) = type_pool.register_struct(
+                symbol,
+                StructDef {
+                    name: name.to_string(),
+                    fields: vec![
+                        StructField {
+                            name: "ptr".to_owned(),
+                            ty: Type::new_ptr_const(pointer),
+                        },
+                        StructField {
+                            name: "len".to_owned(),
+                            ty: Type::U64,
+                        },
+                    ],
+                    is_copy: true,
+                    is_linear: false,
+                    destructor: None,
+                    is_builtin: true,
+                    is_pub: true,
+                    file_id: FileId::DEFAULT,
+                },
+            );
+            return Ok(LocalNominal::Struct(id));
+        }
+
+        self.builtins
+            .get(&(name.clone(), kind))
+            .copied()
+            .ok_or_else(|| {
+                if self.builtins.keys().any(|(known, _)| known == name) {
+                    SemanticImportFailure::BuiltinNominalKindMismatch
+                } else {
+                    SemanticImportFailure::UnknownBuiltinNominal
+                }
+            })
+    }
+
+    fn resolve_nominal_in_pool(
+        &self,
+        type_pool: &TypeInternPool,
+        key: &NominalInstanceKey<K, M>,
+    ) -> Result<LocalNominal, SemanticImportFailure> {
+        match key {
+            NominalInstanceKey::Builtin { kind, name } => self.resolve_builtin_nominal_in_pool(
+                type_pool,
+                name,
+                match kind {
+                    crate::AnonymousNominalKind::Struct => SemanticImportNominalKind::Struct,
+                    crate::AnonymousNominalKind::Enum => SemanticImportNominalKind::Enum,
+                },
+            ),
+            NominalInstanceKey::Named(_) | NominalInstanceKey::Anonymous(_) => self
+                .nominals
+                .get(key)
+                .copied()
+                .ok_or(SemanticImportFailure::MissingNominal),
+        }
     }
 
     fn import_type_local(
@@ -1143,68 +1642,25 @@ where
                 F::Never => Type::NEVER,
                 F::ComptimeType => Type::COMPTIME_TYPE,
                 F::BuiltinNominal { name, kind } => {
-                    if let Some(_capacity) = name
-                        .strip_prefix("Str(")
-                        .and_then(|name| name.strip_suffix(')'))
-                        .and_then(|capacity| capacity.parse::<u64>().ok())
-                    {
-                        if kind != SemanticImportNominalKind::Struct {
-                            return Err(SemanticImportFailure::BuiltinNominalKindMismatch);
-                        }
-                        let symbol = self.interner.get_or_intern(name.as_ref());
-                        let pointer = type_pool.intern_ptr_const_from_type(Type::U8);
-                        let (id, _) = type_pool.register_struct(
-                            symbol,
-                            StructDef {
-                                name: name.to_string(),
-                                fields: vec![
-                                    StructField {
-                                        name: "ptr".to_owned(),
-                                        ty: Type::new_ptr_const(pointer),
-                                    },
-                                    StructField {
-                                        name: "len".to_owned(),
-                                        ty: Type::U64,
-                                    },
-                                ],
-                                is_copy: true,
-                                is_linear: false,
-                                destructor: None,
-                                is_builtin: true,
-                                is_pub: true,
-                                file_id: FileId::DEFAULT,
-                            },
-                        );
-                        Type::new_struct(id)
-                    } else {
-                        let local = self
-                            .builtins
-                            .get(&(name.clone(), kind))
-                            .copied()
-                            .ok_or_else(|| {
-                                if self.builtins.keys().any(|(known, _)| known == name) {
-                                    SemanticImportFailure::BuiltinNominalKindMismatch
-                                } else {
-                                    SemanticImportFailure::UnknownBuiltinNominal
-                                }
-                            })?;
-                        match local {
-                            LocalNominal::Struct(id) => Type::new_struct(id),
-                            LocalNominal::Enum(id) => Type::new_enum(id),
-                        }
+                    match self.resolve_builtin_nominal_in_pool(type_pool, name, kind)? {
+                        LocalNominal::Struct(id) => Type::new_struct(id),
+                        LocalNominal::Enum(id) => Type::new_enum(id),
                     }
                 }
-                F::Nominal(key) => match self.nominals.get(key) {
+                F::Nominal(key) => match self.nominals.get(&NominalInstanceKey::Named(key.clone()))
+                {
                     Some(LocalNominal::Struct(id)) => Type::new_struct(*id),
                     Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
                     None => return Err(SemanticImportFailure::MissingNominal),
                 },
-                // A generic fresh import epoch has no current-request
-                // authority capable of joining an anonymous nominal key to a
-                // live AIR type. Only BodySema's exact-key importer may do so.
-                F::AnonymousNominal(_) => {
-                    return Err(SemanticImportFailure::MissingNominal);
-                }
+                F::AnonymousNominal(key) => match self
+                    .nominals
+                    .get(&NominalInstanceKey::Anonymous(key.clone()))
+                {
+                    Some(LocalNominal::Struct(id)) => Type::new_struct(*id),
+                    Some(LocalNominal::Enum(id)) => Type::new_enum(*id),
+                    None => return Err(SemanticImportFailure::MissingNominal),
+                },
                 F::Array { element, len } => type_pool
                     .try_intern_array(element, len)
                     .map_err(|_| SemanticImportFailure::InvalidStructuralType)?,
@@ -1315,7 +1771,7 @@ where
             SemanticImportConstValue::Function(key) => ConstValue::Function(
                 *self
                     .functions
-                    .get(key)
+                    .get(&FunctionInstanceKey::Definition(key.clone()))
                     .ok_or(SemanticImportFailure::MissingFunction)?,
             ),
             SemanticImportConstValue::Unit => ConstValue::Unit,
@@ -1384,8 +1840,24 @@ where
                         name: name.clone(),
                         kind: *kind,
                     }
+                } else if def.is_builtin
+                    && def
+                        .name
+                        .strip_prefix("Str(")
+                        .and_then(|name| name.strip_suffix(')'))
+                        .and_then(|capacity| capacity.parse::<u64>().ok())
+                        .is_some()
+                {
+                    // `Str(N)` is registered lazily in the exact transaction
+                    // pool. Its compiler-builtin bit plus canonical capacity
+                    // spelling is the durable classification; unrelated source
+                    // structs never acquire that bit.
+                    SemanticImportType::BuiltinNominal {
+                        name: Arc::from(def.name.as_str()),
+                        kind: SemanticImportNominalKind::Struct,
+                    }
                 } else {
-                    SemanticImportType::Nominal(
+                    nominal_import_type(
                         self.nominals
                             .iter()
                             .find_map(|(key, local)| {
@@ -1406,7 +1878,7 @@ where
                         kind: *kind,
                     }
                 } else {
-                    SemanticImportType::Nominal(
+                    nominal_import_type(
                         self.nominals
                             .iter()
                             .find_map(|(key, local)| {
@@ -1453,7 +1925,12 @@ where
             ConstValue::Function(symbol) => SemanticImportConstValue::Function(
                 self.functions
                     .iter()
-                    .find_map(|(key, local)| (*local == symbol).then(|| key.clone()))
+                    .find_map(|(key, local)| match key {
+                        FunctionInstanceKey::Definition(key) if *local == symbol => {
+                            Some(key.clone())
+                        }
+                        _ => None,
+                    })
                     .ok_or(SemanticImportFailure::ForeignLocalValue)?,
             ),
             ConstValue::Unit => SemanticImportConstValue::Unit,
@@ -1466,6 +1943,21 @@ where
     pub fn complete_struct(
         &self,
         key: &K,
+        fields: &[(Arc<str>, SemanticImportType<K, M>)],
+        is_copy: bool,
+        is_linear: bool,
+    ) -> Result<(), SemanticImportFailure> {
+        self.complete_nominal_struct(
+            &NominalInstanceKey::Named(key.clone()),
+            fields,
+            is_copy,
+            is_linear,
+        )
+    }
+
+    fn complete_nominal_struct(
+        &self,
+        key: &NominalInstanceKey<K, M>,
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         is_copy: bool,
         is_linear: bool,
@@ -1515,6 +2007,14 @@ where
     pub fn complete_enum(
         &self,
         key: &K,
+        variants: &[(Arc<str>, Arc<[SemanticImportType<K, M>]>)],
+    ) -> Result<(), SemanticImportFailure> {
+        self.complete_nominal_enum(&NominalInstanceKey::Named(key.clone()), variants)
+    }
+
+    fn complete_nominal_enum(
+        &self,
+        key: &NominalInstanceKey<K, M>,
         variants: &[(Arc<str>, Arc<[SemanticImportType<K, M>]>)],
     ) -> Result<(), SemanticImportFailure> {
         let LocalNominal::Enum(id) = self
@@ -1838,7 +2338,7 @@ mod tests {
         )
         .unwrap();
         for epoch in [&first, &second] {
-            let left = epoch.nominals["left"];
+            let left = epoch.nominals[&NominalInstanceKey::Named("left")];
             let LocalNominal::Struct(left) = left else {
                 panic!("left must be a struct")
             };
@@ -1877,7 +2377,7 @@ mod tests {
                 projection(&second, second.import_type(&ty).unwrap().value)
             );
         }
-        let LocalNominal::Struct(left) = first.nominals["left"] else {
+        let LocalNominal::Struct(left) = first.nominals[&NominalInstanceKey::Named("left")] else {
             panic!("left must be a struct")
         };
         assert!(first.type_pool().try_struct_def(left).is_some());
@@ -1895,7 +2395,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let LocalNominal::Enum(id) = epoch.nominals["choice"] else {
+        let LocalNominal::Enum(id) = epoch.nominals[&NominalInstanceKey::Named("choice")] else {
             panic!("choice must be an enum")
         };
         let ty = Type::new_enum(id);
@@ -1946,7 +2446,7 @@ mod tests {
         );
         assert_eq!(epoch.type_pool().stats(), before);
         assert_eq!(epoch.type_pool().get_array(Type::U8, 4), None);
-        let LocalNominal::Struct(id) = epoch.nominals["node"] else {
+        let LocalNominal::Struct(id) = epoch.nominals[&NominalInstanceKey::Named("node")] else {
             panic!("node must be a struct")
         };
         assert!(epoch.type_pool().try_struct_def(id).is_none());
@@ -1968,7 +2468,7 @@ mod tests {
         );
         assert_eq!(epoch.type_pool().stats(), before);
         assert_eq!(epoch.type_pool().get_array(Type::U16, 5), None);
-        let LocalNominal::Enum(id) = epoch.nominals["choice"] else {
+        let LocalNominal::Enum(id) = epoch.nominals[&NominalInstanceKey::Named("choice")] else {
             panic!("choice must be an enum")
         };
         assert!(epoch.type_pool().try_enum_def(id).is_none());
@@ -2230,6 +2730,624 @@ mod tests {
                 .as_u32(),
             2
         );
+    }
+
+    fn local_callable(
+        key: FunctionInstanceKey<&'static str, &'static str>,
+        symbol: &'static str,
+    ) -> SemanticLocalCallable<&'static str, &'static str> {
+        SemanticLocalCallable {
+            key,
+            symbol: Arc::from(symbol),
+        }
+    }
+
+    fn materialize_local(
+        identity: FunctionInstanceKey<&'static str, &'static str>,
+        callable_kind: crate::AnalyzedCallableKind,
+        input: &SemanticBody<&'static str, &'static str>,
+        nominals: Vec<SemanticLocalNominal<&'static str, &'static str>>,
+        callables: Vec<SemanticLocalCallable<&'static str, &'static str>>,
+    ) -> Result<SemanticLocalMaterialization<&'static str, &'static str>, SemanticBodyImportFailure>
+    {
+        let epoch = Epoch::new_local(nominals, callables, vec!["main"]).unwrap();
+        epoch.materialize_local_body(
+            identity,
+            callable_kind,
+            input,
+            Span::with_file(FileId::new(7), 100, 200),
+        )
+    }
+
+    #[test]
+    fn local_materialization_owns_ordinary_air_strings_and_domains() {
+        use crate::SemanticBodyInstData as D;
+        let identity = FunctionInstanceKey::Definition("main");
+        let mut input = body(vec![
+            D::Const(42),
+            D::Intrinsic {
+                runtime: None,
+                name: Arc::from("compiler-intrinsic"),
+                args: Arc::new([]),
+            },
+            D::Ret(Some(1)),
+        ]);
+        input.strings = vec![Arc::from("body-local")].into();
+        input.local_atoms = vec![crate::SemanticBodyLocalAtom {
+            identity: crate::LocalAtomId {
+                producer: identity.clone(),
+                kind: crate::LocalAtomKind::String,
+                anchor: rue_rir::RirStructuralAnchor::new(vec![
+                    rue_rir::RirStructuralPathSegment::Body,
+                    rue_rir::RirStructuralPathSegment::StringLiteral(0),
+                ]),
+            },
+            content: Arc::from("body-local"),
+        }]
+        .into();
+        input.num_locals = 3;
+        input.num_param_slots = 2;
+        input.param_by_ref = vec![true, false].into();
+        input.param_writable = vec![false, true].into();
+        input.allow_unreachable_code = true;
+        input.warnings = vec![crate::SemanticBodyWarning {
+            kind: rue_error::WarningKind::UnreachableCode,
+            anchor: crate::SemanticBodyAnchor { start: 3, end: 4 },
+            labels: Arc::new([]),
+            notes: Arc::new([]),
+            helps: Arc::new([]),
+            suggestions: Arc::new([]),
+        }]
+        .into();
+        let output = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            vec![],
+            vec![local_callable(identity.clone(), "main")],
+        )
+        .unwrap();
+        assert_eq!(output.identity, identity);
+        assert_eq!(output.name, "main");
+        assert_eq!(output.strings, ["body-local"]);
+        assert_eq!(output.air.len(), 3);
+        assert_eq!(output.body_span.file_id, FileId::new(7));
+        assert!(output.completeness.is_complete());
+        assert_eq!(output.interner.get("main"), output.interner.get("main"));
+        assert!(output.interner.get("compiler-intrinsic").is_some());
+        assert_eq!(output.num_locals, 3);
+        assert_eq!(output.num_param_slots, 2);
+        assert_eq!(output.param_modes.by_ref(), [true, false]);
+        assert_eq!(output.param_modes.writable(), [false, true]);
+        assert!(output.allow_unreachable_code);
+        assert_eq!(output.warnings.len(), 1);
+        assert_eq!(output.local_atoms.len(), 1);
+        assert_eq!(output.local_atoms[0].identity.producer, identity);
+        assert_eq!(output.local_atoms[0].dense_id, 0);
+    }
+
+    #[test]
+    fn local_materialization_resolves_specializations_directly() {
+        use crate::SemanticBodyInstData as D;
+        let arguments = crate::CanonicalArguments {
+            types: vec![TypeInstanceKey::I32].into(),
+            values: vec![crate::CanonicalArgumentValue::Integer(7)].into(),
+        };
+        let owner = FunctionInstanceKey::Specialization {
+            base: Box::new(FunctionInstanceKey::Definition("generic")),
+            arguments: arguments.clone(),
+        };
+        let callee = FunctionInstanceKey::Specialization {
+            base: Box::new(FunctionInstanceKey::Definition("callee")),
+            arguments,
+        };
+        let input = body(vec![
+            D::Const(1),
+            D::CallSpecialized {
+                identity: crate::SemanticSpecializationIdentity {
+                    base: "callee",
+                    type_arguments: vec![SemanticImportType::I32].into(),
+                    value_arguments: vec![SemanticImportConstValue::Integer(7)].into(),
+                },
+                args: Arc::new([]),
+            },
+            D::Ret(Some(1)),
+        ]);
+        let output = materialize_local(
+            owner.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            vec![],
+            vec![
+                local_callable(owner, "generic::<stable>"),
+                local_callable(callee, "callee::<stable>"),
+            ],
+        )
+        .unwrap();
+        assert!(matches!(
+            output.air.get(crate::AirRef::from_raw(1)).data,
+            crate::AirInstData::Call { .. }
+        ));
+    }
+
+    #[test]
+    fn local_materialization_round_trips_fixed_and_dynamic_builtin_nominals() {
+        use crate::SemanticBodyInstData as D;
+        let identity = FunctionInstanceKey::Definition("main");
+        let arch_key = NominalInstanceKey::Builtin {
+            kind: crate::AnonymousNominalKind::Enum,
+            name: Arc::from("Arch"),
+        };
+        let arch_ty = SemanticImportType::BuiltinNominal {
+            name: Arc::from("Arch"),
+            kind: SemanticImportNominalKind::Enum,
+        };
+        let mut fixed = body(vec![
+            D::EnumVariant {
+                enum_key: arch_key,
+                variant_index: 0,
+                payload: Arc::new([]),
+            },
+            D::Ret(Some(0)),
+        ]);
+        fixed.return_type = arch_ty.clone();
+        let mut instructions = fixed.instructions.to_vec();
+        instructions[0].ty = arch_ty.clone();
+        instructions[1].ty = arch_ty;
+        fixed.instructions = instructions.into();
+        let fixed = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &fixed,
+            vec![],
+            vec![local_callable(identity.clone(), "main")],
+        )
+        .unwrap();
+        assert!(fixed.aggregate_types.values().any(|identity| matches!(
+            identity,
+            TypeInstanceKey::BuiltinNominal { name, kind }
+                if name.as_ref() == "Arch" && *kind == crate::AnonymousNominalKind::Enum
+        )));
+
+        let fixed_string = SemanticImportType::BuiltinNominal {
+            name: Arc::from("Str(8)"),
+            kind: SemanticImportNominalKind::Struct,
+        };
+        let fixed_string_key = NominalInstanceKey::Builtin {
+            kind: crate::AnonymousNominalKind::Struct,
+            name: Arc::from("Str(8)"),
+        };
+        let mut dynamic = body(vec![D::PlaceRead { place: 0 }, D::Ret(Some(0))]);
+        dynamic.return_type = SemanticImportType::U64;
+        dynamic.num_locals = 1;
+        dynamic.instructions = vec![
+            crate::SemanticBodyInst {
+                data: D::PlaceRead { place: 0 },
+                ty: SemanticImportType::U64,
+                anchor: crate::SemanticBodyAnchor { start: 1, end: 2 },
+            },
+            crate::SemanticBodyInst {
+                data: D::Ret(Some(0)),
+                ty: SemanticImportType::U64,
+                anchor: crate::SemanticBodyAnchor { start: 2, end: 3 },
+            },
+        ]
+        .into();
+        dynamic.places = vec![crate::SemanticBodyPlace {
+            base: crate::AirPlaceBase::Local(0),
+            base_type: fixed_string,
+            projections: vec![crate::SemanticBodyProjection::Field {
+                struct_key: fixed_string_key,
+                field_index: 1,
+            }]
+            .into(),
+        }]
+        .into();
+        let dynamic = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &dynamic,
+            vec![],
+            vec![local_callable(identity, "main")],
+        )
+        .unwrap();
+        assert!(dynamic.aggregate_types.values().any(|identity| matches!(
+            identity,
+            TypeInstanceKey::BuiltinNominal { name, kind }
+                if name.as_ref() == "Str(8)" && *kind == crate::AnonymousNominalKind::Struct
+        )));
+    }
+
+    #[test]
+    fn local_epoch_rejects_fixed_builtin_nominal_facts() {
+        let error = Epoch::new_local(
+            vec![SemanticLocalNominal {
+                key: NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Enum,
+                    name: Arc::from("Arch"),
+                },
+                module_path: Arc::from("<builtin>"),
+                name: Arc::from("Arch"),
+                kind: SemanticImportNominalKind::Enum,
+                is_public: true,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Enum {
+                    variants: Arc::new([]),
+                },
+            }],
+            vec![],
+            vec![],
+        )
+        .err();
+        assert_eq!(error, Some(SemanticImportFailure::BuiltinNominalShadow));
+    }
+
+    #[test]
+    fn local_epoch_rejects_dynamic_string_builtin_nominal_facts() {
+        let error = Epoch::new_local(
+            vec![SemanticLocalNominal {
+                key: NominalInstanceKey::Builtin {
+                    kind: crate::AnonymousNominalKind::Struct,
+                    name: Arc::from("Str(8)"),
+                },
+                module_path: Arc::from("<builtin>"),
+                name: Arc::from("Str(8)"),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: true,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: Arc::new([]),
+                    is_copy: true,
+                    is_linear: false,
+                    destructor: None,
+                },
+            }],
+            vec![],
+            vec![],
+        )
+        .err();
+        assert_eq!(error, Some(SemanticImportFailure::BuiltinNominalShadow));
+    }
+
+    fn anonymous_key() -> crate::AnonymousNominalKey<&'static str, &'static str> {
+        crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition("producer"),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: crate::CanonicalArguments::default(),
+        }
+    }
+
+    #[test]
+    fn local_materialization_joins_anonymous_nominal_and_member_identity() {
+        use crate::SemanticBodyInstData as D;
+        let anonymous = anonymous_key();
+        let owner_type = TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(anonymous.clone()));
+        let identity = FunctionInstanceKey::AnonymousMember {
+            owner: Box::new(owner_type.clone()),
+            member: crate::AnonymousMemberKey {
+                kind: crate::AnonymousMemberKind::Method,
+                name: Arc::from("value"),
+            },
+        };
+        let nominal = SemanticLocalNominal {
+            key: NominalInstanceKey::Anonymous(anonymous.clone()),
+            module_path: Arc::from("main"),
+            name: Arc::from("anonymous-record"),
+            kind: SemanticImportNominalKind::Struct,
+            is_public: false,
+            lang_item: None,
+            shape: SemanticLocalNominalShape::Struct {
+                fields: Arc::new([]),
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+            },
+        };
+        let mut input = body(vec![D::UnitConst, D::Ret(None)]);
+        input.return_type = SemanticImportType::Unit;
+        input.instructions = vec![
+            crate::SemanticBodyInst {
+                data: D::UnitConst,
+                ty: SemanticImportType::Unit,
+                anchor: crate::SemanticBodyAnchor { start: 1, end: 2 },
+            },
+            crate::SemanticBodyInst {
+                data: D::Ret(None),
+                ty: SemanticImportType::Unit,
+                anchor: crate::SemanticBodyAnchor { start: 2, end: 3 },
+            },
+        ]
+        .into();
+        let output = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            vec![nominal],
+            vec![local_callable(identity, "anonymous-record.value")],
+        )
+        .unwrap();
+        assert!(output.aggregate_types.values().any(|ty| ty == &owner_type));
+    }
+
+    #[test]
+    fn local_materialization_preserves_named_destructor_kind() {
+        use crate::SemanticBodyInstData as D;
+        let identity = FunctionInstanceKey::Definition("record-drop");
+        let mut input = body(vec![D::UnitConst, D::Ret(None)]);
+        input.return_type = SemanticImportType::Unit;
+        input.instructions = vec![
+            crate::SemanticBodyInst {
+                data: D::UnitConst,
+                ty: SemanticImportType::Unit,
+                anchor: crate::SemanticBodyAnchor { start: 1, end: 2 },
+            },
+            crate::SemanticBodyInst {
+                data: D::Ret(None),
+                ty: SemanticImportType::Unit,
+                anchor: crate::SemanticBodyAnchor { start: 2, end: 3 },
+            },
+        ]
+        .into();
+        let output = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Destructor,
+            &input,
+            vec![SemanticLocalNominal {
+                key: NominalInstanceKey::Named("record"),
+                module_path: Arc::from("main"),
+                name: Arc::from("Record"),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: Arc::new([]),
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: Some(identity.clone()),
+                },
+            }],
+            vec![local_callable(identity, "Record.__drop")],
+        )
+        .unwrap();
+        assert_eq!(
+            output.callable_kind,
+            crate::AnalyzedCallableKind::Destructor
+        );
+        let record = output
+            .aggregate_types
+            .iter()
+            .find_map(|(ty, stable)| {
+                (stable == &TypeInstanceKey::Nominal(NominalInstanceKey::Named("record")))
+                    .then_some(*ty)
+            })
+            .unwrap();
+        assert_eq!(
+            output
+                .type_pool
+                .struct_def(record.as_struct().unwrap())
+                .destructor
+                .as_deref(),
+            Some("Record.__drop")
+        );
+    }
+
+    #[test]
+    fn local_materialization_fails_closed_for_missing_exact_facts() {
+        use crate::SemanticBodyInstData as D;
+        let identity = FunctionInstanceKey::Definition("main");
+        let input = body(vec![D::Call {
+            function: FunctionInstanceKey::Definition("missing"),
+            args: Arc::new([]),
+        }]);
+        let error = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            vec![],
+            vec![local_callable(identity, "main")],
+        )
+        .err()
+        .expect("missing callable fact must fail");
+        assert_eq!(
+            error.kind(),
+            crate::SemanticBodyImportFailureKind::Semantic(SemanticImportFailure::MissingFunction)
+        );
+    }
+
+    #[test]
+    fn local_materialization_rejects_ambiguous_and_incomplete_fact_sets() {
+        let identity = FunctionInstanceKey::Definition("main");
+        assert_eq!(
+            Epoch::new_local(
+                vec![],
+                vec![
+                    local_callable(identity.clone(), "main-a"),
+                    local_callable(identity.clone(), "main-b"),
+                ],
+                vec!["main"],
+            )
+            .err(),
+            Some(SemanticImportFailure::DuplicateCallable)
+        );
+        assert_eq!(
+            Epoch::new_local(
+                vec![],
+                vec![
+                    local_callable(identity.clone(), "main"),
+                    local_callable(FunctionInstanceKey::Definition("other"), "main"),
+                ],
+                vec!["main"],
+            )
+            .err(),
+            Some(SemanticImportFailure::DuplicateCallableLocalIdentity)
+        );
+        assert_eq!(
+            Epoch::new_local(
+                vec![],
+                vec![local_callable(identity.clone(), "main")],
+                vec!["main", "main"],
+            )
+            .err(),
+            Some(SemanticImportFailure::DuplicateModule)
+        );
+
+        let mut epoch = Epoch::new_local(
+            vec![],
+            vec![local_callable(identity.clone(), "main")],
+            vec!["main"],
+        )
+        .unwrap();
+        epoch
+            .local_completeness
+            .as_mut()
+            .expect("local epoch carries its own witness")
+            .nominals_declared += 1;
+        let error = epoch
+            .materialize_local_body(
+                identity,
+                crate::AnalyzedCallableKind::Ordinary,
+                &body(vec![crate::SemanticBodyInstData::Const(0)]),
+                Span::with_file(FileId::new(7), 100, 200),
+            )
+            .err()
+            .expect("incomplete witness must fail");
+        assert_eq!(
+            error.kind(),
+            crate::SemanticBodyImportFailureKind::Semantic(
+                SemanticImportFailure::IncompleteMaterialization
+            )
+        );
+
+        for corrupt in [
+            |witness: &mut SemanticLocalCompleteness| witness.callables_registered += 1,
+            |witness: &mut SemanticLocalCompleteness| witness.modules_registered += 1,
+        ] {
+            let mut epoch = Epoch::new_local(
+                vec![],
+                vec![local_callable(
+                    FunctionInstanceKey::Definition("main"),
+                    "main",
+                )],
+                vec!["main"],
+            )
+            .unwrap();
+            corrupt(
+                epoch
+                    .local_completeness
+                    .as_mut()
+                    .expect("local epoch carries its own witness"),
+            );
+            let error = epoch
+                .materialize_local_body(
+                    FunctionInstanceKey::Definition("main"),
+                    crate::AnalyzedCallableKind::Ordinary,
+                    &body(vec![crate::SemanticBodyInstData::Const(0)]),
+                    Span::with_file(FileId::new(7), 100, 200),
+                )
+                .err()
+                .expect("corrupt internal count must fail");
+            assert_eq!(
+                error.kind(),
+                crate::SemanticBodyImportFailureKind::Semantic(
+                    SemanticImportFailure::IncompleteMaterialization
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn local_materialization_is_independent_of_exact_fact_input_order() {
+        use crate::SemanticBodyInstData as D;
+        let identity = FunctionInstanceKey::Definition("main");
+        let input = body(vec![D::Const(7), D::Ret(Some(0))]);
+        let facts = vec![
+            SemanticLocalNominal {
+                key: NominalInstanceKey::Named("z"),
+                module_path: Arc::from("main"),
+                name: Arc::from("Z"),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: Arc::new([]),
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: None,
+                },
+            },
+            SemanticLocalNominal {
+                key: NominalInstanceKey::Named("a"),
+                module_path: Arc::from("main"),
+                name: Arc::from("A"),
+                kind: SemanticImportNominalKind::Enum,
+                is_public: false,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Enum {
+                    variants: Arc::new([]),
+                },
+            },
+        ];
+        let forward = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            facts.clone(),
+            vec![local_callable(identity.clone(), "main")],
+        )
+        .unwrap();
+        let reverse = materialize_local(
+            identity,
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            facts.into_iter().rev().collect(),
+            vec![local_callable(
+                FunctionInstanceKey::Definition("main"),
+                "main",
+            )],
+        )
+        .unwrap();
+        assert_eq!(format!("{:?}", forward.air), format!("{:?}", reverse.air));
+        assert_eq!(forward.aggregate_types, reverse.aggregate_types);
+        assert_eq!(
+            forward.type_pool.all_types().collect::<Vec<_>>(),
+            reverse.type_pool.all_types().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn local_materialization_matches_the_exact_body_import_boundary() {
+        use crate::SemanticBodyInstData as D;
+        let input = body(vec![
+            D::Const(4),
+            D::Const(5),
+            D::Add(0, 1),
+            D::Ret(Some(2)),
+        ]);
+        let span = Span::with_file(FileId::new(7), 100, 200);
+        let imported = Epoch::new(vec![], vec![("main", Arc::from("main"))], vec!["main"])
+            .unwrap()
+            .import_body(&input, span)
+            .unwrap();
+        let local = materialize_local(
+            FunctionInstanceKey::Definition("main"),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            vec![],
+            vec![local_callable(
+                FunctionInstanceKey::Definition("main"),
+                "main",
+            )],
+        )
+        .unwrap();
+        assert_eq!(format!("{:?}", local.air), format!("{:?}", imported.air));
+        assert_eq!(local.strings, imported.strings);
+        assert_eq!(local.local_atoms, imported.local_atoms);
+        assert_eq!(local.param_modes, imported.param_modes);
+        assert_eq!(local.warnings, imported.warnings);
     }
 
     #[test]

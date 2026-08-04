@@ -422,6 +422,63 @@ fn semantic_schema_scaffolding_stays_exhaustive_and_reviewable() {
 }
 
 #[test]
+fn local_semantic_materialization_owns_complete_cfg_inputs_without_a_peer_cache() {
+    let import = include_str!("semantic_import.rs");
+    let providers = include_str!("sema/provider_body_host.rs");
+
+    for owned in [
+        "pub air: crate::ValidatedAir",
+        "pub type_pool: crate::FrozenTypeInternPool",
+        "pub interner: Arc<ThreadedRodeo>",
+        "pub aggregate_types:",
+        "pub strings: Vec<String>",
+        "pub body_span: Span",
+        "pub completeness: SemanticLocalCompleteness",
+    ] {
+        assert!(
+            import.contains(owned),
+            "local semantic materialization lost owned CFG input: {owned}"
+        );
+    }
+    assert!(import.contains("pub fn new_local("));
+    assert!(import.contains("pub fn materialize_local_body("));
+    assert!(import.contains("local_completeness: Option<SemanticLocalCompleteness>"));
+    let materialize_signature = import
+        .split("pub fn materialize_local_body(")
+        .nth(1)
+        .and_then(|source| source.split(") -> Result").next())
+        .expect("local materialization signature");
+    assert!(
+        !materialize_signature.contains("completeness:"),
+        "a caller-provided completeness witness could be crossed between epochs"
+    );
+    assert!(import.contains("NominalInstanceKey::Anonymous"));
+    assert!(import.contains("SemanticImportFailure::BuiltinNominalShadow"));
+    assert!(import.contains("specialization_key(specialization)"));
+    for provider in ["ProviderSpecializedBody", "ProviderAnonymousBody"] {
+        let body = providers
+            .split(&format!("pub struct {provider}"))
+            .nth(1)
+            .and_then(|source| source.split("\n}").next())
+            .expect("provider result declaration");
+        assert!(body.contains("pub function: AnalyzedFunction"));
+        assert!(body.contains("pub type_pool: Rc<TypeInternPool>"));
+        assert!(body.contains("pub interner: Rc<ThreadedRodeo>"));
+    }
+    for forbidden in ["Mutex<", "RwLock<", "QueryFamily<", "cache:", "selected:"] {
+        let materialization = import
+            .split("pub struct SemanticLocalMaterialization")
+            .nth(1)
+            .and_then(|source| source.split("\n}").next())
+            .expect("local materialization declaration");
+        assert!(
+            !materialization.contains(forbidden),
+            "body-local materialization became peer state: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn semantic_definition_taxonomy_has_one_enum_declaration() {
     let canonical = include_str!("semantic_identity.rs");
     let bindings = include_str!("sema/binding_manifest.rs");

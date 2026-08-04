@@ -40,6 +40,10 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("import_discovery", include_str!("import_discovery.rs")),
     ("import_graph", include_str!("import_graph.rs")),
     ("linking", include_str!("linking.rs")),
+    (
+        "local_semantic_materialization",
+        include_str!("local_semantic_materialization.rs"),
+    ),
     ("parsed_modules", include_str!("parsed_modules.rs")),
     ("program_image_plan", include_str!("program_image_plan.rs")),
     ("queries", include_str!("queries.rs")),
@@ -68,6 +72,44 @@ const PRODUCTION_MODULES: &[(&str, &str)] = &[
     ("unstable", include_str!("unstable.rs")),
     ("well_known_option", include_str!("well_known_option.rs")),
 ];
+
+#[test]
+fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
+    let local = include_str!("local_semantic_materialization.rs");
+
+    for required in [
+        "canonical: &crate::body_query::CanonicalBody",
+        "declarations: &[DurableDeclarationSemantic]",
+        "anonymous_nominals: &[DurableAnonymousNominal]",
+        "callable_facts: &[LocalCallableFact]",
+        "nominal_metadata: &[LocalNominalMetadataFact]",
+        "pub(crate) fn new(",
+        "pub(crate) fn identity(&self) -> &StableDefinitionKey",
+        "pub(crate) fn lang_item(&self) -> Option<rue_air::LangItem>",
+        "rue_air::SemanticImportEpoch::new_local(",
+        ".materialize_local_body(",
+        "FunctionInstanceKey::AnonymousMember",
+    ] {
+        assert!(
+            local.contains(required),
+            "local semantic boundary lost exact input or identity support: {required}"
+        );
+    }
+    for forbidden in [
+        "CanonicalSemanticOutput",
+        "CanonicalMergedProgram",
+        "SemaOutput",
+        "QueryFamily<",
+        "Mutex<",
+        "RwLock<",
+        "cache:",
+    ] {
+        assert!(
+            !local.contains(forbidden),
+            "local semantic boundary gained a peer authority or cache: {forbidden}"
+        );
+    }
+}
 
 const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
     "Lexer",
