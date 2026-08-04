@@ -740,6 +740,10 @@ pub struct CompilerSession {
     queries: FrontendQueryDatabase,
     #[cfg(test)]
     codegen_executions: Vec<(crate::FunctionInstanceKey, rue_query::RequestExecution)>,
+    #[cfg(test)]
+    codegen_attempt_work: Vec<(crate::FunctionInstanceKey, Vec<(std::sync::Arc<str>, u64)>)>,
+    #[cfg(test)]
+    codegen_collections: usize,
     /// One-shot cancellation injections, each consumed with `mem::take` at a
     /// fixed point inside an attempt.
     ///
@@ -4038,12 +4042,11 @@ impl CompilerSession {
     pub(crate) fn codegen_products(
         &mut self,
         semantic: &crate::CanonicalSemanticOutput,
-        foreign_symbols: &[String],
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::backend::FunctionBackendProduct>, crate::CompileErrors> {
         Ok(self
-            .codegen_units(semantic, foreign_symbols, options, request)?
+            .codegen_units(semantic, options, request)?
             .into_iter()
             .map(|collected| collected.unit.backend_product())
             .collect())
@@ -4053,11 +4056,11 @@ impl CompilerSession {
     /// collapsing them into the historical backend-product representation.
     /// Object and link consumers aggregate this exact result in a
     /// `ProgramImagePlan`; presentation consumers may still use the thin
-    /// `codegen_products` projection above.
+    /// `codegen_products` projection above. RUE-1217 owns replacing this
+    /// remaining semantic root enumeration with query-native image roots.
     pub(crate) fn codegen_units(
         &mut self,
         semantic: &crate::CanonicalSemanticOutput,
-        foreign_symbols: &[String],
         options: &crate::CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<Vec<crate::codegen_query::CollectedCodegenUnit>, crate::CompileErrors> {
@@ -4072,29 +4075,19 @@ impl CompilerSession {
                     ),
                 ))
             })?;
-        let mappings = Arc::new(crate::backend::foreign_call_symbol_mappings(
-            semantic.functions(),
-            foreign_symbols,
-        ));
-        let foreign: Arc<std::collections::BTreeSet<String>> =
-            Arc::new(foreign_symbols.iter().cloned().collect());
-        let strings: Arc<[String]> = semantic.strings().to_vec().into();
-        let interner = semantic.rir_owner().semantic_symbols().shared_interner();
         let mut units = Vec::with_capacity(semantic.functions().len());
         #[cfg(test)]
-        self.codegen_executions.clear();
+        {
+            self.codegen_executions.clear();
+            self.codegen_attempt_work.clear();
+            self.codegen_collections = 0;
+        }
         for function in semantic.functions() {
             let attempt = self
                 .queries
                 .revisioned
                 .codegen_unit(
                     revision,
-                    function.clone(),
-                    semantic.type_pool().clone(),
-                    strings.clone(),
-                    interner.clone(),
-                    mappings.clone(),
-                    foreign.clone(),
                     function.optimized_cfg_key.clone(),
                     options.target,
                     request,
@@ -4109,8 +4102,12 @@ impl CompilerSession {
                     ))
                 })?;
             #[cfg(test)]
-            self.codegen_executions
-                .push((function.semantic_identity.clone(), attempt.execution()));
+            {
+                self.codegen_executions
+                    .push((function.semantic_identity.clone(), attempt.execution()));
+                self.codegen_attempt_work
+                    .push((function.semantic_identity.clone(), attempt.work().to_vec()));
+            }
             let terminal = attempt.into_result().map_err(|abort| {
                 crate::CompileErrors::from(crate::CompileError::without_span(
                     crate::ErrorKind::InternalError(format!("codegen query aborted: {abort:?}")),
@@ -4122,9 +4119,13 @@ impl CompilerSession {
             match unit {
                 crate::codegen_query::CodegenUnitValue::Available(unit) => {
                     units.push(crate::codegen_query::CollectedCodegenUnit {
-                        function: function.clone(),
+                        function: function.semantic_identity.clone(),
                         unit: unit.clone(),
                     });
+                    #[cfg(test)]
+                    {
+                        self.codegen_collections += 1;
+                    }
                 }
                 crate::codegen_query::CodegenUnitValue::Failure(errors) => {
                     return Err(errors.clone());
@@ -4139,6 +4140,18 @@ impl CompilerSession {
         &self,
     ) -> &[(crate::FunctionInstanceKey, rue_query::RequestExecution)] {
         &self.codegen_executions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn codegen_attempt_work(
+        &self,
+    ) -> &[(crate::FunctionInstanceKey, Vec<(std::sync::Arc<str>, u64)>)] {
+        &self.codegen_attempt_work
+    }
+
+    #[cfg(test)]
+    pub(crate) fn codegen_collections(&self) -> usize {
+        self.codegen_collections
     }
 
     /// Analyze the current revision, surfacing an unsatisfied trusted-toolchain
@@ -9646,6 +9659,177 @@ fn main() -> i32 {
         assert_ne!(first_helper.1, second_helper.1);
         assert_eq!(first_helper.2, second_helper.2);
         assert_eq!(first_helper.3, second_helper.3);
+    }
+
+    #[test]
+    fn codegen_units_observe_exact_owned_dependencies_and_reuse_unchanged_callers() {
+        let options = CompileOptions::default();
+        let first = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 1 } fn main() -> i32 { if false { helper() } else { 0 } }",
+        )
+        .unwrap();
+        let second = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 2 } fn main() -> i32 { if false { helper() } else { 0 } }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        let compile_units = |session: &mut CompilerSession| {
+            let semantic = session.canonical_semantic(&options).unwrap();
+            session
+                .codegen_units(
+                    &semantic,
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            semantic
+        };
+
+        session.update(&first).into_result().unwrap();
+        let cold = compile_units(&mut session);
+        assert_eq!(session.codegen_collections(), cold.functions().len());
+        assert!(
+            session
+                .codegen_executions()
+                .iter()
+                .all(|(_, execution)| { *execution == rue_query::RequestExecution::Computed })
+        );
+        for (_, work) in session.codegen_attempt_work() {
+            let amount = |label: &str| {
+                work.iter()
+                    .find_map(|(candidate, amount)| {
+                        (candidate.as_ref() == label).then_some(*amount)
+                    })
+                    .unwrap_or(0)
+            };
+            assert_eq!(amount("codegen.dependencies.optimized-cfg"), 1);
+            assert_eq!(amount("codegen.lowering.local"), 1);
+            assert_eq!(amount("codegen.unit.successes"), 1);
+        }
+        let cold_main = cold
+            .functions()
+            .iter()
+            .find(|function| function.legacy_name == "main")
+            .unwrap();
+        let cold_main_work = session
+            .codegen_attempt_work()
+            .iter()
+            .find(|(identity, _)| identity == &cold_main.semantic_identity)
+            .unwrap();
+        assert!(cold_main_work.1.iter().any(|(label, amount)| {
+            label.as_ref() == "codegen.domain.symbol-aliases" && *amount > 0
+        }));
+
+        session.update(&second).into_result().unwrap();
+        let warm = compile_units(&mut session);
+        assert_eq!(session.codegen_collections(), warm.functions().len());
+        let identity_for = |name: &str| {
+            warm.functions()
+                .iter()
+                .find(|function| function.legacy_name == name)
+                .unwrap()
+                .semantic_identity
+                .clone()
+        };
+        let execution_for = |identity: &crate::FunctionInstanceKey| {
+            session
+                .codegen_executions()
+                .iter()
+                .find_map(|(candidate, execution)| (candidate == identity).then_some(*execution))
+                .unwrap()
+        };
+        assert_eq!(
+            execution_for(&identity_for("main")),
+            rue_query::RequestExecution::Reused,
+            "an optimized-away alias does not make a callee implementation an exact caller dependency"
+        );
+        assert_eq!(
+            execution_for(&identity_for("helper")),
+            rue_query::RequestExecution::Computed
+        );
+        let main_work = session
+            .codegen_attempt_work()
+            .iter()
+            .find(|(identity, _)| identity == &identity_for("main"))
+            .unwrap();
+        assert!(
+            main_work.1.is_empty(),
+            "reused codegen terminals perform no local lowering or dependency collection"
+        );
+    }
+
+    #[test]
+    fn cfg_fails_closed_when_an_exact_call_abi_dependency_fails() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn helper(value: i32) -> i32 { value } fn main() -> i32 { helper(42) }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let errors = crate::cfg_query::with_test_call_abi_failure_injection(|| {
+            session
+                .canonical_semantic(&CompileOptions::default())
+                .unwrap_err()
+        });
+        let rendered = errors.to_string();
+        assert!(rendered.contains("call ABI unavailable"), "{rendered}");
+        assert!(rendered.contains("injected call ABI failure"), "{rendered}");
+    }
+
+    #[test]
+    fn owned_codegen_domains_preserve_legacy_backend_bytes_on_both_architectures() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn add(left: i32, right: i32) -> i32 { left + right }\n\
+             fn main() -> i32 { let message = \"owned\"; @dbg(message); add(20, 22) }",
+        )
+        .unwrap();
+        for target in [Target::X86_64Linux, Target::Aarch64Linux] {
+            let options = CompileOptions {
+                target,
+                ..CompileOptions::default()
+            };
+            let mut session = CompilerSession::new();
+            session.update(&source).into_result().unwrap();
+            let semantic = session.canonical_semantic(&options).unwrap();
+            let foreign = crate::backend::collect_foreign_symbols(
+                semantic.rir_owner().rir(),
+                semantic.rir_owner().semantic_symbols().interner(),
+            );
+            let owned = session
+                .codegen_units(
+                    &semantic,
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap()
+                .into_iter()
+                .map(|unit| unit.unit.backend_product())
+                .collect::<Vec<_>>();
+            let legacy = crate::backend::generate_backend_products(
+                semantic.functions(),
+                semantic.type_pool(),
+                semantic.strings(),
+                semantic.rir_owner().semantic_symbols().interner(),
+                &options,
+                &foreign,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+            assert_eq!(owned.len(), legacy.len());
+            for (owned, legacy) in owned.iter().zip(&legacy) {
+                assert_eq!(owned.machine_name, legacy.machine_name);
+                assert_eq!(owned.machine_code.code, legacy.machine_code.code);
+                assert_eq!(owned.machine_code.strings, legacy.machine_code.strings);
+                assert_eq!(
+                    format!("{:?}", owned.machine_code.relocations),
+                    format!("{:?}", legacy.machine_code.relocations)
+                );
+            }
+        }
     }
 
     #[test]

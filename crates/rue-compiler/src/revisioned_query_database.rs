@@ -14155,38 +14155,27 @@ impl RevisionedQueryDatabase {
         Ok((optimized, attempt))
     }
 
-    /// Request one canonical backend terminal. Batch assembly supplies the
-    /// current resolver, but the query key records only the callable names its
-    /// CFG actually uses; unrelated functions cannot invalidate this unit.
-    #[allow(clippy::too_many_arguments)]
+    /// Request one canonical backend terminal from its registered optimized
+    /// CFG. The nested terminal owns every current-domain lowering input, so
+    /// this API requires no semantic output, type pool, or live function.
     pub(crate) fn codegen_unit(
         &self,
         revision: Revision,
-        function: crate::FunctionWithCfg,
-        type_pool: crate::FrozenTypeInternPool,
-        strings: Arc<[String]>,
-        interner: Arc<lasso::ThreadedRodeo>,
-        symbol_mappings: Arc<BTreeMap<String, String>>,
-        foreign_symbols: Arc<BTreeSet<String>>,
         optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
         target: rue_target::Target,
         request: rue_codegen::BackendArtifactRequest,
         optimization: rue_cfg::OptLevel,
         cancellation: CancellationToken,
     ) -> Result<QueryRequestAttempt<crate::codegen_query::CodegenUnitValue>, QueryAbort> {
-        let live = Arc::new(crate::codegen_query::CodegenLiveInput {
-            function: Arc::new(function),
-            type_pool,
-            strings,
-            interner,
-            symbol_mappings,
-            foreign_symbols,
-            optimized_cfg_key,
-        });
         Ok(self.runtime.request_registered(
             &self.codegen_units,
             revision,
-            crate::codegen_query::CodegenUnitQueryKey::new(live, target, request, optimization),
+            crate::codegen_query::CodegenUnitQueryKey::new(
+                optimized_cfg_key,
+                target,
+                request,
+                optimization,
+            ),
             cancellation,
         ))
     }

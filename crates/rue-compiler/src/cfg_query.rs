@@ -11,6 +11,32 @@ use std::sync::Arc;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 use rue_span::Span;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    static INJECT_CALL_ABI_FAILURE: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_call_abi_failure_injection<T>(run: impl FnOnce() -> T) -> T {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            INJECT_CALL_ABI_FAILURE.with(|enabled| enabled.set(false));
+        }
+    }
+    INJECT_CALL_ABI_FAILURE.with(|enabled| {
+        assert!(
+            !enabled.replace(true),
+            "call-ABI failure injection is not nestable"
+        );
+    });
+    let _reset = Reset;
+    run()
+}
+
 #[derive(Debug, Clone)]
 pub(crate) enum CfgSemanticInput {
     Body {
@@ -191,11 +217,23 @@ pub(crate) struct CfgRecord {
     pub(crate) strings: Arc<[String]>,
     pub(crate) local_atoms:
         Arc<[rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>]>,
+    /// Owned current-domain aliases available while lowering this CFG. The
+    /// domain includes cleanup aliases that optimization may leave unused; its
+    /// stable identities and ABI classifications are still exact CFG-query
+    /// dependencies, never a caller-owned program resolver.
+    pub(crate) codegen: Arc<CfgCodegenDomain>,
     pub(crate) materialization_warnings: Arc<[rue_error::CompileWarning]>,
     pub(crate) body_span: Span,
     pub(crate) warnings: Arc<[rue_error::CompileWarning]>,
     pub(crate) implicit_destructor_targets: Arc<[crate::TypeInstanceKey]>,
     pub(crate) implicit_destructor_dependencies_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CfgCodegenDomain {
+    pub(crate) defined_symbol: Arc<str>,
+    pub(crate) symbol_mappings: Arc<std::collections::BTreeMap<String, String>>,
+    pub(crate) foreign_symbols: Arc<std::collections::BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -573,28 +611,19 @@ fn materialize_and_build_cfg(
         context.query_registered(type_facts, dependency.clone())?;
         context.query_registered(drop_glues, dependency)?;
     }
-    let mut callables = domains
-        .stable_callables()
-        .collect::<std::collections::BTreeSet<_>>();
-    callables.insert(key.function.clone());
-    for callable in callables {
-        context.query_registered(
-            call_abis,
-            crate::type_queries::CallAbiQueryKey {
-                callable,
-                configuration: key.configuration.clone(),
-            },
-        )?;
-    }
-    Ok(build_cfg(context, key, materialized, domains))
+    build_cfg(context, call_abis, key, materialized, domains)
 }
 
 fn build_cfg(
     context: &QueryContext,
+    call_abis: &QueryFamily<
+        crate::type_queries::CallAbiQueryKey,
+        crate::type_queries::CallAbiValue,
+    >,
     key: &CfgQueryKey,
     materialized: crate::local_semantic_materialization::LocalSemanticMaterialization,
     domains: crate::durable_cfg::CfgDomainProjection,
-) -> CfgValue {
+) -> Result<CfgValue, QueryAbort> {
     context.record_work(rue_query::WorkItem::new("cfg.build.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.air.instructions",
@@ -613,16 +642,85 @@ fn build_cfg(
     );
     if !output.errors.is_empty() {
         context.record_work(rue_query::WorkItem::new("cfg.build.failures", 1));
-        return CfgValue::Failure {
+        return Ok(CfgValue::Failure {
             errors: output.errors.into(),
             body_span: materialized.body_span,
-        };
+        });
     }
     context.record_work(rue_query::WorkItem::new("cfg.build.successes", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.warnings",
         output.warnings.len() as u64,
     ));
+    let cfg = output
+        .cfg
+        .as_ref()
+        .expect("successful CFG construction publishes a validated CFG");
+    let callables = match domains.runtime_callables(cfg) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(internal_failure(
+                format!("canonical runtime-call projection failed: {error:?}"),
+                materialized.body_span,
+            ));
+        }
+    };
+    let mut call_abi_facts = std::collections::BTreeMap::new();
+    for callable in callables {
+        let terminal = context.query_registered(
+            call_abis,
+            crate::type_queries::CallAbiQueryKey {
+                callable: callable.clone(),
+                configuration: key.configuration.clone(),
+            },
+        )?;
+        let QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("CallAbi publishes typed values")
+        };
+        #[cfg(test)]
+        let injected;
+        #[cfg(test)]
+        let value = if INJECT_CALL_ABI_FAILURE.with(Cell::get) {
+            injected = crate::type_queries::CallAbiValue::Failure(
+                crate::type_queries::TypeQueryFailure::Unavailable(Arc::from(
+                    "injected call ABI failure",
+                )),
+            );
+            &injected
+        } else {
+            value
+        };
+        match value {
+            crate::type_queries::CallAbiValue::Available(facts) => {
+                call_abi_facts.insert(callable, facts.clone());
+            }
+            crate::type_queries::CallAbiValue::Failure(failure) => {
+                let detail = match failure {
+                    crate::type_queries::TypeQueryFailure::Unavailable(detail)
+                    | crate::type_queries::TypeQueryFailure::Invalid(detail) => detail,
+                };
+                return Ok(internal_failure(
+                    format!("call ABI unavailable for {callable:?}: {detail}"),
+                    materialized.body_span,
+                ));
+            }
+        }
+    }
+    let codegen = match domains.codegen_domain(
+        &key.function,
+        &materialized.name,
+        &materialized.type_pool,
+        &materialized.interner,
+        &call_abi_facts,
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(internal_failure(
+                format!("canonical codegen domain projection failed: {error:?}"),
+                materialized.body_span,
+            ));
+        }
+    };
     let mut implicit_destructor_targets = output
         .implicit_named_destructors
         .iter()
@@ -642,7 +740,7 @@ fn build_cfg(
         // the live type pool for same-named structs outside this CFG's domain.
         implicit_destructor_targets.insert(owner.clone());
     }
-    CfgValue::Available(Arc::new(CfgRecord {
+    Ok(CfgValue::Available(Arc::new(CfgRecord {
         cfg: output
             .cfg
             .expect("successful CFG construction publishes a validated CFG"),
@@ -651,6 +749,7 @@ fn build_cfg(
         interner: materialized.interner,
         strings: materialized.strings.into(),
         local_atoms: materialized.local_atoms.into(),
+        codegen: Arc::new(codegen),
         materialization_warnings: materialized.warnings,
         body_span: materialized.body_span,
         warnings: output.warnings.into(),
@@ -660,7 +759,7 @@ fn build_cfg(
             .into(),
         implicit_destructor_dependencies_complete: materialized.completeness.is_complete()
             && !output.anonymous_destructor_dependency_incomplete,
-    }))
+    })))
 }
 
 pub(crate) fn evaluate_optimized_cfg(
@@ -694,6 +793,7 @@ pub(crate) fn evaluate_optimized_cfg(
                     interner: record.interner.clone(),
                     strings: record.strings.clone(),
                     local_atoms: record.local_atoms.clone(),
+                    codegen: record.codegen.clone(),
                     materialization_warnings: record.materialization_warnings.clone(),
                     body_span: record.body_span,
                     warnings: record.warnings.clone(),

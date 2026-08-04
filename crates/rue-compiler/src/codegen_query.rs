@@ -7,7 +7,7 @@
 //! callers keep their units unless a real ABI or emitted reference changes.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     hash::{Hash, Hasher},
     sync::Arc,
 };
@@ -42,17 +42,6 @@ pub(crate) fn with_test_codegen_failure_injection<T>(run: impl FnOnce() -> T) ->
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct CodegenLiveInput {
-    pub(crate) function: Arc<crate::FunctionWithCfg>,
-    pub(crate) type_pool: crate::FrozenTypeInternPool,
-    pub(crate) strings: Arc<[String]>,
-    pub(crate) interner: Arc<lasso::ThreadedRodeo>,
-    pub(crate) symbol_mappings: Arc<BTreeMap<String, String>>,
-    pub(crate) foreign_symbols: Arc<BTreeSet<String>>,
-    pub(crate) optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct CodegenUnitQueryKey {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) target: rue_target::Target,
@@ -67,44 +56,21 @@ pub(crate) struct CodegenUnitQueryKey {
     /// equality because the evaluator retains those projections, but remains
     /// absent from logical identity and the link-content fingerprint.
     pub(crate) request: rue_codegen::BackendArtifactRequest,
-    /// The machine names that this unit can actually reference, including raw
-    /// foreign names. It intentionally omits unrelated program callables.
-    pub(crate) references: Arc<[(String, String)]>,
-    /// Exact content discriminator for revision revalidation. It is excluded
-    /// from `stable_identity`, but not memo equality: successor bodies/layouts
-    /// must select a fresh codegen terminal.
+    /// The registered optimized-CFG dependency owns every current-domain value
+    /// used by lowering. It is excluded from `stable_identity`, but remains in
+    /// memo equality so a different function body/configuration cannot alias.
     pub(crate) optimized_cfg: crate::cfg_query::OptimizedCfgQueryKey,
-    pub(crate) live: Arc<CodegenLiveInput>,
     memo_hash: u64,
 }
 
 impl CodegenUnitQueryKey {
     pub(crate) fn new(
-        live: Arc<CodegenLiveInput>,
+        optimized_cfg: crate::cfg_query::OptimizedCfgQueryKey,
         target: rue_target::Target,
         request: rue_codegen::BackendArtifactRequest,
         optimization: rue_cfg::OptLevel,
     ) -> Self {
-        let function = live.function.semantic_identity.clone();
-        // Codegen receives the complete resolver for its current-domain call
-        // names, but only names mentioned by this CFG belong in equality.
-        let mut references = BTreeSet::new();
-        for block in live.function.cfg.blocks() {
-            for value in &block.insts {
-                if let rue_cfg::CfgInstData::Call { name, .. } =
-                    &live.function.cfg.get_inst(*value).data
-                {
-                    let legacy = live.interner.resolve(name).to_owned();
-                    let resolved = live
-                        .symbol_mappings
-                        .get(&legacy)
-                        .cloned()
-                        .unwrap_or(legacy.clone());
-                    references.insert((legacy, resolved));
-                }
-            }
-        }
-        let references: Arc<[(String, String)]> = references.into_iter().collect::<Vec<_>>().into();
+        let function = optimized_cfg.cfg.function.clone();
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         function.hash(&mut hasher);
         target.hash(&mut hasher);
@@ -118,8 +84,7 @@ impl CodegenUnitQueryKey {
         request.liveness.hash(&mut hasher);
         request.regalloc.hash(&mut hasher);
         request.asm.hash(&mut hasher);
-        references.hash(&mut hasher);
-        live.optimized_cfg_key.hash(&mut hasher);
+        optimized_cfg.hash(&mut hasher);
         let memo_hash = hasher.finish();
         Self {
             function,
@@ -130,9 +95,7 @@ impl CodegenUnitQueryKey {
             backend_epoch: BACKEND_EPOCH,
             abi_layout_epoch: ABI_LAYOUT_EPOCH,
             request,
-            references,
-            optimized_cfg: live.optimized_cfg_key.clone(),
-            live,
+            optimized_cfg,
             memo_hash,
         }
     }
@@ -148,7 +111,6 @@ impl PartialEq for CodegenUnitQueryKey {
             && self.backend_epoch == other.backend_epoch
             && self.abi_layout_epoch == other.abi_layout_epoch
             && self.request == other.request
-            && self.references == other.references
             && self.optimized_cfg == other.optimized_cfg
     }
 }
@@ -188,13 +150,13 @@ pub(crate) struct CodegenUnit {
     pub(crate) presentation: Arc<str>,
 }
 
-/// A reached canonical terminal together with the function record that owns
-/// its stable identity.  The record is intentionally kept beside the terminal
-/// until the image adapter projects it to an object: it avoids making object
-/// generation rediscover or re-run codegen work.
+/// A reached canonical terminal paired only with its stable function identity.
+/// RUE-1217 owns replacing the semantic root enumerator that assembles this
+/// list; neither the terminal nor this collection record retains live frontend
+/// state.
 #[derive(Clone)]
 pub(crate) struct CollectedCodegenUnit {
-    pub(crate) function: crate::FunctionWithCfg,
+    pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) unit: Arc<CodegenUnit>,
 }
 
@@ -335,15 +297,34 @@ pub(crate) fn evaluate_codegen_unit(
 ) -> Result<QueryOutput<CodegenUnitValue>, QueryAbort> {
     context.check_canceled()?;
     context.record_work(rue_query::WorkItem::new("codegen.unit.attempts", 1));
-    let optimized = context.query_registered(optimized_cfgs, key.live.optimized_cfg_key.clone())?;
+    let _nested = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
+    let optimized = context.query_registered(optimized_cfgs, key.optimized_cfg.clone())?;
+    context.record_work(rue_query::WorkItem::new(
+        "codegen.dependencies.optimized-cfg",
+        1,
+    ));
     let QueryOutcome::Success(optimized) = optimized.outcome() else {
         unreachable!("OptimizedCfg publishes typed values");
     };
     if let crate::cfg_query::CfgValue::Failure { errors, .. } = optimized {
         return Ok(codegen_failure(errors.clone()));
     }
-    let function = &key.live.function;
-    let stable_atoms = function
+    let crate::cfg_query::CfgValue::Available(record) = optimized else {
+        unreachable!("failure handled above")
+    };
+    context.record_work(rue_query::WorkItem::new(
+        "codegen.domain.symbol-aliases",
+        record.codegen.symbol_mappings.len() as u64,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "codegen.domain.foreign-aliases",
+        record.codegen.foreign_symbols.len() as u64,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "codegen.dependencies.local-atoms",
+        record.local_atoms.len() as u64,
+    ));
+    let stable_atoms = record
         .local_atoms
         .iter()
         .map(|atom| {
@@ -352,7 +333,7 @@ pub(crate) fn evaluate_codegen_unit(
             ))
         })
         .collect::<Vec<_>>();
-    let atoms = function
+    let atoms = record
         .local_atoms
         .iter()
         .zip(&stable_atoms)
@@ -363,27 +344,25 @@ pub(crate) fn evaluate_codegen_unit(
         })
         .collect::<Vec<_>>();
     let symbols = rue_codegen::MachineSymbolResolver::new_with_foreign(
-        &key.live.symbol_mappings,
-        &key.live.foreign_symbols,
+        &record.codegen.symbol_mappings,
+        &record.codegen.foreign_symbols,
     );
+    context.record_work(rue_query::WorkItem::new("codegen.lowering.local", 1));
     let generated = match key.target.arch() {
         rue_target::Arch::X86_64 => rue_codegen::x86_64::generate_product_with_symbols_and_atoms(
-            // The nested terminal establishes exact invalidation. The CFG
-            // collector already relocated this function into the current
-            // request domain, so codegen must use that current-domain view.
-            &function.cfg,
-            &key.live.type_pool,
-            &key.live.strings,
-            &key.live.interner,
+            &record.cfg,
+            &record.type_pool,
+            &record.strings,
+            &record.interner,
             symbols,
             &atoms,
             key.request,
         ),
         rue_target::Arch::Aarch64 => rue_codegen::aarch64::generate_product_with_symbols_and_atoms(
-            &function.cfg,
-            &key.live.type_pool,
-            &key.live.strings,
-            &key.live.interner,
+            &record.cfg,
+            &record.type_pool,
+            &record.strings,
+            &record.interner,
             key.target,
             symbols,
             &atoms,
@@ -395,7 +374,7 @@ pub(crate) fn evaluate_codegen_unit(
         Err(error) => return Ok(codegen_failure(error.into())),
     };
     if let Some(lowering) = &mut product.artifacts.lowering {
-        lowering.fn_name.clone_from(&function.machine_name);
+        lowering.fn_name = record.codegen.defined_symbol.to_string();
     }
     #[cfg(test)]
     if INJECT_CODEGEN_FAILURE.with(Cell::get) {
@@ -414,14 +393,14 @@ pub(crate) fn evaluate_codegen_unit(
     }
     if let Err(error) = crate::backend::validate_production_call_relocations(
         &product.machine_code.relocations,
-        &key.live.symbol_mappings,
+        &record.codegen.symbol_mappings,
     ) {
         return Ok(codegen_failure(error.into()));
     }
     context.check_canceled()?;
     context.record_work(rue_query::WorkItem::new("codegen.unit.successes", 1));
     let product = crate::backend::FunctionBackendProduct {
-        machine_name: function.machine_name.clone(),
+        machine_name: record.codegen.defined_symbol.to_string(),
         machine_code: product.machine_code,
         artifacts: product.artifacts,
     };

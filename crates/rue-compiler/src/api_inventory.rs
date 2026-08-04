@@ -149,6 +149,51 @@ fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
     );
 }
 
+#[test]
+fn codegen_queries_consume_only_registered_optimized_cfg_domains() {
+    let cfg = include_str!("cfg_query.rs");
+    let codegen = include_str!("codegen_query.rs");
+    let database = include_str!("revisioned_query_database.rs");
+    for required in [
+        "pub(crate) codegen: Arc<CfgCodegenDomain>",
+        "record.codegen.symbol_mappings",
+        "&record.cfg",
+        "&record.type_pool",
+        "&record.strings",
+        "&record.interner",
+        "key.optimized_cfg.clone()",
+        "pub(crate) function: crate::FunctionInstanceKey",
+    ] {
+        assert!(
+            cfg.contains(required) || codegen.contains(required),
+            "codegen ownership boundary lost: {required}"
+        );
+    }
+    for forbidden in [
+        "struct CodegenLiveInput",
+        "pub(crate) live:",
+        "key.live",
+        "pub(crate) function: crate::FunctionWithCfg",
+    ] {
+        assert!(
+            !codegen.contains(forbidden),
+            "codegen key regained caller-owned live state: {forbidden}"
+        );
+    }
+    assert!(
+        !database.contains("function: crate::FunctionWithCfg")
+            && !database.contains("type_pool: crate::FrozenTypeInternPool")
+            && !database.contains("symbol_mappings: Arc<BTreeMap<String, String>>"),
+        "the registered codegen request facade must not require semantic/global live inputs"
+    );
+    let session = include_str!("session.rs");
+    assert!(
+        session.contains("RUE-1217 owns replacing this")
+            && !session.contains("_foreign_symbols: &[String]"),
+        "collection must retain only the explicitly tracked RUE-1217 root adapter"
+    );
+}
+
 const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
     "Lexer",
     "Token",

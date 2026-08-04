@@ -251,8 +251,8 @@ impl ProgramImagePlan {
         let mut plan_units = units
             .iter()
             .map(|collected| ProgramImageUnit {
-                function: collected.function.semantic_identity.clone(),
-                identity: function_identity(&collected.function),
+                function: collected.function.clone(),
+                identity: stable_function_identity(&collected.function),
                 defined_symbol: collected.unit.defined_symbol.to_string(),
                 content_digest: unit_digest(&collected.unit),
             })
@@ -323,7 +323,7 @@ fn validate_program_image_inputs(
     let mut unit_identities = BTreeSet::new();
     let mut defined_symbols = BTreeSet::new();
     for collected in units {
-        let identity = function_identity(&collected.function);
+        let identity = stable_function_identity(&collected.function);
         if !unit_identities.insert(identity.clone()) {
             return duplicate_plan_input("codegen unit identity", &identity);
         }
@@ -369,7 +369,7 @@ fn validate_program_image_inputs(
         }
     }
     for collected in units {
-        let identity = function_identity(&collected.function);
+        let identity = stable_function_identity(&collected.function);
         let Some(expected_symbol) = functions_by_identity.get(&identity) else {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InternalError(format!(
@@ -377,9 +377,7 @@ fn validate_program_image_inputs(
                 )),
             )));
         };
-        if collected.function.machine_name != *expected_symbol
-            || collected.unit.defined_symbol.as_ref() != *expected_symbol
-        {
+        if collected.unit.defined_symbol.as_ref() != *expected_symbol {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InternalError(format!(
                     "program image codegen unit `{identity}` does not match its semantic function symbol"
@@ -391,8 +389,12 @@ fn validate_program_image_inputs(
 }
 
 fn function_identity(function: &FunctionWithCfg) -> String {
+    stable_function_identity(&function.semantic_identity)
+}
+
+fn stable_function_identity(function: &crate::FunctionInstanceKey) -> String {
     crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
-        crate::StableCallableId::Function(function.semantic_identity.clone()),
+        crate::StableCallableId::Function(function.clone()),
     ))
 }
 
@@ -546,13 +548,10 @@ mod tests {
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
         let semantic = session.canonical_semantic(&options).unwrap();
-        let foreign =
-            backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let units = session
             .codegen_units(
                 &semantic,
-                &foreign,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -579,13 +578,10 @@ mod tests {
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
         let semantic = session.canonical_semantic(&options).unwrap();
-        let foreign =
-            backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let products = session
             .codegen_products(
                 &semantic,
-                &foreign,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -679,14 +675,10 @@ mod tests {
         };
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
-        let rir = session.canonical_rir().unwrap();
         let semantic = session.canonical_semantic(&options).unwrap();
-        let foreign =
-            backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
         let units = session
             .codegen_units(
                 &semantic,
-                &foreign,
                 &options,
                 rue_codegen::BackendArtifactRequest::default(),
             )
@@ -710,7 +702,7 @@ mod tests {
 
         let mut duplicate_symbol = units;
         let mut second = duplicate_symbol[0].clone();
-        second.function.semantic_identity =
+        second.function =
             crate::FunctionInstanceKey::DropGlue(Box::new(crate::TypeInstanceKey::I64));
         duplicate_symbol.push(second);
         let error = ProgramImage::new(duplicate_symbol, &functions, &options, &[])
@@ -792,14 +784,11 @@ mod tests {
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let rir = session.canonical_rir().unwrap();
         let semantic = session.canonical_semantic(&options).unwrap();
-        let foreign =
-            backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let first = ProgramImage::new(
             session
                 .codegen_units(
                     &semantic,
-                    &foreign,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
@@ -814,14 +803,11 @@ mod tests {
 
         let rir = session.canonical_rir().unwrap();
         let semantic = session.canonical_semantic(&options).unwrap();
-        let foreign =
-            backend::collect_foreign_symbols(rir.rir(), rir.semantic_symbols().interner());
         let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
         let second = ProgramImage::new(
             session
                 .codegen_units(
                     &semantic,
-                    &foreign,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
@@ -868,8 +854,6 @@ mod tests {
         crate::publish_test_snapshot(&mut old_session, &snapshot).unwrap();
         let old_rir = old_session.canonical_rir().unwrap();
         let old_semantic = old_session.canonical_semantic(&options).unwrap();
-        let old_foreign =
-            backend::collect_foreign_symbols(old_rir.rir(), old_rir.semantic_symbols().interner());
         let old_exports =
             backend::collect_export_symbols(old_rir.rir(), old_rir.semantic_symbols().interner());
         let old = backend::compile_backend_products(
@@ -877,7 +861,6 @@ mod tests {
             old_session
                 .codegen_products(
                     &old_semantic,
-                    &old_foreign,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
@@ -892,10 +875,6 @@ mod tests {
         crate::publish_test_snapshot(&mut fresh_session, &snapshot).unwrap();
         let fresh_rir = fresh_session.canonical_rir().unwrap();
         let fresh_semantic = fresh_session.canonical_semantic(&options).unwrap();
-        let foreign = backend::collect_foreign_symbols(
-            fresh_rir.rir(),
-            fresh_rir.semantic_symbols().interner(),
-        );
         let exports = backend::collect_export_symbols(
             fresh_rir.rir(),
             fresh_rir.semantic_symbols().interner(),
@@ -904,7 +883,6 @@ mod tests {
             fresh_session
                 .codegen_units(
                     &fresh_semantic,
-                    &foreign,
                     &options,
                     rue_codegen::BackendArtifactRequest::default(),
                 )
