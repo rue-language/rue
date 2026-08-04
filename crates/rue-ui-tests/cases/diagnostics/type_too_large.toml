@@ -1,7 +1,7 @@
 [section]
 id = "diagnostics.type_too_large"
 name = "Oversized type layouts (E0906)"
-description = "Types exceeding the maximum object size (Appendix C.4:3, RUE-561) are rejected with E0906 instead of ICEing (debug multiply overflow) or silently truncating the slot count to zero."
+description = "Types exceeding the maximum object size (spec C.4:3, RUE-561) are rejected with E0906 instead of ICEing (debug multiply overflow) or silently truncating the slot count to zero, as spec C.1:2 requires."
 
 [[case]]
 name = "size_of_2gib_array_rejected"

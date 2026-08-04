@@ -18,8 +18,9 @@ use super::context::AnalysisContext;
 use super::{DeclarationPhase, Sema};
 
 /// Maximum size of a single object in bytes: `i32::MAX`, matching the
-/// codegen frame-offset (disp32) addressing range (Appendix C practical
-/// limit, RUE-561). Types larger than this are rejected with E0906.
+/// codegen frame-offset (disp32) addressing range (spec C.4:3, RUE-561).
+/// Types larger than this are rejected with E0906 rather than wrapping the
+/// slot arithmetic, per the graceful-failure policy in spec C.1:2.
 pub(crate) const MAX_TYPE_SIZE_BYTES: u64 = i32::MAX as u64;
 /// [`MAX_TYPE_SIZE_BYTES`] expressed in 8-byte ABI slots.
 pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;

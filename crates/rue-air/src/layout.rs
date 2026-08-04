@@ -32,7 +32,9 @@ pub const STACK_FRAME_ALIGNMENT: u64 = 16;
 /// 32-bit displacements used throughout both machine backends.
 ///
 /// Rounding the architectural `i32::MAX` bound down keeps the subsequent
-/// alignment operation inside the same representable range.
+/// alignment operation inside the same representable range. Published as the
+/// cumulative function-storage ceiling in spec C.4:3; exceeding it is
+/// diagnosed as E0907 rather than wrapping, per spec C.1:2.
 pub const MAX_FUNCTION_FRAME_BYTES: u64 =
     (i32::MAX as u64 / STACK_FRAME_ALIGNMENT) * STACK_FRAME_ALIGNMENT;
 
