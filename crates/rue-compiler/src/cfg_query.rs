@@ -210,6 +210,10 @@ impl QueryKey for OptimizedCfgQueryKey {
 
 #[derive(Debug, Clone)]
 pub(crate) struct CfgRecord {
+    /// Exact body-local AIR consumed by CFG construction. Semantic presentation
+    /// reads this owned artifact instead of rematerializing a program epoch.
+    pub(crate) air: Arc<rue_air::ValidatedAir>,
+    pub(crate) source_name: Arc<str>,
     pub(crate) cfg: rue_cfg::ValidatedCfg,
     pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
     pub(crate) type_pool: rue_air::FrozenTypeInternPool,
@@ -384,6 +388,7 @@ pub(crate) fn evaluate_cfg(
     >,
     key: &CfgQueryKey,
 ) -> Result<QueryOutput<CfgValue>, QueryAbort> {
+    let _span = tracing::info_span!("cfg_construction", phase = "cfg_and_optimization").entered();
     let value =
         materialize_and_build_cfg(context, layouts, type_facts, drop_glues, call_abis, key)?;
     let kind = if matches!(value, CfgValue::Failure { .. }) {
@@ -741,6 +746,8 @@ fn build_cfg(
         implicit_destructor_targets.insert(owner.clone());
     }
     Ok(CfgValue::Available(Arc::new(CfgRecord {
+        air: Arc::new(materialized.air),
+        source_name: materialized.name.into(),
         cfg: output
             .cfg
             .expect("successful CFG construction publishes a validated CFG"),
@@ -776,6 +783,7 @@ pub(crate) fn evaluate_optimized_cfg(
         return Ok(QueryOutput::success(value.clone())
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
     };
+    let _span = tracing::info_span!("cfg_optimization", phase = "cfg_and_optimization").entered();
     let current = record.cfg.clone();
     context.record_work(rue_query::WorkItem::new("cfg.optimize.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
@@ -787,6 +795,8 @@ pub(crate) fn evaluate_optimized_cfg(
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
             Ok(QueryOutput::success(CfgValue::Available(Arc::new(
                 CfgRecord {
+                    air: record.air.clone(),
+                    source_name: record.source_name.clone(),
                     cfg,
                     domains: record.domains.clone(),
                     type_pool: record.type_pool.clone(),

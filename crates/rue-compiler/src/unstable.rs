@@ -334,7 +334,18 @@ pub fn committed_successor_sharing(
     session.committed_successor_sharing()
 }
 
-pub use crate::session::{ClosedDiscoveryContinuation, SemanticParkOutcome, TrustedSuccessorDelta};
+pub use crate::session::{
+    ClosedDiscoveryContinuation, RootedParkOutcome, SemanticParkOutcome, TrustedSuccessorDelta,
+};
+
+/// Run the production body-closure root without constructing a whole-program
+/// semantic presentation value.
+pub fn rooted_or_toolchain_park(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> RootedParkOutcome {
+    session.rooted_or_toolchain_park(options)
+}
 
 /// Run rooted, park-aware semantic analysis on the current committed revision,
 /// surfacing an unsatisfied trusted-toolchain park distinctly (RUE-1112).
@@ -406,6 +417,7 @@ pub struct PresentationRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PresentationOutput {
     text: String,
+    warnings: Vec<crate::CompileWarning>,
 }
 
 /// Publish a source snapshot with caller-selected diagnostic presentation
@@ -512,6 +524,10 @@ pub fn pre_link_object_bytes(
 impl PresentationOutput {
     pub fn as_str(&self) -> &str {
         &self.text
+    }
+
+    pub fn warnings(&self) -> &[crate::CompileWarning] {
+        &self.warnings
     }
 }
 
@@ -643,6 +659,7 @@ impl crate::CompilerSession {
         }
 
         let mut text = String::new();
+        let mut warnings = Vec::new();
         match request.stage {
             PresentationStage::Tokens => {
                 for file_id in request.file_order {
@@ -690,9 +707,6 @@ impl crate::CompilerSession {
                 .expect("write to String");
             }
             stage => {
-                let semantic = self.canonical_semantic(request.options)?;
-                let rir = semantic.rir_owner().clone();
-                let interner = rir.semantic_symbols().interner();
                 let backend_request = match stage {
                     PresentationStage::Lowering => Some(rue_codegen::BackendArtifactRequest {
                         lowering: true,
@@ -717,9 +731,10 @@ impl crate::CompilerSession {
                     _ => None,
                 };
                 if let Some(backend_request) = backend_request {
-                    let products =
-                        self.codegen_products(&semantic, request.options, backend_request)?;
-                    for product in products {
+                    let rooted = self.rooted_codegen(request.options, backend_request)?;
+                    warnings = rooted.warnings;
+                    for collected in rooted.units {
+                        let product = collected.unit.backend_product();
                         match stage {
                             PresentationStage::Lowering => {
                                 write!(
@@ -787,15 +802,18 @@ impl crate::CompilerSession {
                         }
                     }
                 } else {
-                    for function in semantic.functions() {
+                    let rooted = self.rooted_cfg(request.options)?;
+                    warnings = rooted.warnings;
+                    for function in rooted.cfgs {
+                        let record = &function.record;
                         match stage {
                             PresentationStage::Air => {
-                                writeln!(&mut text, "function {}:", function.analyzed.name)
+                                writeln!(&mut text, "function {}:", record.source_name)
                                     .expect("write to String");
                                 writeln!(
                                     &mut text,
                                     "{}",
-                                    function.analyzed.air.display_with_interner(interner)
+                                    record.air.display_with_interner(&record.interner)
                                 )
                                 .expect("write to String");
                             }
@@ -803,7 +821,7 @@ impl crate::CompilerSession {
                                 writeln!(
                                     &mut text,
                                     "{}",
-                                    function.cfg.display_with_interner(interner)
+                                    record.cfg.display_with_interner(&record.interner)
                                 )
                                 .expect("write to String");
                             }
@@ -812,10 +830,10 @@ impl crate::CompilerSession {
                                     &mut text,
                                     "{}",
                                     rue_codegen::generate_stack_frame_info(
-                                        &function.cfg,
-                                        &function.machine_name,
-                                        semantic.type_pool(),
-                                        interner,
+                                        &record.cfg,
+                                        &record.codegen.defined_symbol,
+                                        &record.type_pool,
+                                        &record.interner,
                                         request.options.target,
                                     )?
                                 )
@@ -834,7 +852,7 @@ impl crate::CompilerSession {
                 }
             }
         }
-        Ok(PresentationOutput { text })
+        Ok(PresentationOutput { text, warnings })
     }
 }
 
@@ -926,6 +944,51 @@ mod codegen_unit_tests {
             ),
             "codegen failure must retain its original diagnostic: {errors:?}"
         );
+    }
+
+    #[test]
+    fn frontend_emit_stages_stop_at_rooted_cfg_and_do_not_leak_backend_failures() {
+        let snapshot = crate::SourceSnapshot::single("main.rue", "fn main() -> i32 { 0 }").unwrap();
+        let options = crate::CompileOptions::default();
+        let order = [rue_span::FileId::DEFAULT];
+        let mut frontend = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut frontend, &snapshot).unwrap();
+
+        crate::codegen_query::with_test_codegen_failure_injection(|| {
+            for stage in [
+                PresentationStage::Air,
+                PresentationStage::Cfg,
+                PresentationStage::StackFrame,
+            ] {
+                frontend
+                    .unstable_present(PresentationRequest {
+                        stage,
+                        options: &options,
+                        file_order: &order,
+                    })
+                    .unwrap_or_else(|errors| {
+                        panic!("frontend stage {stage:?} leaked a backend failure: {errors:?}")
+                    });
+            }
+        });
+        assert!(frontend.codegen_executions().is_empty());
+        assert_eq!(frontend.rooted_cfg_executions().len(), 1);
+
+        let mut backend = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut backend, &snapshot).unwrap();
+        let errors = crate::codegen_query::with_test_codegen_failure_injection(|| {
+            backend
+                .unstable_present(PresentationRequest {
+                    stage: PresentationStage::Mir,
+                    options: &options,
+                    file_order: &order,
+                })
+                .unwrap_err()
+        });
+        assert!(matches!(
+            errors.first().map(|error| &error.kind),
+            Some(crate::ErrorKind::InternalCodegenError(_))
+        ));
     }
 
     #[test]

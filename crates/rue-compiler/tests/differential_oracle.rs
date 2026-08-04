@@ -715,7 +715,7 @@ fn fault_injection_proves_semantic_diagnostic_and_import_cache_detection() {
         (
             &corpus[1..3],
             DifferentialOracleFault::Semantic,
-            "affected fields: semantic, emitted-assembly-hash, executable-hash, stable-identities",
+            "affected fields: diagnostics, semantic, emitted-assembly-hash, executable-hash, stable-identities",
         ),
         (
             &corpus[9..11],

@@ -6,15 +6,17 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-#[cfg(test)]
-use rue_compiler::unstable::frontend_query_invalidations;
 use rue_compiler::unstable::{
     DiscoverySourceAssembler, ImportDemandFrontier, ImportDemandMode, ImportInputRevision,
-    SemanticParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
+    RootedParkOutcome, TrustedSuccessorDelta, begin_import_input_request,
     close_import_discovery_successor, close_import_input_request, closed_discovery_continuation,
     discovery_attempt, import_demand_frontier_for_roots, import_observation_ledger,
     plan_delta_roots, publish_import_observation_batch, publish_trusted_toolchain_successor,
-    semantic_or_toolchain_park, stage_import_discovery_successor, stage_import_input_request,
+    rooted_or_toolchain_park, stage_import_discovery_successor, stage_import_input_request,
+};
+#[cfg(test)]
+use rue_compiler::unstable::{
+    SemanticParkOutcome, frontend_query_invalidations, semantic_or_toolchain_park,
 };
 #[cfg(test)]
 use rue_compiler::unstable::{
@@ -1166,9 +1168,9 @@ pub(crate) fn acquire_reached_toolchain_modules(
     }
     let _span = tracing::info_span!("toolchain_acquisition").entered();
     for _ in 0..MAX_TOOLCHAIN_ACQUISITION_ROUNDS {
-        match semantic_or_toolchain_park(&mut result.session, options) {
+        match rooted_or_toolchain_park(&mut result.session, options) {
             // Analysis satisfied every reached-body demand (or there were none).
-            SemanticParkOutcome::Ready(_) => return Ok(()),
+            RootedParkOutcome::Ready => return Ok(()),
             // Deterministic program diagnostics — the source itself, not the
             // toolchain, is at fault, and an erroneous body raises no toolchain
             // park, so there is nothing here to acquire. Reporting stays with
@@ -1177,11 +1179,11 @@ pub(crate) fn acquire_reached_toolchain_modules(
             // diagnostics; surfacing the errors from this loop would invert
             // that ordering. The semantic attempt is memoized, so the later
             // surface re-reads the cached outcome rather than re-analyzing.
-            SemanticParkOutcome::Errors(_) => return Ok(()),
+            RootedParkOutcome::Errors(_) => return Ok(()),
             // A reached body demands trusted std modules absent from the current
             // revision. Satisfy exactly the parked demands, publish one successor,
             // and re-close so semantic can retry on it.
-            SemanticParkOutcome::Parked(park) => {
+            RootedParkOutcome::Parked(park) => {
                 for demand in park.demands() {
                     satisfy_toolchain_module_demand(
                         &mut result.assembler,

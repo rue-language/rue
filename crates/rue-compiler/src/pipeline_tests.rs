@@ -7,6 +7,17 @@ mod tests {
 
     use super::*;
 
+    fn snapshot_with_file_id(file_id: u32, source: &str) -> SourceSnapshot {
+        let file_id = FileId::new(file_id);
+        let metadata = SourceMetadata::new(
+            file_id,
+            [(file_id, "/p/main.rue".to_owned())].into_iter().collect(),
+            [(file_id, "main.rue".to_owned())].into_iter().collect(),
+        )
+        .unwrap();
+        SourceSnapshot::new(metadata, vec![(file_id, Arc::new(source.to_owned()))]).unwrap()
+    }
+
     #[cfg(unix)]
     fn execute_compiled_output(output: &CompileOutput, label: &str) -> std::process::Output {
         use std::os::unix::fs::PermissionsExt;
@@ -193,7 +204,19 @@ mod tests {
         );
         assert_eq!(metrics.semantic.body.analyses_computed, 1);
         assert_eq!(metrics.semantic.body.analyses_reused, 1);
+        assert_eq!(metrics.semantic.body.analyses_invalidated, 1);
         assert_eq!(metrics.semantic.cfg.cfg_builds_attempted, 1);
+        assert_eq!(metrics.semantic.cfg.cfg_builds_succeeded, 1);
+
+        assert_eq!(warm_session.rooted_cfg_executions().len(), 2);
+        assert!(warm_session.rooted_cfg_executions().iter().any(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "callee")
+                && *execution == rue_query::RequestExecution::Computed
+        }));
+        assert!(warm_session.rooted_cfg_executions().iter().any(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                && *execution == rue_query::RequestExecution::Reused
+        }));
 
         assert_eq!(warm_session.codegen_executions().len(), 2);
         assert!(warm_session.codegen_executions().iter().any(|(identity, execution)| {
@@ -223,6 +246,321 @@ mod tests {
         );
         assert!(execution.stdout.is_empty());
         assert!(execution.stderr.is_empty());
+    }
+
+    #[test]
+    fn warm_unreachable_body_edit_reuses_every_rooted_downstream_terminal() {
+        let before = SourceSnapshot::single(
+            "<warm-unreachable-body-edit>",
+            "fn dead() -> i32 { 1 } fn main() -> i32 { 7 }",
+        )
+        .unwrap();
+        let after = SourceSnapshot::single(
+            "<warm-unreachable-body-edit>",
+            "fn dead() -> i32 { 2 } fn main() -> i32 { 7 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        let cold =
+            crate::queries::compile_with_session(&mut warm_session, &before, &options).unwrap();
+        warm_session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let warm =
+            crate::queries::compile_with_session(&mut warm_session, &after, &options).unwrap();
+
+        assert_eq!(warm_session.codegen_executions().len(), 1);
+        assert!(warm_session.codegen_executions().iter().all(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                && *execution == rue_query::RequestExecution::Reused
+        }));
+        assert_eq!(warm.elf, cold.elf);
+        assert_eq!(warm.warnings, cold.warnings);
+        assert_eq!(warm.work.lowered, Default::default());
+        assert_eq!(warm.work.semantic.body_analysis.body_analyses_computed, 0);
+        assert_eq!(warm.work.semantic.body_analysis.body_analyses_reused, 1);
+        assert_eq!(warm.work.semantic.cfg.cfg_builds_attempted, 0);
+        assert_eq!(warm.work.semantic.cfg.cfg_reuses, 1);
+        assert!(warm_session.rooted_cfg_executions().iter().all(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                && *execution == rue_query::RequestExecution::Reused
+        }));
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let fresh =
+            crate::queries::compile_with_session(&mut fresh_session, &after, &options).unwrap();
+        assert_eq!(warm.elf, fresh.elf);
+        assert_eq!(warm.warnings, fresh.warnings);
+    }
+
+    #[test]
+    fn unreachable_warning_reference_edit_changes_only_warning_projection() {
+        let before = SourceSnapshot::single(
+            "<warning-reference-edit>",
+            "fn helper() -> i32 { 42 } fn dormant() -> i32 { helper() } fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+        let after = SourceSnapshot::single(
+            "<warning-reference-edit>",
+            "fn helper() -> i32 { 42 } fn dormant() -> i32 { 0 } fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        let cold = crate::queries::compile_with_session(&mut session, &before, &options).unwrap();
+        assert_eq!(cold.warnings.len(), 1);
+
+        session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let warm = crate::queries::compile_with_session(&mut session, &after, &options).unwrap();
+        assert_eq!(warm.elf, cold.elf);
+        assert_eq!(warm.warnings.len(), 2);
+        assert_eq!(warm.work.lowered, Default::default());
+        assert_eq!(warm.work.semantic.body_analysis.body_analyses_computed, 0);
+        assert_eq!(warm.work.semantic.body_analysis.body_analyses_reused, 1);
+        assert_eq!(warm.work.semantic.cfg.cfg_builds_attempted, 0);
+        assert_eq!(warm.work.semantic.cfg.cfg_reuses, 1);
+        assert!(session.rooted_cfg_executions().iter().all(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                && *execution == rue_query::RequestExecution::Reused
+        }));
+        assert!(session.codegen_executions().iter().all(|(identity, execution)| {
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "main")
+                && *execution == rue_query::RequestExecution::Reused
+        }));
+        assert_eq!(
+            session
+                .warning_reference_executions()
+                .iter()
+                .filter(|(_, execution)| *execution == rue_query::RequestExecution::Computed)
+                .map(|(definition, _)| definition.name())
+                .collect::<Vec<_>>(),
+            vec!["dormant"]
+        );
+    }
+
+    #[test]
+    fn unreachable_body_local_import_alias_marks_exact_remote_helper_referenced() {
+        let root = FileId::new(1);
+        let library = FileId::new(2);
+        let sources = [
+            SourceView::new(
+                "/p/main.rue",
+                "fn dormant() -> i32 { let lib = @import(\"lib.rue\"); lib.helper() } fn main() -> i32 { 0 }",
+                root,
+            ),
+            SourceView::new("/p/lib.rue", "fn helper() -> i32 { 42 }", library),
+        ];
+        let metadata = SourceMetadata::from_sources(
+            &sources,
+            root,
+            HashMap::from([
+                (root, "main.rue".to_owned()),
+                (library, "lib.rue".to_owned()),
+            ]),
+        )
+        .unwrap();
+        let snapshot = SourceSnapshot::from_sources(&sources, metadata).unwrap();
+        let output = test_compile_snapshot(&snapshot, &CompileOptions::default()).unwrap();
+        let warnings = output
+            .warnings
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(warnings.len(), 1, "unexpected warnings: {warnings:?}");
+        assert!(warnings[0].contains("unused function 'dormant'"));
+        assert!(!warnings[0].contains("helper"));
+    }
+
+    #[test]
+    fn reassigned_file_ids_reproject_rooted_warning_spans_and_report_truthful_work() {
+        let source = "fn unused() -> i32 { 1 } fn main() -> i32 { 0 }";
+        let before = snapshot_with_file_id(1, source);
+        let reassigned = snapshot_with_file_id(17, source);
+        let options = CompileOptions::default();
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut warm_session, &before, &options).unwrap();
+        warm_session
+            .update_for_presentation(&reassigned)
+            .into_result()
+            .unwrap();
+        let warm =
+            crate::queries::compile_with_session(&mut warm_session, &reassigned, &options).unwrap();
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&reassigned)
+            .into_result()
+            .unwrap();
+        let fresh = crate::queries::compile_with_session(&mut fresh_session, &reassigned, &options)
+            .unwrap();
+        assert_eq!(warm.warnings, fresh.warnings);
+        assert_eq!(warm.warnings.len(), 1);
+        assert_eq!(
+            warm.warnings[0]
+                .span()
+                .expect("unused warning has a span")
+                .file_id,
+            FileId::new(17)
+        );
+        assert_eq!(
+            warm.work.semantic.body_analysis.body_analyses_computed
+                + warm.work.semantic.body_analysis.body_analyses_reused,
+            1,
+            "work reports the one actual rooted body request"
+        );
+        assert_eq!(warm_session.rooted_cfg_executions().len(), 1);
+        assert_eq!(
+            warm.work.semantic.cfg.cfg_builds_attempted,
+            warm_session
+                .rooted_cfg_executions()
+                .iter()
+                .filter(|(_, execution)| *execution == rue_query::RequestExecution::Computed)
+                .count(),
+        );
+        assert_eq!(
+            warm.work.semantic.cfg.cfg_reuses,
+            warm_session
+                .rooted_cfg_executions()
+                .iter()
+                .filter(|(_, execution)| {
+                    matches!(
+                        execution,
+                        rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined
+                    )
+                })
+                .count(),
+        );
+        assert!(
+            warm_session
+                .warning_reference_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused)
+        );
+        assert_eq!(warm_session.codegen_executions().len(), 1);
+    }
+
+    #[test]
+    fn rooted_compile_recrosses_the_current_import_error_gate() {
+        let valid =
+            SourceSnapshot::single("<rooted-import-gate>", "fn main() -> i32 { 0 }").unwrap();
+        let invalid = SourceSnapshot::single(
+            "<rooted-import-gate>",
+            "const missing = @import(\"missing.rue\"); fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&valid)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &valid, &options).unwrap();
+        session
+            .update_for_presentation(&invalid)
+            .into_result()
+            .unwrap();
+        let warm = crate::queries::compile_with_session(&mut session, &invalid, &options)
+            .expect_err("the current unresolved import must reject rooted compilation");
+
+        let mut fresh = CompilerSession::new();
+        fresh
+            .update_for_presentation(&invalid)
+            .into_result()
+            .unwrap();
+        let fresh = crate::queries::compile_with_session(&mut fresh, &invalid, &options)
+            .expect_err("fresh compilation rejects the same unresolved import");
+        assert_eq!(warm, fresh);
+    }
+
+    #[test]
+    fn rooted_compile_preserves_complete_duplicate_diagnostics() {
+        let snapshot = SourceSnapshot::single(
+            "<rooted-duplicate-diagnostics>",
+            "fn dup() {} fn dup() {} struct clash {} fn clash() {} \
+             enum kind {} struct kind {} struct record {} struct record {} \
+             enum choice {} enum choice {} fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let errors = crate::queries::compile_with_session(
+            &mut session,
+            &snapshot,
+            &CompileOptions::default(),
+        )
+        .unwrap_err();
+        assert_eq!(errors.len(), 5);
+        assert!(matches!(
+            errors.as_slice()[0].kind,
+            ErrorKind::DuplicateFunctionDefinition { ref function_name } if function_name == "dup"
+        ));
+        assert!(matches!(
+            errors.as_slice()[1].kind,
+            ErrorKind::DuplicateFunctionDefinition { ref function_name } if function_name == "clash"
+        ));
+    }
+
+    #[test]
+    fn warm_cross_kind_reorder_matches_fresh_duplicate_diagnostic() {
+        let before = SourceSnapshot::single(
+            "<warm-duplicate-reorder>",
+            "struct clash {} fn clash() {} fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+        let after = SourceSnapshot::single(
+            "<warm-duplicate-reorder>",
+            "fn clash() {} struct clash {} fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+
+        let mut warm_session = CompilerSession::new();
+        warm_session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut warm_session, &before, &options).unwrap_err();
+        warm_session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let warm =
+            crate::queries::compile_with_session(&mut warm_session, &after, &options).unwrap_err();
+
+        let mut fresh_session = CompilerSession::new();
+        fresh_session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let fresh =
+            crate::queries::compile_with_session(&mut fresh_session, &after, &options).unwrap_err();
+        assert_eq!(warm, fresh);
     }
 
     /// The shared query-worker budget may change scheduling only. The complete
@@ -897,22 +1235,22 @@ mod tests {
         assert_eq!(work.lowered.parser_invocations, 0);
         assert_eq!(work.lowered.ast_payload_clones, 0);
         assert_eq!(work.lowered.source_text_clones, 0);
-        assert_eq!(work.semantic.binding.bind_invocations, 1);
-        assert_eq!(work.semantic.manifest.build_invocations, 1);
-        assert_eq!(
-            work.semantic.declaration_reuse.declaration_prefixes_built,
-            1
-        );
-        assert_eq!(work.semantic.declaration_reuse.declaration_indexes_built, 1);
-        assert_eq!(
-            work.semantic
-                .declaration_reuse
-                .declaration_prefix_population_runs,
-            1
-        );
+        assert_eq!(work.semantic.body_analysis.body_analyses_computed, 2);
+        assert_eq!(work.semantic.body_analysis.body_analyses_reused, 0);
+        assert_eq!(work.semantic.body_analysis.closure_bodies_visited, 2);
+        assert_eq!(work.semantic.cfg.functions_considered, 2);
         assert_eq!(work.semantic.cfg.cfg_builds_attempted, 2);
         assert_eq!(work.semantic.cfg.cfg_builds_succeeded, 2);
-        assert!(work.semantic.bound_definitions.is_some());
+        assert_eq!(work.semantic.cfg.optimization_attempts, 2);
+        assert_eq!(work.semantic.cfg.optimization_completions, 2);
+
+        // The query-native path does not execute the retired whole-program
+        // declaration, binding, or durable-body phases. Their counters remain
+        // zero while the rooted body and CFG work above reports what did run.
+        let mut phase_work = work.semantic;
+        phase_work.body_analysis = Default::default();
+        phase_work.cfg = Default::default();
+        assert_eq!(phase_work, CanonicalSemanticWork::default());
     }
 
     #[test]

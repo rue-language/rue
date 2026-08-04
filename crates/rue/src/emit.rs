@@ -2,16 +2,18 @@
 use rue_compiler::unstable::MetricsSnapshot;
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
-use rue_compiler::unstable::{
-    LowerMetrics, ParseMetrics, PresentationRequest, PresentationStage, SemanticMetrics,
-    semantic_metrics,
-};
+#[cfg(test)]
+use rue_compiler::unstable::{LowerMetrics, ParseMetrics, SemanticMetrics, semantic_metrics};
+use rue_compiler::unstable::{PresentationRequest, PresentationStage};
+#[cfg(test)]
+use rue_compiler::{CompileErrors, RirView};
 use rue_compiler::{
-    CompileErrors, CompileOptions, CompileWarning, CompilerSession, DependencyEnvelope,
-    DependencyEnvelopeStatus, ImportDiscoveryStatus, ImportDiscoveryView, RirView, SemanticView,
-    SourceSnapshot, SyntaxView,
+    CompileOptions, CompilerSession, DependencyEnvelope, DependencyEnvelopeStatus,
+    ImportDiscoveryStatus, ImportDiscoveryView, SourceSnapshot,
 };
+#[cfg(test)]
 use rue_error::{CompileError, ErrorKind};
+#[cfg(test)]
 use tracing::info_span;
 
 use crate::DiagnosticOutput;
@@ -45,15 +47,15 @@ pub(crate) enum EmitStage {
     Deps,
 }
 
+#[cfg(test)]
 pub(crate) struct EmitFrontend {
-    parsed: SyntaxView,
     _rir: std::sync::Arc<RirView>,
-    semantic: std::sync::Arc<SemanticView>,
     pub(crate) work: EmitWork,
     #[cfg(test)]
     pub(crate) session_work: MetricsSnapshot,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct EmitWork {
     pub(crate) parsed: ParseMetrics,
@@ -109,11 +111,12 @@ pub(crate) fn emit_frontend_route(stages: &[EmitStage]) -> EmitFrontendRoute {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_emit_frontend_in_session(
     session: &mut CompilerSession,
     options: CompileOptions,
 ) -> Result<EmitFrontend, CompileErrors> {
-    let parsed = session.published().ok_or_else(|| {
+    session.published().ok_or_else(|| {
         CompileErrors::from(CompileError::without_span(ErrorKind::InvalidCompilerInput(
             "emit requires a published closed discovery revision".into(),
         )))
@@ -125,9 +128,7 @@ pub(crate) fn build_emit_frontend_in_session(
     let semantic = session.semantic(&options)?;
     let session_work = session.unstable_metrics();
     Ok(EmitFrontend {
-        parsed,
         _rir: rir,
-        semantic: semantic.clone(),
         work: EmitWork {
             parsed: session_work.parse_metrics(),
             lowered: session_work.lower_metrics(),
@@ -146,16 +147,6 @@ pub(crate) fn build_emit_frontend(
     let mut session = CompilerSession::new();
     update_for_presentation(&mut session, source_snapshot).into_result()?;
     build_emit_frontend_in_session(&mut session, options)
-}
-
-impl EmitFrontend {
-    fn warnings(&self) -> &[CompileWarning] {
-        self.semantic.warnings()
-    }
-
-    fn query_work(&self) -> EmitWork {
-        self.work
-    }
 }
 
 /// Error returned when parsing an emit stage name fails.
@@ -282,17 +273,8 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
         return Err(());
     }
     let frontend_route = emit_frontend_route(stages);
-    let frontend_state = match frontend_route {
-        EmitFrontendRoute::SessionQuery => {
-            let frontend = match build_emit_frontend_in_session(session, compile_options.clone()) {
-                Ok(frontend) => frontend,
-                Err(errors) => {
-                    diagnostics.print_errors(&errors);
-                    return Err(());
-                }
-            };
-            Some(frontend)
-        }
+    match frontend_route {
+        EmitFrontendRoute::SessionQuery => {}
         EmitFrontendRoute::RirOnly => {
             // RIR is a pre-semantic presentation: force the RIR terminal so its
             // parse/lowering diagnostics are attributed canonically, but never run
@@ -306,21 +288,8 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
                 diagnostics.print_errors(&errors);
                 return Err(());
             }
-            None
         }
-        EmitFrontendRoute::AstOnlySyntax | EmitFrontendRoute::None => None,
-    };
-    if let Some(state) = &frontend_state {
-        // Every semantic-frontend --emit mode must surface frontend warnings
-        // (RUE-130). Pre-semantic presentations (tokens/ast/rir) have no semantic
-        // warnings to surface.
-        diagnostics.print_warnings(state.warnings());
-        let work = state.query_work();
-        debug_assert_eq!(state.parsed.modules().len(), source_snapshot.len());
-        debug_assert!(work.parsed.parser_invocations <= source_snapshot.len());
-        debug_assert_eq!(work.lowered.parser_invocations, 0);
-        debug_assert_eq!(work.semantic.binding.bind_invocations, 1);
-        debug_assert_eq!(work.semantic.manifest.build_invocations, 1);
+        EmitFrontendRoute::AstOnlySyntax | EmitFrontendRoute::None => {}
     }
 
     let file_order = source_snapshot
@@ -328,6 +297,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
         .map(|source| source.file_id)
         .collect::<Vec<_>>();
 
+    let mut warnings_printed = false;
     for stage in stages {
         let unstable_stage = match stage {
             EmitStage::Tokens => PresentationStage::Tokens,
@@ -377,6 +347,10 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
                 return Err(());
             }
         };
+        if !warnings_printed && emit_requires_semantic(&[*stage]) {
+            diagnostics.print_warnings(output.warnings());
+            warnings_printed = true;
+        }
         match stage {
             EmitStage::Tokens | EmitStage::Ast => unreachable!(),
             EmitStage::Rir => {

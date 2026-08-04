@@ -336,12 +336,6 @@ pub enum DeclarationInstallFailure {
     /// types; the carried message names both stable keys and the digest. Surfaces
     /// as a fail-closed E9000 internal error.
     AnonymousDigestCollision(Box<str>),
-    /// Two `extern "C"` foreign declarations name the same C symbol with
-    /// disagreeing signatures (RUE-1218, spec 9.3:5). Unlike every other
-    /// variant here this is a *source* error, not a broken installation
-    /// invariant, so it carries the finished diagnostic for the caller to
-    /// report verbatim instead of collapsing into an internal error.
-    ForeignSignatureConflict(Box<CompileError>),
 }
 
 impl From<crate::SemanticStableResolutionFailure> for DeclarationInstallFailure {
@@ -1448,17 +1442,6 @@ impl<'a> DeclarationShells<'a> {
                             allow_unreachable_code,
                             file_id: pending.shell.declaration_span.file_id,
                         };
-                        // Foreign declarations from different modules share one
-                        // key here — the raw C symbol (RUE-1125). Disagreeing
-                        // signatures are rejected before one silently wins
-                        // (RUE-1218, spec 9.3:5). This is a real user
-                        // diagnostic, not an installation invariant, so it
-                        // travels in its own variant rather than as an ICE.
-                        self.sema
-                            .check_foreign_redeclaration(internal, &info)
-                            .map_err(|error| {
-                                DeclarationInstallFailure::ForeignSignatureConflict(Box::new(error))
-                            })?;
                         self.sema
                             .functions_by_file_name
                             .insert((pending.shell.declaration_span.file_id, *name), internal);

@@ -230,6 +230,69 @@ fn source_between_exact_boundaries<'a>(source: &'a str, start: &str, next: &str)
 }
 
 #[test]
+fn warning_body_projection_stays_parse_only_and_below_rir_body_analysis() {
+    let runtime = include_str!("revisioned_query_database.rs");
+    let projector = source_between_exact_boundaries(
+        runtime,
+        "fn warning_static_call_heads(",
+        "\nstruct WarningStaticCallCollector",
+    );
+    for forbidden in [
+        "lower_owned_body_input(",
+        "lower_module_rir",
+        "OwnedBodyInput",
+        "ModuleRir",
+    ] {
+        assert!(
+            !projector.contains(forbidden),
+            "warning AST projector crossed into RIR/body lowering: {forbidden}"
+        );
+    }
+    for required in [
+        ".definitions()",
+        ".declaration_locator(candidate)",
+        "module.ast().items",
+    ] {
+        assert!(
+            projector.contains(required),
+            "warning AST projector lost exact parsed-candidate selection: {required}"
+        );
+    }
+
+    let evaluator = source_between_exact_boundaries(
+        runtime,
+        "let parse_for_warning_syntax = parse_modules.clone();",
+        "        // Body analysis is a canonical registered evaluator.",
+    );
+    for forbidden in [
+        "raw_declaration_bodies",
+        "raw_declaration_signatures",
+        "body_inputs",
+        "body_transactions",
+        "module_rirs",
+        "lower_owned_body_input",
+        "lower_module_rir",
+    ] {
+        assert!(
+            !evaluator.contains(forbidden),
+            "warning query family crossed into RIR/body analysis: {forbidden}"
+        );
+    }
+    for required in [
+        "compiler.warning-body-syntax",
+        "parse_for_warning_syntax",
+        "WarningBodySyntaxQueryKey",
+        "DeclarationImportQueryKey",
+        "CanonicalImportResolution::Resolved",
+    ] {
+        assert!(
+            evaluator.contains(required),
+            "warning query lost canonical parse/import dependency: {required}"
+        );
+    }
+}
+
+#[test]
 fn exact_source_boundaries_ignore_braces_in_comments_and_strings() {
     let fixture = r#"
     fn selected() {
@@ -1652,7 +1715,7 @@ fn unstable_views_do_not_alias_query_engine_records() {
         [
             "pubusecrate::diagnostic::{ColorChoice,DiagnosticFormatter,JsonDiagnostic,JsonDiagnosticFormatter,JsonSpan,JsonSuggestion,MultiFileFormatter,MultiFileJsonFormatter,SourceInfo,};",
             "pubusecrate::import_discovery::{DiscoverySourceAssembler,ImportDemandFrontier,ImportDemandMode,ImportDemandRoots,ImportInputRevision,};",
-            "pubusecrate::session::{ClosedDiscoveryContinuation,SemanticParkOutcome,TrustedSuccessorDelta};",
+            "pubusecrate::session::{ClosedDiscoveryContinuation,RootedParkOutcome,SemanticParkOutcome,TrustedSuccessorDelta,};",
         ],
         "unstable may reexport only reviewed presentation, source-assembly, and Phase-2 demand helpers"
     );

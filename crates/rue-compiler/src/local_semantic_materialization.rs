@@ -118,7 +118,7 @@ fn callable_kind_for_identity(identity: &FunctionInstanceKey) -> rue_air::Analyz
     }
 }
 
-fn fallback_callable_symbol(identity: &FunctionInstanceKey) -> Arc<str> {
+pub(crate) fn fallback_callable_symbol(identity: &FunctionInstanceKey) -> Arc<str> {
     if let Some(symbol) = crate::semantic_identity::anonymous_member_source_symbol(identity) {
         return Arc::from(symbol);
     }
@@ -129,6 +129,203 @@ fn fallback_callable_symbol(identity: &FunctionInstanceKey) -> Arc<str> {
         Arc::from(format!("{encoded}.__drop"))
     } else {
         Arc::from(encoded)
+    }
+}
+
+/// Reconstruct the canonical live AIR symbol for a rooted callable.
+///
+/// The durable graph retains the declaration, owner, and specialization facts
+/// that whole-program analysis uses for presentation names. A rooted local
+/// epoch projects those names here while the CFG codegen domain continues to
+/// own the separate stable machine-symbol encoding.
+pub(crate) fn rooted_callable_symbol(identity: &FunctionInstanceKey) -> Arc<str> {
+    live_callable_symbol(identity)
+        .map(Arc::from)
+        .unwrap_or_else(|| fallback_callable_symbol(identity))
+}
+
+fn live_callable_symbol(identity: &FunctionInstanceKey) -> Option<String> {
+    match identity {
+        FunctionInstanceKey::Definition(definition) => match definition.kind() {
+            StableDefinitionKind::Function => {
+                let module = rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                    definition.module().logical_path(),
+                ));
+                Some(format!("__rue_fn_{module}__{}", definition.name()))
+            }
+            StableDefinitionKind::Destructor
+            | StableDefinitionKind::Method
+            | StableDefinitionKind::AssociatedFunction => {
+                let owner = named_type_live_symbol(definition.owner()?);
+                let (separator, member) = match definition.kind() {
+                    StableDefinitionKind::Destructor => (".", "__drop"),
+                    StableDefinitionKind::Method => (".", definition.name()),
+                    StableDefinitionKind::AssociatedFunction => ("::", definition.name()),
+                    _ => unreachable!(),
+                };
+                Some(format!("{owner}{separator}{member}"))
+            }
+            _ => None,
+        },
+        FunctionInstanceKey::Specialization { base, arguments } => {
+            let mut symbol = live_callable_symbol(base)?;
+            for ty in arguments.types.iter() {
+                symbol.push('.');
+                symbol.push_str(&mangle_canonical_type(ty));
+            }
+            for value in arguments.values.iter() {
+                symbol.push('.');
+                symbol.push_str(&mangle_canonical_value(value));
+            }
+            Some(symbol)
+        }
+        FunctionInstanceKey::AnonymousMember { .. } => {
+            crate::semantic_identity::anonymous_member_source_symbol(identity)
+        }
+        FunctionInstanceKey::DropGlue(owner) => {
+            Some(format!("__rue_drop_{}", drop_glue_type_name(owner)?))
+        }
+    }
+}
+
+fn named_type_live_symbol(owner: &crate::bound_definitions::StableNamedTypeKey) -> String {
+    let bare = match owner.kind() {
+        StableDefinitionKind::Struct => {
+            owner.module().is_trusted_standard_library()
+                && rue_air::LangItem::from_standard_library_nominal(
+                    owner.module().logical_path(),
+                    owner.name(),
+                )
+                .is_some()
+        }
+        StableDefinitionKind::Enum => rue_builtins::is_reserved_enum_name(owner.name()),
+        _ => false,
+    };
+    if bare {
+        owner.name().to_owned()
+    } else {
+        format!(
+            "{}${}",
+            owner.name(),
+            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                owner.module().logical_path()
+            ))
+        )
+    }
+}
+
+fn drop_glue_type_name(ty: &crate::TypeInstanceKey) -> Option<String> {
+    use crate::{NominalInstanceKey, TypeInstanceKey};
+    Some(match ty {
+        TypeInstanceKey::I8 => "i8".to_owned(),
+        TypeInstanceKey::I16 => "i16".to_owned(),
+        TypeInstanceKey::I32 => "i32".to_owned(),
+        TypeInstanceKey::I64 => "i64".to_owned(),
+        TypeInstanceKey::U8 => "u8".to_owned(),
+        TypeInstanceKey::U16 => "u16".to_owned(),
+        TypeInstanceKey::U32 => "u32".to_owned(),
+        TypeInstanceKey::U64 => "u64".to_owned(),
+        TypeInstanceKey::Bool => "bool".to_owned(),
+        TypeInstanceKey::Unit => "unit".to_owned(),
+        TypeInstanceKey::Never => "never".to_owned(),
+        TypeInstanceKey::ComptimeType => "comptime_type".to_owned(),
+        TypeInstanceKey::BuiltinNominal { name, .. }
+        | TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { name, .. }) => name.to_string(),
+        TypeInstanceKey::Nominal(NominalInstanceKey::Named(definition)) => {
+            crate::semantic_identity::named_nominal_source_symbol(definition)?
+        }
+        TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(identity)) => {
+            crate::semantic_identity::anonymous_nominal_source_symbol(identity)
+        }
+        TypeInstanceKey::Array { element, len } => {
+            format!("array_{}_{len}", drop_glue_type_name(element)?)
+        }
+        TypeInstanceKey::PtrConst(pointee) => {
+            format!("ptr_const_{}", drop_glue_type_name(pointee)?)
+        }
+        TypeInstanceKey::PtrMut(pointee) => {
+            format!("ptr_mut_{}", drop_glue_type_name(pointee)?)
+        }
+        TypeInstanceKey::Slice { .. }
+        | TypeInstanceKey::Module(_)
+        | TypeInstanceKey::GenericParameter(_) => return None,
+    })
+}
+
+fn mangle_canonical_type(ty: &crate::TypeInstanceKey) -> String {
+    use crate::{NominalInstanceKey, TypeInstanceKey};
+    match ty {
+        TypeInstanceKey::I8 => "i8".to_owned(),
+        TypeInstanceKey::I16 => "i16".to_owned(),
+        TypeInstanceKey::I32 => "i32".to_owned(),
+        TypeInstanceKey::I64 => "i64".to_owned(),
+        TypeInstanceKey::U8 => "u8".to_owned(),
+        TypeInstanceKey::U16 => "u16".to_owned(),
+        TypeInstanceKey::U32 => "u32".to_owned(),
+        TypeInstanceKey::U64 => "u64".to_owned(),
+        TypeInstanceKey::Bool => "bool".to_owned(),
+        TypeInstanceKey::Unit => "()".to_owned(),
+        TypeInstanceKey::Never => "!".to_owned(),
+        TypeInstanceKey::ComptimeType => "type".to_owned(),
+        TypeInstanceKey::BuiltinNominal { kind, name }
+        | TypeInstanceKey::Nominal(NominalInstanceKey::Builtin { kind, name }) => {
+            format!("builtin{kind:?}{}", rue_air::mangle_symbol_component(name))
+        }
+        TypeInstanceKey::Nominal(NominalInstanceKey::Named(definition)) => format!(
+            "{:?}{}{}",
+            definition.kind(),
+            rue_air::mangle_symbol_component(definition.module().logical_path()),
+            rue_air::mangle_symbol_component(definition.name()),
+        ),
+        TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(identity)) => format!(
+            "anon{:032x}",
+            crate::semantic_identity::anonymous_nominal_digest(identity)
+        ),
+        TypeInstanceKey::Array { element, len } => {
+            format!("array{}_{len}", mangle_canonical_type(element))
+        }
+        TypeInstanceKey::Slice { element, name } => format!(
+            "slice{}_{}",
+            mangle_canonical_type(element),
+            rue_air::mangle_symbol_component(name),
+        ),
+        TypeInstanceKey::PtrConst(pointee) => {
+            format!("ptr_const{}", mangle_canonical_type(pointee))
+        }
+        TypeInstanceKey::PtrMut(pointee) => {
+            format!("ptr_mut{}", mangle_canonical_type(pointee))
+        }
+        TypeInstanceKey::Module(module) => format!(
+            "module{}",
+            rue_air::mangle_symbol_component(module.logical_path())
+        ),
+        TypeInstanceKey::GenericParameter(index) => format!("generic{index}"),
+    }
+}
+
+fn mangle_canonical_value(value: &crate::CanonicalArgumentValue) -> String {
+    use crate::CanonicalArgumentValue;
+    match value {
+        CanonicalArgumentValue::Integer(value) if *value < 0 => {
+            format!("vm{}", value.unsigned_abs())
+        }
+        CanonicalArgumentValue::Integer(value) => format!("v{value}"),
+        CanonicalArgumentValue::Bool(value) => format!("v{value}"),
+        CanonicalArgumentValue::Type(ty) => format!("v{}", mangle_canonical_type(ty)),
+        CanonicalArgumentValue::Function(function) => format!(
+            "vfn{}",
+            rue_air::mangle_symbol_component(&live_callable_symbol(function).unwrap_or_else(
+                || {
+                    crate::StableSymbolEncoder::encode(&crate::StableSymbolId::Callable(
+                        crate::StableCallableId::Function(function.as_ref().clone()),
+                    ))
+                }
+            ))
+        ),
+        CanonicalArgumentValue::Unit => "vunit".to_owned(),
+        CanonicalArgumentValue::String(value) => {
+            format!("vstr{}", rue_air::mangle_symbol_component(value))
+        }
     }
 }
 

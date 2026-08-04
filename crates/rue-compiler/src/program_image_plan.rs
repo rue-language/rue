@@ -11,9 +11,12 @@ use std::{
 };
 use tracing::info;
 
+#[cfg(test)]
+use crate::FunctionWithCfg;
+
 use crate::{
     CompileError, CompileErrors, CompileOptions, CompileOutput, CompileWarning, ErrorKind,
-    FunctionWithCfg, LinkerMode, MultiErrorResult, Target, backend,
+    LinkerMode, MultiErrorResult, Target, backend,
     codegen_query::{CodegenSection, CollectedCodegenUnit, NormalizedRelocation, SectionKind},
     linking,
 };
@@ -37,6 +40,16 @@ pub(crate) struct ProgramImageExportThunk {
     pub(crate) exported_symbol: String,
     pub(crate) native_symbol: String,
     pub(crate) content_digest: ContentDigest,
+}
+
+/// Rooted C-export metadata projected from the exact optimized CFG terminal.
+/// It contains only the ABI facts needed to build the forwarding thunk.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RootedExportThunk {
+    pub(crate) function: crate::FunctionInstanceKey,
+    pub(crate) exported_symbol: String,
+    pub(crate) native_symbol: String,
+    pub(crate) param_types: Vec<rue_air::Type>,
 }
 
 /// Compiler-owned inputs to a fresh program link.  It deliberately excludes
@@ -155,6 +168,35 @@ pub(crate) struct ProgramImage {
 }
 
 impl ProgramImage {
+    /// Construct the production image directly from rooted codegen terminals
+    /// and their exact C-export projections.
+    pub(crate) fn from_rooted(
+        units: Vec<CollectedCodegenUnit>,
+        exports: Vec<RootedExportThunk>,
+        options: &CompileOptions,
+    ) -> MultiErrorResult<Self> {
+        validate_rooted_program_image_inputs(&units, &exports)?;
+        let export_thunk_objects: Vec<Vec<u8>> = exports
+            .iter()
+            .map(|export| {
+                backend::generate_export_thunk_object(
+                    options.target,
+                    &export.exported_symbol,
+                    &export.native_symbol,
+                    &export.param_types,
+                )
+            })
+            .collect();
+        let plan =
+            ProgramImagePlan::from_rooted_inputs(&units, &exports, options, &export_thunk_objects)?;
+        Ok(Self {
+            plan,
+            units,
+            export_thunk_objects,
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn new(
         units: Vec<CollectedCodegenUnit>,
         functions: &[FunctionWithCfg],
@@ -245,6 +287,41 @@ impl ProgramImage {
 }
 
 impl ProgramImagePlan {
+    fn from_rooted_inputs(
+        units: &[CollectedCodegenUnit],
+        exports: &[RootedExportThunk],
+        options: &CompileOptions,
+        export_thunk_objects: &[Vec<u8>],
+    ) -> MultiErrorResult<Self> {
+        let mut plan_units = units
+            .iter()
+            .map(|collected| ProgramImageUnit {
+                function: collected.function.clone(),
+                identity: stable_function_identity(&collected.function),
+                defined_symbol: collected.unit.defined_symbol.to_string(),
+                content_digest: unit_digest(&collected.unit),
+            })
+            .collect::<Vec<_>>();
+        plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
+
+        let mut export_thunks = exports
+            .iter()
+            .zip(export_thunk_objects)
+            .map(|(export, bytes)| ProgramImageExportThunk {
+                exported_symbol: export.exported_symbol.clone(),
+                native_symbol: export.native_symbol.clone(),
+                content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
+            })
+            .collect::<Vec<_>>();
+        export_thunks.sort_by(|left, right| {
+            left.exported_symbol
+                .cmp(&right.exported_symbol)
+                .then_with(|| left.native_symbol.cmp(&right.native_symbol))
+        });
+        Self::finish(plan_units, export_thunks, units, options)
+    }
+
+    #[cfg(test)]
     fn from_inputs(
         units: &[CollectedCodegenUnit],
         functions: &[FunctionWithCfg],
@@ -290,6 +367,15 @@ impl ProgramImagePlan {
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
         });
 
+        Self::finish(plan_units, export_thunks, units, options)
+    }
+
+    fn finish(
+        plan_units: Vec<ProgramImageUnit>,
+        export_thunks: Vec<ProgramImageExportThunk>,
+        units: &[CollectedCodegenUnit],
+        options: &CompileOptions,
+    ) -> MultiErrorResult<Self> {
         let entry_point = if options.target.is_macho() {
             "__main"
         } else {
@@ -326,6 +412,7 @@ impl ProgramImagePlan {
     }
 }
 
+#[cfg(test)]
 fn validate_program_image_inputs(
     units: &[CollectedCodegenUnit],
     functions: &[FunctionWithCfg],
@@ -400,6 +487,57 @@ fn validate_program_image_inputs(
     Ok(())
 }
 
+fn validate_rooted_program_image_inputs(
+    units: &[CollectedCodegenUnit],
+    exports: &[RootedExportThunk],
+) -> MultiErrorResult<()> {
+    let mut units_by_identity = BTreeMap::new();
+    let mut defined_symbols = BTreeSet::new();
+    for collected in units {
+        let identity = stable_function_identity(&collected.function);
+        if units_by_identity
+            .insert(identity.clone(), collected.unit.defined_symbol.as_ref())
+            .is_some()
+        {
+            return duplicate_plan_input("codegen unit identity", &identity);
+        }
+        if !defined_symbols.insert(collected.unit.defined_symbol.as_ref()) {
+            return duplicate_plan_input("defined symbol", &collected.unit.defined_symbol);
+        }
+    }
+    if !units
+        .iter()
+        .any(|unit| unit.unit.defined_symbol.as_ref() == "main")
+    {
+        return Err(CompileError::without_span(ErrorKind::NoMainFunction).into());
+    }
+    let mut exported_symbols = BTreeSet::new();
+    for export in exports {
+        if !exported_symbols.insert(export.exported_symbol.as_str()) {
+            return duplicate_plan_input("C-ABI export symbol", &export.exported_symbol);
+        }
+        let identity = stable_function_identity(&export.function);
+        let Some(defined) = units_by_identity.get(&identity) else {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InternalError(format!(
+                    "C-ABI export `{}` has no rooted codegen unit",
+                    export.exported_symbol
+                )),
+            )));
+        };
+        if **defined != export.native_symbol {
+            return Err(CompileErrors::from(CompileError::without_span(
+                ErrorKind::InternalError(format!(
+                    "C-ABI export `{}` names a foreign native symbol",
+                    export.exported_symbol
+                )),
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn function_identity(function: &FunctionWithCfg) -> String {
     stable_function_identity(&function.semantic_identity)
 }
