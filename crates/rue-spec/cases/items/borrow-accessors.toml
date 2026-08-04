@@ -215,6 +215,132 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = ["E0255", "place rooted at `self`"]
 
+# ---------------------------------------------------------------------------
+# Declared but never called (RUE-1212). 6.6:3-6.6:5 are legality rules on the
+# declaration, so they hold with no call site anywhere in the program; the
+# trailing-exit half of 6.6:6 is decidable from the declaration's body shape
+# and holds too. The remaining 6.6:6/6.6:7 body rules need the per-instruction
+# analysis, which the driver runs only for a body something demands, so they
+# are covered above with a call site.
+# ---------------------------------------------------------------------------
+
+[[case]]
+name = "uncalled_accessor_requires_preview_gate"
+spec = ["6.6:3"]
+description = "An accessor nothing calls is still accessor surface: E1100 without the preview."
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E1100", "borrow_accessors"]
+
+[[case]]
+name = "uncalled_accessor_requires_borrow_self"
+spec = ["6.6:4"]
+description = "The receiver rule holds on a declaration nothing calls (E0257)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(inout self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0257", "requires a `borrow self` receiver"]
+
+[[case]]
+name = "uncalled_associated_function_accessor_is_rejected"
+spec = ["6.6:4"]
+description = "An associated function has no receiver to project from, called or not (E0257)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(k: i64) -> borrow i64 {
+        yield k;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0257", "an associated function with no receiver"]
+
+[[case]]
+name = "uncalled_accessor_params_are_by_value"
+spec = ["6.6:5"]
+description = "The parameter-mode rule holds on a declaration nothing calls (E0260)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self, borrow k: i64) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0260", "must be by-value"]
+
+[[case]]
+name = "uncalled_accessor_body_requires_trailing_yield"
+spec = ["6.6:6"]
+description = "An accessor body with no trailing `yield` is rejected with no call site (E0254)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        self.x
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0254", "single trailing `yield`"]
+
+[[case]]
+name = "uncalled_legal_accessor_compiles"
+spec = ["6.6:1", "6.6:2"]
+description = "Control: a well-formed accessor nothing calls compiles, so the unconditional declaration rules reject only ill-formed ones."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
 [[case]]
 name = "accessor_may_not_call_itself"
 spec = ["6.6:14"]

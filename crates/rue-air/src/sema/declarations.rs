@@ -1367,32 +1367,23 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             super::DeclarationTypeDependencyKind::Signature,
         ));
 
+        // A `-> borrow T` result is the accessor form (ADR-0062), which a free
+        // function can never satisfy: it has no receiver to project from.
+        check_accessor_declaration_shape(
+            self.rir,
+            declaration,
+            Some(body),
+            false,
+            &self.preview_features,
+        )?;
         let InstData::FnDecl {
             params: rir_params_range,
             directives: directives_range,
-            returns_borrow,
             ..
         } = &self.rir.get(declaration).data
         else {
             unreachable!()
         };
-        // A `-> borrow T` result is the accessor form (ADR-0062) and exists
-        // only on `borrow self` methods; a free or associated function cannot
-        // hand out a receiver projection. Gate first so an ungated program
-        // reports E1100 rather than the shape error.
-        if *returns_borrow {
-            self.require_preview(
-                PreviewFeature::BorrowAccessors,
-                "a `-> borrow` accessor",
-                span,
-            )?;
-            return Err(CompileError::new(
-                ErrorKind::AccessorRequiresBorrowSelf {
-                    found: "a free function".to_string(),
-                },
-                span,
-            ));
-        }
         let params = self.rir.params(rir_params_range);
         let directives = self.rir.directives(directives_range);
         let allow_unused_function = self.has_allow_directive(directives.iter(), "unused_function");
@@ -1695,74 +1686,16 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 let param_modes: Vec<RirParamMode> = params.iter().map(|p| p.mode).collect();
                 let param_comptime: Vec<bool> = params.iter().map(|p| p.is_comptime).collect();
 
-                // Place-returning borrow accessors (ADR-0062, RUE-662):
-                // `-> borrow T` is gated behind the `borrow_accessors` preview
-                // and requires a shared `borrow self` receiver (phase 1;
-                // `inout self` accessors are RUE-1016). Accessor parameters
-                // are by-value guard inputs.
-                if *returns_borrow {
-                    self.require_preview(
-                        PreviewFeature::BorrowAccessors,
-                        "a `-> borrow` accessor",
-                        method_inst.span,
-                    )?;
-                    if !*has_self {
-                        return Err(CompileError::new(
-                            ErrorKind::AccessorRequiresBorrowSelf {
-                                found: "an associated function with no receiver".to_string(),
-                            },
-                            method_inst.span,
-                        ));
-                    }
-                    match self_mode {
-                        RirParamMode::Borrow => {}
-                        RirParamMode::Inout => {
-                            return Err(CompileError::new(
-                                ErrorKind::AccessorRequiresBorrowSelf {
-                                    found: "an `inout self` receiver".to_string(),
-                                },
-                                method_inst.span,
-                            )
-                            .with_note(
-                                "mutable accessors (`inout self` -> exclusive result) are a \
-                                 later phase (RUE-1016)",
-                            ));
-                        }
-                        RirParamMode::Normal => {
-                            return Err(CompileError::new(
-                                ErrorKind::AccessorRequiresBorrowSelf {
-                                    found: "a by-value `self` receiver".to_string(),
-                                },
-                                method_inst.span,
-                            ));
-                        }
-                    }
-                    for param in params.iter() {
-                        if param.mode != RirParamMode::Normal {
-                            return Err(CompileError::new(
-                                ErrorKind::AccessorParamModeUnsupported {
-                                    mode: format!(
-                                        "`{}`",
-                                        match param.mode {
-                                            RirParamMode::Inout => "inout",
-                                            RirParamMode::Borrow => "borrow",
-                                            RirParamMode::Normal => unreachable!(),
-                                        }
-                                    ),
-                                },
-                                param.span,
-                            ));
-                        }
-                        if param.is_comptime {
-                            return Err(CompileError::new(
-                                ErrorKind::AccessorParamModeUnsupported {
-                                    mode: "`comptime`".to_string(),
-                                },
-                                param.span,
-                            ));
-                        }
-                    }
-                }
+                // Place-returning borrow accessors (ADR-0062, RUE-662): the
+                // `-> borrow T` declaration shape is checked before any type
+                // in the signature resolves.
+                check_accessor_declaration_shape(
+                    self.rir,
+                    method_ref,
+                    Some(*body),
+                    true,
+                    &self.preview_features,
+                )?;
                 // `Self` in a method signature (parameter or return position)
                 // resolves to the enclosing struct's type, just like the
                 // receiver does. Named-struct inline methods reach this path;
@@ -3174,6 +3107,130 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             span,
         ))
     }
+}
+
+/// The declaration-shape legality of a `-> borrow T` accessor (ADR-0062):
+/// the result position requires the `borrow_accessors` preview (6.6:3), the
+/// receiver is a shared `borrow self` (6.6:4), and every other parameter is a
+/// plain by-value guard input (6.6:5).
+///
+/// These are legality rules on the declaration, so a declared-but-uncalled
+/// accessor is exactly as ill-formed as a called one. Every producer runs this
+/// over every accessor declaration it admits, which is what keeps the rule
+/// independent of the driver's on-demand body analysis.
+///
+/// The declaring `FnDecl` is the only carrier of `returns_borrow`: the durable
+/// signature records the result type's source spelling, which never contains
+/// the result-position `borrow` qualifier.
+///
+/// The preview gate runs first, so an ungated program reports E1100 rather
+/// than a shape error about a form it cannot name yet.
+pub(super) fn check_accessor_declaration_shape(
+    rir: &rue_rir::Rir,
+    declaration: InstRef,
+    body: Option<InstRef>,
+    has_named_owner: bool,
+    preview_features: &rue_error::PreviewFeatures,
+) -> CompileResult<()> {
+    let inst = rir.get(declaration);
+    let InstData::FnDecl {
+        params,
+        has_self,
+        self_mode,
+        returns_borrow: true,
+        ..
+    } = &inst.data
+    else {
+        return Ok(());
+    };
+    let span = inst.span;
+    super::require_preview_feature(
+        preview_features,
+        PreviewFeature::BorrowAccessors,
+        "a `-> borrow` accessor",
+        span,
+    )?;
+    // An accessor hands out a projection of its receiver, so the receiver is
+    // the first thing that has to exist and be a shared borrow. `inout self`
+    // accessors (exclusive results) are a later phase.
+    let receiver = if !has_named_owner {
+        Some(("a free function", false))
+    } else if !*has_self {
+        Some(("an associated function with no receiver", false))
+    } else {
+        match self_mode {
+            RirParamMode::Borrow => None,
+            RirParamMode::Inout => Some(("an `inout self` receiver", true)),
+            RirParamMode::Normal => Some(("a by-value `self` receiver", false)),
+        }
+    };
+    if let Some((found, is_later_phase)) = receiver {
+        let error = CompileError::new(
+            ErrorKind::AccessorRequiresBorrowSelf {
+                found: found.to_string(),
+            },
+            span,
+        );
+        return Err(if is_later_phase {
+            error.with_note(
+                "mutable accessors (`inout self` -> exclusive result) are a later phase (RUE-1016)",
+            )
+        } else {
+            error
+        });
+    }
+    // `self` is carried by `has_self`, so this list is exactly the guard
+    // inputs: by-value runtime values, evaluated once at the call site.
+    for param in rir.params(params).iter() {
+        if param.mode != RirParamMode::Normal {
+            return Err(CompileError::new(
+                ErrorKind::AccessorParamModeUnsupported {
+                    mode: format!(
+                        "`{}`",
+                        match param.mode {
+                            RirParamMode::Inout => "inout",
+                            RirParamMode::Borrow => "borrow",
+                            RirParamMode::Normal => unreachable!(),
+                        }
+                    ),
+                },
+                param.span,
+            ));
+        }
+        if param.is_comptime {
+            return Err(CompileError::new(
+                ErrorKind::AccessorParamModeUnsupported {
+                    mode: "`comptime`".to_string(),
+                },
+                param.span,
+            ));
+        }
+    }
+    if let Some(body) = body {
+        accessor_trailing_yield(rir, body)?;
+    }
+    Ok(())
+}
+
+/// The single trailing `yield` that an accessor body must fall through to
+/// (6.6:6, ADR-0062 phase 1), or E0254.
+///
+/// Which instruction is the trailing exit is decidable from the RIR alone, so
+/// the declaration seam rejects a body with no trailing `yield` for every
+/// accessor in the program. Rejecting the *other* exits — a second `yield`, a
+/// `return`, a `?` — needs the per-instruction analysis, which the driver runs
+/// only for a body something demands.
+pub(super) fn accessor_trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> CompileResult<InstRef> {
+    // A single-statement body lowers to the instruction itself; a
+    // multi-statement body lowers to a block whose last instruction is the
+    // trailing exit.
+    let trailing = match &rir.get(body).data {
+        InstData::Block { instructions } => rir.block_insts(instructions).values().last(),
+        _ => Some(body),
+    };
+    trailing
+        .filter(|inst_ref| matches!(rir.get(*inst_ref).data, InstData::Yield(_)))
+        .ok_or_else(|| CompileError::new(ErrorKind::AccessorBodyMissingYield, rir.get(body).span))
 }
 
 /// A constant declaration projected from the canonical RIR declaration index.
