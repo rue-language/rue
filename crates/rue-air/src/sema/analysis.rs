@@ -3417,8 +3417,9 @@ pub(crate) fn const_use_anchor_of(
 ///
 /// This is the shared implementation behind [`Sema::check_exclusive_access`].
 /// It enforces three rules:
-/// 1. Inout/borrow arguments must be lvalues (a variable, or a field/index
-///    projection chain rooted at one — RUE-143)
+/// 1. Inout arguments must be lvalues (a variable, or a field/index
+///    projection chain rooted at one — RUE-143). A `borrow` argument may
+///    instead be elaborated into a place by argument analysis (RUE-953).
 /// 2. Same ROOT variable cannot be passed to multiple inout parameters
 ///    (prevents aliasing; conservatively, even disjoint fields conflict)
 /// 3. Same root variable cannot be passed to both inout and borrow (law of
@@ -3459,12 +3460,10 @@ where
                 rir.get(arg.value).span,
             ));
         }
-        if arg.is_borrow() && maybe_var_symbol.is_none() {
-            return Err(CompileError::new(
-                ErrorKind::BorrowNonLvalue,
-                rir.get(arg.value).span,
-            ));
-        }
+        // A `borrow` operand that denotes no place is not an error: argument
+        // analysis elaborates it into a promoted static or a hidden temporary
+        // (spec 6.1:39, RUE-953). It has no root variable, so it takes part in
+        // no exclusivity conflict — nothing else can name that storage.
 
         if let Some(var_symbol) = maybe_var_symbol {
             if arg.is_inout() {
@@ -3538,7 +3537,7 @@ mod functions;
 mod instructions;
 mod intrinsics;
 mod ownership;
-pub(crate) use ownership::{AccessorEscapeSite, FirstClassStrSite};
+pub(crate) use ownership::{AccessorEscapeSite, CallOperands, FirstClassStrSite};
 mod pointers;
 mod type_inference;
 

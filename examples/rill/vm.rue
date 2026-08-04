@@ -332,8 +332,7 @@ struct VM {
 
 pub fn run(program: bytecode.Program) -> RunResult {
     let mut vm = VM.new(program);
-    let main_name: StrBuf = "main";
-    let main_symbol = vm.program.pool.find(borrow main_name);
+    let main_symbol = vm.program.pool.find(borrow "main");
     let value = vm.start(main_symbol);
     RunResult { ok: !vm.failed, value: value, output: vm.output, error: vm.error }
 }

@@ -139,8 +139,9 @@ suffix         = "." IDENT                                     (* field access /
 
 (* Call arguments: any argument may carry an `inout`/`borrow` mode. The
    argument itself is parsed as an arbitrary expression; the requirement that
-   an inout/borrow argument denote a place (a variable, optionally with field/
-   index projections) is a legality rule (6.1:17), not a syntactic one. *)
+   an inout argument denote a place (a variable, optionally with field/
+   index projections) is a legality rule (6.1:17), not a syntactic one. A
+   `borrow` argument that denotes no place is elaborated into one (6.1:39). *)
 call_args      = call_arg { "," call_arg } [ "," ] ;
 call_arg       = [ "inout" | "borrow" ] expression ;
 
@@ -238,11 +239,13 @@ Notes:
   that is the entire argument) parses as a type; anything else — including
   `!expr`, which is logical not — parses as an expression.
 - **`inout`/`borrow` call arguments** are parsed as ordinary expressions; the
-  rule that such an argument must denote a place — a variable optionally
+  rule that an `inout` argument must denote a place — a variable optionally
   followed by field and index projections (e.g. `inout s.arr[i]`) — is a
   legality rule enforced during semantic analysis (6.1:17), not a syntactic
-  restriction. A non-place argument such as `inout a + 1` parses but is
-  rejected with an lvalue error (E0425).
+  restriction. A non-place `inout` argument such as `inout a + 1` parses but is
+  rejected with an lvalue error (E0425). A `borrow` argument has no such
+  restriction: one that denotes no place is elaborated into a promoted static
+  or a compiler-materialized temporary (6.1:39).
 - **Type-function application in type position** (`named_type` followed by
   arguments): a name or
   module-qualified path applied to arguments, e.g. `Pair(i32)`,

@@ -142,32 +142,21 @@ fn main() -> i32 {
     let mut arg_index: u64 = 1;
     match std.env.arg(1) {
         OptStr.Some(first) => {
-            let dump_flag: StrBuf = "--dump";
-            if StrBuf.equals_borrowed(borrow first, borrow dump_flag) {
+            if StrBuf.equals_borrowed(borrow first, borrow "--dump") {
                 dump = true;
                 arg_index = 2;
-            } else {
-                let stats_flag: StrBuf = "--stats";
-                let stress_flag: StrBuf = "--stress";
-                if StrBuf.equals_borrowed(borrow first, borrow stats_flag) {
-                    show_stats = true;
-                    arg_index = 2;
-                } else if StrBuf.equals_borrowed(borrow first, borrow stress_flag) {
-                    stress_mode = true;
-                    arg_index = 2;
-                } else {
-                    let ast_flag: StrBuf = "--ast";
-                    if StrBuf.equals_borrowed(borrow first, borrow ast_flag) {
-                        dump_ast = true;
-                        arg_index = 2;
-                    } else {
-                        let help_flag: StrBuf = "--help";
-                        if StrBuf.equals_borrowed(borrow first, borrow help_flag) {
-                            help_mode = true;
-                            arg_index = 2;
-                        }
-                    }
-                }
+            } else if StrBuf.equals_borrowed(borrow first, borrow "--stats") {
+                show_stats = true;
+                arg_index = 2;
+            } else if StrBuf.equals_borrowed(borrow first, borrow "--stress") {
+                stress_mode = true;
+                arg_index = 2;
+            } else if StrBuf.equals_borrowed(borrow first, borrow "--ast") {
+                dump_ast = true;
+                arg_index = 2;
+            } else if StrBuf.equals_borrowed(borrow first, borrow "--help") {
+                help_mode = true;
+                arg_index = 2;
             }
         },
         OptStr.None => {},

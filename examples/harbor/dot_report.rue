@@ -11,12 +11,9 @@ fn quoted_id(inout out: StrBuf, borrow scenario: model.Scenario, id: u64) {
 }
 
 fn kind_shape(borrow scenario: model.Scenario, kind: u64) -> str {
-    let port: StrBuf = "port";
-    let hub: StrBuf = "hub";
-    let factory: StrBuf = "factory";
-    if scenario.strings.equals(kind, borrow port) { "box" }
-    else if scenario.strings.equals(kind, borrow hub) { "diamond" }
-    else if scenario.strings.equals(kind, borrow factory) { "component" }
+    if scenario.strings.equals(kind, borrow "port") { "box" }
+    else if scenario.strings.equals(kind, borrow "hub") { "diamond" }
+    else if scenario.strings.equals(kind, borrow "factory") { "component" }
     else { "ellipse" }
 }
 

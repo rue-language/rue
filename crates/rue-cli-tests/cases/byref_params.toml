@@ -169,16 +169,33 @@ compile_fail = true
 error_contains = ["E0428", "cannot mutate borrowed value"]
 
 [[case]]
-name = "byref_arg_non_lvalue_still_rejected"
-description = "A call result still cannot be passed by reference: there is no caller-visible place to point at (E0427)."
+name = "inout_arg_non_lvalue_still_rejected"
+description = "A call result still cannot be passed by EXCLUSIVE reference: an inout loan writes through the argument's own storage, which a value has none of (E0425). The shared form is elaborated instead (RUE-953, see below)."
 files = [{ path = "main.rue", source = """
 struct D { x: i32 }
 fn mk() -> D { D { x: 1 } }
-fn peek(borrow v: D) -> i32 { v.x }
-fn main() -> i32 { peek(borrow mk()) }
+fn bump(inout v: D) { v.x = v.x + 1; }
+fn main() -> i32 { bump(inout mk()); 0 }
 """ }]
 compile_fail = true
-error_contains = ["E0427", "borrow argument must be a variable"]
+error_contains = ["E0425", "inout argument must be an lvalue"]
+
+[[case]]
+name = "borrow_arg_call_result_is_a_temporary"
+description = "A `borrow` call-result argument is materialized in a hidden binding that owns it for the call and is dropped exactly once when the call returns (RUE-953, spec 6.1:41)."
+files = [{ path = "main.rue", source = """
+struct D { x: i32 }
+drop fn D(self) { @dbg(self.x); }
+fn mk(x: i32) -> D { D { x: x } }
+fn peek(borrow v: D) -> i32 { v.x }
+fn main() -> i32 {
+    let seen = peek(borrow mk(41));
+    @dbg(100);
+    seen + 1
+}
+""" }]
+exit_code = 42
+stdout = "41\n100\n"
 
 [[case]]
 name = "inout_projections_same_root_rejected"

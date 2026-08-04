@@ -478,6 +478,37 @@ returned, stored, or outlive the call — this is what lets Rue omit lifetimes.
 first-class-reference feature is adopted (a live ADR question, deferred), this
 section is where it lands.
 
+**Borrow of a value (elaboration, RUE-953).** The rule above is stated over
+`borrow p` with `p` a place, and that is the whole of the core: surface syntax
+also admits `borrow e` for an arbitrary `e`, and it is *elaborated away* before
+these rules apply. Elaboration is a source-to-source function on the argument,
+choosing between two forms:
+
+```
+  borrow e   with   e comptime-evaluable and infallible
+      ⇝  borrow ℓ_e        where ℓ_e is e's immortal static allocation in H0 (§6.13.2)
+
+  borrow e   otherwise
+      ⇝  let x_fresh = e in  borrow x_fresh    -- x_fresh unnameable, scoped to the call
+```
+
+Neither form is a new rule. The promoted form loans an `H0` allocation, which
+by §6.13.2 is minted before `main` and never retired: `Σ(ℓ_e) = Owned` holds
+everywhere, no scope contains it, and §5.6 therefore schedules nothing for it —
+that is the precise content of "no drop glue". The temporary form is an
+ordinary `let` whose binding scope is the call, so §5.6 governs it unchanged:
+if `class(T)` is droppable the drop is scheduled at the call's exit, and if
+`residual-linear(Σ, x_fresh, T)` the program is **ill-formed** — which is the
+right answer, since `x_fresh` is unnameable and so can never be consumed. The
+must-consume rejection of `f(borrow make_token())` is thus a consequence of
+§5.6, not an added premise.
+
+The elaboration is a function of the *argument's syntax alone*: it commits to
+the promoted form only on a value-independent, enumerated set of infallible
+forms (literals, constants, and the total operators over them — notably not `/`
+or `%`, whose traps are value-dependent). A value-dependent promotion rule is
+unsound to weaken later, which is the history Rust's RFC 1414 → RFC 3027 records.
+
 An **equality compare** `e1 ≟ e2` reads each place operand through the same
 kind of shared loan, scoped to the compare rather than a call: it requires
 `Σ(p) = Owned`, takes a `(root(p), shared)` loan for the compare's duration,

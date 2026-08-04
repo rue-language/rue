@@ -201,13 +201,9 @@ pub fn code_name(code: u64) -> StrBuf {
 }
 
 pub fn location_kind(borrow scenario: Scenario, id: u64) -> u64 {
-    let port: StrBuf = "port";
-    let hub: StrBuf = "hub";
-    let factory: StrBuf = "factory";
-    let market: StrBuf = "market";
-    if scenario.strings.equals(id, borrow port) { LOCATION_PORT() }
-    else if scenario.strings.equals(id, borrow hub) { LOCATION_HUB() }
-    else if scenario.strings.equals(id, borrow factory) { LOCATION_FACTORY() }
-    else if scenario.strings.equals(id, borrow market) { LOCATION_MARKET() }
+    if scenario.strings.equals(id, borrow "port") { LOCATION_PORT() }
+    else if scenario.strings.equals(id, borrow "hub") { LOCATION_HUB() }
+    else if scenario.strings.equals(id, borrow "factory") { LOCATION_FACTORY() }
+    else if scenario.strings.equals(id, borrow "market") { LOCATION_MARKET() }
     else { 0 }
 }

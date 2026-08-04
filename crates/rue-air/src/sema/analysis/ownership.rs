@@ -51,6 +51,53 @@ pub(crate) enum AccessorEscapeSite {
     Capture,
 }
 
+/// The mechanism that gave a `borrow` operand which is not an existing place
+/// something to loan (spec 6.1:39–6.1:41, RUE-953).
+///
+/// The two paths are deliberately distinct and separately criterioned; the
+/// choice between them is made once, in
+/// [`OrdinaryBodyEngine::elaborate_borrow_operand`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BorrowOperandElaboration {
+    /// **Static promotion.** The operand is comptime-evaluable and infallible,
+    /// so the loan names the value's immortal static image: no destructor runs
+    /// and no cleanup is scheduled for it (formal core §6.13.2's `H0` story).
+    Promoted,
+    /// **Compiler-materialized temporary.** The operand is evaluated exactly
+    /// once into a fresh hidden binding scoped to the call — the exact extent
+    /// of the loan it backs — whose value is dropped exactly once on every
+    /// path that leaves that scope (formal core §5.6's scope-exit drop).
+    Temporary,
+}
+
+/// The AIR pieces of an elaborated `borrow` operand, kept separate so each
+/// lands in the position its obligation requires.
+pub(crate) struct ElaboratedBorrowOperand {
+    /// Addressable read of the hidden binding — the operand's replacement.
+    pub(crate) load: AirRef,
+    /// Initializer of the hidden binding. Stays at the operand's argument
+    /// position, so the operand is evaluated in source order (spec 4.10:7).
+    pub(crate) alloc: AirRef,
+    /// Storage annotation. Hoisted into a block wrapping the *call*, which is
+    /// the scope whose exit drops the binding — after the callee has read
+    /// through the loan, on every path that leaves the call.
+    pub(crate) storage_live: AirRef,
+}
+
+/// Analyzed call operands plus the storage annotations that must wrap the
+/// emitted call.
+///
+/// A borrow-operand temporary's `StorageLive` is hoisted here so the call
+/// emitter can wrap the *call* in the block whose exit drops it — after the
+/// callee has read through the loan. Its `Alloc` stays at the operand's
+/// argument position, so operands are still evaluated left to right
+/// (spec 4.10:7).
+pub(crate) struct CallOperands {
+    pub(crate) args: Vec<AirCallArg>,
+    /// `StorageLive` instructions to prefix onto the call, in operand order.
+    pub(crate) temp_scope: Vec<AirRef>,
+}
+
 // Place Building
 // ============================================================================
 
@@ -328,6 +375,207 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         });
         let value = Self::finish_traced_value(air, &mut trace, value, ty, span)?;
         Ok(Some(AnalysisResult::new(value, ty)))
+    }
+
+    /// Whether a by-reference operand names an existing place: a local, a
+    /// parameter, or a field/index projection chain rooted at one.
+    ///
+    /// A name that resolves to no binding — a named constant, or a value
+    /// `const` re-export — is *not* a place: it has no caller-visible storage
+    /// to point at, which is why it used to be an E0427 (RUE-760) and is now a
+    /// borrow-operand elaboration candidate instead (RUE-953).
+    fn borrow_operand_names_place(&self, value: InstRef, ctx: &AnalysisContext) -> bool {
+        let Some(root) = root_variable_of(self.body_rir_ref(), value) else {
+            // A `-> borrow T` accessor chain (ADR-0062) is a place too: it
+            // re-roots at its receiver's binding, which the inlined accessor
+            // body reads in place.
+            return self.place_root_with_accessors(value, ctx).is_some();
+        };
+        ctx.locals.contains_key(&root) || ctx.params.iter().any(|param| param.name == root)
+    }
+
+    /// Whether a `borrow` operand qualifies for **static promotion**
+    /// (spec 6.1:40, RUE-953).
+    ///
+    /// The criterion is two conjuncts, both required:
+    ///
+    /// 1. the operand is drawn from the enumerated *infallible* form set
+    ///    below — literals, a named value constant, a `comptime` parameter,
+    ///    and the arithmetic, bitwise, comparison, and logical operators over
+    ///    them; and
+    /// 2. it actually folds to a value under the body's comptime environment
+    ///    (a string literal or string constant is its own folded image; the
+    ///    comptime engine deliberately holds no string values).
+    ///
+    /// The form set is *value-independent* so the criterion can be checked by
+    /// inspection. `/` and `%` are excluded outright even for a nonzero
+    /// literal divisor: their trap conditions (divisor zero, `MIN / -1`) are
+    /// value-dependent, and a value-dependent promotion rule is exactly the
+    /// mistake Rust had to walk back (RFC 1414 → RFC 3027). Anything outside
+    /// the set — a call, an index, a field read, a cast, an intrinsic — takes
+    /// the temporary path instead, which is observationally identical apart
+    /// from where the value lives.
+    ///
+    /// Conjunct 2 also rules out a *fallible* fold: an operand whose constant
+    /// evaluation overflows or is otherwise diagnosed yields no value here, so
+    /// it takes the temporary path and its error is reported by the ordinary
+    /// runtime analysis of that temporary.
+    fn borrow_operand_is_promotable(&mut self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+        if !self.borrow_operand_has_infallible_form(operand, ctx) {
+            return false;
+        }
+        // A string literal (or a `const` bound to one) is `.rodata`-backed and
+        // never evaluated: it is already the static image the loan names, and
+        // the comptime engine intentionally carries no string values
+        // (RUE-957), so asking it to fold would reject the very case the
+        // ruling is about.
+        if self.borrow_operand_is_static_string(operand, ctx) {
+            return true;
+        }
+        self.try_evaluate_const_in_fn(operand, ctx)
+            .is_some_and(|value| {
+                matches!(
+                    value,
+                    ConstValue::Integer(_) | ConstValue::Bool(_) | ConstValue::Unit
+                )
+            })
+    }
+
+    /// Conjunct 1 of the promotion criterion: the operand's syntax is drawn
+    /// from the enumerated infallible form set.
+    fn borrow_operand_has_infallible_form(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+        match &self.body_rir_ref().get(operand).data {
+            InstData::IntConst(_)
+            | InstData::BoolConst(_)
+            | InstData::UnitConst
+            | InstData::StringConst { .. } => true,
+            InstData::Neg { operand }
+            | InstData::Not { operand }
+            | InstData::BitNot { operand } => {
+                self.borrow_operand_has_infallible_form(*operand, ctx)
+            }
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Eq { lhs, rhs }
+            | InstData::Ne { lhs, rhs }
+            | InstData::Lt { lhs, rhs }
+            | InstData::Gt { lhs, rhs }
+            | InstData::Le { lhs, rhs }
+            | InstData::Ge { lhs, rhs }
+            | InstData::And { lhs, rhs }
+            | InstData::Or { lhs, rhs }
+            | InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs }
+            | InstData::Shl { lhs, rhs }
+            | InstData::Shr { lhs, rhs } => {
+                self.borrow_operand_has_infallible_form(*lhs, ctx)
+                    && self.borrow_operand_has_infallible_form(*rhs, ctx)
+            }
+            // A name is in the set only when it is compile-time known and is
+            // NOT a runtime binding: a `let` or an ordinary parameter is a
+            // place and never reaches elaboration, while a named value
+            // constant or a `comptime` parameter has a static image.
+            InstData::VarRef { name, .. } => {
+                !ctx.locals.contains_key(name)
+                    && !ctx.params.iter().any(|param| param.name == *name)
+                    && (self.borrow_operand_is_static_string(operand, ctx)
+                        || ctx.comptime_value_vars.contains_key(name)
+                        || self
+                            .call_facts()
+                            .value_const(self.body_rir_ref().get(operand).span.file_id, *name)
+                            .is_some())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether the operand is a `.rodata`-backed string image: an inline
+    /// string literal, or a name bound to a string `const` (RUE-957).
+    fn borrow_operand_is_static_string(&self, operand: InstRef, ctx: &AnalysisContext) -> bool {
+        match &self.body_rir_ref().get(operand).data {
+            InstData::StringConst { .. } => true,
+            InstData::VarRef { name, .. } => {
+                !ctx.locals.contains_key(name)
+                    && !ctx.params.iter().any(|param| param.name == *name)
+                    && self
+                        .call_facts()
+                        .value_const(self.body_rir_ref().get(operand).span.file_id, *name)
+                        .is_some_and(|info| matches!(info.value, ConstValue::String(_)))
+            }
+            _ => false,
+        }
+    }
+
+    /// Elaborate a `borrow` operand that denotes no existing place into one
+    /// that does (spec 6.1:39–6.1:41, RUE-953).
+    ///
+    /// Returns the hidden binding's three AIR pieces separately, because each
+    /// belongs in a different position. The split is what makes both
+    /// obligations hold at once:
+    ///
+    /// - the `Alloc` stays here, at the operand's argument position, so the
+    ///   operand is evaluated in source order (spec 4.10:7);
+    /// - the `StorageLive` opens its drop scope around the *call*, so a
+    ///   temporary is dropped after the callee has read through the loan, by
+    ///   the ordinary scope-exit machinery — which already covers early exits
+    ///   (`return`, `break`, `?`) and path-dependent moves through its drop
+    ///   flags. No new drop path is introduced.
+    ///
+    /// A promoted operand's slot is registered as non-owning, so drop
+    /// elaboration schedules nothing for it at all.
+    fn elaborate_borrow_operand(
+        &mut self,
+        air: &mut Air,
+        operand: InstRef,
+        value: AirRef,
+        ty: Type,
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<ElaboratedBorrowOperand> {
+        // The hidden binding is never named, so nothing can consume it: its
+        // value reaches the end of the statement owned and is dropped. That is
+        // precisely the condition the linear leak check forbids, so a linear
+        // operand is reported through the language's existing
+        // discarded-linear-value diagnostic — with the help text that already
+        // names the fix ("bind the value with `let` and consume it").
+        self.reject_discarded_linear_value(ty, operand)?;
+        let kind = if self.borrow_operand_is_promotable(operand, ctx) {
+            BorrowOperandElaboration::Promoted
+        } else {
+            BorrowOperandElaboration::Temporary
+        };
+        let slots = self.require_layout_slots(ty, span)?;
+        let slot = self.reserve_frame_slots(&mut ctx.next_slot, slots, span)?;
+        if kind == BorrowOperandElaboration::Promoted {
+            // The promoted image is immortal and owns nothing — a literal's
+            // bytes live in `.rodata`, and a `StrBuf` promoted at a `borrow
+            // StrBuf` position is the non-owning `cap == 0` header over them.
+            // Registering the slot as non-owning is what makes "no drop glue"
+            // structural rather than incidental.
+            air.add_borrow_slot(slot);
+        }
+        let live = air.add_inst(AirInst {
+            data: AirInstData::StorageLive { slot },
+            ty,
+            span,
+        });
+        let alloc = air.add_inst(AirInst {
+            data: AirInstData::Alloc { slot, init: value },
+            ty: Type::UNIT,
+            span,
+        });
+        let load = air.add_inst(AirInst {
+            data: AirInstData::Load { slot },
+            ty,
+            span,
+        });
+        Ok(ElaboratedBorrowOperand {
+            load,
+            alloc,
+            storage_live: live,
+        })
     }
 
     /// Give a compiler-synthesized borrow argument an addressable home.
@@ -932,9 +1180,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             .expect("accessor expansion follows a successful method lookup");
         let method_name_str = self.body_interner().resolve(&method).to_string();
 
-        // The receiver of an accessor call must be a place, exactly as a
-        // `borrow` argument must (E0427); it is read through a shared borrow,
-        // never moved.
+        // The receiver of an accessor call must be a place (E0427): the
+        // accessor's body is inlined against the receiver's storage, so there
+        // is nothing for borrow-operand elaboration (RUE-953) to loan. It is
+        // read through a shared borrow, never moved.
         let receiver_span = self.body_rir_ref().get(receiver).span;
         let receiver_trace = {
             let prev_byref_root = ctx.byref_arg_root.take();
@@ -982,8 +1231,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let param_modes = param_data.modes().to_vec();
         let param_names = param_data.names().to_vec();
         self.validate_call_contract_for_accessor(args_range, &param_types, &param_modes, span)?;
-        let air_args =
-            self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
+        // Every accessor parameter is by-value, so no operand here can produce
+        // a borrow-operand temporary (RUE-953); the guard statements below are
+        // the accessor's own storage.
+        let air_args = self
+            .analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?
+            .args;
 
         // Run inference for the accessor body so the caller's analysis can
         // walk instructions the caller's own inference never visited. The
@@ -4763,6 +5016,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// through the existing by-value aggregate ABI (the parameter is by-value —
     /// see [`crate::sema::Sema`] parameter setup). All other arguments retain
     /// the ordinary by-value/by-reference analysis in this same chokepoint.
+    ///
+    /// A `borrow` operand that denotes no existing place is elaborated here
+    /// into one that does (RUE-953); see
+    /// [`Self::elaborate_borrow_operand`] for the two mechanisms and for why
+    /// the returned [`CallOperands::temp_scope`] must wrap the emitted call.
     pub(crate) fn analyze_call_args_coerced<A>(
         &mut self,
         air: &mut Air,
@@ -4770,7 +5028,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         param_types: &[Type],
         param_modes: &[RirParamMode],
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>>
+    ) -> CompileResult<CallOperands>
     where
         A: ExactSizeIterator<Item = rue_rir::RirCallArg> + Clone,
     {
@@ -4835,11 +5093,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         param_types: &[Type],
         param_modes: &[RirParamMode],
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>>
+    ) -> CompileResult<CallOperands>
     where
         A: ExactSizeIterator<Item = rue_rir::RirCallArg>,
     {
         let mut air_args = Vec::with_capacity(args.len());
+        let mut temp_scope: Vec<AirRef> = Vec::new();
         for (i, arg) in args.enumerate() {
             // A `str` parameter (ADR-0043 Phase 3, RUE-324) is a first-class
             // 2-word value, not a `borrow`-materialized fat pointer. A string
@@ -4867,11 +5126,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // re-borrowed view (ADR-0043 two-types model). The source is
                 // borrowed (never moved) and a `StrBuf` source's 3-word header
                 // is narrowed to the 2-word `{ptr, len}` view here (RUE-559).
-                // The argument is always a place: `check_exclusive_access`
-                // rejected non-lvalue `borrow` arguments (E0427) before
-                // argument analysis began.
+                // An operand that names no place is elaborated first (RUE-953):
+                // a promoted string literal already *is* the static-backed
+                // view, and any other value is viewed through the temporary
+                // that owns it for the call.
                 if arg.is_borrow() && self.is_str_struct(str_ty) {
-                    let value = self.coerce_borrow_str_place_to_view(air, &arg, str_ty, ctx)?;
+                    let (value, storage_live) =
+                        self.coerce_borrow_str_operand_to_view(air, &arg, str_ty, ctx)?;
+                    temp_scope.extend(storage_live);
                     air_args.push(AirCallArg {
                         value,
                         // The 2-word view is passed BY VALUE (multi-slot
@@ -4939,7 +5201,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 continue;
             }
 
-            let byref_root = if arg.is_inout() || arg.is_borrow() {
+            // A `borrow` operand that denotes no existing place — a literal, a
+            // named constant, a call result, an arithmetic expression — is
+            // elaborated into one (RUE-953). The decision is taken here,
+            // before analysis, so the operand is analyzed as an ordinary value
+            // under the parameter's expected type instead of being traced as a
+            // place. `inout` is unchanged: an exclusive loan still requires
+            // caller-visible storage.
+            let elaborates_borrow =
+                arg.is_borrow() && !self.borrow_operand_names_place(arg.value, ctx);
+
+            let byref_root = if !elaborates_borrow && (arg.is_inout() || arg.is_borrow()) {
                 // A `borrow` argument may be an accessor-call place chain
                 // (ADR-0062): it borrows the accessor receiver's root.
                 let root = match root_variable_of(self.body_rir_ref(), arg.value) {
@@ -4976,9 +5248,43 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 None
             };
             let prev_byref_root = std::mem::replace(&mut ctx.byref_arg_root, byref_root);
+            // An elaborated operand is materialized at the parameter's type, so
+            // a string literal at a `borrow StrBuf` position becomes the
+            // literal-backed `cap == 0` header and an enum-typed fallible
+            // intrinsic names its registry result — the same contextual
+            // materialization a `let` with that annotation performs.
+            let prev_expected = if elaborates_borrow
+                && (param_ty.is_enum() || self.is_str_like(param_ty) || self.is_strbuf(param_ty))
+            {
+                Some(ctx.expected_type.replace(param_ty))
+            } else {
+                None
+            };
             let arg_result = self.analyze_inst(air, arg.value, ctx);
+            if let Some(previous) = prev_expected {
+                ctx.expected_type = previous;
+            }
             ctx.byref_arg_root = prev_byref_root;
             let arg_result = arg_result?;
+            if elaborates_borrow {
+                let span = self.body_rir_ref().get(arg.value).span;
+                let elaborated = self.elaborate_borrow_operand(
+                    air,
+                    arg.value,
+                    arg_result.air_ref,
+                    arg_result.ty,
+                    span,
+                    ctx,
+                )?;
+                temp_scope.push(elaborated.storage_live);
+                let value =
+                    air.add_block(&[elaborated.alloc], elaborated.load, arg_result.ty, span)?;
+                air_args.push(AirCallArg {
+                    value,
+                    mode: AirArgMode::Borrow,
+                });
+                continue;
+            }
             if arg.is_inout() || arg.is_borrow() {
                 // An inlined accessor argument arrives as a guards block whose
                 // tail is the place read (ADR-0062); peel it for the address
@@ -5039,7 +5345,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 mode: Self::convert_arg_mode(arg.mode),
             });
         }
-        Ok(air_args)
+        Ok(CallOperands {
+            args: air_args,
+            temp_scope,
+        })
     }
 
     /// Build a by-value slice `{ptr, len}` value from a `borrow arr` argument
@@ -5171,16 +5480,23 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     ///   value through the 2-slot by-value parameter ABI was the RUE-559
     ///   miscompile: the callee read `cap` as the length and dereferenced the
     ///   length as the data pointer (segfault on indexing).
-    fn coerce_borrow_str_place_to_view(
+    ///
+    /// An operand that names no place is elaborated first (RUE-953) and the
+    /// returned `StorageLive`, when there is one, must wrap the call so a
+    /// temporary outlives the view built from it.
+    fn coerce_borrow_str_operand_to_view(
         &mut self,
         air: &mut Air,
         arg: &RirCallArg,
         str_ty: Type,
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<AirRef> {
+    ) -> CompileResult<(AirRef, Option<AirRef>)> {
         use crate::inst::{AirInstData, AirProjection};
 
         let span = self.body_rir_ref().get(arg.value).span;
+        if !self.borrow_operand_names_place(arg.value, ctx) {
+            return self.elaborate_borrow_str_operand(air, arg, str_ty, ctx);
+        }
         let root = require_byref_place_arg(self.body_rir_ref(), arg)?;
         let prev_byref_root = ctx.byref_arg_root.replace(root);
         let trace = self.try_trace_place(arg.value, air, ctx);
@@ -5194,11 +5510,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if self.is_str_like(src_ty) {
             let projs: Vec<AirProjection> = trace.projections.iter().map(|p| p.proj).collect();
             let place_ref = air.make_place(trace.base, trace.base_type, projs)?;
-            return Ok(air.add_inst(AirInst {
-                data: AirInstData::PlaceRead { place: place_ref },
-                ty: str_ty,
-                span,
-            }));
+            return Ok((
+                air.add_inst(AirInst {
+                    data: AirInstData::PlaceRead { place: place_ref },
+                    ty: str_ty,
+                    span,
+                }),
+                None,
+            ));
         }
 
         // `StrBuf` source: narrow the buffer header to the `{ptr, len}` view.
@@ -5216,9 +5535,69 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 span,
             });
             let (view, prefix) = self.strbuf_text_view(air, strbuf_read, src_ty, span, ctx)?;
-            return self.wrap_value_with_temp_scope(air, view, str_ty, span, prefix);
+            return Ok((
+                self.wrap_value_with_temp_scope(air, view, str_ty, span, prefix)?,
+                None,
+            ));
         }
 
         Err(self.type_mismatch_error(str_ty, src_ty, span))
+    }
+
+    /// Build the `borrow s: str` view for an operand that names no place
+    /// (RUE-953).
+    ///
+    /// A promoted string operand needs no storage at all: at a `str`
+    /// parameter the loan *is* the two-word static-backed view, so the literal
+    /// materializes directly under the expected type and is passed by value —
+    /// the purest form of the promotion the ruling describes (formal core
+    /// §6.13.2: `"hello" : str` is `view⟨A_lit | 0, len⟩` over an allocation in
+    /// `H0`).
+    ///
+    /// Any other operand is evaluated once into a hidden binding that owns it
+    /// for the call; the view is then read out of that binding exactly as it
+    /// would be from a source place, and the binding's `StorageLive` travels
+    /// to the call wrapper so its drop runs after the callee returns.
+    fn elaborate_borrow_str_operand(
+        &mut self,
+        air: &mut Air,
+        arg: &RirCallArg,
+        str_ty: Type,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<(AirRef, Option<AirRef>)> {
+        let span = self.body_rir_ref().get(arg.value).span;
+
+        let prev_expected = ctx.expected_type.replace(str_ty);
+        let operand = self.analyze_inst(air, arg.value, ctx);
+        ctx.expected_type = prev_expected;
+        let operand = operand?;
+
+        // A `str`/`Str(N)` operand already *is* the two-word view: a promoted
+        // literal materialized under the expected type, or a view another call
+        // produced. There is nothing to own and nothing to drop, so no storage
+        // is introduced at all.
+        if self.is_str_like(operand.ty) {
+            return Ok((operand.air_ref, None));
+        }
+
+        // A `StrBuf` operand owns a buffer. The hidden binding owns it for the
+        // call, and the view is read out of that binding through the trusted
+        // accessors — the same narrowing a source place gets (RUE-1066).
+        if self.is_strbuf(operand.ty) {
+            let elaborated = self.elaborate_borrow_operand(
+                air,
+                arg.value,
+                operand.air_ref,
+                operand.ty,
+                span,
+                ctx,
+            )?;
+            let (view, mut prefix) =
+                self.strbuf_text_view(air, elaborated.load, operand.ty, span, ctx)?;
+            prefix.insert(0, elaborated.alloc);
+            let view = self.wrap_value_with_temp_scope(air, view, str_ty, span, prefix)?;
+            return Ok((view, Some(elaborated.storage_live)));
+        }
+        Err(self.type_mismatch_error(str_ty, operand.ty, span))
     }
 }
