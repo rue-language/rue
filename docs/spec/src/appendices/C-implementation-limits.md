@@ -8,13 +8,17 @@ template = "spec/page.html"
 
 {{ rule(id="C.1:1") }}
 
-This appendix documents implementation-defined limits of the Rue compiler. These limits are normative: a conforming implementation **MUST** support at least the minimum values specified here. Implementations **MAY** support larger values.
+This appendix documents two different kinds of limit. A **language limit** is part of Rue's semantics: it follows from the language's own types and is the same for every conforming implementation (for example, the range of `i64`). An **implementation limit** is a ceiling of *this* compiler's internal representation: it is implementation-defined (Appendix B), it is derived from a concrete storage decision rather than from the language, and a later release **MAY** raise it. Every implementation limit stated below cites the representation that bounds it.
 
-{{ rule(id="C.1:2") }}
+{{ rule(id="C.1:2", cat="normative") }}
 
-Programs that exceed these limits are not guaranteed to compile or execute correctly. A conforming implementation **SHOULD** produce a diagnostic when a limit is exceeded.
+Exceeding an implementation limit is a diagnosable compile-time failure. An implementation **MUST** reject a translation unit that exceeds one of its implementation limits by reporting a diagnostic that names the exceeded limit, and **MUST NOT** instead wrap or truncate an index, silently discard part of the program, exhaust an internal index space, or terminate abnormally. This is the general policy; the concrete checks listed in this appendix are instances of it.
 
-## Numeric Limits
+{{ rule(id="C.1:3") }}
+
+An implementation **MAY** support values larger than the ones published here, and raising a ceiling is a compatible change. Programs that stay within the *language* limits of §C.2 remain portable; programs that approach an implementation ceiling are relying on an implementation-defined quantity.
+
+## Language Limits
 
 {{ rule(id="C.2:1", cat="normative") }}
 
@@ -37,25 +41,25 @@ The following integer types have the specified ranges:
 
 ## Source File Limits
 
-{{ rule(id="C.3:1", cat="informative") }}
+{{ rule(id="C.3:1") }}
 
-Source file size **MUST** be representable using 32-bit byte offsets. This limits source files to 4 GiB (4,294,967,295 bytes).
+A single source file is limited to 4,294,967,295 bytes — one byte short of 4 GiB. Source positions are byte offsets stored as 32-bit unsigned integers, so this is the largest length whose end-of-file position is still representable. The compiler checks the length of every source it accepts and rejects an oversized one with a resource-limit diagnostic (E1401) before lexing, so no span can be formed from a truncated offset.
 
-{{ rule(id="C.3:2", cat="informative") }}
+{{ rule(id="C.3:2") }}
 
-The span tracking system uses 32-bit unsigned integers for byte offsets, which determines this limit.
+The span representation that bounds it is `rue_span::Span`: a file identifier plus a `u32` start offset and a `u32` end offset. The file identifier is itself a `u32` (`rue_span::FileId`), with `FileId(0)` reserved for the default/unknown file, so a single compilation can distinguish at most 4,294,967,295 source files.
 
 ## Array Limits
 
 {{ rule(id="C.4:1", cat="normative") }}
 
-Array length **MUST** be representable as an unsigned 64-bit integer. This limits array sizes to 2^64 - 1 elements.
+An array length is a compile-time value of type `u64`, so the language itself admits lengths in the range `0` to `18446744073709551615` (2^64 - 1). The object-size ceiling of C.4:3 applies independently and is what a program actually encounters.
 
-{{ rule(id="C.4:2", cat="informative") }}
+{{ rule(id="C.4:2") }}
 
-Practical limits on array size are determined by available memory and platform constraints rather than the type system.
+An array whose element count is legal for the type system may still be rejected: the binding constraint is the total layout size of the array type, not the element count on its own, and not available memory.
 
-{{ rule(id="C.4:3", cat="informative") }}
+{{ rule(id="C.4:3") }}
 
 The current implementation limits any single object (including an array type) to 2,147,483,647 bytes (`i32::MAX`), matching the code generator's frame-offset addressing range. A type whose layout exceeds this limit is rejected with a diagnostic (E0906) wherever a value of the type would be materialized — a variable, a parameter, or a `@size_of`/`@align_of` query.
 
@@ -67,29 +71,36 @@ Exceeding it is rejected with diagnostic E0907.
 
 ## Identifier Limits
 
-{{ rule(id="C.5:1", cat="informative") }}
+{{ rule(id="C.5:1") }}
 
-There is no explicit limit on identifier length. Identifiers are stored as dynamically-allocated strings and are limited only by available memory.
+There is no separate cap on the length of one identifier: an identifier is a token, so its length is bounded by the source-file limit of C.3:1. The number of *distinct* identifiers and string literals in one compilation is bounded by the string interner, whose handles are non-zero 32-bit keys: at most 4,294,967,295 distinct interned strings.
 
-## Minimum Guaranteed Limits
+## Implementation Capacity Limits
 
-{{ rule(id="C.6:1", cat="normative") }}
+{{ rule(id="C.6:1") }}
 
-A conforming implementation **MUST** support at least:
+The compiler stores syntax, untyped IR, and typed IR in compact index-based form: instructions are `u32` indices, and the variable-length operands of an instruction (its parameters, fields, variants, arguments, or elements) are `(start: u32, extent: u32)` ranges into one shared word store per program. Every capacity below is a consequence of that representation, not of the language:
 
-| Construct | Minimum Limit |
-|-----------|---------------|
-| Source file size | 4 GiB |
-| Integer literal value | 2^64 - 1 |
-| Array length | 2^64 - 1 |
-| Function parameters | No fixed limit |
-| Struct fields | No fixed limit |
-| Enum variants | 2^64 |
-| Syntactic nesting depth (expressions, types, blocks, loops) | 256 levels |
+| Construct | Limit | Bounded by | Diagnosed by |
+|-----------|-------|------------|--------------|
+| Source bytes in one file | 4,294,967,295 | `u32` span offsets | E1401 |
+| Source files in one compilation | 4,294,967,295 | `u32` file identifier, `FileId(0)` reserved | not checked |
+| Distinct identifiers and string literals | 4,294,967,295 | non-zero `u32` interner keys | not checked |
+| IR instructions in one program | 4,294,967,295 | `u32` instruction reference, `u32::MAX` reserved as the null payload | not checked |
+| IR payload words in one program | 4,294,967,295 words (16 GiB) | `u32` payload `start`/`extent` into one word store | not checked |
+| Parameters of one function | 613,566,756 | 7 payload words per parameter | not checked |
+| Fields of one struct | 2,147,483,647 | 2 payload words per field | not checked |
+| Arguments of one call | 2,147,483,647 | 2 payload words per argument | not checked |
+| Variants of one enum | 4,294,967,295 | 1 payload word per variant; the discriminant tag widens to at most `u32` | not checked |
+| Elements of one array literal | 4,294,967,295 | 1 payload word per element | not checked |
+| Distinct composite types (structs, enums, arrays, pointers, modules) | 16,777,216 | `Type` is a `u32`: an 8-bit kind tag plus a 24-bit type-pool index | not checked |
+| Size of one object | 2,147,483,647 bytes | signed 32-bit frame displacement | E0906 |
+| Cumulative storage of one function | 2,147,483,632 bytes | signed 32-bit frame displacement, 16-byte aligned | E0907 |
+| Syntactic nesting depth | 256 | guarded recursion depth in the parser and RIR lowering | E0482 |
 
-{{ rule(id="C.6:2", cat="informative") }}
+{{ rule(id="C.6:2") }}
 
-"No fixed limit" means the construct is limited only by available memory, not by an explicit cap in the implementation.
+"Not checked" in the table above means the ceiling follows from the representation but the compiler does not yet report it as a diagnostic; reaching one of those ceilings today is a defect against C.1:2, not a licensed behavior. The ceilings are also not independent: parameters, fields, variants, arguments, and array elements all draw on the same per-program word store, so the sum of every payload in a program cannot exceed 4,294,967,295 words even when no individual construct does.
 
 {{ rule(id="C.6:3", cat="normative") }}
 
@@ -97,7 +108,7 @@ Syntactic nesting depth — the depth to which expressions, types, and blocks ma
 
 ## Stack and Memory Considerations
 
-{{ rule(id="C.7:1", cat="informative") }}
+{{ rule(id="C.7:1") }}
 
 While the language specification does not impose limits on recursion depth or stack usage, practical execution is constrained by:
 
@@ -105,7 +116,7 @@ While the language specification does not impose limits on recursion depth or st
 - Available memory for local variables
 - Platform-specific calling convention limits
 
-{{ rule(id="C.7:2", cat="informative") }}
+{{ rule(id="C.7:2") }}
 
 Programs requiring deep recursion or large stack allocations **SHOULD** be designed with these platform constraints in mind.
 
@@ -118,6 +129,6 @@ Function size is limited by the target architecture's addressing modes:
 - On x86-64, functions **MUST** fit within the ±2 GiB range addressable by 32-bit relative offsets
 - Jump instructions within a function use 32-bit relative addressing to support functions of any reasonable size
 
-{{ rule(id="C.8:2", cat="informative") }}
+{{ rule(id="C.8:2") }}
 
 The compiler uses 32-bit relative (rel32) encoding for all conditional and unconditional jumps, avoiding the 127-byte limit of 8-bit relative (rel8) encoding. This ensures functions with large basic blocks compile correctly without requiring multi-pass relaxation.

@@ -18,6 +18,10 @@ use rue_span::Span;
 pub const LEXER_DIAGNOSTIC_BUDGET: usize = 100;
 
 /// Maximum source byte length representable by Rue's `u32` span offsets.
+///
+/// Published as the per-file source-size ceiling in spec C.3:1. A longer
+/// source is rejected with the resource-limit diagnostic E1401 before any span
+/// is formed, per the graceful-failure policy in spec C.1:2.
 pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
 
 /// Token kinds in the Rue language.

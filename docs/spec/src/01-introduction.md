@@ -199,7 +199,7 @@ This specification is organized as follows:
 - **Chapter 10: Modules** - Module forms, import resolution, visibility, program composition
 - **Appendix A: Grammar** - Complete EBNF grammar
 - **Appendix B: Runtime Panics** - Summary of panic conditions
-- **Appendix C: Implementation Limits** - Minimum limits for conforming implementations
+- **Appendix C: Implementation Limits** - Language limits, this implementation's capacity ceilings, and the requirement to diagnose rather than wrap when one is exceeded
 
 ## Version
 

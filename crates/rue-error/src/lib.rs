@@ -74,7 +74,8 @@ pub struct ErrorCode(pub u16);
 /// emit [`ErrorCode::NESTING_LIMIT_EXCEEDED`] (E0482) instead of overflowing
 /// the stack on pathologically nested input (RUE-42). Chosen generously so
 /// real code never hits it, but low enough that the guarded recursion stays
-/// well within the stack the parser runs on.
+/// well within the stack the parser runs on. Published as the nesting-depth
+/// limit in spec C.6:3; the diagnosable-failure requirement is spec C.1:2.
 pub const MAX_NESTING_DEPTH: usize = 256;
 
 impl ErrorCode {
@@ -1915,7 +1916,9 @@ pub enum ErrorKind {
     InvalidCompilerInput(String),
 
     /// A source-driven request exceeded a documented bounded compiler
-    /// representation. This is a normal diagnostic, not an ICE.
+    /// representation (spec Appendix C). This is a normal diagnostic, not an
+    /// ICE: spec C.1:2 requires a diagnosable compile-time failure rather than
+    /// a wrapped index or an abnormal termination.
     #[error("compiler resource limit exceeded: {0}")]
     CompilerResourceLimit(String),
 

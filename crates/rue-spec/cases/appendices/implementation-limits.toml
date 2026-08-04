@@ -89,8 +89,13 @@ fn main() -> i32 {
 exit_code = 141
 
 # =============================================================================
-# No Fixed Limits (C.6)
+# Implementation Capacity Limits (C.6)
 # =============================================================================
+# C.6:1 publishes the compiler's capacity ceilings, all derived from its
+# u32-indexed instructions and (start, extent) payload ranges. Those ceilings
+# are far too large to construct as fixtures, so these cases pin the ordinary
+# end of each construct: parameters, fields, variants, and nesting all work,
+# and the published ceiling is the representation's, not an arbitrary cap.
 
 [[case]]
 name = "many_parameters"
@@ -321,6 +326,34 @@ fn main() -> i32 {
 exit_code = 2
 
 # =============================================================================
+# Graceful failure at an implementation limit (C.1:2)
+# =============================================================================
+# Exceeding an implementation limit is a diagnosable compile-time failure, not
+# a wrapped index or a crash. The two limits whose boundary is reachable
+# without an impractical fixture are the object-size ceiling (E0906, a type
+# whose layout exceeds i32::MAX bytes) and the nesting depth (E0482, below).
+# The source-length ceiling (E1401) needs a >4 GiB input, so its boundary is
+# pinned by unit tests in rue-lexer and rue-compiler instead.
+
+[[case]]
+name = "oversized_object_diagnosed"
+spec = ["C.1:2", "C.4:3"]
+description = "A type whose layout exceeds the published object-size ceiling is diagnosed, not silently truncated"
+source = """
+fn main() -> i32 { @size_of([i32; 4294967296]) }
+"""
+compile_fail = true
+error_contains = ["[E0906]", "exceeds the maximum supported object size", "2147483647"]
+
+[[case]]
+name = "object_within_limit_compiles"
+spec = ["C.4:3"]
+source = """
+fn main() -> i32 { if @size_of([i32; 1000]) == 4000 { 0 } else { 1 } }
+"""
+exit_code = 0
+
+# =============================================================================
 # Syntactic Nesting Depth (C.6:3) -- RUE-42
 # =============================================================================
 # Deeply-nested input must be rejected with a clean diagnostic (E0482) rather
@@ -337,7 +370,7 @@ exit_code = 7
 
 [[case]]
 name = "nesting_exceeds_limit_diagnosed"
-spec = ["C.6:3"]
+spec = ["C.6:3", "C.1:2"]
 source = """
 fn main() -> i32 { ((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((((7)))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))))) }
 """
