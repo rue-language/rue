@@ -32741,6 +32741,217 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn retained_provider_specialization_materializes_with_live_air_parity() {
+        let snapshot = source_snapshot(
+            &[(
+                1,
+                "/m.rue",
+                "m.rue",
+                "fn selected(comptime N: i32, value: i32) -> i32 { value + N }\n\
+                 fn main() -> i32 { selected(7, 5) }\n",
+            )],
+            1,
+        );
+        let module = ModuleId::from_logical_path("m.rue").unwrap();
+        let base_instance = free_function_instance(&module, "selected");
+        let crate::FunctionInstanceKey::Definition(base) = base_instance else {
+            unreachable!("free function helper returns a definition")
+        };
+        let arguments = crate::CanonicalArguments {
+            types: Arc::from([]),
+            values: Arc::from([crate::CanonicalArgumentValue::Integer(7)]),
+        };
+        let instance = crate::FunctionInstanceKey::Specialization {
+            base: Box::new(crate::FunctionInstanceKey::Definition(base.clone())),
+            arguments: arguments.clone(),
+        };
+        let configuration = semantic_configuration();
+        let key = crate::body_query::BodyQueryKey {
+            instance: instance.clone(),
+            configuration: configuration.clone(),
+        };
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let input = database
+            .body_input(revision, key, CancellationToken::new())
+            .expect("specialized body input request completes");
+        let rue_query::QueryOutcome::Success(crate::body_query::BodyInputValue::Available(input)) =
+            input.outcome()
+        else {
+            panic!("specialized body input is available: {input:?}")
+        };
+        let input = input.clone();
+        let lowering = lower_owned_body_input(&input).expect("owned specialized body lowers");
+        assert!(lowering.is_valid());
+        let preview = configuration
+            .preview_features
+            .names()
+            .iter()
+            .filter_map(|name| name.parse().ok())
+            .collect();
+        let owner_source = rue_air::DurableBodySourceLocator {
+            file_id: input.source.file_id,
+            physical_path: input.source.physical_path.clone(),
+            source_length: input.source.source_length,
+        };
+        let probe_base = base.clone();
+        let probe_arguments = arguments.clone();
+        let probe_module = module.clone();
+        let target = configuration.target;
+        let outcome = database.probe_ready_body_facts(
+            revision,
+            configuration,
+            "retained-specialization-local-materialization",
+            move |provider| {
+                let source = CompilerBodyDurableSource::with_anonymous(
+                    provider,
+                    &[],
+                    Some((probe_module, owner_source)),
+                );
+                rue_air::analyze_provider_specialized_body(
+                    provider,
+                    source,
+                    &lowering.bundle,
+                    probe_base.clone(),
+                    probe_base.name(),
+                    &probe_arguments,
+                    target,
+                    preview,
+                    &rue_air::ProviderWellKnownOptionFacts {
+                        nominals: Vec::new(),
+                        option_by_payload: Vec::new(),
+                    },
+                )
+            },
+        );
+        let analyzed = outcome
+            .result
+            .expect("real provider specialization analysis succeeds");
+
+        // Capture the retained live semantic result before relocating its
+        // durable export. These fields are deliberately the provider result's
+        // issuing AIR, pool, interner, strings, and warnings — not a second
+        // materialization wrapper.
+        let live_name = analyzed.function.name.clone();
+        let live_air = format!("{:?}", analyzed.function.air);
+        let live_callable_kind = analyzed.function.callable_kind;
+        let live_num_locals = analyzed.function.num_locals;
+        let live_num_param_slots = analyzed.function.num_param_slots;
+        let live_param_modes = analyzed.function.param_modes.clone();
+        let live_allow_unreachable_code = analyzed.function.allow_unreachable_code;
+        let live_body_start = analyzed
+            .function
+            .air
+            .iter()
+            .map(|(_, instruction)| instruction.span.start)
+            .min()
+            .expect("specialized AIR is non-empty");
+        let live_body_end = analyzed
+            .function
+            .air
+            .iter()
+            .map(|(_, instruction)| instruction.span.end)
+            .max()
+            .expect("specialized AIR is non-empty");
+        let live_pool_len = analyzed.type_pool.len();
+        let live_source_symbol = analyzed
+            .interner
+            .get("value")
+            .expect("retained provider interner owns analyzed source symbols");
+        assert_eq!(analyzed.interner.resolve(&live_source_symbol), "value");
+        let live_strings = analyzed.strings.clone();
+        let live_warnings = format!("{:?}", analyzed.warnings);
+
+        let definition_tokens = analyzed
+            .definition_tokens
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let module_tokens = analyzed
+            .module_tokens
+            .into_iter()
+            .collect::<HashMap<_, _>>();
+        let definition = |token: &rue_air::SemanticDefinitionToken| {
+            definition_tokens
+                .get(token)
+                .cloned()
+                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
+        };
+        let relocate_module = |token: &rue_air::SemanticModuleToken| {
+            module_tokens
+                .get(token)
+                .cloned()
+                .ok_or(rue_air::SemanticStableResolutionFailure::Missing)
+        };
+        let live_identity = analyzed
+            .function
+            .identity
+            .try_map_identities(&definition, &relocate_module)
+            .expect("retained function identity relocates");
+        let identity = analyzed
+            .export
+            .identity
+            .try_map_keys(&definition, &relocate_module)
+            .expect("specialization identity relocates");
+        let body = analyzed
+            .export
+            .body
+            .try_map_keys(&definition, &relocate_module)
+            .expect("specialized body relocates");
+        let dependencies = analyzed
+            .export
+            .dependencies
+            .iter()
+            .map(&definition)
+            .collect::<Result<Vec<_>, _>>()
+            .expect("specialization dependencies relocate");
+        let canonical = crate::body_query::CanonicalBody::Specialization {
+            identity,
+            body,
+            dependencies: dependencies.into(),
+            dependency_boundary_complete: analyzed.export.dependency_boundary_complete,
+        };
+        let body_span =
+            rue_span::Span::with_file(input.source.file_id, live_body_start, live_body_end);
+        let callable = crate::local_semantic_materialization::LocalCallableFact {
+            identity: instance,
+            symbol: Arc::from(live_name.as_str()),
+        };
+        let materialized = crate::local_semantic_materialization::materialize_canonical_body(
+            &canonical,
+            body_span,
+            &[],
+            &[],
+            std::slice::from_ref(&callable),
+            &[],
+            std::slice::from_ref(&module),
+        )
+        .expect("durable provider export materializes in a fresh local epoch");
+
+        assert_eq!(materialized.identity, live_identity);
+        assert_eq!(materialized.name, live_name);
+        assert_eq!(materialized.callable_kind, live_callable_kind);
+        assert_eq!(format!("{:?}", materialized.air), live_air);
+        assert_eq!(materialized.num_locals, live_num_locals);
+        assert_eq!(materialized.num_param_slots, live_num_param_slots);
+        assert_eq!(materialized.param_modes, live_param_modes);
+        assert_eq!(
+            materialized.allow_unreachable_code,
+            live_allow_unreachable_code
+        );
+        assert_eq!(materialized.type_pool.len(), live_pool_len);
+        let local_name_symbol = materialized
+            .interner
+            .get(&materialized.name)
+            .expect("local materialization interner owns the function symbol");
+        assert_eq!(
+            materialized.interner.resolve(&local_name_symbol),
+            materialized.name
+        );
+        assert_eq!(materialized.strings, live_strings);
+        assert_eq!(format!("{:?}", materialized.warnings), live_warnings);
+    }
+
+    #[test]
     fn provider_producer_facts_preserve_specialization_instance_terminal() {
         use rue_air::BodyFactProvider;
         let snapshot = source_snapshot(

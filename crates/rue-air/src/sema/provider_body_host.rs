@@ -132,6 +132,14 @@ pub struct ProviderOrdinaryBody<K, M> {
 /// Canonical result of one provider-backed specialization transaction.
 pub struct ProviderSpecializedBody<K, M> {
     pub export: crate::SemanticSpecializedBodyExport,
+    /// Exact body-local AIR and its issuing domains. The compiler currently
+    /// publishes the durable export; the local materializer/CFG cutover can
+    /// consume these without reconstructing a reachable-program Sema epoch.
+    pub function: AnalyzedFunction,
+    pub warnings: Vec<rue_error::CompileWarning>,
+    pub strings: Vec<String>,
+    pub type_pool: Rc<TypeInternPool>,
+    pub interner: Rc<ThreadedRodeo>,
     pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
@@ -144,6 +152,13 @@ pub struct ProviderSpecializedBody<K, M> {
 /// Canonical result of one provider-backed anonymous member body.
 pub struct ProviderAnonymousBody<K, M> {
     pub export: crate::SemanticAnonymousBodyExport,
+    /// Exact body-local AIR and its issuing domains; retained for the canonical
+    /// local-materialization boundary rather than discarded after export.
+    pub function: AnalyzedFunction,
+    pub warnings: Vec<rue_error::CompileWarning>,
+    pub strings: Vec<String>,
+    pub type_pool: Rc<TypeInternPool>,
+    pub interner: Rc<ThreadedRodeo>,
     pub produced_anonymous_nominals: Arc<[crate::SemanticProducedAnonymousNominal]>,
     pub referenced_definitions: Vec<K>,
     pub referenced_values: Vec<K>,
@@ -4905,6 +4920,11 @@ where
     let module_tokens = host.module_tokens.into_inner().into_values().collect();
     Ok(ProviderAnonymousBody {
         export,
+        function,
+        warnings,
+        strings,
+        type_pool: host.type_pool,
+        interner: host.interner,
         produced_anonymous_nominals,
         referenced_definitions,
         referenced_values,
@@ -5094,6 +5114,11 @@ where
     let module_tokens = host.module_tokens.into_inner().into_values().collect();
     Ok(ProviderSpecializedBody {
         export,
+        function,
+        warnings: specialized.warnings,
+        strings: specialized.local_strings,
+        type_pool: host.type_pool,
+        interner: host.interner,
         produced_anonymous_nominals,
         referenced_definitions,
         referenced_values,
