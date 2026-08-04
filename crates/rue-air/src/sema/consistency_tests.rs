@@ -1154,6 +1154,102 @@ mod tests {
         assert!(!TYPECK_SOURCE.contains("DeferredSemaTypeSyntaxProvider"));
     }
 
+    /// Every source-name resolution carries an explicit lexical scope.
+    ///
+    /// RUE-497 retired graph-global name lookup: an unqualified mention is
+    /// resolved against the referencing file's declarations and imports, so two
+    /// sibling modules may share a type or constructor name. RUE-1126 deleted
+    /// the last resolver family that could bypass that — a `GlobalSpeculative`
+    /// root authority plus a spanless `resolve_type_for_comptime*` family that
+    /// anchored every lookup at `FileId::DEFAULT`.
+    ///
+    /// The primary guard is structural: `TypeRootAuthority` is a `pub(super)`
+    /// newtype with a private field and `in_file` as its only constructor, so
+    /// "no scope" is not expressible. This test guards the parts the type
+    /// system cannot: that no scope-free variant, spanless resolver entry
+    /// point, or `FileId::DEFAULT` fallback reappears.
+    #[test]
+    fn source_name_resolution_always_carries_an_explicit_scope() {
+        const RESOLVER_SOURCES: &[(&str, &str)] = &[
+            ("typeck.rs", TYPECK_SOURCE),
+            ("ordinary_engine.rs", ORDINARY_ENGINE_SOURCE),
+            ("fact_mode.rs", include_str!("fact_mode.rs")),
+            ("comptime_eval.rs", include_str!("comptime_eval.rs")),
+            ("declarations.rs", include_str!("declarations.rs")),
+            (
+                "provider_body_host.rs",
+                include_str!("provider_body_host.rs"),
+            ),
+            ("binding_manifest.rs", BINDING_MANIFEST_SOURCE),
+            (
+                "analysis/anon_methods.rs",
+                include_str!("analysis/anon_methods.rs"),
+            ),
+            ("analysis/instructions.rs", INSTRUCTIONS_SOURCE),
+            ("mod.rs", SEMA_ROOT_SOURCE),
+        ];
+
+        // The scope-free root authority and the spanless comptime resolver
+        // family it fed. `resolve_type_for_comptime_with_subst_and_values_at_span`
+        // is the surviving scoped form and must not match these needles.
+        for (file, source) in RESOLVER_SOURCES {
+            for retired in [
+                "GlobalSpeculative",
+                "resolve_type_for_comptime(",
+                "resolve_type_for_comptime_with_subst(",
+                "resolve_type_for_comptime_with_subst_and_values(",
+                "register_anon_struct_methods(",
+                "register_anon_struct_methods_for_comptime(",
+            ] {
+                assert!(
+                    !source.contains(retired),
+                    "{file} reintroduces the scope-free resolver surface: {retired}"
+                );
+            }
+        }
+
+        // `TypeRootAuthority` stays a single-field newtype, private to the
+        // type-syntax module, reachable only through `in_file`.
+        assert!(
+            TYPECK_SOURCE.contains("pub(super) struct TypeRootAuthority {\n    file: FileId,\n}")
+        );
+        assert!(TYPECK_SOURCE.contains("pub(super) fn in_file(file: FileId) -> Self {"));
+        for (file, source) in RESOLVER_SOURCES {
+            if *file == "typeck.rs" {
+                continue;
+            }
+            assert!(
+                !source.contains("TypeRootAuthority"),
+                "{file} names the root authority; it is private to typeck.rs"
+            );
+        }
+        for construction in TYPECK_SOURCE.match_indices("TypeRootAuthority::") {
+            let tail = &TYPECK_SOURCE[construction.0 + "TypeRootAuthority::".len()..];
+            assert!(
+                tail.starts_with("in_file(") || tail.starts_with("file("),
+                "the root authority exposes only a scoped constructor and accessor"
+            );
+        }
+
+        // No resolver may invent a scope by defaulting to the root file. The
+        // deleted family did exactly this: `FileId::DEFAULT` plus a default
+        // span, so a name written in any module resolved as if written in the
+        // program's root.
+        for (file, source) in RESOLVER_SOURCES {
+            for forged in [
+                "in_file(FileId::DEFAULT)",
+                "root_file: FileId::DEFAULT",
+                "resolve_type_syntax_with_substitutions(\n            &syntax,\n            FileId::DEFAULT,",
+                "resolve_function_name_local(name, FileId::DEFAULT)",
+            ] {
+                assert!(
+                    !source.contains(forged),
+                    "{file} anchors a name lookup at the root file instead of a real scope: {forged}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn place_and_ownership_analysis_has_one_cohesive_owner() {
         for method in [

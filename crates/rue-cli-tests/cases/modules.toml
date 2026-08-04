@@ -1587,6 +1587,52 @@ fn main() -> i32 {
 ]
 exit_code = 3
 
+# An anonymous struct's method signature is resolved while the surrounding
+# comptime type constructor is being reduced. RUE-1126 deleted the spanless
+# resolver family that anchored those signature lookups at the root file
+# instead of the file the method is written in; this case fails (or silently
+# picks the root module's two-field `Cell`) if that behavior comes back.
+[[case]]
+name = "anon_method_signature_prefers_local_type_constructor"
+description = "RUE-1126: a type-constructor call in an anonymous-struct method signature resolves in the method's own file, not the root module's same-named constructor."
+files = [
+    { path = "main.rue", source = """
+const lib = @import("lib.rue");
+
+fn Cell(comptime T: type) -> type {
+    struct { a: T, b: T }
+}
+
+fn main() -> i32 {
+    let outer = Cell(i32) { a: 1, b: 2 };
+    lib.run() + outer.b
+}
+""" },
+    { path = "lib.rue", source = """
+fn Cell(comptime T: type) -> type {
+    struct { a: T }
+}
+
+fn Holder() -> type {
+    struct {
+        inner: i32,
+
+        fn wrap(self) -> Cell(i32) {
+            Cell(i32) { a: self.inner }
+        }
+    }
+}
+
+pub fn run() -> i32 {
+    let H = Holder();
+    let h = H { inner: 7 };
+    let c = h.wrap();
+    c.a + @size_of(Cell(i32))
+}
+""" },
+]
+exit_code = 13
+
 [[case]]
 name = "same_named_module_enums_are_nominal_same_variants"
 description = "RUE-501: module-qualified same-named enums from different modules are distinct nominal types, even when their variants match."

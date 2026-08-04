@@ -923,17 +923,18 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.method_info(key).is_some()
     }
 
+    /// Look up a *synthetic* struct identity by its generated spelling.
+    ///
+    /// This reads only the compiler's own tables — types it interned itself
+    /// (`str`, `[T; N]`, `Str(N)`, slices) and the builtin prelude. It is not a
+    /// source-name lookup and must never be widened into one: a user
+    /// declaration is reached through the referencing file's namespace
+    /// (`structs_by_file_name`) so two sibling modules can share a name
+    /// (RUE-497, RUE-1126).
     pub(crate) fn struct_id_for_name(&self, name: Spur) -> Option<StructId> {
         self.generated_structs
             .get(&name)
             .or_else(|| self.builtin_structs.get(&name))
-            .copied()
-    }
-
-    pub(crate) fn enum_id_for_name(&self, name: Spur) -> Option<EnumId> {
-        self.generated_enums
-            .get(&name)
-            .or_else(|| self.builtin_enums.get(&name))
             .copied()
     }
 

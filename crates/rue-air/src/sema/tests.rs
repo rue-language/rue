@@ -3,7 +3,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
 
-    use crate::ConstValue;
     use crate::inst::{AirArgMode, AirInstData, AirRef};
     use crate::sema::{Sema, SemaOutput};
     use crate::types::{StructId, Type};
@@ -3753,8 +3752,13 @@ fn main() -> i32 {
         ));
     }
 
+    /// The retired spanless comptime resolver anchored every lookup at
+    /// `FileId::DEFAULT` regardless of where the syntax was written. The
+    /// surviving scoped resolver reads the referencing file's namespace, so
+    /// declarations, aliases and `const` array lengths of that file all resolve
+    /// (RUE-1126 deleted the speculative variant that could not see them).
     #[test]
-    fn speculative_global_type_resolution_excludes_file_zero_aliases_and_qualified_paths() {
+    fn scoped_type_resolution_reads_the_referencing_file_namespace() {
         let mut sema = gather_declarations_for_testing(
             "struct Leaf { value: i32 }
              const Alias = Leaf;
@@ -3762,44 +3766,22 @@ fn main() -> i32 {
              fn Make() -> type { Leaf }
              fn main() -> i32 { 0 }",
         );
-        let leaf = sema.interner.get("Leaf").unwrap();
-        let alias = sema.interner.get("Alias").unwrap();
-        let make = sema.interner.get_or_intern("Make()");
-        let qualified = sema.interner.get_or_intern("api.Leaf");
-        let array_const = sema.interner.get_or_intern("[i32; CAP]");
-        let fixed_str_const = sema.interner.get_or_intern("Str(CAP)");
-        let plain_str = sema.interner.get_or_intern("str");
-        let array_literal = sema.interner.get_or_intern("[i32; 4]");
-        let fixed_str_literal = sema.interner.get_or_intern("Str(4)");
-
-        assert!(sema.resolve_type_for_comptime(make).is_some());
-        assert_eq!(sema.resolve_type_for_comptime(leaf), None);
-        assert_eq!(sema.resolve_type_for_comptime(alias), None);
-        assert_eq!(sema.resolve_type_for_comptime(qualified), None);
-        assert_eq!(sema.resolve_type_for_comptime(array_const), None);
-        assert_eq!(sema.resolve_type_for_comptime(fixed_str_const), None);
-        assert_eq!(sema.resolve_type_for_comptime(plain_str), None);
-        assert!(sema.resolve_type_for_comptime(array_literal).is_some());
-        assert!(sema.resolve_type_for_comptime(fixed_str_literal).is_some());
-
-        let cap = sema.interner.get("CAP").unwrap();
-        let value_substitutions = HashMap::from([(cap, ConstValue::Integer(4))]);
-        assert!(
-            sema.resolve_type_for_comptime_with_subst_and_values(
-                array_const,
-                &HashMap::new(),
-                &value_substitutions,
-            )
-            .is_some()
-        );
-        assert!(
-            sema.resolve_type_for_comptime_with_subst_and_values(
-                fixed_str_const,
-                &HashMap::new(),
-                &value_substitutions,
-            )
-            .is_some()
-        );
+        let span = Span::with_file(FileId::DEFAULT, 0, 0);
+        for syntax in [
+            "Leaf",
+            "Alias",
+            "Make()",
+            "[i32; CAP]",
+            "Str(CAP)",
+            "str",
+            "[i32; 4]",
+            "Str(4)",
+        ] {
+            assert!(
+                sema.resolve_type_syntax_for_testing(syntax, span).is_ok(),
+                "scoped resolution should reach '{syntax}' from its own file"
+            );
+        }
     }
 
     // ========================================================================

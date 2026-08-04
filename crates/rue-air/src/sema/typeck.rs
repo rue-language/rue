@@ -182,10 +182,34 @@ pub(super) struct TypeSyntaxProvider<'host, 'c, H: TypeSyntaxHost> {
     observed_type_dependencies: Vec<(FileId, String, super::DeclarationTypeDependencyTargetKind)>,
 }
 
+/// The lexical root a type-syntax resolution walks from.
+///
+/// A source name only means something relative to the file whose declarations
+/// and imports are in scope: two sibling modules may each declare `Cell`, and
+/// the referencing file decides which one an unqualified mention selects
+/// (RUE-497). This type therefore has exactly one form — a known file — and no
+/// scope-free "global"/speculative construction; RUE-1126 deleted the last one.
+///
+/// Do not reintroduce a variant that stands for "no scope". Synthetic and
+/// builtin types stay reachable without one: [`Sema::resolve_builtin_struct_name`]
+/// and [`Sema::resolve_builtin_enum_name`] are consulted from inside the scoped
+/// path, so a builtin lookup never needs to bypass the file namespace.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TypeRootAuthority {
-    KnownFile(FileId),
-    GlobalSpeculative,
+pub(super) struct TypeRootAuthority {
+    file: FileId,
+}
+
+impl TypeRootAuthority {
+    /// Anchor resolution at `file`. This is the only constructor: a caller
+    /// cannot ask for a lookup that has no lexical scope.
+    pub(super) fn in_file(file: FileId) -> Self {
+        Self { file }
+    }
+
+    /// The file whose source namespace this resolution reads.
+    pub(super) fn file(self) -> FileId {
+        self.file
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -212,9 +236,6 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
         name: &str,
     ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
     {
-        let TypeRootAuthority::KnownFile(_) = self.root_authority else {
-            return Ok(None);
-        };
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(
             self.host
@@ -228,9 +249,6 @@ impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::
         name: &str,
     ) -> SemaProviderResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>>
     {
-        if self.root_authority == TypeRootAuthority::GlobalSpeculative {
-            return Ok(None);
-        }
         let name = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_module_binding(
             self.root_authority,
@@ -276,7 +294,7 @@ impl<H: TypeSyntaxHost>
     }
 
     fn builtin_type(&mut self, _scope: &FileId, name: &str) -> SemaProviderResult<Option<Type>> {
-        if name == "str" && self.root_authority != TypeRootAuthority::GlobalSpeculative {
+        if name == "str" {
             provider_failure(self.host.type_syntax_make_str(self.span).map(Some))
         } else {
             Ok(None)
@@ -316,9 +334,6 @@ impl<H: TypeSyntaxHost>
         _scope: &FileId,
         name: &str,
     ) -> SemaProviderResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
-        let TypeRootAuthority::KnownFile(_) = self.root_authority else {
-            return Ok(None);
-        };
         let symbol = self.host.type_syntax_symbol(name);
         provider_failure(self.host.type_syntax_named_type(
             self.root_authority,
@@ -398,7 +413,7 @@ impl<H: TypeSyntaxHost>
     }
 
     fn allows_qualified_paths(&self, _scope: &FileId) -> bool {
-        self.root_authority != TypeRootAuthority::GlobalSpeculative
+        true
     }
 
     fn allows_qualified_comptime_call_head(
@@ -406,9 +421,8 @@ impl<H: TypeSyntaxHost>
         _scope: &FileId,
         expectation: crate::SemanticComptimeCallExpectation,
     ) -> bool {
-        self.root_authority != TypeRootAuthority::GlobalSpeculative
-            && !(self.resolution_context == SemaTypeResolutionContext::ArrayLength
-                && expectation == crate::SemanticComptimeCallExpectation::Value)
+        !(self.resolution_context == SemaTypeResolutionContext::ArrayLength
+            && expectation == crate::SemanticComptimeCallExpectation::Value)
     }
 
     fn resolve_array_length(
@@ -601,31 +615,26 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         }
 
         let symbol = self.host.type_syntax_symbol(name);
+        let root_file = self.root_authority.file();
         let value = if let Some(value) = self
             .value_substitutions
             .and_then(|substitutions| substitutions.get(&symbol))
         {
             *value
-        } else if let TypeRootAuthority::KnownFile(root_file) = self.root_authority {
-            if let Some(info) = self.host.type_syntax_value_const(root_file, symbol) {
-                self.host
-                    .type_syntax_record_named_const_dependency(info.span.file_id, name.to_owned());
-                info.value
-            } else if let Some(value) = self.host.type_syntax_recover_const(root_file, symbol)? {
-                self.host
-                    .type_syntax_record_named_const_dependency(root_file, name.to_owned());
-                value
-            } else {
-                let hint = self
-                    .host
-                    .type_syntax_out_of_scope_const_hint(symbol, root_file);
-                return Err(self.invalid_array_length(format!(
-                    "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
-                )));
-            }
+        } else if let Some(info) = self.host.type_syntax_value_const(root_file, symbol) {
+            self.host
+                .type_syntax_record_named_const_dependency(info.span.file_id, name.to_owned());
+            info.value
+        } else if let Some(value) = self.host.type_syntax_recover_const(root_file, symbol)? {
+            self.host
+                .type_syntax_record_named_const_dependency(root_file, name.to_owned());
+            value
         } else {
+            let hint = self
+                .host
+                .type_syntax_out_of_scope_const_hint(symbol, root_file);
             return Err(self.invalid_array_length(format!(
-                "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter"
+                "'{name}' is not a compile-time constant; array lengths must be an integer literal, a `const`, or a `comptime` value parameter{hint}"
             )));
         };
 
@@ -774,8 +783,9 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         {
             return Ok(ConstValue::Type(*ty));
         }
-        if let TypeRootAuthority::KnownFile(root_file) = self.root_authority
-            && let Some(info) = self.host.type_syntax_value_const(root_file, symbol)
+        if let Some(info) = self
+            .host
+            .type_syntax_value_const(self.root_authority.file(), symbol)
         {
             return Ok(info.value);
         }
@@ -822,7 +832,7 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
             inner: TypeSyntaxProvider::new(
                 host,
                 span,
-                TypeRootAuthority::KnownFile(span.file_id),
+                TypeRootAuthority::in_file(span.file_id),
                 SemaTypeResolutionContext::Type,
                 None,
                 None,
@@ -1080,7 +1090,7 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
             let mut provider = TypeSyntaxProvider::new(
                 self.inner.host,
                 self.inner.span,
-                TypeRootAuthority::KnownFile(self.inner.span.file_id),
+                TypeRootAuthority::in_file(self.inner.span.file_id),
                 SemaTypeResolutionContext::Type,
                 None,
                 None,
@@ -1726,12 +1736,9 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
         module: Option<crate::types::ModuleId>,
         name: Spur,
     ) -> CompileResult<Option<crate::SemanticModuleBinding<crate::types::ModuleId, FileId>>> {
-        let file = match (authority, module) {
-            (TypeRootAuthority::KnownFile(file), None) => file,
-            (TypeRootAuthority::KnownFile(_), Some(module)) => {
-                self.module_registry.get_def(module).file_id
-            }
-            (TypeRootAuthority::GlobalSpeculative, _) => return Ok(None),
+        let file = match module {
+            None => authority.file(),
+            Some(module) => self.module_registry.get_def(module).file_id,
         };
         let Some(binding) = self.resolve_module_binding_in_file(file, name)? else {
             return Ok(None);
@@ -1764,10 +1771,7 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
         &self,
         authority: TypeRootAuthority,
     ) -> crate::SemanticVisibilityDomain {
-        crate::SemanticVisibilityDomain::from_file_path(match authority {
-            TypeRootAuthority::KnownFile(file) => self.get_file_path(file),
-            TypeRootAuthority::GlobalSpeculative => None,
-        })
+        crate::SemanticVisibilityDomain::from_file_path(self.get_file_path(authority.file()))
     }
 
     fn type_syntax_named_type(
@@ -1777,13 +1781,9 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
         name: Spur,
         kind: TypeSyntaxNamedKind,
     ) -> CompileResult<Option<crate::SemanticTypeFact<Type, FileId>>> {
-        let (file, bypass_visibility) = match (authority, module) {
-            (TypeRootAuthority::KnownFile(file), None) => (Some(file), false),
-            (TypeRootAuthority::KnownFile(_), Some(module)) => {
-                (Some(self.module_registry.get_def(module).file_id), false)
-            }
-            (TypeRootAuthority::GlobalSpeculative, None) => (None, true),
-            (TypeRootAuthority::GlobalSpeculative, Some(_)) => return Ok(None),
+        let file = match module {
+            None => authority.file(),
+            Some(module) => self.module_registry.get_def(module).file_id,
         };
         let fact =
             |this: &Self, value: Type, site: FileId, is_public: bool| crate::SemanticTypeFact {
@@ -1799,20 +1799,15 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
             };
         match kind {
             TypeSyntaxNamedKind::Struct => {
-                let id = match file {
-                    Some(file) => self
-                        .structs_by_file_name
-                        .get(&(file, name))
-                        .copied()
-                        .or_else(|| {
-                            (module.is_none())
-                                .then(|| self.resolve_builtin_struct_name(name))
-                                .flatten()
-                        }),
-                    None => self
-                        .struct_id_for_name(name)
-                        .or_else(|| self.resolve_builtin_struct_name(name)),
-                };
+                let id = self
+                    .structs_by_file_name
+                    .get(&(file, name))
+                    .copied()
+                    .or_else(|| {
+                        (module.is_none())
+                            .then(|| self.resolve_builtin_struct_name(name))
+                            .flatten()
+                    });
                 let Some(id) = id else { return Ok(None) };
                 let metadata = self
                     .type_pool
@@ -1822,25 +1817,19 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                     self,
                     Type::new_struct(id),
                     metadata.file_id,
-                    metadata.is_pub || bypass_visibility,
+                    metadata.is_pub,
                 )))
             }
             TypeSyntaxNamedKind::Enum => {
-                let id = match file {
-                    Some(file) => {
-                        self.enums_by_file_name
-                            .get(&(file, name))
-                            .copied()
-                            .or_else(|| {
-                                (module.is_none())
-                                    .then(|| self.resolve_builtin_enum_name(name))
-                                    .flatten()
-                            })
-                    }
-                    None => self
-                        .enum_id_for_name(name)
-                        .or_else(|| self.resolve_builtin_enum_name(name)),
-                };
+                let id = self
+                    .enums_by_file_name
+                    .get(&(file, name))
+                    .copied()
+                    .or_else(|| {
+                        (module.is_none())
+                            .then(|| self.resolve_builtin_enum_name(name))
+                            .flatten()
+                    });
                 let Some(id) = id else { return Ok(None) };
                 let metadata = self
                     .type_pool
@@ -1850,11 +1839,10 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                     self,
                     Type::new_enum(id),
                     metadata.file_id,
-                    metadata.is_pub || bypass_visibility,
+                    metadata.is_pub,
                 )))
             }
             TypeSyntaxNamedKind::Alias => {
-                let Some(file) = file else { return Ok(None) };
                 if self.value_const(file, name).is_none() {
                     D::resolve_indexed_const(self, name, file)?;
                 }
@@ -1908,8 +1896,9 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
         name: Spur,
     ) -> CompileResult<Option<crate::SemanticTypeConstructorHead<Spur, Spur, FileId>>> {
         let file = module.map(|module| self.module_registry.get_def(module).file_id);
-        let key = match (authority, file) {
-            (TypeRootAuthority::KnownFile(root), None) => {
+        let key = match file {
+            None => {
+                let root = authority.file();
                 let mut key = self.resolve_function_name_local(name, root);
                 if key.is_none() {
                     let observer = self.declaration_type_observer.clone();
@@ -1919,20 +1908,12 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                 }
                 key
             }
-            (TypeRootAuthority::KnownFile(_), Some(file)) => {
+            Some(file) => {
                 let observer = self.declaration_type_observer.clone();
                 D::collect_free_function_signature(self, name, Some(file))?;
                 self.declaration_type_observer = observer;
                 self.resolve_function_name_local(name, file)
             }
-            // A speculative root resolves against the default file, which is
-            // where its caller anchors the syntax. The function table is keyed
-            // by internal symbol, never by source spelling, so the binding must
-            // be reached through the file-local source namespace.
-            (TypeRootAuthority::GlobalSpeculative, None) => {
-                self.resolve_function_name_local(name, FileId::DEFAULT)
-            }
-            (TypeRootAuthority::GlobalSpeculative, Some(_)) => return Ok(None),
         };
         let Some(key) = key else { return Ok(None) };
         let Some(info) = self
@@ -1964,7 +1945,7 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
             site: info.file_id,
             parameters: parameters.into(),
             returns_type: self.function_returns_type(&info),
-            is_public: info.is_pub || authority == TypeRootAuthority::GlobalSpeculative,
+            is_public: info.is_pub,
             defining_domain: crate::SemanticVisibilityDomain::from_file_path(
                 self.get_file_path(info.file_id),
             ),
@@ -2678,7 +2659,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.resolve_type_syntax_with_substitutions(
             syntax,
             root_file,
-            TypeRootAuthority::KnownFile(root_file),
             span,
             type_substitutions,
             value_substitutions,
@@ -2699,7 +2679,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         &mut self,
         syntax: &str,
         root_file: FileId,
-        root_authority: TypeRootAuthority,
         span: Span,
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
@@ -2709,7 +2688,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             super::fact_mode::TypeSyntaxRequest {
                 syntax,
                 root_file,
-                root_authority,
                 span,
                 type_substitutions,
                 value_substitutions,
@@ -2721,7 +2699,6 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         &mut self,
         syntax: &str,
         root_file: FileId,
-        root_authority: TypeRootAuthority,
         span: Span,
         type_substitutions: Option<&HashMap<Spur, Type>>,
         value_substitutions: Option<&HashMap<Spur, ConstValue>>,
@@ -2729,7 +2706,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let mut provider = TypeSyntaxProvider::new(
             self,
             span,
-            root_authority,
+            TypeRootAuthority::in_file(root_file),
             SemaTypeResolutionContext::Type,
             type_substitutions,
             value_substitutions,
@@ -2867,7 +2844,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let mut provider = TypeSyntaxProvider::new(
             self,
             span,
-            TypeRootAuthority::KnownFile(root_file),
+            TypeRootAuthority::in_file(root_file),
             SemaTypeResolutionContext::Type,
             None,
             None,
@@ -2994,62 +2971,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         self.resolve_type_syntax_with_substitutions(
             &type_name,
             span.file_id,
-            TypeRootAuthority::KnownFile(span.file_id),
             span,
             Some(type_subst),
             Some(value_subst),
         )
         .map_err(|failure| self.type_syntax_compile_error(failure, span))
-    }
-
-    /// Resolve a type symbol to a Type, returning None if the type is unknown.
-    ///
-    /// This is used in comptime evaluation where we can't produce a compile error.
-    pub(crate) fn resolve_type_for_comptime(&mut self, type_sym: Spur) -> Option<Type> {
-        self.resolve_type_for_comptime_with_subst(type_sym, &std::collections::HashMap::new())
-    }
-
-    /// Resolve a type symbol to a Type with type parameter substitution.
-    ///
-    /// This is used in comptime evaluation of generic functions where type parameters
-    /// need to be substituted with their concrete types. For example, when evaluating
-    /// `fn Pair(comptime T: type) -> type { struct { first: T, second: T } }` with T=i32,
-    /// we need to resolve `T` to `i32`.
-    pub(crate) fn resolve_type_for_comptime_with_subst(
-        &mut self,
-        type_sym: Spur,
-        type_subst: &std::collections::HashMap<Spur, Type>,
-    ) -> Option<Type> {
-        self.resolve_type_for_comptime_with_subst_and_values(type_sym, type_subst, &HashMap::new())
-    }
-
-    /// Resolve a type symbol to a Type with both type-parameter and
-    /// value-parameter substitution.
-    ///
-    /// Like [`resolve_type_for_comptime_with_subst`], but additionally threads
-    /// a `comptime` value substitution map so that an array length referring to
-    /// a `comptime N: i32` parameter (`[i32; N]`) resolves to its concrete
-    /// value at each specialization (RUE-16). File-level `const` lengths are
-    /// resolved directly from the constant table and need no substitution.
-    ///
-    /// [`resolve_type_for_comptime_with_subst`]:
-    /// Sema::resolve_type_for_comptime_with_subst
-    pub(crate) fn resolve_type_for_comptime_with_subst_and_values(
-        &mut self,
-        type_sym: Spur,
-        type_subst: &std::collections::HashMap<Spur, Type>,
-        value_subst: &HashMap<Spur, ConstValue>,
-    ) -> Option<Type> {
-        let syntax = self.interner.resolve(&type_sym).to_string();
-        self.resolve_type_syntax_with_substitutions(
-            &syntax,
-            FileId::DEFAULT,
-            TypeRootAuthority::GlobalSpeculative,
-            Span::default(),
-            Some(type_subst),
-            Some(value_subst),
-        )
-        .ok()
     }
 
     fn record_declaration_builtin_type_call_head(&mut self, builtin: super::BuiltinTypeCallHead) {
@@ -3085,7 +3011,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let mut provider = TypeSyntaxProvider::new(
             self,
             span,
-            TypeRootAuthority::KnownFile(span.file_id),
+            TypeRootAuthority::in_file(span.file_id),
             SemaTypeResolutionContext::Type,
             None,
             value_substitutions,

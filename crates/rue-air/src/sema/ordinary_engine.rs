@@ -691,7 +691,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .resolve_type_syntax(super::fact_mode::TypeSyntaxRequest {
                 syntax: &syntax,
                 root_file,
-                root_authority: super::typeck::TypeRootAuthority::KnownFile(root_file),
                 span,
                 type_substitutions,
                 value_substitutions,
@@ -884,7 +883,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .resolve_type_syntax(super::fact_mode::TypeSyntaxRequest {
                 syntax: &syntax,
                 root_file,
-                root_authority: super::typeck::TypeRootAuthority::KnownFile(root_file),
                 span,
                 type_substitutions: None,
                 value_substitutions: None,
