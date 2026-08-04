@@ -1631,7 +1631,7 @@ fn extend_owned_aggregate_types(
                 if !active.insert(ty) {
                     return;
                 }
-                for field in sema.type_pool.struct_def(id).fields {
+                for field in &sema.type_pool.struct_def(id).fields {
                     visit(sema, field.ty, active);
                 }
             }
@@ -1639,8 +1639,8 @@ fn extend_owned_aggregate_types(
                 if !active.insert(ty) {
                     return;
                 }
-                for payload in sema.type_pool.enum_def(id).variant_payloads {
-                    for field in payload {
+                for payload in &sema.type_pool.enum_def(id).variant_payloads {
+                    for &field in payload {
                         visit(sema, field, active);
                     }
                 }

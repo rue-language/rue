@@ -21434,8 +21434,8 @@ pub(crate) mod test_support {
             TypeKind::Unit => "()".into(),
             TypeKind::Never => "!".into(),
             TypeKind::ComptimeType => "type".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name,
-            TypeKind::Enum(id) => pool.enum_def(id).name,
+            TypeKind::Struct(id) => pool.struct_def(id).name.clone(),
+            TypeKind::Enum(id) => pool.enum_def(id).name.clone(),
             TypeKind::Array(id) => {
                 let (element, len) = pool.array_def(id);
                 format!("[{}; {}]", endpoint_display(pool, element), len)
@@ -29978,8 +29978,8 @@ fn main() -> i32 {
             TypeKind::Bool => "bool".into(),
             TypeKind::Unit => "()".into(),
             TypeKind::Never => "!".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name,
-            TypeKind::Enum(id) => pool.enum_def(id).name,
+            TypeKind::Struct(id) => pool.struct_def(id).name.clone(),
+            TypeKind::Enum(id) => pool.enum_def(id).name.clone(),
             other => format!("{other:?}"),
         }
     }

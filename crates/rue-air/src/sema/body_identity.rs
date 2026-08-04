@@ -3506,8 +3506,8 @@ mod tests {
             TypeKind::Unit => "()".into(),
             TypeKind::Never => "!".into(),
             TypeKind::Error => "<error>".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name,
-            TypeKind::Enum(id) => pool.enum_def(id).name,
+            TypeKind::Struct(id) => pool.struct_def(id).name.clone(),
+            TypeKind::Enum(id) => pool.enum_def(id).name.clone(),
             TypeKind::Array(id) => {
                 let (element, len) = pool.array_def(id);
                 format!("[{}; {}]", render(pool, element), len)

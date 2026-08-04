@@ -444,7 +444,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             .collect::<Vec<_>>();
         for (name, id) in structs {
             let def = self.type_pool.struct_def(id);
-            for field in def.fields {
+            for field in &def.fields {
                 self.capture_declaration_type(
                     def.file_id,
                     self.interner.resolve(&name).to_string(),
@@ -462,7 +462,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             .collect::<Vec<_>>();
         for (name, id) in enums {
             let def = self.type_pool.enum_def(id);
-            for ty in def.variant_payloads.into_iter().flatten() {
+            for &ty in def.variant_payloads.iter().flatten() {
                 self.capture_declaration_type(
                     def.file_id,
                     self.interner.resolve(&name).to_string(),

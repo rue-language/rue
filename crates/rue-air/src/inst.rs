@@ -187,16 +187,19 @@ impl AirValidationContext<'_> {
 
     fn struct_field_type(&self, id: StructId, field: u32) -> Result<Type, String> {
         self.validate_type(Type::new_struct(id))?;
-        let fields = match self {
-            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool.struct_def(id).fields,
-            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => {
-                pool.struct_def(id).fields.clone()
-            }
+        let field_type = match self {
+            Self::Semantic(pool) | Self::SemanticWithSymbols(pool, _) => pool
+                .struct_def(id)
+                .fields
+                .get(field as usize)
+                .map(|field| field.ty),
+            Self::Canonical(pool) | Self::CanonicalWithSymbols(pool, _) => pool
+                .struct_def(id)
+                .fields
+                .get(field as usize)
+                .map(|field| field.ty),
         };
-        fields
-            .get(field as usize)
-            .map(|field| field.ty)
-            .ok_or_else(|| format!("struct field index {field} is out of bounds"))
+        field_type.ok_or_else(|| format!("struct field index {field} is out of bounds"))
     }
 
     fn array_element_type(&self, ty: Type) -> Result<Type, String> {
