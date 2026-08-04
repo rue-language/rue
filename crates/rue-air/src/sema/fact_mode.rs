@@ -19,17 +19,19 @@ use super::body_endpoint::{
 use super::call_resolution::{
     CallResolutionFactSource, CallResolutionFacts, EpochFacts as EpochCallFacts,
 };
-use super::typeck::TypeRootAuthority;
 use super::{ConstValue, DeclarationPhase, HostInferenceFacts, InferenceContext, Sema};
 use crate::inference::LazyInferenceFacts;
 use crate::sema::inference_ctx::InferenceFactSource;
 use crate::types::{ArrayLen, ModuleId, Type};
 
 /// Exact input for resolving one type-syntax fragment.
+///
+/// `root_file` is the whole scope of the request: a source name is resolved
+/// against that file's declarations and imports and nothing wider. There is
+/// deliberately no way to ask for a scope-free lookup (RUE-497, RUE-1126).
 pub(crate) struct TypeSyntaxRequest<'a> {
     pub(crate) syntax: &'a str,
     pub(crate) root_file: FileId,
-    pub(crate) root_authority: TypeRootAuthority,
     pub(crate) span: Span,
     pub(crate) type_substitutions: Option<&'a HashMap<Spur, Type>>,
     pub(crate) value_substitutions: Option<&'a HashMap<Spur, ConstValue>>,
@@ -164,7 +166,6 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
         self.resolve_type_syntax_with_epoch_facts(
             request.syntax,
             request.root_file,
-            request.root_authority,
             request.span,
             request.type_substitutions,
             request.value_substitutions,

@@ -1,7 +1,0 @@
-const std = @import("std");
-const Nums = std.arraybuf.ArrayBuf(i64);
-fn main() -> i32 {
-    let mut nums = Nums.new();
-    nums.push(42);
-    0
-}
