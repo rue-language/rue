@@ -51,6 +51,28 @@ pub(super) const ARG_REGS: [Reg; 6] = [Reg::Rdi, Reg::Rsi, Reg::Rdx, Reg::Rcx, R
 /// `crate::cfg_lower::type_uses_sret_return`. (RUE-106)
 pub(super) const RET_REGS: [Reg; 6] = [Reg::Rax, Reg::Rdx, Reg::Rcx, Reg::R8, Reg::R9, Reg::R10];
 
+// Call sequences and the prologue name these registers physically, and liveness
+// models neither those physical definitions nor their uses. So they must be off
+// limits to the allocator, not merely unlikely to collide (RUE-1146).
+const _: () = {
+    let mut index = 0;
+    while index < ARG_REGS.len() {
+        assert!(
+            super::mir::is_reserved(ARG_REGS[index]),
+            "every ABI argument register must be reserved from allocation"
+        );
+        index += 1;
+    }
+    let mut index = 0;
+    while index < RET_REGS.len() {
+        assert!(
+            super::mir::is_reserved(RET_REGS[index]),
+            "every ABI result register must be reserved from allocation"
+        );
+        index += 1;
+    }
+};
+
 /// Round `value` up to a multiple of `alignment` (a power of two ≥ 1).
 const fn align_up_u32(value: u32, alignment: u32) -> u32 {
     value.div_ceil(alignment) * alignment

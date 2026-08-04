@@ -432,21 +432,125 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     pub fn clobbers_at(&self, inst_idx: usize) -> &[Reg] {
         &self.clobbers_at[inst_idx]
     }
+}
 
-    /// Check if a physical register is clobbered while a vreg is live.
+// ============================================================================
+// Clobber Index
+// ============================================================================
+
+/// Constant-time "is this register clobbered anywhere in this live range?".
+///
+/// Allocation asks that question once per candidate caller-saved register per
+/// interval: a caller-saved register is only a legal home for an interval that
+/// survives no clobber of it, and a call clobbers every caller-saved register
+/// (see each backend's `Inst::clobbers`). Answering it by scanning
+/// [`LivenessInfo::clobbers_at`] across the range costs O(range) per question,
+/// which is quadratic on a function that keeps many values live over a long
+/// span — the shape that made allocation quadratic in RUE-302.
+///
+/// So this precomputes, for each tracked register, a prefix count of the
+/// instructions that clobber it. A range is clobber-free exactly when the
+/// counts at its two endpoints agree. Building the index is O(tracked ×
+/// instructions) once per function; each query is O(tracked) lookup plus two
+/// array reads.
+pub struct ClobberIndex<Reg> {
+    /// One entry per tracked register: the register, and prefix counts where
+    /// `counts[i]` is the number of instructions before `i` that clobber it.
+    /// The count slice has `instruction_count + 1` entries.
+    tracked: Vec<(Reg, Vec<u32>)>,
+}
+
+impl<Reg: Copy + Eq> ClobberIndex<Reg> {
+    /// Build an index over `liveness`'s clobber data for `tracked`.
     ///
-    /// Returns true if `reg` is clobbered by any instruction during the live range of `vreg`.
-    /// This is used to prevent allocating a vreg to a register that would be clobbered
-    /// before the vreg's last use.
-    pub fn is_clobbered_during(&self, vreg: VReg, reg: Reg) -> bool {
-        if let Some(range) = self.range(vreg) {
-            for idx in range.start..=range.end {
-                if idx < self.clobbers_at.len() && self.clobbers_at[idx].contains(&reg) {
-                    return true;
+    /// Only the tracked registers get an answer; see [`Self::is_clobbered_during`].
+    pub fn build(liveness: &LivenessInfo<Reg>, tracked: &[Reg]) -> Self
+    where
+        Reg: std::hash::Hash,
+    {
+        let num_insts = liveness.clobbers_at.len();
+        let tracked = tracked
+            .iter()
+            .map(|&reg| {
+                let mut counts = Vec::with_capacity(num_insts + 1);
+                let mut running = 0_u32;
+                counts.push(running);
+                for idx in 0..num_insts {
+                    if liveness.clobbers_at(idx).contains(&reg) {
+                        running += 1;
+                    }
+                    counts.push(running);
                 }
-            }
+                (reg, counts)
+            })
+            .collect();
+        Self { tracked }
+    }
+
+    /// Whether any instruction in `range` (endpoints included) clobbers `reg`.
+    ///
+    /// A register the index was not built for answers `true`: the index proves
+    /// the *absence* of clobbers only for the registers it tracks, and the safe
+    /// answer for anything else is that the register may be destroyed.
+    pub fn is_clobbered_during(&self, reg: Reg, range: &LiveRange) -> bool {
+        let Some((_, counts)) = self.tracked.iter().find(|(tracked, _)| *tracked == reg) else {
+            return true;
+        };
+        let last = counts.len() - 1;
+        let start = range.start.min(last);
+        let end = range.end.saturating_add(1).min(last);
+        counts[end] > counts[start]
+    }
+}
+
+// ============================================================================
+// Register Classes
+// ============================================================================
+
+/// The two register classes allocation distinguishes.
+///
+/// A caller-saved register costs nothing in the prologue but is destroyed by
+/// every call, so it is offered only to an interval that no instruction
+/// clobbers while it is live. A callee-saved register survives calls and is the
+/// only register home for an interval that spans one, at the price of a
+/// prologue save and epilogue restore.
+///
+/// Standard linear-scan practice is to prefer caller-saved registers for the
+/// intervals that can take them, which both leaves the callee-saved registers
+/// for the intervals that need them and shrinks the prologue.
+#[derive(Clone, Copy)]
+pub struct RegisterClasses<'a, Reg> {
+    /// Tried first, in order, for intervals with no clobber in range.
+    pub caller_saved: &'a [Reg],
+    /// Tried next, in order; saved by the prologue when used.
+    pub callee_saved: &'a [Reg],
+}
+
+impl<'a, Reg: Copy + Eq> RegisterClasses<'a, Reg> {
+    /// Classes for a caller that offers callee-saved registers only.
+    ///
+    /// This reproduces the pre-RUE-1146 policy exactly and is what the
+    /// standalone `linear_scan*` entry points below use.
+    pub fn callee_saved_only(regs: &'a [Reg]) -> Self {
+        Self {
+            caller_saved: &[],
+            callee_saved: regs,
         }
-        false
+    }
+
+    /// Total number of allocatable registers across both classes.
+    pub fn len(&self) -> usize {
+        self.caller_saved.len() + self.callee_saved.len()
+    }
+
+    /// Whether no register at all is allocatable.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether `reg` is one this function's prologue must preserve.
+    pub fn is_callee_saved(&self, reg: Reg) -> bool {
+        self.callee_saved.contains(&reg)
     }
 }
 
@@ -949,7 +1053,10 @@ pub trait RegAllocBackend {
     fn analyze_with_debug(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo);
     fn analyze_loops(mir: &Self::Mir) -> LoopInfo;
     fn coalesce_candidates(instructions: &[Self::Inst]) -> Vec<CoalesceCandidate>;
-    fn allocatable_regs() -> &'static [Self::Reg];
+    /// The allocatable registers, split by who is responsible for preserving
+    /// them. Allocation prefers the caller-saved class for intervals that no
+    /// instruction clobbers while they are live (RUE-1146).
+    fn register_classes() -> RegisterClasses<'static, Self::Reg>;
 
     fn new_mir() -> Self::Mir;
     fn take_symbols(mir: &mut Self::Mir) -> Vec<String>;
@@ -1214,7 +1321,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
             B::vreg_count(&self.mir),
             &self.liveness,
-            B::allocatable_regs(),
+            B::register_classes(),
             self.existing_locals,
             false,
             &CostModel::default(),
@@ -1230,7 +1337,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         let (allocation, num_spills, used_callee_saved, debug_info) = linear_scan_impl_with_remat(
             B::vreg_count(&self.mir),
             &self.liveness,
-            B::allocatable_regs(),
+            B::register_classes(),
             self.existing_locals,
             true,
             &CostModel::default(),
@@ -1384,7 +1491,7 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl(
         vreg_count,
         liveness,
-        allocatable_regs,
+        RegisterClasses::callee_saved_only(allocatable_regs),
         existing_locals,
         false,
         &cost_model,
@@ -1426,7 +1533,7 @@ pub fn linear_scan_with_cost_model<Reg: Copy + Eq + std::hash::Hash>(
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl(
         vreg_count,
         liveness,
-        allocatable_regs,
+        RegisterClasses::callee_saved_only(allocatable_regs),
         existing_locals,
         false,
         cost_model,
@@ -1470,7 +1577,7 @@ pub fn linear_scan_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
         vreg_count,
         liveness,
-        allocatable_regs,
+        RegisterClasses::callee_saved_only(allocatable_regs),
         existing_locals,
         false,
         &cost_model,
@@ -1504,7 +1611,7 @@ pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
     linear_scan_impl(
         vreg_count,
         liveness,
-        allocatable_regs,
+        RegisterClasses::callee_saved_only(allocatable_regs),
         existing_locals,
         true,
         &cost_model,
@@ -1532,12 +1639,56 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
     linear_scan_impl(
         vreg_count,
         liveness,
-        allocatable_regs,
+        RegisterClasses::callee_saved_only(allocatable_regs),
         existing_locals,
         true,
         cost_model,
         loop_info,
     )
+}
+
+/// Pick a physical register for an interval covering `range`, or report that
+/// none is free.
+///
+/// Caller-saved registers come first: an interval that no instruction clobbers
+/// while it is live costs nothing to keep in one, and every callee-saved
+/// register it leaves alone is one the prologue does not have to save
+/// (RUE-1146). Callee-saved registers follow, in their declared order.
+fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
+    classes: RegisterClasses<'_, Reg>,
+    clobbers: &ClobberIndex<Reg>,
+    used: &HashSet<Reg>,
+    range: &LiveRange,
+) -> Option<Reg> {
+    classes
+        .caller_saved
+        .iter()
+        .copied()
+        .find(|&reg| !used.contains(&reg) && !clobbers.is_clobbered_during(reg, range))
+        .or_else(|| {
+            classes
+                .callee_saved
+                .iter()
+                .copied()
+                .find(|&reg| !used.contains(&reg))
+        })
+}
+
+/// Whether `reg` can hold one value for the whole of `range`.
+///
+/// A callee-saved register always can. A caller-saved register can only when no
+/// instruction in the range clobbers it. This is the same condition
+/// [`pick_free_register`] applies, restated for the eviction path: a register
+/// that becomes free by spilling its current occupant is still only usable by
+/// the arriving interval if that interval survives everything the register does
+/// not.
+fn register_survives_range<Reg: Copy + Eq + std::hash::Hash>(
+    classes: RegisterClasses<'_, Reg>,
+    clobbers: &ClobberIndex<Reg>,
+    reg: Reg,
+    range: &LiveRange,
+) -> bool {
+    classes.is_callee_saved(reg) || !clobbers.is_clobbered_during(reg, range)
 }
 
 /// Internal implementation of linear scan register allocation.
@@ -1551,7 +1702,7 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
 fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
-    allocatable_regs: &[Reg],
+    classes: RegisterClasses<'_, Reg>,
     existing_locals: u32,
     collect_debug: bool,
     cost_model: &CostModel,
@@ -1605,9 +1756,13 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
+    // Constant-time clobber answers for the caller-saved candidates; the
+    // callee-saved class survives every clobber by definition (RUE-1146).
+    let clobbers = ClobberIndex::build(liveness, classes.caller_saved);
+
     // Track which registers are currently in use and when they become free
     // Tuple: (vreg, physical reg, live range end)
-    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(allocatable_regs.len());
+    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(classes.len());
 
     for (vreg, range) in vregs_by_start {
         // Expire old intervals - remove registers whose vregs are no longer live
@@ -1616,21 +1771,15 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register
-        let mut allocated_reg = None;
-        for &reg in allocatable_regs {
-            if !used_regs.contains(&reg) {
-                allocated_reg = Some(reg);
-                break;
-            }
-        }
+        // Try to find a free register, caller-saved class first
+        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
             allocation[vreg] = Some(Allocation::Register(reg));
             active.push((vreg, reg, range.end));
-            // Track callee-saved register usage
-            if !used_callee_saved.contains(&reg) {
+            // Track callee-saved register usage: only these oblige the prologue
+            if classes.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
                 used_callee_saved.push(reg);
             }
         } else {
@@ -1647,7 +1796,13 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
             let mut best_spill_idx = None;
             let mut best_spill_priority = current_priority;
 
-            for (i, &(_active_vreg, _, end)) in active.iter().enumerate() {
+            for (i, &(_active_vreg, active_reg, end)) in active.iter().enumerate() {
+                // Evicting only helps if the freed register can actually hold
+                // the arriving interval; a caller-saved register clobbered
+                // during that interval cannot.
+                if !register_survives_range(classes, &clobbers, active_reg, &range) {
+                    continue;
+                }
                 let active_loop_depth = loop_info.max_depth_in_range(range.start, end);
                 let active_remaining = end.saturating_sub(range.start);
                 let active_priority =
@@ -1712,7 +1867,7 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
 fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
-    allocatable_regs: &[Reg],
+    classes: RegisterClasses<'_, Reg>,
     existing_locals: u32,
     collect_debug: bool,
     cost_model: &CostModel,
@@ -1771,9 +1926,13 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
+    // Constant-time clobber answers for the caller-saved candidates; the
+    // callee-saved class survives every clobber by definition (RUE-1146).
+    let clobbers = ClobberIndex::build(liveness, classes.caller_saved);
+
     // Track which registers are currently in use and when they become free
     // Tuple: (vreg, physical reg, live range end)
-    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(allocatable_regs.len());
+    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(classes.len());
 
     for (vreg, range) in vregs_by_start {
         // Expire old intervals - remove registers whose vregs are no longer live
@@ -1782,21 +1941,15 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register
-        let mut allocated_reg = None;
-        for &reg in allocatable_regs {
-            if !used_regs.contains(&reg) {
-                allocated_reg = Some(reg);
-                break;
-            }
-        }
+        // Try to find a free register, caller-saved class first
+        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
             allocation[vreg] = Some(Allocation::Register(reg));
             active.push((vreg, reg, range.end));
-            // Track callee-saved register usage
-            if !used_callee_saved.contains(&reg) {
+            // Track callee-saved register usage: only these oblige the prologue
+            if classes.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
                 used_callee_saved.push(reg);
             }
         } else {
@@ -1821,7 +1974,13 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
             let mut best_spill_priority = current_priority;
             let mut best_is_remat = current_is_remat;
 
-            for (i, &(active_vreg, _, end)) in active.iter().enumerate() {
+            for (i, &(active_vreg, active_reg, end)) in active.iter().enumerate() {
+                // Evicting only helps if the freed register can actually hold
+                // the arriving interval; a caller-saved register clobbered
+                // during that interval cannot.
+                if !register_survives_range(classes, &clobbers, active_reg, &range) {
+                    continue;
+                }
                 let active_is_remat = can_remat(active_vreg).is_some();
                 let active_loop_depth = loop_info.max_depth_in_range(range.start, end);
                 let active_remaining = end.saturating_sub(range.start);
@@ -1983,6 +2142,110 @@ mod tests {
         info.live_at = vec![FixedBitSet::with_capacity(vreg_count); max_inst + 1];
         info.clobbers_at = vec![Vec::new(); max_inst + 1];
         info
+    }
+
+    fn make_liveness_with_clobbers(
+        ranges: Vec<(u32, usize, usize)>,
+        clobbers: Vec<(usize, TestReg)>,
+    ) -> LivenessInfo<TestReg> {
+        let mut info = make_liveness(ranges);
+        for (idx, reg) in clobbers {
+            info.clobbers_at[idx].push(reg);
+        }
+        info
+    }
+
+    #[test]
+    fn clobber_index_answers_only_for_tracked_registers() {
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], vec![(2, TestReg(0))]);
+        let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
+
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 2)));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 1)));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(3, 4)));
+        // An untracked register cannot be proven clobber-free.
+        assert!(index.is_clobbered_during(TestReg(1), &LiveRange::new(0, 1)));
+    }
+
+    #[test]
+    fn clobber_index_tolerates_ranges_past_the_last_instruction() {
+        let liveness = make_liveness_with_clobbers(vec![(0, 0, 1)], vec![(1, TestReg(0))]);
+        let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
+
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, usize::MAX)));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 0)));
+    }
+
+    #[test]
+    fn caller_saved_is_preferred_and_call_crossing_intervals_avoid_it() {
+        // v0 spans the clobber at instruction 2, v1 does not.
+        let liveness = make_liveness_with_clobbers(
+            vec![(0, 0, 4), (1, 3, 4)],
+            vec![(2, TestReg(9)), (2, TestReg(8))],
+        );
+        let classes = RegisterClasses {
+            caller_saved: &[TestReg(9), TestReg(8)],
+            callee_saved: &[TestReg(0)],
+        };
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            classes,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(0))),
+            "an interval spanning the clobber must take the callee-saved register"
+        );
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(9))),
+            "an interval clear of the clobber should take the first caller-saved register"
+        );
+        assert_eq!(
+            used_callee_saved,
+            vec![TestReg(0)],
+            "only callee-saved registers are reported to frame planning"
+        );
+    }
+
+    #[test]
+    fn eviction_never_hands_a_clobbered_caller_saved_register_to_a_spanning_interval() {
+        // Only a caller-saved register exists, and every interval spans the
+        // clobber, so nothing can hold a value: all three must spill.
+        let liveness = make_liveness_with_clobbers(
+            vec![(0, 0, 4), (1, 0, 4), (2, 0, 4)],
+            vec![(2, TestReg(9))],
+        );
+        let classes = RegisterClasses {
+            caller_saved: &[TestReg(9)],
+            callee_saved: &[],
+        };
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            3,
+            &liveness,
+            classes,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 3);
+        assert!(used_callee_saved.is_empty());
+        for idx in 0..3 {
+            assert!(
+                matches!(allocation[VReg::new(idx)], Some(Allocation::Spill(_))),
+                "v{idx} spans the clobber and must not hold the caller-saved register"
+            );
+        }
     }
 
     #[test]

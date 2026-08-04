@@ -92,13 +92,20 @@ be exposed as C entry points without a target-C lowering path.
 
 The x86-64 allocator uses `rbx` and `r12`-`r15` for values live across calls;
 generated prologues save and restore every used callee-saved register along with
-`rbp`. It does not use the 128-byte System V red zone. Rue emits no direction-
+`rbp`. It also allocates the caller-saved `r11` to values that survive no call,
+which conforms: a caller-saved register carries no obligation across a call
+boundary, and a value in one never crosses one. Every other caller-saved
+register is reserved for a fixed instruction operand, an ABI position, or
+rewrite scratch. The allocator does not use the 128-byte System V red zone. Rue emits no direction-
 flag-setting, x87, or MMX operations; a conforming clear direction flag remains
 clear on return.
 
 The AArch64 allocator uses `x19`-`x28` for values live across calls and preserves
-them along with frame pointer and link register. It avoids the platform register
-`x18` and veneer scratch registers `x16`/`x17`. Vector registers are currently
+them along with frame pointer and link register. It also allocates the
+caller-saved `x13` and `x14` to values that survive no call; the remaining
+caller-saved temporaries `x9`-`x12` and `x15` are rewrite and address scratch.
+It avoids the indirect-result register `x8`, the platform register `x18`, and
+veneer scratch registers `x16`/`x17`. Vector registers are currently
 unused. The stack pointer remains 16-byte aligned, and generated code does not
 access memory below `sp`. Condition flags are caller-clobbered.
 

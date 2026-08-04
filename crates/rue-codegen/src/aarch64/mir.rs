@@ -95,6 +95,108 @@ pub enum Reg {
     Xzr = 32,
 }
 
+// ============================================================================
+// Register roles
+// ============================================================================
+//
+// Several passes name physical registers directly — for ABI argument and
+// result positions, for the emitter's address materialization, and as
+// allocation rewrite scratch. Those uses must never overlap what the register
+// allocator hands out. Before RUE-1146 the separation held only because the
+// allocator drew from X19-X28 exclusively; `RESERVED_REGS` states the
+// constraint instead, and `aarch64::regalloc` proves at compile time that no
+// allocatable register is in it.
+
+/// Registers the allocator must never hand to a virtual register.
+///
+/// Each entry is reserved for one of four reasons:
+///
+/// * **ABI position.** `x0`-`x7` carry arguments and results, and `x8` is the
+///   indirect-result register AAPCS64 reserves (and the Linux syscall number
+///   register). CFG lowering writes and reads these as physical registers
+///   around every call and in the prologue; liveness models a call's
+///   *clobbers* but not those physical defs and uses, so the clobber test
+///   cannot make an ABI register safe.
+/// * **Rewrite scratch.** [`SCRATCH_VALUE`] and [`SCRATCH_SOURCE_A`] through
+///   [`SCRATCH_SOURCE_C`] hold reloaded spill values while an instruction is
+///   rewritten.
+/// * **Emitter scratch.** [`SCRATCH_ADDRESS`] materializes a load/store offset
+///   too large for the immediate field; the emitter asserts that neither the
+///   base nor the transferred register is that register.
+/// * **Platform role.** `x16`/`x17` are the linker's veneer scratch (IP0/IP1)
+///   and are also the macOS syscall number register, `x18` is the reserved
+///   platform register, and `x29`/`x30`/`sp`/`xzr` are the frame pointer, link
+///   register, stack pointer, and zero register.
+///
+/// `x13` and `x14` are the caller-saved registers with no role here, which is
+/// why they are the whole caller-saved allocatable class on this target.
+pub(crate) const RESERVED_REGS: &[Reg] = &[
+    Reg::X0,  // argument/result 0
+    Reg::X1,  // argument/result 1
+    Reg::X2,  // argument 2
+    Reg::X3,  // argument 3
+    Reg::X4,  // argument 4
+    Reg::X5,  // argument 5
+    Reg::X6,  // argument 6
+    Reg::X7,  // argument 7
+    Reg::X8,  // indirect result location; Linux syscall number
+    Reg::X9,  // SCRATCH_VALUE
+    Reg::X10, // SCRATCH_SOURCE_A
+    Reg::X11, // SCRATCH_SOURCE_B
+    Reg::X12, // SCRATCH_SOURCE_C
+    Reg::X15, // SCRATCH_ADDRESS
+    Reg::X16, // IP0 linker veneer scratch; macOS syscall number
+    Reg::X17, // IP1 linker veneer scratch
+    Reg::X18, // reserved platform register
+    Reg::Fp,  // frame pointer (x29)
+    Reg::Lr,  // link register (x30)
+    Reg::Sp,  // stack pointer
+    Reg::Xzr, // zero register
+];
+
+/// Scratch register for a rewritten instruction's value: the destination when
+/// it is spilled, and the sole source operand of a unary instruction.
+pub(crate) const SCRATCH_VALUE: Reg = Reg::X9;
+
+/// Scratch register for a rewritten instruction's first source operand.
+pub(crate) const SCRATCH_SOURCE_A: Reg = Reg::X10;
+
+/// Scratch register for a rewritten instruction's second source operand, kept
+/// distinct from [`SCRATCH_SOURCE_A`] so both can be reloaded at once.
+pub(crate) const SCRATCH_SOURCE_B: Reg = Reg::X11;
+
+/// Scratch register for a rewritten instruction's third source operand, needed
+/// by the four-operand multiply-accumulate forms.
+pub(crate) const SCRATCH_SOURCE_C: Reg = Reg::X12;
+
+/// The emitter's address scratch: an unscaled load or store offset that does
+/// not fit the immediate field is materialized here and added to the base.
+/// Distinct from every allocation scratch because emission happens after
+/// rewriting, with allocated values already live in registers.
+pub(crate) const SCRATCH_ADDRESS: Reg = Reg::X15;
+
+/// Whether the allocator is forbidden from handing out `reg`.
+pub(crate) const fn is_reserved(reg: Reg) -> bool {
+    let mut index = 0;
+    while index < RESERVED_REGS.len() {
+        if RESERVED_REGS[index] as u8 == reg as u8 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+// Every scratch register is reserved. Without this, moving a scratch role to a
+// different register would silently make it allocatable as well.
+const _: () = {
+    assert!(is_reserved(SCRATCH_VALUE));
+    assert!(is_reserved(SCRATCH_SOURCE_A));
+    assert!(is_reserved(SCRATCH_SOURCE_B));
+    assert!(is_reserved(SCRATCH_SOURCE_C));
+    assert!(is_reserved(SCRATCH_ADDRESS));
+};
+
 impl Reg {
     /// Get the register encoding for instruction fields (0-30 for X0-X30, 31 for SP/XZR).
     #[inline]
@@ -865,10 +967,27 @@ impl Aarch64Inst {
                 Reg::X17,
                 Reg::Lr,
             ],
-            // Syscall clobbers X0 (return value) and preserves most registers.
-            // On macOS, X16 contains syscall number; on Linux, X8 does.
-            // We conservatively clobber both to handle either target.
-            Aarch64Inst::Svc { .. } => &[Reg::X0, Reg::X8, Reg::X16],
+            // Syscall returns in X0. On macOS, X16 carries the syscall
+            // number; on Linux, X8 does — clobber both to cover either target.
+            // The caller-saved temporaries X9-X15 and X17 are listed too: the
+            // Linux arm64 syscall ABI preserves them, but Darwin's kernel
+            // boundary follows the ordinary procedure-call standard and is
+            // free to destroy them. That distinction only became observable
+            // when allocation started handing out X13/X14 (RUE-1146), so the
+            // set is stated conservatively rather than per-target.
+            Aarch64Inst::Svc { .. } => &[
+                Reg::X0,
+                Reg::X8,
+                Reg::X9,
+                Reg::X10,
+                Reg::X11,
+                Reg::X12,
+                Reg::X13,
+                Reg::X14,
+                Reg::X15,
+                Reg::X16,
+                Reg::X17,
+            ],
             // All other instructions don't clobber additional registers
             _ => &[],
         }

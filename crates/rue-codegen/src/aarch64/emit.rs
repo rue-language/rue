@@ -81,8 +81,8 @@
 use rue_error::{CompileError, CompileResult, ErrorKind, ice_error};
 
 use super::mir::{
-    Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg, narrow_load_mnemonic,
-    narrow_store_mnemonic,
+    Aarch64Inst, Aarch64Mir, BLOCK_LABEL_BASE, Cond, LabelId, Reg, SCRATCH_ADDRESS,
+    narrow_load_mnemonic, narrow_store_mnemonic,
 };
 use crate::{EmittedCode, EmittedInst, EmittedRelocation};
 
@@ -1796,20 +1796,25 @@ impl<'a> Emitter<'a> {
             self.emit_u32(inst);
         } else {
             // Offset outside the unscaled range: materialize the address in
-            // X15 — the dedicated address scratch; X9-X12 carry spilled values
-            // and may be the very rd/rs of this access. Previously the offset
-            // was masked & 0x1FF, silently WRAPPING — locals deeper than 256
-            // bytes loaded from above the frame pointer. (RUE-129)
-            // Correctness guard (must run in release): if the base were X15 we
-            // would clobber it while materializing the address and load from the
-            // wrong location, so plain `assert!` not `debug_assert!` (RUE-45).
+            // the dedicated address scratch; the allocation scratch registers
+            // carry spilled values and may be the very rd/rs of this access,
+            // and an allocated value may be in any allocatable register.
+            // `mir::RESERVED_REGS` keeps SCRATCH_ADDRESS out of both.
+            // Previously the offset was masked & 0x1FF, silently WRAPPING —
+            // locals deeper than 256 bytes loaded from above the frame
+            // pointer. (RUE-129)
+            // Correctness guard (must run in release): if the base were the
+            // address scratch we would clobber it while materializing the
+            // address and load from the wrong location, so plain `assert!` not
+            // `debug_assert!` (RUE-45).
             assert!(
-                base != Reg::Sp && base != Reg::X15,
+                base != Reg::Sp && base != SCRATCH_ADDRESS,
                 "large-offset load needs a general base register"
             );
-            self.emit_mov_imm(Reg::X15, offset as i64);
-            self.emit_add_rr(Reg::X15, base, Reg::X15, false);
-            let inst = OPCODE_LDR_UOFF | (Reg::X15.encoding() as u32) << 5 | rd.encoding() as u32;
+            self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
+            self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
+            let inst =
+                OPCODE_LDR_UOFF | (SCRATCH_ADDRESS.encoding() as u32) << 5 | rd.encoding() as u32;
             self.emit_u32(inst);
         }
     }
@@ -1832,22 +1837,22 @@ impl<'a> Emitter<'a> {
             self.emit_u32(inst);
         } else {
             // Offset outside the unscaled range: materialize the address in
-            // X15 — the dedicated address scratch; X9-X12 carry spilled values
-            // and may be the very rd/rs of this access. Previously the offset
-            // was masked & 0x1FF, silently WRAPPING — locals deeper than 256
-            // bytes stored ABOVE the frame pointer, corrupting the caller's
-            // stack. (RUE-129)
+            // the dedicated address scratch; see `emit_ldr` for why no other
+            // register will do. Previously the offset was masked & 0x1FF,
+            // silently WRAPPING — locals deeper than 256 bytes stored ABOVE
+            // the frame pointer, corrupting the caller's stack. (RUE-129)
             // Correctness guard (must run in release): if the base or source
-            // were X15 we would clobber it while materializing the address and
-            // store to/from the wrong location, so plain `assert!` not
-            // `debug_assert!` (RUE-45).
+            // were the address scratch we would clobber it while materializing
+            // the address and store to/from the wrong location, so plain
+            // `assert!` not `debug_assert!` (RUE-45).
             assert!(
-                base != Reg::Sp && base != Reg::X15 && rs != Reg::X15,
+                base != Reg::Sp && base != SCRATCH_ADDRESS && rs != SCRATCH_ADDRESS,
                 "large-offset store needs a general base register"
             );
-            self.emit_mov_imm(Reg::X15, offset as i64);
-            self.emit_add_rr(Reg::X15, base, Reg::X15, false);
-            let inst = OPCODE_STR_UOFF | (Reg::X15.encoding() as u32) << 5 | rs.encoding() as u32;
+            self.emit_mov_imm(SCRATCH_ADDRESS, offset as i64);
+            self.emit_add_rr(SCRATCH_ADDRESS, base, SCRATCH_ADDRESS, false);
+            let inst =
+                OPCODE_STR_UOFF | (SCRATCH_ADDRESS.encoding() as u32) << 5 | rs.encoding() as u32;
             self.emit_u32(inst);
         }
     }

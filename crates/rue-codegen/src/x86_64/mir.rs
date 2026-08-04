@@ -40,6 +40,100 @@ pub enum Reg {
     R15 = 15,
 }
 
+// ============================================================================
+// Register roles
+// ============================================================================
+//
+// The register allocator hands out physical registers; several passes also
+// name physical registers directly, for fixed-register instruction operands,
+// for ABI argument and result positions, and as rewrite scratch. Those two
+// uses must never overlap. Before RUE-1146 the separation held only because
+// the allocator drew from callee-saved registers exclusively and every
+// directly-named register happened to be caller-saved — a coincidence
+// documented in comments. `RESERVED_REGS` states the constraint instead, and
+// `x86_64::regalloc` proves at compile time that no allocatable register is in
+// it.
+
+/// Registers the allocator must never hand to a virtual register.
+///
+/// Each entry is reserved for one of four reasons:
+///
+/// * **Machine role.** `rsp` is the stack pointer and `rbp` the frame pointer.
+/// * **Fixed instruction operand.** `idiv`/`div`/`mul` read and write the
+///   `rdx:rax` pair (see `X86Inst::clobbers`), `cdq`/`cqo` write `rdx`, and the
+///   variable-count shifts take their count in `cl`, i.e. `rcx`. The emitter
+///   asserts the shift destination is not `rcx` for exactly this reason.
+/// * **Register-allocation scratch.** [`SCRATCH_VALUE`], [`SCRATCH_SOURCE`],
+///   [`SCRATCH_ADDR_BASE`], and [`SCRATCH_ADDR_INDEX`] hold reloaded spill
+///   values and lowered address components while an instruction is rewritten.
+/// * **ABI position.** `cfg_lower::ARG_REGS` and `cfg_lower::RET_REGS` are
+///   written and read as physical registers around every call and in the
+///   prologue. Liveness models a call's *clobbers* but not those physical
+///   defs and uses, so an ABI register is not something the clobber test can
+///   make safe; it is excluded outright.
+///
+/// `r11` is the one caller-saved register with no role here, which is why it
+/// is the whole caller-saved allocatable class on this target.
+pub(crate) const RESERVED_REGS: &[Reg] = &[
+    Reg::Rsp, // stack pointer
+    Reg::Rbp, // frame pointer
+    Reg::Rax, // div/mul low half, RET_REGS[0], SCRATCH_VALUE
+    Reg::Rcx, // shift count (cl), ARG_REGS[3], RET_REGS[2], SCRATCH_ADDR_INDEX
+    Reg::Rdx, // div/mul high half, cdq/cqo, ARG_REGS[2], RET_REGS[1], SCRATCH_ADDR_BASE
+    Reg::Rsi, // ARG_REGS[1]
+    Reg::Rdi, // ARG_REGS[0]
+    Reg::R8,  // ARG_REGS[4], RET_REGS[3]
+    Reg::R9,  // ARG_REGS[5], RET_REGS[4]
+    Reg::R10, // RET_REGS[5], SCRATCH_SOURCE
+];
+
+/// Scratch register for a rewritten instruction's value: the destination when
+/// it is spilled, and the first source operand of most instructions.
+pub(crate) const SCRATCH_VALUE: Reg = Reg::Rax;
+
+/// Scratch register for a rewritten instruction's second source operand, kept
+/// distinct from [`SCRATCH_VALUE`] so a two-operand instruction can reload both
+/// operands at once.
+pub(crate) const SCRATCH_SOURCE: Reg = Reg::R10;
+
+/// Scratch register for a memory rewrite's second temporary: the lowered base
+/// of a SIB address, and the transferred value of a store or indexed access
+/// whose base pointer already occupies [`SCRATCH_VALUE`].
+pub(crate) const SCRATCH_ADDR_BASE: Reg = Reg::Rdx;
+
+/// Scratch register for a lowered SIB index, distinct from the two registers a
+/// SIB address rewrite already occupies. (`rsp` cannot encode as a SIB index,
+/// which is one more reason it is reserved.)
+pub(crate) const SCRATCH_ADDR_INDEX: Reg = Reg::Rcx;
+
+/// The register a variable-count shift takes its count in: `cl`, the low byte
+/// of `rcx`. This is a fixed machine operand, not a choice — the emitter
+/// asserts that a shift's destination is not this register, and the allocator
+/// therefore cannot hand it out.
+pub(crate) const SHIFT_COUNT: Reg = Reg::Rcx;
+
+/// Whether the allocator is forbidden from handing out `reg`.
+pub(crate) const fn is_reserved(reg: Reg) -> bool {
+    let mut index = 0;
+    while index < RESERVED_REGS.len() {
+        if RESERVED_REGS[index] as u8 == reg as u8 {
+            return true;
+        }
+        index += 1;
+    }
+    false
+}
+
+// Every scratch register is reserved. Without this, moving a scratch role to a
+// different register would silently make it allocatable as well.
+const _: () = {
+    assert!(is_reserved(SCRATCH_VALUE));
+    assert!(is_reserved(SCRATCH_SOURCE));
+    assert!(is_reserved(SCRATCH_ADDR_BASE));
+    assert!(is_reserved(SCRATCH_ADDR_INDEX));
+    assert!(is_reserved(SHIFT_COUNT));
+};
+
 impl Reg {
     /// Get the register encoding for ModR/M and SIB bytes.
     #[inline]

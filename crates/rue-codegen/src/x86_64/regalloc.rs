@@ -14,34 +14,76 @@
 use rue_error::{CompileError, CompileResult, ErrorKind};
 
 use super::liveness;
+use super::mir;
 use super::mir::VReg;
-use super::mir::{Operand, Reg, X86Inst, X86Mir};
+use super::mir::{
+    Operand, Reg, SCRATCH_ADDR_BASE, SCRATCH_ADDR_INDEX, SCRATCH_SOURCE, SCRATCH_VALUE,
+    SHIFT_COUNT, X86Inst, X86Mir,
+};
 use crate::alloc_dst;
 use crate::regalloc::{
     Allocation, AllocationContext, CoalesceCandidate, LivenessInfo, LoopInfo, RegAllocBackend,
-    RegAllocDebugInfo, RegAllocDriver, RematerializeOp, RewriteBuffer,
+    RegAllocDebugInfo, RegAllocDriver, RegisterClasses, RematerializeOp, RewriteBuffer,
 };
 
-/// Available registers for allocation.
+/// Caller-saved registers offered to intervals no instruction clobbers while
+/// they are live — in particular, intervals that cross no call.
 ///
-/// We ONLY use callee-saved registers for general allocation. This ensures
-/// that values survive across function calls without needing explicit save/restore.
-/// Caller-saved registers (rax, rcx, rdx, rsi, rdi, r8-r11) are avoided because
-/// they get clobbered by function calls.
+/// `r11` is the only caller-saved register with no other role on this target:
+/// every other one is a fixed instruction operand, an ABI argument or result
+/// position, or rewrite scratch. See [`mir::RESERVED_REGS`] for the per-register
+/// reasoning; the assertion below keeps the two in agreement.
+const CALLER_SAVED_REGS: &[Reg] = &[Reg::R11];
+
+/// Callee-saved registers, the only home for a value that must survive a call.
 ///
-/// We also avoid:
-/// - rsp (stack pointer)
-/// - rbp (frame pointer)
-/// - rax, rdx (used implicitly by idiv, and rax for scratch)
+/// Each one used obliges the prologue to save it and the epilogue to restore
+/// it, so allocation reaches for these only after the caller-saved class above
+/// is exhausted or ineligible.
+const CALLEE_SAVED_REGS: &[Reg] = &[Reg::R12, Reg::R13, Reg::R14, Reg::R15, Reg::Rbx];
+
+/// Every allocatable register, in preference order: caller-saved first.
 ///
-/// When we run out of callee-saved registers, values are spilled to the stack.
+/// This is the flattening of [`CALLER_SAVED_REGS`] and [`CALLEE_SAVED_REGS`];
+/// [`register_classes`](X86Backend::register_classes) is what allocation
+/// actually consults, and it keeps the two classes apart. When neither class
+/// has a register available, values are spilled to the stack.
 const ALLOCATABLE_REGS: &[Reg] = &[
+    Reg::R11, // Caller-saved
     Reg::R12, // Callee-saved
     Reg::R13, // Callee-saved
     Reg::R14, // Callee-saved
     Reg::R15, // Callee-saved
     Reg::Rbx, // Callee-saved
 ];
+
+// No allocatable register may carry a reserved role, and the flattened list
+// must stay the concatenation of the two classes.
+const _: () = {
+    let mut index = 0;
+    while index < ALLOCATABLE_REGS.len() {
+        assert!(
+            !mir::is_reserved(ALLOCATABLE_REGS[index]),
+            "an allocatable register must not also be reserved for a fixed \
+             operand, an ABI position, or rewrite scratch"
+        );
+        index += 1;
+    }
+    assert!(ALLOCATABLE_REGS.len() == CALLER_SAVED_REGS.len() + CALLEE_SAVED_REGS.len());
+    let mut index = 0;
+    while index < CALLER_SAVED_REGS.len() {
+        assert!(ALLOCATABLE_REGS[index] as u8 == CALLER_SAVED_REGS[index] as u8);
+        index += 1;
+    }
+    let mut index = 0;
+    while index < CALLEE_SAVED_REGS.len() {
+        assert!(
+            ALLOCATABLE_REGS[CALLER_SAVED_REGS.len() + index] as u8
+                == CALLEE_SAVED_REGS[index] as u8
+        );
+        index += 1;
+    }
+};
 
 /// Zero-sized adapter for target-specific analysis and instruction rewriting.
 struct X86Backend;
@@ -106,7 +148,7 @@ impl RegAlloc {
     ) -> CompileResult<()> {
         match inst {
             X86Inst::MovRI32 { dst, imm } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::MovRI32 { dst: dst_op, imm });
                     },
@@ -114,14 +156,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::MovRI64 { dst, imm } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::MovRI64 { dst: dst_op, imm });
                     },
@@ -129,14 +171,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::MovRR { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 let dst_alloc = Self::get_allocation(context, dst);
 
                 match dst_alloc {
@@ -148,16 +190,16 @@ impl RegAlloc {
                     }
                     Some(Allocation::Spill(offset)) => {
                         // Move src to RAX (if not already), then store to stack
-                        if src_op != Operand::Physical(Reg::Rax) {
+                        if src_op != Operand::Physical(SCRATCH_VALUE) {
                             mir.push(X86Inst::MovRR {
-                                dst: Operand::Physical(Reg::Rax),
+                                dst: Operand::Physical(SCRATCH_VALUE),
                                 src: src_op,
                             });
                         }
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     }
                     Some(Allocation::Rematerialize(_)) => {
@@ -170,7 +212,7 @@ impl RegAlloc {
             }
 
             X86Inst::MovRM { dst, base, offset } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::MovRM { dst: dst_op, base, offset });
                     },
@@ -178,14 +220,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset: spill_offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::MovMR { base, offset, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 mir.push(X86Inst::MovMR {
                     base,
                     offset,
@@ -194,7 +236,7 @@ impl RegAlloc {
             }
 
             X86Inst::Movzx8RM { dst, base, offset } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movzx8RM { dst: dst_op, base, offset });
                     },
@@ -202,14 +244,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset: spill_offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::MovMR8 { base, offset, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rdx)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_ADDR_BASE)?;
                 mir.push(X86Inst::MovMR8 {
                     base,
                     offset,
@@ -398,38 +440,38 @@ impl RegAlloc {
             }
 
             X86Inst::IdivR { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::IdivR { src: src_op });
             }
 
             X86Inst::DivR { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::DivR { src: src_op });
             }
 
             X86Inst::Idiv64R { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::Idiv64R { src: src_op });
             }
 
             X86Inst::Div64R { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::Div64R { src: src_op });
             }
 
             X86Inst::MulR { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::MulR { src: src_op });
             }
 
             X86Inst::Mul64R { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::Mul64R { src: src_op });
             }
 
             X86Inst::TestRR { src1, src2 } => {
-                let src1_op = Self::load_operand(context, mir, src1, Reg::Rax)?;
-                let src2_op = Self::load_operand(context, mir, src2, Reg::R10)?;
+                let src1_op = Self::load_operand(context, mir, src1, SCRATCH_VALUE)?;
+                let src2_op = Self::load_operand(context, mir, src2, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::TestRR {
                     src1: src1_op,
                     src2: src2_op,
@@ -437,8 +479,8 @@ impl RegAlloc {
             }
 
             X86Inst::Test64RR { src1, src2 } => {
-                let src1_op = Self::load_operand(context, mir, src1, Reg::Rax)?;
-                let src2_op = Self::load_operand(context, mir, src2, Reg::R10)?;
+                let src1_op = Self::load_operand(context, mir, src1, SCRATCH_VALUE)?;
+                let src2_op = Self::load_operand(context, mir, src2, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::Test64RR {
                     src1: src1_op,
                     src2: src2_op,
@@ -446,8 +488,8 @@ impl RegAlloc {
             }
 
             X86Inst::CmpRR { src1, src2 } => {
-                let src1_op = Self::load_operand(context, mir, src1, Reg::Rax)?;
-                let src2_op = Self::load_operand(context, mir, src2, Reg::R10)?;
+                let src1_op = Self::load_operand(context, mir, src1, SCRATCH_VALUE)?;
+                let src2_op = Self::load_operand(context, mir, src2, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::CmpRR {
                     src1: src1_op,
                     src2: src2_op,
@@ -455,8 +497,8 @@ impl RegAlloc {
             }
 
             X86Inst::Cmp64RR { src1, src2 } => {
-                let src1_op = Self::load_operand(context, mir, src1, Reg::Rax)?;
-                let src2_op = Self::load_operand(context, mir, src2, Reg::R10)?;
+                let src1_op = Self::load_operand(context, mir, src1, SCRATCH_VALUE)?;
+                let src2_op = Self::load_operand(context, mir, src2, SCRATCH_SOURCE)?;
                 mir.push(X86Inst::Cmp64RR {
                     src1: src1_op,
                     src2: src2_op,
@@ -464,12 +506,12 @@ impl RegAlloc {
             }
 
             X86Inst::CmpRI { src, imm } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 mir.push(X86Inst::CmpRI { src: src_op, imm });
             }
 
             X86Inst::Cmp64RI { src, imm } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 mir.push(X86Inst::Cmp64RI { src: src_op, imm });
             }
 
@@ -514,8 +556,8 @@ impl RegAlloc {
             }
 
             X86Inst::Movzx { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movzx { dst: dst_op, src: src_op });
                     },
@@ -523,15 +565,15 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Movsx8To64 { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movsx8To64 { dst: dst_op, src: src_op });
                     },
@@ -539,15 +581,15 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Movsx16To64 { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movsx16To64 { dst: dst_op, src: src_op });
                     },
@@ -555,15 +597,15 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Movsx32To64 { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movsx32To64 { dst: dst_op, src: src_op });
                     },
@@ -571,15 +613,15 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Movzx8To64 { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movzx8To64 { dst: dst_op, src: src_op });
                     },
@@ -587,15 +629,15 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Movzx16To64 { dst, src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Movzx16To64 { dst: dst_op, src: src_op });
                     },
@@ -603,14 +645,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Pop { dst } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Pop { dst: dst_op });
                     },
@@ -618,19 +660,19 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Push { src } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
                 mir.push(X86Inst::Push { src: src_op });
             }
 
             X86Inst::Lea { dst, base, disp } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::Lea { dst: dst_op, base, disp });
                     },
@@ -638,18 +680,19 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::Shl { dst, count } => {
-                // SHL needs count in RCX
-                let count_op = Self::load_operand(context, mir, count, Reg::Rcx)?;
-                if count_op != Operand::Physical(Reg::Rcx) {
+                // A variable-count shift reads its count from `cl`, so the
+                // count lands in that fixed register rather than in scratch.
+                let count_op = Self::load_operand(context, mir, count, SHIFT_COUNT)?;
+                if count_op != Operand::Physical(SHIFT_COUNT) {
                     mir.push(X86Inst::MovRR {
-                        dst: Operand::Physical(Reg::Rcx),
+                        dst: Operand::Physical(SHIFT_COUNT),
                         src: count_op,
                     });
                 }
@@ -658,23 +701,23 @@ impl RegAlloc {
                     Some(Allocation::Register(reg)) => {
                         mir.push(X86Inst::Shl {
                             dst: Operand::Physical(reg),
-                            count: Operand::Physical(Reg::Rcx),
+                            count: Operand::Physical(SHIFT_COUNT),
                         });
                     }
                     Some(Allocation::Spill(offset)) => {
                         mir.push(X86Inst::MovRM {
-                            dst: Operand::Physical(Reg::Rax),
+                            dst: Operand::Physical(SCRATCH_VALUE),
                             base: Reg::Rbp,
                             offset,
                         });
                         mir.push(X86Inst::Shl {
-                            dst: Operand::Physical(Reg::Rax),
-                            count: Operand::Physical(Reg::Rcx),
+                            dst: Operand::Physical(SCRATCH_VALUE),
+                            count: Operand::Physical(SHIFT_COUNT),
                         });
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     }
                     Some(Allocation::Rematerialize(_)) => {
@@ -683,7 +726,7 @@ impl RegAlloc {
                     None => {
                         mir.push(X86Inst::Shl {
                             dst,
-                            count: Operand::Physical(Reg::Rcx),
+                            count: Operand::Physical(SHIFT_COUNT),
                         });
                     }
                 }
@@ -695,10 +738,10 @@ impl RegAlloc {
                 // only sees concrete memory operations with physical bases.
                 // Load base vreg into scratch register
                 let base_op = Operand::Virtual(base);
-                let base_reg = Self::load_operand(context, mir, base_op, Reg::Rax)?;
+                let base_reg = Self::load_operand(context, mir, base_op, SCRATCH_VALUE)?;
                 let base_phys = match base_reg {
                     Operand::Physical(r) => r,
-                    _ => Reg::Rax,
+                    _ => SCRATCH_VALUE,
                 };
 
                 match Self::get_allocation(context, dst) {
@@ -711,14 +754,14 @@ impl RegAlloc {
                     }
                     Some(Allocation::Spill(spill_off)) => {
                         mir.push(X86Inst::MovRM {
-                            dst: Operand::Physical(Reg::Rdx),
+                            dst: Operand::Physical(SCRATCH_ADDR_BASE),
                             base: base_phys,
                             offset,
                         });
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset: spill_off,
-                            src: Operand::Physical(Reg::Rdx),
+                            src: Operand::Physical(SCRATCH_ADDR_BASE),
                         });
                     }
                     Some(Allocation::Rematerialize(_)) => {
@@ -736,12 +779,12 @@ impl RegAlloc {
 
             X86Inst::MovMRIndexed { base, offset, src } => {
                 // Lifecycle boundary: see MovRMIndexed above.
-                let src_op = Self::load_operand(context, mir, src, Reg::Rdx)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_ADDR_BASE)?;
                 let base_op = Operand::Virtual(base);
-                let base_reg = Self::load_operand(context, mir, base_op, Reg::Rax)?;
+                let base_reg = Self::load_operand(context, mir, base_op, SCRATCH_VALUE)?;
                 let base_phys = match base_reg {
                     Operand::Physical(r) => r,
-                    _ => Reg::Rax,
+                    _ => SCRATCH_VALUE,
                 };
                 mir.push(X86Inst::MovMR {
                     base: base_phys,
@@ -757,7 +800,8 @@ impl RegAlloc {
                 width,
                 signed,
             } => {
-                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
+                let base_reg =
+                    Self::load_operand(context, mir, Operand::Virtual(base), SCRATCH_VALUE)?;
                 let base_phys = base_reg.as_physical();
                 match Self::get_allocation(context, dst) {
                     Some(Allocation::Register(reg)) => mir.push(X86Inst::NarrowLoadRM {
@@ -769,7 +813,7 @@ impl RegAlloc {
                     }),
                     Some(Allocation::Spill(spill_off)) => {
                         mir.push(X86Inst::NarrowLoadRM {
-                            dst: Operand::Physical(Reg::Rdx),
+                            dst: Operand::Physical(SCRATCH_ADDR_BASE),
                             base: base_phys,
                             offset,
                             width,
@@ -778,7 +822,7 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset: spill_off,
-                            src: Operand::Physical(Reg::Rdx),
+                            src: Operand::Physical(SCRATCH_ADDR_BASE),
                         });
                     }
                     Some(Allocation::Rematerialize(_)) => {
@@ -800,8 +844,9 @@ impl RegAlloc {
                 offset,
                 width,
             } => {
-                let src_op = Self::load_operand(context, mir, src, Reg::Rdx)?;
-                let base_reg = Self::load_operand(context, mir, Operand::Virtual(base), Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_ADDR_BASE)?;
+                let base_reg =
+                    Self::load_operand(context, mir, Operand::Virtual(base), SCRATCH_VALUE)?;
                 mir.push(X86Inst::NarrowStoreMR {
                     base: base_reg.as_physical(),
                     src: src_op,
@@ -817,11 +862,11 @@ impl RegAlloc {
                 scale,
                 disp,
             } => {
-                // Load base into a register (use Rdx as scratch to avoid conflicts)
-                let base_op = Self::load_operand(context, mir, base, Reg::Rdx)?;
-                // Load index into a register (use Rcx as scratch)
-                // Note: RSP cannot be used as index in SIB encoding
-                let index_op = Self::load_operand(context, mir, index, Reg::Rcx)?;
+                // The address components go to the dedicated address scratch
+                // registers, which `mir::RESERVED_REGS` keeps out of allocation
+                // so neither can collide with an allocated value (RUE-1146).
+                let base_op = Self::load_operand(context, mir, base, SCRATCH_ADDR_BASE)?;
+                let index_op = Self::load_operand(context, mir, index, SCRATCH_ADDR_INDEX)?;
 
                 match Self::get_allocation(context, dst) {
                     Some(Allocation::Register(reg)) => {
@@ -836,7 +881,7 @@ impl RegAlloc {
                     Some(Allocation::Spill(offset)) => {
                         // Load into scratch register then store
                         mir.push(X86Inst::MovRMSib {
-                            dst: Operand::Physical(Reg::Rax),
+                            dst: Operand::Physical(SCRATCH_VALUE),
                             base: base_op,
                             index: index_op,
                             scale,
@@ -845,7 +890,7 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     }
                     Some(Allocation::Rematerialize(_)) => {
@@ -870,12 +915,11 @@ impl RegAlloc {
                 disp,
                 src,
             } => {
-                // Load base into a register (use Rdx as scratch)
-                let base_op = Self::load_operand(context, mir, base, Reg::Rdx)?;
-                // Load index into a register (use Rcx as scratch)
-                let index_op = Self::load_operand(context, mir, index, Reg::Rcx)?;
+                // See MovRMSib: the address scratch registers are reserved.
+                let base_op = Self::load_operand(context, mir, base, SCRATCH_ADDR_BASE)?;
+                let index_op = Self::load_operand(context, mir, index, SCRATCH_ADDR_INDEX)?;
                 // Load src value
-                let src_op = Self::load_operand(context, mir, src, Reg::Rax)?;
+                let src_op = Self::load_operand(context, mir, src, SCRATCH_VALUE)?;
 
                 mir.push(X86Inst::MovMRSib {
                     base: base_op,
@@ -887,7 +931,7 @@ impl RegAlloc {
             }
 
             X86Inst::StringConstPtr { dst, string_id } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::StringConstPtr { dst: dst_op, string_id });
                     },
@@ -895,14 +939,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::StringConstLen { dst, string_id } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::StringConstLen { dst: dst_op, string_id });
                     },
@@ -910,14 +954,14 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
             }
 
             X86Inst::StringConstCap { dst, string_id } => {
-                alloc_dst!(Self::get_allocation(context, dst), dst, Reg::Rax =>
+                alloc_dst!(Self::get_allocation(context, dst), dst, SCRATCH_VALUE =>
                     emit |dst_op| {
                         mir.push(X86Inst::StringConstCap { dst: dst_op, string_id });
                     },
@@ -925,7 +969,7 @@ impl RegAlloc {
                         mir.push_after(X86Inst::MovMR {
                             base: Reg::Rbp,
                             offset,
-                            src: Operand::Physical(Reg::Rax),
+                            src: Operand::Physical(SCRATCH_VALUE),
                         });
                     },
                 );
@@ -1075,7 +1119,7 @@ impl RegAlloc {
         F: FnOnce(Operand, Operand) -> X86Inst,
     {
         // Load src first (use R10 as scratch to avoid clobbering RAX)
-        let src_op = Self::load_operand(context, mir, src, Reg::R10)?;
+        let src_op = Self::load_operand(context, mir, src, SCRATCH_SOURCE)?;
 
         match Self::get_allocation(context, dst) {
             Some(Allocation::Register(reg)) => {
@@ -1084,17 +1128,17 @@ impl RegAlloc {
             Some(Allocation::Spill(offset)) => {
                 // Load dst from stack to RAX
                 mir.push(X86Inst::MovRM {
-                    dst: Operand::Physical(Reg::Rax),
+                    dst: Operand::Physical(SCRATCH_VALUE),
                     base: Reg::Rbp,
                     offset,
                 });
                 // Perform operation
-                mir.push(make_inst(Operand::Physical(Reg::Rax), src_op));
+                mir.push(make_inst(Operand::Physical(SCRATCH_VALUE), src_op));
                 // Store result back to stack
                 mir.push_after(X86Inst::MovMR {
                     base: Reg::Rbp,
                     offset,
-                    src: Operand::Physical(Reg::Rax),
+                    src: Operand::Physical(SCRATCH_VALUE),
                 });
             }
             Some(Allocation::Rematerialize(_)) => {
@@ -1124,17 +1168,17 @@ impl RegAlloc {
             Some(Allocation::Spill(offset)) => {
                 // Load from stack
                 mir.push(X86Inst::MovRM {
-                    dst: Operand::Physical(Reg::Rax),
+                    dst: Operand::Physical(SCRATCH_VALUE),
                     base: Reg::Rbp,
                     offset,
                 });
                 // Perform operation
-                mir.push(make_inst(Operand::Physical(Reg::Rax)));
+                mir.push(make_inst(Operand::Physical(SCRATCH_VALUE)));
                 // Store back
                 mir.push_after(X86Inst::MovMR {
                     base: Reg::Rbp,
                     offset,
-                    src: Operand::Physical(Reg::Rax),
+                    src: Operand::Physical(SCRATCH_VALUE),
                 });
             }
             Some(Allocation::Rematerialize(_)) => {
@@ -1162,15 +1206,15 @@ impl RegAlloc {
             }
             Some(Allocation::Spill(offset)) => {
                 mir.push(X86Inst::MovRM {
-                    dst: Operand::Physical(Reg::Rax),
+                    dst: Operand::Physical(SCRATCH_VALUE),
                     base: Reg::Rbp,
                     offset,
                 });
-                mir.push(make_inst(Operand::Physical(Reg::Rax), imm));
+                mir.push(make_inst(Operand::Physical(SCRATCH_VALUE), imm));
                 mir.push_after(X86Inst::MovMR {
                     base: Reg::Rbp,
                     offset,
-                    src: Operand::Physical(Reg::Rax),
+                    src: Operand::Physical(SCRATCH_VALUE),
                 });
             }
             Some(Allocation::Rematerialize(_)) => {
@@ -1198,15 +1242,15 @@ impl RegAlloc {
             }
             Some(Allocation::Spill(offset)) => {
                 mir.push(X86Inst::MovRM {
-                    dst: Operand::Physical(Reg::Rax),
+                    dst: Operand::Physical(SCRATCH_VALUE),
                     base: Reg::Rbp,
                     offset,
                 });
-                mir.push(make_inst(Operand::Physical(Reg::Rax), imm));
+                mir.push(make_inst(Operand::Physical(SCRATCH_VALUE), imm));
                 mir.push_after(X86Inst::MovMR {
                     base: Reg::Rbp,
                     offset,
-                    src: Operand::Physical(Reg::Rax),
+                    src: Operand::Physical(SCRATCH_VALUE),
                 });
             }
             Some(Allocation::Rematerialize(_)) => {
@@ -1233,11 +1277,11 @@ impl RegAlloc {
             }
             Some(Allocation::Spill(offset)) => {
                 // setcc writes a byte, so we use RAX and store
-                mir.push(make_inst(Operand::Physical(Reg::Rax)));
+                mir.push(make_inst(Operand::Physical(SCRATCH_VALUE)));
                 mir.push_after(X86Inst::MovMR {
                     base: Reg::Rbp,
                     offset,
-                    src: Operand::Physical(Reg::Rax),
+                    src: Operand::Physical(SCRATCH_VALUE),
                 });
             }
             Some(Allocation::Rematerialize(_)) => {
@@ -1325,8 +1369,11 @@ impl RegAllocBackend for X86Backend {
             .collect()
     }
 
-    fn allocatable_regs() -> &'static [Self::Reg] {
-        ALLOCATABLE_REGS
+    fn register_classes() -> RegisterClasses<'static, Self::Reg> {
+        RegisterClasses {
+            caller_saved: CALLER_SAVED_REGS,
+            callee_saved: CALLEE_SAVED_REGS,
+        }
     }
 
     fn new_mir() -> Self::Mir {
@@ -1361,7 +1408,10 @@ impl RegAllocBackend for X86Backend {
 #[cfg(test)]
 mod tests {
     use super::liveness;
-    use super::{ALLOCATABLE_REGS, Operand, Reg, RegAlloc, VReg, X86Inst, X86Mir};
+    use super::{
+        ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, Operand, Reg, RegAlloc, VReg,
+        X86Inst, X86Mir,
+    };
     use crate::regalloc::{Allocation, RematerializeOp};
 
     fn define_loaded_values(mir: &mut X86Mir, vregs: &[VReg]) {
@@ -1386,10 +1436,11 @@ mod tests {
 
         let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
-        // v0 should be allocated to R12 (first allocatable)
+        // v0 should be allocated to the first allocatable register, which is
+        // caller-saved: nothing clobbers it while v0 is live (RUE-1146).
         match &mir.instructions()[0] {
             X86Inst::MovRI32 { dst, imm } => {
-                assert_eq!(dst, &Operand::Physical(Reg::R12));
+                assert_eq!(dst, &Operand::Physical(ALLOCATABLE_REGS[0]));
                 assert_eq!(*imm, 42);
             }
             _ => panic!("expected MovRI32"),
@@ -1437,12 +1488,12 @@ mod tests {
 
         let mir = RegAlloc::new(mir, 0).allocate().unwrap();
 
-        // Both can be allocated to R12 since they don't interfere
+        // Both can be allocated to the same register since they don't interfere
         match (&mir.instructions()[0], &mir.instructions()[1]) {
             (X86Inst::MovRI32 { dst: d0, .. }, X86Inst::MovRI32 { dst: d1, .. }) => {
-                // They should both get R12 since v0 is dead before v1 is defined
-                assert_eq!(d0, &Operand::Physical(Reg::R12));
-                assert_eq!(d1, &Operand::Physical(Reg::R12));
+                // v0 is dead before v1 is defined, so both get the first register
+                assert_eq!(d0, &Operand::Physical(ALLOCATABLE_REGS[0]));
+                assert_eq!(d1, &Operand::Physical(ALLOCATABLE_REGS[0]));
             }
             _ => panic!("expected two MovRI32"),
         }
@@ -1558,8 +1609,10 @@ mod tests {
         // Force a spill and verify load/store instructions are inserted
         let mut mir = X86Mir::new();
 
-        // Create 6 vregs to force spilling (only 5 allocatable regs: R12-R15, Rbx)
-        let vregs: Vec<VReg> = (0..6).map(|_| mir.alloc_vreg()).collect();
+        // One more simultaneously-live value than there are registers
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 1)
+            .map(|_| mir.alloc_vreg())
+            .collect();
 
         define_loaded_values(&mut mir, &vregs);
 
@@ -1616,20 +1669,23 @@ mod tests {
     #[test]
     fn test_production_rematerializes_constants_and_strings_without_spills() {
         let mut mir = X86Mir::new();
-        let vregs: Vec<VReg> = (0..7).map(|_| mir.alloc_vreg()).collect();
+        // Two more simultaneously-live values than there are registers, so the
+        // callee-saved-only baseline below has to spill exactly twice.
+        let count = ALLOCATABLE_REGS.len() + 2;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
 
-        for (index, &vreg) in vregs[..5].iter().enumerate() {
+        for (index, &vreg) in vregs[..count - 2].iter().enumerate() {
             mir.push(X86Inst::MovRI32 {
                 dst: Operand::Virtual(vreg),
                 imm: index as i32,
             });
         }
         mir.push(X86Inst::StringConstPtr {
-            dst: Operand::Virtual(vregs[5]),
+            dst: Operand::Virtual(vregs[count - 2]),
             string_id: 7,
         });
         mir.push(X86Inst::MovRI64 {
-            dst: Operand::Virtual(vregs[6]),
+            dst: Operand::Virtual(vregs[count - 1]),
             imm: 99,
         });
         for &vreg in &vregs {
@@ -1832,6 +1888,139 @@ mod tests {
     }
 
     #[test]
+    fn caller_saved_registers_absorb_pressure_before_spilling() {
+        // A call-free function with more simultaneously-live values than there
+        // are callee-saved registers still fits in registers, because the
+        // caller-saved class is available to it (RUE-1146).
+        let mut mir = X86Mir::new();
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len())
+            .map(|_| mir.alloc_vreg())
+            .collect();
+
+        define_loaded_values(&mut mir, &vregs);
+        for &vreg in &vregs {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        assert!(
+            vregs.len() > CALLEE_SAVED_REGS.len(),
+            "the fixture must exceed what the callee-saved class alone can hold"
+        );
+
+        let (mir, num_spills, used_callee_saved) =
+            RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 0, "every value should fit in a register");
+        assert!(
+            !mir.instructions().iter().any(|inst| matches!(
+                inst,
+                X86Inst::MovMR { base: Reg::Rbp, .. } | X86Inst::MovRM { base: Reg::Rbp, .. }
+            )),
+            "no value should touch the frame"
+        );
+
+        let assigned: Vec<Reg> = mir
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::MovRM {
+                    dst: Operand::Physical(reg),
+                    base: Reg::Rsi,
+                    ..
+                } => Some(*reg),
+                _ => None,
+            })
+            .collect();
+        for &reg in CALLER_SAVED_REGS {
+            assert!(
+                assigned.contains(&reg),
+                "the caller-saved class should be used before spilling, missing {reg}"
+            );
+        }
+        for &reg in &used_callee_saved {
+            assert!(
+                CALLEE_SAVED_REGS.contains(&reg),
+                "only callee-saved registers oblige the prologue, got {reg}"
+            );
+        }
+    }
+
+    #[test]
+    fn call_free_function_saves_no_callee_saved_registers() {
+        // With the caller-saved class available, a small call-free function
+        // needs nothing preserved across its own body, so frame planning sees
+        // an empty callee-saved set (RUE-1146, and the reason RUE-1195 had to
+        // land first).
+        let mut mir = X86Mir::new();
+        let vregs: Vec<VReg> = (0..CALLER_SAVED_REGS.len())
+            .map(|_| mir.alloc_vreg())
+            .collect();
+
+        define_loaded_values(&mut mir, &vregs);
+        for &vreg in &vregs {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (_, num_spills, used_callee_saved) =
+            RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 0);
+        assert!(
+            used_callee_saved.is_empty(),
+            "a call-free function this small should save nothing, got {used_callee_saved:?}"
+        );
+    }
+
+    #[test]
+    fn cross_call_values_never_take_a_caller_saved_register() {
+        // Every value here is defined before a call and used after it, so none
+        // may live in a caller-saved register — the call destroys them all.
+        let mut mir = X86Mir::new();
+        let symbol = mir.intern_symbol("callee");
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len())
+            .map(|_| mir.alloc_vreg())
+            .collect();
+
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(X86Inst::CallRel { symbol_id: symbol });
+        for &vreg in &vregs {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, used_callee_saved) =
+            RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        // One more value than the callee-saved class holds, so exactly one
+        // spills rather than borrowing a caller-saved register.
+        assert_eq!(num_spills as usize, CALLER_SAVED_REGS.len());
+        for &reg in &used_callee_saved {
+            assert!(CALLEE_SAVED_REGS.contains(&reg));
+        }
+        for inst in mir.instructions() {
+            if let X86Inst::MovRM {
+                dst: Operand::Physical(reg),
+                base: Reg::Rsi,
+                ..
+            } = inst
+            {
+                assert!(
+                    !CALLER_SAVED_REGS.contains(reg),
+                    "a value live across a call must not be in caller-saved {reg}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_call_survival_and_symbol_reconstruction() {
         let mut mir = X86Mir::new();
         let value = mir.alloc_vreg();
@@ -1860,10 +2049,10 @@ mod tests {
             })
             .expect("value definition should be physical");
 
-        assert!(matches!(
-            value_reg,
-            Reg::Rbx | Reg::R12 | Reg::R13 | Reg::R14 | Reg::R15
-        ));
+        assert!(
+            CALLEE_SAVED_REGS.contains(&value_reg),
+            "a value live across a call must land in a callee-saved register, got {value_reg}"
+        );
         assert!(
             mir.instructions()
                 .iter()
@@ -1882,7 +2071,9 @@ mod tests {
     #[test]
     fn test_loop_pressure_uses_loop_aware_spilling() {
         let mut mir = X86Mir::new();
-        let vregs: Vec<VReg> = (0..6).map(|_| mir.alloc_vreg()).collect();
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 1)
+            .map(|_| mir.alloc_vreg())
+            .collect();
         let loop_label = mir.alloc_label();
 
         define_loaded_values(&mut mir, &vregs);
@@ -1904,8 +2095,10 @@ mod tests {
         }
 
         let loop_info = liveness::analyze_loops(&mir);
+        // The loop body starts one instruction past the label, which the
+        // per-value loads above precede.
         assert!(
-            loop_info.depth(7) > 0,
+            loop_info.depth(vregs.len() + 1) > 0,
             "loop body should have nonzero depth"
         );
 
@@ -1958,8 +2151,10 @@ mod tests {
         // Force multiple spills and verify they get unique stack offsets
         let mut mir = X86Mir::new();
 
-        // Create 10 vregs to force 5 spills
-        let vregs: Vec<VReg> = (0..10).map(|_| mir.alloc_vreg()).collect();
+        // Five more simultaneously-live values than there are registers
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 5)
+            .map(|_| mir.alloc_vreg())
+            .collect();
 
         define_loaded_values(&mut mir, &vregs);
 
@@ -2009,16 +2204,14 @@ mod tests {
         // Test that spills are placed after existing local variables
         let mut mir = X86Mir::new();
 
-        let v0 = mir.alloc_vreg();
-        let v1 = mir.alloc_vreg();
-        let v2 = mir.alloc_vreg();
-        let v3 = mir.alloc_vreg();
-        let v4 = mir.alloc_vreg();
-        let v5 = mir.alloc_vreg();
+        // One more simultaneously-live value than there are registers
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 1)
+            .map(|_| mir.alloc_vreg())
+            .collect();
 
         // Define and use all vregs.
-        define_loaded_values(&mut mir, &[v0, v1, v2, v3, v4, v5]);
-        for vreg in [v0, v1, v2, v3, v4, v5] {
+        define_loaded_values(&mut mir, &vregs);
+        for &vreg in &vregs {
             mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rdi),
                 src: Operand::Virtual(vreg),
@@ -2057,8 +2250,10 @@ mod tests {
         // Test a function with many virtual registers causing a large stack frame
         let mut mir = X86Mir::new();
 
-        // Create 20 vregs (5 registers + 15 spills)
-        let vregs: Vec<VReg> = (0..20).map(|_| mir.alloc_vreg()).collect();
+        // Fifteen more simultaneously-live values than there are registers
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 15)
+            .map(|_| mir.alloc_vreg())
+            .collect();
 
         define_loaded_values(&mut mir, &vregs);
 
@@ -2099,8 +2294,10 @@ mod tests {
         // Test spilling with many existing local variables
         let mut mir = X86Mir::new();
 
-        // 6 vregs forces 1 spill
-        let vregs: Vec<VReg> = (0..6).map(|_| mir.alloc_vreg()).collect();
+        // One more simultaneously-live value than there are registers
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 1)
+            .map(|_| mir.alloc_vreg())
+            .collect();
 
         define_loaded_values(&mut mir, &vregs);
         for vreg in &vregs {
@@ -2136,8 +2333,10 @@ mod tests {
         // Test that binary operations work correctly when operands are spilled
         let mut mir = X86Mir::new();
 
-        // Create enough vregs to force spilling
-        let vregs: Vec<VReg> = (0..8).map(|_| mir.alloc_vreg()).collect();
+        // Three more simultaneously-live values than there are registers
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len() + 3)
+            .map(|_| mir.alloc_vreg())
+            .collect();
 
         define_loaded_values(&mut mir, &vregs);
 
@@ -2170,12 +2369,15 @@ mod tests {
     #[test]
     fn test_spilled_binary_destination_has_ordered_rewrite() {
         let mut mir = X86Mir::new();
-        let vregs: Vec<VReg> = (0..7).map(|_| mir.alloc_vreg()).collect();
+        // The first value is never used again, so `count` must exceed the
+        // register count by two for the rest to outnumber the registers.
+        let count = ALLOCATABLE_REGS.len() + 2;
+        let vregs: Vec<VReg> = (0..count).map(|_| mir.alloc_vreg()).collect();
 
         define_loaded_values(&mut mir, &vregs);
         mir.push(X86Inst::AddRR {
-            dst: Operand::Virtual(vregs[6]),
-            src: Operand::Virtual(vregs[5]),
+            dst: Operand::Virtual(vregs[count - 1]),
+            src: Operand::Virtual(vregs[count - 2]),
         });
         for &vreg in &vregs[1..] {
             mir.push(X86Inst::MovRR {
