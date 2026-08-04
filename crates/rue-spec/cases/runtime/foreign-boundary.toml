@@ -10,7 +10,7 @@
 id = "runtime.foreign_boundary"
 spec_chapter = "9.3"
 name = "Foreign-Boundary Semantics"
-description = "Rules governing the target-C foreign boundary: foreign redeclaration agreement."
+description = "Rules governing the target-C foreign boundary: foreign redeclaration agreement and the reserved entry-point symbol."
 
 # =============================================================================
 # Foreign redeclaration (9.3:5, RUE-1218)
@@ -64,5 +64,91 @@ extern "C" {
 extern "C" {
     fn shared(y: i64) -> i64;
 }
+""" }
+exit_code = 0
+
+# =============================================================================
+# The program entry point is not a foreign function (9.3:6, RUE-1220)
+# =============================================================================
+
+[[case]]
+name = "foreign_declaration_of_main_in_another_module_rejected"
+spec = ["9.3:6"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "A non-root module declaring `extern \"C\" fn main` is rejected: it would bind the program's own entry point"
+source = """
+const a = @import("a.rue");
+
+fn main() -> i32 { a.run() }
+"""
+aux_files = { "a.rue" = """
+extern "C" {
+    fn main() -> i32;
+}
+
+pub fn run() -> i32 {
+    checked { main() }
+}
+""" }
+compile_fail = true
+error_contains = [
+    "E1108",
+    "main",
+    "entry point",
+]
+
+[[case]]
+name = "foreign_declaration_of_main_in_the_root_module_rejected"
+spec = ["9.3:6"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "The rule holds in the root module too: the entry symbol is reserved even with no `main` definition to collide with"
+source = """
+extern "C" {
+    fn main() -> i32;
+}
+
+fn other() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E1108",
+    "entry point",
+]
+
+[[case]]
+name = "c_export_named_main_rejected"
+spec = ["9.3:6"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "The export direction of the same rule: a `pub extern \"C\" fn` named `main` is rejected (E1106)"
+source = """
+pub extern "C" fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = [
+    "E1106",
+    "main",
+    "entry point",
+]
+
+[[case]]
+name = "foreign_declaration_of_another_symbol_is_unaffected"
+spec = ["9.3:6"]
+preview = "c_ffi"
+preview_should_pass = true
+description = "The rule is about the entry symbol alone: a foreign declaration under any other C name is legal"
+source = """
+const a = @import("a.rue");
+
+fn main() -> i32 { a.run() }
+"""
+aux_files = { "a.rue" = """
+extern "C" {
+    fn rue_absent_symbol() -> i32;
+}
+
+pub fn run() -> i32 { 0 }
 """ }
 exit_code = 0

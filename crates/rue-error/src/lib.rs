@@ -463,6 +463,15 @@ impl ErrorCode {
     /// identity is module-local (RUE-1125), so only foreign declarations can
     /// collide across modules at all.
     pub const FOREIGN_SIGNATURE_CONFLICT: Self = Self(1107);
+    /// An `extern "C"` foreign declaration names `main`, the program entry
+    /// point (RUE-1220, spec 9.3:6). A foreign declaration names the C symbol
+    /// it declares (RUE-1125), so this one takes the bare `main` symbol the
+    /// runtime start glue calls (spec 6.1:38) — in the root module it collides
+    /// with the entry point's own definition, and in any other module a call
+    /// through it recurses into the program's own `main`. Sits in the FFI band
+    /// beside the other `extern "C"` rules, and is the import-side mirror of
+    /// E1106's rejection of a `pub extern "C" fn` export named `main`.
+    pub const FOREIGN_ENTRY_POINT_DECLARATION: Self = Self(1108);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -1864,6 +1873,20 @@ pub enum ErrorKind {
     )]
     ForeignSignatureConflict(Box<ForeignSignatureConflictError>),
 
+    /// An `extern "C"` foreign declaration names `main` (RUE-1220, spec
+    /// 9.3:6). The declared C symbol is the program's own entry point, which
+    /// belongs to the runtime start glue (`_start`/`__main`, spec 6.1:38), so
+    /// there is no external `main` for such a declaration to describe: in a
+    /// non-root module it silently binds the program's own entry point and a
+    /// call through it recurses, and in the root module it collides with the
+    /// entry point's definition. Rejected in every module and for every
+    /// signature, mirroring E1106's rejection of an export named `main`.
+    #[error(
+        "`extern \"C\"` declaration of `main` names the program entry point, which is not an \
+         external function (ADR-0064)"
+    )]
+    ForeignEntryPointDeclaration,
+
     /// A `@repr(c)` struct failed the reject-don't-guess eligibility check
     /// (ADR-0064 Amendment 1): an empty struct, an enum/aggregate field without
     /// its own `@repr(c)` marker, or a linear / destructor-bearing field. The
@@ -2149,6 +2172,7 @@ impl ErrorKind {
             ErrorKind::ExternVariadicUnsupported => ErrorCode::EXTERN_VARIADIC_UNSUPPORTED,
             ErrorKind::ExportSignatureUnsupported { .. } => ErrorCode::EXPORT_SIGNATURE_UNSUPPORTED,
             ErrorKind::ForeignSignatureConflict(_) => ErrorCode::FOREIGN_SIGNATURE_CONFLICT,
+            ErrorKind::ForeignEntryPointDeclaration => ErrorCode::FOREIGN_ENTRY_POINT_DECLARATION,
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,

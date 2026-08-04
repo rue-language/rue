@@ -114,6 +114,67 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             })
     }
 
+    /// Reject an `extern "C"` foreign declaration of `main`, the program entry
+    /// symbol (RUE-1220, spec 9.3:6).
+    ///
+    /// A foreign declaration names the C symbol it declares (RUE-1125), so
+    /// `extern "C" { fn main(); }` takes the bare `main` symbol the runtime
+    /// start glue calls (spec 6.1:38). There is no external function for it to
+    /// describe: in a non-root module the declaration silently binds the
+    /// program's own entry point, so a call through it recurses into `main`,
+    /// and in the root module it collides with the entry point's definition.
+    /// The rule is the import-side mirror of E1106's rejection of a
+    /// `pub extern "C" fn` export named `main`, and applies in every module and
+    /// for every signature — agreement with the entry point is not a defence,
+    /// which is why RUE-1218's signature check cannot express it.
+    ///
+    /// This lives in the predeclaration sweep rather than at signature
+    /// installation (where the query layer's foreign-redeclaration conflict
+    /// check runs) because
+    /// it reads only the declaration's own name and `extern` marker: no type is
+    /// resolved, so the earlier seam is available, and it is the one point both
+    /// producers pass for every declaration the program contains (installation
+    /// is reachable only from an already-swept `DeclarationShells`). Rejecting
+    /// here means the colliding `main` key is never handed out at all.
+    pub(super) fn check_foreign_entry_point_declaration(
+        &self,
+        declaration: InstRef,
+    ) -> CompileResult<()> {
+        let inst = self.rir.get(declaration);
+        let InstData::FnDecl {
+            name,
+            is_extern: true,
+            ..
+        } = &inst.data
+        else {
+            return Ok(());
+        };
+        if self.interner.resolve(name) != "main" {
+            return Ok(());
+        }
+        // Without `c_ffi` the declaration is rejected as E1100 by the gate that
+        // owns every `extern "C"` form; reporting a rule about a form the
+        // program cannot name yet would bury it. Same layering as the accessor
+        // sweep, and the same order the driver already produces.
+        if !self.preview_features.contains(&PreviewFeature::CFfi) {
+            return Ok(());
+        }
+        // One declaration is the whole error, so the declaration's own span
+        // carries it: no second site to label, unlike the redeclaration rule.
+        Err(
+            CompileError::new(ErrorKind::ForeignEntryPointDeclaration, inst.span)
+                .with_note(
+                    "a foreign declaration names the C symbol it declares, so this one resolves \
+                     to the program's entry point rather than to anything external; the entry \
+                     symbol belongs to the runtime start glue (`_start`/`__main`)",
+                )
+                .with_help(
+                    "give the foreign function a different C name, or call the Rue function \
+                     directly instead of declaring it foreign",
+                ),
+        )
+    }
+
     /// Resolve a source-level function name only in the given source file.
     ///
     /// This is the sole source-level lookup path for unqualified calls.

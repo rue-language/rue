@@ -905,3 +905,79 @@ fn main() -> i32 { 0 }""" },
 }""" },
 ]
 exit_code = 0
+
+# --- Foreign declaration of the entry point (spec 9.3:6, RUE-1220) ----------
+# `main` is the program's own entry symbol, reserved for the runtime start glue
+# (spec 6.1:38). Because a foreign declaration names the C symbol it declares
+# (RUE-1125), `extern "C" { fn main(); }` in a non-root module used to take the
+# bare `main` symbol: the program compiled and linked, and a call through the
+# declaration recursed into the program's own `main` (stack overflow, exit 101).
+# The signature agrees with the entry point's, so the RUE-1218 conflict rule
+# cannot reach it — the name alone is the fault, in every module.
+
+[[case]]
+name = "extern_declaration_of_main_rejected"
+description = "The RUE-1220 repro: a non-root module declaring `extern \"C\" fn main` is rejected instead of binding the program's own entry point (E1108)."
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+
+fn main() -> i32 {
+    a.run()
+}""" },
+  { path = "a.rue", source = """extern "C" {
+    fn main() -> i32;
+}
+
+pub fn run() -> i32 {
+    checked { main() }
+}""" },
+]
+compile_fail = true
+error_contains = ["E1108", "main", "entry point", "a.rue"]
+
+[[case]]
+name = "extern_declaration_of_main_in_root_module_rejected"
+description = "The entry symbol is reserved in the root module too, with no other declaration to collide with (E1108). A root that also defines `main` is caught earlier still, by the duplicate-definition rule."
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """extern "C" {
+    fn main() -> i32;
+}
+
+fn other() -> i32 { 0 }""" },
+]
+compile_fail = true
+error_contains = ["E1108", "entry point"]
+
+[[case]]
+name = "extern_declaration_of_another_symbol_still_accepted"
+description = "The rule names the entry symbol exactly: a foreign declaration under any other C name is unaffected."
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+
+fn main() -> i32 {
+    a.run()
+}""" },
+  { path = "a.rue", source = """extern "C" {
+    fn mainly(x: i64) -> i64;
+}
+
+pub fn run() -> i32 { 0 }""" },
+]
+exit_code = 0
+
+[[case]]
+name = "ordinary_main_in_another_module_still_compiles_and_runs"
+description = "An ordinary (non-`extern`) `main` outside the root stays a namespaced function (RUE-1125): it is mangled, called normally, and does not become the entry point."
+args = ["main.rue", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+
+fn main() -> i32 {
+    a.main()
+}""" },
+  { path = "a.rue", source = """pub fn main() -> i32 { 7 }""" },
+]
+exit_code = 7
