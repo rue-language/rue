@@ -2823,6 +2823,39 @@ where
     K: Clone + Eq + Hash + Ord,
     M: Clone + Eq + Hash + Ord,
 {
+    /// Reject a free function whose declared result is `-> borrow T`. The
+    /// accessor form (ADR-0062) hands out a projection of its receiver, so it
+    /// exists only on `borrow self` methods and a free function is the first
+    /// entry in the 6.6:4 rejection list. The result position alone also
+    /// demands the preview (6.6:3), so the gate runs first and an ungated
+    /// program reports E1100 rather than the shape error.
+    ///
+    /// The declaring `FnDecl` is the only carrier of this flag: the durable
+    /// signature records the result type's source spelling, which never
+    /// contains the result-position `borrow` qualifier.
+    fn reject_free_function_accessor(&self, declaration: InstRef) -> CompileResult<()> {
+        let inst = self.rir.rir().get(declaration);
+        let InstData::FnDecl {
+            returns_borrow: true,
+            ..
+        } = &inst.data
+        else {
+            return Ok(());
+        };
+        let span = inst.span;
+        self.require_preview(
+            rue_error::PreviewFeature::BorrowAccessors,
+            "a `-> borrow` accessor",
+            span,
+        )?;
+        Err(CompileError::new(
+            rue_error::ErrorKind::AccessorRequiresBorrowSelf {
+                found: "a free function".to_string(),
+            },
+            span,
+        ))
+    }
+
     fn resolve_array_length_in_file(
         &mut self,
         length: &ArrayLen,
@@ -4134,6 +4167,7 @@ where
                         name.to_owned(),
                     ))
                 })?;
+            host.reject_free_function_accessor(declaration)?;
             let (params, return_type, body) = match &host.rir.rir().get(declaration).data {
                 InstData::FnDecl {
                     params,
@@ -4943,6 +4977,11 @@ where
             "provider specialization host could not be constructed".into(),
         ))
     })?;
+    // A generic free function reaches analysis only through its
+    // specializations, so the 6.6:3/6.6:4 accessor gate runs here as well.
+    if let Some(declaration) = host.endpoint.first_free_function(name, owner_file) {
+        host.reject_free_function_accessor(declaration)?;
+    }
     let initial_anonymous_identities = host
         .canonical_anonymous_types
         .values()

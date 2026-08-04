@@ -4101,6 +4101,54 @@ fn main() -> i32 { 0 }";
     }
 
     #[test]
+    fn free_function_accessor_without_yield_requires_preview() {
+        // 6.6:3 is disjunctive: the `-> borrow` result position alone demands
+        // the preview, whether or not the body contains a `yield` (RUE-1213).
+        let source = "
+fn make() -> borrow i64 {
+    5
+}
+fn main() -> i32 { 0 }";
+        let errors = compile_to_air(source).expect_err("the gate is off");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::PreviewFeatureRequired { feature, .. }
+                if *feature == PreviewFeature::BorrowAccessors
+        )));
+    }
+
+    #[test]
+    fn free_function_accessor_without_yield_is_rejected() {
+        // The accessor identity is the declaration's `-> borrow` result, not a
+        // trailing `yield` in the body: a free function carrying the result
+        // qualifier is rejected under the preview too (6.6:4, RUE-1213).
+        let source = "
+fn make() -> borrow i64 {
+    5
+}
+fn main() -> i32 { 0 }";
+        let errors = compile_with_accessors(source).expect_err("free-fn accessor");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorRequiresBorrowSelf { found } if found == "a free function"
+        )));
+    }
+
+    #[test]
+    fn plain_free_function_is_not_an_accessor() {
+        // Control: an ordinary `-> T` free function keeps compiling with the
+        // preview enabled; only the result-position `borrow` marks an accessor.
+        let source = "
+fn make() -> i64 {
+    5
+}
+fn main() -> i32 {
+    if make() == 5 { 0 } else { 1 }
+}";
+        compile_with_accessors(source).expect("an ordinary free function is unaffected");
+    }
+
+    #[test]
     fn accessor_params_must_be_by_value() {
         let source = "
 struct P {
