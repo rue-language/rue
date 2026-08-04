@@ -133,7 +133,7 @@
 
 use rue_error::{CompileResult, ice_error};
 
-use super::mir::{LabelId, Reg, X86Inst, X86Mir};
+use super::mir::{LabelId, Reg, SHIFT_COUNT, X86Inst, X86Mir};
 use crate::vreg::BLOCK_LABEL_BASE;
 use crate::{EmittedCode, EmittedInst, EmittedRelocation, format_offset};
 
@@ -1299,20 +1299,22 @@ impl<'a> Emitter<'a> {
                 let dst_reg = dst.as_physical();
                 let cnt = count.as_physical();
 
-                // If count isn't in RCX, move it.
-                if cnt != Reg::Rcx {
+                // If count isn't already in the fixed count register, move it.
+                if cnt != SHIFT_COUNT {
                     // NB: this clobbers rcx, which is exactly what we want.
                     self.begin_inst();
-                    self.emit_mov_rr(Reg::Rcx, cnt);
-                    end_inst!(self, "mov rcx, {}", cnt);
+                    self.emit_mov_rr(SHIFT_COUNT, cnt);
+                    end_inst!(self, "mov {}, {}", SHIFT_COUNT, cnt);
                 }
 
-                // If dst is RCX, that's a conflict (dst would be clobbered by the move above
-                // or would shift itself by itself).
+                // If dst is the count register, that's a conflict (dst would be
+                // clobbered by the move above or would shift itself by itself).
+                // `mir::RESERVED_REGS` makes that unreachable by keeping the
+                // count register out of allocation entirely (RUE-1146).
                 assert!(
-                    dst_reg != Reg::Rcx,
-                    "Shl dst allocated to RCX, but x86 requires count in CL; \
-         regalloc must avoid assigning dst=RCX for Shl"
+                    dst_reg != SHIFT_COUNT,
+                    "Shl dst allocated to the shift-count register, but x86 requires \
+         the count in CL; regalloc must never assign it"
                 );
 
                 self.begin_inst();

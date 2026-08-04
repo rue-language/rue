@@ -708,6 +708,30 @@ mod tests {
         (cfg_output.cfg.unwrap(), type_pool, interner)
     }
 
+    /// Assert that a `--emit regalloc` projection exercises the widened
+    /// caller-saved class (RUE-1146) and never reports one of its registers as
+    /// callee-saved.
+    ///
+    /// The projection covers every function in the fixture, so this pins both
+    /// halves of the policy on the real pipeline: `caller_saved` names the
+    /// first caller-saved candidate on the target, which allocation offers
+    /// before any callee-saved register, and no such register may reach frame
+    /// planning's save list.
+    fn assert_widened_allocation(regalloc: &str, caller_saved: &str) {
+        assert!(
+            regalloc.contains(&format!("-> {caller_saved}")),
+            "fixture must allocate the caller-saved register {caller_saved}"
+        );
+        for section in regalloc.split("Callee-saved registers used:").skip(1) {
+            let reported = section.lines().nth(1).unwrap_or_default();
+            assert!(
+                !reported.contains(caller_saved),
+                "{caller_saved} is caller-saved and must not reach the prologue \
+                 save list, found: {reported}"
+            );
+        }
+    }
+
     fn assert_same_machine_code(normal: &MachineCode, with_asm: &MachineCode) {
         assert_eq!(normal.code, with_asm.code);
         assert_eq!(normal.strings, with_asm.strings);
@@ -818,6 +842,7 @@ mod tests {
             !x86_regalloc.contains("Spills:\n  none"),
             "fixture must exercise x86 spills"
         );
+        assert_widened_allocation(&x86_regalloc, "r11");
         let x86_asm = x86_product.artifacts.asm.expect("x86 assembly projection");
         assert!(!x86_asm.is_empty());
         assert!(x86_asm.contains("jno "), "fixture must retain rel32 fixups");
@@ -851,6 +876,7 @@ mod tests {
                 !arm_regalloc.contains("Spills:\n  none"),
                 "fixture must exercise AArch64 spills"
             );
+            assert_widened_allocation(&arm_regalloc, "x13");
             let arm_asm = arm_product
                 .artifacts
                 .asm

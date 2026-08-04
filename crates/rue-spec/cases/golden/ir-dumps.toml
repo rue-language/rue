@@ -903,14 +903,14 @@ bb0:
 [[case]]
 name = "simple_return_stackframe"
 spec = ["2.1:1"]
+description = "The constant dies before the exit call, so it lives in a caller-saved register and the frame saves nothing (RUE-1146). The prologue is still emitted, because a calling function needs it to keep RSP 16-byte aligned at the call site (RUE-1195)."
 source = "fn main() -> i32 { 42 }"
 target = "x86-64-linux"
 expected_stackframe = """
-Frame size: 16 bytes
+Frame size: 0 bytes
 Alignment: 16 bytes
 
 Layout (rbp-relative):
-  [rbp  -8] : saved r12 (callee-saved)
 
 Return: rax (Type::I32)
 """
