@@ -40,15 +40,32 @@ error_contains = [
 ]
 
 [[case]]
-name = "named_const_is_not_a_borrow_place"
-description = "Borrowing a named constant reports the ordinary non-lvalue diagnostic before CFG construction (RUE-760)."
+name = "named_const_borrow_is_promoted"
+description = "A named constant has no caller-visible storage, so a `borrow` of it is promoted to a static loan rather than rejected as a non-lvalue (RUE-953 supersedes the RUE-760 borrow case; `inout` above is unchanged)."
 source = """
 const VALUE: i32 = 42;
 
-fn take(borrow value: i32) {}
+fn take(borrow value: i32) -> i32 { value }
 
-fn main() {
-    take(borrow VALUE);
+fn main() -> i32 {
+    take(borrow VALUE)
+}
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_self_receiver_still_requires_a_place"
+description = "E0427 survives borrow-operand elaboration: the implicit autoref of a `borrow self` receiver is not a `borrow` operand, so a computed receiver still has nothing to loan (RUE-953)."
+source = """
+struct Pair {
+    value: i32,
+    fn read(borrow self) -> i32 { self.value }
+}
+
+fn make() -> Pair { Pair { value: 1 } }
+
+fn main() -> i32 {
+    make().read()
 }
 """
 compile_fail = true

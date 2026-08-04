@@ -417,43 +417,109 @@ mod tests {
     }
 
     #[test]
-    fn byref_arguments_reject_non_places_during_air_analysis() {
+    fn inout_arguments_reject_non_places_during_air_analysis() {
         let cases = [
-            (
-                "const VALUE: i32 = 1; fn take(inout x: i32) {} fn main() -> i32 { take(inout VALUE); 0 }",
-                true,
-            ),
-            (
-                "const VALUE: i32 = 1; fn take(borrow x: i32) {} fn main() -> i32 { take(borrow VALUE); 0 }",
-                false,
-            ),
-            (
-                "fn take(inout x: i32) {} fn main() -> i32 { take(inout 1); 0 }",
-                true,
-            ),
-            (
-                "fn take(borrow x: i32) {} fn main() -> i32 { take(borrow (1 + 2)); 0 }",
-                false,
-            ),
-            (
-                "fn value() -> i32 { 1 } fn take(borrow x: i32) {} fn main() -> i32 { take(borrow value()); 0 }",
-                false,
-            ),
+            "const VALUE: i32 = 1; fn take(inout x: i32) {} fn main() -> i32 { take(inout VALUE); 0 }",
+            "fn take(inout x: i32) {} fn main() -> i32 { take(inout 1); 0 }",
+            "fn value() -> i32 { 1 } fn take(inout x: i32) {} fn main() -> i32 { take(inout value()); 0 }",
         ];
 
-        for (source, is_inout) in cases {
+        for source in cases {
             let errors = compile_to_air(source).expect_err("non-place must fail in sema");
             assert!(
-                errors.iter().any(|error| {
-                    if is_inout {
-                        matches!(error.kind, ErrorKind::InoutNonLvalue)
-                    } else {
-                        matches!(error.kind, ErrorKind::BorrowNonLvalue)
-                    }
-                }),
+                errors
+                    .iter()
+                    .any(|error| matches!(error.kind, ErrorKind::InoutNonLvalue)),
                 "source: {source}\nerrors: {errors:#?}"
             );
         }
+    }
+
+    /// Every borrow-operand slot introduced by `main`, paired with whether it
+    /// is registered as non-owning (the AIR signature of static promotion).
+    fn borrow_operand_slots(output: &SemaOutput) -> Vec<(u32, bool)> {
+        output
+            .functions
+            .iter()
+            .flat_map(|function| {
+                function.air.iter().filter_map(|(_, inst)| match inst.data {
+                    AirInstData::StorageLive { slot } => {
+                        Some((slot, function.air.is_borrow_slot(slot)))
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn borrow_operands_that_name_no_place_are_elaborated() {
+        // Every shape the old E0427 rejected now compiles (RUE-953).
+        for source in [
+            "const VALUE: i32 = 1; fn take(borrow x: i32) {} fn main() -> i32 { take(borrow VALUE); 0 }",
+            "fn take(borrow x: i32) {} fn main() -> i32 { take(borrow (1 + 2)); 0 }",
+            "fn value() -> i32 { 1 } fn take(borrow x: i32) {} fn main() -> i32 { take(borrow value()); 0 }",
+            "fn take(borrow x: i32) {} fn main() -> i32 { take(borrow 5); 0 }",
+        ] {
+            compile_to_air(source).unwrap_or_else(|errors| {
+                panic!("source: {source}\nerrors: {errors:#?}");
+            });
+        }
+    }
+
+    #[test]
+    fn promoted_borrow_operands_schedule_no_cleanup() {
+        // A comptime-evaluable, infallible operand loans a static image: its
+        // hidden binding owns nothing, so its slot is non-owning and drop
+        // elaboration schedules nothing for it.
+        let promoted = compile_to_air(
+            "const VALUE: i32 = 1;
+             fn take(borrow x: i32) {}
+             fn main() -> i32 { take(borrow 5); take(borrow (1 + 2)); take(borrow VALUE); 0 }",
+        )
+        .expect("promotable operands compile");
+        let slots = borrow_operand_slots(&promoted);
+        assert_eq!(slots.len(), 3, "one hidden binding per operand: {slots:?}");
+        assert!(
+            slots.iter().all(|(_, non_owning)| *non_owning),
+            "every promoted operand's slot is non-owning: {slots:?}"
+        );
+    }
+
+    #[test]
+    fn runtime_borrow_operands_materialize_an_owning_temporary() {
+        // A runtime operand — and a form outside the promotion set, even with
+        // constant arguments — takes the temporary path, whose binding owns
+        // its value and is dropped by the ordinary scope-exit machinery.
+        for source in [
+            "fn value() -> i32 { 1 } fn take(borrow x: i32) {} fn main() -> i32 { take(borrow value()); 0 }",
+            "fn take(borrow x: i32) {} fn main() -> i32 { take(borrow (6 / 2)); 0 }",
+        ] {
+            let output = compile_to_air(source).expect("runtime operands compile");
+            let slots = borrow_operand_slots(&output);
+            assert_eq!(slots.len(), 1, "source: {source}, slots: {slots:?}");
+            assert!(
+                !slots[0].1,
+                "source: {source}: a temporary's slot owns its value"
+            );
+        }
+    }
+
+    #[test]
+    fn linear_borrow_operand_temporaries_are_rejected() {
+        let errors = compile_to_air(
+            "linear struct Token { id: i32 }
+             fn make() -> Token { Token { id: 1 } }
+             fn peek(borrow t: Token) -> i32 { 5 }
+             fn main() -> i32 { peek(borrow make()) }",
+        )
+        .expect_err("nothing can consume a hidden binding, so a linear one leaks");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(error.kind, ErrorKind::LinearValueDiscarded { .. })),
+            "errors: {errors:#?}"
+        );
     }
 
     #[test]

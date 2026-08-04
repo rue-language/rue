@@ -356,8 +356,8 @@ compile_fail = true
 error_contains = ["E0481", "invalid array length", "'A' is not a compile-time constant"]
 
 [[case]]
-name = "borrow_const_not_lvalue_rue52"
-description = "RUE-52: `borrow CONST` reached codegen as an immediate `Const` and hit panic!(\"by-ref argument must be a place\") in byref_args -> SIGABRT. Now a clean E0427."
+name = "borrow_const_is_promoted_rue52"
+description = "RUE-52: `borrow CONST` reached codegen as an immediate `Const` and hit panic!(\"by-ref argument must be a place\") in byref_args -> SIGABRT. It is now promoted to a static loan in sema (RUE-953), so codegen still never sees a non-place by-ref argument."
 files = [{ path = "main.rue", source = """
 const C: i32 = 5;
 fn take(borrow v: i32) -> i32 { v }
@@ -365,8 +365,7 @@ fn main() -> i32 {
     take(borrow C)
 }
 """ }]
-compile_fail = true
-error_contains = ["E0427", "borrow argument must be"]
+exit_code = 5
 
 [[case]]
 name = "inout_const_not_lvalue_rue52"

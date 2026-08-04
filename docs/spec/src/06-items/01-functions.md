@@ -228,6 +228,86 @@ fn main() -> i32 {
 }
 ```
 
+## Borrow Operands
+
+{{ rule(id="6.1:39", cat="legality-rule") }}
+
+An argument to a `borrow` parameter **MAY** be any expression of the parameter's
+type. When the argument does not denote a place — a variable, or a field or
+element projection chain rooted at one — it is a *borrow operand*, and the
+implementation elaborates it into a place by exactly one of two mechanisms:
+**static promotion** (6.1:40) when the operand meets the promotion criterion,
+and a **compiler-materialized temporary** (6.1:41) otherwise. Elaboration
+introduces no binding that source code can name, so the storage it produces is
+reachable from no other expression and takes part in none of the exclusivity
+rules 6.1:20, 6.1:30, and 6.1:36. This rule does **not** extend to `inout`: an
+exclusive loan writes through the argument's own storage, so an `inout`
+argument **MUST** still be an lvalue (6.1:17). Nor does it extend to a method
+receiver, whose passing mode is chosen by autoref (6.4:25) rather than written
+as a `borrow` operand.
+
+{{ rule(id="6.1:40", cat="legality-rule") }}
+
+A borrow operand is **promoted** when it is compile-time evaluable and
+infallible. It is promoted exactly when both of the following hold:
+
+- it is built only from a literal (integer, boolean, unit, or string), a named
+  value constant (6.5), a `comptime` parameter, and the unary operators `-`,
+  `!`, `~` and the binary operators `+`, `-`, `*`, `&`, `|`, `^`, `<<`, `>>`,
+  `&&`, `||`, `==`, `!=`, `<`, `<=`, `>`, `>=` applied to promoted operands;
+  and
+- it is a string, or it evaluates to a value at compile time.
+
+Division (`/`) and remainder (`%`) are excluded from the first condition even
+when the divisor is a nonzero literal, because their trap conditions depend on
+operand values rather than on the shape of the expression. An operand outside
+the set, and an operand whose compile-time evaluation is diagnosed (for example
+one that overflows its type), is not promoted and is elaborated under 6.1:41
+instead.
+
+A promoted operand loans the value's static image, which exists for the whole
+program's execution: no destructor runs for it, and no cleanup is scheduled at
+any point. A string literal promoted at a `borrow str` parameter is the
+static-backed two-word view of 3.7:44; promoted at a `borrow StrBuf` parameter
+it is the zero-capacity, literal-backed representation of 3.10:2, which owns no
+allocation.
+
+{{ rule(id="6.1:41", cat="dynamic-semantics") }}
+
+A borrow operand that is not promoted is evaluated **exactly once**, in
+argument order (4.10:7), and its value is placed in a fresh hidden binding
+created for the call; the loan names that binding's storage, so the value is
+live for the whole call. The binding's scope is that call — the exact extent
+of the loan it backs, since loans are second-class and cannot outlive the call
+(6.1:26) — so the binding goes out of scope as soon as the call returns, and
+its value is dropped there under the ordinary rules of 3.9. It is dropped
+exactly once on every path that reaches it, including a path that leaves the
+enclosing statement early through `return`, `break`, `continue`, or `?` after
+the binding was initialized, and it is not dropped on a path that leaves before
+the operand was evaluated at all.
+
+Because no expression can name the hidden binding, nothing can consume it. An
+operand whose type carries a linear value (3.8:57) is therefore rejected, on
+the same ground as a discarded expression value (3.8:64).
+
+{{ rule(id="6.1:42", cat="example") }}
+
+```rue
+struct Log { id: i32 }
+drop fn Log(self) { @dbg(self.id); }
+
+fn make(id: i32) -> Log { Log { id: id } }
+fn level(borrow entry: Log) -> i32 { entry.id }
+
+fn threshold(borrow limit: i32) -> i32 { limit }
+
+fn main() -> i32 {
+    let promoted = threshold(borrow 40);  // static: no temporary, no drop
+    let temporary = level(borrow make(2));  // hidden binding, dropped after the call
+    promoted + temporary  // 42
+}
+```
+
 ## Parameter Immutability
 
 {{ rule(id="6.1:32", cat="legality-rule") }}

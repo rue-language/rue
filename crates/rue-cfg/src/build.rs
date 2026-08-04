@@ -1373,11 +1373,30 @@ impl<'a> CfgBuilder<'a> {
                 // Collect statements into a Vec for iteration (needed for checking remaining)
                 let statements: Vec<AirRef> = self.air.get_block_statements(statements).collect();
 
-                // Check if this is a "wrapper block" that only contains StorageLive statements.
-                // These are synthetic blocks created to pair StorageLive with Alloc, and they
-                // should NOT create a new scope for drop elaboration.
+                // A binding's storage wrapper — `Block { [StorageLive s], Alloc s }`,
+                // emitted by `let` lowering to pair a slot's storage annotation with
+                // its initializer — must NOT open a drop scope: the binding belongs
+                // to the enclosing block, which is where its drop is scheduled.
+                //
+                // The shape is matched exactly: every statement is a `StorageLive`
+                // AND the block's value is the `Alloc` that initializes one of those
+                // slots. A block whose statements are `StorageLive`s but whose value
+                // is an ordinary expression is a real drop scope. That is what a
+                // borrow-operand temporary is (RUE-953): its `StorageLive` is hoisted
+                // to a wrapper around the call so the temporary's drop lands *after*
+                // the call, while its `Alloc` stays at the operand's argument
+                // position so evaluation order is unchanged.
+                let value_alloc_slot = match self.air.get(*value).data {
+                    AirInstData::Alloc { slot, .. } => Some(slot),
+                    _ => None,
+                };
                 let is_storage_live_wrapper = statements.iter().all(|stmt| {
                     matches!(self.air.get(*stmt).data, AirInstData::StorageLive { .. })
+                }) && statements.iter().any(|stmt| {
+                    matches!(
+                        self.air.get(*stmt).data,
+                        AirInstData::StorageLive { slot } if Some(slot) == value_alloc_slot
+                    )
                 });
 
                 // Only push a scope if this is a real syntactic block (not a StorageLive wrapper)

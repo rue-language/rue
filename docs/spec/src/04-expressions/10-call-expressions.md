@@ -25,7 +25,7 @@ call_arg  = [ "inout" | "borrow" ] expression ;
 
 {{ rule(id="4.10:10", cat="informative") }}
 
-An `inout` or `borrow` argument must denote a place; that requirement is a post-parse legality rule of the parameter-mode system (6.1:17), not a grammar restriction (see the grammar notes in appendix A).
+An `inout` argument must denote a place; that requirement is a post-parse legality rule of the parameter-mode system (6.1:17), not a grammar restriction (see the grammar notes in appendix A). A `borrow` argument that denotes no place is elaborated into one instead of being rejected (6.1:39).
 
 {{ rule(id="4.10:3", cat="legality-rule") }}
 

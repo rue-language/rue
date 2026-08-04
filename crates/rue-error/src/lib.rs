@@ -1460,7 +1460,11 @@ pub enum ErrorKind {
     /// Same variable passed to multiple inout parameters in a single call
     #[error("cannot pass same variable '{variable}' to multiple inout parameters")]
     InoutExclusiveAccess { variable: String },
-    /// Borrow argument is not an lvalue (variable, field, or array element)
+    /// A shared by-reference position that requires an existing place and has
+    /// no elaboration (RUE-953): a method's `borrow self` receiver, an
+    /// accessor's receiver, and the array source of a slice coercion. An
+    /// explicit `borrow` *argument* that names no place is elaborated into a
+    /// promoted static or a hidden temporary instead of reaching this.
     #[error("borrow argument must be a variable, field, or array element")]
     BorrowNonLvalue,
     /// Cannot mutate a borrowed value

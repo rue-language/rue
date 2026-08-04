@@ -109,9 +109,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         param_modes: &[RirParamMode],
         validate_semantic_types: bool,
         ctx: &mut AnalysisContext,
-    ) -> CompileResult<Vec<AirCallArg>> {
+    ) -> CompileResult<CallOperands> {
         let args = self.body_rir_ref().call_args(args_range).to_vec();
-        let air_args = self.analyze_call_args_coerced(
+        let operands = self.analyze_call_args_coerced(
             air,
             args.iter().copied(),
             param_types,
@@ -119,7 +119,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ctx,
         )?;
         if validate_semantic_types {
-            for ((arg, air_arg), expected) in args.iter().zip(&air_args).zip(param_types) {
+            for ((arg, air_arg), expected) in args.iter().zip(&operands.args).zip(param_types) {
                 let found = air.get(air_arg.value).ty;
                 if !self.types_compatible(found, *expected) {
                     return Err(self.type_mismatch_error(
@@ -130,19 +130,27 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
             }
         }
-        Ok(air_args)
+        Ok(operands)
     }
 
     /// Emit an ordinary resolved call and package its declared result.
+    ///
+    /// `temp_scope` carries the storage annotations of any borrow-operand
+    /// temporary this call materialized (RUE-953). Wrapping the *call* in that
+    /// block is what puts the temporaries' scope exit — and therefore their
+    /// drop — after the callee has read through the loan.
     fn emit_call_result(
-        &self,
+        &mut self,
         air: &mut Air,
         name: Spur,
         args: &[AirCallArg],
+        temp_scope: Vec<AirRef>,
         return_type: Type,
         span: Span,
     ) -> CompileResult<AnalysisResult> {
         let air_ref = air.add_call(None, name, args, return_type, span)?;
+        let air_ref =
+            self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
         Ok(AnalysisResult::new(air_ref, return_type))
     }
 
@@ -546,8 +554,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Analyze all arguments. Slice parameters (ADR-0043, RUE-322) coerce a
         // `borrow arr` argument into a by-value fat pointer here.
-        let air_args =
-            self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
+        let CallOperands {
+            args: air_args,
+            temp_scope,
+        } = self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
 
         // Handle generic function calls differently
         if is_generic {
@@ -732,7 +742,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if let Some(ConstValue::Type(ty)) =
                     self.reduce_type_ctor_body(name, &type_subst, &value_subst, span)?
                 {
-                    // Success! Return a TypeConst instruction instead of a runtime call
+                    // Success! Return a TypeConst instruction instead of a
+                    // runtime call. This arm is reached only when every
+                    // parameter is `comptime`, and a `comptime` parameter takes
+                    // an unmarked argument (4.10:3), so `temp_scope` is
+                    // necessarily empty here — there is no call left to wrap.
                     let air_ref = air.add_inst(AirInst {
                         data: AirInstData::TypeConst(ty),
                         ty: Type::COMPTIME_TYPE,
@@ -752,11 +766,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 return_type,
                 span,
             )?;
+            let air_ref =
+                self.wrap_value_with_temp_scope(air, air_ref, return_type, span, temp_scope)?;
             Ok(AnalysisResult::new(air_ref, return_type))
         } else {
             // Regular non-generic call
             let return_type = base_return_type;
-            self.emit_call_result(air, name, &air_args, return_type, span)
+            self.emit_call_result(air, name, &air_args, temp_scope, return_type, span)
         }
     }
 
@@ -1191,7 +1207,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if receiver_frame_pushed {
             ctx.call_loaned_roots.pop();
         }
-        air_args.extend(args_result?);
+        let args_result = args_result?;
+        air_args.extend(args_result.args);
+        // The receiver's materialized owner is entered first: it is created
+        // before any explicit operand, so its scope must be the outer one.
+        let mut temp_scope = receiver_temp_scope;
+        temp_scope.extend(args_result.temp_scope);
 
         // Generate the method call symbol: `Type.method`, file-qualified when
         // the type name spans files (RUE-571) — must match the definition
@@ -1199,15 +1220,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let call_name = self.method_symbol(struct_id, &method_name_str, true);
         let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
-        let call = self.emit_call_result(air, call_name_sym, &air_args, return_type, span)?;
-        let air_ref = self.wrap_value_with_temp_scope(
-            air,
-            call.air_ref,
-            return_type,
-            span,
-            receiver_temp_scope,
-        )?;
-        Ok(AnalysisResult::new(air_ref, return_type))
+        let call =
+            self.emit_call_result(air, call_name_sym, &air_args, temp_scope, return_type, span)?;
+        Ok(AnalysisResult::new(call.air_ref, return_type))
     }
 
     /// Analyze a module member call: `module.function(args)` becomes a direct function call.
@@ -1336,10 +1351,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // materialize their by-value fat-pointer views exactly like direct
         // calls do (RUE-559) — std functions taking `borrow s: str` are called
         // this way.
-        let air_args =
-            self.analyze_call_operands(air, args_range, &param_types, &param_modes, true, ctx)?;
+        let CallOperands {
+            args: air_args,
+            temp_scope,
+        } = self.analyze_call_operands(air, args_range, &param_types, &param_modes, true, ctx)?;
 
-        self.emit_call_result(air, function_key, &air_args, fn_info.return_type, span)
+        self.emit_call_result(
+            air,
+            function_key,
+            &air_args,
+            temp_scope,
+            fn_info.return_type,
+            span,
+        )
     }
 
     /// Analyze a type-qualified associated-function call.
@@ -1486,7 +1510,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // path as free and module-member calls. In particular, `borrow str`
         // and `[T]` parameters are physical by-value views even though their
         // source modes remain Borrow (RUE-634).
-        let air_args = self.analyze_call_operands(
+        let CallOperands {
+            args: air_args,
+            temp_scope,
+        } = self.analyze_call_operands(
             air,
             args_range,
             &method_param_types,
@@ -1503,6 +1530,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let call_name = self.method_symbol(struct_id, &function_name_str, false);
         let call_name_sym = self.body_interner().get_or_intern(&call_name);
 
-        self.emit_call_result(air, call_name_sym, &air_args, return_type, span)
+        self.emit_call_result(air, call_name_sym, &air_args, temp_scope, return_type, span)
     }
 }

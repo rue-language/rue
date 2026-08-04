@@ -1347,3 +1347,185 @@ struct S {
 fn main() -> i32 { let s = S { v: 30 }; s.m(4, 8) }
 """
 exit_code = 42
+
+# =============================================================================
+# Borrow operands: static promotion and compiler-materialized temporaries
+# (6.1:39 - 6.1:41)
+# =============================================================================
+
+[[case]]
+name = "borrow_operand_literal_is_accepted"
+spec = ["6.1:39", "6.1:40"]
+description = "A `borrow` argument need not denote a place: a literal operand is promoted to a static loan"
+source = """
+fn take(borrow x: i32) -> i32 { x }
+fn main() -> i32 { take(borrow 42) }
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_operand_named_constant_is_promoted"
+spec = ["6.1:40"]
+description = "A named value constant has no caller-visible storage, so borrowing it is a promoted static loan"
+source = """
+const LIMIT: i32 = 42;
+fn take(borrow x: i32) -> i32 { x }
+fn main() -> i32 { take(borrow LIMIT) }
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_operand_const_expression_is_promoted"
+spec = ["6.1:40"]
+description = "Arithmetic over literals is in the promotion form set and folds infallibly"
+source = """
+fn take(borrow x: i32) -> i32 { x }
+fn main() -> i32 { take(borrow (6 * 7 - 0)) }
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_operand_inout_still_requires_a_place"
+spec = ["6.1:39"]
+description = "Elaboration does not extend to `inout`: an exclusive loan still needs the argument's own storage"
+source = """
+fn take(inout x: i32) { x = x + 1; }
+fn main() -> i32 { take(inout 1); 0 }
+"""
+compile_fail = true
+error_contains = ["E0425", "inout argument must be an lvalue"]
+
+[[case]]
+name = "borrow_operand_call_result_is_a_temporary"
+spec = ["6.1:41"]
+description = "A runtime operand is evaluated once into a hidden binding whose storage backs the loan"
+source = """
+fn value() -> i32 { 42 }
+fn take(borrow x: i32) -> i32 { x }
+fn main() -> i32 { take(borrow value()) }
+"""
+exit_code = 42
+
+[[case]]
+name = "borrow_operand_temporary_is_evaluated_exactly_once"
+spec = ["6.1:41"]
+description = "The operand runs once, not once per read of the parameter inside the callee"
+source = """
+fn source() -> i32 { @dbg(1); 21 }
+fn take(borrow x: i32) -> i32 { x + x }
+fn main() -> i32 { take(borrow source()) }
+"""
+exit_code = 42
+expected_stdout = "1\n"
+
+[[case]]
+name = "borrow_operand_temporary_drops_once_after_the_call"
+spec = ["6.1:41"]
+description = "A droppable temporary's destructor runs exactly once, after the call it backs returns"
+source = """
+struct Log { id: i32 }
+drop fn Log(self) { @dbg(self.id); }
+fn make(id: i32) -> Log { Log { id: id } }
+fn level(borrow entry: Log) -> i32 { entry.id }
+fn main() -> i32 {
+    let value = level(borrow make(7));
+    @dbg(100);
+    value
+}
+"""
+exit_code = 7
+expected_stdout = "7\n100\n"
+
+[[case]]
+name = "borrow_operand_temporary_drops_once_per_evaluation"
+spec = ["6.1:41"]
+description = "A temporary created in a loop is dropped on each iteration, not accumulated"
+source = """
+struct Log { id: i32 }
+drop fn Log(self) { @dbg(self.id); }
+fn make(id: i32) -> Log { Log { id: id } }
+fn level(borrow entry: Log) -> i32 { entry.id }
+fn main() -> i32 {
+    let mut i: i32 = 0;
+    let mut total: i32 = 0;
+    while i < 3 {
+        total = total + level(borrow make(i));
+        i = i + 1;
+    }
+    total
+}
+"""
+exit_code = 3
+expected_stdout = "0\n1\n2\n"
+
+[[case]]
+name = "borrow_operand_temporary_drops_on_an_early_exit_path"
+spec = ["6.1:41"]
+description = "A `return` taken by a later argument of the same call still drops the already-initialized temporary exactly once"
+source = """
+struct Log { id: i32 }
+drop fn Log(self) { @dbg(self.id); }
+fn make(id: i32) -> Log { Log { id: id } }
+fn both(borrow entry: Log, extra: i32) -> i32 { entry.id + extra }
+fn pick(early: bool) -> i32 { if early { 5 } else { 1 } }
+fn run(early: bool) -> i32 {
+    if early { return both(borrow make(7), pick(true)); }
+    both(borrow make(9), pick(false))
+}
+fn main() -> i32 {
+    let first = run(true);
+    let second = run(false);
+    first + second
+}
+"""
+exit_code = 22
+expected_stdout = "7\n9\n"
+
+[[case]]
+name = "borrow_operand_temporaries_nest"
+spec = ["6.1:41"]
+description = "A borrow operand may itself contain a borrow operand; the inner temporary's scope nests inside the outer one"
+source = """
+fn inner() -> i32 { @dbg(1); 20 }
+fn middle(borrow x: i32) -> i32 { @dbg(2); x + 1 }
+fn outer(borrow y: i32) -> i32 { @dbg(3); y * 2 }
+fn main() -> i32 { outer(borrow middle(borrow inner())) }
+"""
+exit_code = 42
+expected_stdout = "1\n2\n3\n"
+
+[[case]]
+name = "borrow_operand_preserves_left_to_right_evaluation"
+spec = ["6.1:41", "4.10:7"]
+description = "Elaborating a later argument does not hoist its evaluation ahead of an earlier argument"
+source = """
+fn first() -> i32 { @dbg(1); 20 }
+fn second() -> i32 { @dbg(2); 22 }
+fn take(a: i32, borrow b: i32) -> i32 { a + b }
+fn main() -> i32 { take(first(), borrow second()) }
+"""
+exit_code = 42
+expected_stdout = "1\n2\n"
+
+[[case]]
+name = "borrow_operand_linear_temporary_is_rejected"
+spec = ["6.1:41"]
+description = "Nothing can name the hidden binding, so a linear operand would be dropped unconsumed"
+source = """
+linear struct Token { id: i32 }
+fn make() -> Token { Token { id: 1 } }
+fn peek(borrow t: Token) -> i32 { 5 }
+fn main() -> i32 { peek(borrow make()) }
+"""
+compile_fail = true
+error_contains = ["E0478", "carries a linear value and must be consumed"]
+
+[[case]]
+name = "borrow_operand_promoted_string_at_str_parameter"
+spec = ["6.1:40"]
+description = "A string literal promoted at a `borrow str` parameter is the static-backed two-word view"
+source = """
+fn width(borrow s: str) -> i32 { @intCast(s.len()) }
+fn main() -> i32 { width(borrow "hello") }
+"""
+exit_code = 5
