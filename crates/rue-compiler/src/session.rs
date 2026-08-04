@@ -5576,6 +5576,28 @@ mod tests {
         }
     }
 
+    /// The comptime arguments of a specialization of the definition named
+    /// `source_name`, or `None` for any other callable.
+    ///
+    /// A live callable name is never a source name: an ordinary definition's
+    /// internal symbol is module-qualified (RUE-1125) and a specialization
+    /// appends its argument mangling to that. Tests therefore select a
+    /// specialization through its durable identity.
+    fn specialization_arguments<'a>(
+        function: &'a FunctionWithCfg,
+        source_name: &str,
+    ) -> Option<&'a crate::CanonicalArguments> {
+        let crate::FunctionInstanceKey::Specialization { base, arguments } =
+            &function.semantic_identity
+        else {
+            return None;
+        };
+        let crate::FunctionInstanceKey::Definition(definition) = base.as_ref() else {
+            return None;
+        };
+        (definition.name() == source_name).then_some(arguments)
+    }
+
     fn retained_body_query_stamps(
         session: &CompilerSession,
         key: &crate::body_query::BodyQueryKey,
@@ -5768,8 +5790,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata, SourceSnapshot,
-        StableDefinitionKey, StableDefinitionKind, Target,
+        FunctionWithCfg, ModuleId, OptLevel, PreviewFeature, PreviewFeatures, SourceMetadata,
+        SourceSnapshot, StableDefinitionKey, StableDefinitionKind, Target,
     };
 
     #[test]
@@ -7334,7 +7356,10 @@ mod tests {
             .iter()
             .map(|function| (function.analyzed.name.as_str(), function.cfg.fn_name()))
             .collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(names.get("probe"), Some(&"probe"));
+        assert_eq!(
+            names.get("__rue_fn_main_2erue__probe"),
+            Some(&"__rue_fn_main_2erue__probe")
+        );
         assert_eq!(names.get("main"), Some(&"main"));
     }
 
@@ -8962,7 +8987,11 @@ fn main() -> i32 { 0 }
         let choose_true = cold
             .functions()
             .iter()
-            .find(|function| function.legacy_name == "choose.vtrue")
+            .find(|function| {
+                specialization_arguments(function, "choose").is_some_and(|arguments| {
+                    arguments.values.as_ref() == [crate::CanonicalArgumentValue::Bool(true)]
+                })
+            })
             .unwrap();
         let choose_true_key = crate::body_query::BodyQueryKey {
             instance: choose_true.semantic_identity.clone(),
@@ -9625,6 +9654,166 @@ fn main() -> i32 {
         );
     }
 
+    /// Warm-session locality of callable identity (RUE-1125).
+    ///
+    /// Inserting an unreachable, same-named free function into an unrelated
+    /// module must not touch an existing function at all. Identity is derived
+    /// from a declaration's own module and source name, so `helpers.value`
+    /// keeps its semantic identity, its body/declaration terminals, its
+    /// dependency set, its machine symbol, and its presentation name, and its
+    /// body is reused rather than recomputed.
+    #[test]
+    fn an_unrelated_same_named_declaration_does_not_disturb_a_warm_body() {
+        const ROOT: &str = "const helpers = @import(\"helpers.rue\");\n\
+             const spare = @import(\"spare.rue\");\n\
+             fn main() -> i32 { helpers.value() + spare.unrelated() }";
+        const HELPERS: &str = "pub fn value() -> i32 { 10 }";
+        const SPARE: &str = "pub fn unrelated() -> i32 { 20 }";
+        let program = |spare: &str| {
+            snapshot(
+                &[
+                    (1, "/p/main.rue", "main.rue", ROOT),
+                    (2, "/p/helpers.rue", "helpers.rue", HELPERS),
+                    (3, "/p/spare.rue", "spare.rue", spare),
+                ],
+                1,
+            )
+        };
+        let options = CompileOptions::default();
+
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &program(SPARE));
+        let cold = session.canonical_semantic(&options).unwrap();
+        let value = body_query_key(&mut session, &options, "value");
+
+        // Everything RUE-1125 requires to be a function of `value`'s own
+        // declaration: its query terminals, its dependency set, its emitted
+        // symbols, and how it is presented.
+        let observed = |session: &CompilerSession,
+                        semantic: &Arc<crate::CanonicalSemanticOutput>| {
+            let function = semantic
+                .functions()
+                .iter()
+                .find(|function| function.definition_source_name() == Some("value"))
+                .expect("value is reached from main");
+            (
+                retained_body_query_stamps(session, &value),
+                retained_body_closure_stamps(session, &value),
+                retained_body_dependency_nodes(session, &value),
+                function.semantic_identity.clone(),
+                function.legacy_name.clone(),
+                function.machine_name.clone(),
+            )
+        };
+        let before = observed(&session, &cold);
+        assert_eq!(
+            before.4, "__rue_fn_helpers_2erue__value",
+            "an ordinary free function is module-qualified from the start"
+        );
+        let codegen = |session: &mut CompilerSession, semantic| {
+            session
+                .codegen_units(
+                    semantic,
+                    &options,
+                    rue_codegen::BackendArtifactRequest::default(),
+                )
+                .unwrap();
+            session
+                .codegen_executions()
+                .iter()
+                .find(|(identity, _)| *identity == before.3)
+                .map(|(_, execution)| *execution)
+                .expect("value publishes a codegen unit")
+        };
+        assert_eq!(
+            codegen(&mut session, &cold),
+            rue_query::RequestExecution::Computed
+        );
+
+        // Insert an unreachable free function with the same source name into a
+        // module `value` has no relationship with. Appending leaves every
+        // existing span in `spare.rue` untouched.
+        let edited = format!("{SPARE}\n@allow(unused_function)\npub fn value() -> i32 {{ 99 }}\n");
+        publish_with_test_imports(&mut session, &program(&edited));
+        let warm = session.canonical_semantic(&options).unwrap();
+        let after = observed(&session, &warm);
+
+        assert_eq!(
+            before.0, after.0,
+            "the body transaction, canonical body, reference, and produced-anonymous \
+             terminals must all keep their stamps"
+        );
+        assert_eq!(
+            before.1, after.1,
+            "the body closure and its bundle must keep their stamps"
+        );
+        assert_eq!(before.2, after.2, "the dependency set must be unchanged");
+        assert_eq!(
+            (&before.3, &before.4, &before.5),
+            (&after.3, &after.4, &after.5),
+            "semantic identity, internal symbol, and machine symbol must be unchanged"
+        );
+        assert_eq!(
+            warm.work().body_analysis.body_analyses_computed,
+            0,
+            "no body may be recomputed: {:?}",
+            warm.work().body_analysis
+        );
+        assert_eq!(
+            codegen(&mut session, &warm),
+            rue_query::RequestExecution::Reused,
+            "the machine-code terminal must be reused, not re-emitted"
+        );
+
+        // The declaration terminal and the presentation identity are equally
+        // unaffected, and the new declaration really is present and distinct.
+        let declarations = |session: &mut CompilerSession| {
+            session
+                .stable_definitions(&options)
+                .unwrap()
+                .definitions()
+                .iter()
+                .filter(|record| {
+                    record.stable_key().kind() == StableDefinitionKind::Function
+                        && record.stable_key().name() == "value"
+                })
+                .map(|record| record.stable_key().clone())
+                .collect::<Vec<_>>()
+        };
+        let bound = declarations(&mut session);
+        let helpers_value = match &before.3 {
+            crate::FunctionInstanceKey::Definition(key) => key.clone(),
+            other => panic!("value is an ordinary definition: {other:?}"),
+        };
+        assert!(
+            bound.contains(&helpers_value),
+            "helpers.value keeps its declaration identity: {bound:?}"
+        );
+        assert!(
+            bound
+                .iter()
+                .any(|key| key.module().logical_path() == "spare.rue"),
+            "the inserted declaration is really bound, as its own module's: {bound:?}"
+        );
+        assert_eq!(bound.len(), 2, "{bound:?}");
+        let presented = session
+            .semantic(&options)
+            .unwrap()
+            .function_views()
+            .map(|function| function.name().to_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            presented.contains(&"value".to_owned()),
+            "presentation names the declaration, not its internal symbol: {presented:?}"
+        );
+
+        // Warm and fresh must agree on the whole artifact.
+        let mut fresh = CompilerSession::new();
+        publish_with_test_imports(&mut fresh, &program(&edited));
+        let expected = fresh.canonical_semantic(&options).unwrap();
+        assert_semantic_artifact_parity(&session, &warm, &expected);
+    }
+
     #[test]
     fn body_query_stamps_preserve_caller_and_reference_values_across_body_only_edits() {
         let options = CompileOptions::default();
@@ -9728,7 +9917,7 @@ fn main() -> i32 {
         let identity_for = |name: &str| {
             warm.functions()
                 .iter()
-                .find(|function| function.legacy_name == name)
+                .find(|function| function.definition_source_name() == Some(name))
                 .unwrap()
                 .semantic_identity
                 .clone()
@@ -9860,7 +10049,7 @@ fn main() -> i32 {
         let size = cold
             .functions()
             .iter()
-            .find(|function| function.legacy_name.starts_with("size."))
+            .find(|function| specialization_arguments(function, "size").is_some())
             .unwrap();
         let size = crate::body_query::BodyQueryKey {
             instance: size.semantic_identity.clone(),

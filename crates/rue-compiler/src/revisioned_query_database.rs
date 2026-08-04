@@ -30019,8 +30019,11 @@ fn main() -> i32 {
         // its `Spur`s and the driver's line up.
         let interner = rir.semantic_symbols().interner();
         let make_sym = interner.get("make").expect("make interned");
+        let make_symbol = bound
+            .free_function_symbol(file, make_sym)
+            .expect("make is bound in its own module");
         let prod = bound
-            .function_info(make_sym)
+            .function_info(make_symbol)
             .expect("the epoch has make's FunctionInfo");
 
         let rir_ref = rir.rir();
@@ -31837,6 +31840,16 @@ fn main() -> i32 {
         )
         .expect("declarations bind");
         let interner = rir.semantic_symbols().interner();
+        // A function-valued constant names a declaration. The provider holds it
+        // as a source-name handle joined to a durable definition, while an epoch
+        // holds the internal symbol, which is module-qualified (RUE-1125), so
+        // the epoch side renders through the source-name projection to compare
+        // the same declaration rather than two symbol spaces.
+        let epoch_symbol = |symbol| {
+            interner
+                .resolve(&bound.function_source_name(symbol))
+                .to_owned()
+        };
         let epoch = value_keys
             .iter()
             .map(|(name, _)| {
@@ -31844,9 +31857,8 @@ fn main() -> i32 {
                 let info = bound
                     .epoch_const_info(file, symbol)
                     .unwrap_or_else(|| panic!("epoch resolves {name}"));
-                let rendered = bound.with_type_pool(|pool| {
-                    render_const_info(&info, pool, |symbol| interner.resolve(&symbol).to_owned())
-                });
+                let rendered =
+                    bound.with_type_pool(|pool| render_const_info(&info, pool, epoch_symbol));
                 (*name, rendered)
             })
             .collect::<Vec<_>>();
@@ -31854,11 +31866,8 @@ fn main() -> i32 {
         let epoch_module = bound
             .epoch_module_binding_info(file, dep_symbol)
             .expect("the LIVE epoch resolves the module binding");
-        let epoch_module = bound.with_type_pool(|pool| {
-            render_const_info(&epoch_module, pool, |symbol| {
-                interner.resolve(&symbol).to_owned()
-            })
-        });
+        let epoch_module =
+            bound.with_type_pool(|pool| render_const_info(&epoch_module, pool, epoch_symbol));
 
         // Pool side: the production durable declaration adapter plus the real
         // ProviderEndpointFacts registration primitive, which composes the

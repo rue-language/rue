@@ -850,7 +850,7 @@ fn main() -> i32 {
         source: &str,
         name: &str,
     ) -> (rue_cfg::ValidatedCfg, FrozenTypeInternPool, ThreadedRodeo) {
-        use rue_air::Sema;
+        use rue_air::{Sema, SemaMetadata};
         use rue_error::PreviewFeatures;
         use rue_lexer::Lexer;
         use rue_parser::Parser;
@@ -864,10 +864,11 @@ fn main() -> i32 {
         let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all_for_test()
             .unwrap();
+        let symbol = SemaMetadata::synthetic_root_function_symbol(name);
         let func = output
             .functions
             .iter()
-            .find(|f| f.name == name)
+            .find(|f| f.name == symbol)
             .expect("requested test function should exist");
         let cfg = CfgBuilder::build(
             &func.air,

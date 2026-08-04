@@ -2369,6 +2369,27 @@ impl<'a> BoundSema<'a> {
         self.sema.function_info(name).copied()
     }
 
+    /// Map a source free-function name in one file to the internal symbol its
+    /// declaration was bound under.
+    ///
+    /// An ordinary function's internal symbol is module-qualified (RUE-1125),
+    /// so it is never the source spelling; a caller holding a source name needs
+    /// this binding before consulting [`Self::function_info`].
+    pub fn free_function_symbol(&self, file: FileId, source_name: Spur) -> Option<Spur> {
+        self.sema.resolve_function_name_local(source_name, file)
+    }
+
+    /// Map an internal function symbol back to the source name it was declared
+    /// under, leaving any other symbol unchanged.
+    ///
+    /// Parity checks against the durable provider path compare declarations,
+    /// and the provider assembles its facts in source-name handles while an
+    /// epoch names callables by internal symbol; this is the projection that
+    /// puts both in the same terms.
+    pub fn function_source_name(&self, symbol: Spur) -> Spur {
+        self.sema.source_function_name(symbol)
+    }
+
     /// Return the canonical resolved nominal [`Type`] for `(file, name)`.
     /// Provider-boundary parity checks compare it with the independently
     /// assembled `ProviderEndpointFacts` result.

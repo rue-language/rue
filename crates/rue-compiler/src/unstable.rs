@@ -555,6 +555,11 @@ pub struct OracleSemanticState {
 /// Raw function state for in-tree differential and storage-profile tooling.
 pub struct UnstableSemanticFunction {
     pub analyzed: Arc<rue_air::AnalyzedFunction>,
+    /// The declaration's source name when this callable is an ordinary
+    /// definition. `analyzed.name` is the internal symbol, which an ordinary
+    /// definition qualifies by module (RUE-1125), so a consumer that speaks in
+    /// source terms reads this instead.
+    pub source_name: Option<String>,
     pub cfg: rue_cfg::ValidatedCfg,
 }
 
@@ -575,6 +580,7 @@ pub fn into_oracle_semantic_state(
         functions: functions
             .into_iter()
             .map(|function| UnstableSemanticFunction {
+                source_name: function.definition_source_name().map(str::to_owned),
                 analyzed: function.analyzed,
                 cfg: function.cfg,
             })
@@ -1098,7 +1104,7 @@ mod codegen_unit_tests {
         let consume_name = semantic
             .functions()
             .iter()
-            .find(|function| function.analyzed.name == "consume")
+            .find(|function| function.definition_source_name() == Some("consume"))
             .unwrap()
             .machine_name
             .clone();

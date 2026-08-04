@@ -835,7 +835,7 @@ mod tests {
     use super::*;
     use crate::CfgBuilder;
     use lasso::ThreadedRodeo;
-    use rue_air::Sema;
+    use rue_air::{Sema, SemaMetadata};
     use rue_error::{PreviewFeature, PreviewFeatures};
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -905,17 +905,21 @@ mod tests {
     }
 
     impl Program {
+        /// CFGs are keyed by internal symbol, which an ordinary function
+        /// qualifies by its module (RUE-1125); fixtures name functions by
+        /// source, so every lookup projects the source name first.
         fn cfg(&self, name: &str) -> &ValidatedCfg {
             self.cfgs
-                .get(name)
+                .get(&SemaMetadata::synthetic_root_function_symbol(name))
                 .unwrap_or_else(|| panic!("no CFG for function '{name}'"))
         }
 
         fn find_call(&self, caller: &str, callee: &str) -> CfgValue {
             let cfg = self.cfg(caller);
+            let callee_symbol = SemaMetadata::synthetic_root_function_symbol(callee);
             attached_values(cfg)
                 .find(|&value| match &cfg.get_inst(value).data {
-                    CfgInstData::Call { name, .. } => self.interner.resolve(name) == callee,
+                    CfgInstData::Call { name, .. } => self.interner.resolve(name) == callee_symbol,
                     _ => false,
                 })
                 .unwrap_or_else(|| panic!("no call to '{callee}' in '{caller}'"))

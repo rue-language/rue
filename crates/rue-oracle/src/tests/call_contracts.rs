@@ -176,8 +176,8 @@ fn find_intrinsic_in_function<'a>(
     let cfg = state
         .functions
         .iter()
+        .find(|function| function.is_source_named(function_name))
         .map(|function| &function.cfg)
-        .find(|cfg| cfg.fn_name() == function_name)
         .unwrap_or_else(|| panic!("missing CFG for {function_name}"));
     let mut found = None;
     for value in cfg
@@ -385,8 +385,16 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
         let main_index = state
             .functions
             .iter()
-            .position(|function| function.cfg.fn_name() == "main")
+            .position(|function| function.is_source_named("main"))
             .expect("main CFG");
+        // A call site names its callee by internal symbol, so the probe reads
+        // that symbol off the callee's own CFG rather than assuming a spelling.
+        let callee_symbol = state
+            .functions
+            .iter()
+            .find(|function| function.is_source_named(callee_name))
+            .map(|function| function.cfg.fn_name().to_owned())
+            .unwrap_or_else(|| panic!("missing CFG for {callee_name}"));
         let (random, call) = {
             let cfg = &state.functions[main_index].cfg;
             let mut random = None;
@@ -403,7 +411,7 @@ fn user_call_layout_is_rejected_before_unmodeled_operands_run() {
                         random = Some(value);
                     }
                     CfgInstData::Call { name, .. }
-                        if state.interner.resolve(name) == callee_name =>
+                        if state.interner.resolve(name) == callee_symbol =>
                     {
                         assert!(
                             call.replace(value).is_none(),
@@ -468,7 +476,7 @@ fn abort_intrinsic_static_contracts_precede_unmodeled_operands() {
         let main_index = state
             .functions
             .iter()
-            .position(|function| function.cfg.fn_name() == "main")
+            .position(|function| function.is_source_named("main"))
             .expect("main CFG");
         let (random, panic, panic_args, assertion, assert_args) = {
             let cfg = &state.functions[main_index].cfg;
@@ -740,7 +748,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     let drift_user_index = drift_state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "user_pointer")
+        .position(|function| function.is_source_named("user_pointer"))
         .expect("user_pointer CFG");
     let type_pool = &drift_state.type_pool;
     drift_state.functions[drift_user_index]
@@ -780,7 +788,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     let extra_main = extra_use_state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let outer_cast = extra_use_state.functions[extra_main]
         .cfg
@@ -835,7 +843,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     let extra_init_main = extra_init_use_state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let (slice_init, slice_ty, outer_cast) = {
         let cfg = &extra_init_use_state.functions[extra_init_main].cfg;
@@ -899,7 +907,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     let wrong_consumer_main = wrong_consumer_state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let (wrong_consumer_init, consumer, mut consumer_args) = {
         let cfg = &wrong_consumer_state.functions[wrong_consumer_main].cfg;
@@ -977,7 +985,7 @@ fn pointer_intrinsic_gaps_require_exact_signature_and_synthesized_provenance() {
     let wrong_init_main = wrong_init_state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let slice_init = {
         let cfg = &wrong_init_state.functions[wrong_init_main].cfg;
@@ -1056,7 +1064,7 @@ fn validated_cfg_rejects_out_of_bounds_field_pointer_projection_metadata() {
     let main_index = state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let (_, _, args, _) = find_intrinsic_in_function(&state, "main", "field_ptr");
     let field_read = args[0];

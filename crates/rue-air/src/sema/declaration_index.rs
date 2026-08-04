@@ -74,9 +74,6 @@ pub(super) struct RirDeclarationIndex {
     anonymous_methods: Vec<InstRef>,
     named_method_refs: HashSet<InstRef>,
     anonymous_method_refs: HashSet<InstRef>,
-    /// Deliberately preserves the historical internal-symbol rule: every
-    /// receiverless `FnDecl` counts, including associated functions.
-    non_receiver_name_multiplicity: HashMap<Spur, usize>,
     destructors: Vec<RirDestructorDeclaration>,
     shell_declarations: Vec<RirShellDeclaration>,
     work: RirDeclarationIndexWork,
@@ -146,7 +143,6 @@ impl RirDeclarationIndex {
         let mut named_method_owners = HashMap::new();
         let mut anonymous_method_refs = HashSet::new();
         let mut declaration_source_orders = HashMap::new();
-        let mut non_receiver_name_multiplicity = HashMap::<Spur, usize>::new();
         let mut destructors = Vec::new();
         let mut const_shell_declarations = Vec::new();
         let mut work = RirDeclarationIndexWork {
@@ -169,9 +165,6 @@ impl RirDeclarationIndex {
                         name: *name,
                         has_self: *has_self,
                     });
-                    if !*has_self {
-                        *non_receiver_name_multiplicity.entry(*name).or_default() += 1;
-                    }
                 }
                 InstData::StructDecl { name, methods, .. } => {
                     for method_ref in rir.struct_methods(methods) {
@@ -274,7 +267,6 @@ impl RirDeclarationIndex {
             anonymous_methods,
             named_method_refs,
             anonymous_method_refs,
-            non_receiver_name_multiplicity,
             destructors,
             shell_declarations,
             work,
@@ -291,14 +283,6 @@ impl RirDeclarationIndex {
         );
         debug_assert_eq!(self.work.destructors_indexed, self.destructors.len());
         self.work
-    }
-
-    #[inline]
-    pub(super) fn non_receiver_name_multiplicity(&self, name: Spur) -> usize {
-        self.non_receiver_name_multiplicity
-            .get(&name)
-            .copied()
-            .unwrap_or_default()
     }
 
     pub(super) fn first_free_function(
@@ -488,7 +472,6 @@ mod tests {
             .first_free_function(collide, Some(FileId::new(7)))
             .unwrap();
         assert!(!index.is_type_scoped_method(free_collide));
-        assert_eq!(index.non_receiver_name_multiplicity(collide), 3);
 
         let destructors = index.destructors();
         assert_eq!(destructors.len(), 1);
@@ -559,7 +542,6 @@ mod tests {
             index.first_free_function(same, Some(second)),
             second_candidates.first().copied()
         );
-        assert_eq!(index.non_receiver_name_multiplicity(same), 3);
         let bound_consts = bound_const_candidates(&rir, &index);
         assert_eq!(bound_consts.candidates(second, same).len(), 1);
 
@@ -655,9 +637,9 @@ mod tests {
         sema.set_symbol_paths(HashMap::from([(file_id, "pkg/main.rue".to_owned())]));
         let output = sema.analyze_all().unwrap();
 
-        // Receiverless associated functions historically participate in the
-        // free-function name multiplicity used for machine symbols. RUE-656
-        // indexes that rule instead of silently "correcting" the spelling.
+        // A free function's internal symbol is module-qualified from its own
+        // declaration (RUE-1125), and the index selects the free declaration
+        // rather than the same-named associated function that precedes it.
         let expected_name = "__rue_fn_pkg_2fmain_2erue__collide";
         let free = output
             .functions

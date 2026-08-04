@@ -1091,7 +1091,7 @@ drop fn StrBuf(self) { }
                 let cfg = &state
                     .functions
                     .iter()
-                    .find(|function| function.analyzed.name == "probe")
+                    .find(|function| function.definition_source_name() == Some("probe"))
                     .unwrap_or_else(|| panic!("missing CFG for {name}"))
                     .cfg;
                 let intrinsic_types: Vec<_> = cfg
@@ -1168,7 +1168,7 @@ drop fn StrBuf(self) { }
                 let cfg = &state
                     .functions
                     .iter()
-                    .find(|function| function.analyzed.name == "probe")
+                    .find(|function| function.definition_source_name() == Some("probe"))
                     .unwrap_or_else(|| panic!("missing CFG for {name}"))
                     .cfg;
                 let intrinsic_types: Vec<_> = cfg

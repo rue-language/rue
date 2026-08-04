@@ -843,8 +843,18 @@ impl FunctionView {
         &self.owner.functions()[self.function]
     }
 
+    /// The declaration's source-level name.
+    ///
+    /// A callable's internal symbol is not a source name: an ordinary
+    /// definition qualifies it by module (RUE-1125) and glue and
+    /// specializations carry their own generated spellings. Presentation names
+    /// the declaration, so an ordinary definition reports its source name and
+    /// only a generated callable falls back to its internal symbol.
     pub fn name(&self) -> &str {
-        &self.function().analyzed.name
+        let function = self.function();
+        function
+            .definition_source_name()
+            .unwrap_or(&function.analyzed.name)
     }
 
     pub fn instruction_count(&self) -> usize {

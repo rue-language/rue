@@ -119,6 +119,23 @@ pub struct FunctionWithCfg {
     pub cfg: Cfg,
 }
 
+impl FunctionWithCfg {
+    /// The source-level name of this callable's declaration, when it is an
+    /// ordinary definition rather than a specialization or drop glue.
+    ///
+    /// Neither `machine_name` nor `legacy_name` spells a source name: an
+    /// ordinary callable's internal symbol is module-qualified (RUE-1125) and
+    /// its machine symbol is encoded from the semantic identity. Anything that
+    /// must speak in source terms — the C export boundary above all — reads the
+    /// name from the durable identity, which records module and source name.
+    pub(crate) fn definition_source_name(&self) -> Option<&str> {
+        match &self.semantic_identity {
+            crate::FunctionInstanceKey::Definition(definition) => Some(definition.name()),
+            _ => None,
+        }
+    }
+}
+
 impl std::fmt::Debug for FunctionWithCfg {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // The optimized query key contains request-local relocation domains;

@@ -157,12 +157,19 @@ assert_relocated_symbol_names() {
 
     assert_identical "relocated AIR symbol names" "$symbols_a" "$symbols_b"
 
+    # Every ordinary free function is module-qualified from its own declaration
+    # (RUE-1125), so the diamond's uniquely named `shared.rue` callables carry a
+    # module component too, and a specialization appends its argument mangling
+    # to that base. Each component is the module's logical path, never the
+    # relocated physical root — which is what this assertion exists to pin.
     local expected actual
     expected="$(printf '%s\n' \
         '__rue_fn_left_2fentry_2erue__compute' \
         '__rue_fn_left_2fshared_2erue__make' \
         '__rue_fn_right_2fentry_2erue__compute' \
-        '__rue_fn_right_2fshared_2erue__make')"
+        '__rue_fn_right_2fshared_2erue__make' \
+        '__rue_fn_shared_2erue__choose.i32' \
+        '__rue_fn_shared_2erue__perturb')"
     actual="$(< "$symbols_a")"
     if [ "$actual" != "$expected" ]; then
         printf 'FAIL: reproducibility fixture generated unexpected AIR symbols\n' >&2
@@ -195,9 +202,16 @@ assert_source_order_independent_ir() {
     assert_identical "source-order root-only AIR/CFG/lowering" "$ir_a" "$ir_b"
 
     # Make the comparison non-vacuous: each adapter must have resolved the
-    # symbols exercised by ordinary, generic, and intrinsic calls.
+    # symbols exercised by ordinary, generic, and intrinsic calls. A source
+    # call resolves to the callee's internal symbol, which an ordinary function
+    # qualifies by its own module (RUE-1125) and a specialization extends with
+    # its argument mangling; an intrinsic keeps its own name.
     local expected_symbol
-    for expected_symbol in '@rotate(' '@finish(' '@identity.i32(' '@assert('; do
+    for expected_symbol in \
+        '@__rue_fn_main_2erue__rotate(' \
+        '@__rue_fn_main_2erue__finish(' \
+        '@__rue_fn_main_2erue__identity.i32(' \
+        '@assert('; do
         if ! grep -Fq "$expected_symbol" "$ir_a"; then
             printf 'FAIL: stable IR omitted resolved symbol %s\n' "$expected_symbol" >&2
             return 1

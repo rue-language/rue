@@ -386,10 +386,10 @@ pub(crate) fn compile_backend_products(
 ///
 /// Each exported function was already code-generated as an ordinary native body
 /// under its mangled `machine_name`; this adds one extra object per export whose
-/// single global symbol is the unmangled C name (`legacy_name`, the source
-/// identifier) and whose body receives arguments per the target-C convention,
-/// re-extends narrow scalars, and forwards to the native body. The signature was
-/// gated to register-resident scalars/pointers in semantic analysis
+/// single global symbol is the unmangled C name (the export's source identifier)
+/// and whose body receives arguments per the target-C convention, re-extends
+/// narrow scalars, and forwards to the native body. The signature was gated to
+/// register-resident scalars/pointers in semantic analysis
 /// (`ExportSignatureUnsupported`), so the entry block's parameters are exactly
 /// the argument-register scalars the thunk marshals.
 pub(crate) fn generate_export_thunk_objects(
@@ -404,9 +404,12 @@ pub(crate) fn generate_export_thunk_objects(
         export_symbols.iter().map(String::as_str).collect();
     let mut objects = Vec::new();
     for function in functions {
-        if !export_set.contains(function.legacy_name.as_str()) {
+        let Some(exported_symbol) = function
+            .definition_source_name()
+            .filter(|name| export_set.contains(name))
+        else {
             continue;
-        }
+        };
         let cfg = &function.cfg;
         // A scalar parameter is materialized as a `Param { index }` instruction
         // carrying its type; parameter `index` arrives in the matching argument
@@ -432,7 +435,7 @@ pub(crate) fn generate_export_thunk_objects(
             &function.machine_name,
             &param_types,
         );
-        let mut obj_builder = ObjectBuilder::new(options.target, &function.legacy_name)
+        let mut obj_builder = ObjectBuilder::new(options.target, exported_symbol)
             .code(machine_code.code)
             .strings(machine_code.strings);
         for reloc in machine_code.relocations {

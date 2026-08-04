@@ -47,45 +47,71 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             .unwrap_or(internal_name)
     }
 
+    /// The internal symbol of an ordinary function, derived only from its own
+    /// declaration and module (RUE-1125).
+    ///
+    /// A function's identity is a property of where it is declared, never of
+    /// what else the program happens to contain: the spelling is decided from
+    /// `(module, source name)` alone, so adding or removing an unrelated
+    /// declaration anywhere else cannot restamp an existing function's
+    /// semantic identity, body artifact, or dependency edges. Two declarations
+    /// name themselves instead, and each is recognized from its own
+    /// declaration, never from what the rest of the program contains:
+    ///
+    /// - The ROOT module's `main` keeps the unmangled `main` symbol the runtime
+    ///   `_start`/`__main` glue calls (spec 6.1:38, RUE-920/RUE-921). When no
+    ///   root is designated (single-file callers that never call
+    ///   `set_root_file_id`) that lone file is the root, so its `main` keeps the
+    ///   bare name too. A `main` in any OTHER module is an ordinary namespaced
+    ///   function: it must never keep the bare `main` symbol, so it cannot
+    ///   collide with the root entry point and so a root that lacks `main` still
+    ///   fails with `NoMainFunction` instead of silently adopting an imported
+    ///   entry point.
+    ///
+    /// - An `extern "C"` foreign declaration (ADR-0064) declares an external C
+    ///   symbol rather than a Rue callable: it has no body, no artifact, and no
+    ///   Rue namespace of its own, and a call site lowers to that raw symbol for
+    ///   the linker to satisfy from an archive. Its internal symbol therefore is
+    ///   the C name it declares. The declaration is read from its own module, so
+    ///   this stays a property of the declaration.
+    ///
+    /// A `pub extern "C" fn` export is *not* an exception here. Its native body
+    /// is an ordinary module-qualified callable like any other; its unmangled C
+    /// symbol is specified separately and emitted as a distinct entry thunk
+    /// (ADR-0064 P4, `backend::generate_export_thunk_objects`).
     pub(super) fn internal_function_name(&self, source_name: Spur, file_id: FileId) -> Spur {
         let source = self.interner.resolve(&source_name);
-        // The program entry point is the ROOT module's `main`: it keeps the
-        // unmangled `main` symbol the runtime `_start`/`__main` glue calls
-        // (spec 6.1:38, RUE-920/RUE-921). When no root is designated (single-file
-        // callers that never call `set_root_file_id`) that lone file is the
-        // root, so its `main` keeps the bare name too.
         let file_is_root = self.root_file_id.is_none_or(|root| root == file_id);
         if source == "main" && file_is_root {
             return source_name;
         }
-        // A `main` in any OTHER module is an ordinary namespaced function
-        // (spec 6.1:38). It must never keep the bare `main` symbol — even as the
-        // only `main` in the program — so it cannot collide with the root's
-        // entry point and so a root that lacks `main` still fails with
-        // `NoMainFunction` instead of silently adopting an imported entry
-        // point. Force it down the mangling path regardless of multiplicity.
-        //
-        // Otherwise preserve the historical symbol rule exactly in this
-        // preparatory slice: receiverless associated functions count too.
-        // Correct free function classification is indexed separately for body
-        // lookup.
-        let non_root_main = source == "main";
-        if non_root_main
-            || self
-                .declaration_index
-                .non_receiver_name_multiplicity(source_name)
-                > 1
-        {
-            let module_component = self
-                .get_symbol_path(file_id)
-                .map(normalize_module_path)
-                .unwrap_or_else(|| format!("file{}", file_id.index()));
-            let module_component = mangle_symbol_component(&module_component);
-            self.interner
-                .get_or_intern(&format!("__rue_fn_{}__{}", module_component, source))
-        } else {
-            source_name
+        if self.declares_foreign_function(source_name, file_id) {
+            return source_name;
         }
+        let module_component = self
+            .get_symbol_path(file_id)
+            .map(normalize_module_path)
+            .unwrap_or_else(|| format!("file{}", file_id.index()));
+        let module_component = mangle_symbol_component(&module_component);
+        self.interner
+            .get_or_intern(&format!("__rue_fn_{}__{}", module_component, source))
+    }
+
+    /// Whether `file_id` declares `source_name` as an `extern "C"` foreign
+    /// function. This reads only that file's own declarations — the same
+    /// file-scoped free-function selection body binding performs.
+    fn declares_foreign_function(&self, source_name: Spur, file_id: FileId) -> bool {
+        self.declaration_index
+            .first_free_function(source_name, Some(file_id))
+            .is_some_and(|declaration| {
+                matches!(
+                    self.rir.get(declaration).data,
+                    InstData::FnDecl {
+                        is_extern: true,
+                        ..
+                    }
+                )
+            })
     }
 
     /// Resolve a source-level function name only in the given source file.

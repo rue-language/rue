@@ -21,8 +21,8 @@ fn flattened_parameter_padding_is_a_semantic_gap_but_oob_is_a_contract_failure()
     let cfg = state
         .functions
         .iter()
+        .find(|function| function.is_source_named("take"))
         .map(|function| &function.cfg)
-        .find(|cfg| cfg.fn_name() == "take")
         .expect("take CFG");
     assert_eq!(cfg.num_params(), 2, "Pair is flattened into two ABI slots");
     let frame = Frame {
@@ -98,8 +98,8 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
     let cfg = state
         .functions
         .iter()
+        .find(|function| function.is_source_named("read"))
         .map(|function| &function.cfg)
-        .find(|cfg| cfg.fn_name() == "read")
         .expect("read CFG");
     let mut field_read = None;
     for value in cfg
@@ -154,8 +154,8 @@ fn matching_cfg_metadata_is_required_before_a_runtime_symptom_is_registrable() {
     let ordinary_cfg = ordinary_state
         .functions
         .iter()
+        .find(|function| function.is_source_named("identity"))
         .map(|function| &function.cfg)
-        .find(|cfg| cfg.fn_name() == "identity")
         .expect("identity CFG");
     let ordinary_param = ordinary_cfg
         .blocks()
@@ -208,7 +208,7 @@ fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed()
         let read_index = state
             .functions
             .iter()
-            .position(|function| function.cfg.fn_name() == "read")
+            .position(|function| function.is_source_named("read"))
             .expect("read CFG");
         let (place_value, base) = {
             let cfg = &state.functions[read_index].cfg;
@@ -284,8 +284,8 @@ fn logical_inout_writability_is_distinct_from_the_by_reference_abi() {
         let cfg = state
             .functions
             .iter()
+            .find(|function| function.is_source_named(name))
             .map(|function| &function.cfg)
-            .find(|cfg| cfg.fn_name() == name)
             .unwrap_or_else(|| panic!("missing {name} CFG"));
         let value = cfg
             .blocks()
@@ -331,8 +331,8 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     let view_cfg = view_state
         .functions
         .iter()
+        .find(|function| function.is_source_named("main"))
         .map(|function| &function.cfg)
-        .find(|cfg| cfg.fn_name() == "main")
         .expect("main CFG");
     let view_value = view_cfg
         .blocks()
@@ -387,7 +387,7 @@ fn validated_cfg_rejects_invalid_owned_text_projection_metadata() {
     let main_index = owned_state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let (owned_ty, zero) = {
         let cfg = &owned_state.functions[main_index].cfg;
@@ -485,7 +485,7 @@ fn validated_cfg_rejects_malformed_place_writes_before_oracle_model_gaps() {
         let write_index = state
             .functions
             .iter()
-            .position(|function| function.cfg.fn_name() == "write")
+            .position(|function| function.is_source_named("write"))
             .expect("write CFG");
         let (write_value, base, base_type, rhs, projections) = {
             let cfg = &state.functions[write_index].cfg;
@@ -551,7 +551,7 @@ fn validated_cfg_rejects_out_of_bounds_place_read_bases() {
         let read_index = state
             .functions
             .iter()
-            .position(|function| function.cfg.fn_name() == "read")
+            .position(|function| function.is_source_named("read"))
             .expect("read CFG");
         let (read_value, base_type, projections) = {
             let cfg = &state.functions[read_index].cfg;
@@ -600,7 +600,7 @@ fn zero_sized_place_base_uses_the_canonical_boundary_slot() {
     let main_index = state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "main")
+        .position(|function| function.is_source_named("main"))
         .expect("main CFG");
     let (read_value, base_type, projections) = {
         let cfg = &state.functions[main_index].cfg;
@@ -681,7 +681,7 @@ fn validated_cfg_requires_exact_type_and_writable_storage_for_whole_place_writes
         let write_index = state
             .functions
             .iter()
-            .position(|function| function.cfg.fn_name() == "write")
+            .position(|function| function.is_source_named("write"))
             .expect("write CFG");
         let (write_value, base, base_type, rhs) = {
             let cfg = &state.functions[write_index].cfg;
@@ -747,7 +747,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
     let probe_index = state
         .functions
         .iter()
-        .position(|function| function.cfg.fn_name() == "probe")
+        .position(|function| function.is_source_named("probe"))
         .expect("probe CFG");
     let other_fixed_type = state.functions[probe_index]
         .cfg
