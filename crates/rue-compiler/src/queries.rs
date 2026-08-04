@@ -194,6 +194,8 @@ pub(crate) fn collect_function_cfg_queries(
     opt_level: OptLevel,
     interner: std::sync::Arc<ThreadedRodeo>,
     stable_inputs: &[crate::cfg_query::CfgBodyInput],
+    durable_declarations: &[crate::durable_semantics::DurableDeclarationSemantic],
+    durable_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
     stable_aggregate_types: std::collections::HashMap<Type, crate::TypeInstanceKey>,
     projected_identities: &std::collections::BTreeMap<
         rue_air::FunctionInstanceKey<
@@ -238,6 +240,102 @@ pub(crate) fn collect_function_cfg_queries(
             .count(),
         ..Default::default()
     };
+    // AIR's active-aggregate index contains types named directly by reached
+    // bodies and demanded glue. CFG cleanup closes that domain transitively
+    // over aggregate fields, so join completed pool entries back to their
+    // durable nominal identities before projecting a current body.
+    let mut stable_aggregate_types = stable_aggregate_types;
+    let mut stable_types_by_symbol = std::collections::BTreeMap::new();
+    for nominal in durable_anonymous_nominals {
+        let symbol = crate::semantic_identity::anonymous_nominal_source_symbol(&nominal.identity);
+        let stable = crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
+            nominal.identity.clone(),
+        ));
+        let candidate = (nominal.identity.kind, stable);
+        if let Some(previous) = stable_types_by_symbol.insert(symbol.clone(), candidate.clone())
+            && previous != candidate
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "aggregate symbol '{symbol}' has conflicting stable identities"
+                )))
+                .into(),
+                work,
+            });
+        }
+    }
+    for declaration in durable_declarations {
+        let kind = match &declaration.payload {
+            crate::durable_semantics::DurableDeclarationPayload::Struct { .. } => {
+                crate::AnonymousNominalKind::Struct
+            }
+            crate::durable_semantics::DurableDeclarationPayload::Enum { .. } => {
+                crate::AnonymousNominalKind::Enum
+            }
+            _ => continue,
+        };
+        let Some(symbol) = crate::semantic_identity::named_nominal_source_symbol(&declaration.key)
+        else {
+            unreachable!("struct and enum declarations have nominal source symbols")
+        };
+        let stable = crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Named(
+            declaration.key.clone(),
+        ));
+        let candidate = (kind, stable);
+        if let Some(previous) = stable_types_by_symbol.insert(symbol.clone(), candidate.clone())
+            && previous != candidate
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "aggregate symbol '{symbol}' has conflicting stable identities"
+                )))
+                .into(),
+                work,
+            });
+        }
+    }
+    let live_nominal_types = type_pool
+        .all_struct_ids()
+        .map(|id| {
+            (
+                Type::new_struct(id),
+                type_pool.struct_symbol_name(id),
+                crate::AnonymousNominalKind::Struct,
+            )
+        })
+        .chain(type_pool.all_enum_ids().map(|id| {
+            (
+                Type::new_enum(id),
+                type_pool.enum_symbol_name(id),
+                crate::AnonymousNominalKind::Enum,
+            )
+        }))
+        .collect::<Vec<_>>();
+    for (live, symbol, live_kind) in live_nominal_types {
+        let Some((stable_kind, stable)) = stable_types_by_symbol.get(&symbol).cloned() else {
+            continue;
+        };
+        if stable_kind != live_kind {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "aggregate symbol '{symbol}' has conflicting live and stable kinds"
+                )))
+                .into(),
+                work,
+            });
+        }
+        if let Some(previous) = stable_aggregate_types.insert(live, stable.clone())
+            && previous != stable
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "live aggregate {live:?} has conflicting stable identities"
+                )))
+                .into(),
+                work,
+            });
+        }
+    }
 
     // Combine user functions with drop glue, filtering out comptime-only functions.
     let mut all_functions: Vec<_> = functions
@@ -356,6 +454,42 @@ pub(crate) fn collect_function_cfg_queries(
             machine_name,
         ));
     }
+    // Cleanup closure discovery may encounter an anonymous destructor whose
+    // body was not otherwise reached. Its source symbol is still a stable
+    // function reference and must relocate through the owner identity rather
+    // than depending on membership in `all_functions`.
+    for (live, stable) in &stable_aggregate_types {
+        let TypeKind::Struct(id) = live.kind() else {
+            continue;
+        };
+        let Some(source_symbol) = type_pool.struct_def(id).destructor.as_ref() else {
+            continue;
+        };
+        let crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(owner)) = stable
+        else {
+            continue;
+        };
+        let identity = crate::FunctionInstanceKey::AnonymousMember {
+            owner: Box::new(crate::TypeInstanceKey::Nominal(
+                crate::NominalInstanceKey::Anonymous(owner.clone()),
+            )),
+            member: crate::AnonymousMemberKey {
+                kind: crate::AnonymousMemberKind::Destructor,
+                name: std::sync::Arc::from("__drop"),
+            },
+        };
+        if let Some(previous) = legacy_to_stable.insert(source_symbol.clone(), identity.clone())
+            && previous != identity
+        {
+            return Err(CfgConstructionFailure {
+                errors: CompileError::without_span(ErrorKind::InternalError(format!(
+                    "live anonymous destructor symbol '{source_symbol}' has conflicting identities"
+                )))
+                .into(),
+                work,
+            });
+        }
+    }
     // AIR and CFG remain source-semantic artifacts. Their live call names are
     // resolved through `legacy_to_machine` only at the codegen boundary; this
     // keeps presentation and durable CFG reuse independent of interner slots.
@@ -364,6 +498,15 @@ pub(crate) fn collect_function_cfg_queries(
     // linker layout. Machine symbols are the stable semantic
     // identity shared by user, specialized, destructor, and glue functions.
     all_functions.sort_by(|left, right| left.4.cmp(&right.4));
+    let callable_symbols = all_functions
+        .iter()
+        .map(|(function, identity, _, _, _)| {
+            (
+                identity.clone(),
+                std::sync::Arc::<str>::from(function.name.as_str()),
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
 
     let _span = info_span!("cfg_collection", phase = "cfg_query_collection").entered();
     let aggregate_types = std::sync::Arc::new(stable_aggregate_types);
@@ -396,9 +539,34 @@ pub(crate) fn collect_function_cfg_queries(
                     ));
                 };
                 let semantic_input = if let Some(input) = current_input {
-                    crate::cfg_query::CfgSemanticInput::Body(std::sync::Arc::new(
-                        input.body.clone(),
-                    ))
+                    let body = match input.canonical.as_ref() {
+                        crate::body_query::CanonicalBody::Ordinary { body, .. }
+                        | crate::body_query::CanonicalBody::Anonymous { body, .. }
+                        | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
+                    };
+                    let materialization = crate::local_semantic_materialization::select_materialization_facts(
+                        &semantic_identity,
+                        body,
+                        durable_declarations,
+                        durable_anonymous_nominals,
+                        &callable_symbols,
+                    )
+                    .map_err(|error| {
+                        (
+                            CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "CFG materialization fact selection failed: {error:?}"
+                                )),
+                                body_span,
+                            )
+                            .into(),
+                            canonical_semantic::CfgConstructionWork::default(),
+                        )
+                    })?;
+                    crate::cfg_query::CfgSemanticInput::Body {
+                        input: std::sync::Arc::new(input.clone()),
+                        materialization: std::sync::Arc::new(materialization),
+                    }
                 } else if let crate::FunctionInstanceKey::DropGlue(owner) = &semantic_identity {
                     let Some(facts) = stable_drop_glue_plans.get(owner.as_ref()) else {
                         return Err((
@@ -410,9 +578,30 @@ pub(crate) fn collect_function_cfg_queries(
                             canonical_semantic::CfgConstructionWork::default(),
                         ));
                     };
+                    let materialization = crate::local_semantic_materialization::select_drop_glue_materialization_facts(
+                        owner,
+                        facts,
+                        durable_declarations,
+                        durable_anonymous_nominals,
+                        &callable_symbols,
+                    )
+                    .map_err(|error| {
+                        (
+                            CompileError::new(
+                                ErrorKind::InternalError(format!(
+                                    "drop-glue materialization fact selection failed: {error:?}"
+                                )),
+                                body_span,
+                            )
+                            .into(),
+                            canonical_semantic::CfgConstructionWork::default(),
+                        )
+                    })?;
                     crate::cfg_query::CfgSemanticInput::DropGlue {
                         owner: owner.as_ref().clone(),
                         facts: Box::new(facts.clone()),
+                        materialization: std::sync::Arc::new(materialization),
+                        body_span,
                     }
                 } else {
                     return Err((
@@ -430,7 +619,11 @@ pub(crate) fn collect_function_cfg_queries(
                         crate::durable_cfg::CfgDomainProjection::from_body(
                             &func,
                             &input.function,
-                            &input.body,
+                            match input.canonical.as_ref() {
+                                crate::body_query::CanonicalBody::Ordinary { body, .. }
+                                | crate::body_query::CanonicalBody::Anonymous { body, .. }
+                                | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
+                            },
                             body_span,
                             &strings,
                             &type_pool,
@@ -476,31 +669,12 @@ pub(crate) fn collect_function_cfg_queries(
                         ));
                     }
                 };
-                #[cfg(test)]
-                let mut domains = domains;
-                #[cfg(test)]
-                if crate::canonical_semantic::take_test_cfg_import_failure() {
-                    domains.force_import_failure_for_test();
-                }
-                let live = std::sync::Arc::new(crate::cfg_query::CfgLiveInput {
-                    function: func.clone(),
-                    type_pool: type_pool.clone(),
-                    interner: interner.clone(),
-                    domains: domains.clone(),
-                    body_span,
-                    aggregate_types: aggregate_types.clone(),
-                    implicit_destructor_dependencies_complete: !matches!(
-                        func.implicit_drop_source,
-                        Some(rue_air::ImplicitDropDependencySourceEvent::Anonymous)
-                    ),
-                });
                 let (optimized_cfg_key, attempt) = cfg_queries
                     .optimized_cfg(
                         revision,
                         semantic_identity.clone(),
                         configuration.clone(),
                         semantic_input,
-                        live,
                         opt_level,
                         cancellation.clone(),
                     )

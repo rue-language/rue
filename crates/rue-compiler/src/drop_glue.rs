@@ -26,9 +26,219 @@ use rue_air::{
 };
 use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_span::Span;
+use std::sync::Arc;
 
 type IssuedTypeInstanceKey =
     rue_air::TypeInstanceKey<rue_air::SemanticDefinitionToken, rue_air::SemanticModuleToken>;
+
+pub(crate) fn semantic_type_from_instance(
+    ty: &crate::TypeInstanceKey,
+) -> rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId> {
+    use crate::TypeInstanceKey as T;
+    use rue_air::SemanticImportType as S;
+    match ty {
+        T::I8 => S::I8,
+        T::I16 => S::I16,
+        T::I32 => S::I32,
+        T::I64 => S::I64,
+        T::U8 => S::U8,
+        T::U16 => S::U16,
+        T::U32 => S::U32,
+        T::U64 => S::U64,
+        T::Bool => S::Bool,
+        T::Unit => S::Unit,
+        T::Never => S::Never,
+        T::ComptimeType => S::ComptimeType,
+        T::BuiltinNominal { kind, name } => S::BuiltinNominal {
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+            name: name.clone(),
+        },
+        T::Nominal(crate::NominalInstanceKey::Named(key)) => S::Nominal(key.clone()),
+        T::Nominal(crate::NominalInstanceKey::Anonymous(key)) => S::AnonymousNominal(key.clone()),
+        T::Nominal(crate::NominalInstanceKey::Builtin { kind, name }) => S::BuiltinNominal {
+            kind: match kind {
+                crate::AnonymousNominalKind::Struct => rue_air::SemanticImportNominalKind::Struct,
+                crate::AnonymousNominalKind::Enum => rue_air::SemanticImportNominalKind::Enum,
+            },
+            name: name.clone(),
+        },
+        T::Array { element, len } => S::Array {
+            element: Box::new(semantic_type_from_instance(element)),
+            len: *len,
+        },
+        T::Slice { element, name } => S::Slice {
+            element: Box::new(semantic_type_from_instance(element)),
+            name: name.clone(),
+        },
+        T::PtrConst(element) => S::PtrConst(Box::new(semantic_type_from_instance(element))),
+        T::PtrMut(element) => S::PtrMut(Box::new(semantic_type_from_instance(element))),
+        T::Module(module) => S::Module(module.clone()),
+        T::GenericParameter(index) => S::GenericParameter(*index),
+    }
+}
+
+/// Build the canonical AIR-shaped body for one exact drop-glue fact. Layout
+/// slots are supplied by registered Layout dependencies observed by the CFG
+/// evaluator, so this path never needs a caller-owned frozen pool.
+pub(crate) fn synthesize_canonical_drop_glue(
+    owner: &crate::TypeInstanceKey,
+    facts: &crate::type_queries::DropGlueFacts,
+    abi_slots: &std::collections::BTreeMap<crate::TypeInstanceKey, u32>,
+) -> Result<rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>, Arc<str>> {
+    use rue_air::{SemanticBodyAnchor, SemanticBodyInst, SemanticBodyInstData};
+    type Body = rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>;
+    type Ty = rue_air::SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
+
+    let slots = |ty: &crate::TypeInstanceKey| {
+        abi_slots
+            .get(ty)
+            .copied()
+            .ok_or_else(|| Arc::<str>::from(format!("missing layout for drop-glue type {ty:?}")))
+    };
+    let anchor = SemanticBodyAnchor { start: 0, end: 0 };
+    let mut instructions = Vec::<SemanticBodyInst<_, _>>::new();
+    let mut add = |data, ty: Ty| {
+        let index = u32::try_from(instructions.len()).expect("drop-glue body fits u32");
+        instructions.push(SemanticBodyInst { data, ty, anchor });
+        index
+    };
+    let mut statements = Vec::new();
+    let num_param_slots = slots(owner)?;
+
+    match &facts.plan {
+        crate::type_queries::DropGluePlan::Struct { fields } => {
+            let mut current = 0;
+            for field in fields.iter() {
+                let width = slots(&field.ty)?;
+                if field.drop {
+                    let ty = semantic_type_from_instance(&field.ty);
+                    let param = add(SemanticBodyInstData::Param { index: current }, ty.clone());
+                    statements.push(add(SemanticBodyInstData::Drop { value: param }, ty));
+                }
+                current = current.saturating_add(width);
+            }
+        }
+        crate::type_queries::DropGluePlan::Array {
+            element,
+            len,
+            drop_element,
+        } => {
+            let width = slots(element)?;
+            if *drop_element {
+                for index in 0..*len {
+                    let ty = semantic_type_from_instance(element);
+                    let param = add(
+                        SemanticBodyInstData::Param {
+                            index: u32::try_from(index)
+                                .unwrap_or(u32::MAX)
+                                .saturating_mul(width),
+                        },
+                        ty.clone(),
+                    );
+                    statements.push(add(SemanticBodyInstData::Drop { value: param }, ty));
+                }
+            }
+        }
+        crate::type_queries::DropGluePlan::Enum { variants } => {
+            let disc_ty = if variants.is_empty() {
+                Ty::Never
+            } else if variants.len() <= 256 {
+                Ty::U8
+            } else if variants.len() <= 65_536 {
+                Ty::U16
+            } else if variants.len() <= 4_294_967_296usize {
+                Ty::U32
+            } else {
+                Ty::U64
+            };
+            let disc = add(
+                SemanticBodyInstData::Param {
+                    index: num_param_slots.saturating_sub(1),
+                },
+                disc_ty.clone(),
+            );
+            let unit = add(SemanticBodyInstData::UnitConst, Ty::Unit);
+            let mut arms = Vec::new();
+            for (variant_index, variant) in variants.iter().enumerate() {
+                if !variant.fields.iter().any(|field| field.drop) {
+                    continue;
+                }
+                let mut field_slot = 1u32;
+                let mut drops = Vec::new();
+                for field in variant.fields.iter() {
+                    let width = slots(&field.ty)?;
+                    if field.drop {
+                        let ty = semantic_type_from_instance(&field.ty);
+                        let param = add(
+                            SemanticBodyInstData::Param {
+                                index: num_param_slots
+                                    .saturating_sub(field_slot.saturating_add(width)),
+                            },
+                            ty.clone(),
+                        );
+                        drops.push(add(SemanticBodyInstData::Drop { value: param }, ty));
+                    }
+                    field_slot = field_slot.saturating_add(width);
+                }
+                let body = add(
+                    SemanticBodyInstData::Block {
+                        statements: drops.into(),
+                        value: unit,
+                    },
+                    Ty::Unit,
+                );
+                arms.push(rue_air::SemanticBodyMatchArm {
+                    pattern: rue_air::SemanticBodyPattern::Int(variant_index as i64),
+                    body,
+                });
+            }
+            arms.push(rue_air::SemanticBodyMatchArm {
+                pattern: rue_air::SemanticBodyPattern::Wildcard,
+                body: unit,
+            });
+            statements.push(add(
+                SemanticBodyInstData::Match {
+                    scrutinee: disc,
+                    arms: arms.into(),
+                },
+                Ty::Unit,
+            ));
+        }
+        crate::type_queries::DropGluePlan::None => {}
+    }
+    let unit = add(SemanticBodyInstData::UnitConst, Ty::Unit);
+    let value = if statements.is_empty() {
+        unit
+    } else {
+        add(
+            SemanticBodyInstData::Block {
+                statements: statements.into(),
+                value: unit,
+            },
+            Ty::Unit,
+        )
+    };
+    add(SemanticBodyInstData::Ret(Some(value)), Ty::Unit);
+    Ok(Body {
+        return_type: Ty::Unit,
+        instructions: instructions.into(),
+        places: Arc::new([]),
+        strings: Arc::new([]),
+        local_atoms: Arc::new([]),
+        param_drops: Arc::new([]),
+        borrow_slots: Arc::new([]),
+        num_locals: 0,
+        num_param_slots,
+        param_by_ref: vec![false; num_param_slots as usize].into(),
+        param_writable: vec![false; num_param_slots as usize].into(),
+        allow_unreachable_code: false,
+        warnings: Arc::new([]),
+        method_references: Arc::new([]),
+    })
+}
 
 fn plan_type_matches_live(
     planned: &IssuedTypeInstanceKey,
@@ -563,6 +773,52 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn canonical_drop_glue_is_synthesized_from_exact_facts_and_layout_slots() {
+        let element = crate::TypeInstanceKey::BuiltinNominal {
+            kind: crate::AnonymousNominalKind::Struct,
+            name: Arc::from("Owned"),
+        };
+        let owner = crate::TypeInstanceKey::Array {
+            element: Box::new(element.clone()),
+            len: 3,
+        };
+        let facts = crate::type_queries::DropGlueFacts {
+            required: true,
+            synthesize: true,
+            destructor: None,
+            nested: Arc::from([element.clone()]),
+            plan: crate::type_queries::DropGluePlan::Array {
+                element: element.clone(),
+                len: 3,
+                drop_element: true,
+            },
+        };
+        let slots = std::collections::BTreeMap::from([(element, 2), (owner.clone(), 6)]);
+        let body = synthesize_canonical_drop_glue(&owner, &facts, &slots).unwrap();
+        assert_eq!(body.num_param_slots, 6);
+        assert_eq!(body.param_by_ref.as_ref(), &[false; 6]);
+        let params = body
+            .instructions
+            .iter()
+            .filter_map(|instruction| match instruction.data {
+                rue_air::SemanticBodyInstData::Param { index } => Some(index),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(params, [0, 2, 4]);
+        assert_eq!(
+            body.instructions
+                .iter()
+                .filter(|instruction| matches!(
+                    instruction.data,
+                    rue_air::SemanticBodyInstData::Drop { .. }
+                ))
+                .count(),
+            3
+        );
+    }
 
     fn test_type_identity(ty: Type, type_pool: &FrozenTypeInternPool) -> IssuedTypeInstanceKey {
         use rue_air::{AnonymousNominalKind as K, TypeInstanceKey as T, TypeKind};

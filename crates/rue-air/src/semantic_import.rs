@@ -1278,10 +1278,18 @@ where
     {
         nominals.sort_by(|left, right| left.key.cmp(&right.key));
         callables.sort_by(|left, right| left.key.cmp(&right.key));
-        if nominals
-            .iter()
-            .any(|nominal| matches!(nominal.key, NominalInstanceKey::Builtin { .. }))
-        {
+        if nominals.iter().any(|nominal| {
+            let NominalInstanceKey::Builtin { name, .. } = &nominal.key else {
+                return false;
+            };
+            name.as_ref() == "str"
+                || rue_builtins::get_builtin_enum(name).is_some()
+                || name
+                    .strip_prefix("Str(")
+                    .and_then(|name| name.strip_suffix(')'))
+                    .and_then(|capacity| capacity.parse::<u64>().ok())
+                    .is_some()
+        }) {
             return Err(SemanticImportFailure::BuiltinNominalShadow);
         }
         let mut modules = modules;
@@ -1321,7 +1329,21 @@ where
         );
         let mut local_identities = std::collections::BTreeSet::new();
         for nominal in &nominals {
-            if epoch.nominals.contains_key(&nominal.key) {
+            let builtin_key = match &nominal.key {
+                NominalInstanceKey::Builtin { kind, name } => Some((
+                    name.clone(),
+                    match kind {
+                        crate::AnonymousNominalKind::Struct => SemanticImportNominalKind::Struct,
+                        crate::AnonymousNominalKind::Enum => SemanticImportNominalKind::Enum,
+                    },
+                )),
+                _ => None,
+            };
+            if epoch.nominals.contains_key(&nominal.key)
+                || builtin_key
+                    .as_ref()
+                    .is_some_and(|key| epoch.builtins.contains_key(key))
+            {
                 return Err(SemanticImportFailure::DuplicateNominal);
             }
             if !local_identities.insert((
@@ -1343,7 +1365,7 @@ where
                             is_copy: false,
                             is_linear: false,
                             destructor: None,
-                            is_builtin: false,
+                            is_builtin: builtin_key.is_some(),
                             is_pub: nominal.is_public,
                             file_id,
                         },
@@ -1371,6 +1393,9 @@ where
                 }
             };
             epoch.nominals.insert(nominal.key.clone(), local);
+            if let Some(key) = builtin_key {
+                epoch.builtins.insert(key, local);
+            }
         }
 
         for nominal in &nominals {

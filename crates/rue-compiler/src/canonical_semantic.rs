@@ -11,6 +11,7 @@ pub(crate) struct PreparedDurableBodyCandidate {
     pub owner: crate::StableDefinitionKey,
     pub body_span: rue_span::Span,
     pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+    pub canonical: Arc<crate::body_query::CanonicalBody>,
 }
 
 pub(crate) struct PreparedDurableSpecializedBodyCandidate {
@@ -19,12 +20,14 @@ pub(crate) struct PreparedDurableSpecializedBodyCandidate {
         rue_air::SemanticSpecializationIdentity<crate::StableDefinitionKey, crate::ModuleId>,
     pub body_span: rue_span::Span,
     pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+    pub canonical: Arc<crate::body_query::CanonicalBody>,
 }
 
 pub(crate) struct PreparedDurableAnonymousBodyCandidate {
     pub identity: crate::FunctionInstanceKey,
     pub body_span: rue_span::Span,
     pub body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+    pub canonical: Arc<crate::body_query::CanonicalBody>,
 }
 
 fn fold_body_import_work(durable: &mut crate::DurableBodyWork, body: BodyAnalysisWork) {
@@ -57,7 +60,6 @@ use crate::{
 #[cfg(test)]
 thread_local! {
     static INJECT_CFG_FAILURE: Cell<bool> = const { Cell::new(false) };
-    static INJECT_CFG_IMPORT_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_DECLARATION_FAILURE: Cell<bool> = const { Cell::new(false) };
     static INJECT_AUTHORITATIVE_KEY_MISMATCH: Cell<bool> = const { Cell::new(false) };
 }
@@ -80,30 +82,6 @@ pub(crate) fn with_test_cfg_failure_injection<T>(run: impl FnOnce() -> T) -> T {
     });
     let _reset = Reset;
     run()
-}
-
-#[cfg(test)]
-pub(crate) fn with_test_cfg_import_failure_injection<T>(run: impl FnOnce() -> T) -> T {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            INJECT_CFG_IMPORT_FAILURE.with(|enabled| enabled.set(false));
-        }
-    }
-
-    INJECT_CFG_IMPORT_FAILURE.with(|enabled| {
-        assert!(
-            !enabled.replace(true),
-            "CFG import failure injection is not nestable"
-        );
-    });
-    let _reset = Reset;
-    run()
-}
-
-#[cfg(test)]
-pub(crate) fn take_test_cfg_import_failure() -> bool {
-    INJECT_CFG_IMPORT_FAILURE.with(|enabled| enabled.replace(false))
 }
 
 #[cfg(test)]
@@ -1041,6 +1019,8 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
         body_candidates,
         specialized_body_candidates,
         anonymous_body_candidates,
+        durable,
+        anonymous_nominals,
         demanded_drop_glue,
         demanded_drop_glue_plans,
         body_work,
@@ -1341,6 +1321,8 @@ fn finish_canonical_analysis(
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
+    durable_declarations: &[DurableDeclarationSemantic],
+    durable_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
     demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     durable_body_reuse_work: crate::DurableBodyWork,
@@ -1361,6 +1343,8 @@ fn finish_canonical_analysis(
         durable_body_candidates,
         durable_specialized_body_candidates,
         durable_anonymous_body_candidates,
+        durable_declarations,
+        durable_anonymous_nominals,
         demanded_drop_glue,
         demanded_drop_glue_plans,
         durable_body_reuse_work,
@@ -1395,6 +1379,8 @@ fn finish_canonical_analysis_with(
     durable_body_candidates: Vec<PreparedDurableBodyCandidate>,
     durable_specialized_body_candidates: Vec<PreparedDurableSpecializedBodyCandidate>,
     durable_anonymous_body_candidates: Vec<PreparedDurableAnonymousBodyCandidate>,
+    durable_declarations: &[DurableDeclarationSemantic],
+    durable_anonymous_nominals: &[crate::durable_semantics::DurableAnonymousNominal],
     demanded_drop_glue: Arc<[crate::TypeInstanceKey]>,
     demanded_drop_glue_plans: Arc<[(crate::TypeInstanceKey, crate::type_queries::DropGlueFacts)]>,
     mut durable_body_reuse_work: crate::DurableBodyWork,
@@ -1561,6 +1547,27 @@ fn finish_canonical_analysis_with(
         .zip(authoritative_keys.iter())
         .map(|(endpoint, key)| ((*key).clone(), endpoint.token))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let queried_cfg_bodies = durable_body_candidates
+        .iter()
+        .map(|candidate| {
+            (
+                crate::FunctionInstanceKey::Definition(candidate.owner.clone()),
+                (candidate.body_span, candidate.canonical.clone()),
+            )
+        })
+        .chain(durable_specialized_body_candidates.iter().map(|candidate| {
+            (
+                candidate.instance.clone(),
+                (candidate.body_span, candidate.canonical.clone()),
+            )
+        }))
+        .chain(durable_anonymous_body_candidates.iter().map(|candidate| {
+            (
+                candidate.identity.clone(),
+                (candidate.body_span, candidate.canonical.clone()),
+            )
+        }))
+        .collect::<std::collections::BTreeMap<_, _>>();
     let mut queried_candidates = durable_body_candidates
         .into_iter()
         .filter_map(|candidate| {
@@ -1596,15 +1603,6 @@ fn finish_canonical_analysis_with(
                 body: candidate.body,
             }),
     );
-    let queried_cfg_bodies = queried_candidates
-        .iter()
-        .map(|candidate| {
-            (
-                candidate.identity.clone(),
-                (candidate.body_span, candidate.body.clone()),
-            )
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
     let composition = analyze_bodies(
         bound,
         queried_candidates,
@@ -1857,12 +1855,14 @@ fn finish_canonical_analysis_with(
             .and_then(|function_key| {
                 queried_cfg_bodies
                     .get(function_key)
-                    .map(|(body_span, body)| (*body_span, body.clone(), function_key.clone()))
+                    .map(|(body_span, canonical)| {
+                        (*body_span, canonical.clone(), function_key.clone())
+                    })
             });
-        if let Some((body_span, body, function_key)) = selected {
+        if let Some((body_span, canonical, function_key)) = selected {
             stable_cfg_inputs.push(crate::cfg_query::CfgBodyInput {
                 function: function_key,
-                body,
+                canonical,
                 body_span,
             });
         }
@@ -1882,6 +1882,8 @@ fn finish_canonical_analysis_with(
         options.opt_level,
         rir.semantic_symbols().shared_interner(),
         &stable_cfg_inputs,
+        durable_declarations,
+        durable_anonymous_nominals,
         stable_aggregate_types,
         &projected_callable_identities,
         cfg_queries,

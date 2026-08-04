@@ -155,6 +155,43 @@ pub(crate) fn canonical_type_from_live(
     })
 }
 
+fn canonical_primitive(ty: Type) -> Option<CanonicalType> {
+    use rue_air::TypeKind as K;
+    Some(match ty.kind() {
+        K::I8 => CanonicalType::I8,
+        K::I16 => CanonicalType::I16,
+        K::I32 => CanonicalType::I32,
+        K::I64 => CanonicalType::I64,
+        K::U8 => CanonicalType::U8,
+        K::U16 => CanonicalType::U16,
+        K::U32 => CanonicalType::U32,
+        K::U64 => CanonicalType::U64,
+        K::Bool => CanonicalType::Bool,
+        K::Unit => CanonicalType::Unit,
+        K::Never => CanonicalType::Never,
+        K::ComptimeType => CanonicalType::ComptimeType,
+        _ => return None,
+    })
+}
+
+fn live_primitive(ty: &CanonicalType) -> Option<Type> {
+    Some(match ty {
+        CanonicalType::I8 => Type::I8,
+        CanonicalType::I16 => Type::I16,
+        CanonicalType::I32 => Type::I32,
+        CanonicalType::I64 => Type::I64,
+        CanonicalType::U8 => Type::U8,
+        CanonicalType::U16 => Type::U16,
+        CanonicalType::U32 => Type::U32,
+        CanonicalType::U64 => Type::U64,
+        CanonicalType::Bool => Type::BOOL,
+        CanonicalType::Unit => Type::UNIT,
+        CanonicalType::Never => Type::NEVER,
+        CanonicalType::ComptimeType => Type::COMPTIME_TYPE,
+        _ => return None,
+    })
+}
+
 fn deduplicate_type_mappings(
     mappings: Vec<(Type, CanonicalType)>,
 ) -> Result<Vec<(Type, CanonicalType)>, CfgDomainFailure> {
@@ -240,11 +277,6 @@ pub(crate) enum CfgDomainFailure {
 }
 
 impl CfgDomainProjection {
-    #[cfg(test)]
-    pub(crate) fn force_import_failure_for_test(&mut self) {
-        self.incomplete_epoch = Some(Arc::new(()));
-    }
-
     pub(crate) fn same_live_domain(&self, other: &Self) -> bool {
         let complete_or_same_epoch = match (&self.incomplete_epoch, &other.incomplete_epoch) {
             (None, None) => true,
@@ -258,20 +290,6 @@ impl CfgDomainProjection {
             && self.atoms == other.atoms
             && self.spans == other.spans
             && self.symbols == other.symbols
-    }
-
-    pub(crate) fn same_optimized_memo_domain(&self, other: &Self) -> bool {
-        match (&self.incomplete_epoch, &other.incomplete_epoch) {
-            (None, None) => true,
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-            _ => false,
-        }
-    }
-
-    pub(crate) fn optimized_memo_domain_hash(&self) -> usize {
-        self.incomplete_epoch
-            .as_ref()
-            .map_or(0, |epoch| Arc::as_ptr(epoch) as usize)
     }
 
     /// Build the relocation domain for one canonical analyzed function without
@@ -441,23 +459,76 @@ impl CfgDomainProjection {
         stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
         stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
     ) -> Result<Self, CfgDomainFailure> {
-        if function.air.instructions().len() != body.instructions.len() {
+        Self::from_body_parts(
+            &function.air,
+            &function.identity,
+            &function.local_atoms,
+            stable_function,
+            body,
+            body_span,
+            strings,
+            type_pool,
+            interner,
+            stable_type,
+            stable_callable,
+        )
+    }
+
+    pub fn from_local_body(
+        materialization: &rue_air::SemanticLocalMaterialization<
+            crate::StableDefinitionKey,
+            crate::ModuleId,
+        >,
+        body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
+        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
+    ) -> Result<Self, CfgDomainFailure> {
+        Self::from_body_parts(
+            &materialization.air,
+            &materialization.identity,
+            &materialization.local_atoms,
+            &materialization.identity,
+            body,
+            materialization.body_span,
+            &materialization.strings,
+            &materialization.type_pool,
+            &materialization.interner,
+            stable_type,
+            stable_callable,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_body_parts<D: PartialEq, M: PartialEq>(
+        air: &rue_air::ValidatedAir,
+        current_identity: &rue_air::FunctionInstanceKey<D, M>,
+        local_atoms: &[rue_air::LocalAtomRecord<D, M>],
+        stable_function: &crate::FunctionInstanceKey,
+        body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+        body_span: Span,
+        strings: &[String],
+        type_pool: &rue_air::FrozenTypeInternPool,
+        interner: &lasso::ThreadedRodeo,
+        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
+        stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
+    ) -> Result<Self, CfgDomainFailure> {
+        if air.instructions().len() != body.instructions.len() {
             return Err(CfgDomainFailure::Shape);
         }
         let mut types = vec![
-            (function.air.return_type(), body.return_type.clone()),
+            (air.return_type(), body.return_type.clone()),
+            (Type::I32, CanonicalType::I32),
             (Type::UNIT, CanonicalType::Unit),
         ];
         let mut stable_strings = Vec::new();
         let mut spans = Vec::new();
         let mut symbols = Vec::new();
-        if function.local_atoms.len() != body.local_atoms.len() {
+        if local_atoms.len() != body.local_atoms.len() {
             return Err(CfgDomainFailure::Shape);
         }
-        if function
-            .local_atoms
+        if local_atoms
             .iter()
-            .any(|atom| atom.identity.producer != function.identity)
+            .any(|atom| atom.identity.producer != *current_identity)
             || body
                 .local_atoms
                 .iter()
@@ -465,8 +536,7 @@ impl CfgDomainProjection {
         {
             return Err(CfgDomainFailure::Shape);
         }
-        let mut current_atoms = function
-            .local_atoms
+        let mut current_atoms = local_atoms
             .iter()
             .map(|atom| {
                 if strings.get(atom.dense_id as usize).map(String::as_str)
@@ -498,7 +568,7 @@ impl CfgDomainProjection {
         {
             return Err(CfgDomainFailure::Shape);
         }
-        for ((_, current), durable) in function.air.iter().zip(body.instructions.iter()) {
+        for ((_, current), durable) in air.iter().zip(body.instructions.iter()) {
             let current_kind = live_instruction_kind(&current.data);
             let durable_kind = durable.data.kind();
             if current_kind != durable_kind
@@ -588,7 +658,7 @@ impl CfgDomainProjection {
                     AirInstData::Match { arms, .. },
                     DurableAirInstData::Match { arms: stable, .. },
                 ) => {
-                    let current = function.air.get_match_arms(arms).collect::<Vec<_>>();
+                    let current = air.get_match_arms(arms).collect::<Vec<_>>();
                     if current.len() != stable.len() {
                         return Err(CfgDomainFailure::Shape);
                     }
@@ -610,9 +680,9 @@ impl CfgDomainProjection {
                 _ => return Err(CfgDomainFailure::Shape),
             }
         }
-        for (current, stable) in function.air.places().iter().zip(body.places.iter()) {
+        for (current, stable) in air.places().iter().zip(body.places.iter()) {
             types.push((current.base_type, stable.base_type.clone()));
-            let current_projections = function.air.get_place_projections(current);
+            let current_projections = air.get_place_projections(current);
             if current_projections.len() != stable.projections.len() {
                 return Err(CfgDomainFailure::Shape);
             }
@@ -632,14 +702,11 @@ impl CfgDomainProjection {
                 }
             }
         }
-        if function.air.param_drops().len() != body.param_drops.len() {
+        if air.param_drops().len() != body.param_drops.len() {
             return Err(CfgDomainFailure::Shape);
         }
-        for ((current_slot, current), (stable_slot, stable)) in function
-            .air
-            .param_drops()
-            .iter()
-            .zip(body.param_drops.iter())
+        for ((current_slot, current), (stable_slot, stable)) in
+            air.param_drops().iter().zip(body.param_drops.iter())
         {
             if current_slot != stable_slot {
                 return Err(CfgDomainFailure::Shape);
@@ -731,6 +798,9 @@ impl CfgDomainProjection {
     }
 
     fn stable_type(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
+        if let Some(stable) = canonical_primitive(value) {
+            return Ok(stable);
+        }
         self.types
             .iter()
             .find(|(current, _)| *current == value)
@@ -738,6 +808,9 @@ impl CfgDomainProjection {
             .ok_or(CfgDomainFailure::MissingLiveType(value))
     }
     fn current_type(&self, value: &CanonicalType) -> Result<Type, CfgDomainFailure> {
+        if let Some(current) = live_primitive(value) {
+            return Ok(current);
+        }
         self.types
             .iter()
             .find(|(_, stable)| stable == value)

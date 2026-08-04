@@ -14135,7 +14135,6 @@ impl RevisionedQueryDatabase {
         function: crate::FunctionInstanceKey,
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
         semantic_input: crate::cfg_query::CfgSemanticInput,
-        live: Arc<crate::cfg_query::CfgLiveInput>,
         opt_level: rue_cfg::OptLevel,
         cancellation: CancellationToken,
     ) -> Result<
@@ -14145,99 +14144,7 @@ impl RevisionedQueryDatabase {
         ),
         QueryAbort,
     > {
-        let mut layout_dependencies = BTreeSet::new();
-        let mut drop_dependencies = BTreeSet::new();
-        for ty in live.domains.stable_types() {
-            crate::cfg_query::collect_type_dependencies(ty, &mut layout_dependencies);
-            crate::cfg_query::collect_drop_type_dependency(ty, &mut drop_dependencies);
-        }
-        let layout_keys = layout_dependencies
-            .into_iter()
-            .map(|ty| crate::type_queries::TypeQueryKey {
-                ty,
-                configuration: configuration.clone(),
-            })
-            .collect::<Vec<_>>();
-        let mut layout_values = Vec::with_capacity(layout_keys.len());
-        for key in layout_keys {
-            let attempt = self.runtime.request_registered(
-                &self.layouts,
-                revision,
-                key.clone(),
-                cancellation.clone(),
-            );
-            let terminal = attempt.into_result()?;
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("Layout publishes typed values")
-            };
-            layout_values.push((key, value.clone()));
-        }
-        let drop_keys = drop_dependencies
-            .into_iter()
-            .map(|ty| crate::type_queries::TypeQueryKey {
-                ty,
-                configuration: configuration.clone(),
-            })
-            .collect::<Vec<_>>();
-        let mut type_fact_values = Vec::with_capacity(drop_keys.len());
-        let mut drop_glue_values = Vec::with_capacity(drop_keys.len());
-        for key in drop_keys {
-            let attempt = self.runtime.request_registered(
-                &self.type_facts,
-                revision,
-                key.clone(),
-                cancellation.clone(),
-            );
-            let terminal = attempt.into_result()?;
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("TypeFacts publishes typed values")
-            };
-            type_fact_values.push((key.clone(), value.clone()));
-            let attempt = self.runtime.request_registered(
-                &self.drop_glues,
-                revision,
-                key.clone(),
-                cancellation.clone(),
-            );
-            let terminal = attempt.into_result()?;
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("DropGlue publishes typed values")
-            };
-            drop_glue_values.push((key, value.clone()));
-        }
-        let mut callables = live.domains.stable_callables().collect::<BTreeSet<_>>();
-        callables.insert(function.clone());
-        let call_abi_keys = callables
-            .into_iter()
-            .map(|callable| crate::type_queries::CallAbiQueryKey {
-                callable,
-                configuration: configuration.clone(),
-            })
-            .collect::<Vec<_>>();
-        let mut call_abi_values = Vec::with_capacity(call_abi_keys.len());
-        for key in call_abi_keys {
-            let attempt = self.runtime.request_registered(
-                &self.call_abis,
-                revision,
-                key.clone(),
-                cancellation.clone(),
-            );
-            let terminal = attempt.into_result()?;
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("CallAbi publishes typed values")
-            };
-            call_abi_values.push((key, value.clone()));
-        }
-        let cfg = crate::cfg_query::CfgQueryKey::new(
-            function,
-            configuration,
-            semantic_input,
-            layout_values.into(),
-            type_fact_values.into(),
-            drop_glue_values.into(),
-            call_abi_values.into(),
-            live,
-        );
+        let cfg = crate::cfg_query::CfgQueryKey::new(function, configuration, semantic_input);
         let optimized = crate::cfg_query::OptimizedCfgQueryKey::new(cfg, opt_level);
         let attempt = self.runtime.request_registered(
             &self.optimized_cfgs,
@@ -18967,19 +18874,7 @@ fn provider_definition_symbol_component(key: &crate::StableDefinitionKey) -> Str
 /// Body closure aggregation calls this before any CFG/codegen consumer can
 /// materialize the collected nominal set.
 fn compiler_anonymous_identity_digest(identity: &crate::AnonymousNominalKey) -> u128 {
-    let identity = identity.with_canonical_producer();
-    let relocated: rue_air::AnonymousNominalKey<String, String> = identity
-        .as_ref()
-        .try_map_identities::<String, String, std::convert::Infallible>(
-            &|definition| Ok(provider_definition_symbol_component(definition)),
-            &|module| {
-                Ok(rue_air::stable_digest::stable_module_component(
-                    module.logical_path(),
-                ))
-            },
-        )
-        .expect("compiler anonymous identity relocation to stable content is infallible");
-    rue_air::stable_digest::stable_anonymous_identity_digest(&relocated)
+    crate::semantic_identity::anonymous_nominal_digest(identity)
 }
 
 fn register_body_closure_anonymous_digest(
@@ -32924,6 +32819,7 @@ fn main() -> i32 {
             std::slice::from_ref(&callable),
             &[],
             std::slice::from_ref(&module),
+            &[],
         )
         .expect("durable provider export materializes in a fresh local epoch");
 
