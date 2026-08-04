@@ -1326,6 +1326,11 @@ impl<'a> DeclarationShells<'a> {
                         // of the current RIR, so it is read here rather than
                         // threaded through the durable declaration shell.
                         is_c_export,
+                        // The `-> borrow T` accessor marker (ADR-0062) is the
+                        // same kind of property: the durable signature records
+                        // the result type's source spelling, which never
+                        // contains the result-position `borrow` qualifier.
+                        returns_borrow,
                         ..
                     } = &self.sema.rir.get(pending.declaration).data
                     else {
@@ -1340,6 +1345,7 @@ impl<'a> DeclarationShells<'a> {
                         return Err(DeclarationInstallFailure::CallableShapeMismatch);
                     }
                     let is_c_export = *is_c_export;
+                    let returns_borrow = *returns_borrow;
                     let type_name = self.sema.interner.get_or_intern("type");
                     let rir_parameters = self.sema.rir.params(params);
                     if parameters
@@ -1388,10 +1394,6 @@ impl<'a> DeclarationShells<'a> {
                             .structs_by_file_name
                             .get(&(pending.shell.declaration_span.file_id, owner))
                             .ok_or(DeclarationInstallFailure::MissingNominal)?;
-                        // The shell carries no accessor flag; derive it from
-                        // the body's trailing `yield`, which coincides on
-                        // every accepted program.
-                        let returns_borrow = super::info::body_ends_in_yield(self.sema.rir, body);
                         self.sema.methods.insert(
                             (id, *name),
                             super::MethodInfo {

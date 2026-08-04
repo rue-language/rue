@@ -100,24 +100,6 @@ pub struct MethodInfo {
     pub returns_borrow: bool,
 }
 
-/// Whether a function body block ends in a `yield` — the derived marker of a
-/// `-> borrow T` accessor body (ADR-0062) for install paths that carry a body
-/// handle but not the declaring `FnDecl`. A non-accessor body ending in
-/// `yield` is ill-formed (E0256) and never completes compilation, so the
-/// derivation agrees with the declaration flag on every accepted program.
-pub(crate) fn body_ends_in_yield(rir: &rue_rir::Rir, body: rue_rir::InstRef) -> bool {
-    match &rir.get(body).data {
-        rue_rir::InstData::Block { instructions } => rir
-            .block_insts(instructions)
-            .values()
-            .last()
-            .is_some_and(|last| matches!(rir.get(last).data, rue_rir::InstData::Yield(_))),
-        // A single-statement body lowers to the instruction itself.
-        rue_rir::InstData::Yield(_) => true,
-        _ => false,
-    }
-}
-
 /// Signature-only callable metadata consumed at a call site. Imported
 /// callables deliberately have no producer-local RIR handles or spans.
 #[derive(Debug, Clone, Copy)]
