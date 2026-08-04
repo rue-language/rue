@@ -739,6 +739,10 @@ pub struct CompilerSession {
     parse_invalidation_entries_compared: u64,
     queries: FrontendQueryDatabase,
     #[cfg(test)]
+    rooted_cfg_executions: Vec<(crate::FunctionInstanceKey, rue_query::RequestExecution)>,
+    #[cfg(test)]
+    warning_reference_executions: Vec<(crate::StableDefinitionKey, rue_query::RequestExecution)>,
+    #[cfg(test)]
     codegen_executions: Vec<(crate::FunctionInstanceKey, rue_query::RequestExecution)>,
     #[cfg(test)]
     codegen_attempt_work: Vec<(crate::FunctionInstanceKey, Vec<(std::sync::Arc<str>, u64)>)>,
@@ -828,6 +832,55 @@ pub enum SemanticParkOutcome {
     /// revision. The host driver must acquire the demanded modules, publish a
     /// successor, and retry.
     Parked(Box<crate::ParkedToolchainModules>),
+}
+
+/// Park-aware result for the production body-closure root. Unlike
+/// [`SemanticParkOutcome`], success carries no recomposed program semantic
+/// value: normal compilation only needs the query-owned reached terminals.
+pub enum RootedParkOutcome {
+    Ready,
+    Errors(CompileErrors),
+    Parked(Box<crate::ParkedToolchainModules>),
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RootedCfgUnit {
+    pub(crate) function: crate::FunctionInstanceKey,
+    pub(crate) optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
+    pub(crate) record: Arc<crate::cfg_query::CfgRecord>,
+    #[allow(dead_code)]
+    pub(crate) body_span: rue_span::Span,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RootedCfgOutput {
+    graph: RootedBodyGraph,
+    pub(crate) cfgs: Vec<RootedCfgUnit>,
+    pub(crate) warnings: Vec<CompileWarning>,
+    pub(crate) work: crate::CanonicalSemanticWork,
+}
+
+pub(crate) struct RootedCodegenOutput {
+    pub(crate) units: Vec<crate::codegen_query::CollectedCodegenUnit>,
+    #[allow(dead_code)]
+    pub(crate) cfgs: Vec<RootedCfgUnit>,
+    pub(crate) exports: Vec<crate::program_image_plan::RootedExportThunk>,
+    pub(crate) warnings: Vec<CompileWarning>,
+    pub(crate) work: crate::CanonicalSemanticWork,
+}
+
+#[derive(Debug, Clone)]
+struct RootedBodyGraph {
+    revision: rue_query::Revision,
+    configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
+    declarations: Arc<[crate::DurableDeclarationSemantic]>,
+    anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
+    declaration_dependencies: Arc<[crate::semantic_query_nucleus::SemanticDeclarationDependency]>,
+    c_export_roots: Arc<[crate::StableDefinitionKey]>,
+    modules: Arc<[Arc<crate::parsed_modules::ParsedModule>]>,
+    main: crate::StableDefinitionKey,
+    closure: crate::body_query::BodyClosureOutput,
+    work: crate::CanonicalSemanticWork,
 }
 
 /// An opaque, single-use continuation issued ONLY from a successful close of
@@ -4035,10 +4088,815 @@ impl CompilerSession {
         }
     }
 
+    fn rooted_body_graph_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedBodyGraph, SemanticRequestControl> {
+        self.require_successful_import_diagnostics()
+            .map_err(SemanticRequestControl::Compile)?;
+        let _imports = self
+            .accepted_semantic_import_graph()
+            .map_err(SemanticRequestControl::Compile)?;
+        let program = self
+            .published
+            .clone()
+            .ok_or_else(|| SemanticRequestControl::Compile(no_published_program()))?;
+        let revision = self
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .ok_or_else(|| SemanticRequestControl::Compile(no_published_program()))?;
+        let modules = program
+            .modules_iter()
+            .map(|module| module.module_id().clone())
+            .collect::<Vec<_>>();
+        let projection = match self
+            .queries
+            .revisioned
+            .projected_declaration_semantics_for_modules(
+                revision,
+                modules.iter().cloned(),
+                options.target,
+                &options.preview_features,
+                cancellation.clone(),
+            ) {
+            Ok(projection) => projection,
+            Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Query(abort)) => {
+                return Err(SemanticRequestControl::Abort(abort));
+            }
+            Err(crate::revisioned_query_database::SemanticNucleusBatchFailure::Stable {
+                declaration,
+                failure,
+            }) => {
+                return Err(SemanticRequestControl::Compile(
+                    semantic_nucleus_failure_diagnostics(
+                        program.modules(),
+                        declaration.as_ref(),
+                        &failure,
+                    ),
+                ));
+            }
+        };
+        let Some(main_declaration) = projection.declarations.iter().find(|declaration| {
+            declaration.key.kind() == crate::StableDefinitionKind::Function
+                && declaration.key.name() == "main"
+                && declaration.key.module() == program.root()
+        }) else {
+            return Err(SemanticRequestControl::Compile(
+                CompileError::without_span(ErrorKind::NoMainFunction).into(),
+            ));
+        };
+        let crate::durable_semantics::DurableDeclarationPayload::Callable {
+            parameters,
+            result,
+            ..
+        } = &main_declaration.payload
+        else {
+            return Err(SemanticRequestControl::Compile(
+                CompileError::without_span(ErrorKind::NoMainFunction).into(),
+            ));
+        };
+        let invalid_main = if !parameters.is_empty() {
+            Some("`main` must not declare parameters")
+        } else if !matches!(
+            result,
+            crate::durable_semantics::DurableType::I32
+                | crate::durable_semantics::DurableType::Unit
+        ) {
+            Some("`main` must return `i32` or `()`")
+        } else {
+            None
+        };
+        if let Some(reason) = invalid_main {
+            let span = program.module(program.root()).and_then(|module| {
+                module.ast().items.iter().find_map(|item| match item {
+                    rue_parser::ast::Item::Function(function)
+                        if module.resolve_raw_symbol(function.name.name) == "main" =>
+                    {
+                        Some(function.span)
+                    }
+                    _ => None,
+                })
+            });
+            let kind = ErrorKind::InvalidMainSignature { reason };
+            return Err(SemanticRequestControl::Compile(
+                match span {
+                    Some(span) => CompileError::new(kind, span),
+                    None => CompileError::without_span(kind),
+                }
+                .into(),
+            ));
+        }
+
+        let main = main_declaration.key.clone();
+        let mut roots = BTreeSet::from([crate::FunctionInstanceKey::Definition(main.clone())]);
+        roots.extend(
+            projection
+                .c_export_roots
+                .iter()
+                .cloned()
+                .map(crate::FunctionInstanceKey::Definition),
+        );
+        let configuration = crate::semantic_query_nucleus::SemanticQueryConfiguration {
+            target: options.target,
+            preview_features: StablePreviewFeatures::new(&options.preview_features),
+        };
+        let request = self
+            .queries
+            .revisioned
+            .body_closure(
+                revision,
+                crate::body_query::BodyClosureQueryKey {
+                    modules: modules.into(),
+                    roots: roots.into_iter().collect::<Vec<_>>().into(),
+                    configuration: configuration.clone(),
+                },
+                cancellation.clone(),
+            )
+            .map_err(SemanticRequestControl::Abort)?;
+        let closure_terminal = &request.terminal;
+        let rue_query::QueryOutcome::Success(closure) = closure_terminal.outcome() else {
+            unreachable!("BodyClosure publishes typed values")
+        };
+        if let Some(park) = &closure.parked_toolchain {
+            return Err(SemanticRequestControl::Parked(Box::new(park.clone())));
+        }
+        let mut work = crate::CanonicalSemanticWork::default();
+        work.body_analysis.closure_bodies_visited = closure.bodies.len();
+        for closure_body in closure.bodies.iter() {
+            match request.execution_for(&closure_body.key) {
+                rue_query::RequestExecution::Computed => {
+                    work.body_analysis.body_analyses_computed += 1;
+                    if request.was_retained(&closure_body.key) {
+                        work.body_analysis.body_analyses_invalidated += 1;
+                    }
+                }
+                rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined => {
+                    work.body_analysis.body_analyses_reused += 1;
+                }
+                rue_query::RequestExecution::Aborted => unreachable!(
+                    "a successful rooted body closure cannot retain an aborted body attempt"
+                ),
+            }
+        }
+        let mut errors = closure
+            .scheduling_errors
+            .iter()
+            .flat_map(|(_, errors)| errors.iter().cloned())
+            .collect::<Vec<_>>();
+        if let Some(fatal) = &closure.fatal {
+            let fatal_errors = match fatal {
+                crate::body_query::BodyClosureFatal::DeclarationFailed {
+                    declaration,
+                    failure,
+                } => semantic_nucleus_failure_diagnostics(
+                    program.modules(),
+                    declaration.as_ref(),
+                    failure,
+                ),
+                crate::body_query::BodyClosureFatal::ProducerFailed { failure, .. } => {
+                    semantic_nucleus_failure_diagnostics(program.modules(), None, failure)
+                }
+                crate::body_query::BodyClosureFatal::WellKnownOptionResolution {
+                    failure, ..
+                } => well_known_option_resolution_diagnostics(program.modules(), failure),
+                other => CompileError::without_span(ErrorKind::InternalError(format!(
+                    "rooted body closure failed: {other:?}"
+                )))
+                .into(),
+            };
+            errors.extend(fatal_errors.iter().cloned());
+        }
+
+        let mut anonymous = projection
+            .anonymous_nominals
+            .iter()
+            .cloned()
+            .map(|fact| (fact.identity.clone(), fact))
+            .collect::<BTreeMap<_, _>>();
+        for closure_body in closure.bodies.iter() {
+            let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
+                unreachable!("BodyAnalysisBundle publishes typed values")
+            };
+            if matches!(
+                bundle.transaction,
+                crate::body_query::BodyTransaction::DeterministicFailure { .. }
+            ) {
+                let locator = self
+                    .queries
+                    .revisioned
+                    .body_source_locator_projection(
+                        revision,
+                        closure_body.key.clone(),
+                        cancellation.clone(),
+                    )
+                    .map_err(SemanticRequestControl::Abort)?;
+                let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
+                    unreachable!("BodySourceLocator publishes typed values")
+                };
+                let projected = crate::revisioned_query_database::project_transaction_diagnostics(
+                    bundle.transaction.clone(),
+                    locator.as_ref(),
+                );
+                if let crate::body_query::BodyTransaction::DeterministicFailure {
+                    errors: body_errors,
+                    ..
+                } = projected
+                {
+                    errors.extend(body_errors.iter().cloned());
+                }
+            }
+            if let crate::body_query::BodyTransaction::Success {
+                produced_anonymous_nominals,
+                consulted_anonymous_nominals,
+                ..
+            } = &bundle.transaction
+            {
+                for fact in produced_anonymous_nominals
+                    .0
+                    .iter()
+                    .chain(consulted_anonymous_nominals.0.iter())
+                {
+                    anonymous.insert(fact.identity.clone(), fact.clone());
+                }
+            }
+            if let Some(crate::body_query::ProducedAnonymous::Produced(produced)) =
+                &bundle.produced_anonymous
+            {
+                for fact in produced.0.iter() {
+                    anonymous.insert(fact.identity.clone(), fact.clone());
+                }
+            }
+        }
+        for nominal in anonymous.values() {
+            let crate::durable_semantics::DurableAnonymousNominalShape::Struct { methods, .. } =
+                &nominal.shape
+            else {
+                continue;
+            };
+            let mut names = BTreeSet::new();
+            if let Some(duplicate) = methods
+                .iter()
+                .find(|method| !names.insert(method.name.clone()))
+            {
+                errors.push(CompileError::without_span(
+                    ErrorKind::ComptimeEvaluationFailed {
+                        reason: format!(
+                            "duplicate method `{}` in an anonymous struct",
+                            duplicate.name
+                        ),
+                    },
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(SemanticRequestControl::Compile(errors.into()));
+        }
+
+        Ok(RootedBodyGraph {
+            revision,
+            configuration,
+            declarations: projection.declarations,
+            anonymous_nominals: anonymous.into_values().collect::<Vec<_>>().into(),
+            declaration_dependencies: projection.dependencies,
+            c_export_roots: projection.c_export_roots,
+            modules: program.modules().to_vec().into(),
+            main,
+            closure: closure.clone(),
+            work,
+        })
+    }
+
+    fn rooted_warning_references(
+        &mut self,
+        graph: &RootedBodyGraph,
+    ) -> Result<BTreeSet<crate::StableDefinitionKey>, CompileErrors> {
+        let functions = graph
+            .declarations
+            .iter()
+            .filter(|declaration| declaration.key.kind() == crate::StableDefinitionKind::Function)
+            .map(|declaration| {
+                (
+                    (
+                        declaration.key.module().clone(),
+                        Arc::<str>::from(declaration.key.name()),
+                    ),
+                    declaration.key.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let module_bindings = graph
+            .declarations
+            .iter()
+            .filter_map(|declaration| {
+                let crate::durable_semantics::DurableDeclarationPayload::ModuleBinding { target } =
+                    &declaration.payload
+                else {
+                    return None;
+                };
+                Some((
+                    (
+                        declaration.key.module().clone(),
+                        Arc::<str>::from(declaration.key.name()),
+                    ),
+                    target.clone(),
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let callable_aliases = graph
+            .declarations
+            .iter()
+            .filter_map(|declaration| {
+                let crate::durable_semantics::DurableDeclarationPayload::Const {
+                    value: crate::durable_semantics::DurableConstValue::Function(target),
+                    ..
+                } = &declaration.payload
+                else {
+                    return None;
+                };
+                Some((
+                    (
+                        declaration.key.module().clone(),
+                        Arc::<str>::from(declaration.key.name()),
+                    ),
+                    target.clone(),
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let resolve_head =
+            |caller: &crate::ModuleId,
+             head: &crate::revisioned_query_database::WarningStaticCallHead| {
+                let (name, qualifiers) = head.components.split_last()?;
+                let mut module = head.module.clone().unwrap_or_else(|| caller.clone());
+                for qualifier in qualifiers {
+                    module = module_bindings.get(&(module, qualifier.clone()))?.clone();
+                }
+                callable_aliases
+                    .get(&(module.clone(), name.clone()))
+                    .cloned()
+                    .or_else(|| functions.get(&(module, name.clone())).cloned())
+            };
+
+        #[cfg(test)]
+        self.warning_reference_executions.clear();
+        let mut referenced = BTreeSet::new();
+        for declaration in graph
+            .declarations
+            .iter()
+            .filter(|declaration| declaration.key.kind().owns_body())
+        {
+            let (execution, projected) = self
+                .queries
+                .revisioned
+                .warning_body_references(
+                    graph.revision,
+                    crate::body_query::BodyQueryKey {
+                        instance: crate::FunctionInstanceKey::Definition(declaration.key.clone()),
+                        configuration: graph.configuration.clone(),
+                    },
+                    rue_query::CancellationToken::new(),
+                )
+                .map_err(|abort| {
+                    CompileError::without_span(ErrorKind::InternalError(format!(
+                        "warning body-reference query aborted: {abort:?}"
+                    )))
+                })?;
+            #[cfg(not(test))]
+            let _ = execution;
+            #[cfg(test)]
+            self.warning_reference_executions
+                .push((declaration.key.clone(), execution));
+            let heads = match projected {
+                crate::revisioned_query_database::WarningBodyReferencesValue::Available(heads) => {
+                    heads
+                }
+                crate::revisioned_query_database::WarningBodyReferencesValue::Failure(failure) => {
+                    return Err(CompileError::without_span(ErrorKind::InternalError(format!(
+                        "warning body-reference projection failed: {failure:?}"
+                    )))
+                    .into());
+                }
+            };
+            referenced.extend(
+                heads
+                    .iter()
+                    .filter_map(|head| resolve_head(declaration.key.module(), head)),
+            );
+        }
+        Ok(referenced)
+    }
+
+    pub(crate) fn rooted_cfg(
+        &mut self,
+        options: &CompileOptions,
+    ) -> Result<RootedCfgOutput, CompileErrors> {
+        let graph = match self
+            .rooted_body_graph_with_cancellation(options, rue_query::CancellationToken::new())
+        {
+            Ok(graph) => graph,
+            Err(SemanticRequestControl::Compile(errors)) => return Err(errors),
+            Err(SemanticRequestControl::Parked(park)) => {
+                return Err(unresolved_toolchain_park_errors(&park));
+            }
+            Err(SemanticRequestControl::Abort(abort)) => {
+                panic!("uncanceled rooted CFG request aborted: {abort:?}")
+            }
+        };
+        let mut work = graph.work;
+        let mut identities = graph
+            .closure
+            .reached
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        identities.extend(
+            graph
+                .closure
+                .demanded_drop_glue
+                .iter()
+                .cloned()
+                .map(|owner| crate::FunctionInstanceKey::DropGlue(Box::new(owner))),
+        );
+        let main_identity = crate::FunctionInstanceKey::Definition(graph.main.clone());
+        let callable_symbols = identities
+            .iter()
+            .cloned()
+            .map(|identity| {
+                let symbol = if identity == main_identity {
+                    Arc::from("main")
+                } else {
+                    crate::local_semantic_materialization::rooted_callable_symbol(&identity)
+                };
+                (identity, symbol)
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut cfg_inputs = Vec::with_capacity(identities.len());
+        let warning_references = self.rooted_warning_references(&graph)?;
+        let mut warnings = rooted_unused_function_warnings(&graph, &warning_references);
+        for closure_body in graph.closure.bodies.iter() {
+            let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
+                unreachable!("BodyAnalysisBundle publishes typed values")
+            };
+            let crate::body_query::BodyTransaction::Success { body, .. } = &bundle.transaction
+            else {
+                continue;
+            };
+            let locator = self
+                .queries
+                .revisioned
+                .body_source_locator_projection(
+                    graph.revision,
+                    closure_body.key.clone(),
+                    rue_query::CancellationToken::new(),
+                )
+                .map_err(|abort| {
+                    CompileError::without_span(ErrorKind::InternalError(format!(
+                        "body source locator query aborted: {abort:?}"
+                    )))
+                })?;
+            let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
+                unreachable!("BodySourceLocator publishes typed values")
+            };
+            let Some(locator) = locator.as_ref() else {
+                return Err(CompileError::without_span(ErrorKind::InternalError(format!(
+                    "reached body {:?} has no source locator",
+                    closure_body.key.instance
+                )))
+                .into());
+            };
+            let body_span = match body.as_ref() {
+                crate::body_query::CanonicalBody::Ordinary { .. } => {
+                    rue_span::Span::with_file(locator.file_id, locator.body_start, locator.body_end)
+                }
+                crate::body_query::CanonicalBody::Anonymous { body_anchor, .. } => {
+                    rue_span::Span::with_file(
+                        locator.file_id,
+                        locator.body_start + body_anchor.start,
+                        locator.body_start + body_anchor.end,
+                    )
+                }
+                crate::body_query::CanonicalBody::Specialization { .. } => {
+                    rue_span::Span::with_file(
+                        locator.file_id,
+                        locator.declaration_start,
+                        locator.declaration_end,
+                    )
+                }
+            };
+            let semantic_body = match body.as_ref() {
+                crate::body_query::CanonicalBody::Ordinary { body, .. }
+                | crate::body_query::CanonicalBody::Anonymous { body, .. }
+                | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
+            };
+            warnings.extend(import_semantic_body_warnings(semantic_body, body_span));
+            // Comptime providers participate in body reachability because their
+            // results can produce runtime declarations and anonymous nominals,
+            // but they have no runtime CFG/codegen terminal of their own.
+            if semantic_body.return_type == rue_air::SemanticImportType::ComptimeType {
+                work.cfg.comptime_functions_filtered += 1;
+                continue;
+            }
+            work.cfg.functions_considered += 1;
+            let materialization =
+                crate::local_semantic_materialization::select_materialization_facts(
+                    &closure_body.key.instance,
+                    semantic_body,
+                    &graph.declarations,
+                    &graph.anonymous_nominals,
+                    &callable_symbols,
+                )
+                .map_err(|error| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "CFG materialization fact selection failed: {error:?}"
+                        )),
+                        body_span,
+                    )
+                })?;
+            cfg_inputs.push((
+                closure_body.key.instance.clone(),
+                crate::cfg_query::CfgSemanticInput::Body {
+                    input: Arc::new(crate::cfg_query::CfgBodyInput {
+                        function: closure_body.key.instance.clone(),
+                        canonical: Arc::new((**body).clone()),
+                        body_span,
+                    }),
+                    materialization: Arc::new(materialization),
+                },
+                body_span,
+            ));
+        }
+        let fallback_span = cfg_inputs
+            .iter()
+            .find(|(identity, _, _)| identity == &main_identity)
+            .map_or(rue_span::Span::default(), |(_, _, span)| *span);
+        for (owner, facts) in graph.closure.demanded_drop_glue_plans.iter() {
+            work.cfg.drop_glue_functions_synthesized += 1;
+            let identity = crate::FunctionInstanceKey::DropGlue(Box::new(owner.clone()));
+            let materialization =
+                crate::local_semantic_materialization::select_drop_glue_materialization_facts(
+                    owner,
+                    facts,
+                    &graph.declarations,
+                    &graph.anonymous_nominals,
+                    &callable_symbols,
+                )
+                .map_err(|error| {
+                    CompileError::new(
+                        ErrorKind::InternalError(format!(
+                            "drop-glue materialization fact selection failed: {error:?}"
+                        )),
+                        fallback_span,
+                    )
+                })?;
+            cfg_inputs.push((
+                identity,
+                crate::cfg_query::CfgSemanticInput::DropGlue {
+                    owner: owner.clone(),
+                    facts: Box::new(facts.clone()),
+                    materialization: Arc::new(materialization),
+                    body_span: fallback_span,
+                },
+                fallback_span,
+            ));
+        }
+        cfg_inputs.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut cfgs = Vec::with_capacity(cfg_inputs.len());
+        #[cfg(test)]
+        self.rooted_cfg_executions.clear();
+        for (function, semantic_input, body_span) in cfg_inputs {
+            let (optimized_cfg_key, attempt) = self
+                .queries
+                .revisioned
+                .optimized_cfg(
+                    graph.revision,
+                    function.clone(),
+                    graph.configuration.clone(),
+                    semantic_input,
+                    options.opt_level,
+                    rue_query::CancellationToken::new(),
+                )
+                .map_err(|abort| {
+                    CompileError::without_span(ErrorKind::InternalError(format!(
+                        "optimized CFG query aborted: {abort:?}"
+                    )))
+                })?;
+            let execution = attempt.execution();
+            #[cfg(test)]
+            self.rooted_cfg_executions
+                .push((function.clone(), execution));
+            match execution {
+                rue_query::RequestExecution::Computed => {
+                    work.cfg.cfg_builds_attempted += 1;
+                    work.cfg.optimization_attempts += 1;
+                }
+                rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined => {
+                    work.cfg.cfg_reuse_candidates += 1;
+                    work.cfg.cfg_reuses += 1;
+                }
+                rue_query::RequestExecution::Aborted => {}
+            }
+            let terminal = attempt.into_result().map_err(|abort| {
+                CompileError::without_span(ErrorKind::InternalError(format!(
+                    "optimized CFG query aborted: {abort:?}"
+                )))
+            })?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("OptimizedCfg publishes typed values")
+            };
+            let record = match value {
+                crate::cfg_query::CfgValue::Available(record) => {
+                    if execution == rue_query::RequestExecution::Computed {
+                        work.cfg.cfg_builds_succeeded += 1;
+                        work.cfg.optimization_completions += 1;
+                    }
+                    record.clone()
+                }
+                crate::cfg_query::CfgValue::Failure {
+                    errors,
+                    body_span: old_span,
+                } => {
+                    return Err(crate::cfg_query::import_errors(
+                        errors, *old_span, body_span,
+                    ));
+                }
+            };
+            warnings.extend(crate::cfg_query::import_warnings(
+                &record.materialization_warnings,
+                record.body_span,
+                body_span,
+            ));
+            warnings.extend(crate::cfg_query::import_warnings(
+                &record.warnings,
+                record.body_span,
+                body_span,
+            ));
+            cfgs.push(RootedCfgUnit {
+                function,
+                optimized_cfg_key,
+                record,
+                body_span,
+            });
+        }
+
+        // Preserve the canonical backend/presentation order independently of
+        // the query scheduling order. Function-instance identity is the right
+        // key for query work, while machine symbols are the established public
+        // ordering for MIR, assembly, and object-image consumers.
+        cfgs.sort_by(|left, right| {
+            left.record
+                .codegen
+                .defined_symbol
+                .cmp(&right.record.codegen.defined_symbol)
+        });
+
+        warnings.sort_by(|left, right| {
+            let key = |warning: &CompileWarning| {
+                let span = warning.span();
+                let module = span
+                    .and_then(|span| {
+                        graph
+                            .modules
+                            .iter()
+                            .find(|module| module.file_id() == span.file_id)
+                    })
+                    .map(|module| module.module_id().as_str())
+                    .unwrap_or("");
+                (
+                    module,
+                    span.map(|span| span.start).unwrap_or(0),
+                    span.map(|span| span.end).unwrap_or(0),
+                    warning.to_string(),
+                    format!("{:?}", warning.diagnostic()),
+                )
+            };
+            key(left).cmp(&key(right))
+        });
+        warnings.dedup();
+
+        Ok(RootedCfgOutput {
+            graph,
+            cfgs,
+            warnings,
+            work,
+        })
+    }
+
+    pub(crate) fn rooted_codegen(
+        &mut self,
+        options: &CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+    ) -> Result<RootedCodegenOutput, CompileErrors> {
+        let RootedCfgOutput {
+            graph,
+            cfgs,
+            warnings,
+            work,
+        } = self.rooted_cfg(options)?;
+
+        let mut units = Vec::with_capacity(cfgs.len());
+        #[cfg(test)]
+        {
+            self.codegen_executions.clear();
+            self.codegen_attempt_work.clear();
+            self.codegen_collections = 0;
+        }
+        for cfg in &cfgs {
+            let attempt = self
+                .queries
+                .revisioned
+                .codegen_unit(
+                    graph.revision,
+                    cfg.optimized_cfg_key.clone(),
+                    options.target,
+                    request,
+                    options.opt_level,
+                    rue_query::CancellationToken::new(),
+                )
+                .map_err(|abort| {
+                    CompileError::without_span(ErrorKind::InternalError(format!(
+                        "codegen query aborted: {abort:?}"
+                    )))
+                })?;
+            #[cfg(test)]
+            {
+                self.codegen_executions
+                    .push((cfg.function.clone(), attempt.execution()));
+                self.codegen_attempt_work
+                    .push((cfg.function.clone(), attempt.work().to_vec()));
+            }
+            let terminal = attempt.into_result().map_err(|abort| {
+                CompileError::without_span(ErrorKind::InternalError(format!(
+                    "codegen query aborted: {abort:?}"
+                )))
+            })?;
+            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                unreachable!("CodegenUnit publishes typed terminals")
+            };
+            match value {
+                crate::codegen_query::CodegenUnitValue::Available(unit) => {
+                    units.push(crate::codegen_query::CollectedCodegenUnit {
+                        function: cfg.function.clone(),
+                        unit: unit.clone(),
+                    });
+                    #[cfg(test)]
+                    {
+                        self.codegen_collections += 1;
+                    }
+                }
+                crate::codegen_query::CodegenUnitValue::Failure(errors) => {
+                    return Err(errors.clone());
+                }
+            }
+        }
+        let export_roots = graph
+            .c_export_roots
+            .iter()
+            .cloned()
+            .map(crate::FunctionInstanceKey::Definition)
+            .collect::<BTreeSet<_>>();
+        let exports = cfgs
+            .iter()
+            .filter(|cfg| export_roots.contains(&cfg.function))
+            .map(|cfg| {
+                let mut param_types =
+                    vec![rue_air::Type::I64; cfg.record.cfg.num_params() as usize];
+                for block in cfg.record.cfg.blocks() {
+                    for &value in &block.insts {
+                        let instruction = cfg.record.cfg.get_inst(value);
+                        if let rue_cfg::CfgInstData::Param { index } = instruction.data
+                            && let Some(slot) = param_types.get_mut(index as usize)
+                        {
+                            *slot = instruction.ty;
+                        }
+                    }
+                }
+                crate::program_image_plan::RootedExportThunk {
+                    function: cfg.function.clone(),
+                    exported_symbol: match &cfg.function {
+                        crate::FunctionInstanceKey::Definition(key) => key.name().to_owned(),
+                        _ => unreachable!("C export roots are source definitions"),
+                    },
+                    native_symbol: cfg.record.codegen.defined_symbol.to_string(),
+                    param_types,
+                }
+            })
+            .collect();
+        Ok(RootedCodegenOutput {
+            units,
+            cfgs,
+            exports,
+            warnings,
+            work,
+        })
+    }
+
     /// Collect the canonical per-function backend terminals for one semantic
     /// result. This is deliberately a deterministic adapter: `CodegenUnit`
     /// owns lowering, allocation, scheduling, emission, and requested
     /// presentation projections; callers only order and project terminals.
+    #[cfg(test)]
     pub(crate) fn codegen_products(
         &mut self,
         semantic: &crate::CanonicalSemanticOutput,
@@ -4058,6 +4916,7 @@ impl CompilerSession {
     /// `ProgramImagePlan`; presentation consumers may still use the thin
     /// `codegen_products` projection above. RUE-1217 owns replacing this
     /// remaining semantic root enumeration with query-native image roots.
+    #[cfg(test)]
     pub(crate) fn codegen_units(
         &mut self,
         semantic: &crate::CanonicalSemanticOutput,
@@ -4143,6 +5002,20 @@ impl CompilerSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn rooted_cfg_executions(
+        &self,
+    ) -> &[(crate::FunctionInstanceKey, rue_query::RequestExecution)] {
+        &self.rooted_cfg_executions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn warning_reference_executions(
+        &self,
+    ) -> &[(crate::StableDefinitionKey, rue_query::RequestExecution)] {
+        &self.warning_reference_executions
+    }
+
+    #[cfg(test)]
     pub(crate) fn codegen_attempt_work(
         &self,
     ) -> &[(crate::FunctionInstanceKey, Vec<(std::sync::Arc<str>, u64)>)] {
@@ -4172,23 +5045,42 @@ impl CompilerSession {
             }
             Err(SemanticRequestControl::Compile(errors)) => SemanticParkOutcome::Errors(errors),
             Err(SemanticRequestControl::Parked(park)) => {
-                // Atomically attach this rooted park's exact sorted missing-demand
-                // set to the outstanding closed continuation, making it authorizing
-                // (RUE-1112). Demand authority lives only here — bound to this
-                // closed revision and this park — so a later, non-parking close can
-                // never inherit it, and `publish_trusted_toolchain_successor` can
-                // require the successor's added set to EQUAL exactly this set.
-                if let Some(state) = self.continuation.as_mut() {
-                    let mut demands = park.demands().to_vec();
-                    demands.sort();
-                    demands.dedup();
-                    state.attached_demands = Some(Arc::from(demands));
-                }
+                self.attach_toolchain_park(&park);
                 SemanticParkOutcome::Parked(park)
             }
             Err(SemanticRequestControl::Abort(abort)) => {
                 panic!("uncanceled semantic request aborted: {abort:?}")
             }
+        }
+    }
+
+    pub(crate) fn rooted_or_toolchain_park(
+        &mut self,
+        options: &CompileOptions,
+    ) -> RootedParkOutcome {
+        match self.rooted_body_graph_with_cancellation(options, rue_query::CancellationToken::new())
+        {
+            Ok(_) => RootedParkOutcome::Ready,
+            Err(SemanticRequestControl::Compile(errors)) => RootedParkOutcome::Errors(errors),
+            Err(SemanticRequestControl::Parked(park)) => {
+                self.attach_toolchain_park(&park);
+                RootedParkOutcome::Parked(park)
+            }
+            Err(SemanticRequestControl::Abort(abort)) => {
+                panic!("uncanceled rooted body-closure request aborted: {abort:?}")
+            }
+        }
+    }
+
+    fn attach_toolchain_park(&mut self, park: &crate::ParkedToolchainModules) {
+        // Atomically attach this rooted park's exact sorted missing-demand set
+        // to the outstanding closed continuation, making it authorizing
+        // (RUE-1112).
+        if let Some(state) = self.continuation.as_mut() {
+            let mut demands = park.demands().to_vec();
+            demands.sort();
+            demands.dedup();
+            state.attached_demands = Some(Arc::from(demands));
         }
     }
 
@@ -4344,7 +5236,7 @@ impl CompilerSession {
             Err(crate::revisioned_query_database::DeclarationShellBatchFailure::Stable(
                 failure,
             )) => Err(CanonicalSemanticFailure::declaration(
-                declaration_shell_failure_diagnostics(merged.ast(), &failure),
+                declaration_shell_failure_diagnostics(merged.ast().modules(), &failure),
                 CanonicalSemanticWork::default(),
             )),
         };
@@ -4391,7 +5283,7 @@ impl CompilerSession {
                 };
                 prepared = Err(CanonicalSemanticFailure::declaration(
                     semantic_nucleus_failure_diagnostics(
-                        merged.ast(),
+                        merged.ast().modules(),
                         declaration.as_ref(),
                         &failure,
                     ),
@@ -4523,7 +5415,7 @@ impl CompilerSession {
                     } => (
                         roots.iter().next().cloned(),
                         semantic_nucleus_failure_diagnostics(
-                            merged.ast(),
+                            merged.ast().modules(),
                             declaration.as_ref(),
                             failure,
                         ),
@@ -4538,14 +5430,14 @@ impl CompilerSession {
                     ),
                     crate::body_query::BodyClosureFatal::ProducerFailed { instance, failure } => (
                         Some(instance.clone()),
-                        semantic_nucleus_failure_diagnostics(merged.ast(), None, failure),
+                        semantic_nucleus_failure_diagnostics(merged.ast().modules(), None, failure),
                     ),
                     crate::body_query::BodyClosureFatal::WellKnownOptionResolution {
                         instance,
                         failure,
                     } => (
                         Some(instance.clone()),
-                        well_known_option_resolution_diagnostics(merged.ast(), failure),
+                        well_known_option_resolution_diagnostics(merged.ast().modules(), failure),
                     ),
                     crate::body_query::BodyClosureFatal::TypeQuery { ty, detail } => (
                         roots.iter().next().cloned(),
@@ -5076,8 +5968,148 @@ impl CompilerSession {
     }
 }
 
+fn import_semantic_body_warnings(
+    body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+    body_span: rue_span::Span,
+) -> Vec<CompileWarning> {
+    let locate = |anchor: &rue_air::SemanticBodyAnchor| {
+        rue_span::Span::with_file(
+            body_span.file_id,
+            body_span.start + anchor.start,
+            body_span.start + anchor.end,
+        )
+    };
+    body.warnings
+        .iter()
+        .map(|warning| {
+            let mut imported = CompileWarning::new(warning.kind.clone(), locate(&warning.anchor));
+            for label in warning.labels.iter() {
+                imported = imported.with_label(label.message.to_string(), locate(&label.anchor));
+            }
+            for note in warning.notes.iter() {
+                imported = imported.with_note(note.to_string());
+            }
+            for help in warning.helps.iter() {
+                imported = imported.with_help(help.to_string());
+            }
+            for suggestion in warning.suggestions.iter() {
+                imported = imported.with_suggestion(
+                    rue_error::Suggestion::new(
+                        suggestion.message.to_string(),
+                        locate(&suggestion.anchor),
+                        suggestion.replacement.to_string(),
+                    )
+                    .with_applicability(suggestion.applicability),
+                );
+            }
+            imported
+        })
+        .collect()
+}
+
+fn rooted_unused_function_warnings(
+    graph: &RootedBodyGraph,
+    warning_references: &BTreeSet<crate::StableDefinitionKey>,
+) -> Vec<CompileWarning> {
+    fn source_definition(
+        instance: &crate::FunctionInstanceKey,
+    ) -> Option<&crate::StableDefinitionKey> {
+        match instance {
+            crate::FunctionInstanceKey::Definition(definition) => Some(definition),
+            crate::FunctionInstanceKey::Specialization { base, .. } => source_definition(base),
+            crate::FunctionInstanceKey::AnonymousMember { .. }
+            | crate::FunctionInstanceKey::DropGlue(_) => None,
+        }
+    }
+
+    let mut referenced = graph
+        .declaration_dependencies
+        .iter()
+        .filter_map(|dependency| {
+            match &dependency.target {
+            crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedType(key)
+            | crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::TypeCallHead(
+                key,
+            )
+            | crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::NamedValue(
+                key,
+            ) => Some(key.clone()),
+            crate::semantic_query_nucleus::SemanticDeclarationDependencyTarget::BuiltinTypeCallHead(
+                _,
+            ) => None,
+        }
+        })
+        .collect::<BTreeSet<_>>();
+    referenced.extend(
+        graph
+            .closure
+            .reached
+            .iter()
+            .filter_map(source_definition)
+            .cloned(),
+    );
+    referenced.extend(warning_references.iter().cloned());
+
+    graph
+        .declarations
+        .iter()
+        .filter_map(|declaration| {
+            let name = declaration.key.name();
+            if declaration.key.kind() != crate::StableDefinitionKind::Function
+                || name == "main"
+                || declaration.key.module().is_trusted_standard_library()
+                || declaration.is_public
+                || name.starts_with('_')
+                || referenced.contains(&declaration.key)
+            {
+                return None;
+            }
+            let module = graph
+                .modules
+                .iter()
+                .find(|module| module.module_id() == declaration.key.module())?;
+            let candidate = crate::declaration_candidate::DeclarationCandidateKey {
+                module: declaration.key.module().clone(),
+                category: crate::declaration_candidate::DeclarationCandidateCategory::Function,
+                name: Arc::from(name),
+                owner: None,
+                duplicate_discriminator: 0,
+            };
+            let locator = module.definitions().declaration_locator(&candidate)?;
+            let function = module.ast().items.iter().find_map(|item| match item {
+                rue_parser::ast::Item::Function(function)
+                    if function.span == locator.declaration_span =>
+                {
+                    Some(function)
+                }
+                _ => None,
+            })?;
+            let allows_unused = function.directives.iter().any(|directive| {
+                module.resolve_raw_symbol(directive.name.name) == "allow"
+                    && directive.args.iter().any(|argument| match argument {
+                        rue_parser::ast::DirectiveArg::Ident(argument) => {
+                            module.resolve_raw_symbol(argument.name) == "unused_function"
+                        }
+                    })
+            });
+            if allows_unused {
+                return None;
+            }
+            Some(
+                CompileWarning::new(
+                    rue_error::WarningKind::UnusedFunction(name.to_owned()),
+                    locator.declaration_span,
+                )
+                .with_help(format!(
+                    "if this is intentional, prefix it with an underscore: `_{name}`"
+                )),
+            )
+        })
+        .collect()
+}
+
 fn declaration_shell_failure_diagnostics(
-    program: &crate::canonical_merge::CanonicalMergedAst,
+    modules: &[Arc<crate::parsed_modules::ParsedModule>],
     failure: &crate::declaration_candidate::DeclarationShellFailure,
 ) -> CompileErrors {
     use crate::declaration_candidate::DeclarationShellFailure as F;
@@ -5086,8 +6118,7 @@ fn declaration_shell_failure_diagnostics(
         F::OccurrencesUnavailable(_) => None,
     };
     let span = key.and_then(|key| {
-        program
-            .modules()
+        modules
             .iter()
             .find(|module| module.module_id() == &key.module)
             .and_then(|module| module.definitions().declaration_locator(key))
@@ -5103,14 +6134,81 @@ fn declaration_shell_failure_diagnostics(
 }
 
 fn semantic_nucleus_failure_diagnostics(
-    program: &crate::canonical_merge::CanonicalMergedAst,
+    modules: &[Arc<crate::parsed_modules::ParsedModule>],
     declaration: Option<&crate::declaration_candidate::DeclarationCandidateKey>,
     failure: &crate::semantic_query_nucleus::SemanticNucleusFailure,
 ) -> CompileErrors {
     use crate::semantic_query_nucleus::SemanticNucleusFailure as F;
+    if let F::DuplicateDeclarations(failures) = failure {
+        let mut diagnostics = CompileErrors::new();
+        for failure in failures.iter() {
+            diagnostics.extend(semantic_nucleus_failure_diagnostics(
+                modules,
+                None,
+                &F::DuplicateDeclaration {
+                    kind: failure.kind.clone(),
+                    first: failure.first.clone(),
+                    duplicate: failure.duplicate.clone(),
+                },
+            ));
+        }
+        return diagnostics;
+    }
+    if let F::ForeignSignatureConflict(conflict) = failure {
+        let locate = |declaration: &crate::declaration_candidate::DeclarationCandidateKey| {
+            modules
+                .iter()
+                .find(|module| module.module_id() == &declaration.module)
+                .and_then(|module| module.definitions().declaration_locator(declaration))
+                .map(|locator| locator.declaration_span)
+        };
+        if let (Some(left_span), Some(right_span)) = (
+            locate(&conflict.left.declaration),
+            locate(&conflict.right.declaration),
+        ) {
+            let left = (left_span, &conflict.left);
+            let right = (right_span, &conflict.right);
+            let order = |(span, _): &(rue_span::Span, _)| (span.file_id.index(), span.start);
+            let (first, second) = if order(&left) <= order(&right) {
+                (left, right)
+            } else {
+                (right, left)
+            };
+            let spelled_alike = first.1.signature == second.1.signature;
+            let mut error = CompileError::new(
+                ErrorKind::ForeignSignatureConflict(Box::new(
+                    rue_error::ForeignSignatureConflictError {
+                        symbol: conflict.symbol.to_string(),
+                        declared: second.1.signature.to_string(),
+                        previously_declared: first.1.signature.to_string(),
+                    },
+                )),
+                second.0,
+            )
+            .with_label("conflicting declaration of the same C symbol", second.0)
+            .with_label("first declared here", first.0)
+            .with_note(
+                "an `extern \"C\"` declaration names an external C symbol, so every module that \
+                 declares it describes the same function; only one definition is linked in",
+            );
+            if spelled_alike {
+                error = error.with_note(
+                    "the two signatures are spelled alike but resolve to different types: a struct \
+                     or enum declared in each module is a distinct type, even under the same name",
+                );
+            }
+            return CompileErrors::from(error.with_help(
+                "make the declarations identical, or declare the symbol once and import that module",
+            ));
+        }
+        return CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
+            format!(
+                "query-owned foreign-signature conflict could not be projected to source: {failure:?}"
+            ),
+        )));
+    }
     if let (Some(declaration), F::DiagnosticAtParameter { kind, ordinal }) = (declaration, failure)
-        && let Some(module) = program
-            .modules()
+        && let Some(module) = modules
             .iter()
             .find(|module| module.module_id() == &declaration.module)
         && let Some(locator) = module.definitions().declaration_locator(declaration)
@@ -5139,8 +6237,7 @@ fn semantic_nucleus_failure_diagnostics(
         }
     }
     if let F::DiagnosticAtDeclaration { kind, declaration } = failure
-        && let Some(span) = program
-            .modules()
+        && let Some(span) = modules
             .iter()
             .find(|module| module.module_id() == &declaration.module)
             .and_then(|module| module.definitions().declaration_locator(declaration))
@@ -5148,10 +6245,34 @@ fn semantic_nucleus_failure_diagnostics(
     {
         return CompileErrors::from(CompileError::new(kind.clone(), span));
     }
+    if let F::DuplicateDeclaration {
+        kind,
+        first,
+        duplicate,
+    } = failure
+        && let Some(module) = modules
+            .iter()
+            .find(|module| module.module_id() == &duplicate.module)
+        && let Some(duplicate_span) = module
+            .definitions()
+            .declaration_locator(duplicate)
+            .map(|locator| locator.declaration_span)
+        && let Some(first_module) = modules
+            .iter()
+            .find(|module| module.module_id() == &first.module)
+        && let Some(first_span) = first_module
+            .definitions()
+            .declaration_locator(first)
+            .map(|locator| locator.declaration_span)
+    {
+        return CompileErrors::from(CompileError::new(kind.clone(), duplicate_span).with_label(
+            format!("first defined in {}", first_module.physical_path()),
+            first_span,
+        ));
+    }
     if let (Some(declaration), F::DiagnosticAtProducerRange { kind, start, end }) =
         (declaration, failure)
-        && let Some(producer) = program
-            .modules()
+        && let Some(producer) = modules
             .iter()
             .find(|module| module.module_id() == &declaration.module)
             .and_then(|module| module.definitions().producer_fragment_span(declaration))
@@ -5169,8 +6290,7 @@ fn semantic_nucleus_failure_diagnostics(
     }
     if let F::OwnershipGate { kind, gate } = failure {
         let primary_span = declaration.and_then(|key| {
-            program
-                .modules()
+            modules
                 .iter()
                 .find(|module| module.module_id() == &key.module)
                 .and_then(|module| module.definitions().declaration_locator(key))
@@ -5181,8 +6301,7 @@ fn semantic_nucleus_failure_diagnostics(
             None => CompileError::without_span(kind.clone()),
         };
         if let Some(application) = &gate.application
-            && let Some(span) = program
-                .modules()
+            && let Some(span) = modules
                 .iter()
                 .find(|module| module.module_id() == &application.declaration.module)
                 .and_then(|module| {
@@ -5198,8 +6317,7 @@ fn semantic_nucleus_failure_diagnostics(
     }
     if let (Some(declaration), F::Diagnostic(ErrorKind::CopyStructWithDestructor { type_name })) =
         (declaration, failure)
-        && let Some(module) = program
-            .modules()
+        && let Some(module) = modules
             .iter()
             .find(|module| module.module_id() == &declaration.module)
     {
@@ -5243,8 +6361,7 @@ fn semantic_nucleus_failure_diagnostics(
         }
     }
     let span = declaration.and_then(|key| {
-        program
-            .modules()
+        modules
             .iter()
             .find(|module| module.module_id() == &key.module)
             .and_then(|module| module.definitions().declaration_locator(key))
@@ -5254,6 +6371,11 @@ fn semantic_nucleus_failure_diagnostics(
         F::Diagnostic(kind) => (kind.clone(), None),
         F::DiagnosticAtParameter { kind, .. } => (kind.clone(), None),
         F::DiagnosticAtDeclaration { kind, .. } => (kind.clone(), None),
+        F::DuplicateDeclaration { kind, .. } => (kind.clone(), None),
+        F::DuplicateDeclarations(_) => unreachable!("duplicate batches return above"),
+        F::ForeignSignatureConflict(_) => {
+            unreachable!("foreign-signature conflicts return above")
+        }
         F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None),
         F::OwnershipGate { kind, .. } => (kind.clone(), None),
         F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone())),
@@ -5311,7 +6433,7 @@ fn semantic_nucleus_failure_diagnostics(
 }
 
 fn well_known_option_resolution_diagnostics(
-    program: &crate::canonical_merge::CanonicalMergedAst,
+    modules: &[Arc<crate::parsed_modules::ParsedModule>],
     failure: &crate::revisioned_query_database::WellKnownOptionResolutionFailure,
 ) -> CompileErrors {
     use crate::revisioned_query_database::WellKnownOptionResolutionFailure as F;
@@ -5329,7 +6451,7 @@ fn well_known_option_resolution_diagnostics(
             ),
         ))),
         F::Semantic { payload, failure } => {
-            let mut errors = semantic_nucleus_failure_diagnostics(program, None, failure);
+            let mut errors = semantic_nucleus_failure_diagnostics(modules, None, failure);
             if errors.is_empty() {
                 errors = CompileErrors::from(CompileError::without_span(ErrorKind::InternalError(
                     format!(
@@ -5894,6 +7016,111 @@ mod tests {
                 .collect(),
         )
         .unwrap()
+    }
+
+    fn c_ffi_options() -> CompileOptions {
+        CompileOptions {
+            preview_features: PreviewFeatures::from([PreviewFeature::CFfi]),
+            ..CompileOptions::default()
+        }
+    }
+
+    #[test]
+    fn rooted_foreign_conflict_diagnostic_orders_sites_by_source_not_query_order() {
+        let source = snapshot(
+            &[
+                (
+                    10,
+                    "/p/main.rue",
+                    "main.rue",
+                    "const a = @import(\"a.rue\");\n\
+                     const b = @import(\"b.rue\");\n\
+                     fn main() -> i32 { 0 }",
+                ),
+                (
+                    40,
+                    "/p/a.rue",
+                    "a.rue",
+                    "extern \"C\" { fn shared(x: i64) -> i64; }",
+                ),
+                (
+                    2,
+                    "/p/b.rue",
+                    "b.rue",
+                    "extern \"C\" { fn shared() -> bool; }",
+                ),
+            ],
+            10,
+        );
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &source);
+        let errors = session.rooted_cfg(&c_ffi_options()).unwrap_err();
+        let error = errors
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::ForeignSignatureConflict(_)))
+            .unwrap_or_else(|| panic!("rooted declaration projection reports E1107: {errors:?}"));
+        let ErrorKind::ForeignSignatureConflict(payload) = &error.kind else {
+            unreachable!("just matched")
+        };
+        assert_eq!(payload.symbol, "shared");
+        assert_eq!(payload.declared, "fn() -> bool");
+        assert_eq!(payload.previously_declared, "fn(i64) -> i64");
+        let primary = error.span().expect("E1107 has a primary declaration span");
+        let first = error
+            .diagnostic()
+            .labels
+            .iter()
+            .find(|label| label.message == "first declared here")
+            .expect("E1107 labels the first declaration")
+            .span;
+        assert!(
+            (first.file_id.index(), first.start) < (primary.file_id.index(), primary.start),
+            "diagnostic source order must not depend on projection traversal: {error:?}"
+        );
+    }
+
+    #[test]
+    fn rooted_foreign_conflict_explains_same_spelling_with_distinct_nominals() {
+        let source = snapshot(
+            &[
+                (
+                    1,
+                    "/p/main.rue",
+                    "main.rue",
+                    "const a = @import(\"a.rue\");\n\
+                     const b = @import(\"b.rue\");\n\
+                     fn main() -> i32 { 0 }",
+                ),
+                (
+                    2,
+                    "/p/a.rue",
+                    "a.rue",
+                    "@repr(c)\n\
+                     pub struct Point { x: i32, y: i32 }\n\
+                     extern \"C\" { fn takes(p: Point) -> i32; }",
+                ),
+                (
+                    3,
+                    "/p/b.rue",
+                    "b.rue",
+                    "@repr(c)\n\
+                     pub struct Point { x: i64 }\n\
+                     extern \"C\" { fn takes(p: Point) -> i32; }",
+                ),
+            ],
+            1,
+        );
+        let mut session = CompilerSession::new();
+        publish_with_test_imports(&mut session, &source);
+        let errors = session.rooted_cfg(&c_ffi_options()).unwrap_err();
+        let error = errors
+            .iter()
+            .find(|error| matches!(error.kind, ErrorKind::ForeignSignatureConflict(_)))
+            .unwrap_or_else(|| panic!("distinct nominal identities report E1107: {errors:?}"));
+        assert!(error.diagnostic().notes.iter().any(|note| {
+            note.0
+                .contains("spelled alike but resolve to different types")
+        }));
     }
 
     fn base() -> SourceSnapshot {

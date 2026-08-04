@@ -114,6 +114,7 @@ pub struct FunctionWithCfg {
     /// Stable semantic/ABI/CFG content identity used by the per-function
     /// codegen terminal. It intentionally excludes current interner and type
     /// pool indexes while retaining every exact input observed by Cfg.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) optimized_cfg_key: crate::cfg_query::OptimizedCfgQueryKey,
     /// The control flow graph built from the AIR.
     pub cfg: Cfg,
@@ -925,6 +926,12 @@ pub struct SourceStats {
 }
 
 /// Composable structural work from the session query graph.
+///
+/// The phase-shaped fields remain stable for metrics consumers during the
+/// query-native cutover. A zero for a retired whole-program phase means that
+/// compilation deliberately bypassed that phase; rooted body-analysis and CFG
+/// query executions are reported in `semantic` rather than being hidden behind
+/// a default value.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PipelineWork {
     pub parsed: ParsedModulesWork,
@@ -1033,37 +1040,24 @@ impl CompilerSession {
     }
 }
 
-/// Drive this session's pipeline through the pre-link boundary: RIR, semantic
-/// analysis, CFG lowering, code generation, and object-file creation — but NOT
-/// linking. Returns the total number of generated object bytes so a caller can
-/// keep the result alive without depending on link availability.
+/// Drive this session's rooted query graph through the pre-link boundary: body
+/// reachability, per-body CFG/codegen terminals, and object-file creation — but
+/// NOT linking. Returns the total number of generated object bytes so a caller
+/// can keep the result alive without depending on link availability.
 ///
 /// This is the exact pre-link interval the RUE-1086 scaling-bench runner times
 /// (the ~45 ms Caldera target is a pre-link number). It shares the RIR and
-/// semantic query terminals with [`compile_with_session`], so calling it after a
-/// `semantic()` reuses the cached semantic result and times only the backend
-/// tail through object generation.
+/// codegen terminals with [`compile_with_session`].
 pub(crate) fn pre_link_object_bytes_with_session(
     session: &mut CompilerSession,
     options: &CompileOptions,
 ) -> MultiErrorResult<usize> {
     let _span = info_span!("compile_pipeline_pre_link").entered();
-    let _rir_span = info_span!("semantic_astgen", phase = "program_construction").entered();
-    let semantic = session.canonical_semantic(options)?;
-    drop(_rir_span);
-    let rir = semantic.rir_owner();
-    let export_symbols =
-        crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-    let units = session.codegen_units(
-        &semantic,
+    let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
+    let image = crate::program_image_plan::ProgramImage::from_rooted(
+        rooted.units,
+        rooted.exports,
         options,
-        rue_codegen::BackendArtifactRequest::default(),
-    )?;
-    let image = crate::program_image_plan::ProgramImage::new(
-        units,
-        semantic.functions(),
-        options,
-        &export_symbols,
     )?;
     let objects = image.fresh_objects(options)?;
     Ok(objects.iter().map(|object| object.len()).sum())
@@ -1095,25 +1089,14 @@ pub(crate) fn compile_with_session(
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let _span = info_span!("compile_pipeline").entered();
 
-    let _rir_span = info_span!("semantic_astgen", phase = "program_construction").entered();
-    let semantic = session.canonical_semantic(options)?;
-    drop(_rir_span);
-    let rir = semantic.rir_owner();
+    let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
     let session_work = session.work().clone();
-    let export_symbols =
-        crate::backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
-    let units = session.codegen_units(
-        &semantic,
+    let image = crate::program_image_plan::ProgramImage::from_rooted(
+        rooted.units,
+        rooted.exports,
         options,
-        rue_codegen::BackendArtifactRequest::default(),
     )?;
-    let image = crate::program_image_plan::ProgramImage::new(
-        units,
-        semantic.functions(),
-        options,
-        &export_symbols,
-    )?;
-    let mut output = image.fresh_link(options, semantic.warnings())?;
+    let mut output = image.fresh_link(options, &rooted.warnings)?;
     output.source_stats = SourceStats {
         files: snapshot.len(),
         bytes: total_source_bytes,
@@ -1125,9 +1108,9 @@ pub(crate) fn compile_with_session(
     };
     output.work = PipelineWork {
         parsed: session_work.last_parse,
-        merged: session_work.last_merge,
-        lowered: session_work.last_rir,
-        semantic: semantic.work(),
+        merged: Default::default(),
+        lowered: Default::default(),
+        semantic: rooted.work,
     };
     Ok(output)
 }

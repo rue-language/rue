@@ -139,6 +139,11 @@ pub(crate) enum RawConstSyntaxFailure {
 pub(crate) struct RawDeclarationSignatureSyntax {
     pub(crate) declaration_fragments: Arc<[Arc<str>]>,
     pub(crate) extern_abi: Option<Arc<str>>,
+    /// The exact body is attached only for a `-> borrow` accessor. Its
+    /// declaration-shape rules include a trailing-yield check even when no
+    /// caller demands body analysis, so that one signature query legitimately
+    /// depends on its own body while ordinary signatures remain body-agnostic.
+    pub(crate) accessor_body: Option<Arc<str>>,
 }
 
 /// Stable, position-free failure retained by the exact raw-signature family.

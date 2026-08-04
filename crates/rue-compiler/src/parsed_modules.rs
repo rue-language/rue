@@ -195,6 +195,14 @@ impl ParsedDefinitionIndex {
         &self.declaration_capabilities
     }
 
+    pub(crate) fn declaration_keys_in_source_order(
+        &self,
+    ) -> impl ExactSizeIterator<Item = &DeclarationCandidateKey> {
+        self.declarations
+            .iter()
+            .map(|candidate| &candidate.fact.key)
+    }
+
     pub(crate) fn evaluate_declaration_shell(
         &self,
         key: &DeclarationCandidateKey,
@@ -305,9 +313,15 @@ impl ParsedDefinitionIndex {
                 (vec![fragment(declaration)?].into(), Some(fragment(abi)?))
             }
         };
+        let accessor_body = if candidate.is_accessor {
+            Some(fragment(candidate.raw_body_span?)?)
+        } else {
+            None
+        };
         let syntax = RawDeclarationSignatureSyntax {
             declaration_fragments,
             extern_abi,
+            accessor_body,
         };
         #[cfg(test)]
         self.raw_declaration_signature_terminal_materializations
@@ -410,6 +424,7 @@ pub(crate) struct ParsedDeclarationCandidate {
     raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
     raw_signature_locator: Option<RawDeclarationSignatureLocator>,
     raw_body_span: Option<Span>,
+    is_accessor: bool,
     raw_import_range: Option<RawDeclarationImportRange>,
     /// Value-position anonymous type literals inside this declaration's constant
     /// initializer or body, with module-relative spans and their frontend
@@ -1352,6 +1367,7 @@ fn bind_payload(
                     },
                 ),
                 raw_body_span: candidate.raw_body_span.map(remap_span),
+                is_accessor: candidate.is_accessor,
                 raw_import_range: candidate.raw_import_range,
                 anonymous_sites: candidate
                     .anonymous_sites
@@ -1817,6 +1833,7 @@ fn build_definition_index(
         Option<RawConstSyntaxSpans>,
         Option<RawDeclarationSignatureLocator>,
         Option<Span>,
+        bool,
         Option<RawDeclarationImportRange>,
         Arc<[rue_rir::AnonymousTypeSite]>,
     )>::new();
@@ -1894,6 +1911,7 @@ fn build_definition_index(
                         is_generic,
                         is_unchecked,
                         is_extern,
+                        is_accessor,
                         declaration_span,
                         signature_spans: Vec<Span>,
                         raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
@@ -1966,6 +1984,7 @@ fn build_definition_index(
                 raw_const_syntax_spans,
                 raw_signature_locator,
                 raw_body_span,
+                is_accessor,
                 raw_import_range,
                 anonymous_sites,
             ));
@@ -1984,6 +2003,7 @@ fn build_definition_index(
                 is_generic(&function.params)?,
                 function.is_unchecked,
                 false,
+                function.borrow_return.is_some(),
                 function.span,
                 vec![signature_prefix(function.span, function.body.span())?],
                 None,
@@ -2006,6 +2026,7 @@ fn build_definition_index(
                     structure.visibility == Visibility::Public,
                     Arc::from([]),
                     None,
+                    false,
                     false,
                     false,
                     false,
@@ -2044,6 +2065,7 @@ fn build_definition_index(
                         is_generic(&method.params)?,
                         false,
                         false,
+                        method.borrow_return.is_some(),
                         method.span,
                         vec![signature_prefix(method.span, method.body.span())?],
                         None,
@@ -2066,6 +2088,7 @@ fn build_definition_index(
                 value.visibility == Visibility::Public,
                 Arc::from([]),
                 None,
+                false,
                 false,
                 false,
                 false,
@@ -2101,6 +2124,7 @@ fn build_definition_index(
                     false,
                     false,
                     false,
+                    false,
                     value.span,
                     vec![signature_prefix(value.span, value.init.span())?],
                     Some(raw_const_syntax_spans),
@@ -2119,6 +2143,7 @@ fn build_definition_index(
                 false,
                 Arc::from([]),
                 Some(DeclarationParameterMode::Value),
+                false,
                 false,
                 false,
                 false,
@@ -2149,6 +2174,7 @@ fn build_definition_index(
                         is_generic(&function.params)?,
                         false,
                         true,
+                        false,
                         function.span,
                         vec![function.span],
                         None,
@@ -2232,6 +2258,7 @@ fn build_definition_index(
                 raw_const_syntax_spans,
                 raw_signature_locator,
                 raw_body_span,
+                is_accessor,
                 raw_import_range,
                 anonymous_sites,
             )| {
@@ -2252,6 +2279,7 @@ fn build_definition_index(
                     raw_const_syntax_spans,
                     raw_signature_locator,
                     raw_body_span,
+                    is_accessor,
                     raw_import_range,
                     anonymous_sites,
                 })

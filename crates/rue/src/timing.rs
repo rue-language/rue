@@ -1198,13 +1198,15 @@ mod tests {
         // The session parses the source module once, then the registered
         // declaration and body terminals each reparse their exact durable
         // input. BodyInput is an owned-syntax boundary and no longer validates
-        // by performing a duplicate lowering. Query evaluation itself has no
-        // presentation span, so its one reparse remains a timing root.
+        // by performing a duplicate lowering. The query-native body-analysis
+        // span owns its one reparse so that lazy parse work is charged to the
+        // semantic phase which demanded it.
         assert_eq!(session_parse_file.invocations, 3);
-        assert_eq!(session_parse_file.root_invocations, 1);
+        assert_eq!(session_parse_file.root_invocations, 0);
         for expected in [
             ("parse_program", "parse_file"),
             ("declaration_nucleus", "parse_file"),
+            ("body_analysis", "parse_file"),
         ] {
             assert!(
                 session_edges.contains(&(expected.0.to_owned(), expected.1.to_owned())),
@@ -1245,16 +1247,15 @@ mod tests {
             "missing compile -> compile_pipeline in batch edges: {compile_edges:?}"
         );
         for edge in [
-            ("semantic_astgen", "declaration_shells"),
-            ("declaration_shells", "declaration_shell_prepare"),
-            ("declaration_shell_prepare", "rir_declaration_index"),
-            ("semantic_astgen", "sema"),
-            // Query-native codegen units publish their backend subphases
-            // directly beneath the pipeline aggregate. They must not escape
-            // to query-root timing spans or revive a peer codegen coordinator.
-            ("compile_pipeline", "mir_lowering"),
-            ("compile_pipeline", "register_allocation"),
-            ("compile_pipeline", "machine_emission"),
+            ("compile_pipeline", "declaration_occurrence_index"),
+            ("compile_pipeline", "declaration_nucleus"),
+            // Query-native codegen units own their backend subphases. They
+            // remain beneath the pipeline aggregate without reviving a peer
+            // whole-program codegen coordinator.
+            ("compile_pipeline", "codegen_unit"),
+            ("codegen_unit", "mir_lowering"),
+            ("codegen_unit", "register_allocation"),
+            ("codegen_unit", "machine_emission"),
             // Object serialization runs after collecting the query units, so
             // it remains a sibling of those backend leaves.
             ("compile_pipeline", "object_serialization"),
@@ -1271,8 +1272,10 @@ mod tests {
             );
         }
         assert!(
-            !compile_edges.contains(&("sema".to_owned(), "rir_declaration_index".to_owned())),
-            "the batch index and sema spans must remain siblings: {compile_edges:?}"
+            !compile_edges
+                .iter()
+                .any(|(parent, _)| parent == "semantic_astgen" || parent == "sema"),
+            "normal compilation must not enter whole-program semantic spans: {compile_edges:?}"
         );
 
         let compile_timing =
@@ -1305,26 +1308,48 @@ mod tests {
                 .unwrap();
             assert_eq!(timing.root_invocations, 0, "{phase}");
         }
-        let index = compile_timing
+        let occurrence_index = compile_timing
             .passes
             .iter()
-            .find(|pass| pass.name == "rir_declaration_index")
+            .find(|pass| pass.name == "declaration_occurrence_index")
             .unwrap();
-        assert_eq!(index.invocations, 1);
-        assert_eq!(index.root_invocations, 0);
-        assert_eq!(index.leaf_invocations, 1);
-        let sema = compile_timing
+        assert_eq!(occurrence_index.invocations, 1);
+        assert_eq!(occurrence_index.root_invocations, 0);
+        assert_eq!(occurrence_index.leaf_invocations, 1);
+        let declaration = compile_timing
             .passes
             .iter()
-            .find(|pass| pass.name == "sema")
+            .find(|pass| pass.name == "declaration_nucleus")
             .unwrap();
-        assert_eq!(sema.invocations, 1);
-        assert_eq!(sema.root_invocations, 0);
-        assert_eq!(sema.leaf_invocations, 1);
+        // The rooted plan requests the declaration once while selecting the
+        // entry point and once through the reached-body closure. The query
+        // database reuses the value; both requests remain visible timing
+        // leaves beneath the pipeline aggregate.
+        assert_eq!(declaration.invocations, 2);
+        assert_eq!(declaration.root_invocations, 0);
+        assert_eq!(declaration.leaf_invocations, 1);
+        for phase in [
+            Phase::SemanticAnalysis,
+            Phase::CfgAndOptimization,
+            Phase::Backend,
+        ] {
+            assert!(
+                compile_timing
+                    .phase_accounting
+                    .phase_ns
+                    .get(&phase)
+                    .copied()
+                    .unwrap_or(0)
+                    > 0,
+                "query-native compilation must attribute {} work: {:?}",
+                phase.wire_name(),
+                compile_timing.phase_accounting
+            );
+        }
     }
 
     #[test]
-    fn body_query_stage_spans_report_under_the_coordinator_span() {
+    fn body_query_work_spans_report_query_native_phase_boundaries() {
         let snapshot = SourceSnapshot::single(
             "main.rue",
             "fn helper() -> i32 { 7 }\nfn main() -> i32 { helper() }",
@@ -1340,9 +1365,9 @@ mod tests {
         });
 
         // Registered query evaluation is not represented as a presentation
-        // coordinator span. Its prerequisite fan-out therefore appears as a
-        // query-rooted timing leaf; the retired session worklist and body-local
-        // epoch pipeline must not reappear.
+        // coordinator span. The semantic phase has one work span for the
+        // prerequisite fan-out and one for body analysis; the retired session
+        // worklist and body-local epoch pipeline must not reappear.
         let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
         for retired in [
             "body_queries",
@@ -1350,7 +1375,6 @@ mod tests {
             "body_schedule",
             "body_record",
             "body_toolchain_demands",
-            "body_analysis",
             "body_derive_epoch",
             "body_prepare_declarations",
             "body_project_declarations",
@@ -1386,9 +1410,9 @@ mod tests {
             .iter()
             .find(|pass| pass.name == "parse_file")
             .unwrap();
-        assert!(
-            parse_file.root_invocations > 0 && parse_file.root_invocations < parse_file.invocations,
-            "body-input reparses are query-rooted while program and declaration reparses retain their parents: {parse_file:?}"
+        assert_eq!(
+            parse_file.root_invocations, 0,
+            "every reparse is owned by the phase which demanded it: {parse_file:?}"
         );
     }
 

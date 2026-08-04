@@ -37,6 +37,8 @@ pub(crate) enum ParsedSemanticSignature {
         is_unchecked: bool,
         is_extern: bool,
         is_c_export: bool,
+        is_accessor: bool,
+        accessor_body_has_trailing_yield: bool,
     },
     Struct {
         fields: Arc<[(Arc<str>, Arc<str>)]>,
@@ -65,14 +67,19 @@ fn signature_source(
         // brace reconstructs valid field-only syntax; inserting a bare block
         // here would itself be parsed as a malformed field.
         Category::Struct => fragments.concat(),
-        Category::Function | Category::Destructor => format!("{} {{}}", fragments.concat()),
+        Category::Function | Category::Destructor => format!(
+            "{} {}",
+            fragments.concat(),
+            syntax.accessor_body.as_deref().unwrap_or("{}")
+        ),
         Category::Method | Category::AssociatedFunction => format!(
-            "struct {} {{ {} {{}} }}",
+            "struct {} {{ {} {} }}",
             key.owner
                 .as_ref()
                 .map(|owner| owner.name.as_ref())
                 .unwrap_or("__missing_owner"),
             fragments.concat(),
+            syntax.accessor_body.as_deref().unwrap_or("{}"),
         ),
         Category::ExternFunction => format!(
             "extern {} {{ {} }}",
@@ -147,13 +154,28 @@ pub(crate) fn parse_semantic_signature(
         .first()
         .ok_or_else(|| Arc::from("semantic signature parsed no declaration"))?;
     let unit: Arc<str> = Arc::from("()");
+    let has_trailing_yield = |body: &rue_parser::ast::Expr| match body {
+        rue_parser::ast::Expr::Yield(_) => true,
+        rue_parser::ast::Expr::Block(block) => {
+            matches!(block.expr.as_ref(), rue_parser::ast::Expr::Yield(_))
+                || matches!(
+                    block.statements.last(),
+                    Some(rue_parser::ast::Statement::Expr(
+                        rue_parser::ast::Expr::Yield(_)
+                    ))
+                )
+        }
+        _ => false,
+    };
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
                     has_self,
                     self_mode,
                     is_unchecked,
                     is_extern,
-                    is_c_export|
+                    is_c_export,
+                    is_accessor,
+                    accessor_body_has_trailing_yield|
      -> Result<ParsedSemanticSignature, Arc<str>> {
         Ok(ParsedSemanticSignature::Callable {
             parameters: parsed_parameters(&source, &interner, parameters)?,
@@ -166,6 +188,8 @@ pub(crate) fn parse_semantic_signature(
             is_unchecked,
             is_extern,
             is_c_export,
+            is_accessor,
+            accessor_body_has_trailing_yield,
         })
     };
     match (key.category, item) {
@@ -177,6 +201,8 @@ pub(crate) fn parse_semantic_signature(
             function.is_unchecked,
             false,
             function.export_abi.is_some(),
+            function.borrow_return.is_some(),
+            has_trailing_yield(&function.body),
         ),
         (Category::ExternFunction, rue_parser::ast::Item::Extern(block)) => {
             let function = block
@@ -190,6 +216,8 @@ pub(crate) fn parse_semantic_signature(
                 crate::declaration_candidate::DeclarationParameterMode::Value,
                 false,
                 true,
+                false,
+                false,
                 false,
             )
         }
@@ -209,6 +237,8 @@ pub(crate) fn parse_semantic_signature(
                 false,
                 false,
                 false,
+                method.borrow_return.is_some(),
+                has_trailing_yield(&method.body),
             )
         }
         (Category::Struct, rue_parser::ast::Item::Struct(structure)) => {
@@ -625,6 +655,31 @@ impl SemanticNucleusKey {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DuplicateDeclarationFailure {
+    pub(crate) kind: rue_error::ErrorKind,
+    pub(crate) first: DeclarationCandidateKey,
+    pub(crate) duplicate: DeclarationCandidateKey,
+}
+
+/// One stable source site participating in a foreign-signature conflict.
+///
+/// The query result carries a durable declaration key rather than a span so it
+/// remains reusable across revisions. Presentation resolves the key against
+/// the current parsed module and orders the two sites by source position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignSignatureSite {
+    pub(crate) declaration: DeclarationCandidateKey,
+    pub(crate) signature: Arc<str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ForeignSignatureConflictFailure {
+    pub(crate) symbol: Arc<str>,
+    pub(crate) left: ForeignSignatureSite,
+    pub(crate) right: ForeignSignatureSite,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SemanticNucleusFailure {
     Shell(Arc<str>),
     Syntax(Arc<str>),
@@ -638,6 +693,13 @@ pub(crate) enum SemanticNucleusFailure {
         kind: rue_error::ErrorKind,
         declaration: DeclarationCandidateKey,
     },
+    DuplicateDeclaration {
+        kind: rue_error::ErrorKind,
+        first: DeclarationCandidateKey,
+        duplicate: DeclarationCandidateKey,
+    },
+    DuplicateDeclarations(Arc<[DuplicateDeclarationFailure]>),
+    ForeignSignatureConflict(ForeignSignatureConflictFailure),
     /// A diagnostic anchored within the producer fragment. Offsets are
     /// fragment-relative so the stable failure carries no revision-local span.
     DiagnosticAtProducerRange {

@@ -312,6 +312,7 @@ pub(crate) fn evaluate_codegen_unit(
     let crate::cfg_query::CfgValue::Available(record) = optimized else {
         unreachable!("failure handled above")
     };
+    let _span = tracing::info_span!("codegen_unit", phase = "backend").entered();
     context.record_work(rue_query::WorkItem::new(
         "codegen.domain.symbol-aliases",
         record.codegen.symbol_mappings.len() as u64,

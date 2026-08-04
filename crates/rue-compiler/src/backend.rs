@@ -23,6 +23,7 @@ pub(crate) fn collect_foreign_symbols(rir: &rue_rir::Rir, interner: &ThreadedRod
 /// the lowered program (ADR-0064 P4). Each is the raw name under which a C-ABI
 /// entry thunk exposes the exported Rue function to separately compiled C
 /// callers; the name is the export's source identifier (no mangling).
+#[cfg(test)]
 pub(crate) fn collect_export_symbols(rir: &rue_rir::Rir, interner: &ThreadedRodeo) -> Vec<String> {
     rir.iter()
         .filter_map(|(_, inst)| match &inst.data {
@@ -210,6 +211,7 @@ pub(crate) fn generate_pre_link_objects_from_products(
 /// Validate the function/symbol projection at the object-generation boundary.
 /// The program-image adapter uses the same check before it serializes the
 /// shared `CodegenUnit` terminals.
+#[cfg(test)]
 pub(crate) fn validate_backend_functions(functions: &[FunctionWithCfg]) -> MultiErrorResult<()> {
     if !functions.iter().any(|function| {
         matches!(
@@ -392,6 +394,7 @@ pub(crate) fn compile_backend_products(
 /// register-resident scalars/pointers in semantic analysis
 /// (`ExportSignatureUnsupported`), so the entry block's parameters are exactly
 /// the argument-register scalars the thunk marshals.
+#[cfg(test)]
 pub(crate) fn generate_export_thunk_objects(
     functions: &[FunctionWithCfg],
     options: &CompileOptions,
@@ -430,32 +433,43 @@ pub(crate) fn generate_export_thunk_objects(
                 }
             }
         }
-        let machine_code = rue_codegen::export_thunk::generate_export_thunk(
+        objects.push(generate_export_thunk_object(
             options.target,
+            exported_symbol,
             &function.machine_name,
             &param_types,
-        );
-        let mut obj_builder = ObjectBuilder::new(options.target, exported_symbol)
-            .code(machine_code.code)
-            .strings(machine_code.strings);
-        for reloc in machine_code.relocations {
-            let rel_type = match reloc.kind {
-                RelocationKind::X86Plt32 => RelocationType::Plt32,
-                RelocationKind::Aarch64Call26 => RelocationType::Call26,
-                other => {
-                    unreachable!("export thunk emitted unexpected relocation kind {other:?}")
-                }
-            };
-            obj_builder = obj_builder.relocation(CodeRelocation {
-                offset: reloc.offset,
-                symbol: reloc.symbol,
-                rel_type,
-                addend: reloc.addend,
-            });
-        }
-        objects.push(obj_builder.build());
+        ));
     }
     objects
+}
+
+pub(crate) fn generate_export_thunk_object(
+    target: Target,
+    exported_symbol: &str,
+    native_symbol: &str,
+    param_types: &[rue_air::Type],
+) -> Vec<u8> {
+    let machine_code =
+        rue_codegen::export_thunk::generate_export_thunk(target, native_symbol, param_types);
+    let mut obj_builder = ObjectBuilder::new(target, exported_symbol)
+        .code(machine_code.code)
+        .strings(machine_code.strings);
+    for reloc in machine_code.relocations {
+        let rel_type = match reloc.kind {
+            RelocationKind::X86Plt32 => RelocationType::Plt32,
+            RelocationKind::Aarch64Call26 => RelocationType::Call26,
+            other => {
+                unreachable!("export thunk emitted unexpected relocation kind {other:?}")
+            }
+        };
+        obj_builder = obj_builder.relocation(CodeRelocation {
+            offset: reloc.offset,
+            symbol: reloc.symbol,
+            rel_type,
+            addend: reloc.addend,
+        });
+    }
+    obj_builder.build()
 }
 
 /// Standalone codegen APIs retain their historical passthrough behavior, but

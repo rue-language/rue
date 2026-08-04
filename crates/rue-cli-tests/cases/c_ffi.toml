@@ -870,6 +870,25 @@ compile_fail = true
 error_contains = ["E1107", "shared", "conflicting signatures"]
 
 [[case]]
+name = "emit_air_rejects_conflicting_foreign_redeclaration"
+description = "The query-owned declaration projection rejects a foreign-signature conflict for semantic presentation as well as normal image production (E1107)."
+args = ["main.rue", "--preview", "c_ffi", "--emit", "air"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 { 0 }""" },
+  { path = "a.rue", source = """extern "C" {
+    fn shared(x: i64) -> i64;
+}""" },
+  { path = "b.rue", source = """extern "C" {
+    fn shared() -> bool;
+}""" },
+]
+compile_fail = true
+error_contains = ["E1107", "shared", "conflicting signatures"]
+
+[[case]]
 name = "extern_identical_redeclaration_accepted"
 description = "An identical redeclaration of one C symbol in two modules is legal, as in C; parameter names are not part of the signature."
 args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
