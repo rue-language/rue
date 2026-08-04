@@ -451,6 +451,17 @@ impl ErrorCode {
     pub const REPR_C_STRUCT_INELIGIBLE: Self = Self(1104);
     pub const EXTERN_VARIADIC_UNSUPPORTED: Self = Self(1105);
     pub const EXPORT_SIGNATURE_UNSUPPORTED: Self = Self(1106);
+    /// The same C symbol is declared by two `extern "C"` foreign declarations
+    /// whose Rue signatures disagree (RUE-1218, spec 9.3:5). A foreign
+    /// declaration names an external C symbol rather than a Rue callable, so
+    /// every module that declares it is describing *one* function; disagreeing
+    /// descriptions cannot both be right, and the program links against a
+    /// single definition. Sits in the FFI band beside the other `extern "C"`
+    /// signature rules (E1101-E1103) because it is a foreign-declaration rule,
+    /// not a general duplicate-definition rule — an ordinary function's
+    /// identity is module-local (RUE-1125), so only foreign declarations can
+    /// collide across modules at all.
+    pub const FOREIGN_SIGNATURE_CONFLICT: Self = Self(1107);
 
     // ========================================================================
     // Comptime errors (E1200-E1299)
@@ -569,6 +580,22 @@ pub struct ReprCIneligibleError {
     pub failing_type: String,
     /// Human phrase naming the reject-list reason.
     pub reason: String,
+}
+
+/// Payload for `ErrorKind::ForeignSignatureConflict`.
+///
+/// Two `extern "C"` foreign declarations name the same C symbol with
+/// disagreeing Rue signatures (RUE-1218). Both rendered signatures are carried
+/// so the diagnostic states the disagreement rather than only pointing at the
+/// two declaration sites.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignSignatureConflictError {
+    /// The C symbol both declarations name.
+    pub symbol: String,
+    /// The later declaration's signature, as rendered for the user.
+    pub declared: String,
+    /// The earlier declaration's signature, as rendered for the user.
+    pub previously_declared: String,
 }
 
 /// Payload for `ErrorKind::LinearFieldDroppedByDestructure`.
@@ -1819,6 +1846,23 @@ pub enum ErrorKind {
         reason: String,
     },
 
+    /// Two `extern "C"` foreign declarations name the same C symbol with
+    /// disagreeing Rue signatures (RUE-1218, spec 9.3:5). A foreign declaration
+    /// is a description of an *external* function, not a Rue definition, so its
+    /// internal symbol is the raw C name it declares (RUE-1125) — two modules
+    /// declaring the same symbol produce one undefined symbol for the linker.
+    /// Identical redeclarations are legal, matching C; disagreeing ones cannot
+    /// both describe the definition that will be linked in, and without this
+    /// rule the last-collected signature silently wins for every call site.
+    #[error(
+        "`extern \"C\"` symbol `{}` is declared with conflicting signatures: `{}` here, \
+         but `{}` earlier",
+        .0.symbol,
+        .0.declared,
+        .0.previously_declared
+    )]
+    ForeignSignatureConflict(Box<ForeignSignatureConflictError>),
+
     /// A `@repr(c)` struct failed the reject-don't-guess eligibility check
     /// (ADR-0064 Amendment 1): an empty struct, an enum/aggregate field without
     /// its own `@repr(c)` marker, or a linear / destructor-bearing field. The
@@ -2101,6 +2145,7 @@ impl ErrorKind {
             ErrorKind::ExternArrayByValue { .. } => ErrorCode::EXTERN_ARRAY_BY_VALUE,
             ErrorKind::ExternVariadicUnsupported => ErrorCode::EXTERN_VARIADIC_UNSUPPORTED,
             ErrorKind::ExportSignatureUnsupported { .. } => ErrorCode::EXPORT_SIGNATURE_UNSUPPORTED,
+            ErrorKind::ForeignSignatureConflict(_) => ErrorCode::FOREIGN_SIGNATURE_CONFLICT,
             ErrorKind::ReprCStructIneligible(_) => ErrorCode::REPR_C_STRUCT_INELIGIBLE,
             ErrorKind::SliceNotYetImplemented => ErrorCode::SLICE_NOT_YET_IMPLEMENTED,
             ErrorKind::SliceReturnNotAllowed => ErrorCode::SLICE_RETURN_NOT_ALLOWED,

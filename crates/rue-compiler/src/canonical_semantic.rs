@@ -793,12 +793,21 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
     let bound = shells
         .install_declaration_semantics_with_anonymous(&projected, &projected_anonymous)
         .map_err(|reason| {
-            CanonicalSemanticFailure::declaration(
-                crate::CompileErrors::from(crate::CompileError::without_span(
+            // A foreign-signature conflict is the one installation outcome that
+            // reports a source error rather than a broken invariant: two modules
+            // declared the same C symbol with disagreeing signatures (RUE-1218).
+            let errors = match reason {
+                rue_air::DeclarationInstallFailure::ForeignSignatureConflict(error) => {
+                    crate::CompileErrors::from(*error)
+                }
+                reason => crate::CompileErrors::from(crate::CompileError::without_span(
                     rue_error::ErrorKind::InternalError(format!(
                         "query declaration installation invariant failed: {reason:?}"
                     )),
                 )),
+            };
+            CanonicalSemanticFailure::declaration(
+                errors,
                 declaration_stage_work(
                     declaration_index,
                     DeclarationBindingWork::default(),

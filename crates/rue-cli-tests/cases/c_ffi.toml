@@ -811,3 +811,78 @@ fn main() -> i32 { 0 }
 args = ["main.rue", "-o", "prog"]
 compile_fail = true
 error_contains = ["c_ffi"]
+
+# --- Foreign redeclaration across modules (spec 9.3:5, RUE-1218) ------------
+# Under the module-local identity rule (RUE-1125) a foreign declaration's
+# internal symbol is the raw C name it declares, so two modules declaring one C
+# function correctly produce one undefined symbol for the linker. They also land
+# on one signature key: disagreeing declarations must be rejected rather than
+# letting the last-installed signature silently type-check the other module's
+# calls. The check runs at declaration time, so no call site is needed.
+
+[[case]]
+name = "extern_conflicting_redeclaration_rejected"
+description = "Two modules declaring one C symbol with disagreeing signatures is rejected, naming both declaration sites (E1107)."
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 {
+    a.call() + b.call()
+}""" },
+  { path = "a.rue", source = """extern "C" {
+    fn shared(x: i64) -> i64;
+}
+
+pub fn call() -> i32 {
+    @intCast(checked { shared(1) })
+}""" },
+  { path = "b.rue", source = """extern "C" {
+    fn shared(x: ptr const u8) -> i32;
+}
+
+pub fn call() -> i32 {
+    let byte: u8 = 0;
+    checked { shared(@raw(byte)) }
+}""" },
+]
+compile_fail = true
+error_contains = ["E1107", "shared", "conflicting signatures", "a.rue", "b.rue"]
+
+[[case]]
+name = "extern_conflicting_redeclaration_rejected_without_call_site"
+description = "The redeclaration check is a declaration rule: it fires with no call to the foreign symbol at all (E1107)."
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 { 0 }""" },
+  { path = "a.rue", source = """extern "C" {
+    fn shared(x: i64) -> i64;
+}""" },
+  { path = "b.rue", source = """extern "C" {
+    fn shared() -> bool;
+}""" },
+]
+compile_fail = true
+error_contains = ["E1107", "shared", "conflicting signatures"]
+
+[[case]]
+name = "extern_identical_redeclaration_accepted"
+description = "An identical redeclaration of one C symbol in two modules is legal, as in C; parameter names are not part of the signature."
+args = ["main.rue", "--preview", "c_ffi", "-o", "prog"]
+files = [
+  { path = "main.rue", source = """const a = @import("a.rue");
+const b = @import("b.rue");
+
+fn main() -> i32 { 0 }""" },
+  { path = "a.rue", source = """extern "C" {
+    fn shared(x: i64) -> i64;
+}""" },
+  { path = "b.rue", source = """extern "C" {
+    fn shared(y: i64) -> i64;
+}""" },
+]
+exit_code = 0
