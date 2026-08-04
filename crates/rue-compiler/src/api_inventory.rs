@@ -111,6 +111,44 @@ fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
     }
 }
 
+#[test]
+fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
+    let cfg = include_str!("cfg_query.rs");
+    let database = include_str!("revisioned_query_database.rs");
+    for required in [
+        "CfgSemanticInput::Body",
+        "materialize_canonical_body(",
+        "materialize_semantic_body(",
+        "synthesize_canonical_drop_glue(",
+        "CfgDomainProjection::from_local_body(",
+        "pub(crate) type_pool: rue_air::FrozenTypeInternPool",
+        "pub(crate) interner: Arc<lasso::ThreadedRodeo>",
+        "pub(crate) local_atoms:",
+        "&record.type_pool",
+    ] {
+        assert!(
+            cfg.contains(required),
+            "CFG ownership boundary lost: {required}"
+        );
+    }
+    for forbidden in [
+        "struct CfgLiveInput",
+        "pub(crate) live:",
+        "key.live",
+        "same_optimized_memo_domain",
+        "optimized_memo_domain_hash",
+    ] {
+        assert!(
+            !cfg.contains(forbidden),
+            "CFG key regained request-local identity state: {forbidden}"
+        );
+    }
+    assert!(
+        !database.contains("live: Arc<crate::cfg_query::CfgLiveInput>"),
+        "the registered request facade must not require caller-owned CFG live input"
+    );
+}
+
 const RUE_868_RAW_FACADE_VOCABULARY: &[&str] = &[
     "Lexer",
     "Token",

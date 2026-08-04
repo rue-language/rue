@@ -2,9 +2,8 @@
 //!
 //! The unoptimized family owns AIR-to-CFG lowering. The optimized family owns
 //! only the selected optimization pipeline and observes the exact unoptimized
-//! terminal. Both publish stable relocation domains; request-local AIR, type
-//! indexes, symbols, strings, and spans are construction inputs, never memo
-//! identity.
+//! terminal. Both publish stable relocation domains and own the body-local AIR,
+//! type pool, symbols, strings, and local atoms required by their CFG.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -12,64 +11,78 @@ use std::sync::Arc;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 use rue_span::Span;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum CfgSemanticInput {
-    Body(Arc<rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>>),
+    Body {
+        input: Arc<CfgBodyInput>,
+        materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
+    },
     DropGlue {
         owner: crate::TypeInstanceKey,
         facts: Box<crate::type_queries::DropGlueFacts>,
+        materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
+        body_span: Span,
     },
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct CfgBodyInput {
     pub(crate) function: crate::FunctionInstanceKey,
-    pub(crate) body: rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
+    pub(crate) canonical: Arc<crate::body_query::CanonicalBody>,
     pub(crate) body_span: Span,
 }
 
-#[derive(Debug)]
-pub(crate) struct CfgLiveInput {
-    pub(crate) function: Arc<rue_air::AnalyzedFunction>,
-    pub(crate) type_pool: rue_air::FrozenTypeInternPool,
-    pub(crate) interner: Arc<lasso::ThreadedRodeo>,
-    pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
-    pub(crate) body_span: Span,
-    pub(crate) aggregate_types:
-        Arc<std::collections::HashMap<rue_air::Type, crate::TypeInstanceKey>>,
-    pub(crate) implicit_destructor_dependencies_complete: bool,
+impl PartialEq for CfgBodyInput {
+    fn eq(&self, other: &Self) -> bool {
+        self.function == other.function && self.canonical == other.canonical
+    }
 }
+
+impl Eq for CfgBodyInput {}
+
+impl PartialEq for CfgSemanticInput {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Body {
+                    input: left_input,
+                    materialization: left_materialization,
+                },
+                Self::Body {
+                    input: right_input,
+                    materialization: right_materialization,
+                },
+            ) => left_input == right_input && left_materialization == right_materialization,
+            (
+                Self::DropGlue {
+                    owner: left_owner,
+                    facts: left_facts,
+                    materialization: left_materialization,
+                    ..
+                },
+                Self::DropGlue {
+                    owner: right_owner,
+                    facts: right_facts,
+                    materialization: right_materialization,
+                    ..
+                },
+            ) => {
+                left_owner == right_owner
+                    && left_facts == right_facts
+                    && left_materialization == right_materialization
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for CfgSemanticInput {}
 
 #[derive(Debug, Clone)]
 pub(crate) struct CfgQueryKey {
     pub(crate) function: crate::FunctionInstanceKey,
     pub(crate) configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
     pub(crate) semantic_input: CfgSemanticInput,
-    pub(crate) layouts: Arc<
-        [(
-            crate::type_queries::TypeQueryKey,
-            crate::type_queries::LayoutValue,
-        )],
-    >,
-    pub(crate) type_facts: Arc<
-        [(
-            crate::type_queries::TypeQueryKey,
-            crate::type_queries::TypeFactsValue,
-        )],
-    >,
-    pub(crate) drop_glues: Arc<
-        [(
-            crate::type_queries::TypeQueryKey,
-            crate::type_queries::DropGlueValue,
-        )],
-    >,
-    pub(crate) call_abis: Arc<
-        [(
-            crate::type_queries::CallAbiQueryKey,
-            crate::type_queries::CallAbiValue,
-        )],
-    >,
-    pub(crate) live: Arc<CfgLiveInput>,
     memo_hash: u64,
 }
 
@@ -78,31 +91,6 @@ impl CfgQueryKey {
         function: crate::FunctionInstanceKey,
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
         semantic_input: CfgSemanticInput,
-        layouts: Arc<
-            [(
-                crate::type_queries::TypeQueryKey,
-                crate::type_queries::LayoutValue,
-            )],
-        >,
-        type_facts: Arc<
-            [(
-                crate::type_queries::TypeQueryKey,
-                crate::type_queries::TypeFactsValue,
-            )],
-        >,
-        drop_glues: Arc<
-            [(
-                crate::type_queries::TypeQueryKey,
-                crate::type_queries::DropGlueValue,
-            )],
-        >,
-        call_abis: Arc<
-            [(
-                crate::type_queries::CallAbiQueryKey,
-                crate::type_queries::CallAbiValue,
-            )],
-        >,
-        live: Arc<CfgLiveInput>,
     ) -> Self {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         function.hash(&mut hasher);
@@ -110,21 +98,27 @@ impl CfgQueryKey {
         // These stable values deliberately do not implement `Hash`. Compute
         // their complete Debug framing once at key construction instead of on
         // every memo-table probe; equality still resolves hash collisions.
-        format!("{semantic_input:?}").hash(&mut hasher);
-        format!("{layouts:?}").hash(&mut hasher);
-        format!("{type_facts:?}").hash(&mut hasher);
-        format!("{drop_glues:?}").hash(&mut hasher);
-        format!("{call_abis:?}").hash(&mut hasher);
+        match &semantic_input {
+            CfgSemanticInput::Body {
+                input,
+                materialization,
+            } => {
+                format!("{:?};{:?}", input.canonical, materialization).hash(&mut hasher);
+            }
+            CfgSemanticInput::DropGlue {
+                owner,
+                facts,
+                materialization,
+                ..
+            } => {
+                format!("{owner:?};{facts:?};{materialization:?}").hash(&mut hasher);
+            }
+        }
         let memo_hash = hasher.finish();
         Self {
             function,
             configuration,
             semantic_input,
-            layouts,
-            type_facts,
-            drop_glues,
-            call_abis,
-            live,
             memo_hash,
         }
     }
@@ -135,10 +129,6 @@ impl PartialEq for CfgQueryKey {
         self.function == other.function
             && self.configuration == other.configuration
             && self.semantic_input == other.semantic_input
-            && self.layouts == other.layouts
-            && self.type_facts == other.type_facts
-            && self.drop_glues == other.drop_glues
-            && self.call_abis == other.call_abis
     }
 }
 
@@ -163,38 +153,17 @@ impl QueryKey for CfgQueryKey {
 pub(crate) struct OptimizedCfgQueryKey {
     pub(crate) cfg: CfgQueryKey,
     pub(crate) opt_level: rue_cfg::OptLevel,
-    live_domain_hash: u64,
 }
 
 impl OptimizedCfgQueryKey {
     pub(crate) fn new(cfg: CfgQueryKey, opt_level: rue_cfg::OptLevel) -> Self {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        // Complete domains are relocatable by the collector and therefore do
-        // not belong in optimized memo identity. An incomplete projection is
-        // deliberately epoch-local: distinguish that one token so a successor
-        // reruns the evaluator and takes its fail-closed rebuild path.
-        cfg.live
-            .domains
-            .optimized_memo_domain_hash()
-            .hash(&mut hasher);
-        let live_domain_hash = hasher.finish();
-        Self {
-            cfg,
-            opt_level,
-            live_domain_hash,
-        }
+        Self { cfg, opt_level }
     }
 }
 
 impl PartialEq for OptimizedCfgQueryKey {
     fn eq(&self, other: &Self) -> bool {
-        self.cfg == other.cfg
-            && self.opt_level == other.opt_level
-            && self
-                .cfg
-                .live
-                .domains
-                .same_optimized_memo_domain(&other.cfg.live.domains)
+        self.cfg == other.cfg && self.opt_level == other.opt_level
     }
 }
 
@@ -204,7 +173,6 @@ impl std::hash::Hash for OptimizedCfgQueryKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.cfg.hash(state);
         std::mem::discriminant(&self.opt_level).hash(state);
-        self.live_domain_hash.hash(state);
     }
 }
 
@@ -218,6 +186,12 @@ impl QueryKey for OptimizedCfgQueryKey {
 pub(crate) struct CfgRecord {
     pub(crate) cfg: rue_cfg::ValidatedCfg,
     pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
+    pub(crate) type_pool: rue_air::FrozenTypeInternPool,
+    pub(crate) interner: Arc<lasso::ThreadedRodeo>,
+    pub(crate) strings: Arc<[String]>,
+    pub(crate) local_atoms:
+        Arc<[rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>]>,
+    pub(crate) materialization_warnings: Arc<[rue_error::CompileWarning]>,
     pub(crate) body_span: Span,
     pub(crate) warnings: Arc<[rue_error::CompileWarning]>,
     pub(crate) implicit_destructor_targets: Arc<[crate::TypeInstanceKey]>,
@@ -372,43 +346,8 @@ pub(crate) fn evaluate_cfg(
     >,
     key: &CfgQueryKey,
 ) -> Result<QueryOutput<CfgValue>, QueryAbort> {
-    for (dependency, expected) in key.layouts.iter() {
-        let terminal = context.query_registered(layouts, dependency.clone())?;
-        let QueryOutcome::Success(actual) = terminal.outcome() else {
-            unreachable!("Layout publishes typed values")
-        };
-        if actual != expected {
-            return Err(QueryAbort::Canceled);
-        }
-    }
-    for (dependency, expected) in key.type_facts.iter() {
-        let terminal = context.query_registered(type_facts, dependency.clone())?;
-        let QueryOutcome::Success(actual) = terminal.outcome() else {
-            unreachable!("TypeFacts publishes typed values")
-        };
-        if actual != expected {
-            return Err(QueryAbort::Canceled);
-        }
-    }
-    for (dependency, expected) in key.drop_glues.iter() {
-        let terminal = context.query_registered(drop_glues, dependency.clone())?;
-        let QueryOutcome::Success(actual) = terminal.outcome() else {
-            unreachable!("DropGlue publishes typed values")
-        };
-        if actual != expected {
-            return Err(QueryAbort::Canceled);
-        }
-    }
-    for (dependency, expected) in key.call_abis.iter() {
-        let terminal = context.query_registered(call_abis, dependency.clone())?;
-        let QueryOutcome::Success(actual) = terminal.outcome() else {
-            unreachable!("CallAbi publishes typed values")
-        };
-        if actual != expected {
-            return Err(QueryAbort::Canceled);
-        }
-    }
-    let value = build_cfg(context, key);
+    let value =
+        materialize_and_build_cfg(context, layouts, type_facts, drop_glues, call_abis, key)?;
     let kind = if matches!(value, CfgValue::Failure { .. }) {
         rue_query::QueryTerminalKind::Failure
     } else {
@@ -417,28 +356,266 @@ pub(crate) fn evaluate_cfg(
     Ok(QueryOutput::success(value).with_terminal_kind(kind))
 }
 
-fn build_cfg(context: &QueryContext, key: &CfgQueryKey) -> CfgValue {
+fn internal_failure(message: impl Into<String>, body_span: Span) -> CfgValue {
+    CfgValue::Failure {
+        errors: crate::CompileError::new(
+            rue_error::ErrorKind::InternalError(message.into()),
+            body_span,
+        )
+        .into(),
+        body_span,
+    }
+}
+
+fn canonical_body(
+    canonical: &crate::body_query::CanonicalBody,
+) -> &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId> {
+    match canonical {
+        crate::body_query::CanonicalBody::Ordinary { body, .. }
+        | crate::body_query::CanonicalBody::Anonymous { body, .. }
+        | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
+    }
+}
+
+fn collect_plan_types(
+    owner: &crate::TypeInstanceKey,
+    facts: &crate::type_queries::DropGlueFacts,
+) -> std::collections::BTreeSet<crate::TypeInstanceKey> {
+    let mut output = std::collections::BTreeSet::from([owner.clone()]);
+    output.extend(facts.nested.iter().cloned());
+    match &facts.plan {
+        crate::type_queries::DropGluePlan::Struct { fields } => {
+            output.extend(fields.iter().map(|field| field.ty.clone()));
+        }
+        crate::type_queries::DropGluePlan::Array { element, .. } => {
+            output.insert(element.clone());
+        }
+        crate::type_queries::DropGluePlan::Enum { variants } => {
+            output.extend(
+                variants
+                    .iter()
+                    .flat_map(|variant| variant.fields.iter())
+                    .map(|field| field.ty.clone()),
+            );
+        }
+        crate::type_queries::DropGluePlan::None => {}
+    }
+    output
+}
+
+fn materialize_and_build_cfg(
+    context: &QueryContext,
+    layouts: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::LayoutValue>,
+    type_facts: &QueryFamily<
+        crate::type_queries::TypeQueryKey,
+        crate::type_queries::TypeFactsValue,
+    >,
+    drop_glues: &QueryFamily<crate::type_queries::TypeQueryKey, crate::type_queries::DropGlueValue>,
+    call_abis: &QueryFamily<
+        crate::type_queries::CallAbiQueryKey,
+        crate::type_queries::CallAbiValue,
+    >,
+    key: &CfgQueryKey,
+) -> Result<CfgValue, QueryAbort> {
+    let synthesized;
+    let (body, body_span, facts) = match &key.semantic_input {
+        CfgSemanticInput::Body {
+            input,
+            materialization,
+        } => (
+            canonical_body(&input.canonical),
+            input.body_span,
+            materialization.as_ref(),
+        ),
+        CfgSemanticInput::DropGlue {
+            owner,
+            facts,
+            materialization,
+            body_span,
+        } => {
+            let mut slots = std::collections::BTreeMap::new();
+            for ty in collect_plan_types(owner, facts) {
+                let dependency = crate::type_queries::TypeQueryKey {
+                    ty: ty.clone(),
+                    configuration: key.configuration.clone(),
+                };
+                let terminal = context.query_registered(layouts, dependency)?;
+                let QueryOutcome::Success(value) = terminal.outcome() else {
+                    unreachable!("Layout publishes typed values")
+                };
+                let crate::type_queries::LayoutValue::Available(layout) = value else {
+                    return Ok(internal_failure(
+                        format!("drop-glue layout unavailable for {ty:?}: {value:?}"),
+                        *body_span,
+                    ));
+                };
+                slots.insert(ty, layout.abi_slots);
+            }
+            synthesized =
+                match crate::drop_glue::synthesize_canonical_drop_glue(owner, facts, &slots) {
+                    Ok(body) => body,
+                    Err(error) => return Ok(internal_failure(error.as_ref(), *body_span)),
+                };
+            (&synthesized, *body_span, materialization.as_ref())
+        }
+    };
+    let mut builtin_facts = Vec::with_capacity(facts.builtin_nominals.len());
+    for request in facts.builtin_nominals.iter() {
+        let dependency = crate::type_queries::TypeQueryKey {
+            ty: request.query_ty.clone(),
+            configuration: key.configuration.clone(),
+        };
+        let terminal = context.query_registered(type_facts, dependency)?;
+        let QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("TypeFacts publishes typed values")
+        };
+        let crate::type_queries::TypeFactsValue::Available(value) = value else {
+            return Ok(internal_failure(
+                format!("builtin nominal facts unavailable for {request:?}: {value:?}"),
+                body_span,
+            ));
+        };
+        builtin_facts.push(
+            crate::local_semantic_materialization::LocalBuiltinNominalFact {
+                request: request.clone(),
+                facts: value.as_ref().clone(),
+            },
+        );
+    }
+    context.record_work(rue_query::WorkItem::new("cfg.materialize.attempts", 1));
+    let materialized = match &key.semantic_input {
+        CfgSemanticInput::Body { input, .. } => {
+            crate::local_semantic_materialization::materialize_canonical_body(
+                &input.canonical,
+                body_span,
+                &facts.declarations,
+                &facts.anonymous_nominals,
+                &facts.callables,
+                &facts.nominal_metadata,
+                &facts.modules,
+                &builtin_facts,
+            )
+        }
+        CfgSemanticInput::DropGlue { owner, .. } => {
+            crate::local_semantic_materialization::materialize_semantic_body(
+                crate::FunctionInstanceKey::DropGlue(Box::new(owner.clone())),
+                body,
+                body_span,
+                &facts.declarations,
+                &facts.anonymous_nominals,
+                &facts.callables,
+                &facts.nominal_metadata,
+                &facts.modules,
+                &builtin_facts,
+            )
+        }
+    };
+    let materialized = match materialized {
+        Ok(value) => value,
+        Err(error) => {
+            context.record_work(rue_query::WorkItem::new("cfg.materialize.failures", 1));
+            return Ok(internal_failure(
+                format!("canonical CFG materialization failed: {error:?}"),
+                body_span,
+            ));
+        }
+    };
+    context.record_work(rue_query::WorkItem::new("cfg.materialize.successes", 1));
+
+    let domains = match crate::durable_cfg::CfgDomainProjection::from_local_body(
+        &materialized,
+        body,
+        |ty| {
+            crate::durable_cfg::canonical_type_from_live(
+                ty,
+                &materialized.type_pool,
+                &materialized.aggregate_types,
+            )
+        },
+        |symbol| {
+            let name = materialized.interner.resolve(&symbol);
+            facts
+                .callables
+                .iter()
+                .find(|fact| fact.symbol.as_ref() == name)
+                .map(|fact| fact.identity.clone())
+        },
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(internal_failure(
+                format!("canonical CFG domain projection failed: {error:?}"),
+                body_span,
+            ));
+        }
+    };
+
+    let mut layout_dependencies = std::collections::BTreeSet::new();
+    let mut drop_dependencies = std::collections::BTreeSet::new();
+    for ty in domains.stable_types() {
+        collect_type_dependencies(ty, &mut layout_dependencies);
+        collect_drop_type_dependency(ty, &mut drop_dependencies);
+    }
+    for ty in layout_dependencies {
+        context.query_registered(
+            layouts,
+            crate::type_queries::TypeQueryKey {
+                ty,
+                configuration: key.configuration.clone(),
+            },
+        )?;
+    }
+    for ty in drop_dependencies {
+        let dependency = crate::type_queries::TypeQueryKey {
+            ty,
+            configuration: key.configuration.clone(),
+        };
+        context.query_registered(type_facts, dependency.clone())?;
+        context.query_registered(drop_glues, dependency)?;
+    }
+    let mut callables = domains
+        .stable_callables()
+        .collect::<std::collections::BTreeSet<_>>();
+    callables.insert(key.function.clone());
+    for callable in callables {
+        context.query_registered(
+            call_abis,
+            crate::type_queries::CallAbiQueryKey {
+                callable,
+                configuration: key.configuration.clone(),
+            },
+        )?;
+    }
+    Ok(build_cfg(context, key, materialized, domains))
+}
+
+fn build_cfg(
+    context: &QueryContext,
+    key: &CfgQueryKey,
+    materialized: crate::local_semantic_materialization::LocalSemanticMaterialization,
+    domains: crate::durable_cfg::CfgDomainProjection,
+) -> CfgValue {
     context.record_work(rue_query::WorkItem::new("cfg.build.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.air.instructions",
-        key.live.function.air.instructions().len() as u64,
+        materialized.air.instructions().len() as u64,
     ));
     let output = rue_cfg::CfgBuilder::build(
-        &key.live.function.air,
-        key.live.function.num_locals,
-        key.live.function.num_param_slots,
-        &key.live.function.name,
-        &key.live.type_pool,
-        key.live.function.param_modes.clone(),
-        &key.live.interner,
-        key.live.function.allow_unreachable_code,
-        key.live.function.callable_kind,
+        &materialized.air,
+        materialized.num_locals,
+        materialized.num_param_slots,
+        &materialized.name,
+        &materialized.type_pool,
+        materialized.param_modes.clone(),
+        &materialized.interner,
+        materialized.allow_unreachable_code,
+        materialized.callable_kind,
     );
     if !output.errors.is_empty() {
         context.record_work(rue_query::WorkItem::new("cfg.build.failures", 1));
         return CfgValue::Failure {
             errors: output.errors.into(),
-            body_span: key.live.body_span,
+            body_span: materialized.body_span,
         };
     }
     context.record_work(rue_query::WorkItem::new("cfg.build.successes", 1));
@@ -450,13 +627,13 @@ fn build_cfg(context: &QueryContext, key: &CfgQueryKey) -> CfgValue {
         .implicit_named_destructors
         .iter()
         .filter_map(|id| {
-            key.live
+            materialized
                 .aggregate_types
                 .get(&rue_air::Type::new_struct(*id))
                 .cloned()
         })
         .collect::<std::collections::BTreeSet<_>>();
-    if let CfgSemanticInput::DropGlue { owner, facts } = &key.semantic_input
+    if let CfgSemanticInput::DropGlue { owner, facts, .. } = &key.semantic_input
         && facts.destructor.is_some()
     {
         // A synthesized struct glue body does not explicitly drop its owner,
@@ -469,16 +646,19 @@ fn build_cfg(context: &QueryContext, key: &CfgQueryKey) -> CfgValue {
         cfg: output
             .cfg
             .expect("successful CFG construction publishes a validated CFG"),
-        domains: key.live.domains.clone(),
-        body_span: key.live.body_span,
+        domains,
+        type_pool: materialized.type_pool,
+        interner: materialized.interner,
+        strings: materialized.strings.into(),
+        local_atoms: materialized.local_atoms.into(),
+        materialization_warnings: materialized.warnings,
+        body_span: materialized.body_span,
         warnings: output.warnings.into(),
         implicit_destructor_targets: implicit_destructor_targets
             .into_iter()
             .collect::<Vec<_>>()
             .into(),
-        implicit_destructor_dependencies_complete: key
-            .live
-            .implicit_destructor_dependencies_complete
+        implicit_destructor_dependencies_complete: materialized.completeness.is_complete()
             && !output.anonymous_destructor_dependency_incomplete,
     }))
 }
@@ -497,56 +677,25 @@ pub(crate) fn evaluate_optimized_cfg(
         return Ok(QueryOutput::success(value.clone())
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
     };
-    let (current, record) = if record.domains.same_live_domain(&key.cfg.live.domains) {
-        (record.cfg.clone(), record.clone())
-    } else {
-        context.record_work(rue_query::WorkItem::new("cfg.import.attempts", 1));
-        match crate::durable_cfg::CfgDomainProjection::import_cfg(
-            &record.domains,
-            &key.cfg.live.domains,
-            &record.cfg,
-            key.cfg.live.body_span,
-        )
-        .and_then(|editor| {
-            editor
-                .finish_after_optimization(&key.cfg.live.type_pool)
-                .map_err(|_| crate::durable_cfg::CfgDomainFailure::Shape)
-        }) {
-            Ok(current) => {
-                context.record_work(rue_query::WorkItem::new("cfg.import.successes", 1));
-                (current, record.clone())
-            }
-            Err(_) => {
-                // A relocation-domain miss must not turn a valid current body
-                // into an ICE. Rebuild from the exact current AIR and continue
-                // optimization; the regular Cfg family remains the canonical
-                // fast path, while this fail-closed path preserves correctness
-                // if a newly introduced CFG domain escaped projection.
-                context.record_work(rue_query::WorkItem::new("cfg.import.failures", 1));
-                context.record_work(rue_query::WorkItem::new("cfg.fallbacks", 1));
-                match build_cfg(context, &key.cfg) {
-                    CfgValue::Available(record) => (record.cfg.clone(), record.clone()),
-                    rebuilt @ CfgValue::Failure { .. } => {
-                        return Ok(QueryOutput::success(rebuilt)
-                            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
-                    }
-                }
-            }
-        }
-    };
+    let current = record.cfg.clone();
     context.record_work(rue_query::WorkItem::new("cfg.optimize.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.optimize.nonzero-level",
         u64::from(key.opt_level != rue_cfg::OptLevel::O0),
     ));
-    match rue_cfg::opt::optimize(current, key.opt_level, &key.cfg.live.type_pool) {
+    match rue_cfg::opt::optimize(current, key.opt_level, &record.type_pool) {
         Ok(cfg) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
             Ok(QueryOutput::success(CfgValue::Available(Arc::new(
                 CfgRecord {
                     cfg,
-                    domains: key.cfg.live.domains.clone(),
-                    body_span: key.cfg.live.body_span,
+                    domains: record.domains.clone(),
+                    type_pool: record.type_pool.clone(),
+                    interner: record.interner.clone(),
+                    strings: record.strings.clone(),
+                    local_atoms: record.local_atoms.clone(),
+                    materialization_warnings: record.materialization_warnings.clone(),
+                    body_span: record.body_span,
                     warnings: record.warnings.clone(),
                     implicit_destructor_targets: record.implicit_destructor_targets.clone(),
                     implicit_destructor_dependencies_complete: record
@@ -562,7 +711,7 @@ pub(crate) fn evaluate_optimized_cfg(
                         "CFG optimization failed: {error}"
                     )),
                 )),
-                body_span: key.cfg.live.body_span,
+                body_span: record.body_span,
             })
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure))
         }

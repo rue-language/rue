@@ -55,6 +55,87 @@ impl StableSymbolEncoder {
     }
 }
 
+pub(crate) fn anonymous_nominal_digest(identity: &AnonymousNominalKey) -> u128 {
+    let identity = identity.with_canonical_producer();
+    let relocated: rue_air::AnonymousNominalKey<String, String> = identity
+        .as_ref()
+        .try_map_identities::<String, String, std::convert::Infallible>(
+            &|definition| {
+                Ok(rue_air::stable_digest::stable_definition_component(
+                    definition.module().logical_path(),
+                    definition.name(),
+                    definition.owner().map(|owner| owner.name()),
+                    definition.kind() as u8,
+                ))
+            },
+            &|module| {
+                Ok(rue_air::stable_digest::stable_module_component(
+                    module.logical_path(),
+                ))
+            },
+        )
+        .expect("compiler anonymous identity relocation to stable content is infallible");
+    rue_air::stable_digest::stable_anonymous_identity_digest(&relocated)
+}
+
+/// Spell an anonymous nominal through the same stable-content digest used by
+/// both semantic engines. The digest is presentation only; the full key remains
+/// the identity used by queries and relocation.
+pub(crate) fn anonymous_nominal_source_symbol(identity: &AnonymousNominalKey) -> String {
+    let digest = anonymous_nominal_digest(identity);
+    let kind = match identity.kind {
+        AnonymousNominalKind::Struct => "struct",
+        AnonymousNominalKind::Enum => "enum",
+    };
+    format!("__anon_{kind}_{digest:032x}")
+}
+
+pub(crate) fn anonymous_member_source_symbol(identity: &FunctionInstanceKey) -> Option<String> {
+    let FunctionInstanceKey::AnonymousMember { owner, member } = identity else {
+        return None;
+    };
+    let TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(owner)) = owner.as_ref() else {
+        return None;
+    };
+    Some(format!(
+        "{}.{}",
+        anonymous_nominal_source_symbol(owner),
+        member.name
+    ))
+}
+
+/// Spell a named nominal through the same unconditional module qualification
+/// used by AIR's type pool. Canonical language-item and reserved builtin types
+/// retain their bare ABI names.
+pub(crate) fn named_nominal_source_symbol(identity: &StableDefinitionKey) -> Option<String> {
+    match identity.kind() {
+        crate::StableDefinitionKind::Struct => {
+            if identity.module().is_trusted_standard_library()
+                && rue_air::LangItem::from_standard_library_nominal(
+                    identity.module().logical_path(),
+                    identity.name(),
+                )
+                .is_some()
+            {
+                return Some(identity.name().to_owned());
+            }
+        }
+        crate::StableDefinitionKind::Enum => {
+            if rue_builtins::is_reserved_enum_name(identity.name()) {
+                return Some(identity.name().to_owned());
+            }
+        }
+        _ => return None,
+    }
+    Some(format!(
+        "{}${}",
+        identity.name(),
+        rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+            identity.module().logical_path()
+        ))
+    ))
+}
+
 pub(crate) fn type_instance_from_semantic(
     value: &rue_air::SemanticImportType<StableDefinitionKey, ModuleId>,
 ) -> Option<TypeInstanceKey> {
@@ -538,6 +619,38 @@ mod tests {
         assert_ne!(
             baseline,
             make(AnonymousNominalKind::Struct, 0, TypeInstanceKey::Bool)
+        );
+    }
+
+    #[test]
+    fn named_nominal_source_symbols_match_type_pool_qualification() {
+        let named = |module, kind, name| {
+            StableDefinitionKey::for_test(
+                module,
+                StableDefinitionNamespace::Type,
+                kind,
+                Arc::<str>::from(name),
+                None,
+            )
+        };
+        let record = named(
+            ModuleId::from_validated_canonical("pkg/main.rue"),
+            StableDefinitionKind::Struct,
+            "Record",
+        );
+        assert_eq!(
+            named_nominal_source_symbol(&record).as_deref(),
+            Some("Record$pkg_2fmain_2erue")
+        );
+
+        let strbuf = named(
+            ModuleId::from_trusted_validated_canonical("\0rue-std/strbuf.rue"),
+            StableDefinitionKind::Struct,
+            "StrBuf",
+        );
+        assert_eq!(
+            named_nominal_source_symbol(&strbuf).as_deref(),
+            Some("StrBuf")
         );
     }
 

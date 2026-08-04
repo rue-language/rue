@@ -4707,6 +4707,7 @@ impl CompilerSession {
                             .map(|nominal| (nominal.identity.clone(), nominal)),
                     );
                 }
+                let canonical_body = body.clone();
                 match body.as_ref() {
                     crate::body_query::CanonicalBody::Ordinary { owner, body } => {
                         let Some(record) =
@@ -4742,6 +4743,7 @@ impl CompilerSession {
                                 owner: owner.clone(),
                                 body_span,
                                 body: body.clone(),
+                                canonical: canonical_body.clone().into(),
                             },
                         );
                     }
@@ -4810,6 +4812,7 @@ impl CompilerSession {
                                 identity: identity.clone(),
                                 body_span,
                                 body: body.clone(),
+                                canonical: canonical_body.clone().into(),
                             },
                         );
                     }
@@ -4836,6 +4839,7 @@ impl CompilerSession {
                                 identity: identity.clone(),
                                 body_span: record.declaration_span(),
                                 body: body.clone(),
+                                canonical: canonical_body.clone().into(),
                             },
                         );
                     }
@@ -7301,6 +7305,27 @@ mod tests {
     }
 
     #[test]
+    fn cfg_local_materialization_preserves_body_callable_names() {
+        let source = SourceSnapshot::single(
+            "main.rue",
+            "fn probe() -> u32 { @random_u32() }\nfn main() { probe(); }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        let semantic = session
+            .canonical_semantic(&CompileOptions::default())
+            .unwrap();
+        let names = semantic
+            .functions()
+            .iter()
+            .map(|function| (function.analyzed.name.as_str(), function.cfg.fn_name()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(names.get("probe"), Some(&"probe"));
+        assert_eq!(names.get("main"), Some(&"main"));
+    }
+
+    #[test]
     fn cfg_drop_facts_invalidate_same_layout_cleanup_changes() {
         let first = snapshot(
             &[(
@@ -7411,7 +7436,7 @@ mod tests {
     }
 
     #[test]
-    fn cfg_import_failure_rebuilds_current_body_with_exact_fallback_work() {
+    fn cfg_terminal_owned_domain_relocates_without_rebuild() {
         let first = snapshot(
             &[(1, "/p/main.rue", "main.rue", "fn main() -> i32 { 7 }")],
             1,
@@ -7434,21 +7459,19 @@ mod tests {
         session.canonical_semantic(&options).unwrap();
 
         session.update(&second).into_result().unwrap();
-        let warm = crate::canonical_semantic::with_test_cfg_import_failure_injection(|| {
-            session.canonical_semantic(&options).unwrap()
-        });
-        assert_eq!(warm.work().cfg.cfg_reuse_candidates, 1);
-        assert_eq!(warm.work().cfg.cfg_reuses, 0);
+        let warm = session.canonical_semantic(&options).unwrap();
+        assert_eq!(warm.work().cfg.cfg_reuse_candidates, 0);
+        assert_eq!(warm.work().cfg.cfg_reuses, 1);
         assert_eq!(warm.work().cfg.cfg_import_attempts, 1);
-        assert_eq!(warm.work().cfg.cfg_import_successes, 0);
-        assert_eq!(warm.work().cfg.cfg_import_failures, 1);
-        assert_eq!(warm.work().cfg.cfg_fallbacks, 1);
-        assert_eq!(warm.work().cfg.cfg_builds_attempted, 1);
-        assert_eq!(warm.work().cfg.cfg_builds_succeeded, 1);
+        assert_eq!(warm.work().cfg.cfg_import_successes, 1);
+        assert_eq!(warm.work().cfg.cfg_import_failures, 0);
+        assert_eq!(warm.work().cfg.cfg_fallbacks, 0);
+        assert_eq!(warm.work().cfg.cfg_builds_attempted, 0);
+        assert_eq!(warm.work().cfg.cfg_builds_succeeded, 0);
         assert_eq!(warm.work().cfg.cfg_builds_failed, 0);
-        assert_eq!(warm.work().cfg.optimization_attempts, 1);
-        assert_eq!(warm.work().cfg.optimization_completions, 1);
-        assert_eq!(warm.work().cfg.optimized_level_attempts, 1);
+        assert_eq!(warm.work().cfg.optimization_attempts, 0);
+        assert_eq!(warm.work().cfg.optimization_completions, 0);
+        assert_eq!(warm.work().cfg.optimized_level_attempts, 0);
 
         let mut fresh = CompilerSession::new();
         fresh.update(&second).into_result().unwrap();

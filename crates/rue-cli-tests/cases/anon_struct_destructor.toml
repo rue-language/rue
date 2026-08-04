@@ -39,6 +39,35 @@ args = ["main.rue", "-o", "prog"]
 stdout = "100\n7\n"
 exit_code = 0
 
+# A receiver wider than the ordinary direct aggregate threshold proves that
+# anonymous destructors use the destructor-specific flattened cleanup ABI.
+[[case]]
+name = "multi_slot_receiver_uses_cleanup_abi"
+description = "A multi-slot anonymous-struct destructor receives every flattened field."
+files = [{ path = "main.rue", source = """
+fn Wide(comptime T: type) -> type {
+    struct {
+        first: T,
+        second: T,
+        third: T,
+        drop fn(self) {
+            @dbg(self.first);
+            @dbg(self.second);
+            @dbg(self.third);
+        }
+    }
+}
+
+fn main() -> i32 {
+    let W = Wide(i32);
+    let _value = W { first: 11, second: 22, third: 33 };
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "11\n22\n33\n"
+exit_code = 0
+
 # RUE-578: this direct literal has no method call to pull the anonymous type's
 # destructor into the old eager body's one-time method sweep. The universal
 # demand-driven driver must discover the destructor registered while analyzing
