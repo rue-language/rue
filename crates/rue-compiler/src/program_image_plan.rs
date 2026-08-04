@@ -171,7 +171,11 @@ impl ProgramImage {
             .collect::<BTreeSet<_>>();
         let expected_thunks = functions
             .iter()
-            .filter(|function| export_set.contains(function.legacy_name.as_str()))
+            .filter(|function| {
+                function
+                    .definition_source_name()
+                    .is_some_and(|name| export_set.contains(name))
+            })
             .count();
         if export_thunk_objects.len() != expected_thunks {
             return Err(CompileErrors::from(CompileError::without_span(
@@ -265,13 +269,20 @@ impl ProgramImagePlan {
             .collect::<BTreeSet<_>>();
         let mut export_thunks = functions
             .iter()
-            .filter(|function| export_set.contains(function.legacy_name.as_str()))
-            .zip(export_thunk_objects)
-            .map(|(function, bytes)| ProgramImageExportThunk {
-                exported_symbol: function.legacy_name.clone(),
-                native_symbol: function.machine_name.clone(),
-                content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
+            .filter_map(|function| {
+                function
+                    .definition_source_name()
+                    .filter(|name| export_set.contains(name))
+                    .map(|name| (function, name))
             })
+            .zip(export_thunk_objects)
+            .map(
+                |((function, exported_symbol), bytes)| ProgramImageExportThunk {
+                    exported_symbol: exported_symbol.to_owned(),
+                    native_symbol: function.machine_name.clone(),
+                    content_digest: bytes_digest(b"rue.program-image.export-thunk\0v1\0", bytes),
+                },
+            )
             .collect::<Vec<_>>();
         export_thunks.sort_by(|left, right| {
             left.exported_symbol
@@ -340,12 +351,13 @@ fn validate_program_image_inputs(
         return duplicate_plan_input("C-ABI export symbol", "duplicate export declaration");
     }
     let mut thunk_identities = BTreeSet::new();
-    for function in functions
+    for exported_symbol in functions
         .iter()
-        .filter(|function| export_set.contains(function.legacy_name.as_str()))
+        .filter_map(FunctionWithCfg::definition_source_name)
+        .filter(|name| export_set.contains(name))
     {
-        if !thunk_identities.insert(function.legacy_name.as_str()) {
-            return duplicate_plan_input("C-ABI export thunk identity", &function.legacy_name);
+        if !thunk_identities.insert(exported_symbol) {
+            return duplicate_plan_input("C-ABI export thunk identity", exported_symbol);
         }
     }
 
@@ -711,10 +723,62 @@ mod tests {
         assert!(error.to_string().contains("duplicate defined symbol"));
     }
 
+    /// A C export's linker-visible name is the identifier its declaration
+    /// spells, independently of the module-qualified internal symbol its native
+    /// body carries (ADR-0064 P4, RUE-1125).
+    #[test]
+    fn export_thunks_carry_the_declared_c_name_over_a_module_qualified_body() {
+        let source = "pub extern \"C\" fn rue_answer() -> i32 { 42 }\n\
+                      fn main() -> i32 { 0 }";
+        let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
+        let options = CompileOptions {
+            preview_features: crate::PreviewFeatures::from([crate::PreviewFeature::CFfi]),
+            ..CompileOptions::default()
+        };
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let rir = session.canonical_rir().unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let exports = backend::collect_export_symbols(rir.rir(), rir.semantic_symbols().interner());
+        assert_eq!(exports, ["rue_answer"]);
+        let units = session
+            .codegen_units(
+                &semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let image = ProgramImage::new(units, semantic.functions(), &options, &exports).unwrap();
+
+        let exported = semantic
+            .functions()
+            .iter()
+            .find(|function| function.definition_source_name() == Some("rue_answer"))
+            .expect("the export is code-generated as an ordinary body");
+        assert_eq!(
+            exported.legacy_name, "__rue_fn_main_2erue__rue_answer",
+            "the export's native body is an ordinary module-qualified callable"
+        );
+        assert_eq!(
+            image.plan.export_thunks.len(),
+            1,
+            "{:?}",
+            image.plan.export_thunks
+        );
+        assert_eq!(image.plan.export_thunks[0].exported_symbol, "rue_answer");
+        assert_eq!(
+            image.plan.export_thunks[0].native_symbol,
+            exported.machine_name
+        );
+    }
+
     #[test]
     fn duplicate_export_thunk_identities_are_rejected() {
         let (units, mut functions, options) = session_inputs("fn main() -> i32 { 0 }");
-        let exported = functions[0].legacy_name.clone();
+        let exported = functions[0]
+            .definition_source_name()
+            .expect("main is an ordinary definition")
+            .to_owned();
         functions.push(functions[0].clone());
         let error = ProgramImage::new(units, &functions, &options, &[exported])
             .err()

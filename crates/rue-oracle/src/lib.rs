@@ -81,7 +81,21 @@ struct CompileState {
 }
 
 struct OracleFunction {
+    /// The declaration's source name, for ordinary definitions. A CFG's
+    /// `fn_name` is the internal symbol, which an ordinary definition
+    /// qualifies by module (RUE-1125); interpretation dispatches on that
+    /// symbol, so only in-tree probes that name a function the way its source
+    /// does need this.
+    #[cfg(test)]
+    source_name: Option<String>,
     cfg: rue_cfg::ValidatedCfg,
+}
+
+#[cfg(test)]
+impl OracleFunction {
+    fn is_source_named(&self, name: &str) -> bool {
+        self.source_name.as_deref() == Some(name)
+    }
 }
 
 fn query_cfg_state(source: &str) -> Result<CompileState, CompileErrors> {
@@ -132,7 +146,11 @@ fn query_cfg_state_from_session(
         functions: state
             .functions
             .into_iter()
-            .map(|function| OracleFunction { cfg: function.cfg })
+            .map(|function| OracleFunction {
+                #[cfg(test)]
+                source_name: function.source_name,
+                cfg: function.cfg,
+            })
             .collect(),
         type_pool: state.type_pool,
         strings: state.strings,
@@ -1783,6 +1801,9 @@ impl<'a> Interp<'a> {
         &self.state.interner
     }
 
+    /// Locate a callee by the internal symbol its call site names. This is the
+    /// interpreter's dispatch, so it must speak the CFG's own symbol space,
+    /// not source names.
     fn find_cfg(&self, name: &str) -> Option<&'a Cfg> {
         self.state
             .functions

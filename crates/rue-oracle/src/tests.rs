@@ -80,8 +80,8 @@ fn stable_str_equality_is_lowered_and_modeled_by_byte_content() {
         let cfg = state
             .functions
             .iter()
-            .map(|function| &function.cfg)
-            .find(|cfg| cfg.fn_name() == function)
+            .find(|candidate| candidate.is_source_named(function))
+            .map(|candidate| &candidate.cfg)
             .unwrap_or_else(|| panic!("missing {function} CFG"));
         let (lhs, rhs) = cfg
             .blocks()

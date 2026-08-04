@@ -3361,7 +3361,7 @@ impl<'a> CfgBuilder<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_air::{AirEditor, AirValidationContext, Sema};
+    use rue_air::{AirEditor, AirValidationContext, Sema, SemaMetadata};
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
     use rue_parser::Parser;
@@ -3382,10 +3382,11 @@ mod tests {
     /// Build the CFG for the analyzed function called `name` in `source`
     /// (robust to analysis order, unlike `build_cfg_for`).
     fn build_cfg_named(source: &str, name: &str) -> Cfg {
+        let symbol = SemaMetadata::synthetic_root_function_symbol(name);
         build_cfg_select(source, |functions| {
             functions
                 .iter()
-                .find(|f| f.name == name)
+                .find(|f| f.name == symbol)
                 .unwrap_or_else(|| panic!("no analyzed function named '{}'", name))
         })
     }
@@ -3473,10 +3474,18 @@ mod tests {
         sema.set_trusted_standard_library_files(HashSet::from([module_file]));
         let output = sema.analyze_all_for_test_with_stable_endpoints().unwrap();
 
+        // The fixture's module carries an explicit trusted-standard-library
+        // symbol path, so its ordinary functions qualify by that path.
+        let symbol = format!(
+            "__rue_fn_{}__{name}",
+            rue_air::mangle_symbol_component(&rue_air::normalize_module_path(
+                "\0rue-std/option.rue"
+            ))
+        );
         let func = output
             .functions
             .iter()
-            .find(|f| f.name == name)
+            .find(|f| f.name == symbol)
             .unwrap_or_else(|| panic!("no analyzed function named '{}'", name));
         CfgBuilder::build(
             &func.air,

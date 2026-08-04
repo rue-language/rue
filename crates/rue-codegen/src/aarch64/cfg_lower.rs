@@ -3708,7 +3708,7 @@ impl crate::aggregate_eq::AggregateEqPlanBackend for CfgLower<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rue_air::Sema;
+    use rue_air::{Sema, SemaMetadata};
     use rue_cfg::CfgBuilder;
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
@@ -3736,10 +3736,11 @@ mod tests {
         let sema = Sema::new_synthetic(&rir, &mut interner, preview);
         let output = sema.analyze_all_for_test().unwrap();
 
+        let symbol = SemaMetadata::synthetic_root_function_symbol(function_name);
         let func = output
             .functions
             .iter()
-            .find(|func| func.name == function_name)
+            .find(|func| func.name == symbol)
             .expect("requested test function should exist");
         let type_pool = &output.type_pool;
         let cfg_output = CfgBuilder::build(
@@ -3785,10 +3786,11 @@ mod tests {
         let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
             .analyze_all_for_test()
             .unwrap();
+        let symbol = SemaMetadata::synthetic_root_function_symbol(name);
         let func = output
             .functions
             .iter()
-            .find(|f| f.name == name)
+            .find(|f| f.name == symbol)
             .unwrap_or_else(|| panic!("no function named `{name}`"));
         let type_pool = &output.type_pool;
         let cfg_output = CfgBuilder::build(
@@ -3893,11 +3895,14 @@ mod tests {
             .analyze_all_for_test()
             .unwrap();
         let func = match name {
-            Some(name) => output
-                .functions
-                .iter()
-                .find(|f| f.name == name)
-                .unwrap_or_else(|| panic!("no function named `{name}`")),
+            Some(name) => {
+                let symbol = SemaMetadata::synthetic_root_function_symbol(name);
+                output
+                    .functions
+                    .iter()
+                    .find(|f| f.name == symbol)
+                    .unwrap_or_else(|| panic!("no function named `{name}`"))
+            }
             None => &output.functions[0],
         };
         let type_pool = &output.type_pool;

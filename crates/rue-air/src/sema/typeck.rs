@@ -1925,7 +1925,13 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                 self.declaration_type_observer = observer;
                 self.resolve_function_name_local(name, file)
             }
-            (TypeRootAuthority::GlobalSpeculative, None) => Some(name),
+            // A speculative root resolves against the default file, which is
+            // where its caller anchors the syntax. The function table is keyed
+            // by internal symbol, never by source spelling, so the binding must
+            // be reached through the file-local source namespace.
+            (TypeRootAuthority::GlobalSpeculative, None) => {
+                self.resolve_function_name_local(name, FileId::DEFAULT)
+            }
             (TypeRootAuthority::GlobalSpeculative, Some(_)) => return Ok(None),
         };
         let Some(key) = key else { return Ok(None) };

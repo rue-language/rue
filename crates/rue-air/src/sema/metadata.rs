@@ -44,6 +44,25 @@ impl SemaMetadata {
         .expect("synthetic sema fixture path must be non-empty")
     }
 
+    /// The internal symbol an ordinary free function declared in the root
+    /// module of a [`super::Sema::new_synthetic`] program is bound under.
+    ///
+    /// A synthetic program names its modules `synthetic/<file index>.rue`, and
+    /// an ordinary function's internal symbol is derived from its own module
+    /// and source name (RUE-1125); only the root module's `main` keeps the bare
+    /// source spelling. Tests that locate an analyzed function by source name
+    /// go through this so the naming rule has one statement.
+    pub fn synthetic_root_function_symbol(source_name: &str) -> String {
+        if source_name == "main" {
+            return source_name.to_owned();
+        }
+        let module = crate::path_norm::mangle_symbol_component(&normalize_module_path(&format!(
+            "synthetic/{}.rue",
+            FileId::DEFAULT.index()
+        )));
+        format!("__rue_fn_{module}__{source_name}")
+    }
+
     pub(super) fn synthetic_for_rir(rir: &Rir) -> Self {
         let mut ids: Vec<_> = rir.iter().map(|(_, inst)| inst.span.file_id).collect();
         ids.sort_by_key(|id| id.index());

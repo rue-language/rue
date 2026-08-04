@@ -323,7 +323,7 @@ enum ProjectedAccess {
 #[cfg(test)]
 mod tests {
     use lasso::ThreadedRodeo;
-    use rue_air::{Sema, StructDef, StructField, Type, TypeInternPool};
+    use rue_air::{Sema, SemaMetadata, StructDef, StructField, Type, TypeInternPool};
     use rue_cfg::{Cfg, CfgBuilder, CfgInst, CfgInstData, PlaceBase, Projection};
     use rue_error::PreviewFeatures;
     use rue_lexer::Lexer;
@@ -376,10 +376,11 @@ mod tests {
             .analyze_all_for_test()
             .expect("fixture should analyze");
         let build_cfg = |name: &str| {
+            let symbol = SemaMetadata::synthetic_root_function_symbol(name);
             let function = output
                 .functions
                 .iter()
-                .find(|function| function.name == name)
+                .find(|function| function.name == symbol)
                 .expect("fixture function should exist");
             CfgBuilder::build(
                 &function.air,

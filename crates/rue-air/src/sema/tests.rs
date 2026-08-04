@@ -60,6 +60,12 @@ mod tests {
         compile_to_air_with_preview_features(source, PreviewFeatures::new())
     }
 
+    /// The internal symbol of an ordinary free function declared in a synthetic
+    /// single-module test program (RUE-1125).
+    fn internal_name(source_name: &str) -> String {
+        crate::SemaMetadata::synthetic_root_function_symbol(source_name)
+    }
+
     fn compile_to_air_with_preview_features(
         source: &str,
         preview_features: PreviewFeatures,
@@ -741,7 +747,7 @@ mod tests {
         let make_type = output
             .functions
             .iter()
-            .find(|function| function.name == "make")
+            .find(|function| function.name == internal_name("make"))
             .unwrap()
             .air
             .return_type();
@@ -1215,7 +1221,7 @@ mod tests {
             let function = output
                 .functions
                 .iter()
-                .find(|function| function.name == "probe")
+                .find(|function| function.name == internal_name("probe"))
                 .unwrap_or_else(|| panic!("missing analyzed function {name}"));
             let intrinsic_types: Vec<_> = function
                 .air
@@ -1870,7 +1876,7 @@ mod tests {
         let replace = output
             .functions
             .iter()
-            .find(|function| function.name == "replace")
+            .find(|function| function.name == internal_name("replace"))
             .unwrap();
         let stored_value = replace
             .air
@@ -1938,7 +1944,7 @@ mod tests {
         let replace = output
             .functions
             .iter()
-            .find(|function| function.name == "replace")
+            .find(|function| function.name == internal_name("replace"))
             .unwrap();
         let stored_value = replace
             .air
@@ -2183,7 +2189,7 @@ mod tests {
         let shadow = output
             .functions
             .iter()
-            .find(|function| function.name == "shadow")
+            .find(|function| function.name == internal_name("shadow"))
             .unwrap();
         assert_eq!(shadow.num_locals, 2);
         assert_eq!(shadow.air.return_type(), Type::BOOL);
@@ -2461,7 +2467,7 @@ mod tests {
             output
                 .functions
                 .iter()
-                .find(|function| function.name == "length")
+                .find(|function| function.name == internal_name("length"))
                 .unwrap()
                 .air
                 .return_type(),
@@ -2485,7 +2491,7 @@ mod tests {
             output
                 .functions
                 .iter()
-                .find(|function| function.name == "empty")
+                .find(|function| function.name == internal_name("empty"))
                 .unwrap()
                 .air
                 .return_type(),
@@ -2511,7 +2517,7 @@ mod tests {
             output
                 .functions
                 .iter()
-                .find(|function| function.name == "has_content")
+                .find(|function| function.name == internal_name("has_content"))
                 .unwrap()
                 .num_locals
                 >= 2
@@ -2616,7 +2622,7 @@ mod tests {
             output
                 .functions
                 .iter()
-                .find(|function| function.name == "value")
+                .find(|function| function.name == internal_name("value"))
                 .unwrap()
                 .air
                 .return_type(),
@@ -2636,7 +2642,7 @@ mod tests {
             output
                 .functions
                 .iter()
-                .find(|function| function.name == "value")
+                .find(|function| function.name == internal_name("value"))
                 .unwrap()
                 .air
                 .return_type(),
@@ -2660,7 +2666,7 @@ mod tests {
             output
                 .functions
                 .iter()
-                .find(|function| function.name == "value")
+                .find(|function| function.name == internal_name("value"))
                 .unwrap()
                 .air
                 .return_type(),
@@ -2960,7 +2966,7 @@ fn main() -> i32 {
             output
                 .functions
                 .iter()
-                .any(|function| function.name == "good_drop")
+                .any(|function| function.name == internal_name("good_drop"))
         );
         assert!(output.aggregate_type_identities_by_type.keys().any(|ty| {
             ty.as_struct().is_some_and(|id| {
@@ -3017,7 +3023,7 @@ fn main() -> i32 {
             output
                 .functions
                 .iter()
-                .any(|function| function.name == "bad_drop")
+                .any(|function| function.name == internal_name("bad_drop"))
         );
         assert!(output.aggregate_type_identities_by_type.keys().any(|ty| {
             ty.as_struct().is_some_and(|id| {
@@ -4330,5 +4336,171 @@ fn main() -> i32 {{
             )
         });
         assert!(has_panic, "the accessor guard's panic inlines into main");
+    }
+
+    // =========================================================================
+    // Callable identity (RUE-1125)
+    // =========================================================================
+    // An ordinary function's internal symbol is decided by its own module and
+    // source name, so no other declaration in the program can rename it. The
+    // exceptions are declaration-local too: the root module's `main` keeps the
+    // entry-point symbol, and an `extern "C"` declaration keeps the C symbol it
+    // names.
+
+    /// The internal symbols of `(source name, file)` in a program assembled
+    /// from `files`, each `(source, file id, module symbol path)`. The first
+    /// file is the root module.
+    fn internal_symbols(files: &[(&str, FileId, &str)], queries: &[(&str, FileId)]) -> Vec<String> {
+        let sources = files
+            .iter()
+            .map(|&(source, file_id, _)| (source, file_id))
+            .collect::<Vec<_>>();
+        let (rir, interner) = lower_files(&sources);
+        let mut sema = Sema::new_synthetic(&rir, &interner, PreviewFeatures::new());
+        sema.set_root_file_id(files[0].1);
+        sema.set_symbol_paths(
+            files
+                .iter()
+                .map(|&(_, file_id, path)| (file_id, path.to_owned()))
+                .collect::<HashMap<_, _>>(),
+        );
+        queries
+            .iter()
+            .map(|&(name, file_id)| {
+                let name = interner.get(name).expect("query name is interned");
+                interner
+                    .resolve(&sema.internal_function_name(name, file_id))
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    const IDENTITY_ROOT: (&str, FileId, &str) =
+        ("fn main() -> i32 { 0 }", FileId::new(1), "pkg/main.rue");
+    const IDENTITY_HELPERS: (&str, FileId, &str) = (
+        "pub fn value() -> i32 { 1 }",
+        FileId::new(2),
+        "pkg/helpers.rue",
+    );
+
+    #[test]
+    fn free_function_identity_is_module_local_not_program_wide() {
+        let value = [("value", FileId::new(2))];
+        let alone = internal_symbols(&[IDENTITY_ROOT, IDENTITY_HELPERS], &value);
+        assert_eq!(alone, ["__rue_fn_pkg_2fhelpers_2erue__value"]);
+
+        // An unrelated same-named free function in another module is not an
+        // input to this declaration's identity.
+        let with_free_twin = internal_symbols(
+            &[
+                IDENTITY_ROOT,
+                IDENTITY_HELPERS,
+                (
+                    "pub fn value() -> i32 { 2 }",
+                    FileId::new(3),
+                    "pkg/other.rue",
+                ),
+            ],
+            &value,
+        );
+        assert_eq!(with_free_twin, alone);
+
+        // Neither is a same-named receiverless associated function, which was
+        // never a free-function lookup candidate to begin with.
+        let with_associated_twin = internal_symbols(
+            &[
+                IDENTITY_ROOT,
+                IDENTITY_HELPERS,
+                (
+                    "pub struct Owner { fn value() -> i32 { 3 } }",
+                    FileId::new(3),
+                    "pkg/other.rue",
+                ),
+            ],
+            &value,
+        );
+        assert_eq!(with_associated_twin, alone);
+
+        // A same-named associated function in the declaration's OWN module is
+        // equally irrelevant.
+        let with_local_associated_twin = internal_symbols(
+            &[
+                IDENTITY_ROOT,
+                (
+                    "pub struct Owner { fn value() -> i32 { 3 } }\n\
+                     pub fn value() -> i32 { 1 }",
+                    FileId::new(2),
+                    "pkg/helpers.rue",
+                ),
+            ],
+            &value,
+        );
+        assert_eq!(with_local_associated_twin, alone);
+    }
+
+    #[test]
+    fn same_named_free_functions_in_distinct_modules_are_distinct_symbols() {
+        let symbols = internal_symbols(
+            &[
+                IDENTITY_ROOT,
+                (
+                    "pub fn value() -> i32 { 1 }",
+                    FileId::new(2),
+                    "pkg/left.rue",
+                ),
+                (
+                    "pub fn value() -> i32 { 2 }",
+                    FileId::new(3),
+                    "pkg/right.rue",
+                ),
+            ],
+            &[("value", FileId::new(2)), ("value", FileId::new(3))],
+        );
+        assert_eq!(
+            symbols,
+            [
+                "__rue_fn_pkg_2fleft_2erue__value",
+                "__rue_fn_pkg_2fright_2erue__value"
+            ],
+            "each module owns its own callable (RUE-426)"
+        );
+    }
+
+    #[test]
+    fn only_the_root_module_main_keeps_the_entry_point_symbol() {
+        let symbols = internal_symbols(
+            &[
+                IDENTITY_ROOT,
+                (
+                    "pub fn main() -> i32 { 7 }",
+                    FileId::new(2),
+                    "pkg/helpers.rue",
+                ),
+            ],
+            &[("main", FileId::new(1)), ("main", FileId::new(2))],
+        );
+        assert_eq!(symbols, ["main", "__rue_fn_pkg_2fhelpers_2erue__main"]);
+    }
+
+    #[test]
+    fn a_foreign_declaration_keeps_the_c_symbol_it_names() {
+        // A foreign `extern "C"` declaration has no Rue body: it names an
+        // external symbol the linker resolves, so that name is its identity.
+        // An export is the opposite — an ordinary Rue body whose separately
+        // specified C name rides its entry thunk (ADR-0064 P4).
+        let symbols = internal_symbols(
+            &[(
+                "extern \"C\" { fn c_answer() -> i32; }\n\
+                 pub extern \"C\" fn rue_answer() -> i32 { 42 }\n\
+                 fn main() -> i32 { 0 }",
+                FileId::new(1),
+                "pkg/main.rue",
+            )],
+            &[("c_answer", FileId::new(1)), ("rue_answer", FileId::new(1))],
+        );
+        assert_eq!(
+            symbols,
+            ["c_answer", "__rue_fn_pkg_2fmain_2erue__rue_answer"]
+        );
     }
 }
