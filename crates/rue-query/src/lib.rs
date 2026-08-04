@@ -2416,6 +2416,8 @@ impl QueryRuntime {
             checked_handoffs: Mutex::new(HashSet::new()),
             #[cfg(test)]
             handoff_validation_visits: AtomicUsize::new(0),
+            #[cfg(test)]
+            validation_endorsement_index_probes: AtomicUsize::new(0),
         });
         let result = match compute {
             Some(compute) => family.query_task(task.clone(), key, origin_request, compute),
@@ -4796,7 +4798,9 @@ struct Task {
     nested_attempt_filters: Mutex<Vec<Arc<[Arc<str>]>>>,
     /// Lexical task-local registered-validation endorsements. An exact
     /// terminal identity is inserted into every active scope only after a
-    /// complete registered-only validation traversal.
+    /// complete registered-only validation traversal. Consequently the oldest
+    /// active scope is the canonical union of all live endorsements: later
+    /// scopes may start empty, but every subsequent insertion reaches it.
     validation_endorsements: Mutex<Vec<BTreeSet<(u64, u64, Revision)>>>,
     /// Active recursive validation certificates. Encountering an unregistered
     /// node taints every enclosing traversal.
@@ -4819,6 +4823,11 @@ struct Task {
     checked_handoffs: Mutex<HashSet<usize>>,
     #[cfg(test)]
     handoff_validation_visits: AtomicUsize,
+    /// Ordered-index probes used by structural amplification tests. One
+    /// identity lookup performs at most one probe, independent of endorsement
+    /// count and lexical nesting depth.
+    #[cfg(test)]
+    validation_endorsement_index_probes: AtomicUsize,
 }
 
 struct ParentPermitDonation {
@@ -5612,6 +5621,8 @@ impl Task {
             checked_handoffs: Mutex::new(HashSet::new()),
             #[cfg(test)]
             handoff_validation_visits: AtomicUsize::new(0),
+            #[cfg(test)]
+            validation_endorsement_index_probes: AtomicUsize::new(0),
         })
     }
 
@@ -5708,22 +5719,32 @@ impl Task {
     }
 
     fn validation_endorsed_identity(&self, incarnation: u64, stamp: u64) -> bool {
-        lock(&self.validation_endorsements)
-            .iter()
-            .rev()
-            .any(|scope| {
-                scope
-                    .iter()
-                    .any(|identity| identity.0 == incarnation && identity.1 == stamp)
-            })
+        let scopes = lock(&self.validation_endorsements);
+        let Some(scope) = scopes.first() else {
+            return false;
+        };
+        #[cfg(test)]
+        self.validation_endorsement_index_probes
+            .fetch_add(1, Ordering::Relaxed);
+        scope
+            .range(
+                (incarnation, stamp, Revision::new(0, 0))
+                    ..=(incarnation, stamp, Revision::new(u64::MAX, u64::MAX)),
+            )
+            .next()
+            .is_some()
     }
 
     fn validation_endorsed<V>(&self, terminal: &QueryTerminal<V>) -> bool {
         let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
-        lock(&self.validation_endorsements)
-            .iter()
-            .rev()
-            .any(|scope| scope.contains(&identity))
+        let scopes = lock(&self.validation_endorsements);
+        let Some(scope) = scopes.first() else {
+            return false;
+        };
+        #[cfg(test)]
+        self.validation_endorsement_index_probes
+            .fetch_add(1, Ordering::Relaxed);
+        scope.contains(&identity)
     }
 
     fn endorse_validation<V>(&self, terminal: &QueryTerminal<V>) {
@@ -8213,6 +8234,7 @@ mod tests {
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
+            validation_endorsement_index_probes: AtomicUsize::new(0),
         };
         task.push(ExactNodeIdentity {
             display: NodeIdentity {
@@ -8263,6 +8285,7 @@ mod tests {
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
+            validation_endorsement_index_probes: AtomicUsize::new(0),
         };
         task.push(ExactNodeIdentity {
             display: NodeIdentity {
@@ -8535,6 +8558,7 @@ mod tests {
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
+            validation_endorsement_index_probes: AtomicUsize::new(0),
         });
         assert!(task.observe_handoff(parent.clone()));
         child.abort();
@@ -10520,6 +10544,90 @@ mod tests {
         assert_eq!(filtered.commits, 3);
         assert_eq!(filtered.aborts, 0);
         assert_eq!(filtered.inputs, [0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn validation_endorsement_identity_lookup_uses_one_ordered_index_probe() {
+        const ENDORSEMENTS: u64 = 65_536;
+
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<Key, u64>("endorsement-index-target", 1)
+            .unwrap();
+        let terminal = runtime
+            .query(
+                &family,
+                revision(1),
+                Key("target"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(1)),
+            )
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("endorsement-index-root", 1)
+            .unwrap();
+        let attempt = runtime.request(
+            &root,
+            revision(1),
+            Key("root"),
+            CancellationToken::new(),
+            move |context| {
+                let outer = context.endorse_registered_validations();
+                lock(&context.task.validation_endorsements)[0].extend((0..ENDORSEMENTS).map(
+                    |identity| {
+                        (
+                            identity,
+                            identity.wrapping_mul(17),
+                            Revision::new(identity, identity.rotate_left(7)),
+                        )
+                    },
+                ));
+                let inner = context.endorse_registered_validations();
+
+                assert!(context.task.validation_endorsed_identity(
+                    ENDORSEMENTS - 1,
+                    (ENDORSEMENTS - 1).wrapping_mul(17),
+                ));
+                assert_eq!(
+                    context
+                        .task
+                        .validation_endorsement_index_probes
+                        .load(Ordering::Relaxed),
+                    1,
+                    "lookup work is one ordered-set probe, not one visit per endorsement"
+                );
+
+                context.task.endorse_validation(&terminal);
+                assert!(
+                    context
+                        .task
+                        .validation_endorsed_identity(terminal.node_incarnation, terminal.stamp)
+                );
+                drop(inner);
+                assert!(
+                    context
+                        .task
+                        .validation_endorsed_identity(terminal.node_incarnation, terminal.stamp)
+                );
+                drop(outer);
+                assert!(
+                    !context
+                        .task
+                        .validation_endorsed_identity(terminal.node_incarnation, terminal.stamp)
+                );
+                assert_eq!(
+                    context
+                        .task
+                        .validation_endorsement_index_probes
+                        .load(Ordering::Relaxed),
+                    3,
+                    "nested scopes and scope teardown do not add index probes"
+                );
+                Ok(QueryOutput::success(1))
+            },
+        );
+        assert_eq!(attempt.execution(), RequestExecution::Computed);
     }
 
     #[test]
