@@ -112,10 +112,18 @@ partitioned into exactly one bucket:
 - root active with all phase counts zero → `unattributed`;
 - root inactive → excluded from compiler-root phase totals.
 
-Immediately before every root or count transition between zero and nonzero,
-elapsed time since the previous transition is charged to the bucket determined
-by the previous state. Timestamps are sampled under the same lock that orders
-root transitions today, so intervals are well-ordered.
+Every root or count transition between zero and nonzero records a timestamped
+observation in thread-local collector state. Query workers publish their local
+observations once at their bounded completion boundary; long-lived caller
+threads publish before reporting. Finalization deterministically sorts and
+reduces the observations. No span close or phase transition takes a shared
+collector lock, so instrumentation does not serialize parallel compiler work.
+
+Finalization uses two independent reducers. One computes the union of compiler
+root intervals without inspecting phase transitions. The other partitions the
+root-active timeline into phase bands. Comparing those independently derived
+totals makes the exact accounting invariant a useful corruption check rather
+than an identity of one state machine.
 
 **Raw durations are integer nanoseconds.** Because the state machine
 partitions a single timeline, the invariant holds exactly, not approximately:
