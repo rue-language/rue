@@ -4923,8 +4923,8 @@ where
     V: Clone + Send + Sync + 'static,
 {
     tracing::dispatcher::with_default(&tracing_dispatch, || {
-        let _parent = tracing_parent.enter();
-        catch_unwind(AssertUnwindSafe(|| {
+        let parent_span = tracing_parent.enter();
+        let result = catch_unwind(AssertUnwindSafe(|| {
             let mut completed = Vec::new();
             loop {
                 let Some((index, request_id, key)) = lock(&queue).pop_front() else {
@@ -4935,7 +4935,14 @@ where
                 completed.push((index, request_id, key, child, result));
             }
             completed
-        }))
+        }));
+        drop(parent_span);
+        // A tracing subscriber may buffer observations locally to avoid
+        // perturbing parallel query execution. This generic lifecycle marker
+        // lets it publish once at the bounded worker-completion boundary; the
+        // runtime knows nothing about compiler phases or measurement schemas.
+        tracing::trace!(timing_flush = true, "registered query worker complete");
+        result
     })
 }
 

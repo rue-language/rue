@@ -57,6 +57,12 @@ as the first statement inside the closure, as `codegen` does in
 The current span tree is exposed by the driver's `--time-passes` and
 `--benchmark-json` modes.
 
+Timing observations accumulate in thread-local state. Registered query workers
+publish that state at their bounded completion boundary, and report generation
+flushes the caller before taking a snapshot. Instrumentation added to compiler
+or query hot paths must preserve this property: do not introduce a shared mutex
+or contended global atomic per span, event, or query probe.
+
 ### Adding Instrumentation
 
 Each compilation pass should have a tracing span wrapping the work:

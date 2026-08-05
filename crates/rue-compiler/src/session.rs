@@ -4363,6 +4363,13 @@ impl CompilerSession {
             target: options.target,
             preview_features: StablePreviewFeatures::new(&options.preview_features),
         };
+        // This compiler-owned consumer boundary includes retained-terminal
+        // validation, query dispatch, deterministic terminal collection, and
+        // the immediate work reduction. The timing layer records it
+        // worker-locally, so the broad boundary does not serialize the query
+        // runtime (RUE-1223).
+        let _body_closure_collection_span =
+            tracing::info_span!("body_closure_collection", phase = "semantic_analysis").entered();
         let request = self
             .queries
             .revisioned
@@ -4401,6 +4408,7 @@ impl CompilerSession {
                 ),
             }
         }
+        drop(_body_closure_collection_span);
         let mut errors = closure
             .scheduling_errors
             .iter()
@@ -4826,6 +4834,9 @@ impl CompilerSession {
         let mut cfgs = Vec::with_capacity(cfg_inputs.len());
         #[cfg(test)]
         self.rooted_cfg_executions.clear();
+        let _cfg_collection_span =
+            tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
+                .entered();
         for (function, semantic_input, body_span) in cfg_inputs {
             let (optimized_cfg_key, attempt) = self
                 .queries
@@ -4900,6 +4911,7 @@ impl CompilerSession {
                 body_span,
             });
         }
+        drop(_cfg_collection_span);
 
         // Preserve the canonical backend/presentation order independently of
         // the query scheduling order. Function-instance identity is the right
@@ -4963,6 +4975,8 @@ impl CompilerSession {
             self.codegen_attempt_work.clear();
             self.codegen_collections = 0;
         }
+        let _codegen_collection_span =
+            tracing::info_span!("codegen_collection", phase = "backend").entered();
         for cfg in &cfgs {
             let attempt = self
                 .queries
@@ -5011,6 +5025,7 @@ impl CompilerSession {
                 }
             }
         }
+        drop(_codegen_collection_span);
         let export_roots = graph
             .c_export_roots
             .iter()

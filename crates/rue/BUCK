@@ -25,6 +25,9 @@ export_file(
 rue_binary(
     name = "rue",
     deps = _DEPS,
+    test_deps = [
+        "//crates/rue-query:rue-query",
+    ],
     rustc_flags = [
         "--check-cfg=cfg(rue_benchmark_allocations)",
         "--check-cfg=cfg(test)",
