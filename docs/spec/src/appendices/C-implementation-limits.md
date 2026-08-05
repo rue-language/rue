@@ -90,6 +90,9 @@ The compiler stores syntax, untyped IR, and typed IR in compact index-based form
 | Distinct identifiers and string literals | 4,294,967,295 | non-zero `u32` interner keys | E1401, when a token is interned |
 | IR instructions in one program | 4,294,967,295 | `u32` instruction reference, `u32::MAX` reserved as the null payload | E1401, at RIR publication |
 | IR payload words in one program | 4,294,967,295 words (16 GiB) | `u32` payload `start`/`extent` into one word store | E1401, at RIR/CFG payload staging |
+| Typed-IR instructions in one function body | 4,294,967,295 | `u32` instruction reference into that body's own array | E1401, at the semantic AIR boundary |
+| CFG basic blocks in one function | 4,294,967,295 | `u32` block identifier into that function's own graph | E1401, at CFG construction and optimization |
+| CFG values in one function | 4,294,967,295 | `u32` value reference into that function's own graph | E1401, at CFG construction and optimization |
 | Parameters of one function | 613,566,756 | 7 payload words per parameter | E1401, via the shared word store |
 | Fields of one struct | 2,147,483,647 | 2 payload words per field | E1401, via the shared word store |
 | Arguments of one call | 2,147,483,647 | 2 payload words per argument | E1401, via the shared word store |
@@ -104,11 +107,21 @@ The compiler stores syntax, untyped IR, and typed IR in compact index-based form
 
 The ceilings are not independent: parameters, fields, variants, arguments, and array elements all draw on the same per-program word store, so the sum of every payload in a program cannot exceed 4,294,967,295 words even when no individual construct does. That shared store is also what diagnoses them — a payload range that no longer fits `(start: u32, extent: u32)` is rejected when it is staged, whichever construct requested it.
 
-The "Diagnosed by" column names where each check runs, because the compact stores are filled by construction paths that cannot themselves fail. Instructions and composite types are the two such paths: `add_inst` and type interning are called from hundreds of infallible sites, so instead of returning an error at each one, the owner records that its ceiling was reached, stops growing, and the next construction or semantic boundary converts that record into the E1401 diagnostic. No index is ever wrapped, no entry is ever silently dropped in a compilation that goes on to be published, and no artifact built past a ceiling reaches code generation.
+The "Diagnosed by" column names where each check runs, because the compact stores are filled by construction paths that cannot themselves fail. Instructions, composite types, and the per-function CFG arenas are such paths: `add_inst`, `new_block`, and type interning are called from hundreds of infallible sites, so instead of returning an error at each one, the owner records that its ceiling was reached, stops growing, and the next construction, semantic, or optimization boundary converts that record into the E1401 diagnostic. No index is ever wrapped, no entry is ever silently dropped in a compilation that goes on to be published, and no artifact built past a ceiling reaches code generation.
 
 {{ rule(id="C.6:3", cat="normative") }}
 
 Syntactic nesting depth — the depth to which expressions, types, and blocks may be nested within one another — is bounded. A conforming implementation **MUST** support a nesting depth of at least 256 levels, and **MUST** diagnose input that exceeds its supported maximum with a clear error rather than exhausting the stack or otherwise failing catastrophically. The reference implementation rejects over-deep input with error `E0482` and a fixed maximum of 256 levels. This bound applies uniformly to every recursive syntactic construct, including parenthesised and operator-chained expressions (`((…))`, `a + a + …`), field and method chains (`a.b.c…`), nested types (`[[…]]`, `ptr const ptr const …`), and `else if` chains.
+
+{{ rule(id="C.6:4") }}
+
+The rows differ in what they count, and the "Construct" column says which. A per-program row names a store the whole compilation shares, so every construct in the program draws on the same budget. A per-function row — the typed-IR instruction array, the CFG block arena, the CFG value arena, and the frame budget of C.4:3 — names storage that belongs to one function and is indexed only by that function's own identifiers. A per-function ceiling binds independently of program size: a program of any legal size may hold any number of functions that each stay inside it, and one function that exceeds it is rejected even in an otherwise tiny program. The per-construct rows (parameters, fields, arguments, variants, array elements) are neither: they are consequences of the shared per-program word store, as C.6:2 states.
+
+{{ rule(id="C.6:5") }}
+
+A per-function CFG ceiling is checked rather than argued unreachable, because the number of CFG entities a function produces is not a small constant multiple of the typed-IR instructions it was lowered from. Drop elaboration re-emits the pending drops at *every* exit: a `return` emits one drop for each live binding still owning a value, plus a guard block for each binding whose move is path-dependent. A body with `N` droppable bindings and `M` `return` statements therefore lowers to on the order of `N * M` CFG values and blocks, from a body whose own instruction count is on the order of `N + M`.
+
+That expansion is quadratic, so no linear bound on CFG size follows from the ceilings above. Taking `N = M = 65,536` gives 2^32 drop values — past the `u32` value space — from roughly 65,536 bindings of about 32 source bytes each and 65,536 returns of about 16 bytes each: about 3 MiB of source, three orders of magnitude inside the file ceiling of C.3:1, and a typed-IR body four orders of magnitude inside the per-program instruction ceiling. The compiler checks these two ceilings for that reason, and reports E1401 naming the exceeded one.
 
 ## Stack and Memory Considerations
 

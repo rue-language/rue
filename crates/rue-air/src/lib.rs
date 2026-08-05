@@ -58,11 +58,12 @@ pub use inst::{
     AirEnumPayload, AirInst, AirInstData, AirIntrinsicArgs, AirMatchArms, AirParamMode, AirPattern,
     AirPayloadError, AirPayloadStorageStats, AirPlace, AirPlaceBase, AirPlaceRef, AirProjection,
     AirRef, AirSourceOrder, AirStructFields, AirTypeArgs, AirValidationContext, AirValidationError,
-    ValidatedAir,
+    AirValidationErrorKind, MAX_AIR_INSTRUCTIONS_PER_BODY, ValidatedAir,
 };
 pub use intern_pool::{
     EnumData, EnumDefEntry, FrozenTypeInternPool, MAX_COMPOSITE_TYPES, StructData, StructDefEntry,
     TypeData, TypeInternPool, TypeInternPoolStats, TypeValidationError,
+    composite_type_limit_message,
 };
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;

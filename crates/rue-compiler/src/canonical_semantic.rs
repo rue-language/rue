@@ -809,6 +809,29 @@ pub(crate) fn analyze_prepared_canonical_program_reusing_declarations(
                 ),
             )
         })?;
+    // The declaration-binding boundary is the earliest point at which the
+    // composite-type ceiling can be reported (spec Appendix C.6:1, C.1:2).
+    // Interning is infallible, so a compilation past the ceiling latches and
+    // keeps handing later registrations the final pool entry; every handle
+    // issued after the latch carries a kind tag the entry it names need not
+    // have. Stopping here means no body is analyzed, no layout or drop fact is
+    // queried, and no CFG is built against that aliased universe — the reads
+    // those stages perform assume a well-kinded graph.
+    if bound.with_type_pool(rue_air::TypeInternPool::capacity_exceeded) {
+        return Err(CanonicalSemanticFailure::declaration(
+            crate::CompileErrors::from(crate::CompileError::without_span(
+                rue_error::ErrorKind::CompilerResourceLimit(rue_air::composite_type_limit_message()),
+            )),
+            declaration_stage_work(
+                declaration_index,
+                DeclarationBindingWork::default(),
+                SemanticBindingManifestWork::default(),
+                BodyOwnerTokenWork::default(),
+                BodyAnalysisWork::default(),
+                reuse,
+            ),
+        ));
+    }
     let dependency_file = |key: &crate::StableDefinitionKey| {
         definitions
             .definition_by_key(key)

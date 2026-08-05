@@ -719,6 +719,17 @@ fn materialize_and_build_cfg(
     };
     context.record_work(rue_query::WorkItem::new("cfg.materialize.successes", 1));
 
+    // Backstop for the composite-type ceiling, checked before this body's type
+    // graph is projected or its layouts, drop facts, and drop glues are
+    // queried. A latched universe aliases later registrations onto the final
+    // pool entry, and those backend-facing reads require a well-kinded graph,
+    // so the check has to precede them rather than guard only `build_cfg`.
+    // Declaration binding normally reports the limit first (spec C.1:2); this
+    // covers a universe that latched after binding completed.
+    if materialized.type_pool.capacity_exceeded() {
+        return Ok(composite_type_limit_failure(materialized.body_span));
+    }
+
     let domains = match crate::durable_cfg::CfgDomainProjection::from_local_body(
         &materialized,
         body,
@@ -770,9 +781,6 @@ fn materialize_and_build_cfg(
         context.query_registered(type_facts, dependency.clone())?;
         context.query_registered(drop_glues, dependency)?;
     }
-    if materialized.type_pool.capacity_exceeded() {
-        return Ok(composite_type_limit_failure(materialized.body_span));
-    }
     build_cfg(context, call_abis, key, materialized, domains)
 }
 
@@ -786,12 +794,7 @@ fn materialize_and_build_cfg(
 fn composite_type_limit_failure(body_span: Span) -> CfgValue {
     CfgValue::Failure {
         errors: crate::CompileError::new(
-            rue_error::ErrorKind::CompilerResourceLimit(format!(
-                "this compilation defines more distinct composite types (structs, enums, arrays, \
-                 pointers, modules) than the implementation limit of {} — a live type handle is a \
-                 u32 holding an 8-bit kind tag and a 24-bit type-pool index (spec Appendix C.6:1)",
-                rue_air::MAX_COMPOSITE_TYPES
-            )),
+            rue_error::ErrorKind::CompilerResourceLimit(rue_air::composite_type_limit_message()),
             body_span,
         )
         .into(),
