@@ -568,6 +568,18 @@ pub struct RegisterClasses<'a, Reg> {
     pub caller_saved: &'a [Reg],
     /// Tried next, in order; saved by the prologue when used.
     pub callee_saved: &'a [Reg],
+    /// The subset of `callee_saved` that instructions address at least as
+    /// cheaply as any register in `caller_saved`.
+    ///
+    /// These are the only registers worth taking *back* from the caller-saved
+    /// class once their prologue save is already paid for (RUE-1227): reusing a
+    /// callee-saved register that encodes no better than the caller-saved
+    /// candidate trades away a free register for nothing, and adds pressure
+    /// besides. On x86-64 this is `rbx` alone — every other allocatable
+    /// register is an extended one whose byte and dword forms need a REX
+    /// prefix, exactly as `r11`'s do. On a fixed-width instruction set it is
+    /// empty, and the preference below never fires.
+    pub compact_callee_saved: &'a [Reg],
 }
 
 impl<'a, Reg: Copy + Eq> RegisterClasses<'a, Reg> {
@@ -579,6 +591,7 @@ impl<'a, Reg: Copy + Eq> RegisterClasses<'a, Reg> {
         Self {
             caller_saved: &[],
             callee_saved: regs,
+            compact_callee_saved: &[],
         }
     }
 
@@ -1734,21 +1747,42 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
 /// Pick a physical register for an interval covering `range`, or report that
 /// none is free.
 ///
-/// Caller-saved registers come first: an interval that no instruction clobbers
-/// while it is live costs nothing to keep in one, and every callee-saved
-/// register it leaves alone is one the prologue does not have to save
-/// (RUE-1146). Callee-saved registers follow, in their declared order.
+/// Caller-saved registers come before callee-saved ones: an interval that no
+/// instruction clobbers while it is live costs nothing to keep in one, and
+/// every callee-saved register it leaves alone is one the prologue does not
+/// have to save (RUE-1146).
+///
+/// Ahead of both sits one narrow exception, the RUE-1227 tiebreak: a register
+/// that is both in [`RegisterClasses::compact_callee_saved`] and in `sunk` —
+/// the callee-saved registers this function's prologue already saves. Against a
+/// *fresh* callee-saved register the caller-saved candidate wins on the save it
+/// avoids, but against one whose save is already paid for it has nothing left
+/// to offer and a worse encoding, so preferring the sunk register is free.
+///
+/// The exception cannot enlarge the save set: it only ever hands out a register
+/// already in it. It can still *shift* which registers end up saved, because
+/// occupying a sunk register denies it to a later call-crossing interval that
+/// then reaches for a fresh one. Ruling that out is [`accept_reuse_pass`]'s
+/// job, not this function's.
 fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
     classes: RegisterClasses<'_, Reg>,
     clobbers: &ClobberIndex<Reg>,
     used: &HashSet<Reg>,
+    sunk: &[Reg],
     range: &LiveRange,
 ) -> Option<Reg> {
     classes
-        .caller_saved
+        .compact_callee_saved
         .iter()
         .copied()
-        .find(|&reg| !used.contains(&reg) && !clobbers.is_clobbered_during(reg, range))
+        .find(|&reg| sunk.contains(&reg) && !used.contains(&reg))
+        .or_else(|| {
+            classes
+                .caller_saved
+                .iter()
+                .copied()
+                .find(|&reg| !used.contains(&reg) && !clobbers.is_clobbered_during(reg, range))
+        })
         .or_else(|| {
             classes
                 .callee_saved
@@ -1775,14 +1809,64 @@ fn register_survives_range<Reg: Copy + Eq + std::hash::Hash>(
     classes.is_callee_saved(reg) || !clobbers.is_clobbered_during(reg, range)
 }
 
+/// How many vregs an allocation keeps in a physical register.
+///
+/// The rest are spilled to the frame or recomputed on use, both of which cost
+/// instructions the register form does not.
+fn registers_held<Reg: Copy>(allocation: &IndexMap<VReg, Option<Allocation<Reg>>>) -> usize {
+    allocation
+        .iter()
+        .filter(|alloc| matches!(alloc, Some(Allocation::Register(_))))
+        .count()
+}
+
+/// Whether a reuse pass's result may replace the baseline pass's.
+///
+/// The reuse pass (see [`linear_scan_impl_with_remat`]) re-runs assignment
+/// allowing call-free intervals to occupy callee-saved registers the baseline
+/// pass already committed to the prologue. That is a codegen-quality trade with
+/// no intended effect on frame cost, so it is taken only when it costs nothing:
+///
+/// * **No new save.** Occupying an already-saved register denies it to a later
+///   call-crossing interval, which may then reach for a *fresh* callee-saved
+///   register — a save the baseline did not pay. Requiring the reuse pass's
+///   save set to be contained in the baseline's rejects exactly that, and with
+///   it any risk of undoing the saves RUE-1146 removed. Containment is the
+///   right test rather than a count: a same-size but different save set would
+///   mean the reuse pass forced a register the baseline never touched.
+/// * **No value displaced from a register.** Denying the caller-saved class to
+///   an interval that could have used it can raise pressure enough that
+///   something no longer fits. Counting the vregs still in registers catches
+///   that whether the loser ends up spilled or rematerialized.
+/// * **No spill in place of a rematerialization.** The register count alone
+///   would let the two trade places, and a spill costs the frame traffic a
+///   recompute does not.
+fn accept_reuse_pass<Reg: Copy + Eq + std::hash::Hash>(
+    baseline: &(
+        IndexMap<VReg, Option<Allocation<Reg>>>,
+        u32,
+        Vec<Reg>,
+        RegAllocDebugInfo<Reg>,
+    ),
+    reuse: &(
+        IndexMap<VReg, Option<Allocation<Reg>>>,
+        u32,
+        Vec<Reg>,
+        RegAllocDebugInfo<Reg>,
+    ),
+) -> bool {
+    let (baseline_allocation, baseline_spills, baseline_saved, _) = baseline;
+    let (reuse_allocation, reuse_spills, reuse_saved, _) = reuse;
+    reuse_saved.iter().all(|reg| baseline_saved.contains(reg))
+        && registers_held(reuse_allocation) >= registers_held(baseline_allocation)
+        && reuse_spills <= baseline_spills
+}
+
 /// Internal implementation of linear scan register allocation.
 ///
 /// This is the shared implementation used by both [`linear_scan`] and
-/// [`linear_scan_with_debug`]. When `collect_debug` is `false` (the normal
-/// compilation path, where callers discard the debug info) the O(V²)
-/// interference-graph construction is skipped — it feeds only `--emit regalloc`
-/// output and building it on every compile made allocation quadratic in the
-/// number of virtual registers (e.g. large array literals) (RUE-302).
+/// [`linear_scan_with_debug`]. See [`linear_scan_impl_with_remat`] for the
+/// two-pass structure, which is identical here.
 fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
@@ -1791,6 +1875,71 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     collect_debug: bool,
     cost_model: &CostModel,
     loop_info: &LoopInfo,
+) -> (
+    IndexMap<VReg, Option<Allocation<Reg>>>,
+    u32,
+    Vec<Reg>,
+    RegAllocDebugInfo<Reg>,
+) {
+    let baseline = scan_intervals(
+        vreg_count,
+        liveness,
+        classes,
+        existing_locals,
+        collect_debug,
+        cost_model,
+        loop_info,
+        &[],
+    );
+    let (_, _, baseline_saved, _) = &baseline;
+    // The reuse pass can only differ where a compact callee-saved register is
+    // already in the save set and there is a caller-saved register to prefer it
+    // over. Otherwise skip it entirely, so neither a push-free function nor a
+    // fixed-width target pays for a second scan.
+    if classes.caller_saved.is_empty()
+        || !classes
+            .compact_callee_saved
+            .iter()
+            .any(|reg| baseline_saved.contains(reg))
+    {
+        return baseline;
+    }
+    let reuse = scan_intervals(
+        vreg_count,
+        liveness,
+        classes,
+        existing_locals,
+        collect_debug,
+        cost_model,
+        loop_info,
+        baseline_saved,
+    );
+    if accept_reuse_pass(&baseline, &reuse) {
+        reuse
+    } else {
+        baseline
+    }
+}
+
+/// One linear-scan pass over the intervals.
+///
+/// When `collect_debug` is `false` (the normal compilation path, where callers
+/// discard the debug info) the O(V²) interference-graph construction is skipped
+/// — it feeds only `--emit regalloc` output and building it on every compile
+/// made allocation quadratic in the number of virtual registers (e.g. large
+/// array literals) (RUE-302).
+///
+/// `sunk` names callee-saved registers whose prologue save is already paid for;
+/// see [`pick_free_register`].
+fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
+    vreg_count: u32,
+    liveness: &LivenessInfo<Reg>,
+    classes: RegisterClasses<'_, Reg>,
+    existing_locals: u32,
+    collect_debug: bool,
+    cost_model: &CostModel,
+    loop_info: &LoopInfo,
+    sunk: &[Reg],
 ) -> (
     IndexMap<VReg, Option<Allocation<Reg>>>,
     u32,
@@ -1855,8 +2004,9 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register, caller-saved class first
-        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, &range);
+        // Try to find a free register: a sunk compact one, else caller-saved,
+        // else a fresh callee-saved one.
+        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
@@ -1945,9 +2095,29 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
 
 /// Internal implementation of linear scan with rematerialization support.
 ///
-/// When a vreg needs to be spilled but has rematerialization info, it is marked
-/// for rematerialization instead of being allocated a stack slot. This avoids
-/// memory traffic for values that can be cheaply recomputed (constants, etc.).
+/// This is the production allocation entry point for both backends.
+///
+/// Assignment runs in two passes. The first is the RUE-1146 policy on its own:
+/// every interval that can live in a caller-saved register does, so a function
+/// whose values all fit there saves nothing in its prologue. If that pass ends
+/// up committing no callee-saved register — the push-free case RUE-1146 exists
+/// to produce — the answer is already final and the second pass is skipped
+/// outright, so the guarantee is structural rather than measured.
+///
+/// Otherwise a second pass re-runs assignment knowing which callee-saved
+/// registers the function pays for regardless. Those are then preferred over a
+/// caller-saved register for a call-free interval, because their cost is
+/// already sunk while the caller-saved register's addressing cost is not: on
+/// x86-64 the one caller-saved candidate is `r11`, whose byte and dword forms
+/// each pay a REX prefix that `rbx` does not (RUE-1227). Knowing the final save
+/// set is what the second pass buys — a single pass cannot, since intervals are
+/// processed in start order and a later interval can force a register into the
+/// save set after an earlier one has already chosen against it.
+///
+/// The second pass's result is taken only if [`accept_reuse_pass`] agrees it
+/// costs no additional save and no additional spill; otherwise the first pass's
+/// allocation stands. Both passes produce a complete, independently valid
+/// allocation, so choosing between them needs no repair step.
 fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
@@ -1957,6 +2127,72 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     cost_model: &CostModel,
     loop_info: &LoopInfo,
     vreg_info: &IndexMap<VReg, VRegInfo>,
+) -> (
+    IndexMap<VReg, Option<Allocation<Reg>>>,
+    u32,
+    Vec<Reg>,
+    RegAllocDebugInfo<Reg>,
+) {
+    let baseline = scan_intervals_with_remat(
+        vreg_count,
+        liveness,
+        classes,
+        existing_locals,
+        collect_debug,
+        cost_model,
+        loop_info,
+        vreg_info,
+        &[],
+    );
+    let (_, _, baseline_saved, _) = &baseline;
+    // The reuse pass can only differ where a compact callee-saved register is
+    // already in the save set and there is a caller-saved register to prefer it
+    // over. Otherwise skip it entirely, so neither a push-free function nor a
+    // fixed-width target pays for a second scan.
+    if classes.caller_saved.is_empty()
+        || !classes
+            .compact_callee_saved
+            .iter()
+            .any(|reg| baseline_saved.contains(reg))
+    {
+        return baseline;
+    }
+    let reuse = scan_intervals_with_remat(
+        vreg_count,
+        liveness,
+        classes,
+        existing_locals,
+        collect_debug,
+        cost_model,
+        loop_info,
+        vreg_info,
+        baseline_saved,
+    );
+    if accept_reuse_pass(&baseline, &reuse) {
+        reuse
+    } else {
+        baseline
+    }
+}
+
+/// One linear-scan pass with rematerialization support.
+///
+/// When a vreg needs to be spilled but has rematerialization info, it is marked
+/// for rematerialization instead of being allocated a stack slot. This avoids
+/// memory traffic for values that can be cheaply recomputed (constants, etc.).
+///
+/// `sunk` names callee-saved registers whose prologue save is already paid for;
+/// see [`pick_free_register`].
+fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
+    vreg_count: u32,
+    liveness: &LivenessInfo<Reg>,
+    classes: RegisterClasses<'_, Reg>,
+    existing_locals: u32,
+    collect_debug: bool,
+    cost_model: &CostModel,
+    loop_info: &LoopInfo,
+    vreg_info: &IndexMap<VReg, VRegInfo>,
+    sunk: &[Reg],
 ) -> (
     IndexMap<VReg, Option<Allocation<Reg>>>,
     u32,
@@ -2025,8 +2261,9 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register, caller-saved class first
-        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, &range);
+        // Try to find a free register: a sunk compact one, else caller-saved,
+        // else a fresh callee-saved one.
+        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
@@ -2290,6 +2527,7 @@ mod tests {
         let classes = RegisterClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
+            compact_callee_saved: &[],
         };
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             2,
@@ -2348,6 +2586,7 @@ mod tests {
         let classes = RegisterClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
+            compact_callee_saved: &[],
         };
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             2,
@@ -2378,6 +2617,134 @@ mod tests {
     }
 
     #[test]
+    fn a_call_free_interval_reuses_a_compact_register_the_prologue_already_saves() {
+        // Same shape as `caller_saved_is_preferred_...`, but now the callee-
+        // saved register is the compact one. v0 spans the clobber and forces
+        // the save; v1 does not, and would take the caller-saved register on
+        // its own. Because v0's save is paid either way and TestReg(0) encodes
+        // better, the second pass gives v1 the callee-saved register instead
+        // (RUE-1227) — at no cost, since the prologue is unchanged.
+        let liveness = make_liveness_with_clobbers(
+            vec![(0, 0, 2), (1, 3, 4)],
+            vec![(2, TestReg(9)), (2, TestReg(8))],
+        );
+        let classes = RegisterClasses {
+            caller_saved: &[TestReg(9), TestReg(8)],
+            callee_saved: &[TestReg(0)],
+            compact_callee_saved: &[TestReg(0)],
+        };
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            classes,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(0)))
+        );
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(0))),
+            "a call-free interval should reuse the freed compact register, not \
+             reach for the caller-saved class"
+        );
+        assert_eq!(used_callee_saved, vec![TestReg(0)], "no new save");
+    }
+
+    #[test]
+    fn a_call_free_function_never_reuses_a_callee_saved_register() {
+        // The RUE-1146 invariant the tiebreak must not undo: nothing here
+        // spans the clobber, so the first pass commits no callee-saved
+        // register at all, there is no sunk cost to reuse, and the second pass
+        // is skipped outright. The prologue stays empty.
+        let liveness =
+            make_liveness_with_clobbers(vec![(0, 0, 1), (1, 3, 4)], vec![(2, TestReg(9))]);
+        let classes = RegisterClasses {
+            caller_saved: &[TestReg(9)],
+            callee_saved: &[TestReg(0)],
+            compact_callee_saved: &[TestReg(0)],
+        };
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            classes,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(9)))
+        );
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(9)))
+        );
+        assert!(
+            used_callee_saved.is_empty(),
+            "a function whose values all fit caller-saved must stay push-free"
+        );
+    }
+
+    #[test]
+    fn the_reuse_pass_is_rejected_when_it_would_force_a_second_save() {
+        // The case the acceptance check exists for. v0 spans the first clobber
+        // and takes the compact register, then expires; v1 is call-free and
+        // would happily reuse that register; but v2 spans the second clobber
+        // and overlaps v1, so handing v1 the compact register pushes v2 onto a
+        // *fresh* callee-saved register the first pass never touched. That is a
+        // new prologue save, so the reuse pass is discarded and the first
+        // pass's allocation stands.
+        //
+        // This is exactly why the tiebreak cannot be a one-pass rule that
+        // reuses whatever is in the save set so far: at v1 the allocator has
+        // not yet seen v2.
+        let liveness = make_liveness_with_clobbers(
+            vec![(0, 0, 2), (1, 3, 5), (2, 4, 9)],
+            vec![(2, TestReg(9)), (7, TestReg(9))],
+        );
+        let classes = RegisterClasses {
+            caller_saved: &[TestReg(9)],
+            callee_saved: &[TestReg(0), TestReg(1)],
+            compact_callee_saved: &[TestReg(0)],
+        };
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            3,
+            &liveness,
+            classes,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(9))),
+            "the call-free interval keeps the caller-saved register"
+        );
+        assert_eq!(
+            allocation[VReg::new(2)],
+            Some(Allocation::Register(TestReg(0)))
+        );
+        assert_eq!(
+            used_callee_saved,
+            vec![TestReg(0)],
+            "the tiebreak must never enlarge the save set"
+        );
+    }
+
+    #[test]
     fn eviction_never_hands_a_clobbered_caller_saved_register_to_a_spanning_interval() {
         // Only a caller-saved register exists, and every interval spans the
         // clobber, so nothing can hold a value: all three must spill.
@@ -2388,6 +2755,7 @@ mod tests {
         let classes = RegisterClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[],
+            compact_callee_saved: &[],
         };
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             3,
