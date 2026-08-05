@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 use rue_query::QueryKey;
 
+use crate::retained_charge::RetainedCharge;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TypeQueryKey {
     pub(crate) ty: crate::TypeInstanceKey,
@@ -316,6 +318,154 @@ impl<D, M> DropGlueFacts<D, M> {
 pub(crate) enum DropGlueValue {
     Available(Box<DropGlueFacts>),
     Failure(TypeQueryFailure),
+}
+
+impl RetainedCharge for TypeShape {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Array { element, .. } => element.retained_charge(),
+            Self::Struct { fields } => fields.retained_charge(),
+            Self::Enum { variants } => variants.retained_charge(),
+            Self::Scalar | Self::Pointer | Self::Slice | Self::Opaque => 0,
+        }
+    }
+}
+
+impl RetainedCharge for TypeShapeValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(shape) => shape.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for TypeFacts {
+    fn retained_charge(&self) -> u64 {
+        self.destructor
+            .retained_charge()
+            .saturating_add(self.shape.retained_charge())
+    }
+}
+
+impl RetainedCharge for TypeQueryFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Unavailable(detail) | Self::Invalid(detail) => detail.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for TypeFactsValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(facts) => facts.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for CanonicalLayout {
+    fn retained_charge(&self) -> u64 {
+        self.kind.retained_charge()
+    }
+}
+
+impl RetainedCharge for CanonicalLayoutKind {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Array { element, .. } => element.retained_charge(),
+            Self::Struct {
+                field_offsets,
+                padding_ranges,
+            } => field_offsets
+                .retained_charge()
+                .saturating_add(padding_ranges.retained_charge()),
+            Self::Enum { variants, .. } => variants.retained_charge(),
+            Self::Scalar | Self::Pointer | Self::Slice => 0,
+        }
+    }
+}
+
+impl RetainedCharge for LayoutValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(layout) => layout.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for CallAbiArgument {
+    fn retained_charge(&self) -> u64 {
+        0
+    }
+}
+
+impl RetainedCharge for CallAbiFacts {
+    fn retained_charge(&self) -> u64 {
+        self.arguments.retained_charge()
+    }
+}
+
+impl RetainedCharge for CallAbiValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(facts) => facts.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for DropGlueFacts<D, M> {
+    fn retained_charge(&self) -> u64 {
+        self.destructor
+            .retained_charge()
+            .saturating_add(self.nested.retained_charge())
+            .saturating_add(self.plan.retained_charge())
+    }
+}
+
+impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for DropGluePlan<D, M> {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::None => 0,
+            Self::Struct { fields } => fields.retained_charge(),
+            Self::Array { element, .. } => element.retained_charge(),
+            Self::Enum { variants } => variants.retained_charge(),
+        }
+    }
+}
+
+impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for DropGlueField<D, M> {
+    fn retained_charge(&self) -> u64 {
+        self.name
+            .retained_charge()
+            .saturating_add(self.ty.retained_charge())
+    }
+}
+
+impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for DropGlueVariant<D, M> {
+    fn retained_charge(&self) -> u64 {
+        self.name
+            .retained_charge()
+            .saturating_add(self.fields.retained_charge())
+    }
+}
+
+impl<D: RetainedCharge, M: RetainedCharge> RetainedCharge for DropGlueVariantField<D, M> {
+    fn retained_charge(&self) -> u64 {
+        self.ty.retained_charge()
+    }
+}
+
+impl RetainedCharge for DropGlueValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(facts) => facts.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
 }
 
 pub(crate) fn type_instance(ty: &crate::durable_semantics::DurableType) -> crate::TypeInstanceKey {

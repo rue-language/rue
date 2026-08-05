@@ -6,6 +6,7 @@ use rue_air::{AirInstData, AnalyzedFunction, SemanticImportType, Type, TypeKind}
 use rue_span::Span;
 
 use crate::DurableAirInstData;
+use crate::retained_charge::RetainedCharge;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 
@@ -276,6 +277,16 @@ enum StableCfgSymbol {
     Intrinsic(Arc<str>),
 }
 
+impl RetainedCharge for StableCfgSymbol {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Callable(value) => value.retained_charge(),
+            Self::Specialization(value) => value.retained_charge(),
+            Self::Runtime(value) | Self::Intrinsic(value) => value.retained_charge(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StableCfgSpan {
     Relative { start: i64, end: i64 },
@@ -317,6 +328,27 @@ pub(crate) struct CfgDomainProjection {
     spans: Vec<(Span, StableCfgSpan)>,
     symbols: Vec<(Spur, StableCfgSymbol)>,
     incomplete_epoch: Option<Arc<()>>,
+}
+
+impl RetainedCharge for CfgDomainProjection {
+    fn retained_charge(&self) -> u64 {
+        let types = (self.types.len() * std::mem::size_of::<(Type, CanonicalType)>()) as u64;
+        let types = self.types.iter().fold(types, |charge, (_, ty)| {
+            charge.saturating_add(ty.retained_charge())
+        });
+        let symbols = (self.symbols.len() * std::mem::size_of::<(Spur, StableCfgSymbol)>()) as u64;
+        let symbols = self.symbols.iter().fold(symbols, |charge, (_, symbol)| {
+            charge.saturating_add(symbol.retained_charge())
+        });
+        types
+            .saturating_add(self.strings.retained_charge())
+            .saturating_add(self.atoms.retained_charge())
+            .saturating_add(
+                (self.spans.len() * std::mem::size_of::<(Span, StableCfgSpan)>()) as u64,
+            )
+            .saturating_add(symbols)
+            .saturating_add(self.incomplete_epoch.retained_charge())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

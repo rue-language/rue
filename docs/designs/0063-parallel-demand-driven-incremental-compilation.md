@@ -667,10 +667,63 @@ entities. Wall time alone is not evidence of incremental correctness.
 
 ### 14. Retention, persistence, and long-lived service use
 
-The memo database is memory-budgeted. Retention policy accounts for artifact
-bytes, dependency/reverse-dependency pins, active waiters, current roots,
-last-good roots, and persistent-cache eligibility. It is not a fixed count of
-terminals shared by an entire query family.
+The memo database has runtime-wide soft budgets of 8 GiB of deterministic
+retained terminal/artifact charge and 4,000,000 retained dependency/input
+observations. These production values are policy defaults, not an RSS promise or
+language guarantee. A caller may select smaller budgets for deterministic policy
+tests.
+
+The release-build calibration on macOS ARM64, after charging full parsed AST,
+definition-index, invalid-import, and admitted-module paths, was:
+
+| Workload | Retained charge | Dependency/input observations | Aggregate probes | Compiler root | Peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Meridian | 1,352,198,599 bytes | 503,083 | 31 | 7.09 s | 2,060,189,696 bytes |
+| Caldera | 4,796,396,175 bytes | 1,234,799 | 102 | 20.84 s | 4,286,857,216 bytes |
+
+The 8 GiB byte default leaves about 79% headroom above Caldera's protected live
+closure. The 4,000,000-observation default likewise exceeds Caldera by more than
+three times. Both workloads retained their prior output hashes during this
+accounting-only recalibration. Recalibration must use an optimized compiler
+binary; debug compiler timings are not comparable.
+
+Artifact charge is allocator-independent. The runtime counts each terminal
+envelope, diagnostic, structural-work record, dependency, and input
+automatically. Compiler families additionally register structural estimators for
+heap-owned success values: logical container lengths and recursively owned
+string/slice data are charged, never allocator capacity or pointer identity. A
+shared allocation is conservatively charged in full for every terminal which can
+reach it; there is deliberately no global allocation-identity registry. A nested
+query terminal reuses the complete immutable charge summary computed when that
+terminal was published, so transitive accounting does not recursively revisit
+its value and observation graph.
+
+The current runtime validates dependencies by pulling exact retained
+observations. It stores no reverse-dependency index. The dependency-pin budget
+therefore charges each retained dependency and input observation edge once; it
+does not imply an unimplemented reverse-edge graph. Rooted-request leases,
+session-retained pin sets, and retained revisions remain separate protection
+gauges. Exact all-terminal-pin or waiter audits require an explicit expensive
+debug traversal; ordinary compiler metrics do not add shared hot-path counters
+to reconstruct them.
+
+Ordinary publication appends to its family-local FIFO and updates byte/pin totals
+under that existing family lock. It mutates no runtime-wide charge or protection
+counter. Each family probes aggregate pressure only after crossing a deterministic
+local quantum: for normal budgets, `budget / 128`, clamped to 1–32 MiB for bytes
+and 4,096–65,536 observations; tiny test budgets use `max(1, budget / 64)`. The
+reported worst-case detection overshoot is `live families × quantum`. Once a
+probe observes pressure, one claimant snapshots the weak family registry in
+stable family-token order and evicts in deterministic round-robin order; each
+family still chooses its oldest unprotected terminal. Existing per-family
+terminal limits remain a secondary fairness/safety guard, not the memory policy.
+
+The budgets are soft because accounting estimates must never change compilation
+correctness. Waiters, terminal/task/session pins, current and last-good
+selections, retained revisions, and atomic handoff windows remain protected even
+when they exceed a budget. The runtime records pressure, protected overflow and
+peak overage, then reclaims the excess when protection releases. There is no
+hard cap and no budget-induced compilation failure in this first policy.
 
 The first implementation may retain only in-process typed values. Logical keys,
 canonical artifact envelopes, schema epochs, content fingerprints, and
@@ -771,12 +824,10 @@ Tracked in Linear under the RUE-648 epic. The dependency order is:
   warm edit-to-codegen and edit-to-runnable baselines. — RUE-1033 (blocked by
   RUE-1032)
 
-  The selected-state compatibility layer and peer cache state are deleted, but
-  this phase remains open until the maintainers choose the initial retained-byte
-  and dependency-lease budgets for the representative-project gate. Existing
-  per-family terminal counts safely evict unprotected terminals and report
-  protected-root pressure, but they are not a cross-family byte policy and must
-  not be presented as one. RUE-1210 tracks that decision and enforcement work.
+  The selected-state compatibility layer and peer cache state are deleted.
+  Runtime-wide retained-artifact and dependency-observation budgets supersede
+  the earlier per-family-count-only policy; the family limits remain secondary
+  guards. RUE-1210 records the initial policy and calibration evidence.
 
 Each family migrates through the compatibility shim one at a time and must pass
 the cold-versus-reused differential oracle before the next family moves. Each
@@ -922,8 +973,6 @@ the architectural scope expands.
 - Which execution substrate best satisfies Rue's attempt/diagnostic/import and
   current/last-good requirements after the Phase 0 comparison: an evolution of
   the in-house database, Salsa, or another typed query runtime?
-- Which initial memory budget and eviction policy should gate the representative
-  project benchmark?
 - Which fixed warm-edit benchmark corpus and host normalization should define
   the first latency budgets without turning one machine's number into a language
   promise?

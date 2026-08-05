@@ -170,6 +170,10 @@ impl SemanticSymbolUniverse {
         &self.interner
     }
 
+    pub(crate) fn admitted_modules(&self) -> &[Arc<crate::parsed_modules::ParsedModule>] {
+        &self.admitted_modules
+    }
+
     pub(crate) fn admits_exact_modules(
         &self,
         modules: &[Arc<crate::parsed_modules::ParsedModule>],

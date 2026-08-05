@@ -14,6 +14,8 @@ use std::{
 
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 
+use crate::retained_charge::RetainedCharge;
+
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -210,6 +212,113 @@ pub(crate) struct NormalizedRelocation {
     pub(crate) symbol: Arc<str>,
     pub(crate) kind: rue_codegen::RelocationKind,
     pub(crate) addend: i64,
+}
+
+impl RetainedCharge for rue_codegen::LoweringDecision {
+    fn retained_charge(&self) -> u64 {
+        self.cfg_inst_desc
+            .retained_charge()
+            .saturating_add(self.cfg_type.retained_charge())
+            .saturating_add(self.mir_insts.retained_charge())
+            .saturating_add(self.rationale.retained_charge())
+    }
+}
+
+impl RetainedCharge for rue_codegen::terminator_plan::TerminatorTrace {
+    fn retained_charge(&self) -> u64 {
+        let edge_work = self.edge_work.iter().fold(
+            (self.edge_work.len() * std::mem::size_of::<Vec<(u32, u32)>>()) as u64,
+            |charge, edge| {
+                charge.saturating_add((edge.len() * std::mem::size_of::<(u32, u32)>()) as u64)
+            },
+        );
+        ((self.successors.len() * std::mem::size_of::<rue_cfg::BlockId>()) as u64)
+            .saturating_add((self.fallthrough.len() * std::mem::size_of::<bool>()) as u64)
+            .saturating_add((self.edge_move_counts.len() * std::mem::size_of::<usize>()) as u64)
+            .saturating_add(edge_work)
+            .saturating_add(
+                (self.switch_cases.len() * std::mem::size_of::<(i64, rue_cfg::BlockId)>()) as u64,
+            )
+    }
+}
+
+impl RetainedCharge for rue_codegen::TerminatorLoweringDecision {
+    fn retained_charge(&self) -> u64 {
+        self.terminator_desc
+            .retained_charge()
+            .saturating_add(self.mir_insts.retained_charge())
+            .saturating_add(self.rationale.retained_charge())
+            .saturating_add(self.policy_trace.retained_charge())
+    }
+}
+
+impl RetainedCharge for rue_codegen::BlockLoweringInfo {
+    fn retained_charge(&self) -> u64 {
+        self.instructions
+            .retained_charge()
+            .saturating_add(self.terminator.retained_charge())
+    }
+}
+
+impl RetainedCharge for rue_codegen::LoweringDebugInfo {
+    fn retained_charge(&self) -> u64 {
+        self.fn_name
+            .retained_charge()
+            .saturating_add(self.target_arch.retained_charge())
+            .saturating_add(self.blocks.retained_charge())
+    }
+}
+
+impl RetainedCharge for rue_codegen::BackendArtifacts {
+    fn retained_charge(&self) -> u64 {
+        self.lowering
+            .retained_charge()
+            .saturating_add(self.mir.retained_charge())
+            .saturating_add(self.liveness.retained_charge())
+            .saturating_add(self.regalloc.retained_charge())
+            .saturating_add(self.asm.retained_charge())
+    }
+}
+
+impl RetainedCharge for SectionContents {
+    fn retained_charge(&self) -> u64 {
+        self.bytes.retained_charge()
+    }
+}
+
+impl RetainedCharge for CodegenSection {
+    fn retained_charge(&self) -> u64 {
+        self.contents
+            .retained_charge()
+            .saturating_add(self.atoms.retained_charge())
+    }
+}
+
+impl RetainedCharge for NormalizedRelocation {
+    fn retained_charge(&self) -> u64 {
+        self.symbol.retained_charge()
+    }
+}
+
+impl RetainedCharge for CodegenUnit {
+    fn retained_charge(&self) -> u64 {
+        self.defined_symbol
+            .retained_charge()
+            .saturating_add(self.referenced_symbols.retained_charge())
+            .saturating_add(self.relocations.retained_charge())
+            .saturating_add(self.sections.retained_charge())
+            .saturating_add(self.artifacts.retained_charge())
+            .saturating_add(self.presentation.retained_charge())
+    }
+}
+
+impl RetainedCharge for CodegenUnitValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(unit) => unit.retained_charge(),
+            Self::Failure(errors) => errors.retained_charge(),
+        }
+    }
 }
 
 const BACKEND_EPOCH: u32 = 1;

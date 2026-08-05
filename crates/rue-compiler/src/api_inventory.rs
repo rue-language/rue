@@ -811,7 +811,12 @@ fn unsupported_api_layout(source: &str, root: bool) -> Option<String> {
             && let Some(path) = macro_invocation_path(trimmed)
         {
             let name = path.rsplit("::").next().unwrap_or(path);
-            if root || !matches!(name, "thread_local" | "session_query_metrics_family") {
+            if root
+                || !matches!(
+                    name,
+                    "thread_local" | "session_query_metrics_family" | "query_value_charge"
+                )
+            {
                 return Some(trimmed.to_owned());
             }
         }
@@ -1277,6 +1282,7 @@ fn facade_stays_small_and_session_centered() {
             "integration_tests",
             "pipeline_tests",
             "producer_nominal_acceptance_tests",
+            "retained_charge",
             "scaling_harness",
             "supported_api_inventory",
             "test_support",

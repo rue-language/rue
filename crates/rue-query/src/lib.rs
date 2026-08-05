@@ -15,6 +15,35 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Initial runtime-wide soft budget for deterministic retained terminal charge.
+///
+/// This is an accounting budget rather than an allocator/RSS promise. Protected
+/// terminals may exceed it; the runtime records that pressure and reclaims the
+/// excess as soon as protection releases.
+pub const DEFAULT_RETAINED_BYTE_BUDGET: u64 = 8 * 1024 * 1024 * 1024;
+
+/// Initial runtime-wide soft budget for retained dependency and input
+/// observations.
+pub const DEFAULT_DEPENDENCY_PIN_BUDGET: u64 = 4_000_000;
+
+/// Runtime-wide soft retention budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionBudgets {
+    /// Deterministic terminal/artifact charge in bytes.
+    pub retained_bytes: u64,
+    /// Retained dependency plus input observation edges.
+    pub dependency_pins: u64,
+}
+
+impl Default for RetentionBudgets {
+    fn default() -> Self {
+        Self {
+            retained_bytes: DEFAULT_RETAINED_BYTE_BUDGET,
+            dependency_pins: DEFAULT_DEPENDENCY_PIN_BUDGET,
+        }
+    }
+}
+
 /// Registered evaluators historically ran on the requesting compiler thread,
 /// whose platform stack is materially larger than Rust's default spawned-thread
 /// stack. Keep structured batch children at that established floor so moving a
@@ -1023,6 +1052,7 @@ pub struct QueryOutput<V> {
     kind: QueryTerminalKind,
     diagnostics: Vec<QueryDiagnostic>,
     work: Vec<WorkItem>,
+    retained_value_charge: Option<u64>,
 }
 
 impl<V> QueryOutput<V> {
@@ -1033,6 +1063,7 @@ impl<V> QueryOutput<V> {
             kind: QueryTerminalKind::Success,
             diagnostics: Vec::new(),
             work: Vec::new(),
+            retained_value_charge: None,
         }
     }
 
@@ -1043,6 +1074,7 @@ impl<V> QueryOutput<V> {
             kind: QueryTerminalKind::Failure,
             diagnostics: Vec::new(),
             work: Vec::new(),
+            retained_value_charge: None,
         }
     }
 
@@ -1055,6 +1087,20 @@ impl<V> QueryOutput<V> {
     /// Attaches structural work. Publication reduces it by stable identity.
     pub fn with_work(mut self, work: Vec<WorkItem>) -> Self {
         self.work = work;
+        self
+    }
+
+    /// Adds this success value's deterministic reachable heap charge.
+    ///
+    /// The terminal envelope already includes the inline `V` storage, so this
+    /// charge is only for heap-owned allocations reachable through the value.
+    /// The runtime adds the terminal envelope, diagnostics,
+    /// structural work, dependencies, and inputs automatically. Shared
+    /// allocations may be charged in full by every terminal which reaches them.
+    /// Failure values ignore this override because their canonical strings are
+    /// charged directly.
+    pub fn with_retained_value_charge(mut self, bytes: u64) -> Self {
+        self.retained_value_charge = Some(bytes);
         self
     }
 
@@ -1118,6 +1164,8 @@ pub struct QueryTerminal<V> {
     work: Arc<[(Arc<str>, u64)]>,
     dependencies: Arc<[Observation]>,
     inputs: Arc<[InputObservation]>,
+    retained_charge: u64,
+    dependency_pin_charge: u64,
     pins: AtomicUsize,
 }
 
@@ -1176,6 +1224,16 @@ impl<V> QueryTerminal<V> {
     /// Exact input leaves read directly by the computing body.
     pub fn inputs(&self) -> &[InputObservation] {
         &self.inputs
+    }
+
+    /// Deterministic runtime-wide retained artifact charge.
+    pub const fn retained_charge(&self) -> u64 {
+        self.retained_charge
+    }
+
+    /// Retained dependency and input observation edges charged to this terminal.
+    pub const fn dependency_pin_charge(&self) -> u64 {
+        self.dependency_pin_charge
     }
 }
 
@@ -1501,6 +1559,45 @@ pub struct RuntimeMetrics {
     pub evictions: u64,
     /// Current retained terminal attempts.
     pub retained_terminals: u64,
+    /// Current deterministic charge for retained terminal artifacts.
+    pub retained_bytes: u64,
+    /// Peak deterministic charge for retained terminal artifacts.
+    pub peak_retained_bytes: u64,
+    /// Current retained dependency and input observation edges.
+    pub retained_dependency_pins: u64,
+    /// Peak retained dependency and input observation edges.
+    pub peak_retained_dependency_pins: u64,
+    /// Configured runtime-wide soft artifact-charge budget.
+    pub retained_byte_budget: u64,
+    /// Configured runtime-wide soft dependency-observation budget.
+    pub dependency_pin_budget: u64,
+    /// Cross-family charge aggregations triggered by family-local watermarks.
+    pub aggregate_retention_probes: u64,
+    /// Deterministic family-local byte/pin quanta between aggregate probes.
+    pub retained_byte_probe_quantum: u64,
+    pub dependency_pin_probe_quantum: u64,
+    /// Worst-case soft-budget detection overshoot from all currently live
+    /// families publishing just below their next probe watermark.
+    pub retained_byte_probe_overshoot_bound: u64,
+    pub dependency_pin_probe_overshoot_bound: u64,
+    /// Enforcement passes which began above the byte budget.
+    pub retained_byte_pressure_events: u64,
+    /// Enforcement passes which began above the dependency-pin budget.
+    pub dependency_pin_pressure_events: u64,
+    /// Byte-pressure passes unable to reach budget because all candidates were
+    /// protected.
+    pub retained_byte_overflow_events: u64,
+    /// Dependency-pressure passes unable to reach budget because all candidates
+    /// were protected.
+    pub dependency_pin_overflow_events: u64,
+    /// Largest protected byte overage observed after an enforcement pass.
+    pub peak_retained_byte_overage: u64,
+    /// Largest protected dependency-pin overage observed after enforcement.
+    pub peak_dependency_pin_overage: u64,
+    /// Terminals evicted while byte pressure was active.
+    pub retained_byte_evictions: u64,
+    /// Terminals evicted while dependency-pin pressure was active.
+    pub dependency_pin_evictions: u64,
     /// Retention passes forced to grow past the configured terminal bound
     /// because every eviction candidate was a protected root (waiter, pin,
     /// request-scoped observation lease, or retained revision). This is the
@@ -1568,6 +1665,17 @@ struct Metrics {
     cycles: AtomicU64,
     evictions: AtomicU64,
     retained_terminals: AtomicU64,
+    peak_retained_bytes: AtomicU64,
+    peak_retained_dependency_pins: AtomicU64,
+    retained_byte_pressure_events: AtomicU64,
+    dependency_pin_pressure_events: AtomicU64,
+    aggregate_retention_probes: AtomicU64,
+    retained_byte_overflow_events: AtomicU64,
+    dependency_pin_overflow_events: AtomicU64,
+    peak_retained_byte_overage: AtomicU64,
+    peak_dependency_pin_overage: AtomicU64,
+    retained_byte_evictions: AtomicU64,
+    dependency_pin_evictions: AtomicU64,
     retention_growth: AtomicU64,
     retention_enforcements: AtomicU64,
     retention_scan_entries: AtomicU64,
@@ -1581,7 +1689,11 @@ struct Metrics {
 }
 
 impl Metrics {
-    fn snapshot(&self) -> RuntimeMetrics {
+    fn snapshot(
+        &self,
+        budgets: RetentionBudgets,
+        retention: RuntimeRetentionSnapshot,
+    ) -> RuntimeMetrics {
         RuntimeMetrics {
             claims: self.claims.load(Ordering::Relaxed),
             joins: self.joins.load(Ordering::Relaxed),
@@ -1595,6 +1707,47 @@ impl Metrics {
             cycles: self.cycles.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
             retained_terminals: self.retained_terminals.load(Ordering::Relaxed),
+            retained_bytes: retention.retained_bytes,
+            peak_retained_bytes: self.peak_retained_bytes.load(Ordering::Relaxed),
+            retained_dependency_pins: retention.dependency_pins,
+            peak_retained_dependency_pins: self
+                .peak_retained_dependency_pins
+                .load(Ordering::Relaxed),
+            retained_byte_budget: budgets.retained_bytes,
+            dependency_pin_budget: budgets.dependency_pins,
+            aggregate_retention_probes: self.aggregate_retention_probes.load(Ordering::Relaxed),
+            retained_byte_probe_quantum: retention_probe_quantum(
+                budgets.retained_bytes,
+                1024 * 1024,
+                32 * 1024 * 1024,
+            ),
+            dependency_pin_probe_quantum: retention_probe_quantum(
+                budgets.dependency_pins,
+                4096,
+                65_536,
+            ),
+            retained_byte_probe_overshoot_bound: retention.live_families.saturating_mul(
+                retention_probe_quantum(budgets.retained_bytes, 1024 * 1024, 32 * 1024 * 1024),
+            ),
+            dependency_pin_probe_overshoot_bound: retention.live_families.saturating_mul(
+                retention_probe_quantum(budgets.dependency_pins, 4096, 65_536),
+            ),
+            retained_byte_pressure_events: self
+                .retained_byte_pressure_events
+                .load(Ordering::Relaxed),
+            dependency_pin_pressure_events: self
+                .dependency_pin_pressure_events
+                .load(Ordering::Relaxed),
+            retained_byte_overflow_events: self
+                .retained_byte_overflow_events
+                .load(Ordering::Relaxed),
+            dependency_pin_overflow_events: self
+                .dependency_pin_overflow_events
+                .load(Ordering::Relaxed),
+            peak_retained_byte_overage: self.peak_retained_byte_overage.load(Ordering::Relaxed),
+            peak_dependency_pin_overage: self.peak_dependency_pin_overage.load(Ordering::Relaxed),
+            retained_byte_evictions: self.retained_byte_evictions.load(Ordering::Relaxed),
+            dependency_pin_evictions: self.dependency_pin_evictions.load(Ordering::Relaxed),
             retention_growth: self.retention_growth.load(Ordering::Relaxed),
             retention_enforcements: self.retention_enforcements.load(Ordering::Relaxed),
             retention_scan_entries: self.retention_scan_entries.load(Ordering::Relaxed),
@@ -1653,6 +1806,19 @@ struct RuntimeCore {
     family_names: Mutex<BTreeSet<Arc<str>>>,
     revisions: Mutex<RevisionStore>,
     nodes: Mutex<NodeRegistry>,
+    retention_families: Mutex<BTreeMap<u64, Weak<dyn RetentionFamily>>>,
+    retention_budgets: RetentionBudgets,
+    /// Aggregate thresholds are consulted only after a family-local probe, not
+    /// by every publication.
+    next_retained_byte_sweep: AtomicU64,
+    next_dependency_pin_sweep: AtomicU64,
+    /// Stable family token at which the next pressure pass begins. Only the
+    /// single claimed sweep owner mutates this cursor, so the runtime can carry
+    /// round-robin fairness across separate pressure events without putting a
+    /// lock on ordinary publication.
+    retention_sweep_cursor: AtomicU64,
+    retention_sweep_claimed: AtomicBool,
+    retention_sweep_pending: AtomicBool,
     /// Spawned structured-batch workers currently alive across every root and
     /// nesting depth. The caller always executes one child inline; this global
     /// counter caps additional OS threads at `permits.maximum - 1`.
@@ -1690,6 +1856,55 @@ struct RegisteredNode {
     node: Weak<dyn ErasedNode>,
     #[cfg(test)]
     entry_visits: Arc<AtomicUsize>,
+}
+
+/// One family-local FIFO exposed to the runtime only while aggregate retention
+/// is under pressure. Ordinary publication never consults this registry.
+trait RetentionFamily: fmt::Debug + Send + Sync {
+    /// Evicts the oldest currently unprotected terminal in this family. Stale
+    /// FIFO entries are discarded as they are encountered.
+    fn evict_one(&self) -> bool;
+
+    /// Exact family-local byte/pin gauges without walking terminal nodes.
+    fn charge_snapshot(&self) -> FamilyChargeSnapshot;
+}
+
+struct RetentionFamilyDriver {
+    name: Arc<str>,
+    evict_one: Box<dyn Fn() -> bool + Send + Sync>,
+    charge_snapshot: Box<dyn Fn() -> FamilyChargeSnapshot + Send + Sync>,
+}
+
+impl fmt::Debug for RetentionFamilyDriver {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RetentionFamilyDriver")
+            .field("name", &self.name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RetentionFamily for RetentionFamilyDriver {
+    fn evict_one(&self) -> bool {
+        (self.evict_one)()
+    }
+
+    fn charge_snapshot(&self) -> FamilyChargeSnapshot {
+        (self.charge_snapshot)()
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct FamilyChargeSnapshot {
+    retained_bytes: u64,
+    dependency_pins: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct RuntimeRetentionSnapshot {
+    retained_bytes: u64,
+    dependency_pins: u64,
+    live_families: u64,
 }
 
 impl RegisteredNode {
@@ -1779,6 +1994,9 @@ enum InterposeSite {
     /// A lifecycle waiter observed neither completion nor cancellation while
     /// holding the predicate lock, immediately before atomically parking.
     HandoffCommitPark,
+    /// Aggregate retention has finished a pass and is about to hand sweep
+    /// ownership to any publisher which arrived concurrently.
+    RetentionSweepRelease,
 }
 
 const REVISION_RETENTION_LIMIT: usize = 64;
@@ -1892,6 +2110,18 @@ struct TestEvents {
 impl QueryRuntime {
     /// Creates a runtime with one shared structured concurrency budget.
     pub fn new(max_concurrency: usize) -> Self {
+        Self::with_retention_budgets(max_concurrency, RetentionBudgets::default())
+    }
+
+    /// Creates a runtime with explicit runtime-wide soft retention budgets.
+    ///
+    /// This constructor is primarily useful for deterministic policy tests and
+    /// benchmark calibration. A zero budget is valid: newly published work is
+    /// reclaimed immediately when it has no live protection.
+    pub fn with_retention_budgets(
+        max_concurrency: usize,
+        retention_budgets: RetentionBudgets,
+    ) -> Self {
         assert!(max_concurrency > 0, "query concurrency must be nonzero");
         Self {
             core: Arc::new(RuntimeCore {
@@ -1904,6 +2134,17 @@ impl QueryRuntime {
                     retired_through: 0,
                 }),
                 nodes: Mutex::new(NodeRegistry::default()),
+                retention_families: Mutex::new(BTreeMap::new()),
+                retention_budgets,
+                next_retained_byte_sweep: AtomicU64::new(
+                    retention_budgets.retained_bytes.saturating_add(1),
+                ),
+                next_dependency_pin_sweep: AtomicU64::new(
+                    retention_budgets.dependency_pins.saturating_add(1),
+                ),
+                retention_sweep_cursor: AtomicU64::new(1),
+                retention_sweep_claimed: AtomicBool::new(false),
+                retention_sweep_pending: AtomicBool::new(false),
                 batch_workers: AtomicUsize::new(0),
                 next_task: AtomicU64::new(1),
                 next_family: AtomicU64::new(1),
@@ -1918,6 +2159,12 @@ impl QueryRuntime {
     }
 
     /// Creates a typed family with deterministic FIFO terminal retention.
+    ///
+    /// This convenience form assigns no heap-owned success-value charge. A
+    /// caller retaining heap-backed values should use the corresponding
+    /// `*_and_retained_charge` constructor or set an exact charge on each
+    /// [`QueryOutput`]. The terminal envelope, diagnostics, work, and
+    /// observations are always charged by the runtime.
     pub fn family<K, V>(
         &self,
         stable_name: impl Into<Arc<str>>,
@@ -1934,7 +2181,8 @@ impl QueryRuntime {
     ///
     /// Compiler families use this when their retained success values do not
     /// implement blanket `Eq`, or when only a canonical projection participates
-    /// in red/green publication.
+    /// in red/green publication. This convenience form assigns no heap-owned
+    /// success-value charge; see [`Self::family_with_equality_and_retained_charge`].
     pub fn family_with_equality<K, V>(
         &self,
         stable_name: impl Into<Arc<str>>,
@@ -1945,7 +2193,29 @@ impl QueryRuntime {
         K: QueryKey,
         V: Clone + Send + Sync + 'static,
     {
-        self.family_with_optional_evaluator(stable_name, retention_limit, value_equal, None)
+        self.family_with_optional_evaluator(stable_name, retention_limit, value_equal, |_| 0, None)
+    }
+
+    /// Creates an unregistered family with an estimator for heap-owned success
+    /// value data.
+    pub fn family_with_equality_and_retained_charge<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        retained_value_charge: fn(&V) -> u64,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.family_with_optional_evaluator(
+            stable_name,
+            retention_limit,
+            value_equal,
+            retained_value_charge,
+            None,
+        )
     }
 
     /// Creates a typed family with a canonical family-owned evaluator.
@@ -1995,6 +2265,35 @@ impl QueryRuntime {
             stable_name,
             retention_limit,
             value_equal,
+            |_| 0,
+            Some(Arc::new(evaluator)),
+        )
+    }
+
+    /// Creates a registered family with an allocator-independent estimator for
+    /// heap-owned success-value data. The estimator excludes inline `V` storage,
+    /// which is already part of the terminal envelope.
+    pub fn family_with_equality_and_evaluator_and_retained_charge<K, V, E>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        retained_value_charge: fn(&V) -> u64,
+        evaluator: E,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+        E: Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Result<QueryOutput<V>, QueryAbort>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.family_with_optional_evaluator(
+            stable_name,
+            retention_limit,
+            value_equal,
+            retained_value_charge,
             Some(Arc::new(evaluator)),
         )
     }
@@ -2004,13 +2303,21 @@ impl QueryRuntime {
         stable_name: impl Into<Arc<str>>,
         retention_limit: usize,
         value_equal: fn(&V, &V) -> bool,
+        retained_value_charge: fn(&V) -> u64,
         evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
     ) -> Result<QueryFamily<K, V>, FamilyError>
     where
         K: QueryKey,
         V: Clone + Send + Sync + 'static,
     {
-        self.family_inner(stable_name, retention_limit, value_equal, evaluator, false)
+        self.family_inner(
+            stable_name,
+            retention_limit,
+            value_equal,
+            retained_value_charge,
+            evaluator,
+            false,
+        )
     }
 
     /// Creates a typed family REGISTERED CONTENT-ADDRESSED: the family asserts
@@ -2029,7 +2336,30 @@ impl QueryRuntime {
         K: QueryKey,
         V: Clone + Send + Sync + 'static,
     {
-        self.family_inner(stable_name, retention_limit, value_equal, None, true)
+        self.family_inner(stable_name, retention_limit, value_equal, |_| 0, None, true)
+    }
+
+    /// Creates a content-addressed family with an estimator for heap-owned
+    /// success-value data.
+    pub fn content_addressed_family_with_equality_and_retained_charge<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        retained_value_charge: fn(&V) -> u64,
+    ) -> Result<QueryFamily<K, V>, FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        self.family_inner(
+            stable_name,
+            retention_limit,
+            value_equal,
+            retained_value_charge,
+            None,
+            true,
+        )
     }
 
     fn family_inner<K, V>(
@@ -2037,6 +2367,7 @@ impl QueryRuntime {
         stable_name: impl Into<Arc<str>>,
         retention_limit: usize,
         value_equal: fn(&V, &V) -> bool,
+        retained_value_charge: fn(&V) -> u64,
         evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
         content_addressed: bool,
     ) -> Result<QueryFamily<K, V>, FamilyError>
@@ -2051,25 +2382,54 @@ impl QueryRuntime {
         if !lock(&self.core.family_names).insert(name.clone()) {
             return Err(FamilyError::DuplicateName(name));
         }
+        let family_number = self.core.next_family.fetch_add(1, Ordering::Relaxed);
+        let inner = Arc::new(FamilyInner {
+            core: Arc::downgrade(&self.core),
+            name: name.clone(),
+            token: FamilyToken {
+                runtime: self.core.identity,
+                family: family_number,
+            },
+            content_addressed,
+            retention_limit,
+            value_equal,
+            retained_value_charge,
+            evaluator,
+            nodes: Mutex::new(HashMap::new()),
+            retention: Mutex::new(FamilyRetentionQueue::new(self.core.retention_budgets)),
+            retained_count: AtomicUsize::new(0),
+            next_publish_sweep: AtomicUsize::new(retention_limit.saturating_add(1)),
+            retained_nodes: AtomicUsize::new(0),
+            retained_revisions: Mutex::new(BTreeMap::new()),
+        });
+        let weak_core = Arc::downgrade(&self.core);
+        let weak_inner = Arc::downgrade(&inner);
+        let charge_inner = Arc::downgrade(&inner);
+        let retention_driver: Arc<dyn RetentionFamily> = Arc::new(RetentionFamilyDriver {
+            name,
+            evict_one: Box::new(move || {
+                let Some(core) = weak_core.upgrade() else {
+                    return false;
+                };
+                let Some(inner) = weak_inner.upgrade() else {
+                    return false;
+                };
+                evict_one_from_family(&core, &inner)
+            }),
+            charge_snapshot: Box::new(move || {
+                charge_inner
+                    .upgrade()
+                    .map_or_else(FamilyChargeSnapshot::default, |inner| {
+                        family_charge_snapshot(&inner)
+                    })
+            }),
+        });
+        lock(&self.core.retention_families)
+            .insert(family_number, Arc::downgrade(&retention_driver));
         Ok(QueryFamily {
             core: self.core.clone(),
-            inner: Arc::new(FamilyInner {
-                name,
-                token: FamilyToken {
-                    runtime: self.core.identity,
-                    family: self.core.next_family.fetch_add(1, Ordering::Relaxed),
-                },
-                content_addressed,
-                retention_limit,
-                value_equal,
-                evaluator,
-                nodes: Mutex::new(HashMap::new()),
-                retention: Mutex::new(VecDeque::new()),
-                retained_count: AtomicUsize::new(0),
-                next_publish_sweep: AtomicUsize::new(retention_limit.saturating_add(1)),
-                retained_nodes: AtomicUsize::new(0),
-                retained_revisions: Mutex::new(BTreeMap::new()),
-            }),
+            inner,
+            retention_driver,
         })
     }
 
@@ -2517,7 +2877,12 @@ impl QueryRuntime {
 
     /// Returns a point-in-time structural metrics snapshot.
     pub fn metrics(&self) -> RuntimeMetrics {
-        let mut metrics = self.core.metrics.snapshot();
+        let retention = self.core.retention_snapshot();
+        self.core.record_retention_peaks(retention);
+        let mut metrics = self
+            .core
+            .metrics
+            .snapshot(self.core.retention_budgets, retention);
         metrics.retained_revisions = lock(&self.core.revisions).entries.len() as u64;
         metrics
     }
@@ -2580,12 +2945,14 @@ pub enum FamilyError {
 pub struct QueryFamily<K: QueryKey, V: Clone + Send + Sync + 'static> {
     core: Arc<RuntimeCore>,
     inner: Arc<FamilyInner<K, V>>,
+    retention_driver: Arc<dyn RetentionFamily>,
 }
 
 /// Non-owning handle for evaluator graphs with cross-family back edges.
 pub struct WeakQueryFamily<K: QueryKey, V: Clone + Send + Sync + 'static> {
     core: Weak<RuntimeCore>,
     inner: Weak<FamilyInner<K, V>>,
+    retention_driver: Weak<dyn RetentionFamily>,
 }
 
 impl<K, V> Clone for WeakQueryFamily<K, V>
@@ -2597,6 +2964,7 @@ where
         Self {
             core: self.core.clone(),
             inner: self.inner.clone(),
+            retention_driver: self.retention_driver.clone(),
         }
     }
 }
@@ -2611,6 +2979,7 @@ where
         Some(QueryFamily {
             core: self.core.upgrade()?,
             inner: self.inner.upgrade()?,
+            retention_driver: self.retention_driver.upgrade()?,
         })
     }
 }
@@ -2638,11 +3007,13 @@ where
         Self {
             core: self.core.clone(),
             inner: self.inner.clone(),
+            retention_driver: self.retention_driver.clone(),
         }
     }
 }
 
 struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
+    core: Weak<RuntimeCore>,
     name: Arc<str>,
     token: FamilyToken,
     /// Registration policy: the family asserts every record is a pure function
@@ -2653,6 +3024,7 @@ struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     content_addressed: bool,
     retention_limit: usize,
     value_equal: fn(&V, &V) -> bool,
+    retained_value_charge: fn(&V) -> u64,
     evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
     // Hashed typed-key memo index. Exact `K` equality is authoritative: the map
     // is keyed by the typed key itself, so hash collisions resolve through `Eq`
@@ -2661,7 +3033,7 @@ struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     // unordered: eviction order lives in `retention` below (the memo index never
     // encoded eviction order), so no companion order structure is required.
     nodes: Mutex<HashMap<K, Arc<Node<K, V>>>>,
-    retention: Mutex<VecDeque<RetentionEntry<K, V>>>,
+    retention: Mutex<FamilyRetentionQueue<K, V>>,
     retained_count: AtomicUsize,
     /// Retained-count watermark for the next publish-side sweep. A pass that
     /// finds only protected entries doubles this watermark, so growing a live
@@ -2685,6 +3057,31 @@ where
             .field("retention_limit", &self.retention_limit)
             .field("has_evaluator", &self.evaluator.is_some())
             .finish_non_exhaustive()
+    }
+}
+
+impl<K, V> Drop for FamilyInner<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        let mut terminals = 0_u64;
+        for node in lock(&self.nodes).values() {
+            for attempt in &lock(&node.state).attempts {
+                if let AttemptState::Terminal { .. } = &attempt.state {
+                    terminals += 1;
+                }
+            }
+        }
+        if terminals > 0 {
+            core.metrics
+                .retained_terminals
+                .fetch_sub(terminals, Ordering::Relaxed);
+        }
     }
 }
 
@@ -2950,6 +3347,174 @@ struct RetentionEntry<K, V> {
     attempt: u64,
 }
 
+struct FamilyRetentionQueue<K, V> {
+    entries: VecDeque<RetentionEntry<K, V>>,
+    retained_bytes: u64,
+    dependency_pins: u64,
+    next_byte_probe: u64,
+    next_pin_probe: u64,
+    byte_probe_quantum: u64,
+    pin_probe_quantum: u64,
+}
+
+impl<K, V> FamilyRetentionQueue<K, V> {
+    fn new(budgets: RetentionBudgets) -> Self {
+        let byte_probe_quantum =
+            retention_probe_quantum(budgets.retained_bytes, 1024 * 1024, 32 * 1024 * 1024);
+        let pin_probe_quantum = retention_probe_quantum(budgets.dependency_pins, 4096, 65_536);
+        Self {
+            entries: VecDeque::new(),
+            retained_bytes: 0,
+            dependency_pins: 0,
+            next_byte_probe: byte_probe_quantum,
+            next_pin_probe: pin_probe_quantum,
+            byte_probe_quantum,
+            pin_probe_quantum,
+        }
+    }
+
+    fn publish(
+        &mut self,
+        entry: RetentionEntry<K, V>,
+        retained_bytes: u64,
+        dependency_pins: u64,
+    ) -> bool {
+        self.entries.push_back(entry);
+        self.retained_bytes = self.retained_bytes.saturating_add(retained_bytes);
+        self.dependency_pins = self.dependency_pins.saturating_add(dependency_pins);
+        let probe = self.retained_bytes >= self.next_byte_probe
+            || self.dependency_pins >= self.next_pin_probe;
+        if probe {
+            self.next_byte_probe = next_probe(self.retained_bytes, self.byte_probe_quantum);
+            self.next_pin_probe = next_probe(self.dependency_pins, self.pin_probe_quantum);
+        }
+        probe
+    }
+
+    fn remove_charge(&mut self, retained_bytes: u64, dependency_pins: u64) {
+        self.retained_bytes = self
+            .retained_bytes
+            .checked_sub(retained_bytes)
+            .expect("retained byte charge releases exactly once");
+        self.dependency_pins = self
+            .dependency_pins
+            .checked_sub(dependency_pins)
+            .expect("retained dependency-pin charge releases exactly once");
+        // A sweep can reclaim most of a family's charge after its publication
+        // watermark advanced. Rebase both probes to the new live charge so a
+        // subsequent regrowth cannot hide below the stale high watermark.
+        self.next_byte_probe = next_probe(self.retained_bytes, self.byte_probe_quantum);
+        self.next_pin_probe = next_probe(self.dependency_pins, self.pin_probe_quantum);
+    }
+}
+
+fn retention_probe_quantum(budget: u64, normal_minimum: u64, normal_maximum: u64) -> u64 {
+    if budget < normal_minimum {
+        // Tiny deterministic policy tests need correspondingly exact probes.
+        return (budget / 64).max(1);
+    }
+    (budget / 128).clamp(normal_minimum, normal_maximum)
+}
+
+fn next_probe(current: u64, quantum: u64) -> u64 {
+    current
+        .checked_div(quantum)
+        .unwrap_or(u64::MAX)
+        .saturating_add(1)
+        .saturating_mul(quantum)
+}
+
+fn evict_one_from_family<K, V>(core: &Arc<RuntimeCore>, family: &Arc<FamilyInner<K, V>>) -> bool
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    let mut retention = lock(&family.retention);
+    let mut remaining = retention.entries.len();
+    while remaining > 0 {
+        remaining -= 1;
+        let entry = retention
+            .entries
+            .pop_front()
+            .expect("retention scan is nonempty");
+        core.metrics
+            .retention_scan_entries
+            .fetch_add(1, Ordering::Relaxed);
+        let Some(node) = entry.node.upgrade() else {
+            continue;
+        };
+        let mut state = lock(&node.state);
+        let Some(index) = state
+            .attempts
+            .iter()
+            .position(|item| item.id == entry.attempt)
+        else {
+            continue;
+        };
+        let protected = match &state.attempts[index].state {
+            AttemptState::Computing { .. } => true,
+            AttemptState::Terminal {
+                terminal, waiters, ..
+            } => {
+                *waiters > 0
+                    || terminal.pins.load(Ordering::Acquire) > 0
+                    || lock(&family.retained_revisions).contains_key(&terminal.revision)
+            }
+        };
+        if protected {
+            drop(state);
+            retention.entries.push_back(entry);
+            continue;
+        }
+        let removed = state
+            .attempts
+            .remove(index)
+            .expect("retention selected an existing attempt");
+        let (terminal, handoffs) = match removed.state {
+            AttemptState::Terminal {
+                terminal, handoffs, ..
+            } => (terminal, handoffs),
+            AttemptState::Computing { .. } => unreachable!(),
+        };
+        let empty = state.attempts.is_empty();
+        drop(state);
+        core.metrics.evictions.fetch_add(1, Ordering::Relaxed);
+        core.metrics
+            .retained_terminals
+            .fetch_sub(1, Ordering::Relaxed);
+        family.retained_count.fetch_sub(1, Ordering::Relaxed);
+        retention.remove_charge(terminal.retained_charge, terminal.dependency_pin_charge);
+        if empty && node.users.load(Ordering::Acquire) == 0 {
+            let mut nodes = lock(&family.nodes);
+            if node.users.load(Ordering::Acquire) == 0
+                && lock(&node.state).attempts.is_empty()
+                && nodes
+                    .get(&node.key)
+                    .is_some_and(|candidate| Arc::ptr_eq(candidate, &node))
+            {
+                nodes.remove(&node.key);
+                family.retained_nodes.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+        drop(retention);
+        handoffs.abort();
+        return true;
+    }
+    false
+}
+
+fn family_charge_snapshot<K, V>(family: &FamilyInner<K, V>) -> FamilyChargeSnapshot
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    let retention = lock(&family.retention);
+    FamilyChargeSnapshot {
+        retained_bytes: retention.retained_bytes,
+        dependency_pins: retention.dependency_pins,
+    }
+}
+
 enum TaskQueryResult<V> {
     Terminal {
         terminal: Arc<QueryTerminal<V>>,
@@ -3017,6 +3582,7 @@ where
         WeakQueryFamily {
             core: Arc::downgrade(&self.core),
             inner: Arc::downgrade(&self.inner),
+            retention_driver: Arc::downgrade(&self.retention_driver),
         }
     }
 
@@ -3087,6 +3653,7 @@ where
             let demand = self.inner.evaluator.as_ref().map(|_| {
                 let core = self.core.clone();
                 let family = Arc::downgrade(&self.inner);
+                let retention_driver = self.retention_driver.clone();
                 let key = key.clone();
                 Arc::new(move |task: Arc<Task>, origin_request: u64| {
                     let Some(inner) = family.upgrade() else {
@@ -3100,6 +3667,7 @@ where
                     QueryFamily {
                         core: core.clone(),
                         inner,
+                        retention_driver: retention_driver.clone(),
                     }
                     .query_task_registered_for_validation(
                         task,
@@ -3524,7 +4092,12 @@ where
     ) -> Result<Option<(u64, Arc<AttemptHandoffLifecycle>, TerminalPin<K, V>)>, QueryAbort> {
         let mut state = lock(&node.state);
         if task.cancellation.is_canceled() {
-            decrement_waiter(&mut state, attempt_id);
+            let enforce = decrement_waiter(&mut state, attempt_id);
+            drop(state);
+            if enforce {
+                self.enforce_retention();
+                self.core.enforce_runtime_retention();
+            }
             self.core
                 .metrics
                 .cancellations
@@ -3553,7 +4126,6 @@ where
                 drop(state);
                 #[cfg(test)]
                 self.core.interpose(InterposeSite::JoinHandoff);
-                self.enforce_retention();
                 return Ok(Some((attempt_id, handoffs, pin)));
             }
             AttemptState::Computing {
@@ -3575,10 +4147,12 @@ where
                 .fetch_add(1, Ordering::Relaxed);
         }
         drop(state);
+        let mut enforce_after_cancellation = false;
         let result = loop {
             let mut state = lock(&node.state);
             if task.cancellation.is_canceled() {
-                decrement_waiter(&mut state, attempt_id);
+                enforce_after_cancellation = decrement_waiter(&mut state, attempt_id);
+                drop(state);
                 break Err(QueryAbort::Canceled);
             }
             let Some(attempt) = state.attempts.iter_mut().find(|item| item.id == attempt_id) else {
@@ -3622,6 +4196,10 @@ where
         if donated {
             task.acquire_permit(&self.core);
         }
+        if enforce_after_cancellation {
+            self.enforce_retention();
+            self.core.enforce_runtime_retention();
+        }
         if matches!(result, Err(QueryAbort::Canceled)) {
             self.core
                 .metrics
@@ -3632,7 +4210,6 @@ where
         if matches!(result, Ok(Some(_))) {
             self.core.interpose(InterposeSite::JoinHandoff);
         }
-        self.enforce_retention();
         result
     }
 
@@ -3654,17 +4231,24 @@ where
             if !matches!(state.attempts[index].state, AttemptState::Terminal { .. }) {
                 return;
             }
-            state.attempts.remove(index);
-            true
+            let removed = state
+                .attempts
+                .remove(index)
+                .expect("terminal attempt exists");
+            match removed.state {
+                AttemptState::Terminal { terminal, .. } => Some(terminal),
+                AttemptState::Computing { .. } => unreachable!(),
+            }
         };
-        if removed {
+        if let Some(terminal) = removed {
             self.core
                 .metrics
                 .retained_terminals
                 .fetch_sub(1, Ordering::Relaxed);
             self.inner.retained_count.fetch_sub(1, Ordering::Relaxed);
+            lock(&self.inner.retention)
+                .remove_charge(terminal.retained_charge, terminal.dependency_pin_charge);
             node.wait.notify_all();
-            self.enforce_retention();
         }
     }
 
@@ -3681,8 +4265,30 @@ where
         lease: bool,
         handoffs: Arc<AttemptHandoffLifecycle>,
     ) -> Arc<QueryTerminal<V>> {
-        let diagnostics = canonical_diagnostics(output.diagnostics);
-        let work = canonical_work(output.work);
+        let QueryOutput {
+            outcome,
+            kind,
+            diagnostics,
+            work,
+            retained_value_charge,
+        } = output;
+        let diagnostics = canonical_diagnostics(diagnostics);
+        let work = canonical_work(work);
+        let retained_value_charge = match &outcome {
+            QueryOutcome::Success(value) => Some(
+                retained_value_charge.unwrap_or_else(|| (self.inner.retained_value_charge)(value)),
+            ),
+            QueryOutcome::Failure(_) => None,
+        };
+        let (retained_charge, dependency_pin_charge) = retained_terminal_charge(
+            &outcome,
+            retained_value_charge,
+            &node.identity,
+            &diagnostics,
+            &work,
+            &dependencies,
+            &inputs,
+        );
         let mut state = lock(&node.state);
         let previous = state
             .attempts
@@ -3693,8 +4299,8 @@ where
                 AttemptState::Computing { .. } => None,
             });
         let red = previous.as_ref().is_some_and(|terminal| {
-            terminal.kind == output.kind
-                && outcomes_equal(self.inner.value_equal, &terminal.outcome, &output.outcome)
+            terminal.kind == kind
+                && outcomes_equal(self.inner.value_equal, &terminal.outcome, &outcome)
                 && semantic_diagnostics_equal(&terminal.diagnostics, &diagnostics)
         });
         let stamp = if red {
@@ -3711,12 +4317,14 @@ where
             revision,
             stamp,
             origin_request,
-            outcome: output.outcome,
-            kind: output.kind,
+            outcome,
+            kind,
             diagnostics: diagnostics.into(),
             work: work.into(),
             dependencies: dependencies.into(),
             inputs: inputs.into(),
+            retained_charge,
+            dependency_pin_charge,
             pins: AtomicUsize::new(0),
         });
         let attempt = state
@@ -3770,10 +4378,14 @@ where
             .retained_terminals
             .fetch_add(1, Ordering::Relaxed);
         self.inner.retained_count.fetch_add(1, Ordering::Relaxed);
-        lock(&self.inner.retention).push_back(RetentionEntry {
-            node: Arc::downgrade(node),
-            attempt: attempt_id,
-        });
+        let aggregate_probe = lock(&self.inner.retention).publish(
+            RetentionEntry {
+                node: Arc::downgrade(node),
+                attempt: attempt_id,
+            },
+            retained_charge,
+            dependency_pin_charge,
+        );
         // The terminal is now exposed and enqueued — reachable to any concurrent
         // enforcer. With `lease_pin` already held (acquired under the node lock
         // above) it is protected before it becomes evictable, so an enforcer that
@@ -3793,6 +4405,9 @@ where
             // A validation-only publication has no birth lease. It can be
             // evicted immediately, so preserve eager enforcement for it.
             self.enforce_retention();
+        }
+        if aggregate_probe {
+            self.core.enforce_runtime_retention_after_probe();
         }
         terminal
     }
@@ -3824,78 +4439,9 @@ where
             .metrics
             .retention_enforcements
             .fetch_add(1, Ordering::Relaxed);
-        let mut retention = lock(&self.inner.retention);
-        let mut evicted_handoffs = Vec::new();
-        let mut remaining = retention.len();
         while self.inner.retained_count.load(Ordering::Relaxed) > self.inner.retention_limit
-            && remaining > 0
-        {
-            // Loop invariant: the pass ends only when the family is at or below
-            // its bound, or when every remaining candidate was protected and had
-            // to be kept — the latter is recorded as growth pressure below.
-            remaining -= 1;
-            let entry = retention.pop_front().expect("retention scan is nonempty");
-            self.core
-                .metrics
-                .retention_scan_entries
-                .fetch_add(1, Ordering::Relaxed);
-            let Some(node) = entry.node.upgrade() else {
-                continue;
-            };
-            let mut state = lock(&node.state);
-            let Some(index) = state
-                .attempts
-                .iter()
-                .position(|item| item.id == entry.attempt)
-            else {
-                continue;
-            };
-            let protected = match &state.attempts[index].state {
-                AttemptState::Computing { .. } => true,
-                AttemptState::Terminal {
-                    terminal, waiters, ..
-                } => {
-                    *waiters > 0
-                        || terminal.pins.load(Ordering::Acquire) > 0
-                        || lock(&self.inner.retained_revisions).contains_key(&terminal.revision)
-                }
-            };
-            if protected {
-                drop(state);
-                retention.push_back(entry);
-                continue;
-            }
-            let removed = state
-                .attempts
-                .remove(index)
-                .expect("retention selected an existing attempt");
-            if let AttemptState::Terminal { handoffs, .. } = removed.state {
-                evicted_handoffs.push(handoffs);
-            }
-            let empty = state.attempts.is_empty();
-            drop(state);
-            self.core.metrics.evictions.fetch_add(1, Ordering::Relaxed);
-            self.core
-                .metrics
-                .retained_terminals
-                .fetch_sub(1, Ordering::Relaxed);
-            self.inner.retained_count.fetch_sub(1, Ordering::Relaxed);
-            if empty && node.users.load(Ordering::Acquire) == 0 {
-                // Reverse-locate the node by its owned typed key (O(1)); the
-                // `ptr_eq` guard ensures a newer incarnation reinserted under
-                // the same key is never evicted in its place.
-                let mut nodes = lock(&self.inner.nodes);
-                if node.users.load(Ordering::Acquire) == 0
-                    && lock(&node.state).attempts.is_empty()
-                    && nodes
-                        .get(&node.key)
-                        .is_some_and(|candidate| Arc::ptr_eq(candidate, &node))
-                {
-                    nodes.remove(&node.key);
-                    self.inner.retained_nodes.fetch_sub(1, Ordering::Relaxed);
-                }
-            }
-        }
+            && evict_one_from_family(&self.core, &self.inner)
+        {}
         // The pass could not reach the configured bound: every remaining
         // candidate was a protected root the live closure still needs. Grow and
         // record the pressure event rather than evict a required terminal.
@@ -3914,10 +4460,6 @@ where
         self.inner
             .next_publish_sweep
             .store(next_publish_sweep, Ordering::Release);
-        drop(retention);
-        for handoffs in evicted_handoffs {
-            handoffs.abort();
-        }
     }
 
     /// Pins a retained terminal against eviction.
@@ -4079,6 +4621,8 @@ where
                 work: held.work.clone(),
                 dependencies: Arc::from([]),
                 inputs: Arc::from([]),
+                retained_charge: held.retained_charge,
+                dependency_pin_charge: 0,
                 pins: AtomicUsize::new(0),
             });
             let id = state.next_attempt;
@@ -4111,11 +4655,18 @@ where
             .retained_terminals
             .fetch_add(1, Ordering::Relaxed);
         self.inner.retained_count.fetch_add(1, Ordering::Relaxed);
-        lock(&self.inner.retention).push_back(RetentionEntry {
-            node: Arc::downgrade(node),
-            attempt: attempt_id,
-        });
+        let aggregate_probe = lock(&self.inner.retention).publish(
+            RetentionEntry {
+                node: Arc::downgrade(node),
+                attempt: attempt_id,
+            },
+            held.retained_charge,
+            0,
+        );
         self.enforce_retention_after_publish();
+        if aggregate_probe {
+            self.core.enforce_runtime_retention_after_probe();
+        }
         Ok(endorsed_pin)
     }
 
@@ -4272,6 +4823,7 @@ where
             // duplicate/root-overlap release cannot enable retention progress,
             // so scanning the full family here would be pure quadratic work.
             self.family.enforce_retention();
+            self.family.core.enforce_runtime_retention();
         }
     }
 }
@@ -4294,11 +4846,15 @@ where
             .get_mut(&self.revision)
             .expect("revision pin owns a retained root");
         *count -= 1;
-        if *count == 0 {
+        let released = *count == 0;
+        if released {
             revisions.remove(&self.revision);
         }
         drop(revisions);
-        self.family.enforce_retention();
+        if released {
+            self.family.enforce_retention();
+            self.family.core.enforce_runtime_retention();
+        }
         // The revision-view lease drops after terminal retention bookkeeping.
         let _ = &self.view;
     }
@@ -5017,9 +5573,10 @@ impl Drop for TaskLeases {
     /// Instead, release in two phases. First decrement every held pin
     /// (`release_deferred`), which never enforces: a decrement is a pure
     /// narrowing of protection, so ordering among released pins is free and no
-    /// still-leased terminal is left unprotected. Each release yields a
-    /// [`FamilyEnforcer`] keyed by its owning family's stable identity, kept
-    /// deduplicated so heterogeneous families collapse to one enforcer apiece.
+    /// still-leased terminal is left unprotected. A release which removes a
+    /// terminal's last pin yields a [`FamilyEnforcer`] keyed by its owning
+    /// family's stable identity; overlapping pins need no scan. Enforcers are
+    /// deduplicated so heterogeneous families collapse to one apiece.
     /// Second, run each distinct family's enforcement exactly once — after all of
     /// that family's decrements are visible. The result is O(pins) decrements
     /// plus O(distinct families) enforcement passes.
@@ -5031,9 +5588,9 @@ impl Drop for TaskLeases {
 /// Two-phase batched release of a heterogeneous pin set. First decrement every
 /// held pin (`release_deferred`), which never enforces — a decrement is a pure
 /// narrowing of protection, so ordering among released pins is free and no
-/// still-leased terminal is left unprotected. Each release yields a
-/// [`FamilyEnforcer`] keyed by its owning family's stable identity, kept
-/// deduplicated so heterogeneous families collapse to one enforcer apiece.
+/// still-leased terminal is left unprotected. Only releases which remove a
+/// terminal's last pin yield a [`FamilyEnforcer`]; they are keyed by stable
+/// family identity and deduplicated to one enforcer per family.
 /// Second, run each distinct family's enforcement exactly once — after all of
 /// that family's decrements are visible. The result is O(pins) decrements plus
 /// O(distinct families) enforcement passes. Shared by task-scoped
@@ -5043,12 +5600,21 @@ fn batched_release(held: &mut Vec<Box<dyn ObservedLease>>) {
         return;
     }
     let mut enforcers: BTreeMap<usize, FamilyEnforcer> = BTreeMap::new();
+    let mut runtimes: BTreeMap<u64, Arc<RuntimeCore>> = BTreeMap::new();
     for lease in held.drain(..) {
-        let enforcer = lease.release_deferred();
+        let Some(enforcer) = lease.release_deferred() else {
+            continue;
+        };
+        runtimes
+            .entry(enforcer.core.identity)
+            .or_insert_with(|| enforcer.core.clone());
         enforcers.entry(enforcer.family_id).or_insert(enforcer);
     }
     for (_family_id, enforcer) in enforcers {
         enforcer.enforce();
+    }
+    for (_runtime_id, runtime) in runtimes {
+        runtime.enforce_runtime_retention();
     }
 }
 
@@ -5171,12 +5737,13 @@ trait ObservedLease: Send + Sync {
     fn duplicate(&self) -> Box<dyn ObservedLease>;
 
     /// Decrement-only release for batched teardown. Consumes the lease and
-    /// decrements its terminal's pin count immediately, but defers the owning
-    /// family's `enforce_retention` into the returned [`FamilyEnforcer`] rather
-    /// than running it inline. Callers dropping many pins at once decrement all
-    /// of them first, then run one enforcement pass per distinct family — keeping
-    /// release linear instead of quadratic.
-    fn release_deferred(self: Box<Self>) -> FamilyEnforcer;
+    /// decrements its terminal's pin count immediately. When that was the last
+    /// pin, it defers the owning family's `enforce_retention` into the returned
+    /// [`FamilyEnforcer`] rather than running it inline; an overlapping pin
+    /// returns `None`. Callers dropping many pins at once decrement all of them
+    /// first, then run one pass per affected family and one aggregate pass per
+    /// runtime, keeping release linear instead of quadratic.
+    fn release_deferred(self: Box<Self>) -> Option<FamilyEnforcer>;
 }
 
 impl<K, V> ObservedLease for TerminalPin<K, V>
@@ -5208,10 +5775,14 @@ where
         )
     }
 
-    fn release_deferred(self: Box<Self>) -> FamilyEnforcer {
+    fn release_deferred(self: Box<Self>) -> Option<FamilyEnforcer> {
         // Narrow protection now: this pin no longer holds the terminal. This is
         // the same decrement `Drop` would perform, minus the enforcement pass.
-        self.terminal.pins.fetch_sub(1, Ordering::AcqRel);
+        let previous = self.terminal.pins.fetch_sub(1, Ordering::AcqRel);
+        assert!(
+            previous > 0,
+            "a deferred terminal pin releases exactly once"
+        );
         // Suppress the `Drop` decrement/enforce so the boxed pin can free its
         // Arcs normally without double-releasing or scanning.
         self.deferred.store(true, Ordering::Relaxed);
@@ -5220,13 +5791,14 @@ where
         // families even when their types coincide. This is the dedup key that
         // collapses N pins in a family to one enforcement.
         let family_id = Arc::as_ptr(&self.family.inner) as *const () as usize;
-        FamilyEnforcer {
+        (previous == 1).then(|| FamilyEnforcer {
             family_id,
+            core: self.family.core.clone(),
             enforce: Box::new({
                 let family = self.family.clone();
                 move || family.enforce_retention()
             }),
-        }
+        })
     }
 }
 
@@ -5237,6 +5809,7 @@ where
 /// family has been decrement-released.
 struct FamilyEnforcer {
     family_id: usize,
+    core: Arc<RuntimeCore>,
     enforce: Box<dyn FnOnce() + Send>,
 }
 
@@ -6150,6 +6723,222 @@ impl Drop for Task {
 }
 
 impl RuntimeCore {
+    fn live_retention_families(&self) -> Vec<(u64, Arc<dyn RetentionFamily>)> {
+        let mut registered = lock(&self.retention_families);
+        let mut live = Vec::with_capacity(registered.len());
+        registered.retain(|token, family| {
+            if let Some(family) = family.upgrade() {
+                live.push((*token, family));
+                true
+            } else {
+                false
+            }
+        });
+        live
+    }
+
+    fn retention_charge_snapshot_from(
+        families: &[(u64, Arc<dyn RetentionFamily>)],
+    ) -> RuntimeRetentionSnapshot {
+        let mut snapshot = families.iter().fold(
+            RuntimeRetentionSnapshot::default(),
+            |mut total, (_, family)| {
+                let family = family.charge_snapshot();
+                total.retained_bytes = total.retained_bytes.saturating_add(family.retained_bytes);
+                total.dependency_pins =
+                    total.dependency_pins.saturating_add(family.dependency_pins);
+                total
+            },
+        );
+        snapshot.live_families = u64::try_from(families.len()).unwrap_or(u64::MAX);
+        snapshot
+    }
+
+    fn retention_snapshot(&self) -> RuntimeRetentionSnapshot {
+        Self::retention_charge_snapshot_from(&self.live_retention_families())
+    }
+
+    fn record_retention_peaks(&self, snapshot: RuntimeRetentionSnapshot) {
+        self.metrics
+            .peak_retained_bytes
+            .fetch_max(snapshot.retained_bytes, Ordering::Relaxed);
+        self.metrics
+            .peak_retained_dependency_pins
+            .fetch_max(snapshot.dependency_pins, Ordering::Relaxed);
+    }
+
+    fn runtime_retention_over_budget(&self, snapshot: RuntimeRetentionSnapshot) -> (bool, bool) {
+        (
+            snapshot.retained_bytes > self.retention_budgets.retained_bytes,
+            snapshot.dependency_pins > self.retention_budgets.dependency_pins,
+        )
+    }
+
+    /// A family-local deterministic charge quantum crossed. This cold probe
+    /// performs the cross-family sum and touches aggregate peak/pressure state;
+    /// ordinary publications remain confined to their existing family lock.
+    fn enforce_runtime_retention_after_probe(&self) {
+        self.metrics
+            .aggregate_retention_probes
+            .fetch_add(1, Ordering::Relaxed);
+        let snapshot = Self::retention_charge_snapshot_from(&self.live_retention_families());
+        self.record_retention_peaks(snapshot);
+        if snapshot.retained_bytes < self.next_retained_byte_sweep.load(Ordering::Acquire)
+            && snapshot.dependency_pins < self.next_dependency_pin_sweep.load(Ordering::Acquire)
+        {
+            return;
+        }
+        self.enforce_runtime_retention();
+    }
+
+    fn enforce_runtime_retention(&self) {
+        let snapshot = Self::retention_charge_snapshot_from(&self.live_retention_families());
+        self.record_retention_peaks(snapshot);
+        let (bytes_over, pins_over) = self.runtime_retention_over_budget(snapshot);
+        if !bytes_over && !pins_over {
+            return;
+        }
+        self.retention_sweep_pending.store(true, Ordering::Release);
+        if self
+            .retention_sweep_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return;
+        }
+        loop {
+            self.retention_sweep_pending.store(false, Ordering::Release);
+            self.run_runtime_retention_sweep();
+            #[cfg(test)]
+            self.interpose(InterposeSite::RetentionSweepRelease);
+            if self.retention_sweep_pending.swap(false, Ordering::AcqRel) {
+                continue;
+            }
+            self.retention_sweep_claimed.store(false, Ordering::Release);
+            // Close the handoff race: a publisher which observed the old claim
+            // sets `pending` before returning. If it arrived between our final
+            // pending check and release, reclaim ownership and run its pass.
+            if !self.retention_sweep_pending.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            if self
+                .retention_sweep_claimed
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+        }
+    }
+
+    fn run_runtime_retention_sweep(&self) {
+        let families = self.live_retention_families();
+        let initial = Self::retention_charge_snapshot_from(&families);
+        self.record_retention_peaks(initial);
+        let (byte_pressure, pin_pressure) = self.runtime_retention_over_budget(initial);
+        if !byte_pressure && !pin_pressure {
+            return;
+        }
+        if byte_pressure {
+            self.metrics
+                .retained_byte_pressure_events
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        if pin_pressure {
+            self.metrics
+                .dependency_pin_pressure_events
+                .fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Family registration is cold. Snapshot and prune its weak entries only
+        // under actual pressure, then perform all eviction without the registry
+        // lock. BTreeMap order is the stable family-token order.
+        let mut start = families.partition_point(|(token, _)| {
+            *token < self.retention_sweep_cursor.load(Ordering::Relaxed)
+        });
+        if start == families.len() {
+            start = 0;
+        }
+        loop {
+            let snapshot = Self::retention_charge_snapshot_from(&families);
+            let (bytes_over, pins_over) = self.runtime_retention_over_budget(snapshot);
+            if !bytes_over && !pins_over {
+                break;
+            }
+            let mut progress = false;
+            for offset in 0..families.len() {
+                let snapshot = Self::retention_charge_snapshot_from(&families);
+                let (bytes_over, pins_over) = self.runtime_retention_over_budget(snapshot);
+                if !bytes_over && !pins_over {
+                    break;
+                }
+                let index = (start + offset) % families.len();
+                let (token, family) = &families[index];
+                if family.evict_one() {
+                    progress = true;
+                    let next = families
+                        .get((index + 1) % families.len())
+                        .map_or(token.saturating_add(1), |(token, _)| *token);
+                    self.retention_sweep_cursor.store(next, Ordering::Relaxed);
+                    if bytes_over {
+                        self.metrics
+                            .retained_byte_evictions
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    if pins_over {
+                        self.metrics
+                            .dependency_pin_evictions
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            if !progress {
+                break;
+            }
+            start = (start + 1) % families.len();
+        }
+
+        let retained = Self::retention_charge_snapshot_from(&families);
+        let retained_bytes = retained.retained_bytes;
+        let retained_pins = retained.dependency_pins;
+        let byte_overage = retained_bytes.saturating_sub(self.retention_budgets.retained_bytes);
+        let pin_overage = retained_pins.saturating_sub(self.retention_budgets.dependency_pins);
+        if byte_overage > 0 {
+            self.metrics
+                .retained_byte_overflow_events
+                .fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .peak_retained_byte_overage
+                .fetch_max(byte_overage, Ordering::Relaxed);
+        }
+        if pin_overage > 0 {
+            self.metrics
+                .dependency_pin_overflow_events
+                .fetch_add(1, Ordering::Relaxed);
+            self.metrics
+                .peak_dependency_pin_overage
+                .fetch_max(pin_overage, Ordering::Relaxed);
+        }
+        let next_bytes = if byte_overage > 0 {
+            retained_bytes
+                .saturating_mul(2)
+                .max(retained_bytes.saturating_add(1))
+        } else {
+            self.retention_budgets.retained_bytes.saturating_add(1)
+        };
+        let next_pins = if pin_overage > 0 {
+            retained_pins
+                .saturating_mul(2)
+                .max(retained_pins.saturating_add(1))
+        } else {
+            self.retention_budgets.dependency_pins.saturating_add(1)
+        };
+        self.next_retained_byte_sweep
+            .store(next_bytes, Ordering::Release);
+        self.next_dependency_pin_sweep
+            .store(next_pins, Ordering::Release);
+    }
+
     fn revision_input(&self, revision: Revision, input: &InputIdentity) -> Option<u64> {
         let revisions = lock(&self.revisions);
         if revisions
@@ -6389,14 +7178,76 @@ impl PermitBudget {
     }
 }
 
-fn decrement_waiter<V>(state: &mut NodeState<V>, attempt_id: u64) {
+/// Drop one waiter and report whether an already-terminal attempt just lost its
+/// final waiter. Callers use the result only after releasing the node-state
+/// lock, because retention enforcement may revisit this node.
+fn decrement_waiter<V>(state: &mut NodeState<V>, attempt_id: u64) -> bool {
     if let Some(attempt) = state.attempts.iter_mut().find(|item| item.id == attempt_id) {
         match &mut attempt.state {
-            AttemptState::Computing { waiters, .. } | AttemptState::Terminal { waiters, .. } => {
-                *waiters -= 1
+            AttemptState::Computing { waiters, .. } => {
+                assert!(*waiters > 0, "a computing waiter releases exactly once");
+                *waiters -= 1;
+            }
+            AttemptState::Terminal { waiters, .. } => {
+                assert!(*waiters > 0, "a terminal waiter releases exactly once");
+                *waiters -= 1;
+                return *waiters == 0;
             }
         }
     }
+    false
+}
+
+fn retained_terminal_charge<V>(
+    outcome: &QueryOutcome<V>,
+    retained_value_charge: Option<u64>,
+    node: &NodeIdentity,
+    diagnostics: &[QueryDiagnostic],
+    work: &[(Arc<str>, u64)],
+    dependencies: &[Observation],
+    inputs: &[InputObservation],
+) -> (u64, u64) {
+    let mut bytes = std::mem::size_of::<QueryTerminal<V>>() as u64;
+    bytes = bytes
+        .saturating_add(node.family.len() as u64)
+        .saturating_add(node.key.len() as u64);
+    bytes = bytes.saturating_add(match outcome {
+        QueryOutcome::Success(_) => retained_value_charge.unwrap_or(0),
+        QueryOutcome::Failure(failure) => {
+            (failure.code.len() as u64).saturating_add(failure.payload.len() as u64)
+        }
+    });
+    for diagnostic in diagnostics {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<QueryDiagnostic>() as u64)
+            .saturating_add(diagnostic.identity.len() as u64)
+            .saturating_add(diagnostic.payload.len() as u64);
+        if let Some(position) = &diagnostic.presentation {
+            bytes = bytes
+                .saturating_add(std::mem::size_of::<PresentationPosition>() as u64)
+                .saturating_add(position.source.len() as u64);
+        }
+    }
+    for (identity, _) in work {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<(Arc<str>, u64)>() as u64)
+            .saturating_add(identity.len() as u64);
+    }
+    for dependency in dependencies {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<Observation>() as u64)
+            .saturating_add(dependency.node.family.len() as u64)
+            .saturating_add(dependency.node.key.len() as u64);
+    }
+    for input in inputs {
+        bytes = bytes
+            .saturating_add(std::mem::size_of::<InputObservation>() as u64)
+            .saturating_add(input.input.family.len() as u64)
+            .saturating_add(input.input.key.len() as u64);
+    }
+    let dependency_pins =
+        u64::try_from(dependencies.len().saturating_add(inputs.len())).unwrap_or(u64::MAX);
+    (bytes, dependency_pins)
 }
 
 fn canonical_diagnostics(mut diagnostics: Vec<QueryDiagnostic>) -> Vec<QueryDiagnostic> {
@@ -9450,6 +10301,93 @@ mod tests {
         let joined = joiner.join().unwrap().unwrap();
         assert!(Arc::ptr_eq(&owner, &joined));
         assert_eq!(joined.outcome(), &QueryOutcome::Success(11));
+        assert_eq!(family.retention().terminals, 0);
+        assert_eq!(family.retention().memo_nodes, 0);
+    }
+
+    #[test]
+    fn canceled_last_waiter_reclaims_terminal_with_zero_retention() {
+        let runtime = QueryRuntime::with_retention_budgets(
+            2,
+            RetentionBudgets {
+                retained_bytes: 0,
+                dependency_pins: 0,
+            },
+        );
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family::<Key, u64>("zero-retention-cancel", 0)
+            .unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel();
+        let owner = thread::spawn({
+            let runtime = runtime.clone();
+            let family = family.clone();
+            move || {
+                runtime.query(
+                    &family,
+                    revision(1),
+                    Key("shared"),
+                    CancellationToken::new(),
+                    |_| {
+                        started_tx.send(()).unwrap();
+                        finish_rx.recv().unwrap();
+                        Ok(QueryOutput::success(11))
+                    },
+                )
+            }
+        });
+        started_rx.recv().unwrap();
+
+        let (parked_tx, parked_rx) = mpsc::channel();
+        let release_park = Arc::new(Barrier::new(2));
+        let blocked_once = Arc::new(AtomicBool::new(false));
+        runtime.set_interpose(Arc::new({
+            let release_park = release_park.clone();
+            let blocked_once = blocked_once.clone();
+            move |site| {
+                if site == InterposeSite::NodeJoinPark && !blocked_once.swap(true, Ordering::SeqCst)
+                {
+                    parked_tx.send(()).unwrap();
+                    release_park.wait();
+                }
+            }
+        }));
+        let cancellation = CancellationToken::new();
+        let waiter = thread::spawn({
+            let runtime = runtime.clone();
+            let family = family.clone();
+            let cancellation = cancellation.clone();
+            move || {
+                runtime.query(&family, revision(1), Key("shared"), cancellation, |_| {
+                    panic!("waiter cannot become owner while shared work is live")
+                })
+            }
+        });
+        parked_rx.recv().unwrap();
+
+        // Publish while the only waiter is parked. The terminal remains above
+        // the zero budget solely because that waiter still protects it.
+        finish_tx.send(()).unwrap();
+        while runtime.metrics().green_publications != 1 {
+            thread::yield_now();
+        }
+        assert!(runtime.metrics().retained_bytes > 0);
+
+        let canceler = thread::spawn({
+            let cancellation = cancellation.clone();
+            move || cancellation.cancel()
+        });
+        while !cancellation.is_canceled() {
+            thread::yield_now();
+        }
+        release_park.wait();
+        canceler.join().unwrap();
+        owner.join().unwrap().unwrap();
+        assert_eq!(waiter.join().unwrap().unwrap_err(), QueryAbort::Canceled);
+        runtime.clear_interpose();
+        assert_eq!(runtime.metrics().retained_bytes, 0);
+        assert_eq!(runtime.metrics().retained_dependency_pins, 0);
         assert_eq!(family.retention().terminals, 0);
         assert_eq!(family.retention().memo_nodes, 0);
     }
@@ -12509,6 +13447,54 @@ mod tests {
         drop(sentinel_pin);
     }
 
+    #[test]
+    fn batched_release_runs_one_aggregate_pass_after_all_families() {
+        let runtime = QueryRuntime::with_retention_budgets(
+            1,
+            RetentionBudgets {
+                retained_bytes: 0,
+                dependency_pins: u64::MAX,
+            },
+        );
+        publish_empty(&runtime, [revision(1)]);
+        let first = runtime.family::<Slot, u64>("batch-global-a", 8).unwrap();
+        let second = runtime.family::<Slot, u64>("batch-global-b", 8).unwrap();
+        let first_attempt = runtime.request(
+            &first,
+            revision(1),
+            Slot(0),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(0)),
+        );
+        let first_pin = first
+            .pin_terminal(first_attempt.terminal().unwrap())
+            .unwrap();
+        drop(first_attempt);
+        let second_attempt = runtime.request(
+            &second,
+            revision(1),
+            Slot(0),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(0)),
+        );
+        let second_pin = second
+            .pin_terminal(second_attempt.terminal().unwrap())
+            .unwrap();
+        drop(second_attempt);
+
+        let before = runtime.metrics().retained_byte_pressure_events;
+        let mut held: Vec<Box<dyn ObservedLease>> = vec![Box::new(first_pin), Box::new(second_pin)];
+        batched_release(&mut held);
+
+        let after = runtime.metrics();
+        assert_eq!(
+            after.retained_byte_pressure_events - before,
+            1,
+            "heterogeneous batched teardown runs one runtime-wide pressure pass"
+        );
+        assert_eq!(after.retained_bytes, 0);
+    }
+
     // A session-held `RetainedPinSet` keeps a completed request's observed
     // terminal retained past its task, deduplicates a re-lease of the same
     // terminal, and hands off atomically to a successor set: pressure applied
@@ -13133,5 +14119,504 @@ mod tests {
             )
             .unwrap();
         assert!(Arc::ptr_eq(&reused, &dependent));
+    }
+
+    fn budget_unit_charge(family: &'static str, key: &'static str, value_charge: u64) -> u64 {
+        let output = QueryOutput::success(0_u64).with_retained_value_charge(value_charge);
+        retained_terminal_charge(
+            &output.outcome,
+            output.retained_value_charge,
+            &NodeIdentity {
+                family: family.into(),
+                key: key.into(),
+            },
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .0
+    }
+
+    #[test]
+    fn family_estimator_charges_success_without_an_output_override() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .family_with_equality_and_retained_charge::<Key, u64>(
+                "charged-family",
+                8,
+                PartialEq::eq,
+                |_| 1234,
+            )
+            .unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let terminal = runtime
+            .query(
+                &family,
+                revision(1),
+                Key("value"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(7)),
+            )
+            .unwrap();
+        assert!(terminal.retained_charge() >= 1234);
+        assert_eq!(runtime.metrics().retained_bytes, terminal.retained_charge());
+    }
+
+    #[test]
+    fn family_watermarks_bound_cross_family_probe_count() {
+        let runtime = QueryRuntime::with_retention_budgets(
+            1,
+            RetentionBudgets {
+                retained_bytes: 1024 * 1024 * 1024,
+                dependency_pins: u64::MAX,
+            },
+        );
+        let family = runtime
+            .family_with_equality_and_retained_charge::<Key, u64>(
+                "probe-quantum",
+                512,
+                PartialEq::eq,
+                |_| 64 * 1024,
+            )
+            .unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        for index in 0..256 {
+            let key = Box::leak(format!("probe-{index}").into_boxed_str());
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Key(key),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(index)),
+                )
+                .unwrap();
+        }
+        let metrics = runtime.metrics();
+        assert!(metrics.aggregate_retention_probes > 0);
+        assert!(
+            metrics.aggregate_retention_probes <= 3,
+            "a family probes by charge quantum, not per publication: {metrics:?}"
+        );
+    }
+
+    #[test]
+    fn byte_probe_rebases_after_reclaim_and_enforces_on_regrowth() {
+        let budgets = RetentionBudgets {
+            retained_bytes: 1024,
+            dependency_pins: u64::MAX,
+        };
+        let mut retention = FamilyRetentionQueue::<Key, u64>::new(budgets);
+        let quantum = retention.byte_probe_quantum;
+        assert!(quantum > 1);
+
+        assert!(retention.publish(
+            RetentionEntry {
+                node: Weak::new(),
+                attempt: 1,
+            },
+            quantum * 8,
+            0,
+        ));
+        retention.remove_charge(quantum * 7, 0);
+        assert!(retention.next_byte_probe - retention.retained_bytes <= quantum);
+
+        assert!(!retention.publish(
+            RetentionEntry {
+                node: Weak::new(),
+                attempt: 2,
+            },
+            quantum - 1,
+            0,
+        ));
+        assert!(retention.publish(
+            RetentionEntry {
+                node: Weak::new(),
+                attempt: 3,
+            },
+            1,
+            0,
+        ));
+    }
+
+    #[test]
+    fn dependency_pin_probe_rebases_after_reclaim_and_enforces_on_regrowth() {
+        let budgets = RetentionBudgets {
+            retained_bytes: u64::MAX,
+            dependency_pins: 1024,
+        };
+        let mut retention = FamilyRetentionQueue::<Key, u64>::new(budgets);
+        let quantum = retention.pin_probe_quantum;
+        assert!(quantum > 1);
+
+        assert!(retention.publish(
+            RetentionEntry {
+                node: Weak::new(),
+                attempt: 1,
+            },
+            0,
+            quantum * 8,
+        ));
+        retention.remove_charge(0, quantum * 7);
+        assert!(retention.next_pin_probe - retention.dependency_pins <= quantum);
+
+        assert!(!retention.publish(
+            RetentionEntry {
+                node: Weak::new(),
+                attempt: 2,
+            },
+            0,
+            quantum - 1,
+        ));
+        assert!(retention.publish(
+            RetentionEntry {
+                node: Weak::new(),
+                attempt: 3,
+            },
+            0,
+            1,
+        ));
+    }
+
+    #[test]
+    fn byte_pressure_evicts_in_stable_family_round_robin_order() {
+        let unit = budget_unit_charge("budget-a", "0", 100);
+        let runtime = QueryRuntime::with_retention_budgets(
+            1,
+            RetentionBudgets {
+                retained_bytes: unit * 2,
+                dependency_pins: u64::MAX,
+            },
+        );
+        let first = runtime
+            .family_with_equality_and_retained_charge::<Key, u64>(
+                "budget-a",
+                8,
+                PartialEq::eq,
+                |_| 100,
+            )
+            .unwrap();
+        let second = runtime
+            .family_with_equality_and_retained_charge::<Key, u64>(
+                "budget-b",
+                8,
+                PartialEq::eq,
+                |_| 100,
+            )
+            .unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let caller_held = runtime
+            .query(
+                &first,
+                revision(1),
+                Key("0"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(0)),
+            )
+            .unwrap();
+        for (key, value) in [("0", 1), ("1", 2)] {
+            runtime
+                .query(
+                    &second,
+                    revision(1),
+                    Key(key),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(value)),
+                )
+                .unwrap();
+        }
+        assert_eq!(caller_held.outcome(), &QueryOutcome::Success(0));
+        assert_eq!(first.retention().terminals, 0);
+        assert_eq!(second.retention().terminals, 2);
+        runtime
+            .query(
+                &first,
+                revision(1),
+                Key("1"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(3)),
+            )
+            .unwrap();
+        // A later pressure event resumes after the family evicted above rather
+        // than always restarting at the lowest family token.
+        assert_eq!(first.retention().terminals, 1);
+        assert_eq!(second.retention().terminals, 1);
+        let metrics = runtime.metrics();
+        assert_eq!(metrics.retained_bytes, unit * 2);
+        assert_eq!(metrics.retained_byte_evictions, 2);
+    }
+
+    #[test]
+    fn protected_byte_overflow_reclaims_when_request_bridge_releases() {
+        let unit = budget_unit_charge("protected", "0", 100);
+        let runtime = QueryRuntime::with_retention_budgets(
+            1,
+            RetentionBudgets {
+                retained_bytes: unit,
+                dependency_pins: u64::MAX,
+            },
+        );
+        let family = runtime
+            .family_with_equality_and_retained_charge::<Key, u64>(
+                "protected",
+                8,
+                PartialEq::eq,
+                |_| 100,
+            )
+            .unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let first = runtime.request(
+            &family,
+            revision(1),
+            Key("0"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(0)),
+        );
+        let second = runtime.request(
+            &family,
+            revision(1),
+            Key("1"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(1)),
+        );
+        assert!(runtime.metrics().retained_byte_overflow_events > 0);
+        assert_eq!(runtime.metrics().retained_bytes, unit * 2);
+        drop(second);
+        assert_eq!(runtime.metrics().retained_bytes, unit);
+        assert_eq!(family.retention().terminals, 1);
+        drop(first);
+    }
+
+    #[test]
+    fn protected_overflow_does_not_repeat_aggregate_scans_below_watermark() {
+        let unit = budget_unit_charge("watermark", "0", 100);
+        let runtime = QueryRuntime::with_retention_budgets(
+            1,
+            RetentionBudgets {
+                retained_bytes: unit,
+                dependency_pins: u64::MAX,
+            },
+        );
+        let family = runtime
+            .family_with_equality_and_retained_charge::<Key, u64>(
+                "watermark",
+                0,
+                PartialEq::eq,
+                |_| 100,
+            )
+            .unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let first = runtime.request(
+            &family,
+            revision(1),
+            Key("0"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(0)),
+        );
+        let second = runtime.request(
+            &family,
+            revision(1),
+            Key("1"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(1)),
+        );
+        let before = runtime.metrics();
+        let third = runtime.request(
+            &family,
+            revision(1),
+            Key("2"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(2)),
+        );
+        let after = runtime.metrics();
+
+        assert_eq!(
+            after.retained_byte_pressure_events, before.retained_byte_pressure_events,
+            "family-limit enforcement must not bypass the aggregate watermark"
+        );
+        assert_eq!(
+            after.retention_scan_entries - before.retention_scan_entries,
+            0,
+            "both family and aggregate geometric watermarks suppress a protected rescan"
+        );
+        drop((third, second, first));
+    }
+
+    #[test]
+    fn aggregate_pressure_respects_selection_and_revision_roots() {
+        let make_runtime = || {
+            QueryRuntime::with_retention_budgets(
+                1,
+                RetentionBudgets {
+                    retained_bytes: 0,
+                    dependency_pins: u64::MAX,
+                },
+            )
+        };
+
+        let runtime = make_runtime();
+        let family = runtime.family::<Key, u64>("selection-root", 8).unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let attempt = runtime.request(
+            &family,
+            revision(1),
+            Key("value"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(1)),
+        );
+        let mut selection = family.selection();
+        selection.publish(attempt.terminal().unwrap()).unwrap();
+        attempt.release_result_lease();
+        drop(attempt);
+        assert!(runtime.metrics().retained_bytes > 0);
+        drop(selection);
+        assert_eq!(runtime.metrics().retained_bytes, 0);
+
+        let runtime = make_runtime();
+        let family = runtime.family::<Key, u64>("revision-root", 8).unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let attempt = runtime.request(
+            &family,
+            revision(1),
+            Key("value"),
+            CancellationToken::new(),
+            |_| Ok(QueryOutput::success(1)),
+        );
+        let revision_root = family.retain_revision(revision(1));
+        attempt.release_result_lease();
+        drop(attempt);
+        assert!(runtime.metrics().retained_bytes > 0);
+        drop(revision_root);
+        assert_eq!(runtime.metrics().retained_bytes, 0);
+    }
+
+    #[test]
+    fn dependency_observation_budget_reclaims_pull_validation_edges() {
+        let runtime = QueryRuntime::with_retention_budgets(
+            1,
+            RetentionBudgets {
+                retained_bytes: u64::MAX,
+                dependency_pins: 0,
+            },
+        );
+        let leaf = runtime.family::<Key, u64>("pin-leaf", 8).unwrap();
+        let root = runtime.family::<Key, u64>("pin-root", 8).unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        runtime
+            .query(
+                &leaf,
+                revision(1),
+                Key("leaf"),
+                CancellationToken::new(),
+                |_| Ok(QueryOutput::success(1)),
+            )
+            .unwrap();
+        let rooted = runtime
+            .query(
+                &root,
+                revision(1),
+                Key("root"),
+                CancellationToken::new(),
+                |context| {
+                    context.query(&leaf, Key("leaf"), |_| {
+                        panic!("the retained leaf is reused")
+                    })?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        assert_eq!(rooted.dependencies().len(), 1);
+        let metrics = runtime.metrics();
+        assert_eq!(metrics.retained_dependency_pins, 0);
+        assert!(metrics.dependency_pin_overflow_events > 0);
+        assert!(metrics.dependency_pin_evictions > 0);
+    }
+
+    #[test]
+    fn concurrent_publisher_hands_pending_pressure_to_sweep_owner() {
+        let runtime = QueryRuntime::with_retention_budgets(
+            2,
+            RetentionBudgets {
+                retained_bytes: 0,
+                dependency_pins: u64::MAX,
+            },
+        );
+        let family = runtime.family::<Key, u64>("sweep-handoff", 8).unwrap();
+        publish_empty(&runtime, [revision(1)]);
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let blocked_once = Arc::new(AtomicBool::new(false));
+        runtime.set_interpose(Arc::new({
+            let entered = entered.clone();
+            let release = release.clone();
+            move |site| {
+                if site == InterposeSite::RetentionSweepRelease
+                    && !blocked_once.swap(true, Ordering::SeqCst)
+                {
+                    entered.wait();
+                    release.wait();
+                }
+            }
+        }));
+        let first = thread::spawn({
+            let runtime = runtime.clone();
+            let family = family.clone();
+            move || {
+                runtime
+                    .query(
+                        &family,
+                        revision(1),
+                        Key("a"),
+                        CancellationToken::new(),
+                        |_| Ok(QueryOutput::success(1)),
+                    )
+                    .unwrap()
+            }
+        });
+        entered.wait();
+        let second = thread::spawn({
+            let runtime = runtime.clone();
+            let family = family.clone();
+            move || {
+                runtime
+                    .query(
+                        &family,
+                        revision(1),
+                        Key("b"),
+                        CancellationToken::new(),
+                        |_| Ok(QueryOutput::success(2)),
+                    )
+                    .unwrap()
+            }
+        });
+        let held_second = second.join().unwrap();
+        release.wait();
+        let held_first = first.join().unwrap();
+        assert_eq!(held_first.outcome(), &QueryOutcome::Success(1));
+        assert_eq!(held_second.outcome(), &QueryOutcome::Success(2));
+        assert_eq!(runtime.metrics().retained_bytes, 0);
+        assert_eq!(family.retention().terminals, 0);
+    }
+
+    #[test]
+    fn dropping_last_family_releases_charge_while_terminal_arc_lives() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let terminal = {
+            let family = runtime.family::<Key, u64>("family-drop", 8).unwrap();
+            runtime
+                .query(
+                    &family,
+                    revision(1),
+                    Key("value"),
+                    CancellationToken::new(),
+                    |_| Ok(QueryOutput::success(7)),
+                )
+                .unwrap()
+        };
+        assert_eq!(runtime.metrics().retained_bytes, 0);
+        assert_eq!(runtime.metrics().retained_terminals, 0);
+        assert_eq!(terminal.outcome(), &QueryOutcome::Success(7));
     }
 }

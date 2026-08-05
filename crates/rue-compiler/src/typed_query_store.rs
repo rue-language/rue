@@ -62,15 +62,6 @@ pub(crate) enum RuntimeObservation {
     Input(rue_query::InputObservation),
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct QueryStoreRetention {
-    pub(crate) retained: usize,
-    pub(crate) protected: usize,
-    pub(crate) pinned: usize,
-    pub(crate) tombstones: usize,
-    pub(crate) evictions: usize,
-}
-
 /// Immutable lifecycle view used by metrics and the diagnostic attempt index.
 pub(crate) trait AttemptView: std::fmt::Debug + Send + Sync {
     fn id(&self) -> AttemptId;
