@@ -4081,10 +4081,9 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn mutually_recursive_accessors_are_rejected() {
-        // A cycle through several accessors is the same non-terminating
-        // expansion as a direct self-call, and is rejected at the point the
-        // expansion re-enters an accessor already on the stack (6.6:14).
+    fn mutually_recursive_accessors_retain_marked_calls_for_cfg_cycle_rejection() {
+        // Cross-body cycle rejection belongs to the canonical CFG dependency
+        // graph; semantic analysis must preserve both exact accessor calls.
         let source = "
 struct P {
     x: i64,
@@ -4101,12 +4100,14 @@ fn main() -> i32 {
     let p = P { x: 1 };
     if p.a() == 1 { 0 } else { 1 }
 }";
-        let errors = compile_with_accessors(source).expect_err("mutually recursive accessors");
-        assert!(
-            errors
-                .iter()
-                .any(|error| matches!(&error.kind, ErrorKind::AccessorRecursion { .. }))
-        );
+        let output = compile_with_accessors(source).expect("sema preserves the accessor cycle");
+        let calls = output
+            .functions
+            .iter()
+            .flat_map(|function| function.air.iter())
+            .filter(|(_, inst)| matches!(inst.data, AirInstData::AccessorCall { .. }))
+            .count();
+        assert_eq!(calls, 3);
     }
 
     #[test]
@@ -4358,9 +4359,7 @@ struct P {{
     }
 
     #[test]
-    fn accessor_guards_execute_before_the_read() {
-        // The inlined guards must be part of the caller's AIR: the bounds
-        // panic from the accessor body appears in main.
+    fn accessor_calls_remain_marked_for_mandatory_cfg_splicing() {
         let source = format!(
             "{GRID_ACCESSOR}
 fn main() -> i32 {{
@@ -4374,16 +4373,11 @@ fn main() -> i32 {{
             .iter()
             .find(|function| function.name == "main")
             .expect("main is analyzed");
-        let has_panic = main.air.iter().any(|(_, inst)| {
-            matches!(
-                &inst.data,
-                AirInstData::Intrinsic {
-                    runtime: Some(crate::RuntimeCallKind::Panic),
-                    ..
-                }
-            )
-        });
-        assert!(has_panic, "the accessor guard's panic inlines into main");
+        assert!(
+            main.air
+                .iter()
+                .any(|(_, inst)| matches!(inst.data, AirInstData::AccessorCall { .. }))
+        );
     }
 
     // =========================================================================

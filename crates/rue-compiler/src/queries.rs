@@ -526,6 +526,78 @@ pub(crate) fn collect_function_cfg_queries(
         })
         .collect::<std::collections::BTreeMap<_, _>>();
 
+    // Build the exact accessor subgraph over canonical per-body artifacts.
+    // These keys become nested `compiler.cfg` reads of each caller's
+    // optimized-CFG query, so an accessor-body edit invalidates precisely its
+    // transitive callers without an epoch-wide eligibility switch (RUE-1208).
+    let mut raw_accessor_keys = std::collections::BTreeMap::new();
+    for input in stable_inputs {
+        let body = match input.canonical.as_ref() {
+            crate::body_query::CanonicalBody::Ordinary { body, .. }
+            | crate::body_query::CanonicalBody::Anonymous { body, .. }
+            | crate::body_query::CanonicalBody::Specialization { body, .. } => body,
+        };
+        let materialization = crate::local_semantic_materialization::select_materialization_facts(
+            &input.function,
+            body,
+            durable_declarations,
+            durable_anonymous_nominals,
+            &callable_symbols,
+        )
+        .map_err(|error| CfgConstructionFailure {
+            errors: CompileError::new(
+                ErrorKind::InternalError(format!(
+                    "accessor CFG materialization fact selection failed: {error:?}"
+                )),
+                input.body_span,
+            )
+            .into(),
+            work: work.clone(),
+        })?;
+        let semantic_input = crate::cfg_query::CfgSemanticInput::Body {
+            input: std::sync::Arc::new(input.clone()),
+            materialization: std::sync::Arc::new(materialization),
+        };
+        raw_accessor_keys.insert(
+            input.function.clone(),
+            crate::cfg_query::CfgQueryKey::new(
+                input.function.clone(),
+                configuration.clone(),
+                semantic_input,
+            ),
+        );
+    }
+    let accessor_subgraph =
+        crate::cfg_query::accessor_cfg_subgraph(raw_accessor_keys).map_err(|failure| {
+            let (kind, span) = match failure {
+                crate::cfg_query::AccessorCfgSubgraphFailure::Missing(identity) => (
+                    ErrorKind::InternalError(format!(
+                        "accessor CFG dependency is missing: {identity:?}"
+                    )),
+                    rue_span::Span::default(),
+                ),
+                crate::cfg_query::AccessorCfgSubgraphFailure::Cycle(identity) => (
+                    ErrorKind::AccessorRecursion {
+                        method: crate::cfg_query::accessor_source_name(&identity),
+                    },
+                    stable_inputs
+                        .iter()
+                        .find(|input| input.function == identity)
+                        .map_or(rue_span::Span::default(), |input| input.body_span),
+                ),
+            };
+            CfgConstructionFailure {
+                errors: CompileError::new(kind, span).into(),
+                work: work.clone(),
+            }
+        })?;
+    let accessor_roots = accessor_subgraph.roots;
+    let accessor_dependencies = accessor_subgraph.dependencies;
+    // Accessors have no out-of-line ABI. Their raw CFGs are query
+    // dependencies only; every executable occurrence is consumed by the
+    // caller's mandatory splice above.
+    all_functions.retain(|(_, identity, _, _, _)| !accessor_subgraph.accessors.contains(identity));
+
     let _span = info_span!("cfg_collection", phase = "cfg_query_collection").entered();
     let aggregate_types = std::sync::Arc::new(stable_aggregate_types);
     let results: Vec<_> = all_functions
@@ -556,7 +628,9 @@ pub(crate) fn collect_function_cfg_queries(
                         canonical_semantic::CfgConstructionWork::default(),
                     ));
                 };
-                let semantic_input = if let Some(input) = current_input {
+                let semantic_input = if let Some(root) = accessor_roots.get(&semantic_identity) {
+                    root.semantic_input.clone()
+                } else if let Some(input) = current_input {
                     let body = match input.canonical.as_ref() {
                         crate::body_query::CanonicalBody::Ordinary { body, .. }
                         | crate::body_query::CanonicalBody::Anonymous { body, .. }
@@ -632,7 +706,7 @@ pub(crate) fn collect_function_cfg_queries(
                     ));
                 };
                 let func = std::sync::Arc::new(func);
-                let domains = match current_input
+                let mut domains = match current_input
                     .map(|input| {
                         crate::durable_cfg::CfgDomainProjection::from_body(
                             &func,
@@ -694,6 +768,10 @@ pub(crate) fn collect_function_cfg_queries(
                         configuration.clone(),
                         semantic_input,
                         opt_level,
+                        accessor_dependencies
+                            .get(&semantic_identity)
+                            .cloned()
+                            .unwrap_or_else(|| std::sync::Arc::new([])),
                         cancellation.clone(),
                     )
                     .map_err(|abort| {
@@ -783,6 +861,42 @@ pub(crate) fn collect_function_cfg_queries(
                         function_work,
                     )),
                     crate::cfg_query::CfgValue::Available(record) => {
+                        domains
+                            .admit_stable_symbols(&record.domains, &record.interner, &interner)
+                            .map_err(|failure| {
+                                (
+                                    CompileError::new(
+                                        failure.error_kind("CFG terminal relocation failed"),
+                                        body_span,
+                                    )
+                                    .into(),
+                                    function_work.clone(),
+                                )
+                            })?;
+                        domains
+                            .admit_stable_types(&record.domains, &type_pool, &aggregate_types)
+                            .map_err(|failure| {
+                                (
+                                    CompileError::new(
+                                        failure.error_kind("CFG terminal relocation failed"),
+                                        body_span,
+                                    )
+                                    .into(),
+                                    function_work.clone(),
+                                )
+                            })?;
+                        domains
+                            .admit_stable_strings(&record.domains, &strings)
+                            .map_err(|failure| {
+                                (
+                                    CompileError::new(
+                                        failure.error_kind("CFG terminal relocation failed"),
+                                        body_span,
+                                    )
+                                    .into(),
+                                    function_work.clone(),
+                                )
+                            })?;
                         let cfg = if record.domains.same_live_domain(&domains) {
                             record.cfg.clone()
                         } else {

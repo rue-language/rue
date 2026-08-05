@@ -115,7 +115,7 @@ impl Place {
         if self.projections.is_empty() {
             match self.base {
                 PlaceBase::Local(slot) => Some(slot),
-                PlaceBase::Param(_) => None,
+                PlaceBase::Param(_) | PlaceBase::Accessor(_) => None,
             }
         } else {
             None
@@ -128,7 +128,7 @@ impl Place {
         if self.projections.is_empty() {
             match self.base {
                 PlaceBase::Param(slot) => Some(slot),
-                PlaceBase::Local(_) => None,
+                PlaceBase::Local(_) | PlaceBase::Accessor(_) => None,
             }
         } else {
             None
@@ -195,6 +195,10 @@ impl CfgInstData {
                 name: *name,
                 args: args.duplicate(),
             },
+            Self::AccessorCall { name, args } => Self::AccessorCall {
+                name: *name,
+                args: args.duplicate(),
+            },
             Self::Intrinsic {
                 runtime,
                 name,
@@ -253,6 +257,7 @@ impl fmt::Display for Place {
         match self.base {
             PlaceBase::Local(slot) => write!(f, "${}", slot)?,
             PlaceBase::Param(slot) => write!(f, "%{}", slot)?,
+            PlaceBase::Accessor(value) => write!(f, "accessor%{}", value.as_u32())?,
         }
         if !self.projections.is_empty() {
             write!(f, "[{} projections]", self.projections.extent())?;
@@ -268,6 +273,9 @@ pub enum PlaceBase {
     Local(u32),
     /// Parameter slot (for parameters, including inout)
     Param(u32),
+    /// Mandatory-inline accessor call whose place result has not yet been
+    /// substituted by the inter-procedural CFG splice.
+    Accessor(CfgValue),
 }
 
 /// A projection applied to a place to reach a nested location.
@@ -490,6 +498,12 @@ pub enum CfgInstData {
         /// Function name (interned symbol)
         name: Spur,
         /// Start index into Cfg's call_args array
+        args: CfgCallArgs,
+    },
+
+    /// Mandatory-inline place-producing accessor call.
+    AccessorCall {
+        name: Spur,
         args: CfgCallArgs,
     },
 
@@ -1157,6 +1171,12 @@ impl Cfg {
                     args,
                 } => Call {
                     runtime: *runtime,
+                    name: domain!(symbol(*name)),
+                    args: cfg
+                        .push_call_args(self.call_args(args).iter().copied())
+                        .map_err(CfgRemapError::Edit)?,
+                },
+                AccessorCall { name, args } => AccessorCall {
                     name: domain!(symbol(*name)),
                     args: cfg
                         .push_call_args(self.call_args(args).iter().copied())
@@ -2131,6 +2151,10 @@ impl Cfg {
         let base_valid = match base {
             PlaceBase::Local(slot) => slot < self.num_locals,
             PlaceBase::Param(slot) => slot < self.num_params,
+            PlaceBase::Accessor(value) => {
+                (value.as_u32() as usize) < self.values.len()
+                    && matches!(self.get_inst(value).data, CfgInstData::AccessorCall { .. })
+            }
         };
         if !base_valid {
             return Err(Self::invalid_edit(operation, "place base is out of bounds"));
@@ -2633,6 +2657,9 @@ impl Cfg {
                 | IntCast { value: v, .. }
                 | Drop { value: v } => *v = map(*v),
                 PlaceRead { place } => {
+                    if let PlaceBase::Accessor(value) = &mut place.base {
+                        *value = map(*value);
+                    }
                     place.projections = payload::push_projections(
                         &mut self.projections,
                         payload::projections(&old_projections, &place.projections)
@@ -2654,6 +2681,9 @@ impl Cfg {
                 }
                 PlaceWrite { place, value } => {
                     *value = map(*value);
+                    if let PlaceBase::Accessor(base) = &mut place.base {
+                        *base = map(*base);
+                    }
                     place.projections = payload::push_projections(
                         &mut self.projections,
                         payload::projections(&old_projections, &place.projections)
@@ -2673,7 +2703,7 @@ impl Cfg {
                             }),
                     )?;
                 }
-                Call { args, .. } => {
+                Call { args, .. } | AccessorCall { args, .. } => {
                     *args = payload::push_call_args(
                         &mut self.call_args,
                         payload::call_args(&old_call_args, args)
@@ -3040,6 +3070,23 @@ impl Cfg {
                 }
                 write!(f, ")")
             }
+            CfgInstData::AccessorCall { name, args } => {
+                match interner {
+                    Some(interner) => write!(f, "accessor_call @{}(", interner.resolve(name))?,
+                    None => write!(f, "accessor_call @{}(", name.into_usize())?,
+                }
+                for (i, arg) in self.call_args(args).iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    match arg.mode {
+                        CfgArgMode::Inout => write!(f, "inout {}", arg.value)?,
+                        CfgArgMode::Borrow => write!(f, "borrow {}", arg.value)?,
+                        CfgArgMode::Normal => write!(f, "{}", arg.value)?,
+                    }
+                }
+                write!(f, ")")
+            }
             CfgInstData::Intrinsic {
                 runtime,
                 name,
@@ -3147,6 +3194,9 @@ impl Cfg {
             }
             PlaceBase::Param(slot) => {
                 let _ = write!(out, "param%{}", slot);
+            }
+            PlaceBase::Accessor(value) => {
+                let _ = write!(out, "accessor%{}", value.as_u32());
             }
         }
         for proj in self.get_place_projections(place) {

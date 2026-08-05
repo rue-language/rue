@@ -369,6 +369,7 @@ pub enum ContractViolationKind {
     InoutArgumentNotLvalue,
     NonIntegerOperationType,
     UnsupportedDebugType,
+    UnsplicedAccessor,
 }
 
 /// The closed, machine-readable cause of an oracle execution failure.
@@ -1347,6 +1348,7 @@ impl<'a> Interp<'a> {
                 };
                 (slot, cfg.num_params(), width, Some(slot))
             }
+            PlaceBase::Accessor(_) => return Some(ContractViolationKind::UnsplicedAccessor),
         };
         let out_of_bounds = if width == 0 {
             // Zero-sized roots consume no logical slot, so the canonical base
@@ -2652,6 +2654,12 @@ impl<'a> Interp<'a> {
                 Self::set_param(frame, *param_slot, val);
                 Value::Unit
             }
+            CfgInstData::AccessorCall { .. } => {
+                return Err(unsupported(
+                    UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+                    "accessor call reached the oracle",
+                ));
+            }
             CfgInstData::Call { runtime, name, .. } => {
                 let fname = self.interner().resolve(name).to_string();
                 let call_args = cfg.get_call_args(&inst.data).to_vec();
@@ -2755,6 +2763,14 @@ impl<'a> Interp<'a> {
                                     let place = match base {
                                         PlaceBase::Local(slot) => Place::local(slot, base_type),
                                         PlaceBase::Param(slot) => Place::param(slot, base_type),
+                                        PlaceBase::Accessor(_) => {
+                                            return Err(unsupported(
+                                                UnsupportedKind::ContractViolation(
+                                                    ContractViolationKind::UnsplicedAccessor,
+                                                ),
+                                                "accessor place reached call writeback",
+                                            ));
+                                        }
                                     };
                                     self.place_write(cfg, frame, &place, val)?;
                                 }
@@ -3128,6 +3144,10 @@ impl<'a> Interp<'a> {
                     format!("param place {slot} out of bounds"),
                 )),
             },
+            PlaceBase::Accessor(_) => Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::UnsplicedAccessor),
+                "accessor place reached oracle storage",
+            )),
         }
     }
 
@@ -3184,6 +3204,14 @@ impl<'a> Interp<'a> {
             let (store, slot) = match base {
                 PlaceBase::Local(slot) => (&mut frame.locals, slot as usize),
                 PlaceBase::Param(slot) => (&mut frame.params, slot as usize),
+                PlaceBase::Accessor(_) => {
+                    return Err(unsupported(
+                        UnsupportedKind::ContractViolation(
+                            ContractViolationKind::UnsplicedAccessor,
+                        ),
+                        "accessor place reached oracle write",
+                    ));
+                }
             };
             if slot >= store.len() {
                 store.resize(slot + 1, None);
@@ -3916,6 +3944,7 @@ fn promotion_key(base: PlaceBase) -> u64 {
     match base {
         PlaceBase::Local(slot) => (slot as u64) << 1,
         PlaceBase::Param(slot) => ((slot as u64) << 1) | 1,
+        PlaceBase::Accessor(value) => ((value.as_u32() as u64) << 2) | 3,
     }
 }
 

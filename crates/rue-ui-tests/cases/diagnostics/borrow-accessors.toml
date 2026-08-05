@@ -1,0 +1,26 @@
+[section]
+id = "diagnostics.borrow-accessors"
+name = "Borrow accessor diagnostics"
+description = "Provider-path accessor calls retain their second-class place diagnostics."
+
+[[case]]
+name = "returned_accessor_result_names_method_and_root"
+source = """
+struct P {
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+    }
+}
+fn read(borrow p: P) -> i64 {
+    return p.xr();
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    @intCast(read(borrow p))
+}
+"""
+preview = "borrow_accessors"
+compile_fail = true
+error_contains = ["E0250", "cannot return an accessor result", "`xr`", "`p`"]

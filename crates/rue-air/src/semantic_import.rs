@@ -547,6 +547,9 @@ pub struct SemanticLocalMaterialization<K, M> {
     pub type_pool: crate::FrozenTypeInternPool,
     pub interner: Arc<ThreadedRodeo>,
     pub aggregate_types: std::collections::HashMap<crate::Type, TypeInstanceKey<K, M>>,
+    /// Exact caller-owned handles explicitly pre-materialized for a mandatory
+    /// accessor splice, paired with their stable type identities.
+    pub materialized_types: Vec<(crate::Type, SemanticImportType<K, M>)>,
     pub strings: Vec<String>,
     pub warnings: Arc<[rue_error::CompileWarning]>,
     pub body_span: Span,
@@ -862,6 +865,12 @@ where
                     let name = resolve_function(function)?;
                     let args = call_args(args, current)?;
                     air.add_call(None, name, &args, ty, span)?;
+                    continue;
+                }
+                SemanticBodyInstData::AccessorCall { function, args } => {
+                    let name = resolve_function(function)?;
+                    let args = call_args(args, current)?;
+                    air.add_accessor_call(name, &args, ty, span)?;
                     continue;
                 }
                 SemanticBodyInstData::RuntimeCall { runtime, args } => {
@@ -1448,6 +1457,21 @@ where
         K: Eq + Hash,
         M: Clone + Eq + Hash,
     {
+        self.materialize_local_body_with_types(identity, callable_kind, body, body_span, &[])
+    }
+
+    pub fn materialize_local_body_with_types(
+        self,
+        identity: FunctionInstanceKey<K, M>,
+        callable_kind: crate::AnalyzedCallableKind,
+        body: &SemanticBody<K, M>,
+        body_span: Span,
+        additional_types: &[SemanticImportType<K, M>],
+    ) -> Result<SemanticLocalMaterialization<K, M>, SemanticBodyImportFailure>
+    where
+        K: Clone + Eq + Hash,
+        M: Clone + Eq + Hash,
+    {
         let completeness = self
             .local_completeness
             .ok_or(SemanticBodyImportFailure::Semantic(
@@ -1500,6 +1524,16 @@ where
             },
             |value| self.interner.get_or_intern(value),
         )?;
+        let materialized_types = additional_types
+            .iter()
+            .map(|stable| {
+                Ok((
+                    self.import_type_local(stable)
+                        .map_err(SemanticBodyImportFailure::Semantic)?,
+                    stable.clone(),
+                ))
+            })
+            .collect::<Result<Vec<_>, SemanticBodyImportFailure>>()?;
         let mut aggregate_types = std::collections::HashMap::new();
         let type_snapshot = self.type_pool.clone().freeze();
         for ty in type_snapshot.all_types() {
@@ -1537,6 +1571,7 @@ where
             type_pool: self.type_pool.freeze(),
             interner: Arc::new(self.interner),
             aggregate_types,
+            materialized_types,
             strings,
             warnings,
             body_span,
@@ -2688,6 +2723,7 @@ mod tests {
     ) -> crate::SemanticBody<&'static str, &'static str> {
         use crate::{SemanticBody, SemanticBodyAnchor, SemanticBodyInst, SemanticImportType};
         SemanticBody {
+            is_accessor: false,
             return_type: SemanticImportType::I32,
             instructions: data
                 .into_iter()

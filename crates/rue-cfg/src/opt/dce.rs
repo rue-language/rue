@@ -243,7 +243,7 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
         CfgInstData::ParamStore { value, .. } => f(*value),
 
         // Function calls
-        CfgInstData::Call { args, .. } => {
+        CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
             for arg in cfg.call_args(args) {
                 f(arg.value);
             }
@@ -285,6 +285,9 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
 
         // Place operations
         CfgInstData::PlaceRead { place } => {
+            if let crate::PlaceBase::Accessor(value) = place.base {
+                f(value);
+            }
             // Visit any index values used in projections
             for proj in cfg.get_place_projections(place) {
                 if let Projection::Index { index, .. } = proj {
@@ -294,6 +297,9 @@ pub(super) fn visit_instruction_uses(cfg: &Cfg, value: CfgValue, mut f: impl FnM
         }
         CfgInstData::PlaceWrite { place, value } => {
             f(*value);
+            if let crate::PlaceBase::Accessor(value) = place.base {
+                f(value);
+            }
             // Visit any index values used in projections
             for proj in cfg.get_place_projections(place) {
                 if let Projection::Index { index, .. } = proj {

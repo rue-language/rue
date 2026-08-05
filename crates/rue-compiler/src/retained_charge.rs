@@ -758,6 +758,9 @@ impl<K: RetainedCharge, M: RetainedCharge> RetainedCharge for rue_air::SemanticB
             Self::Call { function, args } => function
                 .retained_charge()
                 .saturating_add(args.retained_charge()),
+            Self::AccessorCall { function, args } => function
+                .retained_charge()
+                .saturating_add(args.retained_charge()),
             Self::RuntimeCall { args, .. } => args.retained_charge(),
             Self::CallSpecialized { identity, args } => identity
                 .retained_charge()

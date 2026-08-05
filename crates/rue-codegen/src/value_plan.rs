@@ -712,6 +712,7 @@ fn place_plan<A: ValueLowerAdapter>(
             slot,
             by_ref: ctx.cfg.is_param_by_ref(slot),
         },
+        PlaceBase::Accessor(_) => panic!("mandatory-inline accessor place reached codegen"),
     };
     let projections = ctx
         .cfg
@@ -1884,6 +1885,9 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
         CfgInstData::PlaceRead { .. } => lower_residual!(ResidualInput::PlaceRead),
         CfgInstData::PlaceWrite { value, .. } => {
             lower_residual!(ResidualInput::PlaceWrite { value: *value })
+        }
+        CfgInstData::AccessorCall { .. } => {
+            panic!("mandatory-inline accessor call reached codegen")
         }
     }
 }

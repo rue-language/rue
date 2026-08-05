@@ -312,6 +312,10 @@ pub enum SemanticBodyInstData<K, M> {
         function: FunctionInstanceKey<K, M>,
         args: Arc<[SemanticBodyCallArg]>,
     },
+    AccessorCall {
+        function: FunctionInstanceKey<K, M>,
+        args: Arc<[SemanticBodyCallArg]>,
+    },
     RuntimeCall {
         runtime: crate::RuntimeCallKind,
         args: Arc<[SemanticBodyCallArg]>,
@@ -448,6 +452,7 @@ macro_rules! semantic_body_inst_schema {
             StorageLive, SemanticBodyInstData::StorageLive { .. }, 55, "storage_live";
             StorageDead, SemanticBodyInstData::StorageDead { .. }, 56, "storage_dead";
             MarkMoved, SemanticBodyInstData::MarkMoved { .. }, 57, "mark_moved";
+            AccessorCall, SemanticBodyInstData::AccessorCall { .. }, 58, "accessor_call";
         }
     };
 }
@@ -650,6 +655,10 @@ impl<K, M> SemanticBodyInstData<K, M> {
             },
             D::Ret(v) => D::Ret(*v),
             D::Call { function, args } => D::Call {
+                function: function.try_map_identities(key, module)?,
+                args: args.clone(),
+            },
+            D::AccessorCall { function, args } => D::AccessorCall {
                 function: function.try_map_identities(key, module)?,
                 args: args.clone(),
             },
@@ -858,6 +867,10 @@ impl<K, M> SemanticBodyInstData<K, M> {
             D::Call {
                 function,
                 args: values,
+            }
+            | D::AccessorCall {
+                function,
+                args: values,
             } => {
                 visitor(SemanticBodyInstDependency::Function(function));
                 args(visitor, values);
@@ -972,6 +985,8 @@ pub struct SemanticBodyMethodReference<K, M> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticBody<K, M> {
+    /// Whether this body has the second-class, mandatory-splice accessor ABI.
+    pub is_accessor: bool,
     pub return_type: SemanticImportType<K, M>,
     pub instructions: Arc<[SemanticBodyInst<K, M>]>,
     pub places: Arc<[SemanticBodyPlace<K, M>]>,
@@ -1060,6 +1075,7 @@ impl<K, M> SemanticBody<K, M> {
             })
             .collect::<Result<Vec<_>, E>>()?;
         Ok(SemanticBody {
+            is_accessor: self.is_accessor,
             return_type: self.return_type.try_map_identities(key, module)?,
             instructions: instructions.into(),
             places: places.into(),
@@ -1347,12 +1363,16 @@ mod schema_tests {
                 is_param: false,
                 place: Some(4),
             },
+            D::AccessorCall {
+                function: FunctionInstanceKey::Definition("accessor"),
+                args: call_args(&[1]),
+            },
         ]
     }
 
     #[test]
     fn semantic_body_instruction_schema_has_stable_unique_metadata() {
-        assert_eq!(SEMANTIC_BODY_INST_KINDS.len(), 58);
+        assert_eq!(SEMANTIC_BODY_INST_KINDS.len(), 59);
         for (tag, kind) in SEMANTIC_BODY_INST_KINDS.iter().copied().enumerate() {
             assert_eq!(usize::from(kind.schema_tag()), tag);
             assert!(!kind.display_name().is_empty());
@@ -1489,6 +1509,13 @@ mod schema_tests {
             dependencies(&samples[57]),
             [SeenDependency::Instruction(1), SeenDependency::Place(4)]
         );
+        assert_eq!(
+            dependencies(&samples[58]),
+            [
+                SeenDependency::Definition("accessor"),
+                SeenDependency::Instruction(1)
+            ]
+        );
     }
 
     #[test]
@@ -1525,6 +1552,13 @@ mod schema_tests {
                 from_ty: SemanticImportType::Nominal(key),
                 ..
             } if key == "mapped:cast_type"
+        ));
+        assert!(matches!(
+            map(&samples[58]),
+            SemanticBodyInstData::AccessorCall {
+                function: FunctionInstanceKey::Definition(key),
+                ..
+            } if key == "mapped:accessor"
         ));
     }
 

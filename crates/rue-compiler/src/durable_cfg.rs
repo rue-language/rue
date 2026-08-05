@@ -74,6 +74,7 @@ fn live_instruction_kind(data: &AirInstData) -> rue_air::SemanticBodyInstKind {
             runtime: Some(_), ..
         } => K::RuntimeCall,
         AirInstData::Call { runtime: None, .. } => K::Call,
+        AirInstData::AccessorCall { .. } => K::AccessorCall,
         AirInstData::CallGeneric { .. } => K::CallGeneric,
         AirInstData::Intrinsic { .. } => K::Intrinsic,
         AirInstData::Param { .. } => K::Param,
@@ -352,13 +353,13 @@ impl RetainedCharge for CfgDomainProjection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CfgDomainFailure {
     Shape,
     Unsupported,
     Missing,
     MissingLiveType(Type),
-    MissingStableType,
+    MissingStableType(CanonicalType),
     MissingSymbol,
     MissingString,
     Edit(rue_cfg::CfgEditError),
@@ -380,6 +381,214 @@ impl CfgDomainFailure {
 }
 
 impl CfgDomainProjection {
+    /// Admit stable symbols already owned by a surrounding semantic output.
+    pub(crate) fn admit_stable_symbols(
+        &mut self,
+        old: &Self,
+        old_interner: &lasso::ThreadedRodeo,
+        new_interner: &lasso::ThreadedRodeo,
+    ) -> Result<(), CfgDomainFailure> {
+        for (old_symbol, stable) in &old.symbols {
+            if self
+                .symbols
+                .iter()
+                .any(|(_, candidate)| candidate == stable)
+            {
+                continue;
+            }
+            let symbol = new_interner.get_or_intern(old_interner.resolve(old_symbol));
+            self.symbols.push((symbol, stable.clone()));
+        }
+        self.symbols.sort_by(|left, right| {
+            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
+        });
+        self.symbols.dedup();
+        if self.symbols.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(CfgDomainFailure::Shape);
+        }
+        Ok(())
+    }
+
+    /// Admit stable types already owned by a surrounding semantic output.
+    pub(crate) fn admit_stable_types(
+        &mut self,
+        old: &Self,
+        type_pool: &rue_air::FrozenTypeInternPool,
+        aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+    ) -> Result<(), CfgDomainFailure> {
+        for (_, stable) in &old.types {
+            if self.current_type(stable).is_ok() {
+                continue;
+            }
+            let current = type_pool
+                .all_types()
+                .find(|candidate| {
+                    canonical_type_from_live(*candidate, type_pool, aggregates)
+                        .is_ok_and(|value| value == *stable)
+                })
+                .ok_or_else(|| CfgDomainFailure::MissingStableType(stable.clone()))?;
+            self.types.push((current, stable.clone()));
+        }
+        self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
+        Ok(())
+    }
+
+    /// Admit stable strings already owned by a surrounding semantic output.
+    ///
+    /// Optimized accessor splicing can add callee literals to a caller CFG.
+    /// The one-shot semantic adapter owns the merged program string table, so
+    /// relocation maps those stable literals to that table before importing
+    /// the optimized terminal.
+    pub(crate) fn admit_stable_strings(
+        &mut self,
+        old: &Self,
+        strings: &[String],
+    ) -> Result<(), CfgDomainFailure> {
+        for (_, stable) in &old.strings {
+            let index = strings
+                .iter()
+                .position(|value| value == stable.as_ref())
+                .ok_or(CfgDomainFailure::MissingString)
+                .and_then(|index| u32::try_from(index).map_err(|_| CfgDomainFailure::Shape))?;
+            if !self
+                .strings
+                .iter()
+                .any(|(candidate, value)| *candidate == index && value == stable)
+            {
+                self.strings.push((index, stable.clone()));
+            }
+        }
+        self.strings.sort_by_key(|(index, _)| *index);
+        self.strings.dedup();
+        if self.strings.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+            return Err(CfgDomainFailure::Shape);
+        }
+        Ok(())
+    }
+
+    /// Extend this function-local live domain with the stable values used by
+    /// an accessor CFG, then remap that CFG into the extended domain. Accessor
+    /// splicing preserves the callee's source spans and stable local atoms;
+    /// only dense string ids and live type/symbol ids are relocated.
+    pub(crate) fn import_accessor_cfg(
+        &mut self,
+        old: &Self,
+        cfg: &rue_cfg::Cfg,
+        old_interner: &lasso::ThreadedRodeo,
+        new_interner: &lasso::ThreadedRodeo,
+        strings: &mut Vec<String>,
+        new_body_span: Span,
+    ) -> Result<(rue_cfg::CfgEditor, std::collections::BTreeMap<u32, u32>), CfgDomainFailure> {
+        if old.incomplete_epoch.is_some() || self.incomplete_epoch.is_some() {
+            return Err(CfgDomainFailure::Missing);
+        }
+        for (_, stable) in &old.types {
+            self.current_type(stable)?;
+        }
+        for (live, stable) in &old.symbols {
+            if !self
+                .symbols
+                .iter()
+                .any(|(_, candidate)| candidate == stable)
+            {
+                let symbol = new_interner.get_or_intern(old_interner.resolve(live));
+                self.symbols.push((symbol, stable.clone()));
+            }
+        }
+        let mut string_map = std::collections::BTreeMap::new();
+        for (old_index, stable) in &old.strings {
+            let new_index = if let Some(index) =
+                strings.iter().position(|value| value == stable.as_ref())
+            {
+                u32::try_from(index).map_err(|_| CfgDomainFailure::Shape)?
+            } else {
+                let index = u32::try_from(strings.len()).map_err(|_| CfgDomainFailure::Shape)?;
+                strings.push(stable.to_string());
+                index
+            };
+            string_map.insert(*old_index, new_index);
+            if !self
+                .strings
+                .iter()
+                .any(|(index, value)| *index == new_index && value == stable)
+            {
+                self.strings.push((new_index, stable.clone()));
+            }
+        }
+        self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
+        self.symbols.sort_by(|left, right| {
+            (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
+        });
+        self.symbols.dedup();
+
+        let imported = cfg
+            .try_remap_domains(
+                |value| self.current_type(&old.stable_type(value)?),
+                |value| match self
+                    .current_nominal(&old.stable_nominal(Type::new_struct(value))?)?
+                    .kind()
+                {
+                    TypeKind::Struct(id) => Ok(id),
+                    _ => Err(CfgDomainFailure::Shape),
+                },
+                |value| match self
+                    .current_nominal(&old.stable_nominal(Type::new_enum(value))?)?
+                    .kind()
+                {
+                    TypeKind::Enum(id) => Ok(id),
+                    _ => Err(CfgDomainFailure::Shape),
+                },
+                |value: Spur| {
+                    let stable = old
+                        .symbols
+                        .iter()
+                        .find(|(symbol, _)| *symbol == value)
+                        .map(|(_, value)| value)
+                        .ok_or(CfgDomainFailure::MissingSymbol)?;
+                    self.symbols
+                        .iter()
+                        .find(|(_, identity)| identity == stable)
+                        .map(|(symbol, _)| *symbol)
+                        .ok_or(CfgDomainFailure::MissingSymbol)
+                },
+                |value| {
+                    string_map
+                        .get(&value)
+                        .copied()
+                        .ok_or(CfgDomainFailure::MissingString)
+                },
+                |value| {
+                    let anchor = old
+                        .spans
+                        .iter()
+                        .find(|(span, _)| *span == value)
+                        .map(|(_, anchor)| *anchor)
+                        .unwrap_or_else(|| StableCfgSpan::new(value, old.body_span));
+                    anchor.relocate(new_body_span)
+                },
+            )
+            .map_err(|error| match error {
+                rue_cfg::CfgRemapError::Domain(error) => error,
+                rue_cfg::CfgRemapError::Edit(error) => CfgDomainFailure::Edit(error),
+            })?;
+        Ok((imported, string_map))
+    }
+
+    pub(crate) fn callable_for_symbol(&self, name: Spur) -> Option<crate::FunctionInstanceKey> {
+        self.symbols.iter().find_map(|(live, stable)| {
+            if *live != name {
+                return None;
+            }
+            match stable {
+                StableCfgSymbol::Callable(callable) => Some(callable.clone()),
+                StableCfgSymbol::Specialization(identity) => {
+                    crate::semantic_identity::function_instance_from_specialization(identity)
+                }
+                StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => None,
+            }
+        })
+    }
+
     pub(crate) fn same_live_domain(&self, other: &Self) -> bool {
         let complete_or_same_epoch = match (&self.incomplete_epoch, &other.incomplete_epoch) {
             (None, None) => true,
@@ -404,7 +613,7 @@ impl CfgDomainProjection {
         body_span: Span,
         strings: &[String],
         interner: &lasso::ThreadedRodeo,
-        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
+        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure> + Copy,
         stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
     ) -> Result<Self, CfgDomainFailure> {
         let mut types = vec![
@@ -454,7 +663,7 @@ impl CfgDomainProjection {
                 AirInstData::IntCast { from_ty, .. } => {
                     types.push((*from_ty, stable_type(*from_ty)?));
                 }
-                AirInstData::Call { name, .. } => {
+                AirInstData::Call { name, .. } | AirInstData::AccessorCall { name, .. } => {
                     let symbol = stable_callable(*name)
                         .map(StableCfgSymbol::Callable)
                         .unwrap_or_else(|| {
@@ -761,10 +970,10 @@ impl CfgDomainProjection {
             crate::ModuleId,
         >,
         body: &rue_air::SemanticBody<crate::StableDefinitionKey, crate::ModuleId>,
-        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure>,
+        stable_type: impl Fn(Type) -> Result<CanonicalType, CfgDomainFailure> + Copy,
         stable_callable: impl Fn(lasso::Spur) -> Option<crate::FunctionInstanceKey>,
     ) -> Result<Self, CfgDomainFailure> {
-        Self::from_body_parts(
+        let mut projection = Self::from_body_parts(
             &materialization.air,
             &materialization.identity,
             &materialization.local_atoms,
@@ -776,7 +985,15 @@ impl CfgDomainProjection {
             &materialization.interner,
             stable_type,
             stable_callable,
-        )
+        )?;
+        // The caller's materialization includes its transitive accessor
+        // closure. Preserve the complete reverse map so callee-only stable
+        // types resolve to caller-owned live handles during mandatory splice.
+        projection
+            .types
+            .extend(materialization.materialized_types.iter().cloned());
+        projection.types = deduplicate_type_mappings(projection.types)?;
+        Ok(projection)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -887,6 +1104,10 @@ impl CfgDomainProjection {
                         ..
                     },
                     DurableAirInstData::Call { function, .. },
+                ) => symbols.push((*name, StableCfgSymbol::Callable(function.clone()))),
+                (
+                    AirInstData::AccessorCall { name, .. },
+                    DurableAirInstData::AccessorCall { function, .. },
                 ) => symbols.push((*name, StableCfgSymbol::Callable(function.clone()))),
                 (
                     AirInstData::Call {
@@ -1115,7 +1336,7 @@ impl CfgDomainProjection {
             .iter()
             .find(|(_, stable)| stable == value)
             .map(|(current, _)| *current)
-            .ok_or(CfgDomainFailure::MissingStableType)
+            .ok_or_else(|| CfgDomainFailure::MissingStableType(value.clone()))
     }
     fn stable_nominal(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
         self.stable_type(value)
@@ -1294,6 +1515,44 @@ mod tests {
         .unwrap();
         assert!(
             matches!(imported.get_inst(rue_cfg::CfgValue::from_raw(0)).data, CfgInstData::Call { name, .. } if name == new)
+        );
+    }
+
+    #[test]
+    fn accessor_import_reanchors_reused_callee_spans() {
+        let old_interner = lasso::ThreadedRodeo::new();
+        let new_interner = lasso::ThreadedRodeo::new();
+        let old_symbol = old_interner.get_or_intern("callee");
+        let new_symbol = new_interner.get_or_intern("callee");
+        let stable = StableCfgSymbol::Intrinsic(Arc::from("callee"));
+        let mut old = projection_with(old_symbol, stable.clone());
+        old.body_span = Span::new(10, 20);
+        old.spans = vec![(
+            Span::new(12, 13),
+            StableCfgSpan::Relative { start: 2, end: 3 },
+        )];
+        let mut current = projection_with(new_symbol, stable);
+        current.body_span = Span::new(30, 40);
+        current.spans.clear();
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        let block = cfg.new_block();
+        cfg.append_call(block, None, old_symbol, [], Type::I32, Span::new(12, 13))
+            .unwrap();
+
+        let (imported, _) = current
+            .import_accessor_cfg(
+                &old,
+                &cfg,
+                &old_interner,
+                &new_interner,
+                &mut Vec::new(),
+                Span::new(50, 60),
+            )
+            .unwrap();
+
+        assert_eq!(
+            imported.get_inst(rue_cfg::CfgValue::from_raw(0)).span,
+            Span::new(52, 53)
         );
     }
 }

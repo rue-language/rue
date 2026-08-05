@@ -252,7 +252,7 @@ impl Cfg {
                 out.push(*value);
             }
 
-            CfgInstData::Call { args, .. } => {
+            CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
                 for arg in self.call_args(args) {
                     out.push(arg.value);
                 }
@@ -278,6 +278,9 @@ impl Cfg {
     /// Collect the `CfgValue` operands hiding inside a place's `Index`
     /// projections.
     fn collect_place_operands(&self, place: &crate::inst::Place, out: &mut Vec<CfgValue>) {
+        if let PlaceBase::Accessor(value) = place.base {
+            out.push(value);
+        }
         for proj in self.get_place_projections(place) {
             if let Projection::Index { index, .. } = proj {
                 out.push(*index);
@@ -530,7 +533,7 @@ impl<'a> Verifier<'a> {
                     value,
                 };
                 match data {
-                    CfgInstData::Call { args, .. } => {
+                    CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
                         self.cfg
                             .checked_call_args(args)
                             .map_err(|error| self.payload_error(location, error))?;
@@ -945,6 +948,16 @@ impl<'a> Verifier<'a> {
             PlaceBase::Param(slot) => {
                 self.check_param_slot(slot, place.base_type, block, value, "place")?
             }
+            PlaceBase::Accessor(producer) => {
+                let inst = self.cfg.get_inst(producer);
+                if !matches!(inst.data, CfgInstData::AccessorCall { .. })
+                    || inst.ty != place.base_type
+                {
+                    return Err(self.error(format!(
+                        "{block}: {value} has an invalid accessor place producer"
+                    )));
+                }
+            }
         }
         let projections = self.cfg.get_place_projections(place);
         if let Some(pool) = self.type_pool {
@@ -1281,6 +1294,9 @@ impl<'a> Verifier<'a> {
                 f(*value, "stored value")
             }
             CfgInstData::PlaceRead { place } => {
+                if let PlaceBase::Accessor(producer) = place.base {
+                    f(producer, "accessor place producer");
+                }
                 for projection in self.cfg.get_place_projections(place) {
                     if let Projection::Index { index, .. } = projection {
                         f(*index, "projection index");
@@ -1288,6 +1304,9 @@ impl<'a> Verifier<'a> {
                 }
             }
             CfgInstData::PlaceWrite { place, value } => {
+                if let PlaceBase::Accessor(producer) = place.base {
+                    f(producer, "accessor place producer");
+                }
                 for projection in self.cfg.get_place_projections(place) {
                     if let Projection::Index { index, .. } = projection {
                         f(*index, "projection index");
@@ -1295,7 +1314,7 @@ impl<'a> Verifier<'a> {
                 }
                 f(*value, "place-write value");
             }
-            CfgInstData::Call { args, .. } => {
+            CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
                 for arg in self.cfg.call_args(args) {
                     f(arg.value, "call argument");
                 }

@@ -4831,6 +4831,44 @@ impl CompilerSession {
             ));
         }
         cfg_inputs.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut raw_accessor_keys = std::collections::BTreeMap::new();
+        for (function, semantic_input, _) in &cfg_inputs {
+            raw_accessor_keys.insert(
+                function.clone(),
+                crate::cfg_query::CfgQueryKey::new(
+                    function.clone(),
+                    graph.configuration.clone(),
+                    semantic_input.clone(),
+                ),
+            );
+        }
+        let accessor_subgraph = crate::cfg_query::accessor_cfg_subgraph(raw_accessor_keys)
+            .map_err(|failure| {
+                let (kind, span) = match failure {
+                    crate::cfg_query::AccessorCfgSubgraphFailure::Missing(identity) => (
+                        ErrorKind::InternalError(format!(
+                            "accessor CFG dependency is missing: {identity:?}"
+                        )),
+                        fallback_span,
+                    ),
+                    crate::cfg_query::AccessorCfgSubgraphFailure::Cycle(identity) => {
+                        let span = cfg_inputs
+                            .iter()
+                            .find(|(function, _, _)| function == &identity)
+                            .map_or(fallback_span, |(_, _, body_span)| *body_span);
+                        (
+                            ErrorKind::AccessorRecursion {
+                                method: crate::cfg_query::accessor_source_name(&identity),
+                            },
+                            span,
+                        )
+                    }
+                };
+                CompileError::new(kind, span)
+            })?;
+        let accessor_roots = accessor_subgraph.roots;
+        let accessor_dependencies = accessor_subgraph.dependencies;
+        let accessor_functions = accessor_subgraph.accessors;
         let mut cfgs = Vec::with_capacity(cfg_inputs.len());
         #[cfg(test)]
         self.rooted_cfg_executions.clear();
@@ -4838,6 +4876,9 @@ impl CompilerSession {
             tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
                 .entered();
         for (function, semantic_input, body_span) in cfg_inputs {
+            if accessor_functions.contains(&function) {
+                continue;
+            }
             let (optimized_cfg_key, attempt) = self
                 .queries
                 .revisioned
@@ -4845,8 +4886,15 @@ impl CompilerSession {
                     graph.revision,
                     function.clone(),
                     graph.configuration.clone(),
-                    semantic_input,
+                    accessor_roots
+                        .get(&function)
+                        .map(|key| key.semantic_input.clone())
+                        .unwrap_or(semantic_input),
                     options.opt_level,
+                    accessor_dependencies
+                        .get(&function)
+                        .cloned()
+                        .unwrap_or_else(|| Arc::new([])),
                     rue_query::CancellationToken::new(),
                 )
                 .map_err(|abort| {

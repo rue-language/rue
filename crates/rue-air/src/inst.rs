@@ -441,7 +441,7 @@ impl AirPlace {
         if self.projections.is_empty() {
             match self.base {
                 AirPlaceBase::Local(slot) => Some(slot),
-                AirPlaceBase::Param(_) => None,
+                AirPlaceBase::Param(_) | AirPlaceBase::Accessor(_) => None,
             }
         } else {
             None
@@ -454,7 +454,7 @@ impl AirPlace {
         if self.projections.is_empty() {
             match self.base {
                 AirPlaceBase::Param(slot) => Some(slot),
-                AirPlaceBase::Local(_) => None,
+                AirPlaceBase::Local(_) | AirPlaceBase::Accessor(_) => None,
             }
         } else {
             None
@@ -546,6 +546,10 @@ pub enum AirPlaceBase {
     Local(u32),
     /// Parameter slot (for parameters, including inout)
     Param(u32),
+    /// Result of a mandatory-inline `-> borrow T` accessor call. This is a
+    /// second-class place producer, not a value-producing ABI call; CFG
+    /// construction preserves it only until the accessor CFG splice.
+    Accessor(AirRef),
 }
 
 /// A projection applied to a place to reach a nested location.
@@ -1275,6 +1279,16 @@ impl AirEditor {
         self.air.add_call(runtime, name, args, ty, span)
     }
 
+    pub fn add_accessor_call(
+        &mut self,
+        name: Spur,
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.air.add_accessor_call(name, args, ty, span)
+    }
+
     pub fn add_call_generic(
         &mut self,
         name: Spur,
@@ -1552,6 +1566,23 @@ impl Air {
                             format!("place reference {place_ref} is outside the place store"),
                         )
                     })?;
+                if let AirPlaceBase::Accessor(call) = place.base {
+                    check_ref(call)?;
+                    if !matches!(self.get(call).data, AirInstData::AccessorCall { .. }) {
+                        return Err(fail(
+                            Some(index),
+                            format!("place {place_ref} has a non-accessor producer {call}"),
+                        ));
+                    }
+                    if self.get(call).ty != place.base_type {
+                        return Err(fail(
+                            Some(index),
+                            format!(
+                                "place {place_ref} accessor base type does not match its producer"
+                            ),
+                        ));
+                    }
+                }
                 let mut current = place.base_type;
                 for projection in self.get_place_projections(place) {
                     current = match *projection {
@@ -1760,7 +1791,7 @@ impl Air {
                         }
                     }
                 }
-                AirInstData::Call { name, args, .. } => {
+                AirInstData::Call { name, args, .. } | AirInstData::AccessorCall { name, args } => {
                     context
                         .validate_symbol(*name)
                         .map_err(|reason| fail(Some(index), reason))?;
@@ -2188,6 +2219,23 @@ impl Air {
                 name,
                 args,
             },
+            ty,
+            span,
+        }))
+    }
+
+    pub(crate) fn add_accessor_call(
+        &mut self,
+        name: Spur,
+        args: &[AirCallArg],
+        ty: Type,
+        span: Span,
+    ) -> Result<AirRef, AirBuildError> {
+        self.preflight_refs("accessor call arguments", args.iter().map(|arg| arg.value))?;
+        self.reserve_instruction("accessor call arguments")?;
+        let args = self.add_call_args(args)?;
+        Ok(self.push_inst(AirInst {
+            data: AirInstData::AccessorCall { name, args },
             ty,
             span,
         }))
@@ -3397,6 +3445,10 @@ pub enum AirInstData {
         args: AirCallArgs,
     },
 
+    /// Mandatory-inline place-producing accessor call (ADR-0062/RUE-1208).
+    /// Its result may only be used as [`AirPlaceBase::Accessor`].
+    AccessorCall { name: Spur, args: AirCallArgs },
+
     /// Generic function call - requires specialization before codegen.
     ///
     /// This is emitted when calling a function with `comptime` parameters
@@ -3713,6 +3765,19 @@ impl Air {
                     }
                     writeln!(f, ")")?;
                 }
+                AirInstData::AccessorCall { name, args } => {
+                    match interner {
+                        Some(interner) => write!(f, "accessor_call @{}(", interner.resolve(name))?,
+                        None => write!(f, "accessor_call @{}(", name.into_usize())?,
+                    }
+                    for (i, arg) in self.get_call_args(args).enumerate() {
+                        if i > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{}", arg)?;
+                    }
+                    writeln!(f, ")")?;
+                }
                 AirInstData::CallGeneric {
                     name,
                     type_args,
@@ -3914,6 +3979,7 @@ impl Air {
         match place.base {
             AirPlaceBase::Local(slot) => write!(f, "${}", slot)?,
             AirPlaceBase::Param(slot) => write!(f, "param%{}", slot)?,
+            AirPlaceBase::Accessor(call) => write!(f, "accessor%{}", call.as_u32())?,
         }
 
         // Write the projections

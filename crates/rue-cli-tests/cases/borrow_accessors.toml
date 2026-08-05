@@ -1,0 +1,74 @@
+[section]
+id = "cli.borrow_accessors"
+name = "Borrow accessor CFG splicing"
+description = "Marked place-returning accessor calls are mandatorily spliced before both backends."
+
+[[case]]
+name = "guarded_splice_aarch64"
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 { @panic("index out of bounds"); }
+        yield self.cells[i];
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [10, 20, 30, 40] };
+    if g.at(0) + g.at(3) == 50 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+compile_stdout_not_contains = [".at:"]
+
+[[case]]
+name = "accessor_local_destructor_is_linked_and_runs"
+description = "A destructor required only by a spliced accessor body remains in the caller's codegen dependency closure."
+files = [{ path = "main.rue", source = """
+struct D { value: i32 }
+
+drop fn D(self) {
+    @dbg(self.value);
+}
+
+struct P {
+    x: i64,
+
+    fn value(borrow self) -> borrow i64 {
+        let d = D { value: 77 };
+        yield self.x;
+    }
+}
+
+fn main() -> i32 {
+    let p = P { x: 9 };
+    if p.value() == 9 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "main.rue", "-o", "prog"]
+stdout = "77\n"
+exit_code = 0
+
+[[case]]
+name = "guarded_splice_x86_64"
+files = [{ path = "main.rue", source = """
+struct Grid {
+    cells: [i64; 4],
+
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 { @panic("index out of bounds"); }
+        yield self.cells[i];
+    }
+}
+fn main() -> i32 {
+    let g = Grid { cells: [10, 20, 30, 40] };
+    if g.at(0) + g.at(3) == 50 { 0 } else { 1 }
+}
+""" }]
+args = ["--preview", "borrow_accessors", "--emit", "asm", "--target", "x86-64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (x86-64-linux) ===", "main:"]
+compile_stdout_not_contains = [".at:"]

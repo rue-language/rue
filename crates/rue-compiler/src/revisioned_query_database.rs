@@ -10114,6 +10114,7 @@ fn resolve_parsed_semantic_signature(
                     crate::declaration_candidate::DeclarationParameterMode::Borrow => M::Borrow,
                     crate::declaration_candidate::DeclarationParameterMode::Inout => M::Inout,
                 },
+                is_accessor: *is_accessor,
                 is_unchecked: *is_unchecked,
                 is_extern: *is_extern,
                 is_c_export: *is_c_export,
@@ -15508,6 +15509,7 @@ impl RevisionedQueryDatabase {
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
         semantic_input: crate::cfg_query::CfgSemanticInput,
         opt_level: rue_cfg::OptLevel,
+        accessor_dependencies: Arc<[crate::cfg_query::CfgQueryKey]>,
         cancellation: CancellationToken,
     ) -> Result<
         (
@@ -15517,7 +15519,8 @@ impl RevisionedQueryDatabase {
         QueryAbort,
     > {
         let cfg = crate::cfg_query::CfgQueryKey::new(function, configuration, semantic_input);
-        let optimized = crate::cfg_query::OptimizedCfgQueryKey::new(cfg, opt_level);
+        let optimized =
+            crate::cfg_query::OptimizedCfgQueryKey::new(cfg, opt_level, accessor_dependencies);
         let attempt = self.runtime.request_registered(
             &self.optimized_cfgs,
             revision,
@@ -20465,6 +20468,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
             result,
             has_self,
             self_mode,
+            is_accessor,
             ..
         } = signature.signature
         else {
@@ -20496,6 +20500,7 @@ impl rue_air::DurableCallableSource<crate::StableDefinitionKey, ModuleId>
                     rue_air::SemanticParameterMode::Inout
                 }
             },
+            is_accessor,
         })
     }
 
@@ -23036,6 +23041,7 @@ pub(crate) mod test_support {
                         rue_air::SemanticParameterMode::Inout
                     }
                 },
+                is_accessor: false,
             })
         }
     }
@@ -34543,6 +34549,7 @@ fn main() -> i32 {
             std::slice::from_ref(&callable),
             &[],
             std::slice::from_ref(&module),
+            &[],
             &[],
         )
         .expect("durable provider export materializes in a fresh local epoch");

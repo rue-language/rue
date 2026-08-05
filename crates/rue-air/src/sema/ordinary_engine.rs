@@ -287,6 +287,12 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
     pub(crate) fn function_body_info(&self, name: Spur) -> Option<FunctionInfo> {
         self.storage.function_body_info(name)
     }
+    pub(crate) fn function_identity(
+        &self,
+        symbol: Spur,
+    ) -> Result<crate::SemanticDefinitionToken, crate::SemanticBodyExportFailure> {
+        self.storage.function_identity(symbol)
+    }
     pub(crate) fn value_const(&self, key: &(FileId, Spur)) -> Option<ConstInfo> {
         self.storage.value_const(key.0, key.1)
     }
@@ -1697,6 +1703,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 identity,
                 callable_kind: if is_destructor {
                     crate::AnalyzedCallableKind::Destructor
+                } else if is_accessor {
+                    crate::AnalyzedCallableKind::Accessor
                 } else {
                     crate::AnalyzedCallableKind::Ordinary
                 },
@@ -2129,7 +2137,6 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             infer_ctx,
             accessor_trailing_yield: None,
             accessor_call_insts: HashMap::new(),
-            accessor_expansion_stack: Vec::new(),
             expression_loans: Vec::new(),
             inline_resolved_types: Vec::new(),
             place_aliases: HashMap::new(),

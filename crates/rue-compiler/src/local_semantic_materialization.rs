@@ -56,6 +56,69 @@ pub(crate) struct LocalMaterializationFacts {
     pub(crate) nominal_metadata: Arc<[LocalNominalMetadataFact]>,
     pub(crate) modules: Arc<[ModuleId]>,
     pub(crate) builtin_nominals: Arc<[LocalBuiltinNominalRequest]>,
+    /// Exact stable types that must exist in this local epoch even when they
+    /// originate in an accessor body that will be mandatorily spliced here.
+    pub(crate) required_types: Arc<[crate::durable_semantics::DurableType]>,
+}
+
+impl LocalMaterializationFacts {
+    pub(crate) fn union<'a>(facts: impl IntoIterator<Item = &'a Self>) -> Self {
+        let mut declarations = Vec::new();
+        let mut anonymous_nominals = Vec::new();
+        let mut callables = Vec::new();
+        let mut nominal_metadata = Vec::new();
+        let mut modules = Vec::new();
+        let mut builtin_nominals = Vec::new();
+        let mut required_types = Vec::new();
+        for facts in facts {
+            for (source, destination) in [(facts.declarations.as_ref(), &mut declarations)] {
+                for value in source {
+                    if !destination.contains(value) {
+                        destination.push(value.clone());
+                    }
+                }
+            }
+            for value in facts.anonymous_nominals.iter() {
+                if !anonymous_nominals.contains(value) {
+                    anonymous_nominals.push(value.clone());
+                }
+            }
+            for value in facts.callables.iter() {
+                if !callables.contains(value) {
+                    callables.push(value.clone());
+                }
+            }
+            for value in facts.nominal_metadata.iter() {
+                if !nominal_metadata.contains(value) {
+                    nominal_metadata.push(value.clone());
+                }
+            }
+            for value in facts.modules.iter() {
+                if !modules.contains(value) {
+                    modules.push(value.clone());
+                }
+            }
+            for value in facts.builtin_nominals.iter() {
+                if !builtin_nominals.contains(value) {
+                    builtin_nominals.push(value.clone());
+                }
+            }
+            for value in facts.required_types.iter() {
+                if !required_types.contains(value) {
+                    required_types.push(value.clone());
+                }
+            }
+        }
+        Self {
+            declarations: declarations.into(),
+            anonymous_nominals: anonymous_nominals.into(),
+            callables: callables.into(),
+            nominal_metadata: nominal_metadata.into(),
+            modules: modules.into(),
+            builtin_nominals: builtin_nominals.into(),
+            required_types: required_types.into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,6 +165,7 @@ impl RetainedCharge for LocalMaterializationFacts {
             .saturating_add(self.nominal_metadata.retained_charge())
             .saturating_add(self.modules.retained_charge())
             .saturating_add(self.builtin_nominals.retained_charge())
+            .saturating_add(self.required_types.retained_charge())
     }
 }
 
@@ -378,6 +442,7 @@ pub(crate) fn materialize_canonical_body(
     nominal_metadata: &[LocalNominalMetadataFact],
     modules: &[ModuleId],
     builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
 ) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
     let (identity, body) = match canonical {
         crate::body_query::CanonicalBody::Ordinary { owner, body } => {
@@ -402,6 +467,7 @@ pub(crate) fn materialize_canonical_body(
         nominal_metadata,
         modules,
         builtin_facts,
+        materialization_types,
     )
 }
 
@@ -416,8 +482,13 @@ pub(crate) fn materialize_semantic_body(
     nominal_metadata: &[LocalNominalMetadataFact],
     modules: &[ModuleId],
     builtin_facts: &[LocalBuiltinNominalFact],
+    materialization_types: &[crate::durable_semantics::DurableType],
 ) -> Result<LocalSemanticMaterialization, LocalMaterializationFailure> {
-    let callable_kind = callable_kind_for_identity(&identity);
+    let callable_kind = if body.is_accessor {
+        rue_air::AnalyzedCallableKind::Accessor
+    } else {
+        callable_kind_for_identity(&identity)
+    };
 
     let mut destructors = std::collections::BTreeMap::new();
     for candidate in declarations {
@@ -643,7 +714,13 @@ pub(crate) fn materialize_semantic_body(
         })
         .collect();
     let epoch = rue_air::SemanticImportEpoch::new_local(nominals, callables, modules.to_vec())?;
-    Ok(epoch.materialize_local_body(identity, callable_kind, body, body_span)?)
+    Ok(epoch.materialize_local_body_with_types(
+        identity,
+        callable_kind,
+        body,
+        body_span,
+        materialization_types,
+    )?)
 }
 
 /// Select the transitive nominal and callable closure needed to materialize one
@@ -1125,8 +1202,21 @@ pub(crate) fn select_materialization_facts(
         slice_sources,
     };
     selection.callable(identity);
+    let mut required_types = Vec::new();
+    let mut require_type = |ty: &crate::durable_semantics::DurableType| {
+        if !required_types.contains(ty) {
+            required_types.push(ty.clone());
+        }
+    };
+    require_type(&body.return_type);
+    if !body.strings.is_empty() {
+        require_type(&rue_air::SemanticImportType::PtrConst(Box::new(
+            rue_air::SemanticImportType::U8,
+        )));
+    }
     selection.semantic_type(&body.return_type);
     for instruction in body.instructions.iter() {
+        require_type(&instruction.ty);
         selection.semantic_type(&instruction.ty);
         if let rue_air::SemanticBodyInstData::CallSpecialized { identity, .. } = &instruction.data
             && let Some(callable) =
@@ -1142,11 +1232,15 @@ pub(crate) fn select_materialization_facts(
                 }
                 Dependency::Nominal(nominal) => selection.nominal(nominal),
                 Dependency::Function(function) => selection.callable(function),
-                Dependency::Type(ty) => selection.semantic_type(ty),
+                Dependency::Type(ty) => {
+                    require_type(ty);
+                    selection.semantic_type(ty);
+                }
                 Dependency::Instruction(_) | Dependency::Place(_) | Dependency::String(_) => {}
             });
     }
     for place in body.places.iter() {
+        require_type(&place.base_type);
         selection.semantic_type(&place.base_type);
         for projection in place.projections.iter() {
             match projection {
@@ -1154,12 +1248,14 @@ pub(crate) fn select_materialization_facts(
                     selection.nominal(struct_key)
                 }
                 rue_air::SemanticBodyProjection::Index { array_type, .. } => {
+                    require_type(array_type);
                     selection.semantic_type(array_type)
                 }
             }
         }
     }
     for (_, ty) in body.param_drops.iter() {
+        require_type(ty);
         selection.semantic_type(ty);
     }
     for reference in body.method_references.iter() {
@@ -1215,6 +1311,7 @@ pub(crate) fn select_materialization_facts(
         nominal_metadata: nominal_metadata.into(),
         modules: selection.modules.into_iter().collect::<Vec<_>>().into(),
         builtin_nominals: selection.builtins.into_iter().collect::<Vec<_>>().into(),
+        required_types: required_types.into(),
     })
 }
 
@@ -1234,6 +1331,7 @@ pub(crate) fn select_drop_glue_materialization_facts(
         )
     }));
     let body = rue_air::SemanticBody {
+        is_accessor: false,
         return_type: rue_air::SemanticImportType::Unit,
         instructions: Arc::new([]),
         places: Arc::new([]),
@@ -1265,6 +1363,7 @@ mod tests {
     fn body() -> rue_air::SemanticBody<StableDefinitionKey, ModuleId> {
         use rue_air::{SemanticBody, SemanticBodyAnchor, SemanticBodyInst, SemanticBodyInstData};
         SemanticBody {
+            is_accessor: false,
             return_type: rue_air::SemanticImportType::I32,
             instructions: vec![
                 SemanticBodyInst {
@@ -1339,6 +1438,7 @@ mod tests {
                 &[],
                 std::slice::from_ref(&module),
                 &[],
+                &[],
             )
             .err(),
             Some(LocalMaterializationFailure::MissingNominalMetadata)
@@ -1357,6 +1457,7 @@ mod tests {
                 Some(rue_air::LangItem::StrBuf),
             )],
             std::slice::from_ref(&module),
+            &[],
             &[],
         )
         .unwrap();
@@ -1428,6 +1529,7 @@ mod tests {
             }],
             &[LocalNominalMetadataFact::new(record, None)],
             &[module],
+            &[],
             &[],
         )
         .err()
@@ -1501,6 +1603,7 @@ mod tests {
             &facts.callables,
             &facts.nominal_metadata,
             &facts.modules,
+            &[],
             &[],
         )
         .expect("fallback destructor symbols materialize without violating AIR invariants");
