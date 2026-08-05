@@ -800,9 +800,7 @@ pub(crate) fn collect_function_cfg_queries(
                             .map_err(|failure| {
                                 (
                                     CompileError::new(
-                                        ErrorKind::InternalError(format!(
-                                            "CFG terminal relocation failed: {failure:?}"
-                                        )),
+                                        failure.error_kind("CFG terminal relocation failed"),
                                         body_span,
                                     )
                                     .into(),

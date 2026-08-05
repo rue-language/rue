@@ -136,7 +136,7 @@ pub(crate) use semantic_identity::{
 pub use session::{CanonicalImportGraphOutput, CompilerSession, CompilerSessionUpdate};
 pub use source_identity::{ModuleId, ModuleRevision, SourceId, SourceIdVersion, SourceRevision};
 pub use source_metadata::SourceMetadata;
-pub use source_snapshot::{MAX_SOURCE_BYTES, SourceSnapshot};
+pub use source_snapshot::{MAX_SOURCE_BYTES, MAX_SOURCE_FILES, SourceSnapshot};
 pub use toolchain_module_demand::{
     OPTION_MODULE_LOGICAL_PATH, ParkedToolchainModules, STRBUF_MODULE_LOGICAL_PATH,
     TrustedToolchainModuleDemand,

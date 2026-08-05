@@ -588,7 +588,27 @@ struct TypeInternPoolInner {
     /// layout no-op today; the guarantee that pins C representation and anchors
     /// FFI-safety.
     repr_c_structs: Arc<HashSet<StructId>>,
+
+    /// Latched once a registration asked for a pool index past the published
+    /// 24-bit `Type` payload ceiling (spec Appendix C.6:1,
+    /// [`MAX_COMPOSITE_TYPES`]).
+    ///
+    /// Interning runs from hundreds of infallible sites across declaration
+    /// collection, type resolution, and specialization, so the ceiling cannot
+    /// be reported by threading a `Result` back through all of them. Instead
+    /// the pool records the rejection here, stops growing, and semantic
+    /// analysis converts the latch into an `E1401` diagnostic at its next
+    /// boundary — spec C.1:2 requires a diagnostic, never a wrapped 24-bit
+    /// index or an abort. A latched pool is a dying pool: registrations after
+    /// the ceiling reuse the final entry, and no artifact built from it is ever
+    /// published.
+    capacity_exceeded: bool,
 }
+
+/// The published ceiling on distinct composite types (structs, enums, arrays,
+/// pointers, modules) in one compilation: a live [`Type`] is a `u32` carrying an
+/// 8-bit kind tag and a 24-bit type-pool index (spec Appendix C.6:1).
+pub const MAX_COMPOSITE_TYPES: u32 = type_encoding::MAX_PAYLOAD + 1;
 
 fn checked_pool_index(index: usize) -> Option<u32> {
     let index = u32::try_from(index).ok()?;
@@ -667,6 +687,7 @@ impl TypeInternPoolInner {
             struct_lang_items: Arc::default(),
             lang_item_structs: Arc::default(),
             repr_c_structs: Arc::default(),
+            capacity_exceeded: false,
         }
     }
 
@@ -719,7 +740,14 @@ impl TypeInternPoolInner {
     }
 
     /// Append one entry with its containment facts, returning its pool index.
+    ///
+    /// A pool that already ran past the published composite-type ceiling stops
+    /// growing: the entry is dropped and the final legal index is returned, so
+    /// the store cannot hold entries that no `Type` handle can address.
     fn push_entry(&mut self, entry: TypeData, facts: Option<TypeContainmentFacts>) -> usize {
+        if self.capacity_exceeded {
+            return type_encoding::MAX_PAYLOAD as usize;
+        }
         let index = self.entry_count();
         self.types.push(entry);
         self.containment_facts.push(facts);
@@ -827,6 +855,7 @@ impl TypeInternPoolInner {
         flat.struct_lang_items = self.struct_lang_items.clone();
         flat.lang_item_structs = self.lang_item_structs.clone();
         flat.repr_c_structs = self.repr_c_structs.clone();
+        flat.capacity_exceeded |= self.capacity_exceeded;
         flat
     }
 
@@ -848,6 +877,7 @@ impl TypeInternPoolInner {
             (None, _) => Arc::new(self.clone()),
         };
         let containment_dirty = base.containment_dirty;
+        let capacity_exceeded = base.capacity_exceeded;
         Self {
             base_len: base.entry_count(),
             base: Some(base),
@@ -870,6 +900,7 @@ impl TypeInternPoolInner {
             struct_lang_items: Arc::clone(&self.struct_lang_items),
             lang_item_structs: Arc::clone(&self.lang_item_structs),
             repr_c_structs: Arc::clone(&self.repr_c_structs),
+            capacity_exceeded,
         }
     }
 
@@ -892,9 +923,36 @@ impl TypeInternPoolInner {
                 .is_some_and(|base| base.is_anonymous_enum(id))
     }
 
-    fn next_pool_index(&self) -> u32 {
-        checked_pool_index(self.entry_count())
-            .expect("type intern pool exceeds the 24-bit Type payload capacity")
+    /// The pool index the next registration will occupy.
+    ///
+    /// Once the 24-bit `Type` payload is exhausted there is no representable
+    /// index left, so this latches [`Self::capacity_exceeded`] and hands back
+    /// the final legal index instead of panicking. `push_entry` then refuses to
+    /// grow, so the pool stops changing and every later registration resolves to
+    /// that same entry; semantic analysis reports `E1401` at its next boundary
+    /// and nothing built from the pool is published (spec C.1:2). Reusing an
+    /// existing, fully formed index — rather than fabricating one — keeps every
+    /// pool read in range; the public accessors additionally re-check the kind
+    /// tag against the entry, so an aliased handle degrades to `None` rather
+    /// than to a mistyped entry.
+    fn next_pool_index(&mut self) -> u32 {
+        match checked_pool_index(self.entry_count()) {
+            Some(index) => index,
+            None => {
+                self.capacity_exceeded = true;
+                type_encoding::MAX_PAYLOAD
+            }
+        }
+    }
+
+    /// Whether this universe (or the base it reads) ran past the published
+    /// composite-type ceiling.
+    fn capacity_exceeded(&self) -> bool {
+        self.capacity_exceeded
+            || self
+                .base
+                .as_ref()
+                .is_some_and(|base| base.capacity_exceeded())
     }
 
     fn by_value_child_index(&self, ty: Type) -> Option<usize> {
@@ -1972,6 +2030,21 @@ impl TypeInternPool {
         }
     }
 
+    /// Whether this universe ran past the published ceiling of
+    /// [`MAX_COMPOSITE_TYPES`] distinct composite types (spec Appendix C.6:1).
+    ///
+    /// Composite interning is infallible at hundreds of call sites, so the pool
+    /// latches the rejection and stops growing instead of panicking or wrapping
+    /// its 24-bit index. Semantic analysis polls this at its diagnostic
+    /// boundaries and rejects the compilation with `E1401` naming the limit, as
+    /// spec C.1:2 requires.
+    pub fn capacity_exceeded(&self) -> bool {
+        self.inner
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .capacity_exceeded()
+    }
+
     /// Consume the completed semantic type universe for backend-facing reads.
     ///
     /// This is the last legal mutation boundary. Request-local symbol interners
@@ -1986,11 +2059,17 @@ impl TypeInternPool {
         // frozen universe is materialized flat: the request-scoped base and this
         // epoch's overlay collapse into one store here (RUE-1135).
         let mut inner = inner.flatten();
-        if let Some((index, entry)) = inner
-            .types
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| entry.is_incomplete())
+        // A pool that ran past the published composite-type ceiling stopped
+        // completing declaration shells on purpose (spec C.6:1); its
+        // compilation is failing with `E1401` and nothing frozen from it is
+        // published, so incompleteness here is expected rather than a producer
+        // bug.
+        if !inner.capacity_exceeded()
+            && let Some((index, entry)) = inner
+                .types
+                .iter()
+                .enumerate()
+                .find(|(_, entry)| entry.is_incomplete())
         {
             panic!("cannot freeze incomplete type-pool entry {index}: {entry:?}");
         }
@@ -2256,6 +2335,14 @@ impl TypeInternPool {
         def: StructDef,
     ) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        // A pool that already ran past the published composite-type ceiling
+        // (spec Appendix C.6:1) hands every later registration the same final
+        // index, so the slot named here is not the reserved one this call
+        // expects. The compilation is already being failed with `E1401`; skip
+        // the completion instead of asserting (spec C.1:2 forbids an abort).
+        if inner.capacity_exceeded() {
+            return;
+        }
         let pool_index = struct_id.0 as usize;
 
         // Verify this is a valid reserved slot
@@ -2304,6 +2391,14 @@ impl TypeInternPool {
     /// Complete a named struct declaration exactly once.
     pub(crate) fn complete_declared_struct(&self, struct_id: StructId, def: StructDef) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        // A pool that already ran past the published composite-type ceiling
+        // (spec Appendix C.6:1) hands every later registration the same final
+        // index, so the slot named here is not the reserved one this call
+        // expects. The compilation is already being failed with `E1401`; skip
+        // the completion instead of asserting (spec C.1:2 forbids an abort).
+        if inner.capacity_exceeded() {
+            return;
+        }
         let pool_index = struct_id.pool_index() as usize;
         let entry = inner
             .try_entry_mut(pool_index)
@@ -2417,6 +2512,14 @@ impl TypeInternPool {
     /// Complete a named enum declaration exactly once.
     pub(crate) fn complete_declared_enum(&self, enum_id: EnumId, def: EnumDef) {
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        // A pool that already ran past the published composite-type ceiling
+        // (spec Appendix C.6:1) hands every later registration the same final
+        // index, so the slot named here is not the reserved one this call
+        // expects. The compilation is already being failed with `E1401`; skip
+        // the completion instead of asserting (spec C.1:2 forbids an abort).
+        if inner.capacity_exceeded() {
+            return;
+        }
         let pool_index = enum_id.pool_index() as usize;
         let entry = inner
             .try_entry_mut(pool_index)
@@ -3194,6 +3297,12 @@ impl FrozenTypeInternPool {
         TypeInternPool::new().freeze()
     }
 
+    /// Whether the universe this pool was frozen from ran past the published
+    /// composite-type ceiling. See [`TypeInternPool::capacity_exceeded`].
+    pub fn capacity_exceeded(&self) -> bool {
+        self.inner.capacity_exceeded()
+    }
+
     /// Whether `ty` transitively contains a linear value by value.
     pub fn type_carries_linear(&self, ty: Type) -> bool {
         self.inner
@@ -3626,6 +3735,26 @@ mod tests {
             is_pub: false,
             file_id: FileId::DEFAULT,
         }
+    }
+
+    #[test]
+    fn published_composite_type_ceiling_matches_the_payload_width() {
+        // Spec Appendix C.6:1: a live `Type` is a u32 with an 8-bit kind tag
+        // and a 24-bit pool index, so the pool addresses 2^24 entries.
+        assert_eq!(MAX_COMPOSITE_TYPES, 16_777_216);
+        assert_eq!(MAX_COMPOSITE_TYPES, type_encoding::MAX_PAYLOAD + 1);
+    }
+
+    #[test]
+    fn ordinary_interning_never_latches_the_composite_type_ceiling() {
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        assert!(!pool.capacity_exceeded());
+        pool.register_struct(interner.get_or_intern("Pair"), struct_def("Pair", vec![]));
+        pool.try_intern_array(Type::I32, 4).unwrap();
+        pool.try_intern_ptr_const(Type::I32).unwrap();
+        assert!(!pool.capacity_exceeded());
+        assert!(!pool.freeze().capacity_exceeded());
     }
 
     #[test]

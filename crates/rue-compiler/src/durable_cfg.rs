@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use lasso::{Key, Spur};
 use rue_air::{AirInstData, AnalyzedFunction, SemanticImportType, Type, TypeKind};
+use rue_error::ErrorKind;
 use rue_span::Span;
 
 use crate::DurableAirInstData;
@@ -361,6 +362,21 @@ pub(crate) enum CfgDomainFailure {
     MissingSymbol,
     MissingString,
     Edit(rue_cfg::CfgEditError),
+}
+
+impl CfgDomainFailure {
+    /// Classify a domain-relocation failure for the user.
+    ///
+    /// Rebuilding an owner-bound payload during relocation can outgrow the
+    /// compact `u32` payload representation, which is an implementation-limit
+    /// rejection (`E1401` naming the limit, spec C.1:2) rather than a compiler
+    /// bug. Every other relocation failure is a producer invariant.
+    pub(crate) fn error_kind(&self, context: &str) -> ErrorKind {
+        match self {
+            Self::Edit(error) => error.error_kind(context),
+            other => ErrorKind::InternalError(format!("{context}: {other:?}")),
+        }
+    }
 }
 
 impl CfgDomainProjection {

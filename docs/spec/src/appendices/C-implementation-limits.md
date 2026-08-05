@@ -47,7 +47,7 @@ A single source file is limited to 4,294,967,295 bytes — one byte short of 4 G
 
 {{ rule(id="C.3:2") }}
 
-The span representation that bounds it is `rue_span::Span`: a file identifier plus a `u32` start offset and a `u32` end offset. The file identifier is itself a `u32` (`rue_span::FileId`), with `FileId(0)` reserved for the default/unknown file, so a single compilation can distinguish at most 4,294,967,295 source files.
+The span representation that bounds it is `rue_span::Span`: a file identifier plus a `u32` start offset and a `u32` end offset. The file identifier is itself a `u32` (`rue_span::FileId`), with `FileId(0)` reserved for the default/unknown file, so a single compilation can distinguish at most 4,294,967,295 source files. Import discovery numbers the files it reaches densely from `FileId(1)` and rejects a larger compilation with a resource-limit diagnostic (E1401) before the count is narrowed to a `u32`, so two sources can never receive the same identifier.
 
 ## Array Limits
 
@@ -75,6 +75,8 @@ Exceeding it is rejected with diagnostic E0907.
 
 There is no separate cap on the length of one identifier: an identifier is a token, so its length is bounded by the source-file limit of C.3:1. The number of *distinct* identifiers and string literals in one compilation is bounded by the string interner, whose handles are non-zero 32-bit keys: at most 4,294,967,295 distinct interned strings.
 
+Identifiers and string literals are the only unbounded, source-driven producers of interned strings, and both are interned by the lexer. The lexer interns fallibly: a token whose string cannot be given a key is reported through the ordinary lexical error channel as a resource-limit diagnostic (E1401) naming the limit, so the key space is never exhausted by an abort. Every other interned string is a name the compiler synthesizes for an entity it has already admitted (mangled symbols, anonymous-type names, specialization names), and those entities are themselves bounded by the capacity limits of C.6:1.
+
 ## Implementation Capacity Limits
 
 {{ rule(id="C.6:1") }}
@@ -83,24 +85,26 @@ The compiler stores syntax, untyped IR, and typed IR in compact index-based form
 
 | Construct | Limit | Bounded by | Diagnosed by |
 |-----------|-------|------------|--------------|
-| Source bytes in one file | 4,294,967,295 | `u32` span offsets | E1401 |
-| Source files in one compilation | 4,294,967,295 | `u32` file identifier, `FileId(0)` reserved | not checked |
-| Distinct identifiers and string literals | 4,294,967,295 | non-zero `u32` interner keys | not checked |
-| IR instructions in one program | 4,294,967,295 | `u32` instruction reference, `u32::MAX` reserved as the null payload | not checked |
-| IR payload words in one program | 4,294,967,295 words (16 GiB) | `u32` payload `start`/`extent` into one word store | not checked |
-| Parameters of one function | 613,566,756 | 7 payload words per parameter | not checked |
-| Fields of one struct | 2,147,483,647 | 2 payload words per field | not checked |
-| Arguments of one call | 2,147,483,647 | 2 payload words per argument | not checked |
-| Variants of one enum | 4,294,967,295 | 1 payload word per variant; the discriminant tag widens to at most `u32` | not checked |
-| Elements of one array literal | 4,294,967,295 | 1 payload word per element | not checked |
-| Distinct composite types (structs, enums, arrays, pointers, modules) | 16,777,216 | `Type` is a `u32`: an 8-bit kind tag plus a 24-bit type-pool index | not checked |
+| Source bytes in one file | 4,294,967,295 | `u32` span offsets | E1401, before lexing |
+| Source files in one compilation | 4,294,967,295 | `u32` file identifier, `FileId(0)` reserved | E1401, at snapshot assembly |
+| Distinct identifiers and string literals | 4,294,967,295 | non-zero `u32` interner keys | E1401, when a token is interned |
+| IR instructions in one program | 4,294,967,295 | `u32` instruction reference, `u32::MAX` reserved as the null payload | E1401, at RIR publication |
+| IR payload words in one program | 4,294,967,295 words (16 GiB) | `u32` payload `start`/`extent` into one word store | E1401, at RIR/CFG payload staging |
+| Parameters of one function | 613,566,756 | 7 payload words per parameter | E1401, via the shared word store |
+| Fields of one struct | 2,147,483,647 | 2 payload words per field | E1401, via the shared word store |
+| Arguments of one call | 2,147,483,647 | 2 payload words per argument | E1401, via the shared word store |
+| Variants of one enum | 4,294,967,295 | 1 payload word per variant; the discriminant tag widens to at most `u32` | E1401, via the shared word store |
+| Elements of one array literal | 4,294,967,295 | 1 payload word per element | E1401, via the shared word store |
+| Distinct composite types (structs, enums, arrays, pointers, modules) | 16,777,216 | `Type` is a `u32`: an 8-bit kind tag plus a 24-bit type-pool index | E1401, at the semantic boundary |
 | Size of one object | 2,147,483,647 bytes | signed 32-bit frame displacement | E0906 |
 | Cumulative storage of one function | 2,147,483,632 bytes | signed 32-bit frame displacement, 16-byte aligned | E0907 |
 | Syntactic nesting depth | 256 | guarded recursion depth in the parser and RIR lowering | E0482 |
 
 {{ rule(id="C.6:2") }}
 
-"Not checked" in the table above means the ceiling follows from the representation but the compiler does not yet report it as a diagnostic; reaching one of those ceilings today is a defect against C.1:2, not a licensed behavior. The ceilings are also not independent: parameters, fields, variants, arguments, and array elements all draw on the same per-program word store, so the sum of every payload in a program cannot exceed 4,294,967,295 words even when no individual construct does.
+The ceilings are not independent: parameters, fields, variants, arguments, and array elements all draw on the same per-program word store, so the sum of every payload in a program cannot exceed 4,294,967,295 words even when no individual construct does. That shared store is also what diagnoses them — a payload range that no longer fits `(start: u32, extent: u32)` is rejected when it is staged, whichever construct requested it.
+
+The "Diagnosed by" column names where each check runs, because the compact stores are filled by construction paths that cannot themselves fail. Instructions and composite types are the two such paths: `add_inst` and type interning are called from hundreds of infallible sites, so instead of returning an error at each one, the owner records that its ceiling was reached, stops growing, and the next construction or semantic boundary converts that record into the E1401 diagnostic. No index is ever wrapped, no entry is ever silently dropped in a compilation that goes on to be published, and no artifact built past a ceiling reaches code generation.
 
 {{ rule(id="C.6:3", cat="normative") }}
 

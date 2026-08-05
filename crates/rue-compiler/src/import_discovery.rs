@@ -1885,6 +1885,12 @@ impl DiscoverySourceAssembler {
             if self.appended_since_snapshot.is_empty() {
                 return Ok(cached);
             }
+            // Reject a file count the u32 identifier cannot distinguish before
+            // the `usize -> u32` narrowing below wraps two sources onto one
+            // FileId (spec C.3:2, C.1:2).
+            crate::source_snapshot::validate_source_file_count(
+                cached.len() + self.appended_since_snapshot.len(),
+            )?;
             let next_index = cached.len() as u32;
             let appended: Vec<crate::source_snapshot::AppendedSource> = self
                 .appended_since_snapshot
@@ -1919,6 +1925,7 @@ impl DiscoverySourceAssembler {
                 .filter(|(module, _)| *module != root_module),
         );
         let ordered = ordered.collect::<Vec<_>>();
+        crate::source_snapshot::validate_source_file_count(ordered.len())?;
         let physical_paths = ordered
             .iter()
             .enumerate()

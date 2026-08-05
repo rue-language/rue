@@ -29,13 +29,13 @@ mod inst;
 pub use anonymous_sites::{AnonymousTypeSite, AnonymousTypeSiteKind, anonymous_type_sites};
 pub use astgen::AstGen;
 pub use inst::{
-    Inst, InstData, InstRef, InternalIntrinsic, RIR_PAYLOAD_FAMILY_NAMES, RepeatCount, Rir,
-    RirAnonEnumPayloadsRange, RirAnonEnumVariantsRange, RirAnonStructFieldsRange,
-    RirAnonStructMethodsRange, RirArgMode, RirArrayElemsRange, RirBlockInstsRange, RirCallArg,
-    RirCallArgsRange, RirDirective, RirDirectiveView, RirDirectivesRange, RirEditor,
-    RirEnumPayloads, RirEnumPayloadsRange, RirEnumVariantsRange, RirFieldInitsRange,
-    RirInternalIntrinsicArgsRange, RirIntrinsicArgsRange, RirMatchArmsRange, RirParam,
-    RirParamMode, RirParamsRange, RirPattern, RirPatternView, RirPayloadBuildError,
+    Inst, InstData, InstRef, InternalIntrinsic, MAX_RIR_ENTRIES_PER_PROGRAM,
+    RIR_PAYLOAD_FAMILY_NAMES, RepeatCount, Rir, RirAnonEnumPayloadsRange, RirAnonEnumVariantsRange,
+    RirAnonStructFieldsRange, RirAnonStructMethodsRange, RirArgMode, RirArrayElemsRange,
+    RirBlockInstsRange, RirCallArg, RirCallArgsRange, RirDirective, RirDirectiveView,
+    RirDirectivesRange, RirEditor, RirEnumPayloads, RirEnumPayloadsRange, RirEnumVariantsRange,
+    RirFieldInitsRange, RirInternalIntrinsicArgsRange, RirIntrinsicArgsRange, RirMatchArmsRange,
+    RirParam, RirParamMode, RirParamsRange, RirPattern, RirPatternView, RirPayloadBuildError,
     RirPayloadError, RirPayloadStorageStats, RirPrinter, RirStructFieldsRange,
     RirStructMethodsRange, RirStructuralAnchor, RirStructuralPathSegment, RirValidationContext,
     ValidatedRir,

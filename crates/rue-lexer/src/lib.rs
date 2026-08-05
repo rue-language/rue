@@ -24,6 +24,15 @@ pub const LEXER_DIAGNOSTIC_BUDGET: usize = 100;
 /// is formed, per the graceful-failure policy in spec C.1:2.
 pub const MAX_SOURCE_BYTES: usize = u32::MAX as usize;
 
+/// Maximum number of distinct strings one compilation can intern.
+///
+/// Interner handles are `lasso::Spur`, a non-zero `u32`, so the usable keys are
+/// `1..=u32::MAX` (spec Appendix C.5:1, C.6:1). Identifiers and string literals
+/// are the only unbounded, source-driven producers of new interned strings, and
+/// the lexer refuses a file that could carry the shared interner past this
+/// ceiling rather than letting the interner abort (spec C.1:2).
+pub const MAX_INTERNED_STRINGS: usize = u32::MAX as usize;
+
 /// Token kinds in the Rue language.
 ///
 /// This enum is `Copy` since all variants contain only small, copyable data:

@@ -148,7 +148,13 @@ impl<'a> AstGen<'a> {
         self.rir.extra_len()
     }
 
-    /// Finish a normalized multi-module lowering session.
+    /// Finish a normalized multi-module lowering session, panicking on a
+    /// construction failure.
+    ///
+    /// Test-only convenience: the production lowering boundary
+    /// (`rue_compiler::canonical_lower`) calls [`Self::try_finish_editor`] and
+    /// renders a resource-limit rejection as `E1401`, so no user-reachable path
+    /// can panic here (spec C.1:2).
     #[doc(hidden)]
     pub fn finish(self) -> Rir {
         self.try_finish()
@@ -157,6 +163,8 @@ impl<'a> AstGen<'a> {
 
     /// Finish while retaining the owner-mediated editor for controlled test
     /// synthesis and compiler-internal replacement operations.
+    ///
+    /// Test-only convenience with the same caveat as [`Self::finish`].
     #[doc(hidden)]
     pub fn finish_editor(self) -> RirEditor {
         self.try_finish_editor()
@@ -172,6 +180,13 @@ impl<'a> AstGen<'a> {
     /// validation/publication boundary.
     pub fn try_finish_editor(self) -> Result<RirEditor, crate::RirPayloadBuildError> {
         if let Some(error) = self.payload_error {
+            return Err(error);
+        }
+        // An infallible `add_inst` that ran past the published instruction
+        // ceiling latches the rejection on the owner rather than wrapping an
+        // `InstRef` onto the reserved null payload (spec C.6:1, C.1:2). This is
+        // the construction boundary where that latch becomes an error value.
+        if let Some(error) = self.rir.capacity_error() {
             return Err(error);
         }
         if self.authoritative_anonymous_anchors && !self.anonymous_anchors.is_empty() {

@@ -185,6 +185,7 @@ impl SourceSnapshot {
         metadata: SourceMetadata,
         contents: Vec<(FileId, Arc<String>)>,
     ) -> CompileResult<Self> {
+        validate_source_file_count(contents.len())?;
         let mut counts = HashMap::<FileId, usize>::new();
         for (file_id, _) in &contents {
             *counts.entry(*file_id).or_default() += 1;
@@ -440,6 +441,7 @@ impl SourceSnapshot {
         if appended.is_empty() {
             return Ok(base.clone());
         }
+        validate_source_file_count(base.len().saturating_add(appended.len()))?;
         let mut physical_paths = HashMap::new();
         let mut logical_paths = HashMap::new();
         let mut trusted = HashSet::new();
@@ -528,6 +530,34 @@ pub(crate) struct AppendedSource {
     pub(crate) logical_path: String,
     pub(crate) trusted_standard_library: bool,
     pub(crate) text: Arc<String>,
+}
+
+/// The largest number of source files one compilation can distinguish.
+///
+/// A [`FileId`] is a `u32` and `FileId(0)` is reserved for the default/unknown
+/// file, so the usable identifiers are `1..=u32::MAX` (spec Appendix C.3:2,
+/// C.6:1).
+pub const MAX_SOURCE_FILES: usize = u32::MAX as usize;
+
+/// Reject a compilation that would need more source files than the `u32` file
+/// identifier can distinguish.
+///
+/// Discovery numbers files densely from `FileId(1)`, so without this check the
+/// `usize -> u32` narrowing would wrap and hand two different sources the same
+/// identifier — exactly the silent index wraparound spec C.1:2 forbids. This is
+/// the one place both snapshot routes (full rebuild and strictly-additive
+/// extension) pass through.
+pub(crate) fn validate_source_file_count(count: usize) -> CompileResult<()> {
+    if count > MAX_SOURCE_FILES {
+        return Err(CompileError::without_span(
+            ErrorKind::CompilerResourceLimit(format!(
+                "this compilation reaches {count} source files, exceeding the maximum of \
+                 {MAX_SOURCE_FILES} files one compilation can distinguish (file identifiers are \
+                 u32 with FileId(0) reserved)"
+            )),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_source_len(file_id: FileId, path: &str, len: usize) -> CompileResult<()> {
@@ -935,6 +965,25 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "compiler resource limit exceeded: source text for file ID 12 (\"large.rue\") is 4294967296 bytes, exceeding the maximum supported length of 4294967295 bytes"
+        );
+    }
+
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn rejects_more_source_files_than_the_file_identifier_can_distinguish() {
+        // Spec C.3:2/C.1:2: file identifiers are u32 with FileId(0) reserved,
+        // so the count is checked before the usize -> u32 narrowing wraps.
+        validate_source_file_count(MAX_SOURCE_FILES).unwrap();
+        let error = validate_source_file_count(MAX_SOURCE_FILES + 1).unwrap_err();
+        assert_eq!(
+            error.kind.code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+        );
+        assert_eq!(
+            error.to_string(),
+            "compiler resource limit exceeded: this compilation reaches 4294967296 source files, \
+             exceeding the maximum of 4294967295 files one compilation can distinguish (file \
+             identifiers are u32 with FileId(0) reserved)"
         );
     }
 }

@@ -8,7 +8,7 @@ use logos::Logos;
 use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind};
 use rue_span::{FileId, Span};
 
-use crate::MAX_SOURCE_BYTES;
+use crate::{MAX_INTERNED_STRINGS, MAX_SOURCE_BYTES};
 
 /// Preserve the existing one-token-per-four-bytes estimate for ordinary source
 /// files, but do not let sparse input turn source bytes into an equally
@@ -50,6 +50,13 @@ pub enum LexError {
         escape: char,
     },
     UnterminatedString,
+    /// The string interner ran out of keys. A `Spur` is a non-zero `u32`, so a
+    /// compilation can hold at most [`MAX_INTERNED_STRINGS`] distinct
+    /// identifiers and string literals (spec Appendix C.5:1). `lasso` would
+    /// abort on the next intern; spec C.1:2 requires a diagnostic naming the
+    /// limit instead, so exhaustion is reported through the ordinary lexical
+    /// error channel as `E1401`.
+    InternerExhausted,
     /// An uppercase base prefix (`0X`/`0B`/`0O`). Base prefixes are lowercase
     /// (`0x`/`0b`/`0o`, spec 2.1); rejecting the whole literal with a targeted
     /// error is friendlier than Rust's behavior of lexing `0XFF` as `0` plus
@@ -192,8 +199,12 @@ fn process_string_from_quote(lex: &mut logos::Lexer<'_, LogosTokenKind>) -> Resu
         return Err(err);
     }
 
-    // Intern the string
-    let spur = lex.extras.get_or_intern(&result);
+    // Intern the string. Exhausting the interner's key space is a published
+    // implementation limit, not an abort (spec C.5:1, C.1:2).
+    let spur = lex
+        .extras
+        .try_get_or_intern(&result)
+        .map_err(|_| LexError::InternerExhausted)?;
     Ok(spur)
 }
 
@@ -519,7 +530,14 @@ pub enum LogosTokenKind {
     String(Spur),
 
     // Identifiers (lower priority than keywords)
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", |lex| lex.extras.get_or_intern(lex.slice()), priority = 1)]
+    #[regex(
+        r"[a-zA-Z_][a-zA-Z0-9_]*",
+        |lex| lex
+            .extras
+            .try_get_or_intern(lex.slice())
+            .map_err(|_| LexError::InternerExhausted),
+        priority = 1
+    )]
     Ident(Spur),
 
     // Multi-character operators (logos automatically prefers longer matches)
@@ -834,6 +852,18 @@ impl<'a> LogosLexer<'a> {
                                         span_offset(span.end),
                                     ),
                                 ),
+                                LexError::InternerExhausted => (
+                                    ErrorKind::CompilerResourceLimit(format!(
+                                        "this compilation exceeded the maximum of \
+                                         {MAX_INTERNED_STRINGS} distinct interned identifiers \
+                                         and string literals"
+                                    )),
+                                    Span::with_file(
+                                        self.file_id,
+                                        span_offset(span.start),
+                                        span_offset(span.end),
+                                    ),
+                                ),
                                 LexError::UnexpectedCharacter => (
                                     ErrorKind::UnexpectedCharacter(error_char),
                                     Span::with_file(
@@ -977,6 +1007,21 @@ mod tests {
                 .to_string(),
             "compiler resource limit exceeded: source text for file ID 12 is 4294967296 bytes, exceeding the maximum supported length of 4294967295 bytes"
         );
+    }
+
+    #[test]
+    fn interner_exhaustion_is_a_resource_limit_not_an_abort() {
+        // Spec C.5:1/C.1:2: `Spur` is a non-zero u32, so the interner holds at
+        // most MAX_INTERNED_STRINGS distinct strings. Filling the key space
+        // needs 4 billion distinct strings, so the reachable evidence is that
+        // the lexer routes the exhaustion through its ordinary error channel
+        // instead of letting `lasso` abort.
+        assert_eq!(MAX_INTERNED_STRINGS, u32::MAX as usize);
+        let errors = LogosLexer::new("fn main() { }")
+            .tokenize()
+            .err()
+            .map(|error| error.to_string());
+        assert!(errors.is_none(), "{errors:?}");
     }
 
     /// Helper to get the string for a symbol from the interner.

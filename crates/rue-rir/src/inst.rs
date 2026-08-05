@@ -11,6 +11,14 @@ use rue_span::{FileId, Span};
 
 mod payload_support;
 
+/// The published per-program ceiling shared by the RIR instruction array and
+/// the RIR payload word store (spec Appendix C.6:1). Both are indexed by `u32`,
+/// so a program may hold at most this many instructions and at most this many
+/// payload words. Exceeding either is a diagnosable compile-time failure
+/// (C.1:2), surfaced as `E1401` at the canonical lowering boundary — never a
+/// wrapped `InstRef` or a truncated `(start, extent)` range.
+pub const MAX_RIR_ENTRIES_PER_PROGRAM: u32 = u32::MAX;
+
 /// A failure while staging a compact RIR payload.
 #[derive(Debug)]
 pub enum RirPayloadBuildError {
@@ -26,11 +34,30 @@ pub enum RirPayloadBuildError {
     },
 }
 
+impl RirPayloadBuildError {
+    /// Whether this failure is an implementation-limit rejection (spec C.1:2)
+    /// rather than a producer bug or an allocation failure. Consumers use this
+    /// to pick `E1401` over an internal-error code.
+    pub fn is_resource_limit(&self) -> bool {
+        matches!(self, Self::ResourceLimitExceeded { .. })
+    }
+
+    /// Whether this failure is an allocation failure for an otherwise
+    /// representable request (`E1402`), not a limit rejection.
+    pub fn is_resource_exhaustion(&self) -> bool {
+        matches!(self, Self::CapacityFailure { .. })
+    }
+}
+
 impl fmt::Display for RirPayloadBuildError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ResourceLimitExceeded { family } => {
-                write!(f, "RIR {family} payload exceeds the u32 word-store limit")
+                write!(
+                    f,
+                    "RIR {family} exceeded the implementation limit of \
+                     {MAX_RIR_ENTRIES_PER_PROGRAM} per program (spec Appendix C.6:1)"
+                )
             }
             Self::CapacityFailure { family } => {
                 write!(f, "could not reserve storage for RIR {family} payload")
@@ -976,6 +1003,14 @@ pub struct Rir {
     instructions: Vec<Inst>,
     /// Extra data for variable-length instruction payloads.
     extra: Vec<u32>,
+    /// Set once `add_inst` is asked for an instruction beyond the published
+    /// `u32` instruction ceiling (spec Appendix C.6:1). `add_inst` is called
+    /// from hundreds of infallible lowering sites, so the ceiling is recorded
+    /// here and reported once at the construction/publication boundary
+    /// (`AstGen::try_finish_editor`, `RirEditor::capacity_error`) instead of
+    /// wrapping an `InstRef` onto the reserved null payload. Spec C.1:2
+    /// requires a diagnostic, not a wrapped index.
+    instruction_limit_exceeded: bool,
 }
 
 /// Mutable construction-phase owner. Payload descriptors never leave this
@@ -1090,6 +1125,15 @@ impl RirEditor {
     /// below, whose descriptors never escape the editor.
     pub fn add_inst(&mut self, inst: Inst) -> InstRef {
         self.rir.add_inst(inst)
+    }
+
+    /// The implementation-limit rejection latched by an infallible
+    /// [`Self::add_inst`] that ran past the published instruction ceiling
+    /// (spec Appendix C.6:1), if any. Publication boundaries consult this so
+    /// the ceiling becomes an `E1401` diagnostic rather than a wrapped
+    /// `InstRef` (spec C.1:2).
+    pub fn capacity_error(&self) -> Option<RirPayloadBuildError> {
+        self.rir.latched_capacity_error()
     }
 
     pub fn add_intrinsic(
@@ -1976,6 +2020,9 @@ impl RirEditor {
                     }
                 };
             }
+            if let Some(error) = self.rir.latched_capacity_error() {
+                return Err(error);
+            }
             let instruction_end = u32::try_from(self.rir.instructions.len()).map_err(|_| {
                 RirPayloadBuildError::ResourceLimitExceeded {
                     family: "instructions",
@@ -2089,18 +2136,36 @@ impl Rir {
     }
 
     /// Add an instruction and return its reference.
+    ///
+    /// `InstRef` is a `u32` whose maximum value is reserved as the null
+    /// payload, so indices `0..=u32::MAX - 1` are addressable and a program
+    /// holds at most [`MAX_RIR_ENTRIES_PER_PROGRAM`] instructions. Beyond that
+    /// the reference is not representable. This method has hundreds of
+    /// infallible callers across AST lowering, so instead of wrapping onto the
+    /// null payload (spec C.1:2 forbids that) it latches
+    /// `instruction_limit_exceeded` and hands back an already-valid reference;
+    /// the construction boundary turns the latch into an `E1401` diagnostic
+    /// before the RIR is published.
     pub(crate) fn add_inst(&mut self, inst: Inst) -> InstRef {
-        // Debug assertion for u32 overflow - catches pathological inputs during development
-        debug_assert!(
-            self.instructions.len() < u32::MAX as usize,
-            "RIR instruction count overflow: {} instructions exceeds u32::MAX - 1",
-            self.instructions.len()
-        );
-
-        let index = u32::try_from(self.instructions.len())
-            .expect("RIR instruction count checked before insertion");
+        let Ok(index) = u32::try_from(self.instructions.len()) else {
+            self.instruction_limit_exceeded = true;
+            return InstRef::from_raw(0);
+        };
+        if index == MAX_RIR_ENTRIES_PER_PROGRAM {
+            self.instruction_limit_exceeded = true;
+            return InstRef::from_raw(0);
+        }
         self.instructions.push(inst);
         InstRef::from_raw(index)
+    }
+
+    /// The implementation-limit rejection latched during construction, if the
+    /// instruction ceiling was reached. Checked at the publication boundary.
+    pub(crate) fn latched_capacity_error(&self) -> Option<RirPayloadBuildError> {
+        self.instruction_limit_exceeded
+            .then_some(RirPayloadBuildError::ResourceLimitExceeded {
+                family: "instructions",
+            })
     }
 
     /// Get an instruction by reference.
@@ -5463,6 +5528,64 @@ impl<'a, 'b> RirPrinter<'a, 'b> {
 impl fmt::Display for RirPrinter<'_, '_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.to_string())
+    }
+}
+
+#[cfg(test)]
+mod resource_limit_tests {
+    use super::*;
+
+    #[test]
+    fn resource_limit_message_names_the_published_ceiling() {
+        // RUE-1221 / spec C.1:2: the diagnostic must name the exceeded limit.
+        let payload = RirPayloadBuildError::ResourceLimitExceeded {
+            family: "payload words",
+        };
+        let instructions = RirPayloadBuildError::ResourceLimitExceeded {
+            family: "instructions",
+        };
+        assert_eq!(
+            payload.to_string(),
+            "RIR payload words exceeded the implementation limit of 4294967295 per program \
+             (spec Appendix C.6:1)"
+        );
+        assert!(instructions.to_string().contains("RIR instructions"));
+        assert!(instructions.to_string().contains("4294967295"));
+    }
+
+    #[test]
+    fn build_failures_are_classified_for_the_user() {
+        assert!(RirPayloadBuildError::ResourceLimitExceeded { family: "f" }.is_resource_limit());
+        assert!(
+            !RirPayloadBuildError::ResourceLimitExceeded { family: "f" }.is_resource_exhaustion()
+        );
+        assert!(RirPayloadBuildError::CapacityFailure { family: "f" }.is_resource_exhaustion());
+        assert!(!RirPayloadBuildError::CapacityFailure { family: "f" }.is_resource_limit());
+        let invalid = RirPayloadBuildError::InvalidBuilderInput {
+            family: "f",
+            reason: "r",
+        };
+        assert!(!invalid.is_resource_limit());
+        assert!(!invalid.is_resource_exhaustion());
+    }
+
+    #[test]
+    fn instruction_capacity_latch_is_clear_for_an_ordinary_owner() {
+        let mut editor = RirEditor::new();
+        editor.add_inst(Inst {
+            data: InstData::IntConst(7),
+            span: Span::default(),
+        });
+        assert!(editor.capacity_error().is_none());
+    }
+
+    #[test]
+    fn published_instruction_ceiling_matches_the_addressable_index_space() {
+        // `InstRef` reserves `u32::MAX` as the null payload, so the last
+        // addressable index is `u32::MAX - 1` and the capacity is exactly the
+        // published ceiling (spec Appendix C.6:1).
+        assert_eq!(MAX_RIR_ENTRIES_PER_PROGRAM, u32::MAX);
+        assert_eq!(u64::from(MAX_RIR_ENTRIES_PER_PROGRAM), 4_294_967_295);
     }
 }
 
