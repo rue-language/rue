@@ -248,6 +248,113 @@ mod tests {
         assert!(execution.stderr.is_empty());
     }
 
+    /// Opt-in Phase 12 latency witness. This deliberately has no pass/fail
+    /// timing threshold: it emits release-build samples and medians together
+    /// with the exact structural work that makes the samples comparable.
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn rue_1033_warm_single_function_latency_witness() {
+        const SAMPLES: usize = 11;
+        let options = CompileOptions::default();
+        let snapshot = |value| {
+            SourceSnapshot::single(
+                "<rue-1033-latency>",
+                format!("fn callee() -> i32 {{ {value} }} fn main() -> i32 {{ callee() }}"),
+            )
+            .unwrap()
+        };
+        let baseline = snapshot(1);
+
+        let mut codegen_micros = Vec::with_capacity(SAMPLES);
+        let mut runnable_micros = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            // Give every sample the same two-revision history. Reusing one
+            // session across the sample loop would make later samples observe
+            // older retained revisions and cease to measure an identical edit.
+            let mut session = CompilerSession::with_query_concurrency(4);
+            session
+                .update_for_presentation(&baseline)
+                .into_result()
+                .unwrap();
+            crate::queries::compile_with_session(&mut session, &baseline, &options).unwrap();
+            let edited = snapshot(sample as i32 + 2);
+            let edit_start = std::time::Instant::now();
+            session
+                .update_for_presentation(&edited)
+                .into_result()
+                .unwrap();
+            let rooted = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let edit_to_codegen = edit_start.elapsed().as_micros();
+
+            let parse = session.work().last_parse.clone();
+            assert_eq!(parse.syntax.lexer_invocations, 1);
+            assert_eq!(parse.syntax.parser_invocations, 1);
+            assert_eq!(parse.modules_reparsed, 1);
+            assert_eq!(rooted.work.body_analysis.body_analyses_computed, 1);
+            assert_eq!(rooted.work.body_analysis.body_analyses_reused, 1);
+            assert_eq!(rooted.work.body_analysis.body_analyses_invalidated, 1);
+            assert_eq!(rooted.work.cfg.cfg_builds_attempted, 1);
+            assert_eq!(rooted.work.cfg.cfg_builds_succeeded, 1);
+            assert_eq!(
+                session
+                    .codegen_executions()
+                    .iter()
+                    .filter(|(_, execution)| {
+                        *execution == rue_query::RequestExecution::Computed
+                    })
+                    .count(),
+                1
+            );
+            assert_eq!(
+                session
+                    .codegen_executions()
+                    .iter()
+                    .filter(|(_, execution)| { *execution == rue_query::RequestExecution::Reused })
+                    .count(),
+                1
+            );
+
+            let image = crate::program_image_plan::ProgramImage::from_rooted(
+                rooted.units,
+                rooted.exports,
+                &options,
+            )
+            .unwrap();
+            let output = image.fresh_link(&options, &rooted.warnings).unwrap();
+            let edit_to_runnable = edit_start.elapsed().as_micros();
+            let execution = execute_compiled_output(&output, &format!("rue-1033-latency-{sample}"));
+            assert_eq!(execution.status.code(), Some(sample as i32 + 2));
+            assert!(execution.stdout.is_empty());
+            assert!(execution.stderr.is_empty());
+            codegen_micros.push(edit_to_codegen);
+            runnable_micros.push(edit_to_runnable);
+        }
+
+        let median = |samples: &mut Vec<u128>| {
+            samples.sort_unstable();
+            samples[samples.len() / 2]
+        };
+        let codegen_median = median(&mut codegen_micros);
+        let runnable_median = median(&mut runnable_micros);
+        eprintln!(
+            "RUE-1033 warm single-function latency: target={} workers=4 samples={} \
+             edit_to_codegen_unit_us={:?} median_edit_to_codegen_unit_us={} \
+             edit_to_runnable_fresh_link_us={:?} median_edit_to_runnable_fresh_link_us={} \
+             exact_work=lexer:1,parser:1,modules_reparsed:1,bodies_computed:1,bodies_reused:1,\
+             bodies_invalidated:1,cfgs_computed:1,codegen_units_computed:1,codegen_units_reused:1,\
+             fresh_links:1",
+            options.target,
+            SAMPLES,
+            codegen_micros,
+            codegen_median,
+            runnable_micros,
+            runnable_median,
+        );
+    }
+
     #[test]
     fn warm_unreachable_body_edit_reuses_every_rooted_downstream_terminal() {
         let before = SourceSnapshot::single(
@@ -598,6 +705,79 @@ mod tests {
             assert!(execution.stdout.is_empty());
             assert!(execution.stderr.is_empty());
         }
+    }
+
+    #[cfg(unix)]
+    fn assert_scheduled_codegen_matches_fresh_link(cancel_joiner: bool) {
+        let snapshot =
+            SourceSnapshot::single("<scheduled-codegen-executable>", "fn main() -> i32 { 42 }")
+                .unwrap();
+        let options = CompileOptions::default();
+        let mut scheduled = CompilerSession::with_query_concurrency(2);
+        scheduled
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let (owner, joiner) = scheduled.exercise_codegen_schedule_for_test(&options, cancel_joiner);
+        assert_eq!(owner, rue_query::RequestExecution::Computed);
+        assert_eq!(
+            joiner,
+            if cancel_joiner {
+                rue_query::RequestExecution::Aborted
+            } else {
+                rue_query::RequestExecution::Joined
+            }
+        );
+
+        // The ordinary compiler adapter must consume the terminal produced by
+        // that schedule, collect the image plan, and fresh-link it. No test
+        // helper constructs a CodegenUnit or executable directly.
+        let scheduled_output =
+            crate::queries::compile_with_session(&mut scheduled, &snapshot, &options).unwrap();
+        assert!(
+            scheduled
+                .codegen_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused)
+        );
+
+        let mut fresh = CompilerSession::new();
+        fresh
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        let fresh_output =
+            crate::queries::compile_with_session(&mut fresh, &snapshot, &options).unwrap();
+        assert_eq!(scheduled_output.elf, fresh_output.elf);
+        assert_eq!(scheduled_output.warnings, fresh_output.warnings);
+        let execution = execute_compiled_output(
+            &scheduled_output,
+            if cancel_joiner {
+                "canceled-codegen-schedule"
+            } else {
+                "joined-codegen-schedule"
+            },
+        );
+        assert_eq!(execution.status.code(), Some(42), "{execution:?}");
+        assert!(execution.stdout.is_empty());
+        assert!(execution.stderr.is_empty());
+    }
+
+    /// A joined CodegenUnit request must be observationally equivalent to a
+    /// fresh execution through final executable bytes.
+    #[cfg(unix)]
+    #[test]
+    fn joined_codegen_schedule_matches_fresh_linked_executable() {
+        assert_scheduled_codegen_matches_fresh_link(false);
+    }
+
+    /// Canceling one joined waiter must neither cancel nor corrupt the live
+    /// CodegenUnit owner; the owner's terminal must remain usable through the
+    /// ordinary fresh-link adapter and match a fresh compiler session.
+    #[cfg(unix)]
+    #[test]
+    fn canceled_codegen_waiter_schedule_matches_fresh_linked_executable() {
+        assert_scheduled_codegen_matches_fresh_link(true);
     }
 
     #[cfg(unix)]

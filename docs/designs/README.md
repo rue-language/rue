@@ -225,7 +225,7 @@ The table is generated from ADR frontmatter. Run
 | [0060](0060-network-io-v1.md) | Network IO v1: blocking IPv4 TCP in pure Rue | Accepted | stdlib, io, networking, tcp, syscalls, error-handling, ownership |
 | [0061](0061-supported-compiler-facade.md) | Supported compiler facade and immutable artifact views | Accepted | architecture, compiler, tooling, api, incremental |
 | [0062](0062-place-returning-borrow-accessors.md) | Place-returning borrow accessors: projection reads of owned elements | Accepted | ownership, borrows, collections, accessors, stdlib, formal-semantics |
-| [0063](0063-parallel-demand-driven-incremental-compilation.md) | Parallel demand-driven incremental compilation | Accepted | architecture, compiler, incremental, parallelism, codegen, linker, performance |
+| [0063](0063-parallel-demand-driven-incremental-compilation.md) | Parallel demand-driven incremental compilation | Implemented | architecture, compiler, incremental, parallelism, codegen, linker, performance |
 | [0064](0064-c-ffi.md) | C FFI: a guaranteed target-C boundary for imports and exports | Accepted | ffi, abi, codegen, linker, types, semantics, unsafe, interop |
 | [0065](0065-floating-point.md) | Floating point: f32/f64, IEEE-754 semantics, and register classes | Accepted | types, semantics, codegen, numerics, abi |
 | [0066](0066-producer-nominal-anonymous-types-and-incremental-locality.md) | Producer-nominal anonymous types and incremental locality | Implemented | types, semantics, comptime, incremental, performance, parallelism |

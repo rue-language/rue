@@ -400,6 +400,12 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::codegen_query::CodegenUnitQueryKey,
         crate::codegen_query::CodegenUnitValue,
     >,
+    /// One-shot rendezvous inside the registered CodegenUnit evaluator. Unit
+    /// tests use it to force an exact-key owner to remain live while a second
+    /// request joins or cancels. It changes scheduling only: both requests still
+    /// execute the production family and evaluator.
+    #[cfg(test)]
+    codegen_evaluator_gate: Arc<Mutex<Option<Arc<TestCodegenEvaluatorGate>>>>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     /// Per-`(module, import-path)` binding-resolution family. Registered query
     /// machinery for the exact provider boundary. Production body import
@@ -514,6 +520,37 @@ pub(crate) struct RevisionedQueryDatabase {
         CompatibilityKey<super::session::ParseQueryKey>,
         super::session::ParseQueryRecord,
     >,
+}
+
+/// Two-phase rendezvous for deterministic compiler schedule tests. The first
+/// wait tells the test that the owner entered the canonical evaluator; the
+/// second releases that owner after the runtime has observed the intended
+/// join/cancellation lifecycle.
+#[cfg(test)]
+pub(crate) struct TestCodegenEvaluatorGate {
+    rendezvous: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl TestCodegenEvaluatorGate {
+    fn new() -> Self {
+        Self {
+            rendezvous: std::sync::Barrier::new(2),
+        }
+    }
+
+    fn evaluator_wait(&self) {
+        self.rendezvous.wait();
+        self.rendezvous.wait();
+    }
+
+    pub(crate) fn wait_until_entered(&self) {
+        self.rendezvous.wait();
+    }
+
+    pub(crate) fn release(&self) {
+        self.rendezvous.wait();
+    }
 }
 
 impl std::fmt::Debug for RevisionedQueryDatabase {
@@ -13895,12 +13932,24 @@ impl RevisionedQueryDatabase {
             )
             .expect("the OptimizedCfg family has one canonical name");
         let optimized_cfgs_for_codegen = optimized_cfgs.clone();
+        #[cfg(test)]
+        let codegen_evaluator_gate = Arc::new(Mutex::new(None::<Arc<TestCodegenEvaluatorGate>>));
+        #[cfg(test)]
+        let codegen_gate_for_evaluator = codegen_evaluator_gate.clone();
         let codegen_units = runtime
             .family_with_equality_and_evaluator(
                 "compiler.codegen-unit",
                 BODY_QUERY_MEMO_RETENTION,
                 crate::codegen_query::codegen_unit_value_equal,
                 move |context, _, key: &crate::codegen_query::CodegenUnitQueryKey| {
+                    #[cfg(test)]
+                    if let Some(gate) = codegen_gate_for_evaluator
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take()
+                    {
+                        gate.evaluator_wait();
+                    }
                     crate::codegen_query::evaluate_codegen_unit(
                         context,
                         &optimized_cfgs_for_codegen,
@@ -15094,6 +15143,8 @@ impl RevisionedQueryDatabase {
             cfgs,
             optimized_cfgs,
             codegen_units,
+            #[cfg(test)]
+            codegen_evaluator_gate,
             lookup_names,
             lookup_imports,
             #[cfg(test)]
@@ -15138,6 +15189,23 @@ impl RevisionedQueryDatabase {
 }
 
 impl RevisionedQueryDatabase {
+    #[cfg(test)]
+    pub(crate) fn arm_codegen_evaluator_gate_for_test(&self) -> Arc<TestCodegenEvaluatorGate> {
+        let gate = Arc::new(TestCodegenEvaluatorGate::new());
+        let replaced = self
+            .codegen_evaluator_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(gate.clone());
+        assert!(replaced.is_none(), "only one CodegenUnit gate may be armed");
+        gate
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_metrics_for_test(&self) -> rue_query::RuntimeMetrics {
+        self.runtime.metrics()
+    }
+
     #[cfg(test)]
     pub(crate) fn inject_body_transaction_failure_for_test(
         &self,

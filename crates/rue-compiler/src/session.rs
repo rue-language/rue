@@ -1341,6 +1341,108 @@ impl CompilerSession {
             );
         session
     }
+
+    /// Force one exact production CodegenUnit request through an owner/joiner
+    /// schedule. The normal rooted CFG query supplies the key; the registered
+    /// CodegenUnit evaluator supplies the value. This controls only when the
+    /// owner may finish and never constructs a peer artifact path.
+    #[cfg(test)]
+    pub(crate) fn exercise_codegen_schedule_for_test(
+        &mut self,
+        options: &CompileOptions,
+        cancel_joiner: bool,
+    ) -> (rue_query::RequestExecution, rue_query::RequestExecution) {
+        let rooted = self
+            .rooted_cfg(options)
+            .expect("the schedule fixture reaches a valid CFG");
+        let [cfg] = rooted.cfgs.as_slice() else {
+            panic!("the schedule fixture must reach exactly one CodegenUnit");
+        };
+        let revision = rooted.graph.revision;
+        let key = cfg.optimized_cfg_key.clone();
+        let database = &self.queries.revisioned;
+        let gate = database.arm_codegen_evaluator_gate_for_test();
+        let baseline = database.runtime_metrics_for_test();
+        let joiner_cancellation = rue_query::CancellationToken::new();
+
+        let (owner_execution, joiner_execution) = std::thread::scope(|scope| {
+            let owner_key = key.clone();
+            let owner = scope.spawn(|| {
+                database
+                    .codegen_unit(
+                        revision,
+                        owner_key,
+                        options.target,
+                        rue_codegen::BackendArtifactRequest::default(),
+                        options.opt_level,
+                        rue_query::CancellationToken::new(),
+                    )
+                    .expect("the owner CodegenUnit request is registered")
+            });
+            gate.wait_until_entered();
+
+            let joiner_key = key.clone();
+            let joiner_token = joiner_cancellation.clone();
+            let joiner = scope.spawn(|| {
+                database
+                    .codegen_unit(
+                        revision,
+                        joiner_key,
+                        options.target,
+                        rue_codegen::BackendArtifactRequest::default(),
+                        options.opt_level,
+                        joiner_token,
+                    )
+                    .expect("the joining CodegenUnit request is registered")
+            });
+
+            let wait_for = |predicate: &dyn Fn(rue_query::RuntimeMetrics) -> bool| {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                while !predicate(database.runtime_metrics_for_test())
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::yield_now();
+                }
+                predicate(database.runtime_metrics_for_test())
+            };
+            let joined = wait_for(&|metrics| metrics.joins > baseline.joins);
+            let canceled = if cancel_joiner && joined {
+                joiner_cancellation.cancel();
+                wait_for(&|metrics| metrics.cancellations > baseline.cancellations)
+            } else {
+                true
+            };
+
+            // Always release the owner before asserting the schedule so a
+            // failed observation cannot strand a scoped worker.
+            gate.release();
+            let owner = owner.join().expect("CodegenUnit owner did not panic");
+            let joiner = joiner.join().expect("CodegenUnit joiner did not panic");
+            assert!(
+                joined,
+                "the exact-key request did not join within 5 seconds"
+            );
+            assert!(
+                canceled,
+                "the joined waiter did not cancel within 5 seconds"
+            );
+            assert!(
+                owner.terminal().is_some(),
+                "the live owner must publish the canonical CodegenUnit"
+            );
+            if cancel_joiner {
+                assert!(matches!(
+                    joiner.abort(),
+                    Some(rue_query::QueryAbort::Canceled)
+                ));
+                assert!(joiner.terminal().is_none());
+            } else {
+                assert!(joiner.terminal().is_some());
+            }
+            (owner.execution(), joiner.execution())
+        });
+        (owner_execution, joiner_execution)
+    }
     /// Perturb one canonical observation for the in-tree differential oracle.
     #[doc(hidden)]
     pub(crate) fn inject_stale_query_for_oracle(
