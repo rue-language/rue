@@ -1962,6 +1962,7 @@ fn cfg_instruction_kind(data: &rue_cfg::CfgInstData) -> &'static str {
         PlaceRead { .. } => "place_read",
         PlaceWrite { .. } => "place_write",
         Call { .. } => "call",
+        AccessorCall { .. } => "accessor_call",
         Intrinsic { .. } => "intrinsic",
         StructInit { .. } => "struct_initializer",
         ArrayInit { .. } => "array_initializer",

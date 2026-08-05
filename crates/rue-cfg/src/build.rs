@@ -1249,6 +1249,27 @@ impl<'a> CfgBuilder<'a> {
                 }
             }
 
+            AirInstData::AccessorCall { name, args } => {
+                let mut arg_vals = Vec::new();
+                for arg in self.air.get_call_args(args) {
+                    let Some(value) = self.lower_value(arg.value) else {
+                        return Self::diverged();
+                    };
+                    arg_vals.push(CfgCallArg {
+                        value,
+                        mode: Self::convert_arg_mode(arg.mode),
+                    });
+                }
+                let args_result = self.cfg.push_call_args(arg_vals);
+                let args = self.payload_or(args_result, CfgCallArgs::EMPTY, span);
+                let value = self.emit(CfgInstData::AccessorCall { name: *name, args }, ty, span);
+                self.cache(air_ref, value);
+                ExprResult {
+                    value: Some(value),
+                    continuation: Continuation::Continues,
+                }
+            }
+
             AirInstData::Intrinsic {
                 runtime,
                 name,
@@ -1289,6 +1310,7 @@ impl<'a> CfgBuilder<'a> {
                             // them) — record it so CSE's param keying skips
                             // the slot (RUE-914 hunt finding).
                             PlaceBase::Param(slot) => self.cfg.mark_param_address_taken(slot),
+                            PlaceBase::Accessor(_) => {}
                         },
                         // A bare scalar parameter lowers directly to a Param
                         // value with no backing local; its address escaping
@@ -2101,6 +2123,9 @@ impl<'a> CfgBuilder<'a> {
                 let base_key = match air_place.base {
                     AirPlaceBase::Local(slot) => MovedSlot::Local(slot),
                     AirPlaceBase::Param(slot) => MovedSlot::Param(slot),
+                    AirPlaceBase::Accessor(_) => {
+                        unreachable!("semantic analysis rejects accessor-place writes")
+                    }
                 };
                 if air_place.projection_count() == 0 {
                     self.emit_overwrite_drop(base_key, val_ty, span);
@@ -3353,6 +3378,7 @@ impl<'a> CfgBuilder<'a> {
         let base = match air_base {
             AirPlaceBase::Local(slot) => PlaceBase::Local(slot),
             AirPlaceBase::Param(slot) => PlaceBase::Param(slot),
+            AirPlaceBase::Accessor(call) => PlaceBase::Accessor(self.lower_value(call)?),
         };
 
         // Convert projections, lowering any index expressions

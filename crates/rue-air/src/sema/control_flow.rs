@@ -1811,11 +1811,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // downstream ownership error.
         self.check_yield_rooted_at_receiver(operand, ctx)?;
 
-        // Read the place non-consumingly: this type-checks the projection
-        // (including index expressions) and marks its variables used. The
-        // read is emitted as a statement of the trap block below so the AIR
-        // stays fully referenced.
-        let read = self.analyze_inst_for_projection(air, operand, ctx)?;
+        // Preserve the yielded receiver projection as the accessor CFG's
+        // distinguished return operand. The mandatory CFG splice consumes
+        // this `PlaceRead` as a place descriptor before codegen; no accessor
+        // return ABI exists (RUE-1208).
+        let trace = self.try_trace_place(operand, air, ctx)?.ok_or_else(|| {
+            CompileError::new(
+                ErrorKind::AccessorYieldNotReceiverRooted {
+                    found: "a value expression".to_string(),
+                },
+                span,
+            )
+        })?;
+        let ty = trace.result_type();
+        let place = Self::build_place_ref(air, &trace)?;
+        let read = AnalysisResult::new(
+            air.add_inst(crate::AirInst {
+                data: crate::AirInstData::PlaceRead { place },
+                ty,
+                span,
+            }),
+            ty,
+        );
         if !ctx.return_type.is_error()
             && !read.ty.is_error()
             && !self.types_compatible(read.ty, ctx.return_type)
@@ -1831,15 +1848,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
 
-        let trap = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::PanicNoMessage),
-            self.known_symbols().panic,
-            &[],
-            Type::NEVER,
-            span,
-        )?;
-        let air_ref = air.add_block(&[read.air_ref], trap, Type::NEVER, span)?;
-        Ok(AnalysisResult::new(air_ref, Type::NEVER))
+        Ok(read)
     }
 
     /// Walk a yield operand's projection chain to its root and require that

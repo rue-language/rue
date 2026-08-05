@@ -133,7 +133,7 @@ struct ProjectionInfo {
 /// This contains all the information needed to build an `AirPlace` and emit
 /// a `PlaceRead` or `PlaceWrite` instruction.
 #[derive(Debug)]
-pub(super) struct PlaceTrace {
+pub(crate) struct PlaceTrace {
     /// The base of the place (local slot or param slot)
     base: AirPlaceBase,
     /// The type of the base (before projections)
@@ -166,7 +166,7 @@ pub(super) struct MoveStateSnapshot {
 
 impl PlaceTrace {
     /// Get the final type of the place (after all projections).
-    pub(super) fn result_type(&self) -> Type {
+    pub(crate) fn result_type(&self) -> Type {
         self.projections
             .last()
             .map(|p| p.result_type)
@@ -867,7 +867,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// # Returns
     /// * `Some(PlaceTrace)` if the expression is a place
     /// * `None` if it's not (e.g., `get_struct().field` where base is a call)
-    pub(super) fn try_trace_place(
+    pub(crate) fn try_trace_place(
         &mut self,
         inst_ref: InstRef,
         air: &mut Air,
@@ -1132,25 +1132,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         .map(Some)
     }
 
-    /// Inline a `-> borrow T` accessor call at its call site (ADR-0062 §3).
+    /// Lower a `-> borrow T` accessor call to a marked place-producing call.
     ///
-    /// The call compiles to the accessor body's guards followed by the
-    /// address computation of the yielded place — no call is emitted, no
-    /// calling convention for "returning a place" exists (the RUE-1012
-    /// forward-compatibility contract). Statically this is the
+    /// Semantic analysis establishes only the call-site loan and escape
+    /// contract. The callee body remains an exact CFG-query dependency and is
+    /// mandatorily spliced before code generation; no calling convention for
+    /// returning a place exists. Statically this is the
     /// (Accessor-Call) rule: the receiver must be a place; the result is a
     /// second-class borrowed place whose loan `(root(receiver), shared)`
     /// spans the enclosing full expression (registered in
-    /// `ctx.expression_loans`); and the accessor body must be well-formed —
-    /// guards may diverge, and the single trailing `yield` names a place
-    /// rooted at the receiver.
-    ///
-    /// Expansion is acyclic (6.6:14, E0261): while an accessor's body is
-    /// being inlined it is recorded on `ctx.accessor_expansion_stack`, and a
-    /// call naming an accessor already on that stack is rejected — inlining a
-    /// cycle has no fixed point. The marker covers the body only; the
-    /// receiver and argument traces are caller syntax, so a finite chain like
-    /// `v.get_ref(i).get_ref(j)` is unaffected.
+    /// `ctx.expression_loans`).
     #[allow(clippy::too_many_arguments)]
     fn expand_accessor_call(
         &mut self,
@@ -1163,39 +1154,39 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<PlaceTrace> {
-        if ctx.accessor_expansion_stack.contains(&(struct_id, method)) {
-            return Err(CompileError::new(
-                ErrorKind::AccessorRecursion {
-                    method: self.body_interner().resolve(&method).to_string(),
-                },
-                span,
-            )
-            .with_note(
-                "an accessor call is expanded by inlining its body at the call site, so a cycle of accessor calls has no finite expansion",
-            ));
-        }
         let info = self
             .call_facts()
             .method_info(struct_id, method)
             .expect("accessor expansion follows a successful method lookup");
         let method_name_str = self.body_interner().resolve(&method).to_string();
+        let call_name = self.method_symbol(struct_id, &method_name_str, true);
+        let call_name = self.body_interner().get_or_intern(&call_name);
+        if self.function_identity(call_name).is_ok_and(|identity| {
+            ctx.canonical_function_identity == crate::FunctionInstanceKey::Definition(identity)
+        }) {
+            return Err(CompileError::new(
+                ErrorKind::AccessorRecursion {
+                    method: method_name_str.clone(),
+                },
+                span,
+            )
+            .with_note(
+                "an accessor call is expanded by mandatory CFG splicing, so a cycle of accessor calls has no finite expansion",
+            ));
+        }
 
-        // The receiver of an accessor call must be a place (E0427): the
-        // accessor's body is inlined against the receiver's storage, so there
-        // is nothing for borrow-operand elaboration (RUE-953) to loan. It is
-        // read through a shared borrow, never moved.
+        // RUE-1208: semantic analysis establishes the accessor's place/loan
+        // contract, but does not inspect or expand the callee body. The
+        // marked place-producing call survives through canonical AIR so the
+        // per-function CFG query can depend on and splice the callee CFG.
         let receiver_span = self.body_rir_ref().get(receiver).span;
-        let receiver_trace = {
+        let mut receiver_trace = {
             let prev_byref_root = ctx.byref_arg_root.take();
             let trace = self.try_trace_place(receiver, air, ctx);
             ctx.byref_arg_root = prev_byref_root;
             trace?.ok_or_else(|| CompileError::new(ErrorKind::BorrowNonLvalue, receiver_span))?
         };
         let root = receiver_trace.root_var;
-
-        // (Accessor-Call) exclusivity: the shared loan this call takes on the
-        // receiver's root conflicts with any exclusive loan already active in
-        // an enclosing call's argument list (`g(inout v, v.get_ref(i))`).
         for frame in &ctx.call_loaned_roots {
             if frame
                 .iter()
@@ -1214,203 +1205,40 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if receiver_ty.as_struct() != Some(struct_id) {
             return Err(self.type_mismatch_error(Type::new_struct(struct_id), receiver_ty, span));
         }
-
-        // Register the loan for the enclosing full expression and record the
-        // call for the escape-shape checks.
         ctx.expression_loans.push((root, span));
         ctx.accessor_call_insts.insert(inst_ref, (method, root));
+        ctx.referenced_methods.insert((struct_id, method));
+        self.record_body_method_dependency((struct_id, method));
 
-        // Guard statements accumulate here, starting with anything the
-        // receiver trace itself carried (a nested accessor receiver).
-        let mut guard_stmts = receiver_trace.pending_stmts.clone();
-
-        // Analyze the explicit arguments as by-value guard inputs (the
-        // declaration gate rejects every other parameter mode, E0260).
         let param_data = self.body_param_data(info.params);
         let param_types = param_data.types().to_vec();
         let param_modes = param_data.modes().to_vec();
-        let param_names = param_data.names().to_vec();
         self.validate_call_contract_for_accessor(args_range, &param_types, &param_modes, span)?;
-        // Every accessor parameter is by-value, so no operand here can produce
-        // a borrow-operand temporary (RUE-953); the guard statements below are
-        // the accessor's own storage.
-        let air_args = self
-            .analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?
-            .args;
-
-        // Run inference for the accessor body so the caller's analysis can
-        // walk instructions the caller's own inference never visited. The
-        // overlay is popped once expansion completes.
-        let struct_type = Type::new_struct(struct_id);
-        let self_sym = self.body_interner().get_or_intern("self");
-        let mut infer_params: Vec<(Spur, Type, RirParamMode, bool)> =
-            vec![(self_sym, struct_type, RirParamMode::Borrow, false)];
-        for (index, name) in param_names.iter().enumerate() {
-            infer_params.push((*name, param_types[index], RirParamMode::Normal, false));
-        }
-        let Some((body, accessor_decl_span)) = self.call_facts().accessor_body(struct_id, method)
-        else {
-            return Err(CompileError::new(
-                ErrorKind::InternalError(format!(
-                    "accessor `{method_name_str}` has no resolvable body to inline"
-                )),
-                span,
-            ));
-        };
-        let overlay = self.run_type_inference(
-            ctx.infer_ctx,
-            info.return_type,
-            &infer_params,
-            body,
-            None,
-            None,
-        )?;
-        ctx.inline_resolved_types.push(std::sync::Arc::new(overlay));
-
-        // Bind the accessor's value parameters as fresh caller locals
-        // initialized from the analyzed arguments, and `self` as a place
-        // alias of the receiver. The inline scope shadows caller names; the
-        // accessor body only names its own bindings (its standalone analysis
-        // rejects anything else).
-        ctx.push_scope();
-        for (index, name) in param_names.iter().enumerate() {
-            let ty = param_types[index];
-            let (slot, live, alloc) =
-                self.allocate_local_storage(air, air_args[index].value, ty, span, ctx)?;
-            guard_stmts.push(live);
-            guard_stmts.push(alloc);
-            ctx.insert_local(
-                *name,
-                LocalVar {
-                    slot,
-                    ty,
-                    is_mut: false,
-                    span,
-                    allow_unused: true,
-                },
-            );
-        }
-        let alias = super::super::context::PlaceAlias {
-            base: receiver_trace.base,
-            base_type: receiver_trace.base_type,
-            projections: receiver_trace
-                .projections
-                .iter()
-                .map(|p| super::super::context::AliasProjection {
-                    proj: p.proj,
-                    result_type: p.result_type,
-                    field_name: p.field_name,
-                    const_index: p.const_index,
-                    index_segment: p.index_segment,
-                })
-                .collect(),
-            root_var: root,
-        };
-        let saved_alias = ctx.place_aliases.insert(self_sym, alias);
-
-        // Locate the body's guard statements and trailing yield. The shape
-        // (single trailing `yield`) is the accessor's well-formedness rule;
-        // it is re-checked here because a caller may analyze before the
-        // accessor's own standalone analysis runs. This accessor is on the
-        // in-progress stack for exactly the body's analysis, so a call it
-        // makes back into an enclosing accessor is E0261 rather than an
-        // unbounded re-expansion.
-        ctx.accessor_expansion_stack.push((struct_id, method));
-        let expansion = (|| -> CompileResult<PlaceTrace> {
-            // A single-statement body lowers to the instruction itself.
-            let body_insts = match &self.body_rir_ref().get(body).data {
-                InstData::Block { instructions } => {
-                    self.body_rir_ref().block_insts(instructions).to_vec()
-                }
-                _ => vec![body],
-            };
-            let (trailing, guards) = match body_insts.split_last() {
-                Some((trailing, guards))
-                    if matches!(self.body_rir_ref().get(*trailing).data, InstData::Yield(_)) =>
-                {
-                    (*trailing, guards.to_vec())
-                }
-                _ => {
-                    return Err(CompileError::new(
-                        ErrorKind::AccessorBodyMissingYield,
-                        accessor_decl_span,
-                    ));
-                }
-            };
-
-            // Analyze the guards as ordinary statements in the caller's AIR.
-            // A nested `yield` dispatches against the trailing reference and
-            // is rejected (E0254); a `return` or `?` is likewise rejected by
-            // the accessor-body checks in control-flow analysis.
-            let prev_trailing = ctx.accessor_trailing_yield.replace(trailing);
-            for guard in guards {
-                let result =
-                    ctx.with_expected_type(None, |ctx| self.analyze_inst(air, guard, ctx))?;
-                self.reject_discarded_linear_value(result.ty, guard)?;
-                guard_stmts.push(result.air_ref);
-            }
-            ctx.accessor_trailing_yield = prev_trailing;
-
-            // The trailing yield's operand is the place the call becomes.
-            let InstData::Yield(yield_operand) = self.body_rir_ref().get(trailing).data else {
-                unreachable!("trailing accessor instruction was checked to be a yield");
-            };
-            let yield_span = self.body_rir_ref().get(trailing).span;
-            let mut result_trace =
-                self.try_trace_place(yield_operand, air, ctx)?
-                    .ok_or_else(|| {
-                        CompileError::new(
-                            ErrorKind::AccessorYieldNotReceiverRooted {
-                                found: "a value expression".to_string(),
-                            },
-                            yield_span,
-                        )
-                    })?;
-            if result_trace.root_var != root {
-                return Err(CompileError::new(
-                    ErrorKind::AccessorYieldNotReceiverRooted {
-                        found: format!(
-                            "a place rooted at `{}`",
-                            self.body_interner().resolve(&result_trace.root_var)
-                        ),
-                    },
-                    yield_span,
-                ));
-            }
-            let result_ty = result_trace.result_type();
-            if !result_ty.is_error()
-                && !info.return_type.is_error()
-                && !self.types_compatible(result_ty, info.return_type)
-            {
-                return Err(self.type_mismatch_error(info.return_type, result_ty, yield_span));
-            }
-
-            // The composed place is a second-class shared borrow rooted at
-            // the caller's receiver root, prefixed by the guards.
-            let mut pending = std::mem::take(&mut guard_stmts);
-            pending.append(&mut result_trace.pending_stmts);
-            result_trace.pending_stmts = pending;
-            result_trace.via_accessor = true;
-            result_trace.is_borrow_param = true;
-            result_trace.is_root_mutable = false;
-            Ok(result_trace)
-        })();
-
-        // Unwind the inline scope regardless of outcome.
-        ctx.accessor_expansion_stack.pop();
-        match saved_alias {
-            Some(alias) => {
-                ctx.place_aliases.insert(self_sym, alias);
-            }
-            None => {
-                ctx.place_aliases.remove(&self_sym);
-            }
-        }
-        self.check_unused_locals_in_current_scope(ctx);
-        ctx.pop_scope();
-        ctx.inline_resolved_types.pop();
-
-        expansion
+        let operands =
+            self.analyze_call_operands(air, args_range, &param_types, &param_modes, false, ctx)?;
+        let receiver_place = Self::build_place_ref(air, &receiver_trace)?;
+        let receiver_value = air.add_inst(AirInst {
+            data: AirInstData::PlaceRead {
+                place: receiver_place,
+            },
+            ty: receiver_ty,
+            span: receiver_span,
+        });
+        let mut call_args = Vec::with_capacity(operands.args.len() + 1);
+        call_args.push(AirCallArg {
+            value: receiver_value,
+            mode: AirArgMode::Borrow,
+        });
+        call_args.extend(operands.args);
+        let call = air.add_accessor_call(call_name, &call_args, info.return_type, span)?;
+        receiver_trace.base = AirPlaceBase::Accessor(call);
+        receiver_trace.base_type = info.return_type;
+        receiver_trace.projections.clear();
+        receiver_trace.pending_stmts.extend(operands.temp_scope);
+        receiver_trace.via_accessor = true;
+        receiver_trace.is_borrow_param = true;
+        receiver_trace.is_root_mutable = false;
+        Ok(receiver_trace)
     }
 
     /// Analyze a `-> borrow T` accessor call in value position (ADR-0062):
@@ -1530,7 +1358,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     }
 
     /// Build an AirPlaceRef from a PlaceTrace, adding projections to the Air.
-    pub(super) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> CompileResult<AirPlaceRef> {
+    pub(crate) fn build_place_ref(air: &mut Air, trace: &PlaceTrace) -> CompileResult<AirPlaceRef> {
         let projs = trace.projections.iter().map(|p| p.proj);
         Ok(air.make_place(trace.base, trace.base_type, projs)?)
     }
@@ -2862,6 +2690,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         .params
                         .iter()
                         .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
+                    AirPlaceBase::Accessor(_) => false,
                 };
                 if is_droppable_param_base {
                     emit_move_marker = true;
@@ -2901,6 +2730,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let (slot, is_param) = match trace.base {
                     AirPlaceBase::Local(slot) => (slot, false),
                     AirPlaceBase::Param(slot) => (slot, true),
+                    AirPlaceBase::Accessor(_) => {
+                        unreachable!("accessor places never receive move markers")
+                    }
                 };
                 let marker_place = move_is_partial
                     .then(|| Self::build_move_marker_place_ref(air, &trace, span))
@@ -3812,6 +3644,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             span,
                         ));
                     }
+                    AirPlaceBase::Accessor(_) => {
+                        unreachable!("accessor places are classified as borrowed")
+                    }
                 }
             }
 
@@ -3977,6 +3812,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             ErrorKind::AssignToImmutable(root_name),
                             span,
                         ));
+                    }
+                    AirPlaceBase::Accessor(_) => {
+                        unreachable!("accessor places are classified as borrowed")
                     }
                 }
             }
@@ -4534,6 +4372,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .params
                 .iter()
                 .any(|p| p.name == trace.root_var && p.mode == RirParamMode::Normal),
+            AirPlaceBase::Accessor(_) => false,
         };
         if !droppable_base {
             return Ok(value);
@@ -4541,6 +4380,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let (slot, is_param) = match trace.base {
             AirPlaceBase::Local(slot) => (slot, false),
             AirPlaceBase::Param(slot) => (slot, true),
+            AirPlaceBase::Accessor(_) => {
+                unreachable!("accessor places never receive element move markers")
+            }
         };
         // A dedicated Const instruction keeps the marker's index resolvable
         // even when the source index expression was a folded constant

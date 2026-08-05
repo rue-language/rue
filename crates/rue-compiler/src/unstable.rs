@@ -924,7 +924,6 @@ mod codegen_unit_tests {
         let mut session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
         let semantic = session.canonical_semantic(&options).unwrap();
-
         let errors = crate::codegen_query::with_test_codegen_failure_injection(|| {
             session
                 .codegen_products(
@@ -1052,6 +1051,138 @@ mod codegen_unit_tests {
                 .machine_code
                 .code
         );
+    }
+
+    #[test]
+    fn accessor_edit_recomputes_caller_without_publishing_accessor_abi() {
+        let source = |value| {
+            crate::SourceSnapshot::single(
+                "main.rue",
+                format!(
+                    "struct P {{ x: i64, fn value(borrow self) -> borrow i64 {{ if self.x == {value} {{ let bad = 1 / 0; if bad == 0 {{ }} }} yield self.x; }} }} fn helper() -> i64 {{ 1 }} fn main() -> i32 {{ let p = P {{ x: 7 }}; if p.value() + helper() == 8 {{ 0 }} else {{ 1 }} }}"
+                ),
+            )
+            .unwrap()
+        };
+        let mut options = crate::CompileOptions::default();
+        options
+            .preview_features
+            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let mut session = crate::CompilerSession::new();
+
+        session.update(&source(7)).into_result().unwrap();
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let cold = session
+            .codegen_products(
+                &semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        assert_eq!(cold.len(), 2, "accessors have no out-of-line ABI unit");
+        assert!(
+            cold.iter()
+                .all(|unit| !unit.machine_name.contains(".value"))
+        );
+        let cold_rooted = session.rooted_cfg(&options).unwrap();
+        let cold_helper_key = cold_rooted
+            .cfgs
+            .iter()
+            .find(|unit| crate::cfg_query::accessor_source_name(&unit.function) == "helper")
+            .unwrap()
+            .optimized_cfg_key
+            .clone();
+
+        session.update(&source(8)).into_result().unwrap();
+        let warm_rooted = session.rooted_cfg(&options).unwrap();
+        let warm_helper_key = &warm_rooted
+            .cfgs
+            .iter()
+            .find(|unit| crate::cfg_query::accessor_source_name(&unit.function) == "helper")
+            .unwrap()
+            .optimized_cfg_key;
+        assert_eq!(
+            cold_helper_key, *warm_helper_key,
+            "{cold_helper_key:#?}\n{warm_helper_key:#?}"
+        );
+        let execution = |name: &str| {
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .find_map(|(identity, execution)| {
+                    matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == name)
+                        .then_some(*execution)
+                })
+                .unwrap()
+        };
+        assert_eq!(execution("main"), rue_query::RequestExecution::Computed);
+        assert_eq!(
+            execution("helper"),
+            rue_query::RequestExecution::Reused,
+            "{:#?}",
+            session.rooted_cfg_executions()
+        );
+        assert!(session.rooted_cfg_executions().iter().all(|(identity, _)| {
+            !matches!(identity, crate::FunctionInstanceKey::Definition(definition) if definition.name() == "value")
+        }));
+        let semantic = session.canonical_semantic(&options).unwrap();
+        let warm = session
+            .codegen_products(
+                &semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let mut fresh = crate::CompilerSession::new();
+        fresh.update(&source(8)).into_result().unwrap();
+        let semantic = fresh.canonical_semantic(&options).unwrap();
+        let fresh = fresh
+            .codegen_products(
+                &semantic,
+                &options,
+                rue_codegen::BackendArtifactRequest::default(),
+            )
+            .unwrap();
+        let warm = warm
+            .iter()
+            .map(|product| (&product.machine_name, &product.machine_code.code))
+            .collect::<Vec<_>>();
+        let fresh = fresh
+            .iter()
+            .map(|product| (&product.machine_name, &product.machine_code.code))
+            .collect::<Vec<_>>();
+        assert_eq!(warm, fresh);
+    }
+
+    #[test]
+    fn accessor_raw_cfg_dependency_key_is_shared_across_distinct_callers() {
+        let snapshot = crate::SourceSnapshot::single(
+            "main.rue",
+            "struct P { x: i64, fn value(borrow self) -> borrow i64 { yield self.x; } } \
+             struct A { n: i64 } struct B { n: i64 } \
+             fn caller_a(borrow p: P) -> i64 { let a = A { n: 1 }; p.value() + a.n } \
+             fn caller_b(borrow p: P) -> i64 { let b = B { n: 2 }; p.value() + b.n } \
+             fn main() -> i32 { let p = P { x: 3 }; if caller_a(borrow p) + caller_b(borrow p) == 9 { 0 } else { 1 } }",
+        )
+        .unwrap();
+        let mut options = crate::CompileOptions::default();
+        options
+            .preview_features
+            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let mut session = crate::CompilerSession::new();
+        session.update(&snapshot).into_result().unwrap();
+        let rooted = session.rooted_cfg(&options).unwrap();
+        let dependency = |name: &str| {
+            let unit = rooted
+                .cfgs
+                .iter()
+                .find(|unit| crate::cfg_query::accessor_source_name(&unit.function) == name)
+                .unwrap();
+            assert_eq!(unit.optimized_cfg_key.accessor_dependencies.len(), 1);
+            unit.optimized_cfg_key.accessor_dependencies[0].clone()
+        };
+
+        assert_eq!(dependency("caller_a"), dependency("caller_b"));
     }
 
     #[test]

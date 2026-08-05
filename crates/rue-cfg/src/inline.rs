@@ -21,8 +21,8 @@
 //!   included), bracketed by a callee-lifetime `StorageLive` before the
 //!   spliced body and `StorageDead` after the continuation join.
 //! - Physically by-reference: the argument is a place; parameter accesses are
-//!   redirected to its root. Only simple local/parameter roots are accepted;
-//!   projected by-ref arguments are rejected (see [`CfgInlineError`]).
+//!   redirected to its root and any caller projection prefix is composed with
+//!   the callee's own projections.
 //!
 //! # Worked elaboration example: the materialized-parameter drop
 //!
@@ -112,13 +112,6 @@ pub enum CfgInlineError {
         call_type: Type,
         callee_return_type: Type,
     },
-    /// A physically by-reference argument is a projected place (field or
-    /// index). Redirecting parameter accesses to a projected place needs a
-    /// proof that address-formation timing and trap behavior are preserved
-    /// (a projection can bounds-trap when the address is formed), which
-    /// ADR-0049 §2/§3 defers: Phase 1 accepts only simple local/parameter
-    /// roots.
-    ProjectedByRefArgument { arg_index: usize },
     /// A physically by-reference argument is not a place read at all — a
     /// violated sema/CFG invariant at the call site (RUE-760).
     NonPlaceByRefArgument { arg_index: usize },
@@ -162,10 +155,6 @@ impl std::fmt::Display for CfgInlineError {
                 call_type.name(),
                 callee_return_type.name()
             ),
-            Self::ProjectedByRefArgument { arg_index } => write!(
-                f,
-                "by-ref argument {arg_index} is a projected place, which Phase 1 inlining excludes"
-            ),
             Self::NonPlaceByRefArgument { arg_index } => {
                 write!(f, "by-ref argument {arg_index} is not a place read")
             }
@@ -191,15 +180,17 @@ impl From<CfgEditError> for CfgInlineError {
 }
 
 /// Where accesses to one callee source parameter land in the caller.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum ParamRedirect {
     /// Physically by-value: the argument was materialized into this caller
     /// frame slot (the base of a full-ABI-width region).
     Materialized { slot: u32 },
     /// Physically by-reference with a simple caller-local root.
-    ByRefLocal { slot: u32 },
-    /// Physically by-reference with a simple caller-parameter root.
-    ByRefParam { slot: u32 },
+    ByRefPlace {
+        base: PlaceBase,
+        base_type: Type,
+        projections: Vec<Projection>,
+    },
 }
 
 /// One callee source parameter: its start ABI slot and full slot width.
@@ -233,7 +224,7 @@ impl Splice<'_> {
     fn param(&self, slot: u32) -> Result<ParamRedirect, CfgInlineError> {
         self.redirects
             .get(&slot)
-            .copied()
+            .cloned()
             .ok_or(CfgInlineError::UnmappedCalleeParamSlot { slot })
     }
 }
@@ -259,15 +250,20 @@ pub fn inline_call(
     if call.as_u32() as usize >= dst.value_count() {
         return Err(CfgInlineError::CallSiteNotFound { call });
     }
-    let (call_ty, call_span, call_args) = {
+    let (call_ty, call_span, call_args, is_accessor) = {
         let inst = dst.get_inst(call);
-        let CfgInstData::Call { runtime, args, .. } = &inst.data else {
-            return Err(CfgInlineError::NotACall { call });
-        };
-        if runtime.is_some() {
-            return Err(CfgInlineError::RuntimeCall { call });
+        match &inst.data {
+            CfgInstData::Call { runtime, args, .. } => {
+                if runtime.is_some() {
+                    return Err(CfgInlineError::RuntimeCall { call });
+                }
+                (inst.ty, inst.span, dst.call_args(args).to_vec(), false)
+            }
+            CfgInstData::AccessorCall { args, .. } => {
+                (inst.ty, inst.span, dst.call_args(args).to_vec(), true)
+            }
+            _ => return Err(CfgInlineError::NotACall { call }),
         }
-        (inst.ty, inst.span, dst.call_args(args).to_vec())
     };
     let Some((call_block, call_position)) = dst.blocks().iter().find_map(|block| {
         block
@@ -303,20 +299,26 @@ pub fn inline_call(
         let redirect = if callee.is_param_by_ref(param.start_slot) {
             // The argument is a place; only a simple local/parameter root is
             // redirectable in this phase (module docs, ADR-0049 §2/§3).
-            let root = byref_argument_root(&dst, arg.value, index)?;
-            match root {
+            let place = byref_argument_place(&dst, arg.value, index)?;
+            match place.base {
                 PlaceBase::Local(slot) => {
                     if callee.is_param_address_taken(param.start_slot) {
                         dst.mark_address_taken(slot);
                     }
-                    ParamRedirect::ByRefLocal { slot }
                 }
                 PlaceBase::Param(slot) => {
                     if callee.is_param_address_taken(param.start_slot) {
                         dst.mark_param_address_taken(slot);
                     }
-                    ParamRedirect::ByRefParam { slot }
                 }
+                PlaceBase::Accessor(_) => {
+                    return Err(CfgInlineError::NonPlaceByRefArgument { arg_index: index });
+                }
+            }
+            ParamRedirect::ByRefPlace {
+                base: place.base,
+                base_type: place.base_type,
+                projections: dst.get_place_projections(&place).to_vec(),
             }
         } else {
             let arg_ty = dst.get_inst(arg.value).ty;
@@ -363,6 +365,31 @@ pub fn inline_call(
         block_base,
         redirects: &redirects,
     };
+    let yielded = if is_accessor {
+        let returned = callee
+            .blocks()
+            .iter()
+            .find_map(|block| match block.terminator {
+                Terminator::Return { value: Some(value) } => Some(value),
+                _ => None,
+            })
+            .ok_or(CfgInlineError::ReturnTypeMismatch {
+                call_type: call_ty,
+                callee_return_type: callee.return_type(),
+            })?;
+        let CfgInstData::PlaceRead { place } = &callee.get_inst(returned).data else {
+            return Err(CfgInlineError::ReturnTypeMismatch {
+                call_type: call_ty,
+                callee_return_type: callee.return_type(),
+            });
+        };
+        Some((
+            translate_place(&mut dst, callee, place, &splice)?,
+            splice.value(returned),
+        ))
+    } else {
+        None
+    };
     for index in 0..callee.value_count() {
         let source = callee.get_inst(CfgValue::from_raw(index as u32));
         let data = translate_data(&mut dst, callee, &source.data, &splice)?;
@@ -379,7 +406,9 @@ pub fn inline_call(
     // The continuation takes the call result as an explicit block parameter;
     // unit results use a fresh unit constant instead (the builder's join
     // convention), and never results have no continuation edge (RUE-347).
-    let replacement = if call_ty != Type::UNIT && call_ty != Type::NEVER {
+    let replacement = if is_accessor {
+        None
+    } else if call_ty != Type::UNIT && call_ty != Type::NEVER {
         Some(dst.add_block_param(continuation, call_ty))
     } else if call_ty == Type::UNIT {
         Some(dst.add_inst(CfgInst {
@@ -390,7 +419,7 @@ pub fn inline_call(
     } else {
         None
     };
-    let continuation_takes_value = call_ty != Type::UNIT && call_ty != Type::NEVER;
+    let continuation_takes_value = !is_accessor && call_ty != Type::UNIT && call_ty != Type::NEVER;
 
     // -- Attach the copied blocks. ------------------------------------------
     for source in callee.blocks() {
@@ -456,14 +485,26 @@ pub fn inline_call(
     if let (Some(value), true) = (replacement, call_ty == Type::UNIT) {
         continuation_insts.push(value);
     }
+    let mut dead_materialized = Vec::with_capacity(materialized.len());
     for &(slot, _, ty) in &materialized {
-        continuation_insts.push(storage_inst(
+        dead_materialized.push(storage_inst(
             &mut dst,
             CfgInstData::StorageDead { slot, local_ty: ty },
             call_span,
         ));
     }
-    continuation_insts.extend(moved_tail);
+    if is_accessor {
+        // The yielded place may use a by-value parameter in one of its
+        // projections (for example `self.items[i]`). Keep those materialized
+        // parameter slots alive through the caller instructions that consume
+        // the substituted place; ending them at continuation entry leaves the
+        // projection index dangling on backends that rematerialize the load.
+        continuation_insts.extend(moved_tail);
+        continuation_insts.extend(dead_materialized);
+    } else {
+        continuation_insts.extend(dead_materialized);
+        continuation_insts.extend(moved_tail);
+    }
     {
         let block = dst.get_block_mut(continuation);
         block.insts = continuation_insts;
@@ -475,9 +516,66 @@ pub fn inline_call(
     if let Some(replacement) = replacement {
         dst.rewrite_value_uses(|value| if value == call { replacement } else { value })?;
     }
+    if let Some((yielded_place, yielded_value)) = yielded {
+        substitute_accessor_places(&mut dst, call, &yielded_place, yielded_value)?;
+    }
 
     dst.finish_after_optimization(type_pool)
         .map_err(CfgInlineError::Verification)
+}
+
+fn substitute_accessor_places(
+    cfg: &mut Cfg,
+    call: CfgValue,
+    yielded: &Place,
+    yielded_value: CfgValue,
+) -> Result<(), CfgInlineError> {
+    let mut replacements = Vec::new();
+    let mut value_replacements = Vec::new();
+    for index in 0..cfg.value_count() {
+        let value = CfgValue::from_raw(index as u32);
+        let place = match &cfg.get_inst(value).data {
+            CfgInstData::PlaceRead { place } | CfgInstData::PlaceWrite { place, .. }
+                if place.base == PlaceBase::Accessor(call) =>
+            {
+                place
+            }
+            _ => continue,
+        };
+        if matches!(cfg.get_inst(value).data, CfgInstData::PlaceRead { .. })
+            && cfg.get_place_projections(place).is_empty()
+        {
+            value_replacements.push(value);
+            continue;
+        }
+        let mut projections = cfg.get_place_projections(yielded).to_vec();
+        projections.extend_from_slice(cfg.get_place_projections(place));
+        let composed = cfg.make_place(yielded.base, yielded.base_type, projections)?;
+        replacements.push((value, composed));
+    }
+    for (value, place) in replacements {
+        match &mut cfg.get_inst_mut(value).data {
+            CfgInstData::PlaceRead { place: target }
+            | CfgInstData::PlaceWrite { place: target, .. } => *target = place,
+            _ => unreachable!(),
+        }
+    }
+    if !value_replacements.is_empty() {
+        cfg.rewrite_value_uses(|value| {
+            if value_replacements.contains(&value) {
+                yielded_value
+            } else {
+                value
+            }
+        })?;
+        for block_index in 0..cfg.block_count() {
+            let block = BlockId::from_raw(block_index as u32);
+            cfg.get_block_mut(block)
+                .insts
+                .retain(|value| !value_replacements.contains(value));
+        }
+    }
+    Ok(())
 }
 
 /// The callee's per-source-parameter grouping: the recorded ABI descriptors
@@ -505,25 +603,17 @@ fn callee_params(callee: &Cfg) -> Vec<CalleeParam> {
 
 /// Classify a physically by-reference argument's place root. Sema only
 /// accepts places here (RUE-760): a plain variable (`Load`/`Param`) or a
-/// projection chain (`PlaceRead`). Phase 1 admits the projection-free roots
-/// and rejects projected places (see [`CfgInlineError::ProjectedByRefArgument`]).
-fn byref_argument_root(
+/// projection chain (`PlaceRead`). Projected places retain their complete
+/// prefix so callee projections compose onto the caller's exact storage.
+fn byref_argument_place(
     caller: &Cfg,
     argument: CfgValue,
     arg_index: usize,
-) -> Result<PlaceBase, CfgInlineError> {
+) -> Result<Place, CfgInlineError> {
     match &caller.get_inst(argument).data {
-        CfgInstData::Load { slot } => Ok(PlaceBase::Local(*slot)),
-        CfgInstData::Param { index } => Ok(PlaceBase::Param(*index)),
-        CfgInstData::PlaceRead { place } => {
-            if let Some(slot) = place.as_local() {
-                Ok(PlaceBase::Local(slot))
-            } else if let Some(slot) = place.as_param() {
-                Ok(PlaceBase::Param(slot))
-            } else {
-                Err(CfgInlineError::ProjectedByRefArgument { arg_index })
-            }
-        }
+        CfgInstData::Load { slot } => Ok(Place::local(*slot, caller.get_inst(argument).ty)),
+        CfgInstData::Param { index } => Ok(Place::param(*index, caller.get_inst(argument).ty)),
+        CfgInstData::PlaceRead { place } => Ok(place.duplicate_with_owner()),
         _ => Err(CfgInlineError::NonPlaceByRefArgument { arg_index }),
     }
 }
@@ -552,10 +642,25 @@ fn translate_data(
         StringConst(index) => StringConst(*index),
         BlockParam { index } => BlockParam { index: *index },
         Param { index } => match splice.param(*index)? {
-            ParamRedirect::Materialized { slot } | ParamRedirect::ByRefLocal { slot } => {
-                Load { slot }
-            }
-            ParamRedirect::ByRefParam { slot } => Param { index: slot },
+            ParamRedirect::Materialized { slot } => Load { slot },
+            ParamRedirect::ByRefPlace {
+                base,
+                base_type: _,
+                projections,
+            } if projections.is_empty() => match base {
+                PlaceBase::Local(slot) => Load { slot },
+                PlaceBase::Param(index) => Param { index },
+                PlaceBase::Accessor(_) => {
+                    unreachable!("accessor roots are rejected at classification")
+                }
+            },
+            ParamRedirect::ByRefPlace {
+                base,
+                base_type,
+                projections,
+            } => PlaceRead {
+                place: dst.make_place(base, base_type, projections)?,
+            },
         },
         Add(a, b) => Add(splice.value(*a), splice.value(*b)),
         Sub(a, b) => Sub(splice.value(*a), splice.value(*b)),
@@ -593,11 +698,24 @@ fn translate_data(
         ParamStore { param_slot, value } => {
             let value = splice.value(*value);
             match splice.param(*param_slot)? {
-                ParamRedirect::Materialized { slot } | ParamRedirect::ByRefLocal { slot } => {
-                    Store { slot, value }
-                }
-                ParamRedirect::ByRefParam { slot } => ParamStore {
-                    param_slot: slot,
+                ParamRedirect::Materialized { slot } => Store { slot, value },
+                ParamRedirect::ByRefPlace {
+                    base,
+                    base_type: _,
+                    projections,
+                } if projections.is_empty() => match base {
+                    PlaceBase::Local(slot) => Store { slot, value },
+                    PlaceBase::Param(param_slot) => ParamStore { param_slot, value },
+                    PlaceBase::Accessor(_) => {
+                        unreachable!("accessor roots are rejected at classification")
+                    }
+                },
+                ParamRedirect::ByRefPlace {
+                    base,
+                    base_type,
+                    projections,
+                } => PlaceWrite {
+                    place: dst.make_place(base, base_type, projections)?,
                     value,
                 },
             }
@@ -624,6 +742,20 @@ fn translate_data(
                 .collect();
             Call {
                 runtime: *runtime,
+                name: *name,
+                args: dst.push_call_args(args)?,
+            }
+        }
+        AccessorCall { name, args } => {
+            let args: Vec<CfgCallArg> = callee
+                .call_args(args)
+                .iter()
+                .map(|arg| CfgCallArg {
+                    value: splice.value(arg.value),
+                    mode: arg.mode,
+                })
+                .collect();
+            AccessorCall {
                 name: *name,
                 args: dst.push_call_args(args)?,
             }
@@ -719,16 +851,7 @@ fn translate_place(
     place: &Place,
     splice: &Splice<'_>,
 ) -> Result<Place, CfgInlineError> {
-    let base = match place.base {
-        PlaceBase::Local(slot) => PlaceBase::Local(splice.local(slot)),
-        PlaceBase::Param(slot) => match splice.param(slot)? {
-            ParamRedirect::Materialized { slot } | ParamRedirect::ByRefLocal { slot } => {
-                PlaceBase::Local(slot)
-            }
-            ParamRedirect::ByRefParam { slot } => PlaceBase::Param(slot),
-        },
-    };
-    let projections: Vec<Projection> = callee
+    let translated: Vec<Projection> = callee
         .get_place_projections(place)
         .iter()
         .map(|projection| match projection {
@@ -745,7 +868,30 @@ fn translate_place(
             },
         })
         .collect();
-    dst.make_place(base, place.base_type, projections)
+    let (base, base_type, mut projections) = match place.base {
+        PlaceBase::Local(slot) => (
+            PlaceBase::Local(splice.local(slot)),
+            place.base_type,
+            Vec::new(),
+        ),
+        PlaceBase::Param(slot) => match splice.param(slot)? {
+            ParamRedirect::Materialized { slot } => {
+                (PlaceBase::Local(slot), place.base_type, Vec::new())
+            }
+            ParamRedirect::ByRefPlace {
+                base,
+                base_type,
+                projections,
+            } => (base, base_type, projections),
+        },
+        PlaceBase::Accessor(value) => (
+            PlaceBase::Accessor(splice.value(value)),
+            place.base_type,
+            Vec::new(),
+        ),
+    };
+    projections.extend(translated);
+    dst.make_place(base, base_type, projections)
         .map_err(CfgInlineError::Edit)
 }
 
@@ -1176,22 +1322,22 @@ mod tests {
     }
 
     #[test]
-    fn projected_by_ref_argument_is_rejected() {
-        // Redirecting a projected place needs the address-formation proof
-        // obligation ADR-0049 records; Phase 1 refuses it.
+    fn projected_by_ref_argument_composes_onto_caller_place() {
         let program = compile(
             "struct Pair { a: i64, b: i64 }\n\
              fn bump(inout x: i64) { x = x + 1; }\n\
              fn caller() -> i64 { let mut p = Pair { a: 1, b: 2 }; bump(inout p.a); p.a }",
         );
-        let error = program.try_inline("caller", "bump").unwrap_err();
+        let inlined = program.inline("caller", "bump");
         assert!(
-            matches!(
-                error,
-                CfgInlineError::ProjectedByRefArgument { arg_index: 0 }
-            ),
-            "unexpected error: {error}"
+            attached_values(&inlined).any(|value| match &inlined.get_inst(value).data {
+                CfgInstData::PlaceWrite { place, .. } =>
+                    !inlined.get_place_projections(place).is_empty(),
+                _ => false,
+            }),
+            "the callee write must retain the caller field projection"
         );
+        assert_all_blocks_terminated(&inlined);
     }
 
     #[test]

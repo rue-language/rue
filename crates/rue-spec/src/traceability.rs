@@ -236,40 +236,6 @@ pub const KNOWN_UNCOVERED_NORMATIVE: &[(&str, &str)] = &[
          move-without-destructor rule governs `@raw`/`@raw_mut` pointer escapes under \
          ADR-0028 programmer responsibility, which is not positively testable.",
     ),
-    // ADR-0062 phase 1 (RUE-662) borrow-accessor call-site rules. The call-site
-    // semantics are implemented in the semantic engine (see the rue-air accessor
-    // unit suite) but do not yet fire through the incremental driver, whose
-    // per-body pruned RIR cannot see accessor callee bodies. Per the RUE-662
-    // ruling (2026-07-29) they become driver-enforceable via the epoch-engine
-    // eligibility fallback once RUE-1033 lands; the CFG-threshold splice that
-    // retires the fallback is tracked as RUE-1208. The corresponding spec cases
-    // in cases/items/borrow-accessors.toml run as preview-allowed-to-fail and
-    // flip to `preview_should_pass = true` with the eligibility change, retiring
-    // these entries.
-    (
-        "6.6:8",
-        "Accessor call semantics (borrowed-place result, full-expression loan \
-         extent): engine-implemented; awaits the RUE-662 provider-eligibility \
-         fallback (after RUE-1033) to fire through the driver.",
-    ),
-    (
-        "6.6:9",
-        "Accessor-result escape rejections (E0250-E0253): engine-implemented; \
-         awaits the RUE-662 provider-eligibility fallback (after RUE-1033) to \
-         fire through the driver.",
-    ),
-    (
-        "6.6:10",
-        "Exclusivity over the accessor loan extent (E0259): engine-implemented; \
-         awaits the RUE-662 provider-eligibility fallback (after RUE-1033) to \
-         fire through the driver.",
-    ),
-    (
-        "6.6:11",
-        "Drop-glue by-value read out of an accessor result (E0258): \
-         engine-implemented; awaits the RUE-662 provider-eligibility fallback \
-         (after RUE-1033) to fire through the driver.",
-    ),
 ];
 
 impl TraceabilityReport {

@@ -2386,29 +2386,6 @@ where
     fn call_method_info(&self, struct_id: StructId, name: Spur) -> Option<MethodCallInfo> {
         self.method_info_for_symbol(struct_id, name)
     }
-    fn call_accessor_body(&self, struct_id: StructId, name: Spur) -> Option<(InstRef, Span)> {
-        // Accessor bodies (ADR-0062) are spliced at the call site, so the
-        // provider resolves the declaring `FnDecl` from the request-local RIR
-        // — named methods only; anonymous-struct accessors are rejected at
-        // declaration.
-        if let Some(info) = self
-            .endpoint
-            .method_info(struct_id, name)
-            .filter(|info| info.returns_borrow)
-        {
-            return Some((info.body, info.span));
-        }
-        let method_ref = self.rir_struct_method_decl(struct_id, name)?;
-        let inst = self.rir.rir().get(method_ref);
-        match &inst.data {
-            InstData::FnDecl {
-                returns_borrow: true,
-                body,
-                ..
-            } => Some((*body, inst.span)),
-            _ => None,
-        }
-    }
     fn call_named_method_declaration(
         &self,
         file: FileId,

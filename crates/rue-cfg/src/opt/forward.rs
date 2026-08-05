@@ -180,7 +180,7 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                         record_write(&mut slot_class, slot, None);
                     }
                 }
-                CfgInstData::Call { args, .. } => {
+                CfgInstData::Call { args, .. } | CfgInstData::AccessorCall { args, .. } => {
                     for arg in cfg.call_args(args) {
                         if !arg.is_by_ref() {
                             continue;
@@ -285,6 +285,9 @@ pub fn run(cfg: &mut Cfg) -> Result<Stats, crate::CfgEditError> {
                                 // A parameter base writes through a parameter,
                                 // not a local slot: nothing to kill.
                                 PlaceBase::Param(_) => {}
+                                PlaceBase::Accessor(_) => {
+                                    clear_all = true;
+                                }
                             },
                             // An unidentifiable by-ref root: be safe and clear
                             // the whole table at this call.

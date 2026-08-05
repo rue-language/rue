@@ -177,21 +177,181 @@ impl QueryKey for CfgQueryKey {
     }
 }
 
+#[derive(Debug)]
+pub(crate) struct AccessorCfgSubgraph {
+    pub(crate) roots: std::collections::BTreeMap<crate::FunctionInstanceKey, CfgQueryKey>,
+    pub(crate) dependencies:
+        std::collections::BTreeMap<crate::FunctionInstanceKey, Arc<[CfgQueryKey]>>,
+    pub(crate) accessors: std::collections::BTreeSet<crate::FunctionInstanceKey>,
+}
+
+#[derive(Debug)]
+pub(crate) enum AccessorCfgSubgraphFailure {
+    Missing(crate::FunctionInstanceKey),
+    Cycle(crate::FunctionInstanceKey),
+}
+
+pub(crate) fn accessor_source_name(identity: &crate::FunctionInstanceKey) -> String {
+    match identity {
+        crate::FunctionInstanceKey::Definition(definition) => definition.name().to_owned(),
+        crate::FunctionInstanceKey::Specialization { base, .. } => accessor_source_name(base),
+        crate::FunctionInstanceKey::AnonymousMember { member, .. } => member.name.to_string(),
+        crate::FunctionInstanceKey::DropGlue(_) => "<accessor>".to_owned(),
+    }
+}
+
+/// Build the exact accessor dependency closure shared by the session and
+/// one-shot query collectors. Dependencies are in callee-before-caller
+/// postorder so nested mandatory splices are deterministic.
+pub(crate) fn accessor_cfg_subgraph(
+    keys: std::collections::BTreeMap<crate::FunctionInstanceKey, CfgQueryKey>,
+) -> Result<AccessorCfgSubgraph, AccessorCfgSubgraphFailure> {
+    let direct = keys
+        .iter()
+        .map(|(function, key)| {
+            let callees = match &key.semantic_input {
+                CfgSemanticInput::Body { input, .. } => canonical_body(&input.canonical)
+                    .instructions
+                    .iter()
+                    .filter_map(|instruction| match &instruction.data {
+                        rue_air::SemanticBodyInstData::AccessorCall { function, .. } => {
+                            Some(function.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                CfgSemanticInput::DropGlue { .. } => Vec::new(),
+            };
+            (function.clone(), callees)
+        })
+        .collect::<std::collections::BTreeMap<_, Vec<_>>>();
+    let mut accessors = keys
+        .iter()
+        .filter_map(|(function, key)| match &key.semantic_input {
+            CfgSemanticInput::Body { input, .. }
+                if canonical_body(&input.canonical).is_accessor =>
+            {
+                Some(function.clone())
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    accessors.extend(direct.values().flatten().cloned());
+
+    fn postorder(
+        function: &crate::FunctionInstanceKey,
+        direct: &std::collections::BTreeMap<
+            crate::FunctionInstanceKey,
+            Vec<crate::FunctionInstanceKey>,
+        >,
+        keys: &std::collections::BTreeMap<crate::FunctionInstanceKey, CfgQueryKey>,
+        visiting: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+        seen: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
+        output: &mut Vec<CfgQueryKey>,
+    ) -> Result<(), AccessorCfgSubgraphFailure> {
+        for callee in direct.get(function).into_iter().flatten() {
+            if !keys.contains_key(callee) {
+                return Err(AccessorCfgSubgraphFailure::Missing(callee.clone()));
+            }
+            if !visiting.insert(callee.clone()) {
+                return Err(AccessorCfgSubgraphFailure::Cycle(callee.clone()));
+            }
+            if seen.insert(callee.clone()) {
+                postorder(callee, direct, keys, visiting, seen, output)?;
+                output.push(keys[callee].clone());
+            }
+            visiting.remove(callee);
+        }
+        Ok(())
+    }
+
+    fn facts(
+        key: &CfgQueryKey,
+    ) -> Option<&crate::local_semantic_materialization::LocalMaterializationFacts> {
+        match &key.semantic_input {
+            CfgSemanticInput::Body {
+                materialization, ..
+            } => Some(materialization),
+            CfgSemanticInput::DropGlue { .. } => None,
+        }
+    }
+    fn with_facts(
+        key: &CfgQueryKey,
+        materialization: Arc<crate::local_semantic_materialization::LocalMaterializationFacts>,
+    ) -> CfgQueryKey {
+        let semantic_input = match &key.semantic_input {
+            CfgSemanticInput::Body { input, .. } => CfgSemanticInput::Body {
+                input: input.clone(),
+                materialization,
+            },
+            CfgSemanticInput::DropGlue { .. } => key.semantic_input.clone(),
+        };
+        CfgQueryKey::new(
+            key.function.clone(),
+            key.configuration.clone(),
+            semantic_input,
+        )
+    }
+
+    let mut roots = std::collections::BTreeMap::new();
+    let mut dependencies = std::collections::BTreeMap::new();
+    for function in keys.keys() {
+        let mut output = Vec::new();
+        postorder(
+            function,
+            &direct,
+            &keys,
+            &mut std::collections::BTreeSet::from([function.clone()]),
+            &mut std::collections::BTreeSet::new(),
+            &mut output,
+        )?;
+        let root = &keys[function];
+        if output.is_empty() {
+            roots.insert(function.clone(), root.clone());
+            dependencies.insert(function.clone(), Arc::<[CfgQueryKey]>::from([]));
+            continue;
+        }
+        let merged = Arc::new(
+            crate::local_semantic_materialization::LocalMaterializationFacts::union(
+                std::iter::once(root).chain(output.iter()).filter_map(facts),
+            ),
+        );
+        roots.insert(function.clone(), with_facts(root, merged.clone()));
+        dependencies.insert(function.clone(), output.iter().cloned().collect());
+    }
+    Ok(AccessorCfgSubgraph {
+        roots,
+        dependencies,
+        accessors,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct OptimizedCfgQueryKey {
     pub(crate) cfg: CfgQueryKey,
     pub(crate) opt_level: rue_cfg::OptLevel,
+    pub(crate) accessor_dependencies: Arc<[CfgQueryKey]>,
 }
 
 impl OptimizedCfgQueryKey {
-    pub(crate) fn new(cfg: CfgQueryKey, opt_level: rue_cfg::OptLevel) -> Self {
-        Self { cfg, opt_level }
+    pub(crate) fn new(
+        cfg: CfgQueryKey,
+        opt_level: rue_cfg::OptLevel,
+        accessor_dependencies: Arc<[CfgQueryKey]>,
+    ) -> Self {
+        Self {
+            cfg,
+            opt_level,
+            accessor_dependencies,
+        }
     }
 }
 
 impl PartialEq for OptimizedCfgQueryKey {
     fn eq(&self, other: &Self) -> bool {
-        self.cfg == other.cfg && self.opt_level == other.opt_level
+        self.cfg == other.cfg
+            && self.opt_level == other.opt_level
+            && self.accessor_dependencies == other.accessor_dependencies
     }
 }
 
@@ -201,12 +361,18 @@ impl std::hash::Hash for OptimizedCfgQueryKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.cfg.hash(state);
         std::mem::discriminant(&self.opt_level).hash(state);
+        self.accessor_dependencies.hash(state);
     }
 }
 
 impl QueryKey for OptimizedCfgQueryKey {
     fn stable_identity(&self) -> String {
-        format!("{};opt={:?}", self.cfg.stable_identity(), self.opt_level)
+        format!(
+            "{};opt={:?};accessors={}",
+            self.cfg.stable_identity(),
+            self.opt_level,
+            self.accessor_dependencies.len()
+        )
     }
 }
 
@@ -691,6 +857,7 @@ fn materialize_and_build_cfg(
                 &facts.nominal_metadata,
                 &facts.modules,
                 &builtin_facts,
+                &facts.required_types,
             )
         }
         CfgSemanticInput::DropGlue { owner, .. } => {
@@ -704,6 +871,7 @@ fn materialize_and_build_cfg(
                 &facts.nominal_metadata,
                 &facts.modules,
                 &builtin_facts,
+                &facts.required_types,
             )
         }
     };
@@ -967,7 +1135,147 @@ pub(crate) fn evaluate_optimized_cfg(
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
     };
     let _span = tracing::info_span!("cfg_optimization", phase = "cfg_and_optimization").entered();
-    let current = record.cfg.clone();
+    let mut current = record.cfg.clone();
+    let mut domains = record.domains.clone();
+    let interner = record.interner.clone();
+    let mut strings = record.strings.to_vec();
+    let mut local_atoms = record.local_atoms.to_vec();
+    let mut symbol_mappings = record.codegen.symbol_mappings.as_ref().clone();
+    let mut foreign_symbols = record.codegen.foreign_symbols.as_ref().clone();
+    let mut materialization_warnings = record.materialization_warnings.to_vec();
+    let mut warnings = record.warnings.to_vec();
+    let mut implicit_destructor_targets = record
+        .implicit_destructor_targets
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut implicit_destructor_dependencies_complete =
+        record.implicit_destructor_dependencies_complete;
+    let mut accessor_cfgs = std::collections::BTreeMap::new();
+    for dependency in key.accessor_dependencies.iter() {
+        let terminal = context.query_registered(cfgs, dependency.clone())?;
+        let QueryOutcome::Success(value) = terminal.outcome() else {
+            unreachable!("Cfg publishes typed values")
+        };
+        let CfgValue::Available(callee) = value else {
+            return Ok(QueryOutput::success(value.clone())
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        };
+        let body_span = match &dependency.semantic_input {
+            CfgSemanticInput::Body { input, .. } => input.body_span,
+            CfgSemanticInput::DropGlue { body_span, .. } => *body_span,
+        };
+        accessor_cfgs.insert(dependency.function.clone(), (callee.clone(), body_span));
+    }
+    loop {
+        let call = current.blocks().iter().find_map(|block| {
+            block.insts.iter().copied().find(|value| {
+                matches!(
+                    current.get_inst(*value).data,
+                    rue_cfg::CfgInstData::AccessorCall { .. }
+                )
+            })
+        });
+        let Some(call) = call else { break };
+        let rue_cfg::CfgInstData::AccessorCall { name, .. } = current.get_inst(call).data else {
+            unreachable!()
+        };
+        let source_name = record.interner.resolve(&name);
+        let Some(identity) = domains.callable_for_symbol(name) else {
+            return Ok(QueryOutput::success(internal_failure(
+                format!("accessor call '{source_name}' has no stable callable identity"),
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        };
+        let Some((callee, callee_body_span)) = accessor_cfgs.get(&identity) else {
+            return Ok(QueryOutput::success(internal_failure(
+                format!("accessor CFG dependency is unavailable for '{source_name}'"),
+                record.body_span,
+            ))
+            .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+        };
+        let (callee_cfg, string_map) = match domains.import_accessor_cfg(
+            &callee.domains,
+            &callee.cfg,
+            &callee.interner,
+            &interner,
+            &mut strings,
+            *callee_body_span,
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                return Ok(QueryOutput::success(internal_failure(
+                    format!("accessor CFG domain import failed: {error:?}"),
+                    record.body_span,
+                ))
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+            }
+        };
+        let callee_cfg = match callee_cfg.finish_after_optimization(&record.type_pool) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                return Ok(QueryOutput::success(internal_failure(
+                    format!("imported accessor CFG failed verification: {error}"),
+                    record.body_span,
+                ))
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+            }
+        };
+        for atom in callee.local_atoms.iter() {
+            let mut atom = atom.clone();
+            let Some(dense_id) = string_map.get(&atom.dense_id).copied() else {
+                return Ok(QueryOutput::success(internal_failure(
+                    "accessor local atom has no imported string id",
+                    record.body_span,
+                ))
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+            };
+            atom.dense_id = dense_id;
+            if !local_atoms
+                .iter()
+                .any(|current| current.identity == atom.identity)
+            {
+                local_atoms.push(atom);
+            }
+        }
+        symbol_mappings.extend(
+            callee
+                .codegen
+                .symbol_mappings
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone())),
+        );
+        foreign_symbols.extend(callee.codegen.foreign_symbols.iter().cloned());
+        for warning in import_warnings(
+            &callee.materialization_warnings,
+            callee.body_span,
+            *callee_body_span,
+        ) {
+            if !materialization_warnings.contains(&warning) {
+                materialization_warnings.push(warning);
+            }
+        }
+        for warning in import_warnings(&callee.warnings, callee.body_span, *callee_body_span) {
+            if !warnings.contains(&warning) {
+                warnings.push(warning);
+            }
+        }
+        implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
+        implicit_destructor_dependencies_complete &=
+            callee.implicit_destructor_dependencies_complete;
+        current = match rue_cfg::inline_call(&current, call, &callee_cfg, &record.type_pool) {
+            Ok(cfg) => cfg,
+            Err(error) => {
+                return Ok(QueryOutput::success(internal_failure(
+                    format!("mandatory accessor CFG splice failed: {error}"),
+                    record.body_span,
+                ))
+                .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
+            }
+        };
+        context.record_work(rue_query::WorkItem::new("cfg.accessor-splices", 1));
+    }
     context.record_work(rue_query::WorkItem::new("cfg.optimize.attempts", 1));
     context.record_work(rue_query::WorkItem::new(
         "cfg.optimize.nonzero-level",
@@ -981,18 +1289,24 @@ pub(crate) fn evaluate_optimized_cfg(
                     air: record.air.clone(),
                     source_name: record.source_name.clone(),
                     cfg,
-                    domains: record.domains.clone(),
+                    domains,
                     type_pool: record.type_pool.clone(),
-                    interner: record.interner.clone(),
-                    strings: record.strings.clone(),
-                    local_atoms: record.local_atoms.clone(),
-                    codegen: record.codegen.clone(),
-                    materialization_warnings: record.materialization_warnings.clone(),
+                    interner,
+                    strings: strings.into(),
+                    local_atoms: local_atoms.into(),
+                    codegen: Arc::new(CfgCodegenDomain {
+                        defined_symbol: record.codegen.defined_symbol.clone(),
+                        symbol_mappings: Arc::new(symbol_mappings),
+                        foreign_symbols: Arc::new(foreign_symbols),
+                    }),
+                    materialization_warnings: materialization_warnings.into(),
                     body_span: record.body_span,
-                    warnings: record.warnings.clone(),
-                    implicit_destructor_targets: record.implicit_destructor_targets.clone(),
-                    implicit_destructor_dependencies_complete: record
-                        .implicit_destructor_dependencies_complete,
+                    warnings: warnings.into(),
+                    implicit_destructor_targets: implicit_destructor_targets
+                        .into_iter()
+                        .collect::<Vec<_>>()
+                        .into(),
+                    implicit_destructor_dependencies_complete,
                 },
             ))))
         }

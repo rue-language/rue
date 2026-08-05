@@ -87,7 +87,7 @@ fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
         "pub(crate) fn identity(&self) -> &StableDefinitionKey",
         "pub(crate) fn lang_item(&self) -> Option<rue_air::LangItem>",
         "rue_air::SemanticImportEpoch::new_local(",
-        ".materialize_local_body(",
+        ".materialize_local_body_with_types(",
         "FunctionInstanceKey::AnonymousMember",
     ] {
         assert!(

@@ -1,16 +1,9 @@
 # Borrow accessors (ADR-0062 phases 0-1, RUE-662), behind the
 # `borrow_accessors` preview.
 #
-# Coverage note (RUE-662 ruling, 2026-07-29): declaration- and body-level
-# rules are enforced today and carry `preview_should_pass = true`, as does the
-# guard-trap dynamics case (the guard observably traps whether or not the call
-# is inlined) and the expansion-acyclicity rejection (6.6:14, which fires as
-# soon as an expansion is entered). The remaining call-site rules (6.6:8-6.6:11)
-# are implemented in the semantic engine but do not yet fire through the
-# incremental driver, whose per-body RIR pruning cannot see accessor callee
-# bodies; they become enforceable with the RUE-662 epoch-eligibility scaffold
-# (after RUE-1033) and are tracked as known-uncovered until their cases flip to
-# `preview_should_pass = true`.
+# Accessor calls survive semantic analysis as marked place-producing calls.
+# The optimized-CFG query observes the exact accessor CFG dependencies and
+# mandatorily splices their guards and yielded place before code generation.
 
 [section]
 id = "items.borrow-accessors"
@@ -39,6 +32,89 @@ struct Grid {
 fn main() -> i32 {
     let g = Grid { cells: [1, 2, 3, 4] };
     if g.cells[0] == 1 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "nested_accessor_splices_are_repeatable"
+spec = ["6.6:8"]
+description = "Nested accessor calls form a callee-first splice graph and repeated/diamond-shaped uses do not look recursive."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn inner(borrow self) -> borrow i64 { yield self.x; }
+    fn outer(borrow self) -> borrow i64 { yield self.inner(); }
+}
+fn main() -> i32 {
+    let p = P { x: 21 };
+    if p.outer() + p.outer() == 42 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "indirect_accessor_recursion_is_rejected"
+spec = ["6.6:8"]
+description = "An indirect accessor cycle is diagnosed as E0261 before mandatory splicing."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn a(borrow self) -> borrow i64 { yield self.b(); }
+    fn b(borrow self) -> borrow i64 { yield self.a(); }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.a() == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0261", "directly or through other accessors"]
+
+[[case]]
+name = "projected_receiver_accessor_executes_in_place"
+spec = ["6.6:8"]
+description = "A projected receiver remains a place when its accessor CFG is spliced."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Inner {
+    x: i64,
+    fn value(borrow self) -> borrow i64 { yield self.x; }
+}
+struct Outer { inner: Inner }
+fn main() -> i32 {
+    let outer = Outer { inner: Inner { x: 7 } };
+    if outer.inner.value() == 7 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "callee_only_nominal_relocates_into_caller_domain"
+spec = ["6.6:8"]
+description = "Types used only by an accessor body are rematerialized in the caller domain before splicing."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct Marker { value: i64 }
+struct P {
+    x: i64,
+    fn value(borrow self) -> borrow i64 {
+        let marker = Marker { value: 1 };
+        if marker.value != 1 { @panic("bad marker"); }
+        yield self.x;
+    }
+}
+fn main() -> i32 {
+    let p = P { x: 9 };
+    if p.value() == 9 { 0 } else { 1 }
 }
 """
 exit_code = 0
@@ -364,9 +440,8 @@ compile_fail = true
 error_contains = ["E0261", "an accessor may not invoke itself"]
 
 # ---------------------------------------------------------------------------
-# Call-site semantics: implemented in the semantic engine (see the rue-air
-# unit suite), enforceable through the driver once the RUE-662 eligibility
-# scaffold lands. Until then these run as preview-allowed-to-fail.
+# Call-site semantics are enforced through the canonical semantic-body and CFG
+# query path; these cases are required provider-path coverage.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -374,6 +449,7 @@ name = "accessor_read_executes_in_place"
 spec = ["6.6:8", "6.6:12"]
 description = "A guarded accessor call reads the projected element in place; guards run at the call site."
 preview = "borrow_accessors"
+preview_should_pass = true
 source = """
 struct Grid {
     cells: [i64; 4],
@@ -425,6 +501,7 @@ name = "accessor_result_cannot_be_returned"
 spec = ["6.6:9"]
 description = "Returning an accessor result escapes its full expression (E0250)."
 preview = "borrow_accessors"
+preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -449,6 +526,7 @@ name = "accessor_result_cannot_be_let_bound"
 spec = ["6.6:9"]
 description = "A plain `let` binding of an accessor result escapes its full expression (E0252)."
 preview = "borrow_accessors"
+preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -471,6 +549,7 @@ name = "accessor_result_cannot_be_stored"
 spec = ["6.6:9"]
 description = "Assigning an accessor result into storage escapes its full expression (E0251)."
 preview = "borrow_accessors"
+preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -494,6 +573,7 @@ name = "accessor_result_cannot_be_captured"
 spec = ["6.6:9"]
 description = "Capturing an accessor result in an array literal escapes its full expression (E0253)."
 preview = "borrow_accessors"
+preview_should_pass = true
 source = """
 struct P {
     x: i64,
@@ -516,6 +596,7 @@ name = "accessor_loan_conflicts_with_inout"
 spec = ["6.6:10"]
 description = "An exclusive use of the borrowed root in the same full expression violates exclusivity (E0259)."
 preview = "borrow_accessors"
+preview_should_pass = true
 source = """
 struct Grid {
     cells: [i64; 4],
@@ -543,6 +624,7 @@ name = "accessor_result_drop_glue_read_rejected"
 spec = ["6.6:11"]
 description = "Reading an owning (drop-glue) value out of an accessor result by value is rejected (E0258)."
 preview = "borrow_accessors"
+preview_should_pass = true
 real_std = true
 source = """
 const std = @import("std");

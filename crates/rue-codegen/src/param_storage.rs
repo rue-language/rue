@@ -304,6 +304,9 @@ fn scan_param_references(cfg: &Cfg, type_pool: &FrozenTypeInternPool) -> ParamRe
                                 mark_span(&mut needs_home, index, span);
                             }
                         }
+                        PlaceBase::Accessor(_) => {
+                            panic!("mandatory-inline accessor place reached codegen")
+                        }
                     }
                 }
                 CfgInstData::Alloc { slot, .. }

@@ -223,6 +223,7 @@ pub(crate) fn synthesize_canonical_drop_glue(
     };
     add(SemanticBodyInstData::Ret(Some(value)), Ty::Unit);
     Ok(Body {
+        is_accessor: false,
         return_type: Ty::Unit,
         instructions: instructions.into(),
         places: Arc::new([]),

@@ -335,9 +335,6 @@ mod tests {
         fn call_method_info(&self, _: StructId, _: Spur) -> Option<MethodCallInfo> {
             None
         }
-        fn call_accessor_body(&self, _: StructId, _: Spur) -> Option<(InstRef, rue_span::Span)> {
-            None
-        }
         fn call_named_method_declaration(&self, _: FileId, _: Spur, _: Spur) -> Option<InstRef> {
             None
         }

@@ -261,8 +261,18 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                 }
             });
         }
+        let base = match source.base {
+            crate::AirPlaceBase::Local(slot) => crate::AirPlaceBase::Local(slot),
+            crate::AirPlaceBase::Param(slot) => crate::AirPlaceBase::Param(slot),
+            crate::AirPlaceBase::Accessor(call) => {
+                if call.as_u32() as usize >= instruction_count {
+                    return Err(F::InvalidInstructionReference);
+                }
+                crate::AirPlaceBase::Accessor(call)
+            }
+        };
         places.push(SemanticBodyPlace {
-            base: source.base,
+            base,
             base_type: host.export_body_type(source.base_type)?,
             projections: Arc::from(projections),
         });
@@ -485,6 +495,10 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
                     }
                 }
             }
+            AirInstData::AccessorCall { name, args } => SemanticBodyInstData::AccessorCall {
+                function: host.body_function_identity(*name)?,
+                args: call_args(args)?,
+            },
             AirInstData::CallGeneric { .. } => return Err(F::UnsupportedGenericCall),
             AirInstData::Intrinsic {
                 runtime,
@@ -626,6 +640,7 @@ pub(crate) fn export_body<H: SemanticBodyExportHost>(
     Ok(SemanticBodyExport {
         owner,
         body: SemanticBody {
+            is_accessor: analyzed.callable_kind == crate::AnalyzedCallableKind::Accessor,
             return_type: host.export_body_type(body.return_type())?,
             instructions: Arc::from(instructions),
             places: Arc::from(places),

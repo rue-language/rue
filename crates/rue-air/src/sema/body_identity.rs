@@ -790,6 +790,7 @@ struct MethodSignature {
     self_mode: RirParamMode,
     params: ParamRange,
     return_type: Type,
+    returns_borrow: bool,
 }
 
 fn anonymous_nominal_keys_canonically_equal<K: Eq, M: Eq>(
@@ -2131,6 +2132,7 @@ pub struct DurableMethod<K, M> {
     pub result: SemanticImportType<K, M>,
     pub has_self: bool,
     pub self_mode: SemanticParameterMode,
+    pub is_accessor: bool,
 }
 
 /// The durable callable vocabulary the pool consults to mint callable
@@ -2286,11 +2288,7 @@ where
             self_mode: signature.self_mode,
             params: signature.params,
             return_type: signature.return_type,
-            // The durable callable signature does not carry the accessor
-            // flag; call sites that need it resolve the full method record
-            // (with its RIR handle) instead, so this signature-only subset
-            // stays conservative.
-            returns_borrow: false,
+            returns_borrow: signature.returns_borrow,
         })
     }
 
@@ -2349,6 +2347,7 @@ where
             result,
             has_self,
             self_mode,
+            is_accessor,
         } = self
             .source
             .method(key)
@@ -2368,6 +2367,7 @@ where
             },
             params,
             return_type,
+            returns_borrow: is_accessor,
         };
         self.method_sigs.insert(key.clone(), signature);
         Ok(signature)
@@ -3375,6 +3375,7 @@ mod tests {
             result,
             has_self,
             self_mode,
+            is_accessor: false,
         }
     }
 
