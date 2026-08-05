@@ -20,6 +20,7 @@ use rue_span::{FileId, Span};
 use sha2::{Digest, Sha256};
 
 use crate::definition_snapshot::{definition_parts, validate_span};
+use crate::retained_charge::RetainedCharge;
 use crate::{
     DefinitionKind, DefinitionNamespace, ImportDirective, ImportDirectives, ModuleId,
     ModuleRevision, SourceId, SourceRevision, SourceSnapshot, SyntaxWork,
@@ -189,6 +190,83 @@ pub struct ParsedDefinitionIndex {
 impl ParsedDefinitionIndex {
     pub fn candidates(&self) -> &[ParsedDefinitionCandidate] {
         &self.candidates
+    }
+
+    /// Deterministic charge for every owned allocation reachable from this
+    /// cloned index. Shared allocations are deliberately charged along each
+    /// retained path, matching the runtime retention policy.
+    pub(crate) fn retained_allocation_charge(&self) -> u64 {
+        let candidates =
+            (self.candidates.len() * std::mem::size_of::<ParsedDefinitionCandidate>()) as u64;
+        let candidates = self
+            .candidates
+            .iter()
+            .fold(candidates, |charge, candidate| {
+                let candidate_charge = candidate.name.retained_charge();
+                #[cfg(test)]
+                let candidate_charge =
+                    candidate_charge.saturating_add(std::mem::size_of::<SymbolProvenance>() as u64);
+                charge.saturating_add(candidate_charge)
+            });
+        let declarations =
+            (self.declarations.len() * std::mem::size_of::<ParsedDeclarationCandidate>()) as u64;
+        let declarations = self
+            .declarations
+            .iter()
+            .fold(declarations, |charge, declaration| {
+                let anonymous_sites = (declaration.anonymous_sites.len()
+                    * std::mem::size_of::<rue_rir::AnonymousTypeSite>())
+                    as u64;
+                charge
+                    .saturating_add(declaration.fact.retained_charge())
+                    .saturating_add(
+                        declaration
+                            .anonymous_sites
+                            .iter()
+                            .fold(anonymous_sites, |charge, site| {
+                                charge.saturating_add(site.anchor.retained_charge())
+                            }),
+                    )
+            });
+        let declaration_by_key = self.declaration_by_key.iter().fold(
+            (self.declaration_by_key.len()
+                * std::mem::size_of::<(DeclarationCandidateKey, usize)>()) as u64,
+            |charge, (key, _)| charge.saturating_add(key.retained_charge()),
+        );
+        let declaration_capabilities = (self.declaration_capabilities.len()
+            * std::mem::size_of::<DeclarationOccurrenceCapability>())
+            as u64;
+        let declaration_capabilities = self
+            .declaration_capabilities
+            .iter()
+            .fold(declaration_capabilities, |charge, capability| {
+                charge.saturating_add(capability.retained_charge())
+            });
+        let charge = candidates
+            .saturating_add(declarations)
+            .saturating_add(declaration_by_key)
+            .saturating_add(declaration_capabilities);
+        #[cfg(test)]
+        let charge = {
+            let atomics = 4_u64.saturating_mul(std::mem::size_of::<AtomicUsize>() as u64);
+            let by_name = self.by_name.iter().fold(
+                (self.by_name.len()
+                    * std::mem::size_of::<(
+                        (DefinitionNamespace, Arc<str>),
+                        Arc<[ParsedDefinitionOccurrence]>,
+                    )>()) as u64,
+                |charge, ((_, name), occurrences)| {
+                    charge
+                        .saturating_add(name.retained_charge())
+                        .saturating_add(
+                            (occurrences.len() * std::mem::size_of::<ParsedDefinitionOccurrence>())
+                                as u64,
+                        )
+                },
+            );
+            charge.saturating_add(atomics).saturating_add(by_name)
+        };
+        charge
     }
 
     pub(crate) fn declaration_capabilities(&self) -> &[DeclarationOccurrenceCapability] {
@@ -495,6 +573,10 @@ pub enum InvalidImportShape {
 }
 
 impl ParsedInvalidImport {
+    pub(crate) fn retained_allocation_charge(&self) -> u64 {
+        self.importer.retained_charge()
+    }
+
     pub fn span(&self) -> Span {
         self.span
     }
@@ -592,6 +674,63 @@ impl ParsedItemView {
 }
 
 impl ParsedModule {
+    /// Charge the complete retained graph, including the immutable parser
+    /// payload and the snapshot-local aliases derived from it. Aliased Arcs are
+    /// charged once per reachable field rather than deduplicated by address.
+    pub(crate) fn retained_allocation_charge(&self) -> u64 {
+        let ast_charge = |ast: &Arc<Ast>| ast.retained_charge();
+        let tokens_charge = |tokens: &[rue_lexer::Token]| std::mem::size_of_val(tokens) as u64;
+        let imports_charge = |imports: &[ImportDirective]| {
+            imports
+                .iter()
+                .fold(std::mem::size_of_val(imports) as u64, |charge, import| {
+                    charge.saturating_add(import.retained_charge())
+                })
+        };
+
+        let payload = (std::mem::size_of::<ParsedSyntaxPayload>() as u64)
+            .saturating_add(self.payload.source.retained_charge())
+            .saturating_add(self.payload.source_text.retained_charge())
+            .saturating_add(tokens_charge(&self.payload.tokens))
+            .saturating_add(ast_charge(&self.payload.ast.ast))
+            .saturating_add(std::mem::size_of::<SymbolProvenance>() as u64)
+            .saturating_add(self.payload.ast.source.retained_charge())
+            .saturating_add(std::mem::size_of::<RodeoResolver<Spur>>() as u64)
+            .saturating_add(
+                (self.payload.resolver.resolver.len() * std::mem::size_of::<Spur>()) as u64,
+            )
+            .saturating_add(
+                self.payload
+                    .resolver
+                    .resolver
+                    .iter()
+                    .fold(0_u64, |charge, (_, value)| {
+                        charge.saturating_add(value.len() as u64)
+                    }),
+            )
+            .saturating_add(std::mem::size_of::<SymbolProvenance>() as u64)
+            .saturating_add(self.payload.definitions.retained_allocation_charge())
+            .saturating_add(imports_charge(&self.payload.import_sites))
+            .saturating_add(
+                (self.payload.invalid_import_sites.len()
+                    * std::mem::size_of::<ParsedInvalidImportSite>()) as u64,
+            );
+        let invalid_imports = self.invalid_imports.iter().fold(
+            (self.invalid_imports.len() * std::mem::size_of::<ParsedInvalidImport>()) as u64,
+            |charge, invalid| charge.saturating_add(invalid.retained_allocation_charge()),
+        );
+
+        self.revision
+            .retained_charge()
+            .saturating_add(self.physical_path.retained_charge())
+            .saturating_add(payload)
+            .saturating_add(tokens_charge(&self.tokens))
+            .saturating_add(ast_charge(&self.ast))
+            .saturating_add(self.definitions.retained_allocation_charge())
+            .saturating_add(imports_charge(&self.imports))
+            .saturating_add(invalid_imports)
+    }
+
     pub(crate) fn evaluate_raw_const_syntax(
         &self,
         key: &DeclarationCandidateKey,

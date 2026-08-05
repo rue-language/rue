@@ -13,6 +13,7 @@ use crate::durable_semantics::{
     DurableAnonymousNominal, DurableAnonymousNominalShape, DurableDeclarationPayload,
     DurableDeclarationSemantic,
 };
+use crate::retained_charge::RetainedCharge;
 use crate::{FunctionInstanceKey, ModuleId, StableDefinitionKey, StableDefinitionKind};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +69,40 @@ pub(crate) struct LocalBuiltinNominalRequest {
 pub(crate) struct LocalBuiltinNominalFact {
     pub(crate) request: LocalBuiltinNominalRequest,
     pub(crate) facts: crate::type_queries::TypeFacts,
+}
+
+impl RetainedCharge for LocalCallableFact {
+    fn retained_charge(&self) -> u64 {
+        self.identity
+            .retained_charge()
+            .saturating_add(self.symbol.retained_charge())
+    }
+}
+
+impl RetainedCharge for LocalNominalMetadataFact {
+    fn retained_charge(&self) -> u64 {
+        self.identity.retained_charge()
+    }
+}
+
+impl RetainedCharge for LocalBuiltinNominalRequest {
+    fn retained_charge(&self) -> u64 {
+        self.name
+            .retained_charge()
+            .saturating_add(self.query_ty.retained_charge())
+    }
+}
+
+impl RetainedCharge for LocalMaterializationFacts {
+    fn retained_charge(&self) -> u64 {
+        self.declarations
+            .retained_charge()
+            .saturating_add(self.anonymous_nominals.retained_charge())
+            .saturating_add(self.callables.retained_charge())
+            .saturating_add(self.nominal_metadata.retained_charge())
+            .saturating_add(self.modules.retained_charge())
+            .saturating_add(self.builtin_nominals.retained_charge())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

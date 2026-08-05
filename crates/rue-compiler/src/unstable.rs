@@ -1238,6 +1238,32 @@ impl From<crate::session::FrontendQueryWork> for QueryMetrics {
 /// Retention gauges contained in [`MetricsSnapshot`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RetentionMetrics {
+    pub retained_query_records: usize,
+    pub retained_bytes: usize,
+    pub peak_retained_bytes: usize,
+    pub retained_byte_budget: usize,
+    pub dependency_pins: usize,
+    pub peak_dependency_pins: usize,
+    pub dependency_pin_budget: usize,
+    pub aggregate_retention_probes: usize,
+    pub retained_byte_probe_quantum: usize,
+    pub dependency_pin_probe_quantum: usize,
+    pub retained_byte_probe_overshoot_bound: usize,
+    pub dependency_pin_probe_overshoot_bound: usize,
+    pub active_task_leases: usize,
+    pub peak_task_leases: usize,
+    pub active_retained_pins: usize,
+    pub peak_retained_pins: usize,
+    pub retained_revisions: usize,
+    pub retained_byte_pressure_events: usize,
+    pub dependency_pin_pressure_events: usize,
+    pub retained_byte_overflow_events: usize,
+    pub dependency_pin_overflow_events: usize,
+    pub peak_retained_byte_overage: usize,
+    pub peak_dependency_pin_overage: usize,
+    pub query_evictions: usize,
+    pub retained_byte_evictions: usize,
+    pub dependency_pin_evictions: usize,
     pub diagnostic_entries: usize,
     pub diagnostic_source_attempts: usize,
     pub diagnostic_source_bytes: usize,
@@ -1465,6 +1491,38 @@ impl MetricsSnapshot {
     }
     pub fn retention(&self) -> RetentionMetrics {
         RetentionMetrics {
+            retained_query_records: self.inner.retention.retained_query_records,
+            retained_bytes: self.inner.retention.retained_bytes,
+            peak_retained_bytes: self.inner.retention.peak_retained_bytes,
+            retained_byte_budget: self.inner.retention.retained_byte_budget,
+            dependency_pins: self.inner.retention.dependency_pins,
+            peak_dependency_pins: self.inner.retention.peak_dependency_pins,
+            dependency_pin_budget: self.inner.retention.dependency_pin_budget,
+            aggregate_retention_probes: self.inner.retention.aggregate_retention_probes,
+            retained_byte_probe_quantum: self.inner.retention.retained_byte_probe_quantum,
+            dependency_pin_probe_quantum: self.inner.retention.dependency_pin_probe_quantum,
+            retained_byte_probe_overshoot_bound: self
+                .inner
+                .retention
+                .retained_byte_probe_overshoot_bound,
+            dependency_pin_probe_overshoot_bound: self
+                .inner
+                .retention
+                .dependency_pin_probe_overshoot_bound,
+            active_task_leases: self.inner.retention.active_task_leases,
+            peak_task_leases: self.inner.retention.peak_task_leases,
+            active_retained_pins: self.inner.retention.active_retained_pins,
+            peak_retained_pins: self.inner.retention.peak_retained_pins,
+            retained_revisions: self.inner.retention.retained_revisions,
+            retained_byte_pressure_events: self.inner.retention.retained_byte_pressure_events,
+            dependency_pin_pressure_events: self.inner.retention.dependency_pin_pressure_events,
+            retained_byte_overflow_events: self.inner.retention.retained_byte_overflow_events,
+            dependency_pin_overflow_events: self.inner.retention.dependency_pin_overflow_events,
+            peak_retained_byte_overage: self.inner.retention.peak_retained_byte_overage,
+            peak_dependency_pin_overage: self.inner.retention.peak_dependency_pin_overage,
+            query_evictions: self.inner.retention.query_evictions,
+            retained_byte_evictions: self.inner.retention.retained_byte_evictions,
+            dependency_pin_evictions: self.inner.retention.dependency_pin_evictions,
             diagnostic_entries: self.inner.retention.diagnostic_entries,
             diagnostic_source_attempts: self.inner.retention.diagnostic_source_attempts,
             diagnostic_source_bytes: self.inner.retention.diagnostic_source_bytes,

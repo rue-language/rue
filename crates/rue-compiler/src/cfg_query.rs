@@ -11,6 +11,8 @@ use std::sync::Arc;
 use rue_query::{QueryAbort, QueryContext, QueryFamily, QueryKey, QueryOutcome, QueryOutput};
 use rue_span::Span;
 
+use crate::retained_charge::RetainedCharge;
+
 #[cfg(test)]
 use std::cell::Cell;
 
@@ -247,6 +249,158 @@ pub(crate) enum CfgValue {
         errors: crate::CompileErrors,
         body_span: Span,
     },
+}
+
+impl RetainedCharge for lasso::ThreadedRodeo {
+    fn retained_charge(&self) -> u64 {
+        let entries = (self.len() * std::mem::size_of::<lasso::Spur>()) as u64;
+        self.strings().fold(entries, |charge, value| {
+            charge.saturating_add(value.len() as u64)
+        })
+    }
+}
+
+impl RetainedCharge for rue_air::ValidatedAir {
+    fn retained_charge(&self) -> u64 {
+        let payload = self.payload_store_stats();
+        std::mem::size_of_val(self.instructions()) as u64
+            + payload.word_store_logical_bytes as u64
+            + payload.projection_store_logical_bytes as u64
+            + payload.place_store_logical_bytes as u64
+            + std::mem::size_of_val(self.param_drops()) as u64
+    }
+}
+
+impl RetainedCharge for rue_cfg::ValidatedCfg {
+    fn retained_charge(&self) -> u64 {
+        let payload = self.payload_storage_stats();
+        let blocks = std::mem::size_of_val(self.blocks()) as u64;
+        let blocks = self.blocks().iter().fold(blocks, |charge, block| {
+            charge
+                .saturating_add(
+                    (block.params.len() * std::mem::size_of::<(rue_cfg::CfgValue, rue_air::Type)>())
+                        as u64,
+                )
+                .saturating_add(
+                    (block.insts.len() * std::mem::size_of::<rue_cfg::CfgValue>()) as u64,
+                )
+        });
+        blocks
+            .saturating_add((self.value_count() * std::mem::size_of::<rue_cfg::CfgInst>()) as u64)
+            .saturating_add(payload.value_store_logical_bytes as u64)
+            .saturating_add(payload.call_store_logical_bytes as u64)
+            .saturating_add(payload.switch_store_logical_bytes as u64)
+            .saturating_add(payload.projection_store_logical_bytes as u64)
+            .saturating_add(self.fn_name().len() as u64)
+            .saturating_add((self.param_modes().len() * 2 * std::mem::size_of::<bool>()) as u64)
+            .saturating_add(std::mem::size_of_val(self.source_param_abi()) as u64)
+    }
+}
+
+impl RetainedCharge for rue_air::FrozenTypeInternPool {
+    fn retained_charge(&self) -> u64 {
+        let mut charge = (self.len() * std::mem::size_of::<rue_air::Type>()) as u64;
+        for ty in self.all_types() {
+            if let Some(id) = ty.as_struct() {
+                let definition = self.struct_def(id);
+                charge = charge
+                    .saturating_add(definition.name.len() as u64)
+                    .saturating_add(
+                        (definition.fields.len() * std::mem::size_of::<rue_air::StructField>())
+                            as u64,
+                    )
+                    .saturating_add(definition.destructor.retained_charge());
+                charge = definition.fields.iter().fold(charge, |charge, field| {
+                    charge.saturating_add(field.name.len() as u64)
+                });
+            } else if let Some(id) = ty.as_enum() {
+                let definition = self.enum_def(id);
+                charge = charge
+                    .saturating_add(definition.name.len() as u64)
+                    .saturating_add(definition.variants.retained_charge())
+                    .saturating_add(
+                        (definition.variant_payloads.len()
+                            * std::mem::size_of::<Vec<rue_air::Type>>())
+                            as u64,
+                    );
+                charge = definition
+                    .variant_payloads
+                    .iter()
+                    .fold(charge, |charge, payload| {
+                        charge.saturating_add(
+                            (payload.len() * std::mem::size_of::<rue_air::Type>()) as u64,
+                        )
+                    });
+            }
+        }
+        charge
+    }
+}
+
+impl RetainedCharge for CfgBodyInput {
+    fn retained_charge(&self) -> u64 {
+        self.function
+            .retained_charge()
+            .saturating_add(self.canonical.retained_charge())
+    }
+}
+
+impl RetainedCharge for CfgSemanticInput {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Body {
+                input,
+                materialization,
+            } => input
+                .retained_charge()
+                .saturating_add(materialization.retained_charge()),
+            Self::DropGlue {
+                owner,
+                facts,
+                materialization,
+                ..
+            } => owner
+                .retained_charge()
+                .saturating_add(facts.retained_charge())
+                .saturating_add(materialization.retained_charge()),
+        }
+    }
+}
+
+impl RetainedCharge for CfgCodegenDomain {
+    fn retained_charge(&self) -> u64 {
+        self.defined_symbol
+            .retained_charge()
+            .saturating_add(self.symbol_mappings.retained_charge())
+            .saturating_add(self.foreign_symbols.retained_charge())
+    }
+}
+
+impl RetainedCharge for CfgRecord {
+    fn retained_charge(&self) -> u64 {
+        self.air
+            .retained_charge()
+            .saturating_add(self.source_name.retained_charge())
+            .saturating_add(self.cfg.retained_charge())
+            .saturating_add(self.domains.retained_charge())
+            .saturating_add(self.type_pool.retained_charge())
+            .saturating_add(self.interner.retained_charge())
+            .saturating_add(self.strings.retained_charge())
+            .saturating_add(self.local_atoms.retained_charge())
+            .saturating_add(self.codegen.retained_charge())
+            .saturating_add(self.materialization_warnings.retained_charge())
+            .saturating_add(self.warnings.retained_charge())
+            .saturating_add(self.implicit_destructor_targets.retained_charge())
+    }
+}
+
+impl RetainedCharge for CfgValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(record) => record.retained_charge(),
+            Self::Failure { errors, .. } => errors.retained_charge(),
+        }
+    }
 }
 
 pub(crate) fn cfg_value_equal(left: &CfgValue, right: &CfgValue) -> bool {

@@ -7,6 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use crate::retained_charge::RetainedCharge;
+
 use crate::declaration_candidate::{
     DeclarationCandidateCategory as Category, DeclarationCandidateKey, DeclarationShellFact,
 };
@@ -835,6 +837,204 @@ pub(crate) enum ConstResolutionProjection {
 pub(crate) struct DeclarationSemanticValue {
     pub(crate) identity: DeclarationIdentityProjection,
     pub(crate) payload: DurableDeclarationPayload,
+}
+
+impl RetainedCharge for DeferredOwnershipApplication {
+    fn retained_charge(&self) -> u64 {
+        self.declaration.retained_charge()
+    }
+}
+
+impl RetainedCharge for DeferredOwnershipGateSource {
+    fn retained_charge(&self) -> u64 {
+        self.declaration.retained_charge()
+    }
+}
+
+impl RetainedCharge for DeferredOwnershipGate {
+    fn retained_charge(&self) -> u64 {
+        self.ty
+            .retained_charge()
+            .saturating_add(self.source.retained_charge())
+            .saturating_add(self.application.retained_charge())
+    }
+}
+
+impl RetainedCharge for DuplicateDeclarationFailure {
+    fn retained_charge(&self) -> u64 {
+        self.kind
+            .retained_charge()
+            .saturating_add(self.first.retained_charge())
+            .saturating_add(self.duplicate.retained_charge())
+    }
+}
+
+impl RetainedCharge for ForeignSignatureSite {
+    fn retained_charge(&self) -> u64 {
+        self.declaration
+            .retained_charge()
+            .saturating_add(self.signature.retained_charge())
+    }
+}
+
+impl RetainedCharge for ForeignSignatureConflictFailure {
+    fn retained_charge(&self) -> u64 {
+        self.symbol
+            .retained_charge()
+            .saturating_add(self.left.retained_charge())
+            .saturating_add(self.right.retained_charge())
+    }
+}
+
+impl RetainedCharge for SemanticNucleusFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Shell(detail) | Self::Syntax(detail) | Self::Resolution(detail) => {
+                detail.retained_charge()
+            }
+            Self::Diagnostic(kind)
+            | Self::DiagnosticAtParameter { kind, .. }
+            | Self::DiagnosticAtProducerRange { kind, .. } => kind.retained_charge(),
+            Self::DiagnosticAtDeclaration { kind, declaration } => kind
+                .retained_charge()
+                .saturating_add(declaration.retained_charge()),
+            Self::DuplicateDeclaration {
+                kind,
+                first,
+                duplicate,
+            } => kind
+                .retained_charge()
+                .saturating_add(first.retained_charge())
+                .saturating_add(duplicate.retained_charge()),
+            Self::DuplicateDeclarations(failures) => failures.retained_charge(),
+            Self::ForeignSignatureConflict(failure) => failure.retained_charge(),
+            Self::OwnershipGate { kind, gate } => kind
+                .retained_charge()
+                .saturating_add(gate.retained_charge()),
+            Self::DiagnosticWithHelp { kind, help } => kind
+                .retained_charge()
+                .saturating_add(help.retained_charge()),
+            Self::SignatureReentry { signature, cycle } => signature
+                .retained_charge()
+                .saturating_add(cycle.retained_charge()),
+            Self::Cycle(cycle) => cycle.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for SemanticDeclarationDependencyTarget {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::NamedType(key) | Self::TypeCallHead(key) | Self::NamedValue(key) => {
+                key.retained_charge()
+            }
+            Self::BuiltinTypeCallHead(_) => 0,
+        }
+    }
+}
+
+impl RetainedCharge for SemanticDeclarationDependency {
+    fn retained_charge(&self) -> u64 {
+        self.source
+            .retained_charge()
+            .saturating_add(self.target.retained_charge())
+    }
+}
+
+impl RetainedCharge for DeclarationIdentityProjection {
+    fn retained_charge(&self) -> u64 {
+        self.key.retained_charge()
+    }
+}
+
+impl RetainedCharge for DeclarationSignatureProjection {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Callable {
+                parameters, result, ..
+            } => parameters
+                .retained_charge()
+                .saturating_add(result.retained_charge()),
+            Self::Struct { fields, .. } => fields.retained_charge(),
+            Self::Enum { variants } => variants.retained_charge(),
+            Self::Destructor => 0,
+        }
+    }
+}
+
+impl RetainedCharge for ResolvedDeclarationSignature {
+    fn retained_charge(&self) -> u64 {
+        self.signature
+            .retained_charge()
+            .saturating_add(self.anonymous_nominals.retained_charge())
+            .saturating_add(self.dependencies.retained_charge())
+            .saturating_add(self.deferred_ownership.retained_charge())
+    }
+}
+
+impl RetainedCharge for ComptimeCallResultProjection {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Type(ty) => ty.retained_charge(),
+            Self::Value(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for ComptimeCallProjection {
+    fn retained_charge(&self) -> u64 {
+        self.result
+            .retained_charge()
+            .saturating_add(self.anonymous_nominals.retained_charge())
+            .saturating_add(self.dependencies.retained_charge())
+            .saturating_add(self.deferred_ownership.retained_charge())
+    }
+}
+
+impl RetainedCharge for ConstResolutionProjection {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Value {
+                key,
+                ty,
+                value,
+                anonymous_nominals,
+                dependencies,
+                deferred_ownership,
+            } => key
+                .retained_charge()
+                .saturating_add(ty.retained_charge())
+                .saturating_add(value.retained_charge())
+                .saturating_add(anonymous_nominals.retained_charge())
+                .saturating_add(dependencies.retained_charge())
+                .saturating_add(deferred_ownership.retained_charge()),
+            Self::ModuleBinding { key, target } => key
+                .retained_charge()
+                .saturating_add(target.retained_charge()),
+        }
+    }
+}
+
+impl RetainedCharge for SemanticNucleusValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Identity(value) => value.retained_charge(),
+            Self::Signature(value) => value.retained_charge(),
+            Self::NominalWellFormedness | Self::DeferredOwnership => 0,
+            Self::ConstResolution(value) => value.retained_charge(),
+            Self::ComptimeCall(value) => value.retained_charge(),
+            Self::AnonymousNominal(value) => value.retained_charge(),
+            Self::Failure(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for DeclarationSemanticValue {
+    fn retained_charge(&self) -> u64 {
+        self.identity
+            .retained_charge()
+            .saturating_add(self.payload.retained_charge())
+    }
 }
 
 impl DeclarationSemanticValue {

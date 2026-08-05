@@ -27,6 +27,7 @@ use crate::diagnostic_attempt_store::{
     DiagnosticAttemptProvenance, DiagnosticAttemptStore, FrontendDiagnosticIdentity,
     FrontendDiagnosticSnapshot, ImportDiagnosticInputDescriptor,
 };
+use crate::retained_charge::RetainedCharge;
 use crate::typed_query_store::{
     AbortedQueryReason, AttemptExecution as QueryAttemptExecution, AttemptOutcomeKind, AttemptView,
     QUERY_TERMINAL_RETENTION_LIMIT, TerminalKind, TypedQueryFamily,
@@ -49,31 +50,38 @@ pub struct FrontendQueryWork {
 pub struct FrontendRetentionMetrics {
     /// Retained terminal artifacts across all typed query families.
     pub retained_query_records: usize,
-    /// Constant-size selected and last-good terminal protection.
-    pub protected_query_records: usize,
-    /// Retained terminals currently referenced by reverse dependency edges.
+    /// Current and peak deterministic terminal/artifact charge.
+    pub retained_bytes: usize,
+    pub peak_retained_bytes: usize,
+    /// Runtime-wide soft artifact-charge budget.
+    pub retained_byte_budget: usize,
+    /// Retained dependency and input observations. Validation is pull-based;
+    /// this is not a reverse-edge count.
     pub dependency_pins: usize,
-    /// Bounded validation stamps whose artifacts have been evicted.
-    pub validation_tombstones: usize,
-    /// Disappeared graph nodes pinned by retained reverse dependency edges
-    /// after their family tombstones have left bounded store retention.
-    pub graph_retained_disappeared_nodes: usize,
+    pub peak_dependency_pins: usize,
+    pub dependency_pin_budget: usize,
+    pub aggregate_retention_probes: usize,
+    pub retained_byte_probe_quantum: usize,
+    pub dependency_pin_probe_quantum: usize,
+    pub retained_byte_probe_overshoot_bound: usize,
+    pub dependency_pin_probe_overshoot_bound: usize,
+    /// Protection gauges already maintained by their owning scopes.
+    pub active_task_leases: usize,
+    pub peak_task_leases: usize,
+    pub active_retained_pins: usize,
+    pub peak_retained_pins: usize,
+    pub retained_revisions: usize,
+    /// Protected soft-budget overflow and pressure evidence.
+    pub retained_byte_pressure_events: usize,
+    pub dependency_pin_pressure_events: usize,
+    pub retained_byte_overflow_events: usize,
+    pub dependency_pin_overflow_events: usize,
+    pub peak_retained_byte_overage: usize,
+    pub peak_dependency_pin_overage: usize,
     /// Lifetime artifact evictions across all typed query families.
     pub query_evictions: usize,
-    /// Bounded canceled, duplicate, and cyclic query-attempt history.
-    pub aborted_query_attempts: usize,
-    /// Retained direct import-diagnostic query terminals.
-    pub import_query_entries: usize,
-    /// Lifetime direct import-diagnostic query evictions.
-    pub import_query_evictions: usize,
-    /// Retained semantic query terminals.
-    pub semantic_query_entries: usize,
-    /// Lifetime semantic query evictions.
-    pub semantic_query_evictions: usize,
-    /// Retained stable-definition query terminals.
-    pub definition_query_entries: usize,
-    /// Lifetime stable-definition query evictions.
-    pub definition_query_evictions: usize,
+    pub retained_byte_evictions: usize,
+    pub dependency_pin_evictions: usize,
     /// Diagnostic attempts indexed by the bounded diagnostic store.
     ///
     /// Producer caches may also retain the same origin `Arc`; those bounded or
@@ -1110,6 +1118,43 @@ pub(crate) struct ParseQueryRecord {
     diagnostics: Arc<FrontendDiagnosticSnapshot>,
     work: ParsedModulesWork,
     invalidation: ParseInvalidationSummary,
+}
+
+impl RetainedCharge for ExactSourceInput {
+    fn retained_charge(&self) -> u64 {
+        self.revision
+            .retained_charge()
+            .saturating_add(self.metadata.retained_charge())
+    }
+}
+
+impl RetainedCharge for OrdinaryParseKey {
+    fn retained_charge(&self) -> u64 {
+        self.source
+            .retained_charge()
+            .saturating_add(self.file_order.retained_charge())
+            .saturating_add(self.presentation.retained_charge())
+    }
+}
+
+impl RetainedCharge for ParseQueryKey {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Ordinary(key) => key.retained_charge(),
+            Self::Successor { segment, .. } => segment.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for ParseQueryRecord {
+    fn retained_charge(&self) -> u64 {
+        self.key
+            .retained_charge()
+            .saturating_add(self.snapshot.retained_charge())
+            .saturating_add(self.result.retained_charge())
+            .saturating_add(self.diagnostics.retained_charge())
+            .saturating_add(self.invalidation.retained_charge())
+    }
 }
 
 impl ParseQueryRecord {
@@ -2935,27 +2980,41 @@ impl CompilerSession {
 
     fn refresh_retention_metrics(&mut self) {
         let diagnostics = self.diagnostics.retention_metrics();
-
-        let stores = [self.queries.revisioned.parse_retention()];
+        let runtime = self.queries.revisioned.runtime_retention_metrics();
 
         let mut pinned_attempts = BTreeSet::new();
         pinned_attempts.extend(self.queries.revisioned.parse_origin_attempt_ids());
         self.metrics.set_pinned_origins(pinned_attempts);
 
         self.metrics.set_retention(FrontendRetentionMetrics {
-            retained_query_records: stores.iter().map(|store| store.retained).sum(),
-            protected_query_records: stores.iter().map(|store| store.protected).sum(),
-            dependency_pins: stores.iter().map(|store| store.pinned).sum(),
-            validation_tombstones: stores.iter().map(|store| store.tombstones).sum(),
-            graph_retained_disappeared_nodes: 0,
-            query_evictions: stores.iter().map(|store| store.evictions).sum(),
-            aborted_query_attempts: self.queries.revisioned.parse_retained_aborted_len(),
-            import_query_entries: 0,
-            import_query_evictions: 0,
-            semantic_query_entries: 0,
-            semantic_query_evictions: 0,
-            definition_query_entries: 0,
-            definition_query_evictions: 0,
+            retained_query_records: runtime.retained_terminals as usize,
+            retained_bytes: runtime.retained_bytes as usize,
+            peak_retained_bytes: runtime.peak_retained_bytes as usize,
+            retained_byte_budget: runtime.retained_byte_budget as usize,
+            dependency_pins: runtime.retained_dependency_pins as usize,
+            peak_dependency_pins: runtime.peak_retained_dependency_pins as usize,
+            dependency_pin_budget: runtime.dependency_pin_budget as usize,
+            aggregate_retention_probes: runtime.aggregate_retention_probes as usize,
+            retained_byte_probe_quantum: runtime.retained_byte_probe_quantum as usize,
+            dependency_pin_probe_quantum: runtime.dependency_pin_probe_quantum as usize,
+            retained_byte_probe_overshoot_bound: runtime.retained_byte_probe_overshoot_bound
+                as usize,
+            dependency_pin_probe_overshoot_bound: runtime.dependency_pin_probe_overshoot_bound
+                as usize,
+            active_task_leases: runtime.active_task_leases as usize,
+            peak_task_leases: runtime.peak_task_leases as usize,
+            active_retained_pins: runtime.active_retained_pins as usize,
+            peak_retained_pins: runtime.peak_retained_pins as usize,
+            retained_revisions: runtime.retained_revisions as usize,
+            retained_byte_pressure_events: runtime.retained_byte_pressure_events as usize,
+            dependency_pin_pressure_events: runtime.dependency_pin_pressure_events as usize,
+            retained_byte_overflow_events: runtime.retained_byte_overflow_events as usize,
+            dependency_pin_overflow_events: runtime.dependency_pin_overflow_events as usize,
+            peak_retained_byte_overage: runtime.peak_retained_byte_overage as usize,
+            peak_dependency_pin_overage: runtime.peak_dependency_pin_overage as usize,
+            query_evictions: runtime.evictions as usize,
+            retained_byte_evictions: runtime.retained_byte_evictions as usize,
+            dependency_pin_evictions: runtime.dependency_pin_evictions as usize,
             diagnostic_entries: diagnostics.entries,
             diagnostic_source_attempts: diagnostics.source_attempts,
             diagnostic_source_bytes: diagnostics.source_bytes,
@@ -7134,6 +7193,30 @@ mod tests {
     }
 
     #[test]
+    fn warm_compiler_queries_report_bounded_runtime_retention() {
+        let source = base();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+
+        let cold = session.unstable_metrics().retention();
+        assert!(cold.retained_query_records > 0);
+        assert!(cold.retained_bytes > 0);
+        assert!(cold.dependency_pins > 0);
+        assert!(cold.retained_bytes <= cold.retained_byte_budget);
+        assert!(cold.dependency_pins <= cold.dependency_pin_budget);
+
+        session.canonical_semantic(&options).unwrap();
+        let warm = session.unstable_metrics().retention();
+        assert_eq!(warm.retained_query_records, cold.retained_query_records);
+        assert_eq!(warm.retained_bytes, cold.retained_bytes);
+        assert_eq!(warm.dependency_pins, cold.dependency_pins);
+        assert!(warm.peak_retained_bytes >= warm.retained_bytes);
+        assert!(warm.peak_dependency_pins >= warm.dependency_pins);
+    }
+
+    #[test]
     fn absent_trusted_option_parks_the_rooted_attempt_with_exact_demand_and_anchor() {
         // RUE-1112: a freestanding program whose reached `main` body uses a
         // fallible intrinsic while NO trusted std module is present. The
@@ -9951,8 +10034,6 @@ fn main() -> i32 { 0 }
         assert!(Arc::ptr_eq(&reused, &origin));
         assert_eq!(session.work().import_diagnostics.executions, 1);
         assert_eq!(session.work().import_diagnostics.reuses, 1);
-        assert_eq!(session.work().retention.import_query_entries, 0);
-        assert_eq!(session.work().retention.import_query_evictions, 0);
         assert_eq!(session.work().diagnostic_publications, publications);
         assert!(Arc::ptr_eq(
             session

@@ -15,6 +15,7 @@ use rue_air::{
 use rue_air::{SemanticExportFailure, SemanticImportNominalKind};
 use rue_span::FileId;
 
+use crate::retained_charge::RetainedCharge;
 use crate::{
     BoundDefinitionSet, CanonicalMergedProgram, ModuleId, StableDefinitionKey, StableDefinitionKind,
 };
@@ -141,6 +142,95 @@ pub struct DurableDeclarationSemantic {
     pub key: StableDefinitionKey,
     pub is_public: bool,
     pub payload: DurableDeclarationPayload,
+}
+
+impl RetainedCharge for DurableAnonymousNominal {
+    fn retained_charge(&self) -> u64 {
+        self.identity
+            .retained_charge()
+            .saturating_add(self.shape.retained_charge())
+            .saturating_add(self.type_captures.retained_charge())
+            .saturating_add(self.value_captures.retained_charge())
+    }
+}
+
+impl RetainedCharge for DurableAnonymousNominalShape {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Struct { fields, methods } => fields
+                .retained_charge()
+                .saturating_add(methods.retained_charge()),
+            Self::Enum { variants } => variants.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for DurableAnonymousMethodSignature {
+    fn retained_charge(&self) -> u64 {
+        self.name
+            .retained_charge()
+            .saturating_add(self.parameters.retained_charge())
+            .saturating_add(self.result.retained_charge())
+            .saturating_add(self.body.retained_charge())
+    }
+}
+
+impl RetainedCharge for DurableAnonymousMemberBodySyntax {
+    fn retained_charge(&self) -> u64 {
+        self.signature
+            .retained_charge()
+            .saturating_add(self.body.retained_charge())
+    }
+}
+
+impl RetainedCharge for DurableAnonymousMethodType {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::SelfType => 0,
+            Self::Concrete(ty) => ty.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for DurableParameterMode {
+    fn retained_charge(&self) -> u64 {
+        0
+    }
+}
+
+impl RetainedCharge for DurableSemanticParameter {
+    fn retained_charge(&self) -> u64 {
+        self.name
+            .retained_charge()
+            .saturating_add(self.ty.retained_charge())
+    }
+}
+
+impl RetainedCharge for DurableDeclarationPayload {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Callable {
+                parameters, result, ..
+            } => parameters
+                .retained_charge()
+                .saturating_add(result.retained_charge()),
+            Self::Struct { fields, .. } => fields.retained_charge(),
+            Self::Enum { variants } => variants.retained_charge(),
+            Self::Const { ty, value } => {
+                ty.retained_charge().saturating_add(value.retained_charge())
+            }
+            Self::ModuleBinding { target } => target.retained_charge(),
+            Self::Destructor => 0,
+        }
+    }
+}
+
+impl RetainedCharge for DurableDeclarationSemantic {
+    fn retained_charge(&self) -> u64 {
+        self.key
+            .retained_charge()
+            .saturating_add(self.payload.retained_charge())
+    }
 }
 
 /// Work performed by the stable-key/current-revision projection adapter.

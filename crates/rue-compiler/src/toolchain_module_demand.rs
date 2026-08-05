@@ -38,6 +38,7 @@ use std::sync::Arc;
 
 use rue_error::CompileResult;
 
+use crate::retained_charge::RetainedCharge;
 use crate::well_known_option::FalliblePayload;
 use crate::{ModuleId, StableDefinitionKey};
 
@@ -174,6 +175,17 @@ impl BodyToolchainDemand {
     /// present whenever any module is demanded.
     pub(crate) fn requester(&self) -> Option<&StableDefinitionKey> {
         self.requester.as_ref()
+    }
+}
+
+impl RetainedCharge for BodyToolchainDemand {
+    fn retained_charge(&self) -> u64 {
+        self.modules
+            .retained_charge()
+            .saturating_add(
+                (self.payload_kinds.len() * std::mem::size_of::<FalliblePayload>()) as u64,
+            )
+            .saturating_add(self.requester.retained_charge())
     }
 }
 

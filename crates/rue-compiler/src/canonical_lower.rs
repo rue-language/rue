@@ -9,6 +9,7 @@ use rue_rir::RirPrinter;
 use rue_rir::{AstGen, InstRef, Rir, RirEditor, RirValidationContext, ValidatedRir};
 use rue_span::FileId;
 
+use crate::retained_charge::RetainedCharge;
 use crate::{CanonicalMergedProgram, SemanticSymbolUniverse, SourceRevision};
 
 /// Structural work performed by canonical RIR lowering.
@@ -83,6 +84,24 @@ impl ModuleRirOutput {
             Arc::try_unwrap(self.symbols.into_interner())
                 .expect("module RIR owns its semantic symbol interner"),
         ))
+    }
+}
+
+impl RetainedCharge for ModuleRirOutput {
+    fn retained_charge(&self) -> u64 {
+        let instructions = self
+            .rir
+            .len()
+            .saturating_mul(std::mem::size_of::<rue_rir::Inst>()) as u64;
+        let payload = self
+            .rir
+            .extra_len()
+            .saturating_mul(std::mem::size_of::<u32>()) as u64;
+        self.revision
+            .retained_charge()
+            .saturating_add(instructions)
+            .saturating_add(payload)
+            .saturating_add(self.symbols.retained_charge())
     }
 }
 

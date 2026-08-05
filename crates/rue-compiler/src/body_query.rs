@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use rue_query::QueryKey;
 
+use crate::retained_charge::RetainedCharge;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BodySourceLocator {
     pub(crate) file_id: rue_span::FileId,
@@ -480,6 +482,262 @@ pub(crate) fn body_closure_output_equal(
         && left.scheduling_errors == right.scheduling_errors
         && left.fatal == right.fatal
         && left.parked_toolchain == right.parked_toolchain
+}
+
+impl RetainedCharge for BodySourceLocator {
+    fn retained_charge(&self) -> u64 {
+        self.physical_path.retained_charge()
+    }
+}
+
+impl RetainedCharge for BodyDiagnosticCoordinate {
+    fn retained_charge(&self) -> u64 {
+        0
+    }
+}
+
+impl RetainedCharge for BodyDiagnosticBasis {
+    fn retained_charge(&self) -> u64 {
+        self.coordinates.retained_charge()
+    }
+}
+
+impl RetainedCharge for OwnedBodyInput {
+    fn retained_charge(&self) -> u64 {
+        self.owner
+            .retained_charge()
+            .saturating_add(self.source.retained_charge())
+            .saturating_add(self.signature.retained_charge())
+            .saturating_add(self.body.retained_charge())
+    }
+}
+
+impl RetainedCharge for BodyInputIncomplete {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::MissingPrerequisite(detail) => detail.retained_charge(),
+            Self::UnsupportedInstance | Self::UnsupportedKind(_) | Self::Generic | Self::Extern => {
+                0
+            }
+        }
+    }
+}
+
+impl RetainedCharge for BodyInputValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(input) => input.retained_charge(),
+            Self::Incomplete(incomplete) => incomplete.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for BodyQueryKey {
+    fn retained_charge(&self) -> u64 {
+        self.instance.retained_charge()
+    }
+}
+
+impl RetainedCharge for CanonicalBody {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Ordinary { owner, body } => owner
+                .retained_charge()
+                .saturating_add(body.retained_charge()),
+            Self::Anonymous { identity, body, .. } => identity
+                .retained_charge()
+                .saturating_add(body.retained_charge()),
+            Self::Specialization {
+                identity,
+                body,
+                dependencies,
+                ..
+            } => identity
+                .retained_charge()
+                .saturating_add(body.retained_charge())
+                .saturating_add(dependencies.retained_charge()),
+        }
+    }
+}
+
+impl RetainedCharge for BodyReference {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Callable(value) => value.retained_charge(),
+            Self::Definition(value) => value.retained_charge(),
+            Self::Type(value) | Self::DropGlue(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for WellKnownOptionResolution {
+    fn retained_charge(&self) -> u64 {
+        self.option_by_payload
+            .retained_charge()
+            .saturating_add(self.anonymous_nominals.retained_charge())
+    }
+}
+
+impl RetainedCharge for BodyReferences {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
+    }
+}
+
+impl RetainedCharge for BodyLookupObservations {
+    fn retained_charge(&self) -> u64 {
+        self.terminals.retained_charge()
+    }
+}
+
+impl RetainedCharge for BodyTransactionControl {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::DeferredAnonymousProducers(values) => values.retained_charge(),
+            Self::ProducerFailed(failure) => failure.retained_charge(),
+            Self::WellKnownOptionResolution(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for WellKnownOptionResolutionFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Incomplete {
+                prerequisite,
+                detail,
+                ..
+            } => prerequisite
+                .retained_charge()
+                .saturating_add(detail.retained_charge()),
+            Self::Semantic { failure, .. } => failure.retained_charge(),
+            Self::WrongProjection { detail, .. } => detail.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for BodyProducedAnonymousNominals {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
+    }
+}
+
+impl RetainedCharge for BodyConsultedAnonymousNominals {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
+    }
+}
+
+impl RetainedCharge for ProducedAnonymous {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Produced(value) => value.retained_charge(),
+            Self::ProducerFailed(failure) => failure.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for BodyTransaction {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Success {
+                body,
+                references,
+                produced_anonymous_nominals,
+                consulted_anonymous_nominals,
+                lookup_observations,
+            } => body
+                .retained_charge()
+                .saturating_add(references.retained_charge())
+                .saturating_add(produced_anonymous_nominals.retained_charge())
+                .saturating_add(consulted_anonymous_nominals.retained_charge())
+                .saturating_add(lookup_observations.retained_charge()),
+            Self::DeterministicFailure {
+                errors,
+                diagnostic_basis,
+                references,
+                lookup_observations,
+            } => errors
+                .retained_charge()
+                .saturating_add(diagnostic_basis.retained_charge())
+                .saturating_add(references.retained_charge())
+                .saturating_add(lookup_observations.retained_charge()),
+            Self::Control(control) => control.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for BodyAnalysisBundle {
+    fn retained_charge(&self) -> u64 {
+        self.transaction
+            .retained_charge()
+            .saturating_add(self.produced_anonymous.retained_charge())
+    }
+}
+
+impl RetainedCharge for BodyClosureBody {
+    fn retained_charge(&self) -> u64 {
+        self.key
+            .retained_charge()
+            .saturating_add(self.bundle.retained_charge())
+    }
+}
+
+impl RetainedCharge for BodyClosureFatal {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::DeclarationFailed {
+                declaration,
+                failure,
+            } => declaration
+                .retained_charge()
+                .saturating_add(failure.retained_charge()),
+            Self::BodyAvailability { instance, detail } => instance
+                .retained_charge()
+                .saturating_add(detail.retained_charge()),
+            Self::TypeQuery {
+                ty: Some(instance),
+                detail,
+            } => instance
+                .retained_charge()
+                .saturating_add(detail.retained_charge()),
+            Self::TypeQuery { ty: None, detail } => detail.retained_charge(),
+            Self::ProducerFailed { instance, failure } => instance
+                .retained_charge()
+                .saturating_add(failure.retained_charge()),
+            Self::WellKnownOptionResolution { instance, failure } => instance
+                .retained_charge()
+                .saturating_add(failure.retained_charge()),
+            Self::AnonymousDigestCollision { first, second, .. } => first
+                .retained_charge()
+                .saturating_add(second.retained_charge()),
+        }
+    }
+}
+
+impl RetainedCharge for BodyReachabilityOutput {
+    fn retained_charge(&self) -> u64 {
+        self.reached
+            .retained_charge()
+            .saturating_add(self.demanded_drop_glue.retained_charge())
+            .saturating_add(self.demanded_drop_glue_plans.retained_charge())
+            .saturating_add(self.scheduling_errors.retained_charge())
+            .saturating_add(self.fatal.retained_charge())
+            .saturating_add(self.parked_toolchain.retained_charge())
+    }
+}
+
+impl RetainedCharge for BodyClosureOutput {
+    fn retained_charge(&self) -> u64 {
+        self.reached
+            .retained_charge()
+            .saturating_add(self.demanded_drop_glue.retained_charge())
+            .saturating_add(self.demanded_drop_glue_plans.retained_charge())
+            .saturating_add(self.bodies.retained_charge())
+            .saturating_add(self.scheduling_errors.retained_charge())
+            .saturating_add(self.fatal.retained_charge())
+            .saturating_add(self.parked_toolchain.retained_charge())
+    }
 }
 
 impl BodyTransaction {

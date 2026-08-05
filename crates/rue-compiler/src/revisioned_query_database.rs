@@ -8,6 +8,7 @@
 //! retain the current and last-good terminals.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -50,11 +51,113 @@ use crate::{
 use crate::canonical_lower::{ModuleRirOutput, lower_module_rir_with_work};
 use crate::parsed_modules::{ParsedModule, ParsedModulesWork, ParsedProgram};
 
+use crate::retained_charge::RetainedCharge;
 use crate::session::{AttemptId, QueryStructuralWork};
 use crate::typed_query_store::{
     AbortedQueryReason, AttemptExecution as CompilerAttemptExecution, AttemptOutcomeKind,
     AttemptView, RuntimeObservation,
 };
+
+/// Compiler-family registration wrapper. Every compiler success value is
+/// charged by a deterministic structural traversal of its owned representation;
+/// `QueryRuntime` itself keeps the zero-cost inline-only default for generic
+/// users that do not register an estimator.
+struct CompilerQueryRuntime(QueryRuntime);
+
+impl Deref for CompilerQueryRuntime {
+    type Target = QueryRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl CompilerQueryRuntime {
+    fn family_with_equality_and_evaluator<K, V, E>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+        evaluator: E,
+    ) -> Result<QueryFamily<K, V>, rue_query::FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + RetainedCharge + Send + Sync + 'static,
+        E: Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Result<QueryOutput<V>, QueryAbort>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.0
+            .family_with_equality_and_evaluator_and_retained_charge(
+                stable_name,
+                retention_limit,
+                value_equal,
+                RetainedCharge::retained_charge,
+                evaluator,
+            )
+    }
+
+    fn family_with_evaluator<K, V, E>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        evaluator: E,
+    ) -> Result<QueryFamily<K, V>, rue_query::FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + Eq + RetainedCharge + Send + Sync + 'static,
+        E: Fn(&QueryContext, &QueryFamily<K, V>, &K) -> Result<QueryOutput<V>, QueryAbort>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.family_with_equality_and_evaluator(
+            stable_name,
+            retention_limit,
+            PartialEq::eq,
+            evaluator,
+        )
+    }
+
+    #[cfg(test)]
+    fn family_with_equality<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+    ) -> Result<QueryFamily<K, V>, rue_query::FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + RetainedCharge + Send + Sync + 'static,
+    {
+        self.0.family_with_equality_and_retained_charge(
+            stable_name,
+            retention_limit,
+            value_equal,
+            RetainedCharge::retained_charge,
+        )
+    }
+
+    fn content_addressed_family_with_equality<K, V>(
+        &self,
+        stable_name: impl Into<Arc<str>>,
+        retention_limit: usize,
+        value_equal: fn(&V, &V) -> bool,
+    ) -> Result<QueryFamily<K, V>, rue_query::FamilyError>
+    where
+        K: QueryKey,
+        V: Clone + RetainedCharge + Send + Sync + 'static,
+    {
+        self.0
+            .content_addressed_family_with_equality_and_retained_charge(
+                stable_name,
+                retention_limit,
+                value_equal,
+                RetainedCharge::retained_charge,
+            )
+    }
+}
 use crate::typed_query_store::{TerminalKind, TypedQueryFamily};
 
 const IMPORT_INPUT_REVISION_RETENTION: usize = 64;
@@ -505,6 +608,21 @@ impl LookupObservationKey {
             Self::Import(key) => {
                 format!("compiler.lookup-import\u{1}{}", key.stable_identity()).into()
             }
+        }
+    }
+}
+
+impl RetainedCharge for LookupObservationKey {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Name(key) => key
+                .module
+                .retained_charge()
+                .saturating_add(key.name.retained_charge()),
+            Self::Import(key) => key
+                .module
+                .retained_charge()
+                .saturating_add(key.specifier.retained_charge()),
         }
     }
 }
@@ -1679,6 +1797,230 @@ impl LookupImportValue {
             normalized_specifier: Arc::from(requested),
             target: None,
         }))
+    }
+}
+
+impl RetainedCharge for ParseModuleValue {
+    fn retained_charge(&self) -> u64 {
+        self.result.retained_charge()
+    }
+}
+
+impl RetainedCharge for ModuleIndexEntry {
+    fn retained_charge(&self) -> u64 {
+        self.name.retained_charge()
+    }
+}
+
+impl RetainedCharge for ModuleIndex {
+    fn retained_charge(&self) -> u64 {
+        self.revision
+            .retained_charge()
+            .saturating_add(self.definitions.retained_charge())
+            .saturating_add(self.imports.retained_charge())
+    }
+}
+
+impl RetainedCharge for ModuleIndexValue {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
+    }
+}
+
+impl RetainedCharge for DeclarationOccurrenceIndex {
+    fn retained_charge(&self) -> u64 {
+        self.capabilities.retained_charge()
+    }
+}
+
+impl RetainedCharge for DeclarationOccurrenceIndexValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(value) => value.retained_charge(),
+            Self::Failure(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for DeclarationOrderValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(value) => value.retained_charge(),
+            Self::Failure(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for DeclarationShellQueryValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(value) => value.retained_charge(),
+            Self::Failure(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for StableDeclarationClassificationQueryValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Selected(value) => value.retained_charge(),
+            Self::Invalid(value) => value.retained_charge(),
+            Self::Absent => 0,
+        }
+    }
+}
+
+impl RetainedCharge for StableDeclarationClassificationFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::MalformedStableKey(value) => value.retained_charge(),
+            Self::OccurrencesUnavailable(value) => value.retained_charge(),
+            Self::Ambiguous(value)
+            | Self::ParserCapabilityMismatch(value)
+            | Self::DuplicateMultiplicity { key: value, .. } => value.retained_charge(),
+            Self::MultipleAvailable { first, second } => first
+                .retained_charge()
+                .saturating_add(second.retained_charge()),
+        }
+    }
+}
+
+macro_rules! query_value_charge {
+    ($ty:ty) => {
+        impl RetainedCharge for $ty {
+            fn retained_charge(&self) -> u64 {
+                match self {
+                    Self::Available(value) => value.retained_charge(),
+                    Self::Failure(value) => value.retained_charge(),
+                }
+            }
+        }
+    };
+}
+
+query_value_charge!(RawConstSyntaxQueryValue);
+query_value_charge!(RawDeclarationSignatureQueryValue);
+query_value_charge!(RawDeclarationBodyQueryValue);
+query_value_charge!(WarningBodySyntaxValue);
+query_value_charge!(WarningBodyReferencesValue);
+
+impl RetainedCharge for WarningStaticCallHead {
+    fn retained_charge(&self) -> u64 {
+        self.module
+            .retained_charge()
+            .saturating_add(self.components.retained_charge())
+    }
+}
+
+impl RetainedCharge for WarningSyntaxCallHead {
+    fn retained_charge(&self) -> u64 {
+        self.import
+            .retained_charge()
+            .saturating_add(self.components.retained_charge())
+    }
+}
+
+impl RetainedCharge for WarningBodyReferencesFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::ClassificationAbsent(value) => value.retained_charge(),
+            Self::ClassificationInvalid(value) => value.retained_charge(),
+            Self::Shell(value) => value.retained_charge(),
+            Self::ParseRejected(value) => value.retained_charge(),
+            Self::ParserCapabilityMismatch(value) => value.retained_charge(),
+            Self::Import(value) => value.retained_charge(),
+            Self::ImportResolution { key, resolution } => key
+                .retained_charge()
+                .saturating_add(resolution.retained_charge()),
+        }
+    }
+}
+
+impl RetainedCharge for SemanticNucleusProjection {
+    fn retained_charge(&self) -> u64 {
+        self.declarations
+            .retained_charge()
+            .saturating_add(self.anonymous_nominals.retained_charge())
+            .saturating_add(self.dependencies.retained_charge())
+            .saturating_add(self.c_export_roots.retained_charge())
+    }
+}
+
+impl RetainedCharge for SemanticNucleusProjectionValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(value) => value.retained_charge(),
+            Self::Failure {
+                declaration,
+                failure,
+            } => declaration
+                .retained_charge()
+                .saturating_add(failure.retained_charge()),
+        }
+    }
+}
+
+impl RetainedCharge for ModuleRirValue {
+    fn retained_charge(&self) -> u64 {
+        self.result.retained_charge()
+    }
+}
+
+impl RetainedCharge for ResolveImportValue {
+    fn retained_charge(&self) -> u64 {
+        self.groups
+            .retained_charge()
+            .saturating_add(self.requests.retained_charge())
+            .saturating_add(self.resolution.retained_charge())
+    }
+}
+
+impl RetainedCharge for DeclarationImportQueryValue {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::Available(value) => value.retained_charge(),
+            Self::Failure(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for LookupNameFact {
+    fn retained_charge(&self) -> u64 {
+        self.name.retained_charge()
+    }
+}
+
+impl RetainedCharge for LookupNameFailure {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::ModuleIndexUnavailable(value) => value.retained_charge(),
+        }
+    }
+}
+
+impl RetainedCharge for LookupNameValue {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
+    }
+}
+
+impl RetainedCharge for ResolvedImportBinding {
+    fn retained_charge(&self) -> u64 {
+        self.normalized_specifier
+            .retained_charge()
+            .saturating_add(self.target.retained_charge())
+    }
+}
+
+impl RetainedCharge for ImportBindingFailure {
+    fn retained_charge(&self) -> u64 {
+        0
+    }
+}
+
+impl RetainedCharge for LookupImportValue {
+    fn retained_charge(&self) -> u64 {
+        self.0.retained_charge()
     }
 }
 
@@ -9943,7 +10285,7 @@ impl RevisionedQueryDatabase {
         declaration_memo_retention: usize,
         query_concurrency: usize,
     ) -> Self {
-        let runtime = QueryRuntime::new(query_concurrency);
+        let runtime = CompilerQueryRuntime(QueryRuntime::new(query_concurrency));
         let module_store = Arc::new(Mutex::new(ModuleInputStore::default()));
         #[cfg(test)]
         let test_import_store = Arc::new(Mutex::new(TestImportInputStore {
@@ -18801,29 +19143,8 @@ impl RevisionedQueryDatabase {
         origins.into_iter()
     }
 
-    pub(crate) fn parse_retained_aborted_len(&self) -> usize {
-        // Abort history belongs to the diagnostic/metrics attempt index.
-        0
-    }
-
-    pub(crate) fn parse_retention(&self) -> crate::typed_query_store::QueryStoreRetention {
-        let retention = self.parse.retention();
-        let protected = match (
-            self.parse_selection.current(),
-            self.parse_selection.last_good(),
-        ) {
-            (Some(current), Some(last_good)) if Arc::ptr_eq(current, last_good) => 1,
-            (Some(_), Some(_)) => 2,
-            (Some(_), None) | (None, Some(_)) => 1,
-            (None, None) => 0,
-        };
-        crate::typed_query_store::QueryStoreRetention {
-            retained: retention.terminals,
-            protected,
-            pinned: 0,
-            tombstones: 0,
-            evictions: self.runtime.metrics().evictions as usize,
-        }
+    pub(crate) fn runtime_retention_metrics(&self) -> rue_query::RuntimeMetrics {
+        self.runtime.metrics()
     }
 }
 
@@ -18909,6 +19230,13 @@ impl QueryKey for ProviderProbeKey {
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProviderProbeValue;
+
+#[cfg(test)]
+impl RetainedCharge for ProviderProbeValue {
+    fn retained_charge(&self) -> u64 {
+        0
+    }
+}
 
 /// Convert a rue-air provider namespace to the compiler's presemantic
 /// namespace, and back, so a body names a namespace without depending on the

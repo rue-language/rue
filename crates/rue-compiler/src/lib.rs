@@ -58,6 +58,7 @@ mod local_semantic_materialization;
 mod parsed_modules;
 mod program_image_plan;
 mod queries;
+mod retained_charge;
 mod revisioned_query_database;
 mod semantic_identity;
 mod semantic_query_nucleus;
