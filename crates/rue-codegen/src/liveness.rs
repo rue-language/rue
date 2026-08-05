@@ -492,6 +492,32 @@ fn compute_dataflow(
 ///   number of live bits, whereas this path stays linear (RUE-302).
 /// * **Has back-edges (loops):** loop-carried values are live past their textual
 ///   last use, so we fall back to the exact `live_in`/`live_out` scan.
+///
+/// # A range is a textual interval, not liveness
+///
+/// Either way the result is a single `[start, end]` span of *instruction
+/// indices*, and every index between the endpoints is inside it. That is not
+/// the same claim as "the value is live at each of those instructions": a range
+/// is a contiguous approximation of a set that dataflow may know to have holes.
+/// Allocation is built on the interval reading — `LiveRange::overlaps` decides
+/// interference, and [`ClobberIndex`](crate::regalloc::ClobberIndex) asks
+/// whether anything in the span destroys a register — so anything that makes
+/// the two readings disagree is a miscompile, not an imprecision.
+///
+/// This is why refining "the value is not really live there" needs the two-part
+/// treatment RUE-1224 gave the non-returning trap calls, and not just the
+/// dataflow half. Removing a call's successors empties its live-out and can
+/// shorten a range that *ends* at the call, but a range that merely *spans* the
+/// call does not shrink at all: its endpoints are a def before and a use after,
+/// and every index between them stays in the interval no matter what
+/// `live_out` says. RUE-1224 therefore also had to exclude those calls from
+/// `ClobberIndex`, because the clobber remained inside the interval and would
+/// otherwise have kept disqualifying the value from a caller-saved register.
+///
+/// So a future refinement here should expect the same shape: model the fact in
+/// the dataflow *and* teach every consumer that reads the range as a dense
+/// interval about the exclusion. Changing only one of the two silently changes
+/// what allocation believes about register lifetimes.
 fn build_live_ranges(
     num_insts: usize,
     vreg_count: u32,

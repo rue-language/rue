@@ -39,8 +39,35 @@ const CALLER_SAVED_REGS: &[Reg] = &[Reg::R11];
 ///
 /// Each one used obliges the prologue to save it and the epilogue to restore
 /// it, so allocation reaches for these only after the caller-saved class above
-/// is exhausted or ineligible.
-const CALLEE_SAVED_REGS: &[Reg] = &[Reg::R12, Reg::R13, Reg::R14, Reg::R15, Reg::Rbx];
+/// is exhausted or ineligible — with the one exception in
+/// [`COMPACT_CALLEE_SAVED_REGS`], which costs no additional save.
+///
+/// The order is by encoding cost, so a function that needs fewer of them than
+/// there are gets the cheapest ones (RUE-1227).
+///
+/// `rbx` leads: it is the only legacy register here, so its byte and dword
+/// forms encode without the REX prefix `r12`-`r15` always need, and `push rbx`
+/// / `pop rbx` are a byte shorter than the extended forms.
+///
+/// `r12` trails: its low three bits are `rsp`'s, so *every* memory operand
+/// based on it needs a SIB byte that no other register here does. That costs a
+/// byte per access, and allocation hands long-lived pointers to callee-saved
+/// registers precisely because they are used a lot — an aggregate base held in
+/// `r12` paid for itself a hundred times over in `examples/life`.
+///
+/// `r13`-`r15` sit between, in numeric order; they encode identically to each
+/// other for every form allocation produces.
+const CALLEE_SAVED_REGS: &[Reg] = &[Reg::Rbx, Reg::R13, Reg::R14, Reg::R15, Reg::R12];
+
+/// Callee-saved registers that encode at least as compactly as any caller-saved
+/// one, and so are worth preferring over [`CALLER_SAVED_REGS`] for a call-free
+/// interval once their prologue save is already paid for (RUE-1227).
+///
+/// `rbx` is the whole set: `r11` and `r12`-`r15` are all extended registers
+/// that pay the same REX prefix as each other, so trading `r11` for one of them
+/// would give up a register and buy nothing. See
+/// [`RegisterClasses::compact_callee_saved`].
+const COMPACT_CALLEE_SAVED_REGS: &[Reg] = &[Reg::Rbx];
 
 /// Every allocatable register, in preference order: caller-saved first.
 ///
@@ -50,11 +77,11 @@ const CALLEE_SAVED_REGS: &[Reg] = &[Reg::R12, Reg::R13, Reg::R14, Reg::R15, Reg:
 /// has a register available, values are spilled to the stack.
 const ALLOCATABLE_REGS: &[Reg] = &[
     Reg::R11, // Caller-saved
-    Reg::R12, // Callee-saved
+    Reg::Rbx, // Callee-saved
     Reg::R13, // Callee-saved
     Reg::R14, // Callee-saved
     Reg::R15, // Callee-saved
-    Reg::Rbx, // Callee-saved
+    Reg::R12, // Callee-saved
 ];
 
 // No allocatable register may carry a reserved role, and the flattened list
@@ -80,6 +107,26 @@ const _: () = {
         assert!(
             ALLOCATABLE_REGS[CALLER_SAVED_REGS.len() + index] as u8
                 == CALLEE_SAVED_REGS[index] as u8
+        );
+        index += 1;
+    }
+    // The compact set is a preference among callee-saved registers, so a
+    // register outside that class must never appear in it — offering one would
+    // hand a call-crossing interval a register no prologue saves.
+    let mut index = 0;
+    while index < COMPACT_CALLEE_SAVED_REGS.len() {
+        let mut found = false;
+        let mut probe = 0;
+        while probe < CALLEE_SAVED_REGS.len() {
+            if CALLEE_SAVED_REGS[probe] as u8 == COMPACT_CALLEE_SAVED_REGS[index] as u8 {
+                found = true;
+            }
+            probe += 1;
+        }
+        assert!(
+            found,
+            "a compact register must be callee-saved: the RUE-1227 preference \
+             only ever reuses a register the prologue already saves"
         );
         index += 1;
     }
@@ -1375,6 +1422,7 @@ impl RegAllocBackend for X86Backend {
         RegisterClasses {
             caller_saved: CALLER_SAVED_REGS,
             callee_saved: CALLEE_SAVED_REGS,
+            compact_callee_saved: COMPACT_CALLEE_SAVED_REGS,
         }
     }
 
@@ -1417,8 +1465,8 @@ impl RegAllocBackend for X86Backend {
 mod tests {
     use super::liveness;
     use super::{
-        ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, Operand, Reg, RegAlloc, VReg,
-        X86Inst, X86Mir,
+        ALLOCATABLE_REGS, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, COMPACT_CALLEE_SAVED_REGS, Operand,
+        Reg, RegAlloc, VReg, X86Inst, X86Mir,
     };
     use crate::regalloc::{Allocation, RematerializeOp};
 
@@ -1982,6 +2030,83 @@ mod tests {
         assert!(
             used_callee_saved.is_empty(),
             "a call-free function this small should save nothing, got {used_callee_saved:?}"
+        );
+    }
+
+    #[test]
+    fn the_callee_saved_order_leads_with_rbx_and_trails_with_r12() {
+        // The order is an encoding-cost claim, not an arbitrary listing, and
+        // both ends of it are load-bearing (RUE-1227): `rbx` needs no REX
+        // prefix for byte and dword forms, and `r12` needs a SIB byte for every
+        // memory operand based on it. A function that uses fewer callee-saved
+        // registers than exist must get the cheap end first.
+        assert_eq!(CALLEE_SAVED_REGS.first(), Some(&Reg::Rbx));
+        assert_eq!(CALLEE_SAVED_REGS.last(), Some(&Reg::R12));
+        assert_eq!(
+            COMPACT_CALLEE_SAVED_REGS,
+            &[Reg::Rbx],
+            "r11 and r12-r15 are all extended registers that pay the same REX \
+             prefix, so only rbx is worth taking back from the caller-saved class"
+        );
+    }
+
+    #[test]
+    fn a_call_free_value_prefers_rbx_over_r11_once_rbx_is_saved() {
+        // A value defined before a call and used after it forces `rbx` into the
+        // prologue. A second, call-free value then costs nothing extra to put
+        // in `rbx` as well once the first has died, and encodes better there
+        // than in `r11` (RUE-1227). The save set must not grow to pay for it.
+        let mut mir = X86Mir::new();
+        let symbol = mir.intern_symbol("callee");
+        let across = mir.alloc_vreg();
+        let after = mir.alloc_vreg();
+
+        mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(across),
+            base: Reg::Rsi,
+            offset: 0,
+        });
+        mir.push(X86Inst::call(symbol));
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(across),
+        });
+        mir.push(X86Inst::MovRM {
+            dst: Operand::Virtual(after),
+            base: Reg::Rsi,
+            offset: 8,
+        });
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(after),
+        });
+
+        let (mir, num_spills, used_callee_saved) =
+            RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            used_callee_saved,
+            vec![Reg::Rbx],
+            "the call-crossing value alone decides the prologue"
+        );
+
+        let loads: Vec<Reg> = mir
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::MovRM {
+                    dst: Operand::Physical(reg),
+                    base: Reg::Rsi,
+                    ..
+                } => Some(*reg),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            loads,
+            vec![Reg::Rbx, Reg::Rbx],
+            "the call-free value should reuse the already-saved rbx, not take r11"
         );
     }
 

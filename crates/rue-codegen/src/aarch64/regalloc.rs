@@ -1352,6 +1352,12 @@ impl RegAllocBackend for Aarch64Backend {
         RegisterClasses {
             caller_saved: CALLER_SAVED_REGS,
             callee_saved: CALLEE_SAVED_REGS,
+            // AArch64 instructions are a fixed four bytes and encode every
+            // general register in the same five-bit field, so no allocatable
+            // register is cheaper to address than another and the RUE-1227
+            // preference has nothing to trade. Reusing a callee-saved register
+            // in place of a caller-saved one here would only add pressure.
+            compact_callee_saved: &[],
         }
     }
 
