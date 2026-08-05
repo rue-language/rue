@@ -1100,7 +1100,6 @@ fn import_source(
     )
 }
 
-#[allow(dead_code)]
 fn rooted_demand_locality_source(
     leaf_value: i32,
     unrelated_value: i32,
@@ -1979,6 +1978,89 @@ fn correctness_oracle_import_edit_compares_imported_body_and_linked_bytes() {
         changed_body_origins(&before, &after).contains("main"),
         "changing an imported value must refresh its root consumer"
     );
+}
+
+/// Phase 12's rooted-host locality gate. Both revisions enter through the
+/// production import-input protocol, and both edits are driven all the way
+/// through rooted CFG/CodegenUnit collection and the fresh linker. This is not
+/// a driver-shaped compatibility harness: `CompilerSession` remains the sole
+/// owner of the canonical query graph.
+#[cfg(unix)]
+#[test]
+fn query_native_rooted_demand_warm_edit_locality_through_fresh_link() {
+    #[derive(Debug)]
+    struct Locality {
+        bodies_computed: usize,
+        bodies_reused: usize,
+        cfgs_computed: usize,
+        codegen_computed: usize,
+        codegen_reused: usize,
+    }
+
+    let options = CompileOptions::default();
+    let run_edit = |leaf_value, unrelated_value| {
+        let (baseline, baseline_context, baseline_reads) = rooted_demand_locality_source(1, 10, 1);
+        let (edited, edited_context, edited_reads) =
+            rooted_demand_locality_source(leaf_value, unrelated_value, 2);
+        let mut warm = CompilerSession::with_query_concurrency(4);
+        close_import_source(&mut warm, &baseline, baseline_context, baseline_reads);
+        crate::queries::compile_with_session(&mut warm, &baseline, &options)
+            .expect("rooted-demand baseline fresh-links");
+
+        close_import_source(&mut warm, &edited, edited_context, edited_reads);
+        let warm_output = crate::queries::compile_with_session(&mut warm, &edited, &options)
+            .expect("rooted-demand warm edit fresh-links");
+        let codegen_computed = warm
+            .codegen_executions()
+            .iter()
+            .filter(|(_, execution)| *execution == rue_query::RequestExecution::Computed)
+            .count();
+        let codegen_reused = warm
+            .codegen_executions()
+            .iter()
+            .filter(|(_, execution)| {
+                matches!(
+                    execution,
+                    rue_query::RequestExecution::Reused | rue_query::RequestExecution::Joined
+                )
+            })
+            .count();
+
+        let mut fresh = CompilerSession::new();
+        let (_, fresh_context, fresh_reads) =
+            rooted_demand_locality_source(leaf_value, unrelated_value, 2);
+        close_import_source(&mut fresh, &edited, fresh_context, fresh_reads);
+        let fresh_output = crate::queries::compile_with_session(&mut fresh, &edited, &options)
+            .expect("fresh rooted-demand edit fresh-links");
+        assert_eq!(warm_output.elf, fresh_output.elf);
+        assert_eq!(warm_output.warnings, fresh_output.warnings);
+
+        Locality {
+            bodies_computed: warm_output
+                .work
+                .semantic
+                .body_analysis
+                .body_analyses_computed,
+            bodies_reused: warm_output.work.semantic.body_analysis.body_analyses_reused,
+            cfgs_computed: warm_output.work.semantic.cfg.cfg_builds_attempted,
+            codegen_computed,
+            codegen_reused,
+        }
+    };
+
+    let reachable = run_edit(2, 10);
+    assert_eq!(reachable.bodies_computed, 1, "{reachable:?}");
+    assert_eq!(reachable.bodies_reused, 1, "{reachable:?}");
+    assert_eq!(reachable.cfgs_computed, 1, "{reachable:?}");
+    assert_eq!(reachable.codegen_computed, 1, "{reachable:?}");
+    assert_eq!(reachable.codegen_reused, 1, "{reachable:?}");
+
+    let unrelated = run_edit(1, 11);
+    assert_eq!(unrelated.bodies_computed, 0, "{unrelated:?}");
+    assert_eq!(unrelated.bodies_reused, 2, "{unrelated:?}");
+    assert_eq!(unrelated.cfgs_computed, 0, "{unrelated:?}");
+    assert_eq!(unrelated.codegen_computed, 0, "{unrelated:?}");
+    assert_eq!(unrelated.codegen_reused, 2, "{unrelated:?}");
 }
 
 #[test]

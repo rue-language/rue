@@ -1,12 +1,12 @@
 ---
 id: 0063
 title: "Parallel demand-driven incremental compilation"
-status: accepted
+status: implemented
 tags: [architecture, compiler, incremental, parallelism, codegen, linker, performance]
 feature-flag: null
 created: 2026-07-18
 accepted: 2026-07-18
-implemented:
+implemented: 2026-08-04
 spec-sections: []
 superseded-by:
 supersedes: [0045, 0050, 0053]
@@ -19,15 +19,18 @@ relates: ["ADR-0052", "ADR-0055", "ADR-0058", "ADR-0061", "RUE-328", "RUE-648", 
 
 ## Status
 
-Accepted by Steve on 2026-07-18 after adversarial review in PR #1824. This is
+Accepted by Steve on 2026-07-18 after adversarial review in PR #1824 and
+implemented through the Phase 12 fresh-link boundary on 2026-08-04. This is
 an internal compiler and tooling design with no language-semantics or preview-
 feature change. It authorizes the phased demand-driven compilation project
 through fresh linking; incremental linker implementation still requires the
 follow-up ADR described below.
 
-Implementation is tracked by the Linear project **Parallel demand-driven
+Implementation was tracked by the Linear project **Parallel demand-driven
 incremental compilation** under the RUE-648 epic. RUE-1021 through RUE-1033 are
-the dependency-ordered phase issues.
+the completed dependency-ordered phase issues. The retained-artifact policy and
+calibration are recorded by RUE-1210; the final structural and latency witnesses
+are recorded in the [RUE-1033 acceptance ledger](../notes/rue-1033-acceptance-ledger.md).
 
 This ADR supersedes ADR-0045's compiler-architecture rollout and
 its exclusion of cross-request and cross-invocation incremental state. It
@@ -817,7 +820,7 @@ Tracked in Linear under the RUE-648 epic. The dependency order is:
   fresh internal/system linker paths, and establish the delta/fingerprint
   contract for follow-up direct and incremental internal linking. — RUE-1032
   (blocked by RUE-1031)
-- [ ] **Phase 12: Compatibility and performance completion.** Generalize the
+- [x] **Phase 12: Compatibility and performance completion.** Generalize the
   cold-versus-reused oracle, add multi-worker determinism and cancellation
   schedules and source-position-shift cases, delete the selected-state
   compatibility shim and peer cache state, enforce memory budgets, and publish
@@ -970,17 +973,15 @@ the architectural scope expands.
 
 ## Open Questions
 
-- Which execution substrate best satisfies Rue's attempt/diagnostic/import and
-  current/last-good requirements after the Phase 0 comparison: an evolution of
-  the in-house database, Salsa, or another typed query runtime?
-- Which fixed warm-edit benchmark corpus and host normalization should define
-  the first latency budgets without turning one machine's number into a language
-  promise?
 - Is `LoweredMir` independently valuable enough to retain as a memo terminal, or
   should MIR presentation be a projection/debug recomputation from
   `OptimizedCfg` until measurements justify it?
 
-These questions affect implementation and measured policy, not the accepted
+The implementation uses Rue's in-house typed query runtime. Warm-edit evidence
+uses the fixed single-callee fixture and records raw host context and structural
+work rather than normalizing one machine into a portable latency promise; see
+the [RUE-1033 acceptance ledger](../notes/rue-1033-acceptance-ledger.md). The
+remaining MIR question affects future measured policy, not the implemented
 identity, revision, dependency, `CodegenUnit`, or linking-seam decisions.
 
 ## Future Work
@@ -1006,3 +1007,4 @@ identity, revision, dependency, `CodegenUnit`, or linking-seam decisions.
 - [ADR-0061: Supported compiler facade](0061-supported-compiler-facade.md)
 - [Body analysis and CFG incrementality audit](../notes/body-analysis-cfg-incrementality-audit.md)
 - [Compiler session architecture completion audit](../notes/canonical-query-completion-audit.md)
+- [RUE-1033 Phase 12 acceptance ledger](../notes/rue-1033-acceptance-ledger.md)
