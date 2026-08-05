@@ -1065,7 +1065,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             ErrorKind::TypeMismatch {
                                 expected: scrutinee_type
                                     .safe_name_with_pool(Some(self.body_type_pool())),
-                                found: enum_def.name.clone(),
+                                found: enum_def.name.to_string(),
                             },
                             pattern_span,
                         ));
@@ -1075,7 +1075,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     let variant_name = self.body_interner().resolve(&*variant);
                     let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                         ErrorKind::UnknownVariant {
-                            enum_name: enum_def.name.clone(),
+                            enum_name: enum_def.name.to_string(),
                             variant_name: variant_name.to_string(),
                         },
                         pattern_span,
@@ -1276,7 +1276,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(super::analysis::non_exhaustive_match_error(
                 span,
                 scrutinee_type,
-                enum_def.as_deref(),
+                enum_def.as_deref().map(|entry| &**entry),
                 |i| covered_variants.contains_key(&i),
                 bool_true_covered,
                 bool_false_covered,
@@ -1689,7 +1689,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let variant_name = self.body_interner().resolve(&*variant).to_string();
         let variant_index = def.find_variant(&variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
-                enum_name: def.name.clone(),
+                enum_name: def.name.to_string(),
                 variant_name: variant_name.clone(),
             },
             pattern_span,

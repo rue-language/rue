@@ -2345,6 +2345,8 @@ pub fn assert_slot_policy(plan: ValuePlan, actual: usize) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::{
         ComparisonPreparation, DebugValuePlan, IntegerExtension, IntegerWidth, IntrinsicArgPlan,
         IntrinsicOperation, MaterializationRequirement, MaterializedValue, OptionIntrinsic,
@@ -2413,7 +2415,7 @@ mod tests {
         let (str_id, _) = pool.register_struct(
             interner.get_or_intern("str"),
             StructDef {
-                name: "str".to_string(),
+                name: "str".into(),
                 fields: vec![
                     StructField {
                         name: "ptr".to_string(),
@@ -2435,7 +2437,7 @@ mod tests {
         let (struct_id, _) = pool.register_struct(
             interner.get_or_intern("CoverageStruct"),
             StructDef {
-                name: "CoverageStruct".to_string(),
+                name: "CoverageStruct".into(),
                 fields: vec![
                     StructField {
                         name: "left".to_string(),
@@ -2457,8 +2459,8 @@ mod tests {
         let (enum_id, _) = pool.register_enum(
             interner.get_or_intern("CoverageEnum"),
             EnumDef {
-                name: "CoverageEnum".to_string(),
-                variants: vec!["None".to_string(), "Some".to_string()],
+                name: "CoverageEnum".into(),
+                variants: Arc::from(["None".into(), "Some".into()]),
                 variant_payloads: vec![vec![], vec![Type::I32]],
                 is_pub: false,
                 file_id: FileId::DEFAULT,
@@ -2681,8 +2683,8 @@ mod tests {
         let (enum_id, _) = pool.register_enum(
             enum_name,
             EnumDef {
-                name: "ComparisonEnum".to_string(),
-                variants: vec!["First".to_string(), "Second".to_string()],
+                name: "ComparisonEnum".into(),
+                variants: Arc::from(["First".into(), "Second".into()]),
                 variant_payloads: vec![vec![], vec![]],
                 is_pub: false,
                 file_id: FileId::DEFAULT,
@@ -2923,7 +2925,7 @@ mod tests {
         let (struct_id, _) = strbuf_pool.register_struct(
             name,
             StructDef {
-                name: "StrBuf".to_string(),
+                name: "StrBuf".into(),
                 fields: vec![
                     StructField {
                         name: "ptr".to_string(),
@@ -3167,7 +3169,7 @@ mod tests {
         let (struct_id, _) = pool.register_struct(
             name,
             StructDef {
-                name: "DropAggregate".to_string(),
+                name: "DropAggregate".into(),
                 fields: vec![
                     StructField {
                         name: "first".to_string(),
@@ -3184,7 +3186,7 @@ mod tests {
                 ],
                 is_copy: false,
                 is_linear: false,
-                destructor: Some("DropAggregate::__drop".to_string()),
+                destructor: Some("DropAggregate::__drop".into()),
                 is_builtin: true,
                 is_pub: false,
                 file_id: FileId::DEFAULT,

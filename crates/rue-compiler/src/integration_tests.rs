@@ -617,7 +617,7 @@ mod integration_tests {
             let point = result
                 .type_pool
                 .all_struct_ids()
-                .find(|&id| result.type_pool.struct_def(id).name == "Point");
+                .find(|&id| &*result.type_pool.struct_def(id).name == "Point");
             assert!(point.is_some(), "Point struct should exist in pool");
         }
 

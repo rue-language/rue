@@ -2,6 +2,8 @@
 //!
 //! This module handles injection of compiler-provided enums like Arch and Os.
 
+use std::sync::Arc;
+
 use rue_builtins::BUILTIN_ENUMS;
 
 use super::{DeclarationPhase, Sema};
@@ -18,15 +20,15 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
     pub(crate) fn inject_builtin_types(&mut self) {
         // Inject built-in enum types (Arch, Os)
         for builtin_enum in BUILTIN_ENUMS {
-            let variants: Vec<String> = builtin_enum
+            let variants: Arc<[Arc<str>]> = builtin_enum
                 .variants
                 .iter()
-                .map(|v| v.to_string())
+                .map(|v| Arc::from(*v))
                 .collect();
 
             // Create the synthetic enum definition
             let enum_def = EnumDef {
-                name: builtin_enum.name.to_string(),
+                name: Arc::from(builtin_enum.name),
                 variants,
                 variant_payloads: Vec::new(),
                 is_pub: true,                      // Built-in enums are always public

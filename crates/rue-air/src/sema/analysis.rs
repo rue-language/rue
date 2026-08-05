@@ -1462,7 +1462,7 @@ fn named_method_dependency_events(
                 rue_span::Span::default(),
             )
         })?;
-    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.clone();
+    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.to_string();
     let caller_method_name = sema.interner.resolve(&caller_method).to_string();
     let mut events = Vec::new();
     for callee in referenced_functions {
@@ -1499,7 +1499,7 @@ fn named_method_dependency_events(
         });
     }
     for (callee_struct, callee_method) in referenced_methods {
-        let owner_name = sema.type_pool.struct_def(*callee_struct).name.clone();
+        let owner_name = sema.type_pool.struct_def(*callee_struct).name.to_string();
         // Membership, not the generated-name prefix: `__anon_struct_N` is a
         // legal source declaration, and only `anonymous_struct_ids` knows which
         // structs the compiler generated (RUE-1050).
@@ -1550,7 +1550,7 @@ fn named_destructor_dependency_events(
     referenced_functions: &HashSet<Spur>,
     referenced_methods: &HashSet<(StructId, Spur)>,
 ) -> CompileResult<Vec<super::NamedDestructorDependencyEvent>> {
-    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.clone();
+    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.to_string();
     let mut events = Vec::new();
     for callee in referenced_functions {
         let info = sema.function_info(*callee).copied().ok_or_else(|| {
@@ -1580,7 +1580,7 @@ fn named_destructor_dependency_events(
         });
     }
     for (callee_struct, callee_method) in referenced_methods {
-        let owner_name = sema.type_pool.struct_def(*callee_struct).name.clone();
+        let owner_name = sema.type_pool.struct_def(*callee_struct).name.to_string();
         // Membership, not the generated-name prefix: `__anon_struct_N` is a
         // legal source declaration, and only `anonymous_struct_ids` knows which
         // structs the compiler generated (RUE-1050).
@@ -2235,7 +2235,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
 
                 // Get the struct definition to find its name for impl block lookup
                 let struct_def = sema.type_pool.struct_def(struct_id);
-                let type_name_str = struct_def.name.clone();
+                let type_name_str = struct_def.name.to_string();
                 let method_name_str = sema.interner.resolve(&method_name).to_string();
 
                 // For anonymous structs, use the MethodInfo directly since there's no named StructDecl.
@@ -2814,7 +2814,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                     let struct_type = Type::new_struct(struct_id);
                     let full_name = sema.destructor_symbol(struct_id);
 
-                    let owner_name = sema.type_pool.struct_def(struct_id).name.clone();
+                    let owner_name = sema.type_pool.struct_def(struct_id).name.to_string();
                     let named_destructor_identity = match sema.stable_definition_token(
                         destructor.span.file_id.index(),
                         &owner_name,
@@ -2971,7 +2971,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 super::BodyOwnerKind::Destructor,
                             ),
                             file: destructor.span.file_id.index(),
-                            owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
+                            owner_name: sema.type_pool.struct_def(struct_id).name.to_string(),
                         },
                     );
                     let analysis = sema.analyze_destructor_function(
@@ -3004,7 +3004,11 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                         super::BodyOwnerKind::Destructor,
                                     ),
                                     file: destructor.span.file_id.index(),
-                                    owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
+                                    owner_name: sema
+                                        .type_pool
+                                        .struct_def(struct_id)
+                                        .name
+                                        .to_string(),
                                 },
                             );
                             analyzed.ordinary_owner = Some(sema.body_owner_token(
@@ -3048,7 +3052,11 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                         super::BodyOwnerKind::Destructor,
                                     ),
                                     file: destructor.span.file_id.index(),
-                                    owner_name: sema.type_pool.struct_def(struct_id).name.clone(),
+                                    owner_name: sema
+                                        .type_pool
+                                        .struct_def(struct_id)
+                                        .name
+                                        .to_string(),
                                 });
                             match named_destructor_dependency_events(
                                 sema,
@@ -3257,7 +3265,7 @@ pub(crate) fn non_exhaustive_match_error(
             .iter()
             .enumerate()
             .filter(|(i, _)| !variant_covered(*i as u32))
-            .map(|(_, v)| v.as_str())
+            .map(|(_, v)| v.as_ref())
             .collect();
         if missing.is_empty() {
             return err;

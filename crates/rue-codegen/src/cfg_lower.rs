@@ -422,7 +422,7 @@ impl<'a> CfgLowerContext<'a> {
             TypeKind::Struct(struct_id) => {
                 let struct_def = self.type_pool.struct_def(struct_id);
                 self.is_strbuf(ty)
-                    || struct_def.name == "str"
+                    || &*struct_def.name == "str"
                     || (struct_def.name.starts_with("Str(") && struct_def.name.ends_with(')'))
             }
             _ => false,

@@ -654,7 +654,7 @@ mod tests {
         let (struct_id, _) = pool.register_struct(
             interner.get_or_intern(name),
             StructDef {
-                name: name.to_string(),
+                name: name.into(),
                 fields: struct_fields,
                 is_copy: true,
                 is_linear: false,

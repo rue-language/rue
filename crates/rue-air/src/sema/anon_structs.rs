@@ -218,7 +218,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     if def.is_builtin {
                         T::BuiltinNominal {
                             kind: K::Struct,
-                            name: std::sync::Arc::from(def.name.as_str()),
+                            name: def.name.clone(),
                         }
                     } else {
                         T::Nominal(N::Named(self.struct_identity(id)?))
@@ -232,11 +232,11 @@ impl<D: DeclarationPhase> Sema<'_, D> {
                     let def = self.type_pool.enum_metadata(id).ok_or(F::UnsupportedType)?;
                     if rue_builtins::BUILTIN_ENUMS
                         .iter()
-                        .any(|builtin| builtin.name == def.name)
+                        .any(|builtin| builtin.name == &*def.name)
                     {
                         T::BuiltinNominal {
                             kind: K::Enum,
-                            name: std::sync::Arc::from(def.name.as_str()),
+                            name: def.name.clone(),
                         }
                     } else {
                         T::Nominal(N::Named(self.enum_identity(id)?))

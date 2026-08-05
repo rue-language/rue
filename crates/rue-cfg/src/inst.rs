@@ -3042,6 +3042,8 @@ impl Cfg {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -3252,7 +3254,7 @@ mod tests {
             interner.get_or_intern("Maybe"),
             EnumDef {
                 name: "Maybe".into(),
-                variants: vec!["None".into(), "Some".into()],
+                variants: Arc::from(["None".into(), "Some".into()]),
                 variant_payloads: vec![vec![], vec![Type::I32]],
                 is_pub: false,
                 file_id: FileId::DEFAULT,

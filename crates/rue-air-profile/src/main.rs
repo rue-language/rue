@@ -480,7 +480,7 @@ fn profile_families() -> Value {
         symbols.get_or_intern("ProfileEnum"),
         EnumDef {
             name: "ProfileEnum".into(),
-            variants: vec!["Only".into()],
+            variants: std::sync::Arc::from(["Only".into()]),
             variant_payloads: vec![vec![Type::I32; 64]],
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,

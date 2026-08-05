@@ -962,11 +962,11 @@ impl<'a> Interp<'a> {
 
     fn is_bare_str_type(&self, ty: Type) -> bool {
         ty.as_struct()
-            .is_some_and(|struct_id| self.state.type_pool.struct_def(struct_id).name == "str")
+            .is_some_and(|struct_id| &*self.state.type_pool.struct_def(struct_id).name == "str")
     }
 
     fn is_str_like_struct(&self, struct_id: rue_air::StructId) -> bool {
-        let name = &self.state.type_pool.struct_def(struct_id).name;
+        let name: &str = &self.state.type_pool.struct_def(struct_id).name;
         name == "str" || (name.starts_with("Str(") && name.ends_with(')'))
     }
 

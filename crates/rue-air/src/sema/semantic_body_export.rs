@@ -714,7 +714,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         self.stable_definition_token(
             info.span.file_id.index(),
             method,
-            Some(owner.name.as_str()),
+            Some(owner.name.as_ref()),
             if method == "__drop" {
                 StableDefinitionKind::Destructor
             } else if info.has_self {
@@ -770,11 +770,11 @@ impl BodySema<'_> {
         Ok(match self.canonical_anonymous_types.get(&ty) {
             Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
             None if self.type_pool.struct_def(id).is_builtin
-                || self.type_pool.struct_def(id).name == "str" =>
+                || &*self.type_pool.struct_def(id).name == "str" =>
             {
                 crate::NominalInstanceKey::Builtin {
                     kind: crate::AnonymousNominalKind::Struct,
-                    name: Arc::from(self.type_pool.struct_def(id).name.as_str()),
+                    name: self.type_pool.struct_def(id).name.clone(),
                 }
             }
             None => crate::NominalInstanceKey::Named(self.struct_identity(id)?),
@@ -790,11 +790,11 @@ impl BodySema<'_> {
             Some(key) => crate::NominalInstanceKey::Anonymous(key.clone()),
             None if rue_builtins::BUILTIN_ENUMS
                 .iter()
-                .any(|builtin| builtin.name == self.type_pool.enum_def(id).name) =>
+                .any(|builtin| builtin.name == &*self.type_pool.enum_def(id).name) =>
             {
                 crate::NominalInstanceKey::Builtin {
                     kind: crate::AnonymousNominalKind::Enum,
-                    name: Arc::from(self.type_pool.enum_def(id).name.as_str()),
+                    name: self.type_pool.enum_def(id).name.clone(),
                 }
             }
             None => crate::NominalInstanceKey::Named(self.enum_identity(id)?),
@@ -819,7 +819,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
         self.stable_definition_token(
             def.file_id.index(),
-            def.name.as_str(),
+            def.name.as_ref(),
             None,
             StableDefinitionKind::Struct,
         )
@@ -833,7 +833,7 @@ impl<D: DeclarationPhase> Sema<'_, D> {
         }
         self.stable_definition_token(
             def.file_id.index(),
-            def.name.as_str(),
+            def.name.as_ref(),
             None,
             StableDefinitionKind::Enum,
         )
@@ -914,11 +914,11 @@ impl BodySema<'_> {
                 {
                     SemanticImportType::Slice {
                         element: Box::new(self.export_body_type(element)?),
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                     }
-                } else if def.is_builtin || def.name == "str" {
+                } else if def.is_builtin || &*def.name == "str" {
                     SemanticImportType::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Struct,
                     }
                 } else {
@@ -931,10 +931,10 @@ impl BodySema<'_> {
                     SemanticImportType::AnonymousNominal(identity.clone())
                 } else if rue_builtins::BUILTIN_ENUMS
                     .iter()
-                    .any(|builtin| builtin.name == def.name)
+                    .any(|builtin| builtin.name == &*def.name)
                 {
                     SemanticImportType::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Enum,
                     }
                 } else {

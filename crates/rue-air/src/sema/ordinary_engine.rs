@@ -9,6 +9,7 @@
 //! exact facts.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use lasso::{Spur, ThreadedRodeo};
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind};
@@ -717,7 +718,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             .body_type_pool()
             .intern_ptr_const_from_type(Type::U8);
         let struct_def = StructDef {
-            name: "str".to_owned(),
+            name: Arc::from("str"),
             fields: vec![
                 StructField {
                     name: "ptr".to_owned(),
@@ -989,9 +990,9 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             && fields
                 .iter()
                 .all(|field| field.ty.is_copy_in_pool(self.storage.body_type_pool()));
-        let destructor = has_destructor.then(|| format!("{name}.__drop"));
+        let destructor = has_destructor.then(|| Arc::from(format!("{name}.__drop").as_str()));
         let def = crate::types::StructDef {
-            name,
+            name: Arc::from(name.as_str()),
             fields: fields.to_vec(),
             is_copy,
             is_linear: false,
@@ -1057,8 +1058,8 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         name.push_str(" }");
         let name_spur = self.storage.body_interner().get_or_intern(&name);
         let def = crate::types::EnumDef {
-            name,
-            variants: names.to_vec(),
+            name: Arc::from(name.as_str()),
+            variants: names.iter().map(|n| Arc::from(n.as_str())).collect(),
             variant_payloads: payloads.to_vec(),
             is_pub: false,
             file_id: FileId::new(0),
@@ -1363,7 +1364,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             && def.name.ends_with(']')
             && crate::types::parse_array_type_syntax(&def.name).is_none();
         let is_str_fixed = def.name.starts_with("Str(") && def.name.ends_with(')');
-        if is_slice || def.name == "str" || is_str_fixed {
+        if is_slice || &*def.name == "str" || is_str_fixed {
             if let crate::types::TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
                 return Some(self.body_type_pool().ptr_const_def(ptr_id));
             }

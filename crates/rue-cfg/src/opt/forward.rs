@@ -353,7 +353,7 @@ mod tests {
             .register_struct(
                 Spur::try_from_usize(0).unwrap(),
                 StructDef {
-                    name: "Test".to_string(),
+                    name: "Test".into(),
                     fields: vec![],
                     is_copy: false,
                     is_linear: false,

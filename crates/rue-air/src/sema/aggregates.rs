@@ -451,7 +451,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if !field_index_map.contains_key(init_name.as_str()) {
                 return Err(CompileError::new(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.clone(),
+                        struct_name: struct_def.name.to_string(),
                         field_name: init_name.to_string(),
                     },
                     span,
@@ -461,7 +461,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             if !seen_fields.insert(init_name.clone()) {
                 return Err(CompileError::new(
                     ErrorKind::DuplicateField {
-                        struct_name: struct_def.name.clone(),
+                        struct_name: struct_def.name.to_string(),
                         field_name: init_name.to_string(),
                     },
                     span,
@@ -479,7 +479,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .collect();
             return Err(CompileError::new(
                 ErrorKind::MissingFields(Box::new(MissingFieldsError {
-                    struct_name: struct_def.name.clone(),
+                    struct_name: struct_def.name.to_string(),
                     missing_fields,
                 })),
                 span,
@@ -924,7 +924,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let variant_name = self.body_interner().resolve(&method);
             let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                 ErrorKind::UnknownVariant {
-                    enum_name: enum_def.name.clone(),
+                    enum_name: enum_def.name.to_string(),
                     variant_name: variant_name.to_string(),
                 },
                 span,
@@ -1025,7 +1025,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
-                enum_name: enum_def.name.clone(),
+                enum_name: enum_def.name.to_string(),
                 variant_name: variant_name.to_string(),
             },
             span,
@@ -1078,7 +1078,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let variant_name = self.body_interner().resolve(&variant);
         let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
             ErrorKind::UnknownVariant {
-                enum_name: enum_def.name.clone(),
+                enum_name: enum_def.name.to_string(),
                 variant_name: variant_name.to_string(),
             },
             span,
@@ -1370,7 +1370,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 let variant_name = self.body_interner().resolve(&*variant);
                 let variant_index = enum_def.find_variant(variant_name).ok_or_compile_error(
                     ErrorKind::UnknownVariant {
-                        enum_name: enum_def.name.clone(),
+                        enum_name: enum_def.name.to_string(),
                         variant_name: variant_name.to_string(),
                     },
                     inst.span,

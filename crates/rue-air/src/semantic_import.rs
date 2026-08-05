@@ -1112,8 +1112,8 @@ where
             let (id, _) = type_pool.register_enum(
                 symbol,
                 EnumDef {
-                    name: builtin.name.to_owned(),
-                    variants: builtin.variants.iter().map(|v| (*v).to_owned()).collect(),
+                    name: Arc::from(builtin.name),
+                    variants: builtin.variants.iter().map(|v| Arc::from(*v)).collect(),
                     variant_payloads: Vec::new(),
                     is_pub: true,
                     file_id: FileId::DEFAULT,
@@ -1178,8 +1178,8 @@ where
                 return Err(SemanticImportFailure::DuplicateNominalLocalIdentity);
             }
             let file_id = module_files[&nominal.module_path];
-            let name = nominal.name.to_string();
-            let symbol = interner.get_or_intern(&name);
+            let name = nominal.name.clone();
+            let symbol = interner.get_or_intern(name.as_ref());
             let value = match nominal.kind {
                 SemanticImportNominalKind::Struct => {
                     let (id, _) = type_pool.declare_struct(
@@ -1205,7 +1205,7 @@ where
                         symbol,
                         EnumDef {
                             name,
-                            variants: vec![],
+                            variants: Arc::from([]),
                             variant_payloads: vec![],
                             is_pub: nominal.is_public,
                             file_id,
@@ -1225,7 +1225,7 @@ where
         let (str_id, _) = type_pool.register_struct(
             str_symbol,
             StructDef {
-                name: "str".to_owned(),
+                name: Arc::from("str"),
                 fields: vec![
                     StructField {
                         name: "ptr".to_owned(),
@@ -1360,7 +1360,7 @@ where
                     let (id, _) = epoch.type_pool.declare_struct(
                         symbol,
                         StructDef {
-                            name: nominal.name.to_string(),
+                            name: nominal.name.clone(),
                             fields: Vec::new(),
                             is_copy: false,
                             is_linear: false,
@@ -1382,8 +1382,8 @@ where
                     let (id, _) = epoch.type_pool.declare_enum(
                         symbol,
                         EnumDef {
-                            name: nominal.name.to_string(),
-                            variants: Vec::new(),
+                            name: nominal.name.clone(),
+                            variants: Arc::from([]),
                             variant_payloads: Vec::new(),
                             is_pub: nominal.is_public,
                             file_id,
@@ -1582,7 +1582,7 @@ where
             let (id, _) = type_pool.register_struct(
                 symbol,
                 StructDef {
-                    name: name.to_string(),
+                    name: Arc::from(name.as_ref()),
                     fields: vec![
                         StructField {
                             name: "ptr".to_owned(),
@@ -1701,7 +1701,7 @@ where
                     let (id, _) = type_pool.register_struct(
                         symbol,
                         StructDef {
-                            name: name.to_string(),
+                            name: Arc::from(name.as_ref()),
                             fields: vec![
                                 StructField {
                                     name: "ptr".to_owned(),
@@ -1854,7 +1854,7 @@ where
                         element: Box::new(
                             self.export_type_local(self.type_pool.ptr_const_def(pointer))?,
                         ),
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                     }
                 } else if let Some(((name, kind), _)) = self
                     .builtins
@@ -1878,7 +1878,7 @@ where
                     // spelling is the durable classification; unrelated source
                     // structs never acquire that bit.
                     SemanticImportType::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: SemanticImportNominalKind::Struct,
                     }
                 } else {
@@ -2071,7 +2071,7 @@ where
                 id,
                 EnumDef {
                     name: metadata.name,
-                    variants: variants.iter().map(|(name, _)| name.to_string()).collect(),
+                    variants: variants.iter().map(|(name, _)| name.clone()).collect(),
                     variant_payloads,
                     is_pub: metadata.is_pub,
                     file_id: metadata.file_id,

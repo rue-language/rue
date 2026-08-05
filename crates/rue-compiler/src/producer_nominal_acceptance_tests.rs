@@ -160,8 +160,8 @@ fn bound_parse_i64_digest(semantic: &CanonicalSemanticOutput) -> String {
     );
     let def = semantic.type_pool().enum_def(parse[0].1);
     assert_eq!(
-        def.variants,
-        vec!["Some".to_string(), "None".to_string()],
+        def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
+        ["Some", "None"],
         "the ?-bound type must be Option-shaped",
     );
     assert_eq!(
@@ -169,7 +169,7 @@ fn bound_parse_i64_digest(semantic: &CanonicalSemanticOutput) -> String {
         &[rue_air::Type::I64],
         "the ?-bound Option must carry the i64 payload",
     );
-    def.name.clone()
+    def.name.to_string()
 }
 
 /// The producer digests of every `Some(i64)/None`-shaped anonymous enum in a
@@ -182,10 +182,10 @@ fn option_i64_pool_digests(semantic: &CanonicalSemanticOutput) -> BTreeSet<Strin
         .into_iter()
         .map(|id| pool.enum_def(id))
         .filter(|def| {
-            def.variants == vec!["Some".to_string(), "None".to_string()]
+            def.variants.iter().map(Arc::as_ref).eq(["Some", "None"])
                 && def.variant_payload(0) == [rue_air::Type::I64]
         })
-        .map(|def| def.name.clone())
+        .map(|def| def.name.to_string())
         .collect()
 }
 

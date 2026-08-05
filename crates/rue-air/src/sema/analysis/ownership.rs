@@ -2560,7 +2560,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                         let err = CompileError::new(
                             ErrorKind::LinearFieldDroppedByDestructure(Box::new(
                                 rue_error::LinearFieldDroppedByDestructureError {
-                                    struct_name: def.name.clone(),
+                                    struct_name: def.name.to_string(),
                                     accessed,
                                     dropped: field.name.clone(),
                                 },
@@ -2620,7 +2620,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 .unwrap_or_default();
             let mut err = CompileError::new(
                 ErrorKind::MoveFieldOutOfDestructorType {
-                    struct_name: struct_def.name.clone(),
+                    struct_name: struct_def.name.to_string(),
                     field_name: field_name.clone(),
                 },
                 span,
@@ -2957,7 +2957,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         let (field_index, struct_field) =
             struct_def.find_field(&field_name_str).ok_or_compile_error(
                 ErrorKind::UnknownField {
-                    struct_name: struct_def.name.clone(),
+                    struct_name: struct_def.name.to_string(),
                     field_name: field_name_str.clone(),
                 },
                 span,
@@ -3746,7 +3746,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     .body_type_pool()
                     .struct_def(slice_struct_id)
                     .name
-                    .clone(),
+                    .to_string(),
             },
             span,
         ))
@@ -3835,7 +3835,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.clone(),
+                        struct_name: struct_def.name.to_string(),
                         field_name: field_name_str.clone(),
                     },
                     span,

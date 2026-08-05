@@ -81,6 +81,8 @@ pub fn type_name(ty: Type, type_pool: &FrozenTypeInternPool) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use lasso::ThreadedRodeo;
 
     use super::*;
@@ -98,7 +100,7 @@ mod tests {
             .register_struct(
                 symbol,
                 StructDef {
-                    name: name.to_string(),
+                    name: name.into(),
                     fields,
                     is_copy: false,
                     is_linear: false,
@@ -122,8 +124,8 @@ mod tests {
             .register_enum(
                 symbol,
                 EnumDef {
-                    name: name.to_string(),
-                    variants: vec!["Only".to_string()],
+                    name: name.into(),
+                    variants: Arc::from(["Only".into()]),
                     variant_payloads: vec![vec![]],
                     is_pub: false,
                     file_id,
