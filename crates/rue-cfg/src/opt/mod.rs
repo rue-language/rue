@@ -120,8 +120,25 @@ pub enum CfgOptimizationError {
 impl std::fmt::Display for CfgOptimizationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Edit(error) => write!(f, "CFG optimizer edit was rejected: {error:?}"),
+            Self::Edit(error) => write!(f, "CFG optimizer edit was rejected: {error}"),
             Self::Verification(error) => error.fmt(f),
+        }
+    }
+}
+
+impl CfgOptimizationError {
+    /// Classify an optimization failure for the user.
+    ///
+    /// An optimizer payload edit that outgrew the compact `u32` payload
+    /// representation is an implementation-limit rejection (`E1401`) naming the
+    /// limit, per spec C.1:2; every other optimization failure is a compiler
+    /// bug and stays an internal error.
+    pub fn error_kind(&self, context: &str) -> rue_error::ErrorKind {
+        match self {
+            Self::Edit(error) => error.error_kind(context),
+            Self::Verification(_) => {
+                rue_error::ErrorKind::InternalError(format!("{context}: {self}"))
+            }
         }
     }
 }

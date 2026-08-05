@@ -93,6 +93,7 @@ stable|source_identity|source-input|cli+embedders|SourceIdVersion|pub use source
 stable|source_identity|source-input|cli+embedders|SourceRevision|pub use source_identity::SourceRevision
 stable|source_metadata|source-input|cli+embedders|SourceMetadata|pub use source_metadata::SourceMetadata
 stable|source_snapshot|source-input|cli+embedders|MAX_SOURCE_BYTES|pub use source_snapshot::MAX_SOURCE_BYTES
+stable|source_snapshot|source-input|cli+embedders|MAX_SOURCE_FILES|pub use source_snapshot::MAX_SOURCE_FILES
 stable|source_snapshot|source-input|cli+embedders|SourceSnapshot|pub use source_snapshot::SourceSnapshot
 stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|OPTION_MODULE_LOGICAL_PATH|pub use toolchain_module_demand::OPTION_MODULE_LOGICAL_PATH
 stable|toolchain_module_demand|toolchain-module-demand|source-loaders+embedders|ParkedToolchainModules|pub use toolchain_module_demand::ParkedToolchainModules

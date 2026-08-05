@@ -784,6 +784,56 @@ pub enum CfgEditError {
     CapacityFailure { family: &'static str },
 }
 
+/// The published per-program ceiling on the CFG payload word store: payload
+/// ranges are `(start: u32, extent: u32)` into one shared store, so a program
+/// holds at most this many CFG payload words (spec Appendix C.6:1).
+pub const MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM: u32 = u32::MAX;
+
+impl fmt::Display for CfgEditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidBuilderInput { operation, detail } => {
+                write!(f, "invalid CFG {operation} builder input: {detail}")
+            }
+            Self::ResourceLimitExceeded { family } => write!(
+                f,
+                "CFG {family} exceeded the implementation limit of \
+                 {MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM} payload words per program \
+                 (spec Appendix C.6:1)"
+            ),
+            Self::CapacityFailure { family } => {
+                write!(f, "could not reserve storage for CFG {family} payload")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CfgEditError {}
+
+impl CfgEditError {
+    /// Classify this edit failure for the user.
+    ///
+    /// Spec C.1:2 makes exceeding a published implementation limit a
+    /// diagnosable compile-time failure rather than an internal compiler
+    /// error, so a payload range that no longer fits the compact `u32`
+    /// representation is reported as `E1401` naming the limit. A failed
+    /// reservation for an otherwise representable request is the environmental
+    /// `E1402`; only a malformed builder request remains an ICE.
+    pub fn error_kind(&self, context: &str) -> rue_error::ErrorKind {
+        match self {
+            Self::ResourceLimitExceeded { .. } => {
+                rue_error::ErrorKind::CompilerResourceLimit(self.to_string())
+            }
+            Self::CapacityFailure { .. } => {
+                rue_error::ErrorKind::CompilerResourceExhaustion(self.to_string())
+            }
+            Self::InvalidBuilderInput { .. } => {
+                rue_error::ErrorKind::InternalError(format!("{context}: {self}"))
+            }
+        }
+    }
+}
+
 /// Failure from a validated owner-level edit transaction.
 #[derive(Debug)]
 pub enum CfgEditTransactionError {
@@ -3045,6 +3095,43 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
+
+    #[test]
+    fn cfg_payload_limit_message_names_the_published_ceiling() {
+        // RUE-1221 / spec C.1:2: exceeding a published implementation limit is
+        // a diagnosable failure that names the limit, not an ICE.
+        let error = CfgEditError::ResourceLimitExceeded {
+            family: "call args",
+        };
+        assert_eq!(
+            error.to_string(),
+            "CFG call args exceeded the implementation limit of 4294967295 payload words per \
+             program (spec Appendix C.6:1)"
+        );
+        assert_eq!(
+            error.error_kind("CFG payload construction failed").code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+        );
+    }
+
+    #[test]
+    fn cfg_edit_failures_are_classified_apart_from_internal_errors() {
+        assert_eq!(
+            CfgEditError::CapacityFailure { family: "f" }
+                .error_kind("ctx")
+                .code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION
+        );
+        assert_eq!(
+            CfgEditError::InvalidBuilderInput {
+                operation: "append_call",
+                detail: "unknown value",
+            }
+            .error_kind("ctx")
+            .code(),
+            rue_error::ErrorCode::INTERNAL_ERROR
+        );
+    }
 
     #[test]
     fn test_block_id_size() {

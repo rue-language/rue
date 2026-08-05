@@ -357,8 +357,11 @@ impl<'a> CfgBuilder<'a> {
         match result {
             Ok(value) => value,
             Err(error) => {
+                // A payload range that outgrew the compact `u32` representation
+                // is an implementation-limit rejection (E1401), not an ICE
+                // (spec C.1:2); only a malformed builder request stays internal.
                 self.errors.push(CompileError::new(
-                    ErrorKind::InternalError(format!("CFG payload construction failed: {error:?}")),
+                    error.error_kind("CFG payload construction failed"),
                     span,
                 ));
                 fallback
@@ -3368,7 +3371,7 @@ impl<'a> CfgBuilder<'a> {
             Ok(place) => Some(place),
             Err(error) => {
                 self.errors.push(CompileError::new(
-                    ErrorKind::InternalError(format!("CFG place construction failed: {error:?}")),
+                    error.error_kind("CFG place construction failed"),
                     rue_span::Span::default(),
                 ));
                 None

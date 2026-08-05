@@ -33,7 +33,8 @@ pub use inline::{CfgInlineError, inline_call};
 pub use inst::{
     BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,
     CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgPayloadStorageStats,
-    CfgRemapError, CfgValue, Place, PlaceBase, Projection, Terminator, ValidatedCfg,
+    CfgRemapError, CfgValue, MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM, Place, PlaceBase, Projection,
+    Terminator, ValidatedCfg,
 };
 pub use opt::OptLevel;
 #[doc(hidden)]

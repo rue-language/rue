@@ -6,11 +6,31 @@ use std::sync::Arc;
 
 use rue_error::{CompileError, ErrorKind};
 use rue_rir::RirPrinter;
-use rue_rir::{AstGen, InstRef, Rir, RirEditor, RirValidationContext, ValidatedRir};
+use rue_rir::{
+    AstGen, InstRef, Rir, RirEditor, RirPayloadBuildError, RirValidationContext, ValidatedRir,
+};
 use rue_span::FileId;
 
 use crate::retained_charge::RetainedCharge;
 use crate::{CanonicalMergedProgram, SemanticSymbolUniverse, SourceRevision};
+
+/// Classify a RIR construction failure for the user.
+///
+/// Spec C.1:2 makes exceeding a published implementation limit a diagnosable
+/// compile-time failure, not an internal compiler error: a program that is too
+/// large for the `u32` instruction array or the `u32`-indexed payload word
+/// store (Appendix C.6:1) is rejected with `E1401` naming the limit it hit.
+/// Only a genuine producer bug (a malformed builder request) stays an ICE, and
+/// a failed reservation for a representable request is `E1402`.
+pub(crate) fn rir_build_error_kind(context: &str, error: &RirPayloadBuildError) -> ErrorKind {
+    if error.is_resource_limit() {
+        ErrorKind::CompilerResourceLimit(error.to_string())
+    } else if error.is_resource_exhaustion() {
+        ErrorKind::CompilerResourceExhaustion(error.to_string())
+    } else {
+        ErrorKind::InternalError(format!("{context}: {error}"))
+    }
+}
 
 /// Structural work performed by canonical RIR lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -289,9 +309,7 @@ fn lower_module_rir_with_work_internal(
         generator.try_finish_editor().map_err(|error| {
             (
                 CompileError::new(
-                    ErrorKind::InternalError(format!(
-                        "RIR module payload construction failed: {error}"
-                    )),
+                    rir_build_error_kind("RIR module payload construction failed", &error),
                     rue_span::Span::new(0, 0),
                 ),
                 work,
@@ -382,7 +400,7 @@ pub(crate) fn project_module_rirs_with_work(
             .map_err(|error| {
                 (
                     CompileError::new(
-                        ErrorKind::InternalError(format!("RIR module projection failed: {error}")),
+                        rir_build_error_kind("RIR module projection failed", &error),
                         rue_span::Span::new(0, 0),
                     ),
                     work,
@@ -445,6 +463,45 @@ mod tests {
     use super::*;
     use crate::parsed_modules::{ParsedProgram, parse_source_snapshot_modules};
     use crate::{SourceMetadata, SourceSnapshot};
+
+    #[test]
+    fn rir_capacity_rejections_are_resource_limits_not_internal_errors() {
+        // Spec C.1:2 / RUE-1221: a program too large for the u32 instruction
+        // array or the u32-indexed payload word store is a diagnosable
+        // compile-time failure (E1401) naming the limit, not an ICE.
+        let limit = rir_build_error_kind(
+            "ctx",
+            &RirPayloadBuildError::ResourceLimitExceeded {
+                family: "payload words",
+            },
+        );
+        assert_eq!(limit.code(), rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT);
+        assert!(limit.to_string().contains("payload words"));
+        assert!(limit.to_string().contains("4294967295"));
+        assert!(!limit.to_string().contains("internal compiler"));
+
+        assert_eq!(
+            rir_build_error_kind(
+                "ctx",
+                &RirPayloadBuildError::CapacityFailure {
+                    family: "call args"
+                },
+            )
+            .code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_EXHAUSTION
+        );
+        assert_eq!(
+            rir_build_error_kind(
+                "ctx",
+                &RirPayloadBuildError::InvalidBuilderInput {
+                    family: "call args",
+                    reason: "bad request",
+                },
+            )
+            .code(),
+            rue_error::ErrorCode::INTERNAL_ERROR
+        );
+    }
 
     fn assert_send_sync<T: Send + Sync>() {}
 

@@ -770,7 +770,33 @@ fn materialize_and_build_cfg(
         context.query_registered(type_facts, dependency.clone())?;
         context.query_registered(drop_glues, dependency)?;
     }
+    if materialized.type_pool.capacity_exceeded() {
+        return Ok(composite_type_limit_failure(materialized.body_span));
+    }
     build_cfg(context, call_abis, key, materialized, domains)
+}
+
+/// The published composite-type ceiling was reached while this body's type
+/// universe was being built (spec Appendix C.6:1).
+///
+/// Composite interning is infallible at hundreds of sites, so the pool latches
+/// the rejection and stops growing; this is the query boundary that turns the
+/// latch into the `E1401` diagnostic spec C.1:2 requires, instead of letting a
+/// wrapped 24-bit index alias two distinct types.
+fn composite_type_limit_failure(body_span: Span) -> CfgValue {
+    CfgValue::Failure {
+        errors: crate::CompileError::new(
+            rue_error::ErrorKind::CompilerResourceLimit(format!(
+                "this compilation defines more distinct composite types (structs, enums, arrays, \
+                 pointers, modules) than the implementation limit of {} — a live type handle is a \
+                 u32 holding an 8-bit kind tag and a 24-bit type-pool index (spec Appendix C.6:1)",
+                rue_air::MAX_COMPOSITE_TYPES
+            )),
+            body_span,
+        )
+        .into(),
+        body_span,
+    }
 }
 
 fn build_cfg(
@@ -971,9 +997,7 @@ pub(crate) fn evaluate_optimized_cfg(
             context.record_work(rue_query::WorkItem::new("cfg.optimize.failures", 1));
             Ok(QueryOutput::success(CfgValue::Failure {
                 errors: crate::CompileErrors::from(crate::CompileError::without_span(
-                    rue_error::ErrorKind::InternalError(format!(
-                        "CFG optimization failed: {error}"
-                    )),
+                    error.error_kind("CFG optimization failed"),
                 )),
                 body_span: record.body_span,
             })
