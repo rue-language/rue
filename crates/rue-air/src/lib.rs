@@ -61,8 +61,8 @@ pub use inst::{
     ValidatedAir,
 };
 pub use intern_pool::{
-    EnumData, FrozenTypeInternPool, StructData, TypeData, TypeInternPool, TypeInternPoolStats,
-    TypeValidationError,
+    EnumData, EnumDefEntry, FrozenTypeInternPool, StructData, StructDefEntry, TypeData,
+    TypeInternPool, TypeInternPoolStats, TypeValidationError,
 };
 pub use layout::{Layout, LayoutKind, PaddingRange, SLOT_BYTES};
 pub use module_registry::ModuleRegistry;

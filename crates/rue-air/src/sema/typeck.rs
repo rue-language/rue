@@ -9,6 +9,7 @@
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use std::collections::HashMap;
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind, PreviewFeature};
@@ -2020,7 +2021,7 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                 (!def.is_builtin && !self.anonymous_struct_ids.contains(&id))
                     .then_some((
                         def.file_id,
-                        def.name,
+                        def.name.to_string(),
                         super::DeclarationTypeDependencyTargetKind::Struct,
                     ))
                     .into_iter()
@@ -2033,7 +2034,7 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
                     .expect("resolved declaration type names a registered enum identity");
                 vec![(
                     def.file_id,
-                    def.name,
+                    def.name.to_string(),
                     super::DeclarationTypeDependencyTargetKind::Enum,
                 )]
             }
@@ -2233,18 +2234,18 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             TypeKind::Never => "!".to_string(),
             TypeKind::Error => "<error>".to_string(),
             // Nominal strings and generated string views are ordinary structs.
-            TypeKind::Struct(struct_id) => {
-                self.type_pool
-                    .struct_metadata(struct_id)
-                    .expect("struct type must have declaration metadata")
-                    .name
-            }
-            TypeKind::Enum(enum_id) => {
-                self.type_pool
-                    .enum_metadata(enum_id)
-                    .expect("enum type must have declaration metadata")
-                    .name
-            }
+            TypeKind::Struct(struct_id) => self
+                .type_pool
+                .struct_metadata(struct_id)
+                .expect("struct type must have declaration metadata")
+                .name
+                .to_string(),
+            TypeKind::Enum(enum_id) => self
+                .type_pool
+                .enum_metadata(enum_id)
+                .expect("enum type must have declaration metadata")
+                .name
+                .to_string(),
             TypeKind::Array(array_id) => {
                 let (element_type, length) = self.type_pool.array_def(array_id);
                 format!("[{}; {}]", self.format_type_name(element_type), length)
@@ -2373,7 +2374,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let ptr_ty = Type::new_ptr_const(ptr_type_id);
 
         let struct_def = StructDef {
-            name: type_name.to_string(),
+            name: Arc::from(type_name),
             fields: vec![
                 StructField {
                     name: "ptr".to_string(),
@@ -2512,7 +2513,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         let ptr_ty = Type::new_ptr_const(ptr_type_id);
 
         let struct_def = StructDef {
-            name,
+            name: Arc::from(name.as_str()),
             fields: vec![
                 StructField {
                     name: "ptr".to_string(),
@@ -2544,7 +2545,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// keeping `str` first-class (exempt from the slice second-class rule).
     pub(crate) fn is_str_struct(&self, ty: Type) -> bool {
         if let TypeKind::Struct(struct_id) = ty.kind() {
-            self.body_type_pool().struct_def(struct_id).name == "str"
+            &*self.body_type_pool().struct_def(struct_id).name == "str"
         } else {
             false
         }
@@ -2599,7 +2600,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             // + UTF-8 and shares the `{ptr, len}` shape, so `.len()` and byte
             // indexing route through the same slice/str path as `str`.
             let is_str_fixed = def.name.starts_with("Str(") && def.name.ends_with(')');
-            if is_slice || def.name == "str" || is_str_fixed {
+            if is_slice || &*def.name == "str" || is_str_fixed {
                 // Field 0 is `ptr const T`; recover T from its pointee.
                 if let TypeKind::PtrConst(ptr_id) = def.fields[0].ty.kind() {
                     return Some(self.type_pool.ptr_const_def(ptr_id));
@@ -2736,7 +2737,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                 if !def.is_builtin && !self.anonymous_struct_ids.contains(&id) {
                     self.record_resolved_declaration_type_target(
                         def.file_id,
-                        def.name,
+                        def.name.to_string(),
                         super::DeclarationTypeDependencyTargetKind::Struct,
                     );
                 }
@@ -2748,7 +2749,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
                     .expect("resolved declaration type names a registered enum identity");
                 self.record_resolved_declaration_type_target(
                     def.file_id,
-                    def.name,
+                    def.name.to_string(),
                     super::DeclarationTypeDependencyTargetKind::Enum,
                 );
             }

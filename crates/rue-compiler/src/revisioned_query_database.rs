@@ -22700,8 +22700,8 @@ pub(crate) mod test_support {
             TypeKind::Unit => "()".into(),
             TypeKind::Never => "!".into(),
             TypeKind::ComptimeType => "type".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name.clone(),
-            TypeKind::Enum(id) => pool.enum_def(id).name.clone(),
+            TypeKind::Struct(id) => pool.struct_def(id).name.to_string(),
+            TypeKind::Enum(id) => pool.enum_def(id).name.to_string(),
             TypeKind::Array(id) => {
                 let (element, len) = pool.array_def(id);
                 format!("[{}; {}]", endpoint_display(pool, element), len)
@@ -22746,7 +22746,7 @@ pub(crate) mod test_support {
             TypeKind::Struct(id) => {
                 let def = pool.struct_def(id);
                 EndpointNominalRender {
-                    display: def.name.clone(),
+                    display: def.name.to_string(),
                     is_copy: def.is_copy,
                     is_pub: def.is_pub,
                     symbol: pool.struct_symbol_name(id),
@@ -22760,14 +22760,14 @@ pub(crate) mod test_support {
             TypeKind::Enum(id) => {
                 let def = pool.enum_def(id);
                 EndpointNominalRender {
-                    display: def.name.clone(),
+                    display: def.name.to_string(),
                     is_copy: endpoint_is_copy(pool, ty),
                     is_pub: def.is_pub,
                     symbol: pool.enum_symbol_name(id),
                     members: def
                         .variants
                         .iter()
-                        .map(|variant| (variant.clone(), String::new()))
+                        .map(|variant| (variant.to_string(), String::new()))
                         .collect(),
                 }
             }
@@ -29354,7 +29354,7 @@ fn main() -> i32 {
                 interner.get_or_intern("Choice"),
                 EnumDef {
                     name: "Choice".into(),
-                    variants: vec!["Small".into(), "Wide".into()],
+                    variants: Arc::from(["Small".into(), "Wide".into()]),
                     variant_payloads: vec![
                         vec![Type::U8, Type::U64],
                         vec![Type::U32, Type::U16, Type::U64],
@@ -31308,8 +31308,8 @@ fn main() -> i32 {
             TypeKind::Bool => "bool".into(),
             TypeKind::Unit => "()".into(),
             TypeKind::Never => "!".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name.clone(),
-            TypeKind::Enum(id) => pool.enum_def(id).name.clone(),
+            TypeKind::Struct(id) => pool.struct_def(id).name.to_string(),
+            TypeKind::Enum(id) => pool.enum_def(id).name.to_string(),
             other => format!("{other:?}"),
         }
     }

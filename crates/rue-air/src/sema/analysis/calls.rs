@@ -999,7 +999,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         // Look up the struct name by its ID (for error messages)
         let struct_def = self.body_type_pool().struct_def(struct_id);
-        let struct_name_str = struct_def.name.clone();
+        let struct_name_str = struct_def.name.to_string();
 
         // Look up the method using StructId directly
         let method_key = (struct_id, method);

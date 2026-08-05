@@ -189,7 +189,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             None => {
                 return Err(CompileError::new(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.clone(),
+                        struct_name: struct_def.name.to_string(),
                         field_name: field_name_str.to_string(),
                     },
                     span,

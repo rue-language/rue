@@ -27,6 +27,7 @@
 //! - Write lock for insertions (rare, during declaration gathering)
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use lasso::Spur;
@@ -36,8 +37,8 @@ use crate::layout::{Layout, LayoutKind, PaddingRange};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::type_encoding;
 use crate::types::{
-    ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructId,
-    Type, TypeKind,
+    ArrayTypeId, EnumDef, EnumId, LangItem, PtrConstTypeId, PtrMutTypeId, StructDef, StructField,
+    StructId, Type, TypeKind,
 };
 
 /// Type data stored in the intern pool.
@@ -221,6 +222,164 @@ impl ValidationMode {
     }
 }
 
+/// Declaration-order lookup for a nominal's member names.
+///
+/// A struct's fields and an enum's variants are fixed when the definition is
+/// installed, so the position of every member name is known once and never
+/// changes. Building it there replaces the per-lookup walk of `String`
+/// comparisons the bare definitions used with one hash and a binary search
+/// (RUE-1219).
+///
+/// The index stores `(name hash, declaration position)` sorted by hash rather
+/// than owning the names: one allocation per nominal instead of one per member,
+/// which matters because installation is the common case and lookup is the rare
+/// one for small nominals. A probe therefore *proposes* positions and the caller
+/// confirms each against the real member name, so a hash collision costs an
+/// extra comparison and never a wrong answer.
+///
+/// A duplicate name resolves to the *first* declaration position, matching the
+/// linear scan this replaces: duplicates are a declaration error reported
+/// elsewhere, and until then both resolve the way they always did.
+#[derive(Clone, Default)]
+struct MemberNameIndex {
+    /// `(hash, position)` sorted by hash, then by position so equal-hash runs
+    /// stay in declaration order.
+    entries: Box<[(u64, u32)]>,
+}
+
+impl MemberNameIndex {
+    /// FNV-1a. Chosen for being short enough to inline over the two-to-ten
+    /// byte member names that dominate, and fixed rather than randomly seeded
+    /// so a pool built twice from the same declarations probes identically.
+    fn hash(name: &str) -> u64 {
+        let mut hash = 0xcbf2_9ce4_8422_2325u64;
+        for byte in name.as_bytes() {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        hash
+    }
+
+    fn build<'a>(names: impl ExactSizeIterator<Item = &'a str>) -> Self {
+        let mut entries: Vec<(u64, u32)> = names
+            .enumerate()
+            .map(|(position, name)| (Self::hash(name), position as u32))
+            .collect();
+        entries.sort_unstable();
+        Self {
+            entries: entries.into_boxed_slice(),
+        }
+    }
+
+    /// The declaration positions whose member name hashes to `name`'s hash, in
+    /// declaration order. Callers confirm the name itself.
+    fn candidates(&self, name: &str) -> impl Iterator<Item = usize> + '_ {
+        let hash = Self::hash(name);
+        let start = self.entries.partition_point(|(entry, _)| *entry < hash);
+        self.entries[start..]
+            .iter()
+            .take_while(move |(entry, _)| *entry == hash)
+            .map(|(_, position)| *position as usize)
+    }
+}
+
+/// A struct definition as the pool stores it: the definition plus the field
+/// lookup built from it.
+///
+/// The index travels with the definition rather than living beside it in the
+/// pool entry, so a reader that already holds the shared definition resolves a
+/// field name without reacquiring the pool lock, and the frozen pool's
+/// borrow-returning reads get the same lookup (RUE-1219).
+///
+/// Only destructor assignment, destructor requalification, and the linearity
+/// marker mutate an installed definition, and none of them touch `fields`;
+/// [`StructDefEntry::metadata_mut`] is the narrow door they go through, so the
+/// index cannot drift from the fields it indexes.
+#[derive(Clone)]
+pub struct StructDefEntry {
+    def: StructDef,
+    field_index: MemberNameIndex,
+}
+
+impl StructDefEntry {
+    pub(crate) fn new(def: StructDef) -> Self {
+        let field_index =
+            MemberNameIndex::build(def.fields.iter().map(|field| field.name.as_str()));
+        Self { def, field_index }
+    }
+
+    /// Find a field by name and return its declaration index and definition.
+    pub fn find_field(&self, name: &str) -> Option<(usize, &StructField)> {
+        self.field_index
+            .candidates(name)
+            .map(|index| (index, &self.def.fields[index]))
+            .find(|(_, field)| field.name == name)
+    }
+
+    /// Mutable access to the declaration metadata of an installed definition.
+    ///
+    /// Callers may update drop and linearity metadata only. Replacing `fields`
+    /// would invalidate the field index built at installation.
+    fn metadata_mut(&mut self) -> &mut StructDef {
+        &mut self.def
+    }
+}
+
+impl Deref for StructDefEntry {
+    type Target = StructDef;
+
+    fn deref(&self) -> &StructDef {
+        &self.def
+    }
+}
+
+/// The lookup index is derived from `fields` and carries no information the
+/// definition does not already state, so it stays out of the rendering that
+/// durable-output comparisons hash and diff.
+impl std::fmt::Debug for StructDefEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.def.fmt(f)
+    }
+}
+
+/// An enum definition as the pool stores it: the definition plus the variant
+/// lookup built from it. See [`StructDefEntry`].
+#[derive(Clone)]
+pub struct EnumDefEntry {
+    def: EnumDef,
+    variant_index: MemberNameIndex,
+}
+
+impl EnumDefEntry {
+    pub(crate) fn new(def: EnumDef) -> Self {
+        let variant_index =
+            MemberNameIndex::build(def.variants.iter().map(|variant| variant.as_ref()));
+        Self { def, variant_index }
+    }
+
+    /// Find a variant by name and return its declaration index.
+    pub fn find_variant(&self, name: &str) -> Option<usize> {
+        self.variant_index
+            .candidates(name)
+            .find(|&index| &*self.def.variants[index] == name)
+    }
+}
+
+impl Deref for EnumDefEntry {
+    type Target = EnumDef;
+
+    fn deref(&self) -> &EnumDef {
+        &self.def
+    }
+}
+
+/// See [`StructDefEntry`]'s `Debug`: the variant index is derived state.
+impl std::fmt::Debug for EnumDefEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.def.fmt(f)
+    }
+}
+
 /// Data for a struct type in the intern pool.
 ///
 /// The pool entry for a nominal struct and its definition.
@@ -237,7 +396,7 @@ pub struct StructData {
     /// The name symbol (interned string).
     pub name: Spur,
     /// The canonical struct definition stored at this pool index.
-    pub def: Arc<StructDef>,
+    pub def: Arc<StructDefEntry>,
 }
 
 /// Data for an enum type in the intern pool.
@@ -249,19 +408,24 @@ pub struct EnumData {
     /// The name symbol (interned string).
     pub name: Spur,
     /// The canonical enum definition stored at this pool index.
-    pub def: Arc<EnumDef>,
+    pub def: Arc<EnumDefEntry>,
 }
 
 /// Declaration-only struct metadata available before field resolution.
 ///
 /// Fields are deliberately absent so declaration consumers cannot mistake a
 /// nominal shell for a complete definition.
+///
+/// The names are shared handles, not copies: the pool cannot lend a borrow
+/// across its `RwLock`, and most readers want only `file_id`, `is_pub`, or a
+/// drop fact, so a read is a pair of refcount bumps rather than two string
+/// allocations (RUE-1219).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct StructDeclarationMetadata {
-    pub name: String,
+    pub name: Arc<str>,
     pub is_copy: bool,
     pub is_linear: bool,
-    pub destructor: Option<String>,
+    pub destructor: Option<Arc<str>>,
     pub is_builtin: bool,
     pub is_pub: bool,
     pub file_id: FileId,
@@ -270,11 +434,12 @@ pub(crate) struct StructDeclarationMetadata {
 /// Declaration-only enum metadata available before payload resolution.
 ///
 /// Variant names are declaration metadata; payloads are intentionally absent
-/// until the enum reaches the complete state.
+/// until the enum reaches the complete state. Names are shared for the same
+/// reason as [`StructDeclarationMetadata`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnumDeclarationMetadata {
-    pub name: String,
-    pub variants: Vec<String>,
+    pub name: Arc<str>,
+    pub variants: Arc<[Arc<str>]>,
     pub is_pub: bool,
     pub file_id: FileId,
 }
@@ -778,8 +943,8 @@ impl TypeInternPoolInner {
             .copied()
             .chain(std::iter::once(repeated))
             .filter_map(|index| match self.entry(index) {
-                TypeData::Struct(data) => Some(data.def.name.clone()),
-                TypeData::Enum(data) => Some(data.def.name.clone()),
+                TypeData::Struct(data) => Some(data.def.name.to_string()),
+                TypeData::Enum(data) => Some(data.def.name.to_string()),
                 TypeData::Array { .. }
                 | TypeData::PtrConst { .. }
                 | TypeData::PtrMut { .. }
@@ -916,7 +1081,7 @@ impl TypeInternPoolInner {
                 && value.carries_linear
                 && let TypeData::Struct(data) = self.entry_mut(index)
             {
-                Arc::make_mut(&mut data.def).is_linear = true;
+                Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
             }
         }
         for (index, value) in facts.into_iter().enumerate() {
@@ -1000,7 +1165,7 @@ impl TypeInternPoolInner {
         self.entry(index as usize)
     }
 
-    fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
+    fn try_struct_def(&self, id: StructId) -> Option<&StructDefEntry> {
         self.try_struct_def_arc(id).map(Arc::as_ref)
     }
 
@@ -1009,7 +1174,7 @@ impl TypeInternPoolInner {
     /// Callers that cannot hold a borrow — the mutable pool's accessors, which
     /// would otherwise leak `RwLock` scope — clone this handle instead of the
     /// definition it points at.
-    fn try_struct_def_arc(&self, id: StructId) -> Option<&Arc<StructDef>> {
+    fn try_struct_def_arc(&self, id: StructId) -> Option<&Arc<StructDefEntry>> {
         match self.try_entry(id.0 as usize)? {
             TypeData::Struct(data) => Some(&data.def),
             _ => None,
@@ -1051,7 +1216,7 @@ impl TypeInternPoolInner {
         }
     }
 
-    fn struct_def(&self, id: StructId) -> &StructDef {
+    fn struct_def(&self, id: StructId) -> &StructDefEntry {
         self.try_struct_def(id)
             .unwrap_or_else(|| panic!("Expected struct at pool index {}", id.0))
     }
@@ -1059,7 +1224,7 @@ impl TypeInternPoolInner {
     fn struct_def_mut(&mut self, id: StructId) -> &mut StructDef {
         let pool_index = id.pool_index() as usize;
         match self.try_entry_mut(pool_index) {
-            Some(TypeData::Struct(data)) => Arc::make_mut(&mut data.def),
+            Some(TypeData::Struct(data)) => Arc::make_mut(&mut data.def).metadata_mut(),
             other => panic!(
                 "Expected complete struct at pool index {}, got {:?}",
                 pool_index, other
@@ -1067,13 +1232,13 @@ impl TypeInternPoolInner {
         }
     }
 
-    fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
+    fn try_enum_def(&self, id: EnumId) -> Option<&EnumDefEntry> {
         self.try_enum_def_arc(id).map(Arc::as_ref)
     }
 
     /// The shared handle behind a completed enum definition. See
     /// [`TypeInternPoolInner::try_struct_def_arc`].
-    fn try_enum_def_arc(&self, id: EnumId) -> Option<&Arc<EnumDef>> {
+    fn try_enum_def_arc(&self, id: EnumId) -> Option<&Arc<EnumDefEntry>> {
         match self.try_entry(id.0 as usize)? {
             TypeData::Enum(data) => Some(&data.def),
             _ => None,
@@ -1104,7 +1269,7 @@ impl TypeInternPoolInner {
         }
     }
 
-    fn enum_def(&self, id: EnumId) -> &EnumDef {
+    fn enum_def(&self, id: EnumId) -> &EnumDefEntry {
         self.try_enum_def(id)
             .unwrap_or_else(|| panic!("Expected enum at pool index {}", id.0))
     }
@@ -1710,7 +1875,7 @@ impl TypeInternPoolInner {
             || self.struct_lang_items.contains_key(&id)
             || data.def.name.starts_with("__anon_struct_")
         {
-            return data.def.name.clone();
+            return data.def.name.to_string();
         }
         format!(
             "{}${}",
@@ -1730,7 +1895,7 @@ impl TypeInternPoolInner {
         if rue_builtins::is_reserved_enum_name(&data.def.name)
             || data.def.name.starts_with("__anon_enum_")
         {
-            return data.def.name.clone();
+            return data.def.name.to_string();
         }
         format!(
             "{}${}",
@@ -1743,11 +1908,11 @@ impl TypeInternPoolInner {
         match ty.try_kind() {
             Some(TypeKind::Struct(id)) => self
                 .struct_metadata(id)
-                .map(|metadata| metadata.name)
+                .map(|metadata| metadata.name.to_string())
                 .unwrap_or_else(|| format!("<struct#{}>", id.0)),
             Some(TypeKind::Enum(id)) => self
                 .enum_metadata(id)
-                .map(|metadata| metadata.name)
+                .map(|metadata| metadata.name.to_string())
                 .unwrap_or_else(|| format!("<enum#{}>", id.0)),
             Some(TypeKind::Array(id)) => self
                 .try_array_def(id)
@@ -1994,14 +2159,14 @@ impl TypeInternPool {
 
         let mut entry = TypeData::Struct(StructData {
             name,
-            def: Arc::new(def),
+            def: Arc::new(StructDefEntry::new(def)),
         });
         let facts = inner.incremental_facts(&entry);
         if facts.is_some_and(|facts| facts.carries_linear) {
             let TypeData::Struct(data) = &mut entry else {
                 unreachable!()
             };
-            Arc::make_mut(&mut data.def).is_linear = true;
+            Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
         }
         inner.push_entry(entry, facts);
         inner.struct_by_file_name.insert(key, ty);
@@ -2036,7 +2201,7 @@ impl TypeInternPool {
         inner.push_entry(
             TypeData::DeclaredStruct(StructData {
                 name,
-                def: Arc::new(shell),
+                def: Arc::new(StructDefEntry::new(shell)),
             }),
             None,
         );
@@ -2118,14 +2283,14 @@ impl TypeInternPool {
         let key = (def.file_id, name);
         let mut entry = TypeData::Struct(StructData {
             name,
-            def: Arc::new(def),
+            def: Arc::new(StructDefEntry::new(def)),
         });
         let facts = inner.incremental_facts(&entry);
         if facts.is_some_and(|facts| facts.carries_linear) {
             let TypeData::Struct(data) = &mut entry else {
                 unreachable!()
             };
-            Arc::make_mut(&mut data.def).is_linear = true;
+            Arc::make_mut(&mut data.def).metadata_mut().is_linear = true;
         }
         *inner.entry_mut(pool_index) = entry;
         inner.set_facts(pool_index, facts);
@@ -2150,13 +2315,13 @@ impl TypeInternPool {
                     "completed struct changed defining file"
                 );
                 assert_eq!(
-                    data.def.name.as_str(),
-                    def.name.as_str(),
+                    data.def.name.as_ref(),
+                    def.name.as_ref(),
                     "completed struct changed textual name"
                 );
                 *entry = TypeData::Struct(StructData {
                     name: data.name,
-                    def: Arc::new(def),
+                    def: Arc::new(StructDefEntry::new(def)),
                 });
             }
             other => panic!(
@@ -2205,7 +2370,7 @@ impl TypeInternPool {
 
         let entry = TypeData::Enum(EnumData {
             name,
-            def: Arc::new(def),
+            def: Arc::new(EnumDefEntry::new(def)),
         });
         let facts = inner.incremental_facts(&entry);
         inner.push_entry(entry, facts);
@@ -2241,7 +2406,7 @@ impl TypeInternPool {
         inner.push_entry(
             TypeData::DeclaredEnum(EnumData {
                 name,
-                def: Arc::new(shell),
+                def: Arc::new(EnumDefEntry::new(shell)),
             }),
             None,
         );
@@ -2263,13 +2428,13 @@ impl TypeInternPool {
                     "completed enum changed defining file"
                 );
                 assert_eq!(
-                    data.def.name.as_str(),
-                    def.name.as_str(),
+                    data.def.name.as_ref(),
+                    def.name.as_ref(),
                     "completed enum changed textual name"
                 );
                 *entry = TypeData::Enum(EnumData {
                     name: data.name,
-                    def: Arc::new(def),
+                    def: Arc::new(EnumDefEntry::new(def)),
                 });
             }
             other => panic!(
@@ -2455,7 +2620,7 @@ impl TypeInternPool {
     }
 
     /// Get the struct definition if this is a struct type.
-    pub fn get_struct_def(&self, ty: Type) -> Option<Arc<StructDef>> {
+    pub fn get_struct_def(&self, ty: Type) -> Option<Arc<StructDefEntry>> {
         match self.get(ty)? {
             TypeData::Struct(data) => Some(data.def),
             _ => None,
@@ -2463,7 +2628,7 @@ impl TypeInternPool {
     }
 
     /// Get the enum definition if this is an enum type.
-    pub fn get_enum_def(&self, ty: Type) -> Option<Arc<EnumDef>> {
+    pub fn get_enum_def(&self, ty: Type) -> Option<Arc<EnumDefEntry>> {
         match self.get(ty)? {
             TypeData::Enum(data) => Some(data.def),
             _ => None,
@@ -2497,7 +2662,7 @@ impl TypeInternPool {
     ///
     /// Panics if the StructId doesn't correspond to a struct in the pool.
     #[track_caller]
-    pub fn struct_def(&self, struct_id: StructId) -> Arc<StructDef> {
+    pub fn struct_def(&self, struct_id: StructId) -> Arc<StructDefEntry> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         match inner.try_struct_def_arc(struct_id) {
             Some(def) => Arc::clone(def),
@@ -2506,7 +2671,7 @@ impl TypeInternPool {
     }
 
     /// Get a struct definition without panicking on an invalid or wrong-kind ID.
-    pub fn try_struct_def(&self, struct_id: StructId) -> Option<Arc<StructDef>> {
+    pub fn try_struct_def(&self, struct_id: StructId) -> Option<Arc<StructDefEntry>> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.try_struct_def_arc(struct_id).map(Arc::clone)
     }
@@ -2628,7 +2793,7 @@ impl TypeInternPool {
     ///
     /// Panics if the EnumId doesn't correspond to an enum in the pool.
     #[track_caller]
-    pub fn enum_def(&self, enum_id: EnumId) -> Arc<EnumDef> {
+    pub fn enum_def(&self, enum_id: EnumId) -> Arc<EnumDefEntry> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         match inner.try_enum_def_arc(enum_id) {
             Some(def) => Arc::clone(def),
@@ -2637,14 +2802,14 @@ impl TypeInternPool {
     }
 
     /// Get an enum definition without panicking on an invalid or wrong-kind ID.
-    pub fn try_enum_def(&self, enum_id: EnumId) -> Option<Arc<EnumDef>> {
+    pub fn try_enum_def(&self, enum_id: EnumId) -> Option<Arc<EnumDefEntry>> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         inner.try_enum_def_arc(enum_id).map(Arc::clone)
     }
 
     pub(crate) fn enum_variant_count(&self, enum_id: EnumId) -> Option<usize> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
-        inner.try_enum_def(enum_id).map(EnumDef::variant_count)
+        inner.try_enum_def(enum_id).map(|def| def.variant_count())
     }
 
     pub(crate) fn enum_variant_payload_len(
@@ -2733,7 +2898,7 @@ impl TypeInternPool {
             def.destructor.is_none(),
             "struct destructor metadata can only be assigned once"
         );
-        def.destructor = Some(symbol);
+        def.destructor = Some(Arc::from(symbol));
         inner.invalidate_containment_metadata();
     }
 
@@ -2754,10 +2919,11 @@ impl TypeInternPool {
             .as_mut()
             .expect("destructor requalification requires assigned metadata");
         assert_ne!(
-            destructor, &symbol,
+            destructor.as_ref(),
+            symbol.as_str(),
             "destructor requalification requires a different symbol"
         );
-        *destructor = symbol;
+        *destructor = Arc::from(symbol);
     }
 
     /// Finalize the canonical by-value graph after declaration fields,
@@ -3154,20 +3320,20 @@ impl FrozenTypeInternPool {
     }
 
     /// Borrow a completed nominal struct definition without locking or cloning.
-    pub fn struct_def(&self, id: StructId) -> &StructDef {
+    pub fn struct_def(&self, id: StructId) -> &StructDefEntry {
         self.inner.struct_def(id)
     }
 
-    pub fn try_struct_def(&self, id: StructId) -> Option<&StructDef> {
+    pub fn try_struct_def(&self, id: StructId) -> Option<&StructDefEntry> {
         self.inner.try_struct_def(id)
     }
 
     /// Borrow a completed nominal enum definition without locking or cloning.
-    pub fn enum_def(&self, id: EnumId) -> &EnumDef {
+    pub fn enum_def(&self, id: EnumId) -> &EnumDefEntry {
         self.inner.enum_def(id)
     }
 
-    pub fn try_enum_def(&self, id: EnumId) -> Option<&EnumDef> {
+    pub fn try_enum_def(&self, id: EnumId) -> Option<&EnumDefEntry> {
         self.inner.try_enum_def(id)
     }
 
@@ -3455,7 +3621,7 @@ mod tests {
     fn enum_def(name: &str) -> EnumDef {
         EnumDef {
             name: name.into(),
-            variants: vec![],
+            variants: Arc::from([]),
             variant_payloads: vec![],
             is_pub: false,
             file_id: FileId::DEFAULT,
@@ -3485,7 +3651,7 @@ mod tests {
         assert!(pool.is_struct(interned));
         assert!(pool.get_struct_def(interned).is_none());
         assert!(pool.try_struct_def(id).is_none());
-        assert_eq!(pool.struct_declaration_metadata(id).unwrap().name, "Node");
+        assert_eq!(&*pool.struct_declaration_metadata(id).unwrap().name, "Node");
         assert_eq!(
             pool.validate_complete_type(interned),
             Err(TypeValidationError::IncompleteDefinition)
@@ -3722,7 +3888,7 @@ mod tests {
         let def = pool.struct_def(owner);
         assert!(def.is_linear);
         assert_eq!(def.destructor.as_deref(), Some("Owner$left.__drop"));
-        assert_eq!(def.name, "Owner");
+        assert_eq!(&*def.name, "Owner");
         assert_eq!(def.fields.len(), 1);
         assert_eq!(def.fields[0].ty, Type::I64);
     }
@@ -3750,7 +3916,7 @@ mod tests {
             let mut def = struct_def(&name, fields);
             if index + 1 == COUNT {
                 def.is_linear = true;
-                def.destructor = Some(format!("{name}.__drop"));
+                def.destructor = Some(format!("{name}.__drop").into());
             }
             pool.complete_struct_registration(id, declarations.get_or_intern(&name), def);
         }
@@ -3855,7 +4021,7 @@ mod tests {
             );
             if index == 0 {
                 def.is_linear = true;
-                def.destructor = Some(format!("{name}.__drop"));
+                def.destructor = Some(format!("{name}.__drop").into());
             }
             let (id, inserted) = pool.register_struct(declarations.get_or_intern(&name), def);
             assert!(inserted);
@@ -3898,7 +4064,7 @@ mod tests {
         let pointer = pool.try_intern_ptr_mut(Type::new_struct(resource)).unwrap();
         let choice = EnumDef {
             name: "Choice".into(),
-            variants: vec!["Some".into(), "None".into()],
+            variants: Arc::from(["Some".into(), "None".into()]),
             variant_payloads: vec![vec![one_array], vec![pointer]],
             is_pub: false,
             file_id: FileId::DEFAULT,
@@ -4001,7 +4167,7 @@ mod tests {
         let name = interner.get_or_intern("Point");
 
         let def = StructDef {
-            name: "Point".to_string(),
+            name: "Point".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4028,7 +4194,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let make_def = |name: &str, file_id| StructDef {
-            name: name.to_string(),
+            name: name.into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4055,7 +4221,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let make_def = |name: &str, file_id| StructDef {
-            name: name.to_string(),
+            name: name.into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4084,8 +4250,8 @@ mod tests {
         let name = interner.get_or_intern("Color");
 
         let def = EnumDef {
-            name: "Color".to_string(),
-            variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            name: "Color".into(),
+            variants: Arc::from(["Red".into(), "Green".into(), "Blue".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -4139,7 +4305,7 @@ mod tests {
         );
 
         let def = StructDef {
-            name: "Point".to_string(),
+            name: "Point".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4169,8 +4335,8 @@ mod tests {
         );
 
         let def = EnumDef {
-            name: "Status".to_string(),
-            variants: vec!["Active".to_string(), "Inactive".to_string()],
+            name: "Status".into(),
+            variants: Arc::from(["Active".into(), "Inactive".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -4206,7 +4372,7 @@ mod tests {
         // Register a struct
         let struct_name = interner.get_or_intern("Point");
         let struct_def = StructDef {
-            name: "Point".to_string(),
+            name: "Point".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4241,7 +4407,7 @@ mod tests {
 
         let struct_name = interner.get_or_intern("Point");
         let struct_def = StructDef {
-            name: "Point".to_string(),
+            name: "Point".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4255,8 +4421,8 @@ mod tests {
 
         let enum_name = interner.get_or_intern("Color");
         let enum_def = EnumDef {
-            name: "Color".to_string(),
-            variants: vec!["Red".to_string()],
+            name: "Color".into(),
+            variants: Arc::from(["Red".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -4292,7 +4458,7 @@ mod tests {
 
         let name = interner.get_or_intern("Point");
         let def = StructDef {
-            name: "Point".to_string(),
+            name: "Point".into(),
             fields: vec![],
             is_copy: true,
             is_linear: false,
@@ -4328,8 +4494,8 @@ mod tests {
 
         let name = interner.get_or_intern("Status");
         let def = EnumDef {
-            name: "Status".to_string(),
-            variants: vec!["A".to_string(), "B".to_string()],
+            name: "Status".into(),
+            variants: Arc::from(["A".into(), "B".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -4367,7 +4533,7 @@ mod tests {
         let interner = ThreadedRodeo::default();
         let name = interner.get_or_intern("X");
         let def = StructDef {
-            name: "X".to_string(),
+            name: "X".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4399,7 +4565,7 @@ mod tests {
         let e1 = interner.get_or_intern("E1");
 
         let def = StructDef {
-            name: "S1".to_string(),
+            name: "S1".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4412,7 +4578,7 @@ mod tests {
         pool.register_struct(
             s2,
             StructDef {
-                name: "S2".to_string(),
+                name: "S2".into(),
                 ..def
             },
         );
@@ -4420,8 +4586,8 @@ mod tests {
         pool.register_enum(
             e1,
             EnumDef {
-                name: "E1".to_string(),
-                variants: vec![],
+                name: "E1".into(),
+                variants: Arc::from([]),
                 variant_payloads: Vec::new(),
                 is_pub: false,
                 file_id: rue_span::FileId::DEFAULT,
@@ -4486,7 +4652,7 @@ mod tests {
                         let idx = thread_id * 10 + i;
                         let name = names[idx];
                         let def = StructDef {
-                            name: format!("Type{}", idx),
+                            name: format!("Type{}", idx).into(),
                             fields: vec![],
                             is_copy: false,
                             is_linear: false,
@@ -4566,7 +4732,7 @@ mod tests {
         let name = interner.get_or_intern(&name_str);
 
         let def = StructDef {
-            name: name_str.clone(),
+            name: name_str.as_str().into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4588,7 +4754,7 @@ mod tests {
 
         // Can retrieve the struct definition
         let retrieved = pool.struct_def(struct_id);
-        assert_eq!(retrieved.name, name_str);
+        assert_eq!(retrieved.name.as_ref(), name_str);
     }
 
     /// RUE-571: a struct name registered by two files yields file-qualified
@@ -4598,7 +4764,7 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let mk = |name: &str, file: u32, is_builtin: bool| StructDef {
-            name: name.to_string(),
+            name: name.into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4642,7 +4808,7 @@ mod tests {
 
         let payload = interner.get_or_intern("Payload");
         let struct_def = |file_id| StructDef {
-            name: "Payload".to_string(),
+            name: "Payload".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -4656,8 +4822,8 @@ mod tests {
 
         let choice = interner.get_or_intern("Choice");
         let enum_def = |file_id| EnumDef {
-            name: "Choice".to_string(),
-            variants: vec!["Value".to_string()],
+            name: "Choice".into(),
+            variants: Arc::from(["Value".into()]),
             variant_payloads: vec![vec![]],
             is_pub: true,
             file_id,
@@ -4704,7 +4870,7 @@ mod tests {
             let name_str = format!("__anon_struct_{}", i);
             let name = interner.get_or_intern(&name_str);
             let def = StructDef {
-                name: name_str,
+                name: name_str.into(),
                 fields: vec![],
                 is_copy: false,
                 is_linear: false,
@@ -4948,8 +5114,8 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let def = EnumDef {
-            name: "Wide".to_string(),
-            variants: vec!["A".to_string(), "B".to_string()],
+            name: "Wide".into(),
+            variants: Arc::from(["A".into(), "B".into()]),
             variant_payloads: vec![vec![Type::U8, Type::I32], vec![]],
             is_pub: false,
             file_id: FileId::DEFAULT,
@@ -5020,8 +5186,8 @@ mod tests {
         let pool = TypeInternPool::new();
         let interner = ThreadedRodeo::default();
         let def = EnumDef {
-            name: "Shape".to_string(),
-            variants: vec!["Pair".to_string(), "One".to_string()],
+            name: "Shape".into(),
+            variants: Arc::from(["Pair".into(), "One".into()]),
             variant_payloads: vec![vec![Type::I32, Type::I64], vec![Type::I32]],
             is_pub: false,
             file_id: FileId::DEFAULT,

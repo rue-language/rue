@@ -6,6 +6,8 @@
 //! lifetimes. The system covers integer and boolean primitives, user structs
 //! and enums, references and raw pointers, and generic instantiations.
 
+use std::sync::Arc;
+
 use crate::type_encoding::{self, Composite, Decoded, Primitive};
 
 /// A unique identifier for a struct definition.
@@ -371,16 +373,20 @@ impl LangItem {
 /// Definition of a struct type.
 #[derive(Debug, Clone)]
 pub struct StructDef {
-    /// Struct name
-    pub name: String,
+    /// Struct name.
+    ///
+    /// Shared rather than owned: declaration metadata reads hand this name to
+    /// consumers by refcount instead of copying it out of the pool (RUE-1219).
+    pub name: Arc<str>,
     /// Fields in declaration order
     pub fields: Vec<StructField>,
     /// Whether this struct is marked with @copy (can be implicitly duplicated)
     pub is_copy: bool,
     /// Whether this struct is a linear type (must be consumed, cannot be dropped)
     pub is_linear: bool,
-    /// User-defined destructor function name, if any (e.g., "Data.__drop")
-    pub destructor: Option<String>,
+    /// User-defined destructor function name, if any (e.g., "Data.__drop").
+    /// Shared for the same reason as [`StructDef::name`].
+    pub destructor: Option<Arc<str>>,
     /// Whether this is a built-in type (e.g., String) injected by the compiler.
     ///
     /// Built-in types behave like regular structs but have runtime implementations
@@ -402,11 +408,6 @@ pub struct StructField {
 }
 
 impl StructDef {
-    /// Find a field by name and return its index and definition.
-    pub fn find_field(&self, name: &str) -> Option<(usize, &StructField)> {
-        self.fields.iter().enumerate().find(|(_, f)| f.name == name)
-    }
-
     /// Get the number of fields in this struct.
     pub fn field_count(&self) -> usize {
         self.fields.len()
@@ -416,10 +417,13 @@ impl StructDef {
 /// Definition of an enum type.
 #[derive(Debug, Clone)]
 pub struct EnumDef {
-    /// Enum name
-    pub name: String,
-    /// Variant names in declaration order
-    pub variants: Vec<String>,
+    /// Enum name. Shared for the same reason as [`StructDef::name`].
+    pub name: Arc<str>,
+    /// Variant names in declaration order.
+    ///
+    /// Shared as a whole so a declaration-metadata read copies neither the
+    /// sequence nor its names (RUE-1219).
+    pub variants: Arc<[Arc<str>]>,
     /// Payload field types for each variant, in declaration order (RUE-221,
     /// ADR-0038). Parallel to `variants`: `variant_payloads[i]` is the list of
     /// payload types carried by tuple variant `variants[i]`, or empty for a
@@ -437,11 +441,6 @@ impl EnumDef {
     /// Get the number of variants in this enum.
     pub fn variant_count(&self) -> usize {
         self.variants.len()
-    }
-
-    /// Find a variant by name and return its index.
-    pub fn find_variant(&self, name: &str) -> Option<usize> {
-        self.variants.iter().position(|v| v == name)
     }
 
     /// Get the payload field types carried by variant `index`.
@@ -1711,7 +1710,7 @@ mod tests {
     #[test]
     fn test_struct_def_find_field() {
         let def = StructDef {
-            name: "Point".to_string(),
+            name: "Point".into(),
             fields: vec![
                 StructField {
                     name: "x".to_string(),
@@ -1730,6 +1729,7 @@ mod tests {
             file_id: rue_span::FileId::DEFAULT,
         };
 
+        let def = crate::intern_pool::StructDefEntry::new(def);
         let (idx, field) = def.find_field("x").unwrap();
         assert_eq!(idx, 0);
         assert_eq!(field.name, "x");
@@ -1745,7 +1745,7 @@ mod tests {
     #[test]
     fn test_struct_def_field_count() {
         let empty = StructDef {
-            name: "Empty".to_string(),
+            name: "Empty".into(),
             fields: vec![],
             is_copy: false,
             is_linear: false,
@@ -1757,7 +1757,7 @@ mod tests {
         assert_eq!(empty.field_count(), 0);
 
         let with_fields = StructDef {
-            name: "Data".to_string(),
+            name: "Data".into(),
             fields: vec![
                 StructField {
                     name: "a".to_string(),
@@ -1787,8 +1787,8 @@ mod tests {
     #[test]
     fn test_enum_def_variant_count() {
         let empty = EnumDef {
-            name: "Empty".to_string(),
-            variants: vec![],
+            name: "Empty".into(),
+            variants: Arc::from([]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -1796,8 +1796,8 @@ mod tests {
         assert_eq!(empty.variant_count(), 0);
 
         let color = EnumDef {
-            name: "Color".to_string(),
-            variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            name: "Color".into(),
+            variants: Arc::from(["Red".into(), "Green".into(), "Blue".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -1808,13 +1808,14 @@ mod tests {
     #[test]
     fn test_enum_def_find_variant() {
         let color = EnumDef {
-            name: "Color".to_string(),
-            variants: vec!["Red".to_string(), "Green".to_string(), "Blue".to_string()],
+            name: "Color".into(),
+            variants: Arc::from(["Red".into(), "Green".into(), "Blue".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
         };
 
+        let color = crate::intern_pool::EnumDefEntry::new(color);
         assert_eq!(color.find_variant("Red"), Some(0));
         assert_eq!(color.find_variant("Green"), Some(1));
         assert_eq!(color.find_variant("Blue"), Some(2));
@@ -1824,8 +1825,8 @@ mod tests {
     #[test]
     fn test_enum_def_discriminant_type_empty() {
         let empty = EnumDef {
-            name: "Empty".to_string(),
-            variants: vec![],
+            name: "Empty".into(),
+            variants: Arc::from([]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -1837,8 +1838,8 @@ mod tests {
     fn test_enum_def_discriminant_type_small() {
         // 1-256 variants -> U8
         let small = EnumDef {
-            name: "Small".to_string(),
-            variants: vec!["A".to_string()],
+            name: "Small".into(),
+            variants: Arc::from(["A".into()]),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -1846,8 +1847,10 @@ mod tests {
         assert_eq!(small.discriminant_type(), Type::U8);
 
         let max_u8 = EnumDef {
-            name: "MaxU8".to_string(),
-            variants: (0..256).map(|i| format!("V{}", i)).collect(),
+            name: "MaxU8".into(),
+            variants: (0..256)
+                .map(|i| Arc::from(format!("V{}", i).as_str()))
+                .collect(),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,
@@ -1859,8 +1862,10 @@ mod tests {
     fn test_enum_def_discriminant_type_medium() {
         // 257-65536 variants -> U16
         let medium = EnumDef {
-            name: "Medium".to_string(),
-            variants: (0..257).map(|i| format!("V{}", i)).collect(),
+            name: "Medium".into(),
+            variants: (0..257)
+                .map(|i| Arc::from(format!("V{}", i).as_str()))
+                .collect(),
             variant_payloads: Vec::new(),
             is_pub: false,
             file_id: rue_span::FileId::DEFAULT,

@@ -837,8 +837,8 @@ where
             let (id, _) = type_pool.register_enum(
                 symbol,
                 EnumDef {
-                    name: builtin.name.to_owned(),
-                    variants: builtin.variants.iter().map(|v| (*v).to_owned()).collect(),
+                    name: Arc::from(builtin.name),
+                    variants: builtin.variants.iter().map(|v| Arc::from(*v)).collect(),
                     variant_payloads: Vec::new(),
                     is_pub: true,
                     file_id: FileId::DEFAULT,
@@ -858,7 +858,7 @@ where
         let (str_id, _) = type_pool.register_struct(
             str_symbol,
             StructDef {
-                name: "str".to_owned(),
+                name: Arc::from("str"),
                 fields: vec![
                     StructField {
                         name: "ptr".to_owned(),
@@ -992,7 +992,7 @@ where
     /// resolver), so the pool takes an already-reduced `u64` and never re-derives
     /// a non-literal capacity.
     pub(in crate::sema) fn get_or_create_str_fixed(&mut self, capacity: u64) -> Type {
-        let name = format!("Str({capacity})");
+        let name: Arc<str> = Arc::from(format!("Str({capacity})").as_str());
         let symbol = self.interner.get_or_intern(&name);
         let ptr_id = self.type_pool.intern_ptr_const_from_type(Type::U8);
         let (id, _) = self.type_pool.register_struct(
@@ -1106,7 +1106,7 @@ where
                 let (id, _) = self.type_pool.register_struct(
                     symbol,
                     StructDef {
-                        name: name.to_string(),
+                        name: Arc::from(name.as_ref()),
                         fields: vec![
                             StructField {
                                 name: "ptr".to_owned(),
@@ -1217,7 +1217,7 @@ where
             self.file_for_module(&module_path)
         };
         let symbol = self.interner.get_or_intern(name.as_ref());
-        let name = name.to_string();
+        let name = name.clone();
         match body {
             DurableNominalBody::Struct {
                 fields,
@@ -1280,8 +1280,8 @@ where
             DurableNominalBody::Enum { variants } => {
                 let variant_names = variants
                     .iter()
-                    .map(|(name, _)| name.to_string())
-                    .collect::<Vec<_>>();
+                    .map(|(name, _)| Arc::from(name.as_ref()))
+                    .collect::<Arc<[Arc<str>]>>();
                 let (id, _) = self.type_pool.declare_enum(
                     symbol,
                     EnumDef {
@@ -1360,7 +1360,7 @@ where
 
         let file_id = self.file_for_module(&module_path);
         let symbol = self.interner.get_or_intern(name.as_ref());
-        let name = name.to_string();
+        let name = name.clone();
 
         match body {
             DurableNominalBody::Struct {
@@ -1423,8 +1423,10 @@ where
                 Ok(Type::new_struct(id))
             }
             DurableNominalBody::Enum { variants } => {
-                let variant_names: Vec<String> =
-                    variants.iter().map(|(name, _)| name.to_string()).collect();
+                let variant_names: Arc<[Arc<str>]> = variants
+                    .iter()
+                    .map(|(name, _)| Arc::from(name.as_ref()))
+                    .collect();
                 let (id, _) = self.type_pool.declare_enum(
                     symbol,
                     EnumDef {
@@ -1860,12 +1862,12 @@ where
         fields: &[(Arc<str>, SemanticImportType<K, M>)],
         method_names: &[Arc<str>],
     ) -> Result<Type, IdentityMintError> {
-        let name = format!("__anon_struct_{digest:032x}");
+        let name: Arc<str> = Arc::from(format!("__anon_struct_{digest:032x}").as_str());
         let symbol = self.interner.get_or_intern(&name);
         let has_destructor = method_names
             .iter()
             .any(|method| method.as_ref() == ANON_DROP_METHOD);
-        let destructor = has_destructor.then(|| format!("{name}.__drop"));
+        let destructor = has_destructor.then(|| Arc::from(format!("{name}.__drop").as_str()));
 
         // Declare the shell before resolving fields so a field that points back
         // at this nominal resolves the recursive reference to the shell id — the
@@ -1924,8 +1926,10 @@ where
         digest: u128,
         variants: &[(Arc<str>, Vec<SemanticImportType<K, M>>)],
     ) -> Result<Type, IdentityMintError> {
-        let variant_names: Vec<String> =
-            variants.iter().map(|(name, _)| name.to_string()).collect();
+        let variant_names: Arc<[Arc<str>]> = variants
+            .iter()
+            .map(|(name, _)| Arc::from(name.as_ref()))
+            .collect();
         let mut variant_payloads = Vec::with_capacity(variants.len());
         for (_, payload) in variants {
             let mut resolved = Vec::with_capacity(payload.len());
@@ -1959,7 +1963,7 @@ where
         let (id, _) = self.type_pool.register_enum(
             symbol,
             EnumDef {
-                name,
+                name: Arc::from(name.as_str()),
                 variants: variant_names,
                 variant_payloads,
                 is_pub: false,
@@ -2941,7 +2945,7 @@ mod tests {
             let (id, _) = pool.register_struct(
                 widget,
                 StructDef {
-                    name: "Widget".to_owned(),
+                    name: "Widget".into(),
                     fields: Vec::new(),
                     is_copy: true,
                     is_linear: false,
@@ -2988,7 +2992,7 @@ mod tests {
             let (id, _) = pool.register_struct(
                 generated,
                 StructDef {
-                    name: "Generated".to_owned(),
+                    name: "Generated".into(),
                     fields: Vec::new(),
                     is_copy: true,
                     is_linear: false,
@@ -3022,7 +3026,7 @@ mod tests {
             let (id, _) = pool.declare_struct(
                 interner.get_or_intern("Pending"),
                 StructDef {
-                    name: "Pending".to_owned(),
+                    name: "Pending".into(),
                     fields: Vec::new(),
                     is_copy: true,
                     is_linear: false,
@@ -3506,8 +3510,8 @@ mod tests {
             TypeKind::Unit => "()".into(),
             TypeKind::Never => "!".into(),
             TypeKind::Error => "<error>".into(),
-            TypeKind::Struct(id) => pool.struct_def(id).name.clone(),
-            TypeKind::Enum(id) => pool.enum_def(id).name.clone(),
+            TypeKind::Struct(id) => pool.struct_def(id).name.to_string(),
+            TypeKind::Enum(id) => pool.enum_def(id).name.to_string(),
             TypeKind::Array(id) => {
                 let (element, len) = pool.array_def(id);
                 format!("[{}; {}]", render(pool, element), len)
@@ -3585,7 +3589,7 @@ mod tests {
         let (id, _) = pool.declare_struct(
             symbol,
             StructDef {
-                name: name.to_owned(),
+                name: name.into(),
                 fields: Vec::new(),
                 is_copy,
                 is_linear,
@@ -3601,7 +3605,7 @@ mod tests {
         pool.complete_declared_struct(
             id,
             StructDef {
-                name: name.to_owned(),
+                name: name.into(),
                 fields: fields
                     .into_iter()
                     .map(|(name, ty)| StructField {
@@ -3628,11 +3632,11 @@ mod tests {
         variants: Vec<(&str, Vec<Type>)>,
     ) -> EnumId {
         let symbol = interner.get_or_intern(name);
-        let variant_names: Vec<String> = variants.iter().map(|(n, _)| (*n).to_owned()).collect();
+        let variant_names: Arc<[Arc<str>]> = variants.iter().map(|(n, _)| Arc::from(*n)).collect();
         let (id, _) = pool.declare_enum(
             symbol,
             EnumDef {
-                name: name.to_owned(),
+                name: name.into(),
                 variants: variant_names.clone(),
                 variant_payloads: Vec::new(),
                 is_pub,
@@ -3642,7 +3646,7 @@ mod tests {
         pool.complete_declared_enum(
             id,
             EnumDef {
-                name: name.to_owned(),
+                name: name.into(),
                 variants: variant_names,
                 variant_payloads: variants.into_iter().map(|(_, p)| p).collect(),
                 is_pub,
@@ -4277,7 +4281,10 @@ mod tests {
         let ty = pool.find_or_create_anon(&key).unwrap();
         let def = pool.type_pool().struct_def(ty.as_struct().unwrap());
         assert!(!def.is_copy, "a type with a destructor cannot be copy");
-        assert_eq!(def.destructor, Some(format!("{}.__drop", def.name)));
+        assert_eq!(
+            def.destructor.as_deref(),
+            Some(format!("{}.__drop", def.name).as_str())
+        );
     }
 
     /// An anonymous enum mints the `__anon_enum_{digest} { A(i32), B }` name whose
@@ -4302,7 +4309,10 @@ mod tests {
             def.name
         );
         assert!(!def.is_pub);
-        assert_eq!(def.variants, vec!["Some".to_string(), "None".to_string()]);
+        assert_eq!(
+            def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
+            ["Some", "None"]
+        );
     }
 
     /// Distinct producer keys forced onto one digest fail closed: the second is
@@ -4766,7 +4776,7 @@ mod tests {
             );
             assert_eq!(pool.well_known_option_for_payload(inner_ty), Some(outer_ty));
             let inner_def = pool.type_pool().enum_def(inner_ty.as_enum().unwrap());
-            (inner_def.name.clone(), outer_def.name.clone())
+            (inner_def.name.to_string(), outer_def.name.to_string())
         };
         // OUTER first: its payload consult blocks on the not-yet-minted inner
         // enum in round one and succeeds in round two.
@@ -4788,7 +4798,7 @@ mod tests {
         let str8 = pool.get_or_create_str_fixed(8);
         let id = str8.as_struct().unwrap();
         let def = pool.type_pool().struct_def(id);
-        assert_eq!(def.name, "Str(8)");
+        assert_eq!(&*def.name, "Str(8)");
         assert!(def.is_copy);
         assert!(def.is_builtin);
         assert!(def.is_pub);
@@ -4801,7 +4811,7 @@ mod tests {
         let str16 = pool.get_or_create_str_fixed(16);
         assert_ne!(str16, str8);
         assert_eq!(
-            pool.type_pool().struct_def(str16.as_struct().unwrap()).name,
+            &*pool.type_pool().struct_def(str16.as_struct().unwrap()).name,
             "Str(16)"
         );
     }
@@ -4836,7 +4846,7 @@ mod tests {
             .unwrap();
         let id = slice.as_struct().unwrap();
         let def = pool.type_pool().struct_def(id);
-        assert_eq!(def.name, "__slice_i64");
+        assert_eq!(&*def.name, "__slice_i64");
         assert!(def.is_copy, "slice headers are copy");
         assert!(def.is_builtin, "slice structs register as builtin");
         assert_eq!(def.fields.len(), 2, "ptr + len: {:?}", def.fields);

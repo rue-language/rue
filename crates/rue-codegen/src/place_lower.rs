@@ -484,7 +484,7 @@ mod tests {
         let (pair_id, _) = synthetic_types.register_struct(
             synthetic_interner.get_or_intern("IndexedPair"),
             StructDef {
-                name: "IndexedPair".to_string(),
+                name: "IndexedPair".into(),
                 fields: vec![
                     StructField {
                         name: "left".to_string(),

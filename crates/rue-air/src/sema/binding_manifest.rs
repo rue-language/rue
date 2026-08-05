@@ -1244,7 +1244,7 @@ impl<'a> DeclarationShells<'a> {
                     if metadata
                         .variants
                         .iter()
-                        .map(String::as_str)
+                        .map(Arc::as_ref)
                         .ne(variants.iter().map(|variant| variant.0.as_ref()))
                     {
                         return Err(DeclarationInstallFailure::NominalShapeMismatch);
@@ -3244,11 +3244,11 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 {
                     Ok(SemanticExportType::Slice {
                         element: Box::new(self.export_type(element, stack)?),
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                     })
                 } else if def.is_builtin {
                     Ok(SemanticExportType::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Struct,
                     })
                 } else {
@@ -3258,7 +3258,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                     }
                     Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
                         file_id: def.file_id,
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: StableDefinitionKind::Struct,
                     }))
                 }
@@ -3268,13 +3268,13 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                 let symbol = self.interner.get_or_intern(&def.name);
                 if self.builtin_enums.get(&symbol) == Some(&id) {
                     Ok(SemanticExportType::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Enum,
                     })
                 } else {
                     Ok(SemanticExportType::Nominal(SemanticNominalIdentity {
                         file_id: def.file_id,
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: StableDefinitionKind::Enum,
                     }))
                 }
@@ -3517,7 +3517,7 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
                                 .iter()
                                 .map(|&t| self.export_type(t, &mut Vec::new()))
                                 .collect::<Result<Vec<_>, _>>()?;
-                            Ok((Arc::from(n.as_str()), Arc::from(payload)))
+                            Ok((n.clone(), Arc::from(payload)))
                         })
                         .collect::<Result<Vec<_>, _>>()?;
                     SemanticDeclarationPayload::Enum {

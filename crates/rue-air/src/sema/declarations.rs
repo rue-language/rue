@@ -10,6 +10,7 @@
 //! - Validating @copy structs
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, ErrorKind};
@@ -341,13 +342,13 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                     }
 
                     // Convert variant symbols to strings
-                    let variant_names: Vec<String> = variants
+                    let variant_names: Arc<[Arc<str>]> = variants
                         .iter()
-                        .map(|v| self.interner.resolve(&*v).to_string())
+                        .map(|v| Arc::from(self.interner.resolve(&*v)))
                         .collect();
 
                     let enum_def = EnumDef {
-                        name: enum_name,
+                        name: Arc::from(enum_name.as_str()),
                         variants: variant_names,
                         // Payload types are resolved in phase 2
                         // (`resolve_enum_payloads`), once all type names are
@@ -392,7 +393,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
 
                     // Create placeholder struct def (fields will be resolved in phase 2)
                     let struct_def = StructDef {
-                        name: struct_name,
+                        name: Arc::from(struct_name.as_str()),
                         fields: Vec::new(), // Filled in during resolve_declarations
                         is_copy,
                         is_linear: *is_linear,
@@ -576,7 +577,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             self.capture_declaration_type(
                 info.span.file_id,
                 self.interner.resolve(&method_name).to_string(),
-                Some(owner.name.clone()),
+                Some(owner.name.to_string()),
                 source_kind,
                 Edge::Owner,
                 Type::new_struct(struct_id),
@@ -587,7 +588,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 self.capture_declaration_type(
                     info.span.file_id,
                     self.interner.resolve(&method_name).to_string(),
-                    Some(owner.name.clone()),
+                    Some(owner.name.to_string()),
                     source_kind,
                     Edge::Signature,
                     ty,
@@ -711,7 +712,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                     source_kind,
                     dependency_kind,
                     target_file: target_file.index(),
-                    target_name,
+                    target_name: target_name.to_string(),
                     target_kind,
                 });
             self.body_analysis_work.declaration_type_dependency_events += 1;

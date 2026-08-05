@@ -333,9 +333,9 @@ where
                 let def = self.type_pool.struct_def(id);
                 if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
                     T::AnonymousNominal(identity)
-                } else if def.is_builtin || def.name == "str" {
+                } else if def.is_builtin || &*def.name == "str" {
                     T::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Struct,
                     }
                 } else {
@@ -349,10 +349,10 @@ where
                     T::AnonymousNominal(identity)
                 } else if rue_builtins::BUILTIN_ENUMS
                     .iter()
-                    .any(|builtin| builtin.name == def.name)
+                    .any(|builtin| builtin.name == &*def.name)
                 {
                     T::BuiltinNominal {
-                        name: Arc::from(def.name.as_str()),
+                        name: def.name.clone(),
                         kind: crate::SemanticImportNominalKind::Enum,
                     }
                 } else {
@@ -386,10 +386,10 @@ where
             return Ok(crate::NominalInstanceKey::Anonymous(identity));
         }
         let def = self.type_pool.struct_def(id);
-        if def.is_builtin || def.name == "str" {
+        if def.is_builtin || &*def.name == "str" {
             return Ok(crate::NominalInstanceKey::Builtin {
                 kind: crate::AnonymousNominalKind::Struct,
-                name: def.name.as_str().into(),
+                name: def.name.clone(),
             });
         }
         let (token, _) = self.ensure_named_nominal_identity(ty, &def.name)?;
@@ -406,11 +406,11 @@ where
         let def = self.type_pool.enum_def(id);
         if rue_builtins::BUILTIN_ENUMS
             .iter()
-            .any(|builtin| builtin.name == def.name)
+            .any(|builtin| builtin.name == &*def.name)
         {
             return Ok(crate::NominalInstanceKey::Builtin {
                 kind: crate::AnonymousNominalKind::Enum,
-                name: def.name.as_str().into(),
+                name: def.name.clone(),
             });
         }
         if let Some(identity) = self.issued_anonymous_identity_for_type(ty) {
@@ -1989,7 +1989,7 @@ where
                             .enumerate()
                             .map(|(index, name)| {
                                 Ok((
-                                    Arc::from(name.as_str()),
+                                    name.clone(),
                                     definition
                                         .variant_payload(index)
                                         .iter()

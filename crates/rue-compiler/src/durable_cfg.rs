@@ -619,7 +619,7 @@ impl CfgDomainProjection {
                                 crate::StableCallableId::Function(callable),
                             ));
                         if let Some(previous) =
-                            symbol_mappings.insert(source.clone(), machine.clone())
+                            symbol_mappings.insert(source.to_string(), machine.clone())
                             && previous != machine
                         {
                             return Err(CfgDomainFailure::Shape);

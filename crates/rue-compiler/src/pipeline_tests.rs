@@ -884,7 +884,7 @@ mod tests {
         let named_strbufs = pool
             .all_struct_ids()
             .into_iter()
-            .filter(|id| pool.struct_def(*id).name == "StrBuf")
+            .filter(|id| &*pool.struct_def(*id).name == "StrBuf")
             .collect::<Vec<_>>();
         let canonical = named_strbufs
             .iter()
@@ -1038,7 +1038,7 @@ mod tests {
             .type_pool()
             .all_struct_ids()
             .into_iter()
-            .find(|id| semantic.type_pool().struct_def(*id).name == "StrBuf")
+            .find(|id| &*semantic.type_pool().struct_def(*id).name == "StrBuf")
             .unwrap();
         assert_eq!(semantic.type_pool().struct_lang_item(spoof), None);
         assert!(!semantic.type_pool().is_strbuf(spoof));
@@ -2123,12 +2123,12 @@ mod tests {
             let pool = semantic.type_pool();
             let mut names = std::collections::BTreeSet::new();
             for id in pool.all_struct_ids() {
-                if pool.struct_def(id).name == "Payload" {
+                if &*pool.struct_def(id).name == "Payload" {
                     names.insert(format!("struct:{}", pool.struct_symbol_name(id)));
                 }
             }
             for id in pool.all_enum_ids() {
-                if pool.enum_def(id).name == "Choice" {
+                if &*pool.enum_def(id).name == "Choice" {
                     names.insert(format!("enum:{}", pool.enum_symbol_name(id)));
                 }
             }
@@ -2246,13 +2246,13 @@ mod tests {
             .type_pool
             .all_struct_ids()
             .into_iter()
-            .find(|&id| state.type_pool.struct_def(id).name == "Inner")
+            .find(|&id| &*state.type_pool.struct_def(id).name == "Inner")
             .expect("Inner should be interned");
         let enum_id = state
             .type_pool
             .all_enum_ids()
             .into_iter()
-            .find(|&id| state.type_pool.enum_def(id).name == "E")
+            .find(|&id| &*state.type_pool.enum_def(id).name == "E")
             .expect("E should be interned");
         let array_id = state
             .type_pool

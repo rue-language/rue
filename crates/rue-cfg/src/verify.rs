@@ -923,7 +923,7 @@ impl<'a> Verifier<'a> {
             .and_then(|rest| rest.strip_suffix(')'))
             .is_some_and(|capacity| capacity.parse::<u64>().is_ok());
         is_fixed_str
-            && result_def.name == "str"
+            && &*result_def.name == "str"
             && source_def.fields.len() == result_def.fields.len()
             && source_def
                 .fields
@@ -1351,7 +1351,7 @@ mod tests {
         pool.register_struct(
             interner.get_or_intern(name),
             StructDef {
-                name: name.to_string(),
+                name: name.into(),
                 fields: field_types
                     .iter()
                     .enumerate()

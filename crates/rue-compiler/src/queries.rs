@@ -496,7 +496,7 @@ pub(crate) fn collect_function_cfg_queries(
                 name: std::sync::Arc::from("__drop"),
             },
         };
-        if let Some(previous) = legacy_to_stable.insert(source_symbol.clone(), identity.clone())
+        if let Some(previous) = legacy_to_stable.insert(source_symbol.to_string(), identity.clone())
             && previous != identity
         {
             return Err(CfgConstructionFailure {
@@ -830,7 +830,7 @@ pub(crate) fn collect_function_cfg_queries(
                                         rue_air::ImplicitNamedDestructorDependencyEvent {
                                             source: source.clone(),
                                             target_file: target.file_id.index(),
-                                            target_owner_name: target.name.clone(),
+                                            target_owner_name: target.name.to_string(),
                                         },
                                     );
                                 }

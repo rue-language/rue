@@ -758,7 +758,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let (field_index, struct_field) =
                 struct_def.find_field(&field_name_str).ok_or_compile_error(
                     ErrorKind::UnknownField {
-                        struct_name: struct_def.name.clone(),
+                        struct_name: struct_def.name.to_string(),
                         field_name: field_name_str.clone(),
                     },
                     field_span,

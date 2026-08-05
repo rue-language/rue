@@ -2446,7 +2446,7 @@ mod tests {
                 .type_pool
                 .all_struct_ids()
                 .map(|id| output.type_pool.struct_def(id))
-                .any(|s| s.name == "Point" && s.is_copy)
+                .any(|s| &*s.name == "Point" && s.is_copy)
         );
     }
 
@@ -2512,7 +2512,7 @@ mod tests {
                 .type_pool
                 .all_struct_ids()
                 .map(|id| output.type_pool.struct_def(id))
-                .any(|s| s.name == "StrBuf")
+                .any(|s| &*s.name == "StrBuf")
         );
     }
 
@@ -3318,7 +3318,7 @@ fn main() -> i32 {
             sema.type_pool
                 .all_struct_ids()
                 .iter()
-                .all(|id| sema.type_pool.struct_def(*id).name != "StrBuf")
+                .all(|id| &*sema.type_pool.struct_def(*id).name != "StrBuf")
         );
     }
 
@@ -3349,7 +3349,7 @@ fn main() -> i32 {
         // Check the pool definition
         let pool_def = sema.type_pool.get_struct_def(pool_point.unwrap()).unwrap();
 
-        assert_eq!(pool_def.name, "Point");
+        assert_eq!(&*pool_def.name, "Point");
         assert_eq!(pool_def.fields.len(), 2);
         assert_eq!(pool_def.fields[0].name, "x");
         assert_eq!(pool_def.fields[1].name, "y");
@@ -3382,11 +3382,11 @@ fn main() -> i32 {
         let enum_id = *registry_color.unwrap();
         let pool_def = sema.type_pool.enum_def(enum_id);
 
-        assert_eq!(pool_def.name, "Color");
+        assert_eq!(&*pool_def.name, "Color");
         assert_eq!(pool_def.variants.len(), 3);
-        assert_eq!(pool_def.variants[0], "Red");
-        assert_eq!(pool_def.variants[1], "Green");
-        assert_eq!(pool_def.variants[2], "Blue");
+        assert_eq!(&*pool_def.variants[0], "Red");
+        assert_eq!(&*pool_def.variants[1], "Green");
+        assert_eq!(&*pool_def.variants[2], "Blue");
     }
 
     #[test]

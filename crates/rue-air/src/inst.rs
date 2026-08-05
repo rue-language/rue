@@ -3816,6 +3816,8 @@ impl Air {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     #[test]
@@ -4195,7 +4197,7 @@ mod tests {
             interner.get_or_intern("Choice"),
             crate::EnumDef {
                 name: "Choice".into(),
-                variants: vec!["Only".into()],
+                variants: Arc::from(["Only".into()]),
                 variant_payloads: Vec::new(),
                 is_pub: false,
                 file_id: rue_span::FileId::DEFAULT,
@@ -4239,7 +4241,7 @@ mod tests {
             interner.get_or_intern("Choice"),
             crate::EnumDef {
                 name: "Choice".into(),
-                variants: vec!["Only".into()],
+                variants: Arc::from(["Only".into()]),
                 variant_payloads: Vec::new(),
                 is_pub: false,
                 file_id: rue_span::FileId::DEFAULT,

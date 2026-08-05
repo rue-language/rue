@@ -1285,7 +1285,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             self.record_body_named_dependency(
                                 super::NamedConstDependencyTargetEvent::NamedType {
                                     file: def.file_id.index(),
-                                    name: def.name,
+                                    name: def.name.to_string(),
                                     kind: super::DeclarationTypeDependencyTargetKind::Struct,
                                 },
                             );
@@ -1298,7 +1298,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                             self.record_body_named_dependency(
                                 super::NamedConstDependencyTargetEvent::NamedType {
                                     file: def.file_id.index(),
-                                    name: def.name,
+                                    name: def.name.to_string(),
                                     kind: super::DeclarationTypeDependencyTargetKind::Enum,
                                 },
                             );

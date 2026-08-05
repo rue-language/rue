@@ -394,7 +394,7 @@ impl<'a> CfgBuilder<'a> {
             return Some(R::UnsignedInteger);
         }
         if let TypeKind::Struct(struct_id) = ty.kind() {
-            let name = &self.type_pool.struct_def(struct_id).name;
+            let name: &str = &self.type_pool.struct_def(struct_id).name;
             if self.type_pool.is_strbuf(struct_id)
                 || name == "str"
                 || (name.starts_with("Str(") && name.ends_with(')'))
@@ -4150,7 +4150,7 @@ mod tests {
             let type_pool = TypeInternPool::new();
             let span = Span::new(0, 1);
             let struct_def = |name: &str, fields, destructor| StructDef {
-                name: name.to_string(),
+                name: name.into(),
                 fields,
                 is_copy: false,
                 is_linear: false,

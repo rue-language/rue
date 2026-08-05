@@ -593,7 +593,7 @@ mod tests {
         let (struct_id, _) = type_pool.register_struct(
             interner.get_or_intern("PairLike"),
             rue_air::StructDef {
-                name: "PairLike".to_string(),
+                name: "PairLike".into(),
                 fields: vec![
                     rue_air::StructField {
                         name: "a".to_string(),

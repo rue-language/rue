@@ -201,7 +201,7 @@ fn validated_cfg_requires_the_complete_ordinary_nominal_chain_to_be_well_typed()
             .type_pool
             .all_struct_ids()
             .into_iter()
-            .find(|id| state.type_pool.struct_def(*id).name == "Header")
+            .find(|id| &*state.type_pool.struct_def(*id).name == "Header")
             .expect("ordinary Header nominal");
         let header_ty = Type::new_struct(header_struct);
         assert_eq!(state.type_pool.struct_def(header_struct).fields.len(), 3);
@@ -757,7 +757,7 @@ fn validated_cfg_allows_only_the_explicit_str_view_whole_place_read_coercion() {
         .map(|value| state.functions[probe_index].cfg.get_inst(value).ty)
         .find(|ty| {
             ty.as_struct()
-                .is_some_and(|struct_id| state.type_pool.struct_def(struct_id).name == "Str(3)")
+                .is_some_and(|struct_id| &*state.type_pool.struct_def(struct_id).name == "Str(3)")
         })
         .expect("Str(3) parameter type");
     let (read_value, read_type) = {

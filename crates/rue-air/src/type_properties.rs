@@ -39,7 +39,7 @@ fn empty_struct(name: &str) -> StructDef {
 fn empty_enum(name: &str) -> EnumDef {
     EnumDef {
         name: name.into(),
-        variants: vec!["Only".into()],
+        variants: Arc::from(["Only".into()]),
         variant_payloads: vec![vec![]],
         is_pub: false,
         file_id: FileId::DEFAULT,

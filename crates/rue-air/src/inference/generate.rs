@@ -619,7 +619,7 @@ impl<'a> ConstraintGenerator<'a> {
         if let InferType::Concrete(t) = ty
             && let Some(id) = t.as_struct()
         {
-            let name = &self.type_pool.struct_def(id).name;
+            let name: &str = &self.type_pool.struct_def(id).name;
             return name == "str"
                 || (name.starts_with("Str(") && name.ends_with(')'))
                 || (name.starts_with('[')
@@ -3387,7 +3387,7 @@ impl<'a> ConstraintGenerator<'a> {
     fn string_literal_default_is_str(&self) -> bool {
         self.string_literal_default
             .as_struct()
-            .is_some_and(|id| self.type_pool.struct_def(id).name == "str")
+            .is_some_and(|id| &*self.type_pool.struct_def(id).name == "str")
     }
 
     /// Generate constraints for a type-qualified call — an associated-function

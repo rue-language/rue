@@ -480,7 +480,7 @@ fn create_struct_drop_glue_function(
         } else {
             Some(rue_air::ImplicitDropDependencySourceEvent::NamedStruct {
                 file: struct_def.file_id.index(),
-                name: struct_def.name.clone(),
+                name: struct_def.name.to_string(),
             })
         },
         air: air
@@ -654,8 +654,8 @@ fn create_enum_drop_glue_function(
     }
     if planned_variants
         .iter()
-        .zip(&enum_def.variants)
-        .any(|(planned, live)| planned.name.as_ref() != live.as_str())
+        .zip(enum_def.variants.iter())
+        .any(|(planned, live)| planned.name.as_ref() != live.as_ref())
     {
         return Err(CompileError::without_span(ErrorKind::InternalError(
             "enum drop-glue plan disagrees with live variant order".into(),
@@ -745,7 +745,7 @@ fn create_enum_drop_glue_function(
         name: fn_name,
         implicit_drop_source: Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
             file: enum_def.file_id.index(),
-            name: enum_def.name.clone(),
+            name: enum_def.name.to_string(),
         }),
         air: air
             .finish(AirValidationContext::Canonical(type_pool))
@@ -928,11 +928,11 @@ mod tests {
             .register_struct(
                 symbol,
                 StructDef {
-                    name: name.to_string(),
+                    name: Arc::from(name),
                     fields,
                     is_copy: false,
                     is_linear: false,
-                    destructor: destructor.map(str::to_string),
+                    destructor: destructor.map(Arc::from),
                     is_builtin: false,
                     is_pub: false,
                     file_id: rue_span::FileId::DEFAULT,
@@ -948,12 +948,14 @@ mod tests {
         payloads: Vec<Vec<Type>>,
     ) -> EnumId {
         let symbol = interner.get_or_intern(name);
-        let variants = (0..payloads.len()).map(|i| format!("V{i}")).collect();
+        let variants = (0..payloads.len())
+            .map(|i| Arc::from(format!("V{i}").as_str()))
+            .collect();
         type_pool
             .register_enum(
                 symbol,
                 EnumDef {
-                    name: name.to_string(),
+                    name: Arc::from(name),
                     variants,
                     variant_payloads: payloads,
                     is_pub: false,
@@ -1199,7 +1201,7 @@ mod tests {
         let symbol = interner.get_or_intern("Choice");
         let make_enum = |file_id| EnumDef {
             name: "Choice".into(),
-            variants: vec!["Only".into()],
+            variants: Arc::from(["Only".into()]),
             variant_payloads: vec![vec![]],
             is_pub: false,
             file_id,
