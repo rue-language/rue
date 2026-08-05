@@ -1383,7 +1383,7 @@ impl<'a> Emitter<'a> {
                 self.record_label(format!("L{}", id));
             }
 
-            Aarch64Inst::Bl { symbol_id } => {
+            Aarch64Inst::Bl { symbol_id, .. } => {
                 let symbol = self.mir.get_symbol(*symbol_id);
                 self.begin_inst();
                 self.emit_bl(symbol);
@@ -3386,7 +3386,7 @@ mod tests {
 
         let mut mir = Aarch64Mir::new();
         let symbol_id = mir.intern_symbol("test_func");
-        mir.push(Aarch64Inst::Bl { symbol_id });
+        mir.push(Aarch64Inst::call(symbol_id));
 
         let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[])
             .without_frame()
@@ -3428,7 +3428,7 @@ mod tests {
         // (RUE-1195).
         let mut mir = Aarch64Mir::new();
         let symbol_id = mir.intern_symbol("callee");
-        mir.push(Aarch64Inst::Bl { symbol_id });
+        mir.push(Aarch64Inst::call(symbol_id));
         mir.push(Aarch64Inst::Ret);
 
         let expected: Vec<u32> = vec![

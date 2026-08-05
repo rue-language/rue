@@ -257,7 +257,7 @@ fn accesses_memory(inst: &X86Inst) -> bool {
 }
 
 /// Get registers read by an instruction (for dependency analysis).
-fn regs_read(inst: &X86Inst) -> Vec<Reg> {
+pub(super) fn regs_read(inst: &X86Inst) -> Vec<Reg> {
     let mut result = Vec::new();
 
     let add_if_phys = |op: &Operand, vec: &mut Vec<Reg>| {
@@ -421,7 +421,7 @@ fn regs_read(inst: &X86Inst) -> Vec<Reg> {
 }
 
 /// Get registers written by an instruction (for dependency analysis).
-fn regs_written(inst: &X86Inst) -> Vec<Reg> {
+pub(super) fn regs_written(inst: &X86Inst) -> Vec<Reg> {
     let mut result = Vec::new();
 
     let add_if_phys = |op: &Operand, vec: &mut Vec<Reg>| {
@@ -713,7 +713,7 @@ mod tests {
             id: LabelId::new(0)
         }));
         assert!(is_barrier(&X86Inst::Ret));
-        assert!(is_barrier(&X86Inst::CallRel { symbol_id: 0 }));
+        assert!(is_barrier(&X86Inst::call(0)));
 
         assert!(!is_barrier(&X86Inst::MovRR {
             dst: Operand::Physical(Reg::Rax),

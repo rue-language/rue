@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg};
+use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, ReturnBehavior};
 use crate::liveness::{
     LivenessAdapter, branch_successor, conditional_successors, fallthrough_successor,
 };
@@ -56,6 +56,10 @@ impl LivenessAdapter for Aarch64LivenessAdapter<'_> {
 
     fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
         inst.clobbers().to_vec()
+    }
+
+    fn is_non_returning(&self, inst: &Self::Inst) -> bool {
+        inst.is_non_returning()
     }
 }
 
@@ -111,7 +115,14 @@ fn get_successors(
         }
         // Return and trap have no successors
         Aarch64Inst::Ret | Aarch64Inst::Brk => Vec::new(),
-        // Function calls fall through (callee returns)
+        // A call to a helper the runtime ABI manifest declares
+        // `ReturnBehavior::Never` aborts the process. Control never comes back,
+        // so it has no successors and nothing is live after it (RUE-1224).
+        Aarch64Inst::Bl {
+            returns: ReturnBehavior::Never,
+            ..
+        } => Vec::new(),
+        // Ordinary calls fall through (the callee returns)
         Aarch64Inst::Bl { .. } => fallthrough_successor(idx, num_insts),
         // All other instructions fall through to the next
         _ => fallthrough_successor(idx, num_insts),

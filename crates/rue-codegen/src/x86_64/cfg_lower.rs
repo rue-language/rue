@@ -382,8 +382,13 @@ impl<'a> CfgLower<'a> {
             }
         }
 
+        // The manifest's control contract travels with the call: a trap helper
+        // aborts, so liveness must not propagate anything past it (RUE-1224).
         let symbol_id = self.intern_symbol(plan.symbol());
-        self.mir.push(X86Inst::CallRel { symbol_id });
+        self.mir.push(X86Inst::CallRel {
+            symbol_id,
+            returns: plan.return_behavior(),
+        });
 
         match plan.result() {
             RuntimeCallResult::OutPointer(shape) => {
@@ -1075,7 +1080,7 @@ impl<'a> CfgLower<'a> {
             });
         }
         let symbol_id = self.intern_symbol(plan.target.symbol());
-        self.mir.push(X86Inst::CallRel { symbol_id });
+        self.mir.push(X86Inst::call(symbol_id));
         if num_stack_args > 0 || needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
@@ -1331,7 +1336,7 @@ impl<'a> CfgLower<'a> {
             });
         }
         let symbol_id = self.intern_symbol(inputs.symbol_ref());
-        self.mir.push(X86Inst::CallRel { symbol_id });
+        self.mir.push(X86Inst::call(symbol_id));
         if num_stack > 0 || needs_alignment {
             self.mir.push(X86Inst::AddRI {
                 dst: Operand::Physical(Reg::Rsp),
@@ -4110,7 +4115,7 @@ mod tests {
         mir.instructions()
             .iter()
             .position(|inst| {
-                matches!(inst, X86Inst::CallRel { symbol_id } if mir.get_symbol(*symbol_id) == helper.symbol())
+                matches!(inst, X86Inst::CallRel { symbol_id, .. } if mir.get_symbol(*symbol_id) == helper.symbol())
             })
             .unwrap_or_else(|| panic!("missing call to {helper:?}"))
     }

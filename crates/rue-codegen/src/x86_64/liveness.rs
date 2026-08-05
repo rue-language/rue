@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 
-use super::mir::{Operand, Reg, X86Inst, X86Mir};
+use super::mir::{Operand, Reg, ReturnBehavior, X86Inst, X86Mir};
 use crate::liveness::{
     LivenessAdapter, branch_successor, conditional_successors, fallthrough_successor,
 };
@@ -56,6 +56,10 @@ impl LivenessAdapter for X86LivenessAdapter<'_> {
 
     fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
         inst.clobbers().to_vec()
+    }
+
+    fn is_non_returning(&self, inst: &Self::Inst) -> bool {
+        inst.is_non_returning()
     }
 }
 
@@ -113,7 +117,14 @@ fn get_successors(
         | X86Inst::Jle { label } => conditional_successors(idx, *label, label_to_idx, num_insts),
         // Return and trap have no successors
         X86Inst::Ret | X86Inst::Ud2 => Vec::new(),
-        // Function calls fall through (callee returns)
+        // A call to a helper the runtime ABI manifest declares
+        // `ReturnBehavior::Never` aborts the process. Control never comes back,
+        // so it has no successors and nothing is live after it (RUE-1224).
+        X86Inst::CallRel {
+            returns: ReturnBehavior::Never,
+            ..
+        } => Vec::new(),
+        // Ordinary calls fall through (the callee returns)
         X86Inst::CallRel { .. } => fallthrough_successor(idx, num_insts),
         // All other instructions fall through to the next
         _ => fallthrough_successor(idx, num_insts),

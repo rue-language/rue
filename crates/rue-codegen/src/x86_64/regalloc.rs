@@ -989,7 +989,9 @@ impl RegAlloc {
             X86Inst::Jle { label } => mir.push(X86Inst::Jle { label }),
             X86Inst::Jmp { label } => mir.push(X86Inst::Jmp { label }),
             X86Inst::Label { id } => mir.push(X86Inst::Label { id }),
-            X86Inst::CallRel { symbol_id } => mir.push(X86Inst::CallRel { symbol_id }),
+            X86Inst::CallRel { symbol_id, returns } => {
+                mir.push(X86Inst::CallRel { symbol_id, returns })
+            }
             X86Inst::Syscall => mir.push(X86Inst::Syscall),
             X86Inst::Ret => mir.push(X86Inst::Ret),
             X86Inst::Ud2 => mir.push(X86Inst::Ud2),
@@ -1374,6 +1376,12 @@ impl RegAllocBackend for X86Backend {
             caller_saved: CALLER_SAVED_REGS,
             callee_saved: CALLEE_SAVED_REGS,
         }
+    }
+
+    fn physical_operands(inst: &Self::Inst) -> Vec<Self::Reg> {
+        let mut regs = super::schedule::regs_read(inst);
+        regs.extend(super::schedule::regs_written(inst));
+        regs
     }
 
     fn new_mir() -> Self::Mir {
@@ -1988,7 +1996,7 @@ mod tests {
             .collect();
 
         define_loaded_values(&mut mir, &vregs);
-        mir.push(X86Inst::CallRel { symbol_id: symbol });
+        mir.push(X86Inst::call(symbol));
         for &vreg in &vregs {
             mir.push(X86Inst::MovRR {
                 dst: Operand::Physical(Reg::Rdi),
@@ -2021,6 +2029,99 @@ mod tests {
     }
 
     #[test]
+    fn trap_crossing_values_still_take_caller_saved_registers() {
+        // The same fixture as `cross_call_values_never_take_a_caller_saved_register`,
+        // except the call is the overflow trap. It never returns, so no value
+        // is live across it and the caller-saved class stays available
+        // (RUE-1224).
+        let mut mir = X86Mir::new();
+        let symbol = mir.intern_symbol(rue_runtime_abi::RuntimeHelperId::Overflow.symbol());
+        let vregs: Vec<VReg> = (0..ALLOCATABLE_REGS.len())
+            .map(|_| mir.alloc_vreg())
+            .collect();
+
+        define_loaded_values(&mut mir, &vregs);
+        mir.push(X86Inst::CallRel {
+            symbol_id: symbol,
+            returns: rue_runtime_abi::ReturnBehavior::Never,
+        });
+        for &vreg in &vregs {
+            mir.push(X86Inst::MovRR {
+                dst: Operand::Physical(Reg::Rdi),
+                src: Operand::Virtual(vreg),
+            });
+        }
+
+        let (mir, num_spills, _) = RegAlloc::new(mir, 0).allocate_with_spills().unwrap();
+
+        assert_eq!(
+            num_spills, 0,
+            "the trap is not a barrier, so every value should still fit in a register"
+        );
+        let assigned: Vec<Reg> = mir
+            .instructions()
+            .iter()
+            .filter_map(|inst| match inst {
+                X86Inst::MovRM {
+                    dst: Operand::Physical(reg),
+                    base: Reg::Rsi,
+                    ..
+                } => Some(*reg),
+                _ => None,
+            })
+            .collect();
+        for &reg in CALLER_SAVED_REGS {
+            assert!(
+                assigned.contains(&reg),
+                "a value spanning only the trap should be allowed caller-saved {reg}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_never_returning_call_ends_liveness() {
+        // Modelling the trap as non-returning is what makes the clobber test
+        // above correct: nothing propagates past it.
+        let mut mir = X86Mir::new();
+        let value = mir.alloc_vreg();
+        let symbol = mir.intern_symbol(rue_runtime_abi::RuntimeHelperId::Overflow.symbol());
+
+        mir.push(X86Inst::MovRI32 {
+            dst: Operand::Virtual(value),
+            imm: 42,
+        });
+        mir.push(X86Inst::CallRel {
+            symbol_id: symbol,
+            returns: rue_runtime_abi::ReturnBehavior::Never,
+        });
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Physical(Reg::Rdi),
+            src: Operand::Virtual(value),
+        });
+        mir.push(X86Inst::Ret);
+
+        let debug = liveness::analyze_debug(&mir);
+        assert!(
+            debug.instructions[1].live_out.is_empty(),
+            "a never-returning call must have an empty live-out set; found: {:?}",
+            debug.instructions[1].live_out
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "lowering named the allocatable register")]
+    fn lowering_may_not_name_an_allocatable_register_as_a_physical_operand() {
+        let mut mir = X86Mir::new();
+        let value = mir.alloc_vreg();
+        mir.push(X86Inst::MovRR {
+            dst: Operand::Virtual(value),
+            src: Operand::Physical(ALLOCATABLE_REGS[0]),
+        });
+
+        let _ = RegAlloc::new(mir, 0).allocate();
+    }
+
+    #[test]
     fn test_call_survival_and_symbol_reconstruction() {
         let mut mir = X86Mir::new();
         let value = mir.alloc_vreg();
@@ -2030,7 +2131,7 @@ mod tests {
             dst: Operand::Virtual(value),
             imm: 42,
         });
-        mir.push(X86Inst::CallRel { symbol_id: symbol });
+        mir.push(X86Inst::call(symbol));
         mir.push(X86Inst::MovRR {
             dst: Operand::Physical(Reg::Rdi),
             src: Operand::Virtual(value),
@@ -2053,11 +2154,9 @@ mod tests {
             CALLEE_SAVED_REGS.contains(&value_reg),
             "a value live across a call must land in a callee-saved register, got {value_reg}"
         );
-        assert!(
-            mir.instructions()
-                .iter()
-                .any(|inst| matches!(inst, X86Inst::CallRel { symbol_id } if *symbol_id == symbol))
-        );
+        assert!(mir.instructions().iter().any(
+            |inst| matches!(inst, X86Inst::CallRel { symbol_id, .. } if *symbol_id == symbol)
+        ));
         assert!(mir.instructions().iter().any(|inst| matches!(
             inst,
             X86Inst::MovRR {

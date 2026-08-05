@@ -219,7 +219,7 @@ mod tests {
         mir.push(X86Inst::Push {
             src: Operand::Physical(Reg::Rbx),
         });
-        mir.push(X86Inst::CallRel { symbol_id: sym_id });
+        mir.push(X86Inst::call(sym_id));
         mir.push(X86Inst::Pop {
             dst: Operand::Physical(Reg::Rbx),
         });
@@ -239,7 +239,7 @@ mod tests {
         mir.push(X86Inst::Push {
             src: Operand::Physical(Reg::Rax),
         });
-        mir.push(X86Inst::CallRel { symbol_id: sym_id });
+        mir.push(X86Inst::call(sym_id));
         mir.push(X86Inst::Pop {
             dst: Operand::Physical(Reg::Rax),
         });
@@ -255,7 +255,7 @@ mod tests {
     fn test_aligned_call() {
         let mut mir = X86Mir::new();
         let sym_id = mir.intern_symbol("test_func");
-        mir.push(X86Inst::CallRel { symbol_id: sym_id });
+        mir.push(X86Inst::call(sym_id));
         mir.push(X86Inst::Ret);
 
         assert!(verify_stack_alignment(&mir).is_ok());
@@ -284,8 +284,8 @@ mod tests {
         let sym1 = mir.intern_symbol("func1");
         let sym2 = mir.intern_symbol("func2");
 
-        mir.push(X86Inst::CallRel { symbol_id: sym1 });
-        mir.push(X86Inst::CallRel { symbol_id: sym2 });
+        mir.push(X86Inst::call(sym1));
+        mir.push(X86Inst::call(sym2));
         mir.push(X86Inst::Ret);
 
         assert!(verify_stack_alignment(&mir).is_ok());
@@ -307,7 +307,7 @@ mod tests {
             src: Operand::Physical(Reg::Rax),
         });
         // call (should be aligned now)
-        mir.push(X86Inst::CallRel { symbol_id: sym_id });
+        mir.push(X86Inst::call(sym_id));
         // cleanup: add rsp, 16 (arg + padding)
         mir.push(X86Inst::AddRI {
             dst: Operand::Physical(Reg::Rsp),
@@ -330,7 +330,7 @@ mod tests {
             imm: -8,
         });
         // call without proper alignment
-        mir.push(X86Inst::CallRel { symbol_id: sym_id });
+        mir.push(X86Inst::call(sym_id));
         mir.push(X86Inst::Ret);
 
         let result = verify_stack_alignment(&mir);
