@@ -384,6 +384,15 @@ pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
     /// For each instruction index, the physical registers clobbered by that instruction.
     /// This is used to prevent allocating vregs to registers that would be clobbered.
     pub clobbers_at: Vec<Vec<Reg>>,
+    /// For each instruction index, whether control can reach the instruction
+    /// after it once it executes.
+    ///
+    /// Only a call to a helper the runtime ABI manifest declares
+    /// `ReturnBehavior::Never` sets this — the overflow, bounds-check,
+    /// divide-by-zero, panic, and exit traps. Such a call has no successors, so
+    /// no value is live after it; see [`ClobberIndex::build`] for why the
+    /// distinction matters to allocation (RUE-1224).
+    pub non_returning_at: Vec<bool>,
 }
 
 impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
@@ -393,6 +402,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
             ranges: IndexMap::new(),
             live_at: Vec::new(),
             clobbers_at: Vec::new(),
+            non_returning_at: Vec::new(),
         }
     }
 
@@ -404,6 +414,7 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
             ranges,
             live_at: Vec::new(),
             clobbers_at: Vec::new(),
+            non_returning_at: Vec::new(),
         }
     }
 
@@ -432,6 +443,19 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
     pub fn clobbers_at(&self, inst_idx: usize) -> &[Reg] {
         &self.clobbers_at[inst_idx]
     }
+
+    /// Whether the instruction at `inst_idx` never returns control to the
+    /// instruction after it.
+    ///
+    /// Indices outside the analyzed instruction sequence answer `false`; so
+    /// does any liveness built without this information, which keeps the
+    /// pre-RUE-1224 behavior for hand-constructed test liveness.
+    pub fn is_non_returning(&self, inst_idx: usize) -> bool {
+        self.non_returning_at
+            .get(inst_idx)
+            .copied()
+            .unwrap_or(false)
+    }
 }
 
 // ============================================================================
@@ -453,6 +477,9 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
 /// counts at its two endpoints agree. Building the index is O(tracked ×
 /// instructions) once per function; each query is O(tracked) lookup plus two
 /// array reads.
+///
+/// A never-returning call contributes no clobber event (RUE-1224). See
+/// [`ClobberIndex::build`].
 pub struct ClobberIndex<Reg> {
     /// One entry per tracked register: the register, and prefix counts where
     /// `counts[i]` is the number of instructions before `i` that clobber it.
@@ -464,6 +491,23 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
     /// Build an index over `liveness`'s clobber data for `tracked`.
     ///
     /// Only the tracked registers get an answer; see [`Self::is_clobbered_during`].
+    ///
+    /// A never-returning call is skipped. Rue lowers every checked `+`/`*` as
+    /// `jno .L; call __rue_overflow; .L:`, so that trap call sits textually
+    /// inside almost every arithmetic value's live range — but the value is
+    /// live *around* the call, not through it. `__rue_overflow` and its sibling
+    /// traps are declared `ReturnBehavior::Never` by the runtime ABI manifest
+    /// and abort the process, so on every path where a later use of the value
+    /// executes, the call did not. It cannot destroy a value that is already
+    /// dead if it runs, and a live range is a textual interval that cannot
+    /// express that (RUE-1224).
+    ///
+    /// This is deliberately narrower than "the call is on a cold path": the
+    /// call's *arguments* are ordinary uses, live at the call and honored by
+    /// the ranges above; only the clobber event is dropped. If a trap does
+    /// fire, a register holding a user value may hold anything by the time the
+    /// handler runs. Nothing observes that: Rue emits no DWARF and the traps
+    /// print a fixed message and exit without a backtrace (RUE-1146's audit).
     pub fn build(liveness: &LivenessInfo<Reg>, tracked: &[Reg]) -> Self
     where
         Reg: std::hash::Hash,
@@ -476,7 +520,7 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
                 let mut running = 0_u32;
                 counts.push(running);
                 for idx in 0..num_insts {
-                    if liveness.clobbers_at(idx).contains(&reg) {
+                    if !liveness.is_non_returning(idx) && liveness.clobbers_at(idx).contains(&reg) {
                         running += 1;
                     }
                     counts.push(running);
@@ -1058,6 +1102,16 @@ pub trait RegAllocBackend {
     /// instruction clobbers while they are live (RUE-1146).
     fn register_classes() -> RegisterClasses<'static, Self::Reg>;
 
+    /// Every physical register `inst` names as an operand — read or written.
+    ///
+    /// This is the exhaustive per-instruction enumeration each backend's
+    /// scheduler already maintains (`regs_read` + `regs_written`), reused here
+    /// so [`RegAllocDriver::new_with_artifacts`] can prove lowering never named
+    /// an allocatable register directly. Implicit clobbers are deliberately not
+    /// included: a call destroys the caller-saved registers without naming any
+    /// of them as an operand, and the allocator models that separately.
+    fn physical_operands(inst: &Self::Inst) -> Vec<Self::Reg>;
+
     fn new_mir() -> Self::Mir;
     fn take_symbols(mir: &mut Self::Mir) -> Vec<String>;
     fn set_symbols(mir: &mut Self::Mir, symbols: Vec<String>);
@@ -1200,6 +1254,35 @@ impl<I> RewriteBuffer<I> {
     }
 }
 
+/// Fail loudly if pre-allocation MIR names an allocatable register directly.
+///
+/// Lowering names physical registers for ABI positions, fixed instruction
+/// operands, and the stack and frame pointers. The allocator hands out a
+/// disjoint set, and each backend proves the two sets are disjoint at compile
+/// time from its `RESERVED_REGS` table. That proof is only as good as the
+/// table: a lowering site that names, say, `r11` as a raw operand would collide
+/// with whatever value the allocator put there, silently, and only on the
+/// programs where the allocator happened to pick that register.
+///
+/// So this checks the actual instruction stream instead of the table. It runs
+/// before assignment, when every value still lives in a virtual register, so
+/// any physical operand present is one lowering wrote. It is an always-on
+/// assertion rather than a `debug_assert!` because a violation changes emitted
+/// code, and `docs/process/ci.md` gives code generation no debug-assert
+/// allowance (RUE-1224).
+fn assert_no_allocatable_physical_operands<B: RegAllocBackend>(mir: &B::Mir) {
+    let classes = B::register_classes();
+    for inst in B::instructions(mir) {
+        for reg in B::physical_operands(inst) {
+            assert!(
+                !classes.caller_saved.contains(&reg) && !classes.callee_saved.contains(&reg),
+                "lowering named the allocatable register {reg} as a physical operand; \
+                 allocation may put an unrelated value there"
+            );
+        }
+    }
+}
+
 /// Shared assignment, rewrite, and spill orchestration for one target.
 pub struct RegAllocDriver<B: RegAllocBackend> {
     mir: B::Mir,
@@ -1223,6 +1306,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
     /// Create allocator state while optionally retaining the diagnostic
     /// projection of the same liveness dataflow used for allocation.
     pub fn new_with_artifacts(mir: B::Mir, existing_locals: u32, capture_liveness: bool) -> Self {
+        assert_no_allocatable_physical_operands::<B>(&mir);
         let vreg_count = B::vreg_count(&mir) as usize;
         let (mut liveness, liveness_debug) = if capture_liveness {
             let (liveness, debug) = B::analyze_with_debug(&mir);
@@ -2153,6 +2237,83 @@ mod tests {
             info.clobbers_at[idx].push(reg);
         }
         info
+    }
+
+    fn mark_non_returning(info: &mut LivenessInfo<TestReg>, indices: &[usize]) {
+        info.non_returning_at = vec![false; info.clobbers_at.len()];
+        for &idx in indices {
+            info.non_returning_at[idx] = true;
+        }
+    }
+
+    #[test]
+    fn clobber_index_ignores_a_never_returning_call_site() {
+        // The shape Rue emits for every checked add: the value is defined
+        // before the guard branch and used after the label, so the trap call at
+        // instruction 2 sits textually inside its range — but the trap aborts,
+        // so on the path reaching the later use the call never ran.
+        let mut liveness = make_liveness_with_clobbers(vec![(0, 0, 4)], vec![(2, TestReg(0))]);
+        mark_non_returning(&mut liveness, &[2]);
+        let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
+
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
+        assert!(!index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 2)));
+    }
+
+    #[test]
+    fn clobber_index_still_sees_a_returning_call_beside_a_trap() {
+        // A returning call at 1 and a trap at 3: only the returning one can
+        // destroy a value whose later uses execute.
+        let mut liveness =
+            make_liveness_with_clobbers(vec![(0, 0, 4)], vec![(1, TestReg(0)), (3, TestReg(0))]);
+        mark_non_returning(&mut liveness, &[3]);
+        let index = ClobberIndex::build(&liveness, &[TestReg(0)]);
+
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 4)));
+        assert!(index.is_clobbered_during(TestReg(0), &LiveRange::new(0, 1)));
+        assert!(
+            !index.is_clobbered_during(TestReg(0), &LiveRange::new(2, 4)),
+            "a range that clears the returning call is clobber-free despite the trap"
+        );
+    }
+
+    #[test]
+    fn a_trap_spanning_interval_takes_a_caller_saved_register() {
+        // Same allocation shape as `caller_saved_is_preferred_...`, except the
+        // clobber site is a never-returning call: now both intervals fit in the
+        // caller-saved class and the prologue saves nothing.
+        let mut liveness = make_liveness_with_clobbers(
+            vec![(0, 0, 4), (1, 3, 4)],
+            vec![(2, TestReg(9)), (2, TestReg(8))],
+        );
+        mark_non_returning(&mut liveness, &[2]);
+        let classes = RegisterClasses {
+            caller_saved: &[TestReg(9), TestReg(8)],
+            callee_saved: &[TestReg(0)],
+        };
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            classes,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 0);
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(9)))
+        );
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(8)))
+        );
+        assert!(
+            used_callee_saved.is_empty(),
+            "no interval needed a callee-saved register, so the prologue saves nothing"
+        );
     }
 
     #[test]

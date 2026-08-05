@@ -968,7 +968,7 @@ mod tests {
                 dst: Operand::Physical(Reg::Rax),
                 imm: 0,
             },
-            X86Inst::CallRel { symbol_id: 0 },
+            X86Inst::call(0),
             X86Inst::Jz {
                 label: LabelId::new(0),
             },

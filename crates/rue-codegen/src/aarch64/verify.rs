@@ -222,7 +222,7 @@ mod tests {
             src2: Operand::Physical(Reg::X22),
             offset: -16,
         });
-        mir.push(Aarch64Inst::Bl { symbol_id: sym_id });
+        mir.push(Aarch64Inst::call(sym_id));
         mir.push(Aarch64Inst::LdpPost {
             dst1: Operand::Physical(Reg::X21),
             dst2: Operand::Physical(Reg::X22),
@@ -242,7 +242,7 @@ mod tests {
     fn test_aligned_call() {
         let mut mir = Aarch64Mir::new();
         let sym_id = mir.intern_symbol("test_func");
-        mir.push(Aarch64Inst::Bl { symbol_id: sym_id });
+        mir.push(Aarch64Inst::call(sym_id));
         mir.push(Aarch64Inst::Ret);
 
         assert!(verify_stack_alignment(&mir).is_ok());
@@ -261,7 +261,7 @@ mod tests {
             imm: 32,
         });
         // Call (should be aligned)
-        mir.push(Aarch64Inst::Bl { symbol_id: sym_id });
+        mir.push(Aarch64Inst::call(sym_id));
         // Deallocate
         mir.push(Aarch64Inst::AddImm {
             dst: Operand::Physical(Reg::Sp),
@@ -286,7 +286,7 @@ mod tests {
             imm: 8,
         });
         // Call without proper alignment - should fail
-        mir.push(Aarch64Inst::Bl { symbol_id: sym_id });
+        mir.push(Aarch64Inst::call(sym_id));
         mir.push(Aarch64Inst::Ret);
 
         let result = verify_stack_alignment(&mir);
@@ -321,8 +321,8 @@ mod tests {
         let sym1 = mir.intern_symbol("func1");
         let sym2 = mir.intern_symbol("func2");
 
-        mir.push(Aarch64Inst::Bl { symbol_id: sym1 });
-        mir.push(Aarch64Inst::Bl { symbol_id: sym2 });
+        mir.push(Aarch64Inst::call(sym1));
+        mir.push(Aarch64Inst::call(sym2));
         mir.push(Aarch64Inst::Ret);
 
         assert!(verify_stack_alignment(&mir).is_ok());

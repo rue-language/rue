@@ -235,7 +235,7 @@ fn accesses_memory(inst: &Aarch64Inst) -> bool {
 }
 
 /// Get registers read by an instruction (for dependency analysis).
-fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
+pub(super) fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
     let mut result = Vec::new();
 
     let add_if_phys = |op: &Operand, vec: &mut Vec<Reg>| {
@@ -364,7 +364,7 @@ fn regs_read(inst: &Aarch64Inst) -> Vec<Reg> {
 }
 
 /// Get registers written by an instruction (for dependency analysis).
-fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
+pub(super) fn regs_written(inst: &Aarch64Inst) -> Vec<Reg> {
     let mut result = Vec::new();
 
     let add_if_phys = |op: &Operand, vec: &mut Vec<Reg>| {
@@ -620,7 +620,7 @@ mod tests {
             id: LabelId::new(0)
         }));
         assert!(is_barrier(&Aarch64Inst::Ret));
-        assert!(is_barrier(&Aarch64Inst::Bl { symbol_id: 0 }));
+        assert!(is_barrier(&Aarch64Inst::call(0)));
 
         assert!(!is_barrier(&Aarch64Inst::MovRR {
             dst: Operand::Physical(Reg::X0),

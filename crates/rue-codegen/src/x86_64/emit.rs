@@ -1248,7 +1248,7 @@ impl<'a> Emitter<'a> {
                 self.labels.insert(*id, self.code.len());
                 self.record_label(format!("{}", id));
             }
-            X86Inst::CallRel { symbol_id } => {
+            X86Inst::CallRel { symbol_id, .. } => {
                 let symbol = self.mir.get_symbol(*symbol_id);
                 self.begin_inst();
                 self.emit_call_rel(symbol);
@@ -3185,7 +3185,7 @@ mod tests {
 
         let mut mir = X86Mir::new();
         let symbol_id = mir.intern_symbol("__rue_exit");
-        mir.push(X86Inst::CallRel { symbol_id });
+        mir.push(X86Inst::call(symbol_id));
 
         let (code, relocs) = Emitter::new(&mir, 0, 0, 0, &[], &[])
             .without_frame()
@@ -3523,7 +3523,7 @@ mod tests {
         // 16-byte aligned at the call site (RUE-1195).
         let mut mir = X86Mir::new();
         let symbol_id = mir.intern_symbol("callee");
-        mir.push(X86Inst::CallRel { symbol_id });
+        mir.push(X86Inst::call(symbol_id));
         mir.push(X86Inst::Ret);
 
         let expected = vec![

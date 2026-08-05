@@ -63,6 +63,16 @@ pub trait LivenessAdapter {
 
     /// Return physical registers clobbered by `inst`.
     fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
+
+    /// Whether `inst` never returns control to the instruction after it.
+    ///
+    /// This is true only for a call to a runtime helper the ABI manifest
+    /// declares `ReturnBehavior::Never`. Such an instruction reports no
+    /// successors, so nothing is live after it, and its clobbers cannot reach
+    /// any value whose later uses execute (RUE-1224). Instructions that are
+    /// terminal without being calls — `ret`, `ud2`, `brk` — clobber nothing, so
+    /// classifying them either way is immaterial and they answer `false`.
+    fn is_non_returning(&self, inst: &Self::Inst) -> bool;
 }
 
 /// Compute liveness for any backend implementing [`LivenessAdapter`].
@@ -78,6 +88,7 @@ where
         |inst| adapter.uses(inst),
         |inst| adapter.defs(inst),
         |inst| adapter.clobbers(inst),
+        |inst| adapter.is_non_returning(inst),
     )
 }
 
@@ -111,6 +122,7 @@ where
         |inst| adapter.uses(inst),
         |inst| adapter.defs(inst),
         |inst| adapter.clobbers(inst),
+        |inst| adapter.is_non_returning(inst),
     )
 }
 
@@ -182,6 +194,9 @@ pub fn conditional_successors(
 /// * `get_uses` - Returns the virtual registers used (read) by the instruction
 /// * `get_defs` - Returns the virtual registers defined (written) by the instruction
 /// * `get_clobbers` - Returns the physical registers clobbered by the instruction
+/// * `get_non_returning` - Returns whether the instruction never returns control
+///   to the instruction after it
+#[allow(clippy::too_many_arguments)]
 pub fn analyze<I, R>(
     instructions: &[I],
     vreg_count: u32,
@@ -190,6 +205,7 @@ pub fn analyze<I, R>(
     get_uses: impl Fn(&I) -> Vec<VReg>,
     get_defs: impl Fn(&I) -> Vec<VReg>,
     get_clobbers: impl Fn(&I) -> Vec<R>,
+    get_non_returning: impl Fn(&I) -> bool,
 ) -> LivenessInfo<R>
 where
     R: Copy + Eq + std::hash::Hash,
@@ -202,6 +218,7 @@ where
         get_uses,
         get_defs,
         get_clobbers,
+        get_non_returning,
         false,
     )
     .0
@@ -209,6 +226,7 @@ where
 
 /// Compute production liveness and its diagnostic projection in one dataflow
 /// execution.
+#[allow(clippy::too_many_arguments)]
 pub fn analyze_with_debug<I, R>(
     instructions: &[I],
     vreg_count: u32,
@@ -217,6 +235,7 @@ pub fn analyze_with_debug<I, R>(
     get_uses: impl Fn(&I) -> Vec<VReg>,
     get_defs: impl Fn(&I) -> Vec<VReg>,
     get_clobbers: impl Fn(&I) -> Vec<R>,
+    get_non_returning: impl Fn(&I) -> bool,
 ) -> (LivenessInfo<R>, LivenessDebugInfo)
 where
     R: Copy + Eq + std::hash::Hash,
@@ -229,6 +248,7 @@ where
         get_uses,
         get_defs,
         get_clobbers,
+        get_non_returning,
         true,
     );
     (
@@ -246,6 +266,7 @@ fn analyze_inner<I, R>(
     get_uses: impl Fn(&I) -> Vec<VReg>,
     get_defs: impl Fn(&I) -> Vec<VReg>,
     get_clobbers: impl Fn(&I) -> Vec<R>,
+    get_non_returning: impl Fn(&I) -> bool,
     collect_debug: bool,
 ) -> (LivenessInfo<R>, Option<LivenessDebugInfo>)
 where
@@ -259,6 +280,7 @@ where
                 ranges: IndexMap::new(),
                 live_at: Vec::new(),
                 clobbers_at: Vec::new(),
+                non_returning_at: Vec::new(),
             },
             collect_debug.then(|| LivenessDebugInfo {
                 instructions: Vec::new(),
@@ -297,8 +319,9 @@ where
     // Step 6: Compute live_at for each instruction (union of live_in and live_out)
     let live_at = compute_live_at(num_insts, vreg_count, &live_in, &live_out);
 
-    // Step 7: Collect clobbers
+    // Step 7: Collect clobbers and the never-returning call sites (RUE-1224)
     let clobbers_at: Vec<Vec<R>> = instructions.iter().map(|i| get_clobbers(i)).collect();
+    let non_returning_at: Vec<bool> = instructions.iter().map(&get_non_returning).collect();
 
     let debug = collect_debug.then(|| {
         let bitset_to_hashset = |bs: &FixedBitSet| -> std::collections::HashSet<VReg> {
@@ -325,6 +348,7 @@ where
             ranges,
             live_at,
             clobbers_at,
+            non_returning_at,
         },
         debug,
     )
@@ -353,6 +377,7 @@ where
         get_uses,
         get_defs,
         |_| Vec::<R>::new(),
+        |_| false,
     )
     .1
 }
@@ -782,6 +807,7 @@ mod tests {
             test_get_uses,
             test_get_defs,
             test_get_clobbers,
+            |_| false,
         );
 
         // v0: defined at 0, used at 1
@@ -811,6 +837,7 @@ mod tests {
             test_get_uses,
             test_get_defs,
             test_get_clobbers,
+            |_| false,
         );
 
         // v0: defined at 0, last used at 4
@@ -832,6 +859,7 @@ mod tests {
             test_get_uses,
             test_get_defs,
             test_get_clobbers,
+            |_| false,
         );
 
         assert!(info.ranges.is_empty());
@@ -857,6 +885,7 @@ mod tests {
             test_get_uses,
             test_get_defs,
             test_get_clobbers,
+            |_| false,
         );
 
         // v0 and v1 should interfere (both live at instruction 2)

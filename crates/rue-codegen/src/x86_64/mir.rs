@@ -8,6 +8,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+pub use rue_runtime_abi::ReturnBehavior;
+
 // Compile-time size assertions to prevent silent size growth during refactoring.
 // These limits are set slightly above current sizes to allow minor changes,
 // but will catch significant size regressions.
@@ -531,7 +533,16 @@ pub enum X86Inst {
     /// instruction with a relocation for the target address.
     ///
     /// The `symbol_id` is an index into the symbol table stored in `X86Mir`.
-    CallRel { symbol_id: u32 },
+    ///
+    /// `returns` carries the callee's control contract. Every Rue-to-Rue call
+    /// returns; a runtime helper carries whatever the ABI manifest declares, so
+    /// the trap helpers (`__rue_overflow` and siblings) are `Never`. Liveness
+    /// gives a `Never` call no successors, and allocation does not count its
+    /// clobbers against a value that is only live around it (RUE-1224).
+    CallRel {
+        symbol_id: u32,
+        returns: ReturnBehavior,
+    },
 
     /// `syscall` - Invoke system call.
     Syscall,
@@ -664,6 +675,30 @@ pub enum X86Inst {
 }
 
 impl X86Inst {
+    /// A call to a callee that returns normally.
+    ///
+    /// Every Rue-to-Rue call and every returning runtime helper uses this. A
+    /// call to a helper the ABI manifest declares `ReturnBehavior::Never` must
+    /// build [`X86Inst::CallRel`] directly with the manifest's behavior so
+    /// liveness sees it (RUE-1224).
+    pub const fn call(symbol_id: u32) -> Self {
+        Self::CallRel {
+            symbol_id,
+            returns: ReturnBehavior::Returns,
+        }
+    }
+
+    /// Whether this instruction never returns control to the next one.
+    pub const fn is_non_returning(&self) -> bool {
+        matches!(
+            self,
+            X86Inst::CallRel {
+                returns: ReturnBehavior::Never,
+                ..
+            }
+        )
+    }
+
     /// Returns physical registers clobbered by this instruction.
     ///
     /// This information is used by the register allocator to avoid assigning
@@ -815,7 +850,7 @@ impl fmt::Display for X86Inst {
             X86Inst::Jle { label } => write!(f, "jle {}", label),
             X86Inst::Jmp { label } => write!(f, "jmp {}", label),
             X86Inst::Label { id } => write!(f, "{}:", id),
-            X86Inst::CallRel { symbol_id } => write!(f, "call sym{}", symbol_id),
+            X86Inst::CallRel { symbol_id, .. } => write!(f, "call sym{}", symbol_id),
             X86Inst::Syscall => write!(f, "syscall"),
             X86Inst::Ret => write!(f, "ret"),
             X86Inst::Ud2 => write!(f, "ud2"),
@@ -1121,7 +1156,7 @@ impl fmt::Display for X86Mir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for inst in &self.instructions {
             // Special handling for CallRel to show actual symbol name
-            if let X86Inst::CallRel { symbol_id } = inst {
+            if let X86Inst::CallRel { symbol_id, .. } = inst {
                 writeln!(f, "    call {}", self.get_symbol(*symbol_id))?;
             } else {
                 writeln!(f, "    {}", inst)?;

@@ -375,8 +375,13 @@ impl<'a> CfgLower<'a> {
             }
         }
 
+        // The manifest's control contract travels with the call: a trap helper
+        // aborts, so liveness must not propagate anything past it (RUE-1224).
         let symbol_id = self.intern_symbol(plan.symbol());
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        self.mir.push(Aarch64Inst::Bl {
+            symbol_id,
+            returns: plan.return_behavior(),
+        });
 
         match plan.result() {
             RuntimeCallResult::OutPointer(shape) => {
@@ -880,7 +885,7 @@ impl<'a> CfgLower<'a> {
             });
         }
         let symbol_id = self.intern_symbol(plan.target.symbol());
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        self.mir.push(Aarch64Inst::call(symbol_id));
         if plan.stack_bytes > 0 {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
@@ -1153,7 +1158,7 @@ impl<'a> CfgLower<'a> {
             });
         }
         let symbol_id = self.intern_symbol(inputs.symbol_ref());
-        self.mir.push(Aarch64Inst::Bl { symbol_id });
+        self.mir.push(Aarch64Inst::call(symbol_id));
         if stack_bytes > 0 {
             self.mir.push(Aarch64Inst::AddImm {
                 dst: Operand::Physical(Reg::Sp),
@@ -4263,7 +4268,7 @@ mod tests {
         mir.instructions()
             .iter()
             .position(|inst| {
-                matches!(inst, Aarch64Inst::Bl { symbol_id } if mir.get_symbol(*symbol_id) == helper.symbol())
+                matches!(inst, Aarch64Inst::Bl { symbol_id, .. } if mir.get_symbol(*symbol_id) == helper.symbol())
             })
             .unwrap_or_else(|| panic!("missing call to {helper:?}"))
     }

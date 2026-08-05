@@ -30,6 +30,8 @@
 use std::collections::HashMap;
 use std::fmt;
 
+pub use rue_runtime_abi::ReturnBehavior;
+
 // Compile-time size assertions to prevent silent size growth during refactoring.
 // These limits are set slightly above current sizes to allow minor changes,
 // but will catch significant size regressions.
@@ -893,7 +895,16 @@ pub enum Aarch64Inst {
     /// `bl symbol` - Branch with link (call).
     ///
     /// The `symbol_id` is an index into the symbol table stored in `Aarch64Mir`.
-    Bl { symbol_id: u32 },
+    ///
+    /// `returns` carries the callee's control contract. Every Rue-to-Rue call
+    /// returns; a runtime helper carries whatever the ABI manifest declares, so
+    /// the trap helpers (`__rue_overflow` and siblings) are `Never`. Liveness
+    /// gives a `Never` call no successors, and allocation does not count its
+    /// clobbers against a value that is only live around it (RUE-1224).
+    Bl {
+        symbol_id: u32,
+        returns: ReturnBehavior,
+    },
 
     /// `ret` - Return (branch to LR).
     Ret,
@@ -939,6 +950,30 @@ pub enum Aarch64Inst {
 }
 
 impl Aarch64Inst {
+    /// A call to a callee that returns normally.
+    ///
+    /// Every Rue-to-Rue call and every returning runtime helper uses this. A
+    /// call to a helper the ABI manifest declares `ReturnBehavior::Never` must
+    /// build [`Aarch64Inst::Bl`] directly with the manifest's behavior so
+    /// liveness sees it (RUE-1224).
+    pub const fn call(symbol_id: u32) -> Self {
+        Self::Bl {
+            symbol_id,
+            returns: ReturnBehavior::Returns,
+        }
+    }
+
+    /// Whether this instruction never returns control to the next one.
+    pub const fn is_non_returning(&self) -> bool {
+        matches!(
+            self,
+            Aarch64Inst::Bl {
+                returns: ReturnBehavior::Never,
+                ..
+            }
+        )
+    }
+
     /// Returns physical registers clobbered by this instruction.
     ///
     /// This information is used by the register allocator to avoid assigning
@@ -1252,7 +1287,7 @@ impl fmt::Display for Aarch64Inst {
             Aarch64Inst::Bvs { label } => write!(f, "b.vs {}", label),
             Aarch64Inst::Bvc { label } => write!(f, "b.vc {}", label),
             Aarch64Inst::Label { id } => write!(f, "{}:", id),
-            Aarch64Inst::Bl { symbol_id } => write!(f, "bl sym{}", symbol_id),
+            Aarch64Inst::Bl { symbol_id, .. } => write!(f, "bl sym{}", symbol_id),
             Aarch64Inst::Ret => write!(f, "ret"),
             Aarch64Inst::Brk => write!(f, "brk #0x1"),
             Aarch64Inst::Svc { imm } => write!(f, "svc #{:#x}", imm),
@@ -1456,7 +1491,7 @@ impl fmt::Display for Aarch64Mir {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for inst in &self.instructions {
             // Special handling for Bl to show actual symbol name
-            if let Aarch64Inst::Bl { symbol_id } = inst {
+            if let Aarch64Inst::Bl { symbol_id, .. } = inst {
                 writeln!(f, "    bl {}", self.get_symbol(*symbol_id))?;
             } else {
                 writeln!(f, "    {}", inst)?;

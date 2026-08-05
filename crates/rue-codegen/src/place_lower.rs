@@ -549,7 +549,7 @@ mod tests {
             .position(|inst| {
                 matches!(
                     inst,
-                    X86Inst::CallRel { symbol_id }
+                    X86Inst::CallRel { symbol_id, .. }
                         if pair_x86.get_symbol(*symbol_id) == "__rue_bounds_check"
                 )
             })
@@ -578,7 +578,7 @@ mod tests {
             .position(|inst| {
                 matches!(
                     inst,
-                    Aarch64Inst::Bl { symbol_id }
+                    Aarch64Inst::Bl { symbol_id, .. }
                         if pair_arm.get_symbol(*symbol_id) == "__rue_bounds_check"
                 )
             })
@@ -677,10 +677,10 @@ mod tests {
         .lower()
         .expect("AArch64 indexed ZST fixture should lower");
         assert!(unit_index_x86.instructions().iter().any(|inst| {
-            matches!(inst, X86Inst::CallRel { symbol_id } if unit_index_x86.get_symbol(*symbol_id) == "__rue_bounds_check")
+            matches!(inst, X86Inst::CallRel { symbol_id, .. } if unit_index_x86.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
         assert!(unit_index_arm.instructions().iter().any(|inst| {
-            matches!(inst, Aarch64Inst::Bl { symbol_id } if unit_index_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
+            matches!(inst, Aarch64Inst::Bl { symbol_id, .. } if unit_index_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
 
         let unit_write_cfg = build_cfg("write_unit_index");
@@ -697,10 +697,10 @@ mod tests {
         .lower()
         .expect("AArch64 indexed ZST write fixture should lower");
         assert!(unit_write_x86.instructions().iter().any(|inst| {
-            matches!(inst, X86Inst::CallRel { symbol_id } if unit_write_x86.get_symbol(*symbol_id) == "__rue_bounds_check")
+            matches!(inst, X86Inst::CallRel { symbol_id, .. } if unit_write_x86.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
         assert!(unit_write_arm.instructions().iter().any(|inst| {
-            matches!(inst, Aarch64Inst::Bl { symbol_id } if unit_write_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
+            matches!(inst, Aarch64Inst::Bl { symbol_id, .. } if unit_write_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
     }
 
