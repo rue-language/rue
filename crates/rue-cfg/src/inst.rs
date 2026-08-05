@@ -747,6 +747,16 @@ pub struct Cfg {
     /// the AIR keeps a durable/imported body — which rebuilds its CFG from the
     /// same AIR — identical to its freshly analyzed counterpart.
     source_param_abi: Vec<rue_air::SourceParamAbi>,
+    /// The family ("basic blocks" / "values") whose per-function ceiling
+    /// ([`MAX_CFG_ENTITIES_PER_FUNCTION`], spec Appendix C.6:1) a
+    /// [`Cfg::new_block`] or [`Cfg::add_inst`] call ran past, if any.
+    ///
+    /// Both owner-index allocators are infallible and are called from hundreds
+    /// of construction and optimization sites, so the ceiling is recorded here
+    /// and reported once at the construction and optimization boundaries rather
+    /// than wrapping `len() as u32` onto an existing identity. Spec C.1:2
+    /// requires a diagnostic (`E1401`), not a wrapped index.
+    capacity_exceeded: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -780,6 +790,9 @@ pub enum CfgEditError {
     },
     /// A payload cannot be represented by the compact `u32` range format.
     ResourceLimitExceeded { family: &'static str },
+    /// One function's block or value arena ran past the published per-function
+    /// ceiling, so its next `u32` identity is not representable.
+    OwnerLimitExceeded { family: &'static str },
     /// Reserving storage failed without changing the CFG.
     CapacityFailure { family: &'static str },
 }
@@ -788,6 +801,32 @@ pub enum CfgEditError {
 /// ranges are `(start: u32, extent: u32)` into one shared store, so a program
 /// holds at most this many CFG payload words (spec Appendix C.6:1).
 pub const MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM: u32 = u32::MAX;
+
+/// The published per-function ceiling on CFG basic blocks and CFG values
+/// (spec Appendix C.6:1).
+///
+/// A [`BlockId`] and a [`CfgValue`] are `u32` indices into the arenas of **one**
+/// function's graph, and both arena lengths are narrowed to `u32` by graph
+/// traversal and domain projection, so a function holds at most this many of
+/// each. Exceeding either is a diagnosable compile-time failure (spec C.1:2),
+/// surfaced as `E1401` at the CFG construction and optimization boundaries.
+///
+/// This ceiling is *checked*, not argued unreachable: CFG entities are not a
+/// small constant multiple of the RIR instructions that produce them. Drop
+/// elaboration re-emits one drop (and, for a path-dependent move, a flag-guard
+/// block) per live slot at **every** exit, so a body with `N` droppable
+/// bindings and `M` `return` statements lowers to on the order of `N * M`
+/// values and blocks — quadratic, from a body that is linear in its source. See
+/// spec C.6:5 for the arithmetic that disproves the unreachability hypothesis.
+pub const MAX_CFG_ENTITIES_PER_FUNCTION: u32 = u32::MAX;
+
+/// The `u32` identity the next block or value in a per-function arena of
+/// `length` entries will take, or `None` once the published per-function
+/// ceiling leaves no representable identity.
+fn checked_owner_index(length: usize) -> Option<u32> {
+    let index = u32::try_from(length).ok()?;
+    (index < MAX_CFG_ENTITIES_PER_FUNCTION).then_some(index)
+}
 
 impl fmt::Display for CfgEditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -800,6 +839,11 @@ impl fmt::Display for CfgEditError {
                 "CFG {family} exceeded the implementation limit of \
                  {MAX_CFG_PAYLOAD_WORDS_PER_PROGRAM} payload words per program \
                  (spec Appendix C.6:1)"
+            ),
+            Self::OwnerLimitExceeded { family } => write!(
+                f,
+                "this function's CFG has more {family} than the implementation limit of \
+                 {MAX_CFG_ENTITIES_PER_FUNCTION} per function (spec Appendix C.6:1)"
             ),
             Self::CapacityFailure { family } => {
                 write!(f, "could not reserve storage for CFG {family} payload")
@@ -821,7 +865,7 @@ impl CfgEditError {
     /// `E1402`; only a malformed builder request remains an ICE.
     pub fn error_kind(&self, context: &str) -> rue_error::ErrorKind {
         match self {
-            Self::ResourceLimitExceeded { .. } => {
+            Self::ResourceLimitExceeded { .. } | Self::OwnerLimitExceeded { .. } => {
                 rue_error::ErrorKind::CompilerResourceLimit(self.to_string())
             }
             Self::CapacityFailure { .. } => {
@@ -954,6 +998,7 @@ impl Clone for Cfg {
             address_taken_slots: self.address_taken_slots.clone(),
             address_taken_params: self.address_taken_params.clone(),
             source_param_abi: self.source_param_abi.clone(),
+            capacity_exceeded: self.capacity_exceeded,
         }
     }
 }
@@ -1260,6 +1305,7 @@ impl Cfg {
             address_taken_slots: std::collections::HashSet::new(),
             address_taken_params: std::collections::HashSet::new(),
             source_param_abi: Vec::new(),
+            capacity_exceeded: None,
         }
     }
 
@@ -1399,10 +1445,31 @@ impl Cfg {
     }
 
     /// Create a new basic block and return its ID.
+    ///
+    /// A `BlockId` is a `u32` index into this function's block arena, so one
+    /// function holds at most [`MAX_CFG_ENTITIES_PER_FUNCTION`] blocks. Past
+    /// that, `len() as u32` would wrap block 2^32 onto the entry block and
+    /// silently reroute control flow. This allocator has no fallible callers,
+    /// so it latches [`Cfg::capacity_exceeded`] and hands back an existing
+    /// block; the construction and optimization boundaries turn the latch into
+    /// an `E1401` diagnostic before the graph is published (spec C.1:2).
     pub fn new_block(&mut self) -> BlockId {
-        let id = BlockId(self.blocks.len() as u32);
+        let Some(index) = checked_owner_index(self.blocks.len()) else {
+            self.capacity_exceeded.get_or_insert("basic blocks");
+            // The arena is full, so the entry block always exists.
+            return BlockId(0);
+        };
+        let id = BlockId(index);
         self.blocks.push(BasicBlock::new(id));
         id
+    }
+
+    /// The implementation-limit rejection latched by an infallible
+    /// [`Self::new_block`] or [`Self::add_inst`] that ran past the published
+    /// per-function ceiling, if any (spec Appendix C.6:1).
+    pub(crate) fn latched_capacity_error(&self) -> Option<CfgEditError> {
+        self.capacity_exceeded
+            .map(|family| CfgEditError::OwnerLimitExceeded { family })
     }
 
     /// Get a block by ID.
@@ -1418,8 +1485,17 @@ impl Cfg {
     }
 
     /// Add an instruction and return its value reference.
+    ///
+    /// A `CfgValue` is a `u32` index into this function's value arena, so one
+    /// function holds at most [`MAX_CFG_ENTITIES_PER_FUNCTION`] values. See
+    /// [`Self::new_block`] for why the ceiling is latched rather than returned.
     pub(crate) fn add_inst(&mut self, inst: CfgInst) -> CfgValue {
-        let value = CfgValue::from_raw(self.values.len() as u32);
+        let Some(index) = checked_owner_index(self.values.len()) else {
+            self.capacity_exceeded.get_or_insert("values");
+            // The arena is full, so value 0 always exists.
+            return CfgValue::from_raw(0);
+        };
+        let value = CfgValue::from_raw(index);
         self.values.push(inst);
         value
     }
@@ -3131,6 +3207,76 @@ mod tests {
             .code(),
             rue_error::ErrorCode::INTERNAL_ERROR
         );
+    }
+
+    #[test]
+    fn cfg_owner_limit_message_names_the_published_per_function_ceiling() {
+        // RUE-1226 / spec C.1:2: the per-function block and value arenas are a
+        // separate ceiling from the per-program payload word store, and its
+        // diagnostic has to name the one actually exceeded.
+        let error = CfgEditError::OwnerLimitExceeded {
+            family: "basic blocks",
+        };
+        assert_eq!(
+            error.to_string(),
+            "this function's CFG has more basic blocks than the implementation limit of \
+             4294967295 per function (spec Appendix C.6:1)"
+        );
+        assert_eq!(
+            error.error_kind("CFG construction failed").code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+        );
+        assert_eq!(MAX_CFG_ENTITIES_PER_FUNCTION, u32::MAX);
+    }
+
+    #[test]
+    fn owner_index_allocation_stops_at_the_published_ceiling() {
+        assert_eq!(checked_owner_index(0), Some(0));
+        assert_eq!(
+            checked_owner_index(MAX_CFG_ENTITIES_PER_FUNCTION as usize - 1),
+            Some(MAX_CFG_ENTITIES_PER_FUNCTION - 1)
+        );
+        // The final u32 identity is not allocated: `len() as u32` would then
+        // wrap the next entity onto identity 0.
+        assert_eq!(
+            checked_owner_index(MAX_CFG_ENTITIES_PER_FUNCTION as usize),
+            None
+        );
+    }
+
+    #[test]
+    fn an_ordinary_graph_never_latches_the_per_function_ceiling() {
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        let block = cfg.new_block();
+        assert_eq!(block, BlockId(0));
+        assert!(cfg.new_block() != block);
+        cfg.add_inst(CfgInst {
+            data: CfgInstData::Const(7),
+            ty: Type::I32,
+            span: Span::new(0, 1),
+        });
+        assert!(cfg.latched_capacity_error().is_none());
+    }
+
+    #[test]
+    fn a_latched_graph_reports_the_family_that_ran_out() {
+        // Reaching the ceiling needs 2^32 entities, so the latch itself is set
+        // here; `new_block`/`add_inst` set it the same way and then hand back an
+        // existing identity rather than a wrapped one.
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        cfg.new_block();
+        cfg.capacity_exceeded = Some("values");
+        let error = cfg.latched_capacity_error().expect("latched");
+        assert!(matches!(
+            error,
+            CfgEditError::OwnerLimitExceeded { family: "values" }
+        ));
+        assert_eq!(
+            error.error_kind("CFG construction failed").code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+        );
+        // The latch survives the clone every optimization transaction takes.
+        assert!(cfg.clone().latched_capacity_error().is_some());
     }
 
     #[test]

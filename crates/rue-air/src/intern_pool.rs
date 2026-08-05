@@ -28,7 +28,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 
 use lasso::Spur;
 use rue_span::FileId;
@@ -610,10 +610,59 @@ struct TypeInternPoolInner {
 /// 8-bit kind tag and a 24-bit type-pool index (spec Appendix C.6:1).
 pub const MAX_COMPOSITE_TYPES: u32 = type_encoding::MAX_PAYLOAD + 1;
 
+/// The user-facing text for a compilation refused by the composite-type
+/// ceiling (spec Appendix C.6:1, under the C.1:2 policy).
+///
+/// Shared so that the declaration-binding boundary — which stops the
+/// compilation as soon as the latch is visible — and the per-body CFG boundary
+/// that backstops it name the same limit in the same words.
+pub fn composite_type_limit_message() -> String {
+    format!(
+        "this compilation defines more distinct composite types (structs, enums, arrays, \
+         pointers, modules) than the implementation limit of {MAX_COMPOSITE_TYPES} — a live type \
+         handle is a u32 holding an 8-bit kind tag and a 24-bit type-pool index (spec Appendix \
+         C.6:1)"
+    )
+}
+
 fn checked_pool_index(index: usize) -> Option<u32> {
     let index = u32::try_from(index).ok()?;
     (index <= type_encoding::MAX_PAYLOAD).then_some(index)
 }
+
+/// The struct definition read back for a handle that the composite-type
+/// capacity latch aliased onto an entry of a different kind, and only for such
+/// a handle (see [`TypeInternPoolInner::next_pool_index`]).
+///
+/// The compilation this pool belongs to is already failing with `E1401` and
+/// nothing built from the pool will be published, so the read only has to be
+/// answerable without aborting (spec C.1:2). A field-less, drop-less,
+/// non-linear struct is the answer that keeps every dependent walk — ABI slot
+/// counting, containment, layout — finite and free of further aliased reads.
+static ALIASED_STRUCT_DEF: LazyLock<StructDefEntry> = LazyLock::new(|| {
+    StructDefEntry::new(StructDef {
+        name: Arc::from("<type-pool capacity exceeded>"),
+        fields: Vec::new(),
+        is_copy: false,
+        is_linear: false,
+        destructor: None,
+        is_builtin: false,
+        is_pub: false,
+        file_id: FileId::DEFAULT,
+    })
+});
+
+/// The enum counterpart of [`ALIASED_STRUCT_DEF`]. A variant-less enum has no
+/// payload to walk and no discriminant to widen.
+static ALIASED_ENUM_DEF: LazyLock<EnumDefEntry> = LazyLock::new(|| {
+    EnumDefEntry::new(EnumDef {
+        name: Arc::from("<type-pool capacity exceeded>"),
+        variants: Arc::from([] as [Arc<str>; 0]),
+        variant_payloads: Vec::new(),
+        is_pub: false,
+        file_id: FileId::DEFAULT,
+    })
+});
 
 /// Round `offset` up to the next multiple of `align` (a power of two, always at
 /// least 1). Saturating so an already-oversized aggregate cannot wrap; the slot
@@ -935,6 +984,23 @@ impl TypeInternPoolInner {
     /// pool read in range; the public accessors additionally re-check the kind
     /// tag against the entry, so an aliased handle degrades to `None` rather
     /// than to a mistyped entry.
+    ///
+    /// # The latch window
+    ///
+    /// The latch is set inside declaration collection, type resolution, or
+    /// specialization, and the diagnostic is reported at the declaration-binding
+    /// boundary (with the per-body CFG query as a backstop for a universe that
+    /// latches later). Registration continues in between (spec C.1:2 forbids an
+    /// abort), so aliased handles are *read* inside that window — most
+    /// immediately by `incremental_facts`, which walks the field types of the
+    /// very entry being registered, and then by every layout, ABI, and
+    /// containment query the remaining declarations trigger. An aliased handle
+    /// carries the kind tag its registration asked for while the entry it names
+    /// keeps the kind it was created with, so the `&`-returning definition
+    /// accessors below cannot assert the two agree; inside the window they
+    /// degrade to an empty definition of the requested kind
+    /// ([`ALIASED_STRUCT_DEF`], [`ALIASED_ENUM_DEF`]) instead of panicking. A
+    /// kind mismatch with no latch is still a producer bug and still panics.
     fn next_pool_index(&mut self) -> u32 {
         match checked_pool_index(self.entry_count()) {
             Some(index) => index,
@@ -1275,8 +1341,14 @@ impl TypeInternPoolInner {
     }
 
     fn struct_def(&self, id: StructId) -> &StructDefEntry {
-        self.try_struct_def(id)
-            .unwrap_or_else(|| panic!("Expected struct at pool index {}", id.0))
+        match self.try_struct_def(id) {
+            Some(def) => def,
+            // Only a capacity-latched pool can hand out a struct handle that
+            // names a non-struct entry; see `next_pool_index`. Anywhere else a
+            // kind mismatch is a producer bug and must stay loud.
+            None if self.capacity_exceeded() => &ALIASED_STRUCT_DEF,
+            None => panic!("Expected struct at pool index {}", id.0),
+        }
     }
 
     fn struct_def_mut(&mut self, id: StructId) -> &mut StructDef {
@@ -1328,13 +1400,22 @@ impl TypeInternPoolInner {
     }
 
     fn enum_def(&self, id: EnumId) -> &EnumDefEntry {
-        self.try_enum_def(id)
-            .unwrap_or_else(|| panic!("Expected enum at pool index {}", id.0))
+        match self.try_enum_def(id) {
+            Some(def) => def,
+            // See `struct_def`: an aliased handle is only possible inside the
+            // capacity-latch window.
+            None if self.capacity_exceeded() => &ALIASED_ENUM_DEF,
+            None => panic!("Expected enum at pool index {}", id.0),
+        }
     }
 
     fn array_def(&self, id: ArrayTypeId) -> (Type, u64) {
         match self.data(id.0) {
             TypeData::Array { element, len } => (*element, *len),
+            // See `struct_def`: inside the capacity-latch window an array
+            // handle can name an entry of another kind. A zero-length array of
+            // the error type terminates every dependent walk.
+            _ if self.capacity_exceeded() => (Type::ERROR, 0),
             other => panic!("Expected array at pool index {}, got {:?}", id.0, other),
         }
     }
@@ -1349,6 +1430,9 @@ impl TypeInternPoolInner {
     fn ptr_const_def(&self, id: PtrConstTypeId) -> Type {
         match self.data(id.pool_index()) {
             TypeData::PtrConst { pointee } => *pointee,
+            // See `struct_def`: aliasing is confined to the capacity-latch
+            // window, and the error type terminates the pointee walk.
+            _ if self.capacity_exceeded() => Type::ERROR,
             other => panic!(
                 "Expected ptr const at pool index {}, got {:?}",
                 id.pool_index(),
@@ -1360,6 +1444,8 @@ impl TypeInternPoolInner {
     fn ptr_mut_def(&self, id: PtrMutTypeId) -> Type {
         match self.data(id.pool_index()) {
             TypeData::PtrMut { pointee } => *pointee,
+            // See `ptr_const_def`.
+            _ if self.capacity_exceeded() => Type::ERROR,
             other => panic!(
                 "Expected ptr mut at pool index {}, got {:?}",
                 id.pool_index(),
@@ -2763,12 +2849,16 @@ impl TypeInternPool {
     ///
     /// # Panics
     ///
-    /// Panics if the StructId doesn't correspond to a struct in the pool.
+    /// Panics if the StructId doesn't correspond to a struct in the pool —
+    /// unless the composite-type capacity latch has aliased handles onto the
+    /// final entry, in which case the read degrades to an empty definition
+    /// while the compilation fails with `E1401` (spec C.1:2).
     #[track_caller]
     pub fn struct_def(&self, struct_id: StructId) -> Arc<StructDefEntry> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         match inner.try_struct_def_arc(struct_id) {
             Some(def) => Arc::clone(def),
+            None if inner.capacity_exceeded() => Arc::new(ALIASED_STRUCT_DEF.clone()),
             None => panic!("Expected complete struct at pool index {}", struct_id.0),
         }
     }
@@ -2894,12 +2984,14 @@ impl TypeInternPool {
     ///
     /// # Panics
     ///
-    /// Panics if the EnumId doesn't correspond to an enum in the pool.
+    /// Panics if the EnumId doesn't correspond to an enum in the pool — with
+    /// the same capacity-latch exemption as [`Self::struct_def`].
     #[track_caller]
     pub fn enum_def(&self, enum_id: EnumId) -> Arc<EnumDefEntry> {
         let inner = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         match inner.try_enum_def_arc(enum_id) {
             Some(def) => Arc::clone(def),
+            None if inner.capacity_exceeded() => Arc::new(ALIASED_ENUM_DEF.clone()),
             None => panic!("Expected complete enum at pool index {}", enum_id.0),
         }
     }
@@ -2995,6 +3087,14 @@ impl TypeInternPool {
             "destructor symbol must end with .__drop"
         );
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        // A capacity-latched pool aliases later registrations onto the final
+        // entry, so `struct_id` need not name a complete struct and the
+        // assertions below would be checking someone else's definition. The
+        // compilation is already failing with `E1401`; skip the metadata
+        // finalization instead of aborting (spec C.1:2).
+        if inner.capacity_exceeded() {
+            return;
+        }
         let def = inner.struct_def_mut(struct_id);
         assert!(!def.is_copy, "a copy struct cannot acquire a destructor");
         assert!(
@@ -3016,6 +3116,11 @@ impl TypeInternPool {
             "destructor symbol must end with .__drop"
         );
         let mut inner = self.inner.write().unwrap_or_else(PoisonError::into_inner);
+        // See `set_struct_destructor`: inside the capacity-latch window the
+        // handle need not name the struct this call means.
+        if inner.capacity_exceeded() {
+            return;
+        }
         let destructor = inner
             .struct_def_mut(struct_id)
             .destructor
@@ -3755,6 +3860,98 @@ mod tests {
         pool.try_intern_ptr_const(Type::I32).unwrap();
         assert!(!pool.capacity_exceeded());
         assert!(!pool.freeze().capacity_exceeded());
+    }
+
+    /// Drive the pool into the state `next_pool_index` reaches once the
+    /// composite-type ceiling is exhausted, without materializing 2^24 entries.
+    fn latch_composite_type_ceiling(pool: &TypeInternPool) {
+        pool.inner
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .capacity_exceeded = true;
+    }
+
+    #[test]
+    fn latched_pool_degrades_wrong_kind_definition_reads_instead_of_aborting() {
+        // RUE-1226 / spec C.1:2: between the capacity latch and the boundary
+        // that reports E1401, registrations alias the final entry, so a handle
+        // can carry a kind tag the entry it names does not have. Reading one
+        // must not abort the compiler.
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (struct_id, _) = pool.register_struct(
+            interner.get_or_intern("Owner"),
+            struct_def(
+                "Owner",
+                vec![StructField {
+                    name: "value".into(),
+                    ty: Type::I32,
+                }],
+            ),
+        );
+        latch_composite_type_ceiling(&pool);
+
+        let aliased_enum = EnumId::from_pool_index(struct_id.pool_index());
+        assert_eq!(pool.enum_def(aliased_enum).variant_count(), 0);
+
+        let frozen = pool.freeze();
+        assert!(frozen.capacity_exceeded());
+        assert_eq!(frozen.enum_def(aliased_enum).variant_count(), 0);
+        assert_eq!(frozen.struct_def(struct_id).fields.len(), 1);
+        // Every other `&`-returning definition accessor degrades the same way,
+        // so a containment or ABI walk that meets an aliased handle terminates.
+        assert_eq!(
+            frozen.array_def(ArrayTypeId::from_pool_index(struct_id.pool_index())),
+            (Type::ERROR, 0)
+        );
+        assert_eq!(
+            frozen.ptr_const_def(PtrConstTypeId::from_pool_index(struct_id.pool_index())),
+            Type::ERROR
+        );
+        assert_eq!(
+            frozen.ptr_mut_def(PtrMutTypeId::from_pool_index(struct_id.pool_index())),
+            Type::ERROR
+        );
+        // The aliased enum is walkable: no payload, no further aliased reads,
+        // so an ABI or containment walk that meets it terminates rather than
+        // recursing into a mistyped entry.
+        assert_eq!(frozen.inner.abi_slot_count(Type::new_enum(aliased_enum)), 1);
+        // The validating, backend-facing entry points still refuse the aliased
+        // handle. They are not reached in a latched compilation: declaration
+        // binding stops it, and the per-body CFG query backstops that before it
+        // projects domains or queries layouts.
+        assert_eq!(
+            frozen
+                .inner
+                .validate_complete_type(Type::new_enum(aliased_enum)),
+            Err(TypeValidationError::KindMismatch)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Expected complete enum at pool index")]
+    fn a_wrong_kind_handle_without_the_latch_is_still_a_producer_bug() {
+        // The degradation above is scoped to the latch window; a kind mismatch
+        // in a healthy pool stays loud, so the ICE surface does not grow.
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (struct_id, _) =
+            pool.register_struct(interner.get_or_intern("Owner"), struct_def("Owner", vec![]));
+        let _ = pool.enum_def(EnumId::from_pool_index(struct_id.pool_index()));
+    }
+
+    #[test]
+    fn latched_pool_skips_destructor_metadata_finalization() {
+        // `set_struct_destructor` asserts against the definition it finds, but
+        // inside the latch window the handle need not name it. The compilation
+        // is already failing with E1401; the finalization is skipped instead.
+        let interner = ThreadedRodeo::default();
+        let pool = TypeInternPool::new();
+        let (struct_id, _) =
+            pool.register_struct(interner.get_or_intern("Owner"), struct_def("Owner", vec![]));
+        latch_composite_type_ceiling(&pool);
+        pool.set_struct_destructor(struct_id, "Owner.__drop".to_string());
+        assert!(pool.struct_def(struct_id).destructor.is_none());
     }
 
     #[test]

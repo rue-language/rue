@@ -616,14 +616,27 @@ impl<'a> CfgBuilder<'a> {
         let source_param_abi = derive_source_param_abi(&builder);
         builder.cfg.set_source_param_abi(source_param_abi);
 
-        let cfg = match builder.cfg.finish(builder.type_pool) {
-            Ok(cfg) => Some(cfg),
-            Err(error) => {
-                builder.errors.push(CompileError::new(
-                    ErrorKind::InternalError(error.to_string()),
-                    rue_span::Span::default(),
-                ));
-                None
+        // Report the published per-function block/value ceiling before
+        // verification: a latched graph holds identities that were handed back
+        // instead of allocated, so every structural finding downstream is a
+        // consequence of the limit rather than a producer bug. Spec C.1:2 wants
+        // the limit named (E1401), not the E9000 the verifier would raise.
+        let cfg = if let Some(error) = builder.cfg.latched_capacity_error() {
+            builder.errors.push(CompileError::new(
+                error.error_kind("CFG construction failed"),
+                rue_span::Span::default(),
+            ));
+            None
+        } else {
+            match builder.cfg.finish(builder.type_pool) {
+                Ok(cfg) => Some(cfg),
+                Err(error) => {
+                    builder.errors.push(CompileError::new(
+                        ErrorKind::InternalError(error.to_string()),
+                        rue_span::Span::default(),
+                    ));
+                    None
+                }
             }
         };
         CfgOutput {

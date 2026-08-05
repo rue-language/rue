@@ -32,6 +32,21 @@ use rue_span::Span;
 #[cfg(any(test, feature = "fuzz-support"))]
 mod payload_support;
 
+/// The published ceiling on AIR instructions in **one function body**
+/// (spec Appendix C.6:1).
+///
+/// Unlike the RIR instruction ceiling, which counts one shared per-program
+/// array, every function body owns a private AIR instruction array addressed by
+/// its own [`AirRef`] — a `u32`. The array's length is narrowed to `u32` at the
+/// payload-staging boundary (`Air::reserve_instruction`), so a body holds at
+/// most this many instructions and the last `u32` index is left unused rather
+/// than making the count itself unrepresentable.
+///
+/// Exceeding the ceiling is a diagnosable compile-time failure (spec C.1:2),
+/// surfaced as `E1401` at the semantic AIR boundary ([`Air::finish`]) — never a
+/// truncated `AirRef` that aliases instruction 0 onto instruction 2^32.
+pub const MAX_AIR_INSTRUCTIONS_PER_BODY: u32 = u32::MAX;
+
 /// Structured failure returned by checked AIR payload decoding.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AirPayloadError {
@@ -137,17 +152,51 @@ impl From<AirBuildError> for rue_error::CompileError {
     }
 }
 
+/// Why an AIR owner was refused at its publication boundary.
+///
+/// The boundary reports two unrelated things. A structural inconsistency is a
+/// producer bug and stays an internal compiler error; running past a published
+/// implementation limit is a diagnosable compile-time failure that must name
+/// the limit (spec C.1:2), so it needs its own typed channel out of
+/// [`Air::finish`] rather than collapsing into `E9000`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AirValidationErrorKind {
+    /// The owner does not satisfy AIR's structural invariants (`E9000`).
+    Structural,
+    /// Construction ran past a published implementation limit
+    /// (spec Appendix C.6:1). Reported as `E1401` naming the limit.
+    ResourceLimit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct AirValidationError {
     pub instruction: Option<usize>,
     pub reason: String,
+    pub kind: AirValidationErrorKind,
+}
+
+impl AirValidationError {
+    /// Whether this rejection is an implementation-limit failure (spec C.1:2)
+    /// rather than a producer bug. Consumers use it to pick `E1401` over an
+    /// internal-error code.
+    pub fn is_resource_limit(&self) -> bool {
+        matches!(self.kind, AirValidationErrorKind::ResourceLimit)
+    }
 }
 
 impl fmt::Display for AirValidationError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.instruction {
-            Some(index) => write!(f, "invalid AIR instruction {index}: {}", self.reason),
-            None => write!(f, "invalid AIR: {}", self.reason),
+        // A limit rejection already reads as a user-facing sentence naming the
+        // exceeded ceiling; the "invalid AIR" prefix belongs only to the
+        // structural (compiler-bug) channel.
+        match (self.kind, self.instruction) {
+            (AirValidationErrorKind::ResourceLimit, _) => f.write_str(&self.reason),
+            (AirValidationErrorKind::Structural, Some(index)) => {
+                write!(f, "invalid AIR instruction {index}: {}", self.reason)
+            }
+            (AirValidationErrorKind::Structural, None) => {
+                write!(f, "invalid AIR: {}", self.reason)
+            }
         }
     }
 }
@@ -156,9 +205,15 @@ impl std::error::Error for AirValidationError {}
 
 impl From<AirValidationError> for rue_error::CompileError {
     fn from(error: AirValidationError) -> Self {
-        rue_error::CompileError::without_span(rue_error::ErrorKind::InternalError(
-            error.to_string(),
-        ))
+        let kind = match error.kind {
+            AirValidationErrorKind::ResourceLimit => {
+                rue_error::ErrorKind::CompilerResourceLimit(error.to_string())
+            }
+            AirValidationErrorKind::Structural => {
+                rue_error::ErrorKind::InternalError(error.to_string())
+            }
+        };
+        rue_error::CompileError::without_span(kind)
     }
 }
 
@@ -1019,6 +1074,17 @@ pub struct Air {
     /// so the binder aliases an element the collection still owns and drops —
     /// dropping the binder too would double-free (RUE-259).
     borrow_slots: Vec<u32>,
+    /// Set once [`Air::push_inst`] was asked for an instruction beyond the
+    /// published per-body ceiling ([`MAX_AIR_INSTRUCTIONS_PER_BODY`],
+    /// spec Appendix C.6:1).
+    ///
+    /// `push_inst` runs from every non-payload lowering site in semantic
+    /// analysis and returns a bare `AirRef`, so the ceiling cannot be reported
+    /// by threading a `Result` back through all of them. The owner records the
+    /// rejection here, stops growing, and [`Air::finish`] converts the record
+    /// into the `E1401` diagnostic spec C.1:2 requires instead of handing back
+    /// an index truncated by `len() as u32`.
+    instruction_limit_exceeded: bool,
     #[cfg(test)]
     place_reserve_failure: Option<PlaceReserveFailure>,
 }
@@ -1328,9 +1394,17 @@ impl ValidatedAir {
 
 impl Air {
     fn finish(self, context: AirValidationContext<'_>) -> Result<ValidatedAir, AirValidationError> {
+        // Report the published per-body instruction ceiling first: a latched
+        // owner holds a truncated reference graph, so every structural finding
+        // downstream would be a consequence of the limit rather than a producer
+        // bug, and spec C.1:2 wants the limit named (E1401), not an E9000.
+        if let Some(error) = self.latched_capacity_error() {
+            return Err(error);
+        }
         let fail = |instruction, reason| AirValidationError {
             instruction,
             reason,
+            kind: AirValidationErrorKind::Structural,
         };
         let type_cache = std::cell::RefCell::new(([Type::UNIT; 64], 0usize));
         let validate_type = |ty| -> Result<(), String> {
@@ -2294,6 +2368,7 @@ impl Air {
             places: Vec::new(),
             param_drops: Vec::new(),
             borrow_slots: Vec::new(),
+            instruction_limit_exceeded: false,
             #[cfg(test)]
             place_reserve_failure: None,
         }
@@ -2332,13 +2407,26 @@ impl Air {
         self.push_inst(inst)
     }
 
+    /// Preflight one instruction slot for a payload-bearing owner builder.
+    ///
+    /// Payload builders are already fallible, so they reject the published
+    /// per-body ceiling directly instead of relying on `push_inst`'s latch. The
+    /// admissible indices are `0..MAX_AIR_INSTRUCTIONS_PER_BODY`, which is
+    /// exactly the range `push_inst` will accept.
     fn reserve_instruction(&mut self, family: &'static str) -> Result<(), AirBuildError> {
-        u32::try_from(self.instructions.len()).map_err(|_| AirBuildError {
-            phase: "AIR",
-            family,
-            operation: "insert instruction",
-            kind: AirBuildErrorKind::ResourceLimit,
-        })?;
+        let over_limit = match u32::try_from(self.instructions.len()) {
+            Ok(index) => index == MAX_AIR_INSTRUCTIONS_PER_BODY,
+            Err(_) => true,
+        };
+        if over_limit {
+            self.instruction_limit_exceeded = true;
+            return Err(AirBuildError {
+                phase: "AIR",
+                family,
+                operation: "insert instruction",
+                kind: AirBuildErrorKind::ResourceLimit,
+            });
+        }
         self.instructions.try_reserve(1).map_err(|_| AirBuildError {
             phase: "AIR",
             family,
@@ -2368,10 +2456,44 @@ impl Air {
         Ok(())
     }
 
+    /// Append an instruction and return its reference.
+    ///
+    /// An `AirRef` is a `u32` index into this body's instruction array, so a
+    /// body holds at most [`MAX_AIR_INSTRUCTIONS_PER_BODY`] instructions.
+    /// Beyond that the reference is not representable: `len() as u32` would
+    /// wrap instruction 2^32 onto instruction 0 and silently alias two
+    /// distinct values, which spec C.1:2 forbids. This method has no fallible
+    /// callers, so it latches [`Air::instruction_limit_exceeded`] and hands
+    /// back an already-valid reference; [`Air::finish`] turns the latch into an
+    /// `E1401` diagnostic before the body is published.
     fn push_inst(&mut self, inst: AirInst) -> AirRef {
+        let over_limit = match u32::try_from(self.instructions.len()) {
+            Ok(index) => index == MAX_AIR_INSTRUCTIONS_PER_BODY,
+            Err(_) => true,
+        };
+        if over_limit {
+            self.instruction_limit_exceeded = true;
+            // The array is full, so index 0 is always a live instruction.
+            return AirRef::from_raw(0);
+        }
         let index = self.instructions.len() as u32;
         self.instructions.push(inst);
         AirRef::from_raw(index)
+    }
+
+    /// The implementation-limit rejection latched during construction, if this
+    /// body ran past the published per-body instruction ceiling. Checked at the
+    /// publication boundary ([`Air::finish`]).
+    fn latched_capacity_error(&self) -> Option<AirValidationError> {
+        self.instruction_limit_exceeded.then(|| AirValidationError {
+            instruction: None,
+            reason: format!(
+                "this function body has more AIR instructions than the implementation limit \
+                     of {MAX_AIR_INSTRUCTIONS_PER_BODY} per body — an AIR instruction reference \
+                     is a u32 index into one body's instruction array (spec Appendix C.6:1)"
+            ),
+            kind: AirValidationErrorKind::ResourceLimit,
+        })
     }
 
     /// Get an instruction by reference.
@@ -3811,6 +3933,76 @@ impl Air {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod resource_limit_tests {
+    use super::*;
+
+    #[test]
+    fn published_air_body_ceiling_matches_the_addressable_reference_space() {
+        // Spec Appendix C.6:1: an `AirRef` is a u32 index into one body's own
+        // instruction array, and the array length is narrowed to u32 at the
+        // payload-staging boundary, so the count itself stays representable.
+        assert_eq!(MAX_AIR_INSTRUCTIONS_PER_BODY, u32::MAX);
+        assert_eq!(u64::from(MAX_AIR_INSTRUCTIONS_PER_BODY), 4_294_967_295);
+    }
+
+    #[test]
+    fn ordinary_air_owner_never_latches_the_body_ceiling() {
+        let pool = TypeInternPool::new().freeze();
+        let mut editor = AirEditor::new(Type::UNIT);
+        editor.add_unit(Span::new(0, 0));
+        assert!(editor.air.latched_capacity_error().is_none());
+        assert!(
+            editor
+                .finish(AirValidationContext::Canonical(&pool))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_latched_body_is_refused_with_a_diagnostic_naming_the_limit() {
+        // RUE-1226 / spec C.1:2: `push_inst` is infallible, so the per-body
+        // ceiling is latched during lowering and reported here, naming the
+        // limit, rather than truncating `len() as u32` onto instruction 0.
+        let pool = TypeInternPool::new().freeze();
+        let mut editor = AirEditor::new(Type::UNIT);
+        editor.add_unit(Span::new(0, 0));
+        editor.air.instruction_limit_exceeded = true;
+
+        let error = editor
+            .finish(AirValidationContext::Canonical(&pool))
+            .unwrap_err();
+        assert!(error.is_resource_limit());
+        assert!(error.to_string().contains("4294967295"));
+        assert!(error.to_string().contains("spec Appendix C.6:1"));
+        assert!(!error.to_string().contains("invalid AIR"));
+    }
+
+    #[test]
+    fn air_boundary_failures_are_classified_apart_from_internal_errors() {
+        let limit = AirValidationError {
+            instruction: None,
+            reason: "over the ceiling".to_string(),
+            kind: AirValidationErrorKind::ResourceLimit,
+        };
+        let structural = AirValidationError {
+            instruction: Some(3),
+            reason: "bad operand".to_string(),
+            kind: AirValidationErrorKind::Structural,
+        };
+        assert!(limit.is_resource_limit());
+        assert!(!structural.is_resource_limit());
+        assert_eq!(
+            rue_error::CompileError::from(limit).kind.code(),
+            rue_error::ErrorCode::COMPILER_RESOURCE_LIMIT
+        );
+        assert_eq!(
+            rue_error::CompileError::from(structural).kind.code(),
+            rue_error::ErrorCode::INTERNAL_ERROR
+        );
     }
 }
 

@@ -283,6 +283,13 @@ fn publish_optimization(
     type_pool: &FrozenTypeInternPool,
 ) -> Result<ValidatedCfg, CfgOptimizationError> {
     pass_result?;
+    // A pass that allocated past the published per-function block/value ceiling
+    // (spec Appendix C.6:1) latched instead of wrapping an identity; report the
+    // limit here rather than letting verification raise an E9000 about the
+    // aliased identity it handed back.
+    if let Some(error) = cfg.latched_capacity_error() {
+        return Err(error.into());
+    }
     // Recheck the graph handed to codegen. DCE deliberately leaves detached
     // dead values in the arena, so attachment completeness was established by
     // the strict pre-pass check above; all live attachments and uses are still
