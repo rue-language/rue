@@ -3032,6 +3032,131 @@ impl Rir {
         Ok(())
     }
 
+    /// Append every instruction `instruction` references — its operands, block
+    /// members, match-arm bodies, call arguments, and nested declaration
+    /// bodies — to `out`.
+    ///
+    /// The match is exhaustive with no catch-all arm, so a new [`InstData`]
+    /// variant does not compile until its operands are listed here. That is
+    /// what lets a consumer walk an instruction's whole subtree without
+    /// silently missing a syntactic form; the accessor-body legality rules
+    /// (spec 6.6:6, 6.6:7) decide containment questions this way, before any
+    /// type resolves.
+    ///
+    /// Declaration-forming variants report their nested bodies as children. A
+    /// consumer that must not cross a declaration boundary — a nested `fn` owns
+    /// its own body — stops on the declaration instruction itself rather than
+    /// filtering the children out here.
+    pub fn child_instructions(&self, instruction: InstRef, out: &mut Vec<InstRef>) {
+        match &self.get(instruction).data {
+            InstData::IntConst(_)
+            | InstData::BoolConst(_)
+            | InstData::UnitConst
+            | InstData::Continue
+            | InstData::StringConst { .. }
+            | InstData::VarRef { .. }
+            | InstData::TypeConst { .. }
+            | InstData::TypeIntrinsic { .. }
+            | InstData::OffsetOf { .. }
+            | InstData::EnumDecl { .. }
+            | InstData::AnonEnumType { .. } => {}
+            InstData::Add { lhs, rhs }
+            | InstData::Sub { lhs, rhs }
+            | InstData::Mul { lhs, rhs }
+            | InstData::Div { lhs, rhs }
+            | InstData::Mod { lhs, rhs }
+            | InstData::Eq { lhs, rhs }
+            | InstData::Ne { lhs, rhs }
+            | InstData::Lt { lhs, rhs }
+            | InstData::Gt { lhs, rhs }
+            | InstData::Le { lhs, rhs }
+            | InstData::Ge { lhs, rhs }
+            | InstData::And { lhs, rhs }
+            | InstData::Or { lhs, rhs }
+            | InstData::BitAnd { lhs, rhs }
+            | InstData::BitOr { lhs, rhs }
+            | InstData::BitXor { lhs, rhs }
+            | InstData::Shl { lhs, rhs }
+            | InstData::Shr { lhs, rhs } => out.extend([*lhs, *rhs]),
+            InstData::Neg { operand }
+            | InstData::Not { operand }
+            | InstData::BitNot { operand }
+            | InstData::Try { operand }
+            | InstData::Comptime { expr: operand }
+            | InstData::Checked { expr: operand }
+            | InstData::Yield(operand) => out.push(*operand),
+            InstData::Branch {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                out.extend([*cond, *then_block]);
+                out.extend(else_block.iter().copied());
+            }
+            InstData::Loop { cond, body } => out.extend([*cond, *body]),
+            InstData::InfiniteLoop { body, .. } => out.push(*body),
+            InstData::Match { scrutinee, arms } => {
+                out.push(*scrutinee);
+                for (pattern, body) in self.match_arms(arms).iter() {
+                    out.push(body);
+                    if let RirPatternView::Path {
+                        module, ctor_head, ..
+                    } = pattern
+                    {
+                        out.extend(module);
+                        out.extend(ctor_head);
+                    }
+                }
+            }
+            InstData::Break { value } | InstData::Ret(value) => out.extend(value.iter().copied()),
+            InstData::FnDecl { body, .. } | InstData::DropFnDecl { body, .. } => out.push(*body),
+            InstData::ConstDecl { init, .. } | InstData::Alloc { init, .. } => out.push(*init),
+            InstData::Call { args, .. } => {
+                out.extend(self.call_args(args).values().map(|arg| arg.value))
+            }
+            InstData::MethodCall { receiver, args, .. } => {
+                out.push(*receiver);
+                out.extend(self.call_args(args).values().map(|arg| arg.value));
+            }
+            InstData::Intrinsic { args, .. } => out.extend(self.intrinsic_args(args).values()),
+            InstData::InternalIntrinsic { args, .. } => {
+                out.extend(self.internal_intrinsic_args(args).values())
+            }
+            InstData::Block { instructions } => out.extend(self.block_insts(instructions).values()),
+            InstData::Assign { value, .. } => out.push(*value),
+            InstData::StructDecl { methods, .. } => {
+                out.extend(self.struct_methods(methods).values())
+            }
+            InstData::AnonStructType { methods, .. } => {
+                out.extend(self.anon_struct_methods(methods).values())
+            }
+            InstData::StructInit {
+                module,
+                ctor_head,
+                fields,
+                ..
+            } => {
+                out.extend(module.iter().copied());
+                out.extend(ctor_head.iter().copied());
+                out.extend(self.field_inits(fields).values().map(|(_, value)| value));
+            }
+            InstData::FieldGet { base, .. } => out.push(*base),
+            InstData::FieldSet { base, value, .. } => out.extend([*base, *value]),
+            InstData::EnumVariant { module, .. } => out.extend(module.iter().copied()),
+            InstData::ArrayInit { elements } => out.extend(self.array_elements(elements).values()),
+            InstData::ArrayRepeat { value, .. } => out.push(*value),
+            InstData::IndexGet {
+                base,
+                index: subscript,
+            } => out.extend([*base, *subscript]),
+            InstData::IndexSet {
+                base,
+                index: subscript,
+                value,
+            } => out.extend([*base, *subscript, *value]),
+        }
+    }
+
     fn validate_directive_range(&self, range: &RirDirectivesRange) -> Result<(), RirPayloadError> {
         self.validate_variable_records(
             range,

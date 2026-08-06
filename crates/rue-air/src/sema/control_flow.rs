@@ -1352,8 +1352,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // A `?` early return is a non-diverging exit that bypasses an
         // accessor body's single trailing `yield` (ADR-0062 phase 1).
         if ctx.accessor_trailing_yield.is_some() {
-            return Err(CompileError::new(ErrorKind::AccessorBodyMissingYield, span)
-                .with_note("an accessor body cannot contain `?`; guards may only diverge or fall through to the trailing `yield`"));
+            return Err(CompileError::new(
+                ErrorKind::AccessorBodyOtherExit {
+                    found: "a `?`".to_string(),
+                },
+                span,
+            ));
         }
         let return_type = ctx.return_type;
 
@@ -1801,8 +1805,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             return Err(CompileError::new(ErrorKind::YieldOutsideAccessor, span));
         };
         if trailing != inst_ref {
-            return Err(CompileError::new(ErrorKind::AccessorBodyMissingYield, span)
-                .with_note("this `yield` is not the single trailing exit of the accessor body"));
+            return Err(CompileError::new(
+                ErrorKind::AccessorBodyOtherExit {
+                    found: "a second `yield`".to_string(),
+                },
+                span,
+            ));
         }
 
         // The yielded place must be a projection chain rooted at the receiver
@@ -1920,8 +1928,12 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // (ADR-0062 phase 1); an early `return` would be a non-diverging exit
         // that bypasses it.
         if ctx.accessor_trailing_yield.is_some() {
-            return Err(CompileError::new(ErrorKind::AccessorBodyMissingYield, span)
-                .with_note("an accessor body cannot contain `return`; guards may only diverge or fall through to the trailing `yield`"));
+            return Err(CompileError::new(
+                ErrorKind::AccessorBodyOtherExit {
+                    found: "a `return`".to_string(),
+                },
+                span,
+            ));
         }
         let inner_air_ref = if let Some(inner) = inner {
             // Explicit return with value. A `str`-returning function

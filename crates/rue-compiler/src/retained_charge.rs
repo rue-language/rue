@@ -1344,6 +1344,7 @@ impl RetainedCharge for rue_error::ErrorKind {
             | E::BorrowInoutConflict { variable: value }
             | E::MoveOutOfInout { variable: value }
             | E::AccessorYieldNotReceiverRooted { found: value }
+            | E::AccessorBodyOtherExit { found: value }
             | E::AccessorRequiresBorrowSelf { found: value }
             | E::AccessorResultMoved { ty: value }
             | E::AccessorLoanConflict {

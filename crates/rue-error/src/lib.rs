@@ -1560,6 +1560,15 @@ pub enum ErrorKind {
         "an accessor body must end in a single trailing `yield`: every non-diverging path must fall through to it, and no code may follow it"
     )]
     AccessorBodyMissingYield,
+    /// An accessor body contains an exit that bypasses its trailing `yield`:
+    /// a second `yield`, a `return`, or a `?` (ADR-0062 phase 1). Shares
+    /// E0254 with [`ErrorKind::AccessorBodyMissingYield`]; the two halves of
+    /// 6.6:6 differ only in which way the body fails to end in exactly one
+    /// `yield`.
+    #[error(
+        "an accessor body must end in a single trailing `yield`, but this body contains {found}: guards may only diverge or fall through to the trailing `yield`"
+    )]
+    AccessorBodyOtherExit { found: String },
     /// The operand of an accessor's `yield` is not a place rooted at the
     /// receiver parameter.
     #[error("an accessor must yield a place rooted at `self`, not {found}")]
@@ -2080,7 +2089,9 @@ impl ErrorKind {
             ErrorKind::AccessorResultStored { .. } => ErrorCode::ACCESSOR_RESULT_STORED,
             ErrorKind::AccessorResultBound { .. } => ErrorCode::ACCESSOR_RESULT_BOUND,
             ErrorKind::AccessorResultCaptured { .. } => ErrorCode::ACCESSOR_RESULT_CAPTURED,
-            ErrorKind::AccessorBodyMissingYield => ErrorCode::ACCESSOR_BODY_MISSING_YIELD,
+            ErrorKind::AccessorBodyMissingYield | ErrorKind::AccessorBodyOtherExit { .. } => {
+                ErrorCode::ACCESSOR_BODY_MISSING_YIELD
+            }
             ErrorKind::AccessorYieldNotReceiverRooted { .. } => {
                 ErrorCode::ACCESSOR_YIELD_NOT_RECEIVER_ROOTED
             }
