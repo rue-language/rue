@@ -7,7 +7,7 @@
 //! 12 registers each family directly with the runtime; native selection roots
 //! retain the current and last-good terminals.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -400,6 +400,7 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::codegen_query::CodegenUnitQueryKey,
         crate::codegen_query::CodegenUnitValue,
     >,
+    backend_root_publications: QueryFamily<BackendRootPublicationKey, bool>,
     /// One-shot rendezvous inside the registered CodegenUnit evaluator. Unit
     /// tests use it to force an exact-key owner to remain live while a second
     /// request joins or cancels. It changes scheduling only: both requests still
@@ -496,6 +497,14 @@ pub(crate) struct RevisionedQueryDatabase {
     body_closure_root: Arc<Mutex<PublishedBodyClosureRoot>>,
     #[allow(dead_code)]
     body_reachability_root: Arc<Mutex<PublishedBodyReachabilityRoot>>,
+    /// The exact backend terminal cone selected by the latest successful
+    /// rooted codegen collection. The candidate set is populated while each
+    /// request lease is still live, then installed before the predecessor is
+    /// released so programs wider than the family retention floor stay warm.
+    #[cfg_attr(not(test), allow(dead_code))]
+    backend_root: Arc<Mutex<PublishedBackendRoot>>,
+    backend_root_publication_gate: BackendRootPublicationGate,
+    next_backend_root_epoch: std::sync::atomic::AtomicU64,
     /// Session-scoped injection shared with structured body-query children.
     /// Keeping it on the database avoids both thread-local scheduler escapes
     /// and cross-test interference between independent compiler sessions.
@@ -977,7 +986,7 @@ struct PublishedBodyClosureLookupRollback {
 
 #[derive(Debug, Default)]
 struct PublishedBodyClosureRoot {
-    lease: rue_query::RetainedPinSet,
+    lease: Arc<rue_query::RetainedPinSet>,
     reached: BTreeSet<crate::FunctionInstanceKey>,
     additions: u64,
     deletions: u64,
@@ -985,13 +994,147 @@ struct PublishedBodyClosureRoot {
 
 #[derive(Debug, Default)]
 struct PublishedBodyReachabilityRoot {
+    lease: Arc<rue_query::RetainedPinSet>,
+}
+
+/// One in-flight rooted backend collection. Merely collecting or pinning a
+/// terminal cannot alter the session's published root: only
+/// [`RevisionedQueryDatabase::publish_backend_root`] installs this candidate.
+/// Dropping a failed, canceled, or speculative collection releases only its
+/// candidate pins and leaves the last successful root untouched.
+#[derive(Debug, Default)]
+pub(crate) struct BackendRootCandidate {
     lease: rue_query::RetainedPinSet,
+    functions: BTreeSet<crate::FunctionInstanceKey>,
+    cfg_keys: HashSet<crate::cfg_query::CfgQueryKey>,
+    optimized_cfg_terminals: usize,
+    codegen_unit_terminals: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BackendRootPublicationKey {
+    epoch: u64,
+    codegen_units: Arc<[crate::codegen_query::CodegenUnitQueryKey]>,
+    functions: Arc<[crate::FunctionInstanceKey]>,
+    cfg_terminals: usize,
+}
+
+#[derive(Debug, Default)]
+struct BackendRootPublicationGate(Mutex<()>);
+
+impl BackendRootPublicationGate {
+    fn enter(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl QueryKey for BackendRootPublicationKey {
+    fn stable_identity(&self) -> String {
+        format!(
+            "backend-root;epoch={};units={}",
+            self.epoch,
+            self.codegen_units.len()
+        )
+    }
+}
+
+#[derive(Debug, Default)]
+struct PublishedBackendRoot {
+    #[allow(dead_code)] // Owning the set is the retention root.
+    lease: Arc<rue_query::RetainedPinSet>,
+    functions: BTreeSet<crate::FunctionInstanceKey>,
+    #[allow(dead_code)]
+    cfg_terminals: usize,
+    #[allow(dead_code)]
+    optimized_cfg_terminals: usize,
+    #[allow(dead_code)]
+    codegen_unit_terminals: usize,
+    publications: u64,
+    additions: u64,
+    deletions: u64,
+}
+
+#[derive(Debug)]
+struct PublishedBackendRootHandoff {
+    root: Arc<Mutex<PublishedBackendRoot>>,
+    pending: Option<Arc<rue_query::RetainedPinSet>>,
+    functions: Option<BTreeSet<crate::FunctionInstanceKey>>,
+    cfg_terminals: usize,
+    optimized_cfg_terminals: usize,
+    codegen_unit_terminals: usize,
+    previous: Option<PublishedBackendRoot>,
+    installed: bool,
+}
+
+impl rue_query::QueryAttemptHandoff for PublishedBackendRootHandoff {
+    fn commit(&mut self) {
+        let pending = self
+            .pending
+            .take()
+            .expect("backend-root handoff commits at most once");
+        let functions = self
+            .functions
+            .take()
+            .expect("backend-root handoff retains exact membership");
+        let mut root = self
+            .root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let additions = functions.difference(&root.functions).count() as u64;
+        let deletions = root.functions.difference(&functions).count() as u64;
+        let next = PublishedBackendRoot {
+            lease: pending,
+            functions,
+            cfg_terminals: self.cfg_terminals,
+            optimized_cfg_terminals: self.optimized_cfg_terminals,
+            codegen_unit_terminals: self.codegen_unit_terminals,
+            publications: root.publications.saturating_add(1),
+            additions: root.additions.saturating_add(additions),
+            deletions: root.deletions.saturating_add(deletions),
+        };
+        self.previous = Some(std::mem::replace(&mut *root, next));
+        self.installed = true;
+    }
+
+    fn abort(&mut self) {
+        if self.installed {
+            let mut root = self
+                .root
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let previous = self
+                .previous
+                .take()
+                .expect("an installed backend root retains its predecessor");
+            let installed = std::mem::replace(&mut *root, previous);
+            self.pending = Some(installed.lease);
+            self.functions = Some(installed.functions);
+            self.installed = false;
+        } else {
+            drop(self.pending.take());
+            drop(self.functions.take());
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PublishedBackendRootMetrics {
+    pub(crate) functions: usize,
+    pub(crate) cfg_terminals: usize,
+    pub(crate) optimized_cfg_terminals: usize,
+    pub(crate) codegen_unit_terminals: usize,
+    pub(crate) publications: u64,
+    pub(crate) additions: u64,
+    pub(crate) deletions: u64,
 }
 
 #[derive(Debug)]
 struct PublishedBodyReachabilityTerminalHandoff {
     root: Arc<Mutex<PublishedBodyReachabilityRoot>>,
-    pending: Option<rue_query::RetainedPinSet>,
+    pending: Option<Arc<rue_query::RetainedPinSet>>,
     previous: Option<PublishedBodyReachabilityRoot>,
     installed: bool,
 }
@@ -1035,7 +1178,7 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyReachabilityTerminalHandoff
 #[derive(Debug)]
 struct PublishedBodyClosureTerminalHandoff {
     root: Arc<Mutex<PublishedBodyClosureRoot>>,
-    pending: Option<rue_query::RetainedPinSet>,
+    pending: Option<Arc<rue_query::RetainedPinSet>>,
     pending_reached: Option<BTreeSet<crate::FunctionInstanceKey>>,
     previous: Option<PublishedBodyClosureRoot>,
     installed: bool,
@@ -13963,6 +14106,58 @@ impl RevisionedQueryDatabase {
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
         let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
+        let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
+        let codegen_units_for_backend_publication = codegen_units.clone();
+        let backend_root_for_publication = backend_root.clone();
+        let backend_root_publications = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.backend-root-publication",
+                1,
+                |left: &bool, right: &bool| left == right,
+                move |context, _, key: &BackendRootPublicationKey| {
+                    let _validated_registered = context.endorse_registered_validations();
+                    let fallback = backend_root_for_publication
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
+                    let mut terminals = Vec::with_capacity(key.codegen_units.len());
+                    for codegen_key in key.codegen_units.iter() {
+                        let terminal = context.query_registered(
+                            &codegen_units_for_backend_publication,
+                            codegen_key.clone(),
+                        )?;
+                        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                            unreachable!("CodegenUnit publishes typed terminals")
+                        };
+                        if matches!(value, crate::codegen_query::CodegenUnitValue::Failure(_)) {
+                            return Ok(QueryOutput::success(false)
+                                .with_terminal_kind(QueryTerminalKind::Failure));
+                        }
+                        terminals.push(terminal);
+                    }
+                    let pending = context
+                        .retain_observed_terminal_cones_from(
+                            &terminals,
+                            std::slice::from_ref(&fallback),
+                        )
+                        .expect(
+                            "registered backend-root validation observes every final CodegenUnit dependency cone",
+                        );
+                    context.register_attempt_handoff(PublishedBackendRootHandoff {
+                        root: backend_root_for_publication.clone(),
+                        pending: Some(Arc::new(pending)),
+                        functions: Some(key.functions.iter().cloned().collect()),
+                        cfg_terminals: key.cfg_terminals,
+                        optimized_cfg_terminals: key.codegen_units.len(),
+                        codegen_unit_terminals: key.codegen_units.len(),
+                        previous: None,
+                        installed: false,
+                    });
+                    Ok(QueryOutput::success(true))
+                },
+            )
+            .expect("the backend-root publication family has one canonical name");
         #[cfg(test)]
         let inject_body_transaction_failure = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let transactions_for_analysis_bundle = body_transactions.clone();
@@ -14874,7 +15069,6 @@ impl RevisionedQueryDatabase {
             .expect("the BodyClosure family has one canonical name");
         let closures_for_publication = body_closures.clone();
         let reachability_for_publication = body_reachability.clone();
-        let bundles_for_closure_publication = body_analysis_bundles.clone();
         let names_for_closure_publication = lookup_names.clone();
         let imports_for_closure_publication = lookup_imports.clone();
         let lease_for_closure_publication = lookup_root_lease.clone();
@@ -14927,38 +15121,24 @@ impl RevisionedQueryDatabase {
                                     &bundle.transaction,
                                     crate::body_query::BodyTransaction::DeterministicFailure { .. }
                                 )
-                            });
+                        });
                         if closure.kind() == QueryTerminalKind::Success {
-                            let pending = match context.retain_observed_terminal_cone(&closure) {
-                                Ok(pending) => pending,
-                                Err(rue_query::RetainTerminalConeError::DependencyNotObserved(
-                                    _,
-                                )) => {
-                                    // When every reached body stays green, the
-                                    // reused closure carries its bundle
-                                    // terminals without observing them in this
-                                    // publication task. Re-observe those exact
-                                    // carried keys before transferring the
-                                    // closure's retention cone.
-                                    for body in output.bodies.iter() {
-                                        context.query_registered(
-                                            &bundles_for_closure_publication,
-                                            body.key.clone(),
-                                        )?;
-                                    }
-                                    context
-                                        .retain_observed_terminal_cone(&closure)
-                                        .expect(
-                                            "registered closure validation retains its exact dependency cone after observing carried body bundles",
-                                        )
-                                }
-                                Err(error) => panic!(
-                                    "registered closure validation retains its exact dependency cone: {error:?}"
-                                ),
-                            };
+                            let fallback = terminal_root_for_closure_publication
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .lease
+                                .clone();
+                            let pending = context
+                                .retain_observed_terminal_cone_from(
+                                    &closure,
+                                    std::slice::from_ref(&fallback),
+                                )
+                                .expect(
+                                    "registered closure validation retains its exact dependency cone",
+                                );
                             context.register_attempt_handoff(PublishedBodyClosureTerminalHandoff {
                                 root: terminal_root_for_closure_publication.clone(),
-                                pending: Some(pending),
+                                pending: Some(Arc::new(pending)),
                                 pending_reached: Some(output.reached.iter().cloned().collect()),
                                 previous: None,
                                 installed: false,
@@ -14969,7 +15149,7 @@ impl RevisionedQueryDatabase {
                             context.register_attempt_handoff(
                                 PublishedBodyReachabilityTerminalHandoff {
                                     root: terminal_root_for_reachability_publication.clone(),
-                                    pending: Some(rue_query::RetainedPinSet::new()),
+                                    pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
                                     previous: None,
                                     installed: false,
                                 },
@@ -15041,13 +15221,21 @@ impl RevisionedQueryDatabase {
                             context.register_attempt_handoff(
                                 PublishedBodyReachabilityTerminalHandoff {
                                     root: terminal_root_for_reachability_publication.clone(),
-                                    pending: Some(
+                                    pending: Some(Arc::new({
+                                        let fallback = terminal_root_for_reachability_publication
+                                            .lock()
+                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                            .lease
+                                            .clone();
                                         context
-                                            .retain_observed_terminal_cone(&reachability)
+                                            .retain_observed_terminal_cone_from(
+                                                &reachability,
+                                                std::slice::from_ref(&fallback),
+                                            )
                                             .expect(
                                                 "registered reachability validation retains its exact dependency cone",
-                                            ),
-                                    ),
+                                            )
+                                    })),
                                     previous: None,
                                     installed: false,
                                 },
@@ -15144,6 +15332,7 @@ impl RevisionedQueryDatabase {
             cfgs,
             optimized_cfgs,
             codegen_units,
+            backend_root_publications,
             #[cfg(test)]
             codegen_evaluator_gate,
             lookup_names,
@@ -15175,6 +15364,9 @@ impl RevisionedQueryDatabase {
             lookup_root_lease,
             body_closure_root,
             body_reachability_root,
+            backend_root,
+            backend_root_publication_gate: BackendRootPublicationGate::default(),
+            next_backend_root_epoch: std::sync::atomic::AtomicU64::new(1),
             #[cfg(test)]
             inject_body_transaction_failure,
             #[cfg(test)]
@@ -15553,6 +15745,126 @@ impl RevisionedQueryDatabase {
             ),
             cancellation,
         ))
+    }
+
+    /// Start an unpublished backend-root handoff. Every terminal retained into
+    /// this candidate is acquired while its request attempt still owns the
+    /// result lease, closing the birth-to-publication eviction window.
+    pub(crate) fn begin_backend_root(&self) -> BackendRootCandidate {
+        BackendRootCandidate::default()
+    }
+
+    /// Retain one reached optimized-CFG terminal across sequential collection.
+    /// Raw CFG identities are recorded for exact-root metrics; the registered
+    /// publication request captures their full terminal cones.
+    pub(crate) fn retain_backend_optimized_cfg(
+        &self,
+        candidate: &mut BackendRootCandidate,
+        function: crate::FunctionInstanceKey,
+        key: &crate::cfg_query::OptimizedCfgQueryKey,
+        terminal: &Arc<rue_query::QueryTerminal<crate::cfg_query::CfgValue>>,
+    ) {
+        for cfg_key in std::iter::once(&key.cfg).chain(key.accessor_dependencies.iter()) {
+            candidate.cfg_keys.insert(cfg_key.clone());
+        }
+        let pin = self
+            .optimized_cfgs
+            .pin_terminal(terminal)
+            .expect("optimized-CFG result belongs to the registered family");
+        if candidate.lease.lease(pin) {
+            candidate.optimized_cfg_terminals += 1;
+        }
+        candidate.functions.insert(function);
+    }
+
+    /// Retain one reached CodegenUnit terminal. Its optimized-CFG input was
+    /// pinned explicitly during the preceding rooted CFG collection.
+    pub(crate) fn retain_backend_codegen_unit(
+        &self,
+        candidate: &mut BackendRootCandidate,
+        terminal: &Arc<rue_query::QueryTerminal<crate::codegen_query::CodegenUnitValue>>,
+    ) {
+        let pin = self
+            .codegen_units
+            .pin_terminal(terminal)
+            .expect("codegen result belongs to the registered family");
+        if candidate.lease.lease(pin) {
+            candidate.codegen_unit_terminals += 1;
+        }
+    }
+
+    /// Publish the full transitive query cone behind a successful backend
+    /// collection. Direct candidate pins bridge the host collection into this
+    /// registered request; its query context then observes and atomically hands
+    /// off every exact validation dependency, not just the three backend-family
+    /// terminals at the top of the graph.
+    pub(crate) fn publish_backend_root(
+        &self,
+        revision: Revision,
+        candidate: BackendRootCandidate,
+        codegen_units: Arc<[crate::codegen_query::CodegenUnitQueryKey]>,
+    ) -> Result<(), QueryAbort> {
+        // A root-publication request is transactional through its handoff
+        // callbacks. Serialize only these short, whole-program swaps so a
+        // canceled publication always rolls back the root it installed; all
+        // per-function CFG and codegen queries remain independently parallel.
+        let _publication = self.backend_root_publication_gate.enter();
+        let epoch = self
+            .next_backend_root_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let key = BackendRootPublicationKey {
+            epoch,
+            codegen_units,
+            functions: candidate.functions.iter().cloned().collect(),
+            cfg_terminals: candidate.cfg_keys.len(),
+        };
+        let attempt = self.runtime.request_registered(
+            &self.backend_root_publications,
+            revision,
+            key,
+            CancellationToken::new(),
+        );
+        let terminal = attempt.into_result()?;
+        let rue_query::QueryOutcome::Success(published) = terminal.outcome() else {
+            unreachable!("backend-root publication uses a typed terminal")
+        };
+        assert!(
+            *published,
+            "a host-validated successful CodegenUnit collection must publish successfully"
+        );
+        drop(candidate);
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend_root_metrics_for_test(&self) -> PublishedBackendRootMetrics {
+        let root = self
+            .backend_root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _retained_pins = root.lease.len();
+        PublishedBackendRootMetrics {
+            functions: root.functions.len(),
+            cfg_terminals: root.cfg_terminals,
+            optimized_cfg_terminals: root.optimized_cfg_terminals,
+            codegen_unit_terminals: root.codegen_unit_terminals,
+            publications: root.publications,
+            additions: root.additions,
+            deletions: root.deletions,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend_cfg_key_is_retained_for_test(
+        &self,
+        key: &crate::cfg_query::CfgQueryKey,
+    ) -> bool {
+        self.cfgs.contains_retained_key(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_evictions_for_test(&self) -> u64 {
+        self.runtime.metrics().evictions
     }
 
     /// Publish an immutable, revisioned import authority for lower-layer
@@ -23190,6 +23502,66 @@ mod tests {
     use std::collections::{BTreeSet, HashMap};
 
     #[test]
+    fn backend_root_publication_gate_serializes_distinct_epochs() {
+        let gate = Arc::new(BackendRootPublicationGate::default());
+        let first_epoch = gate.enter();
+        let attempted = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let second_gate = gate.clone();
+        let second_attempted = attempted.clone();
+        let second_entered = entered.clone();
+        let second_epoch = std::thread::spawn(move || {
+            second_attempted.store(true, std::sync::atomic::Ordering::Release);
+            let _publication = second_gate.enter();
+            second_entered.store(true, std::sync::atomic::Ordering::Release);
+        });
+        while !attempted.load(std::sync::atomic::Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        assert!(
+            !entered.load(std::sync::atomic::Ordering::Acquire),
+            "a distinct backend-root epoch cannot enter while its predecessor may roll back"
+        );
+        drop(first_epoch);
+        second_epoch.join().unwrap();
+        assert!(entered.load(std::sync::atomic::Ordering::Acquire));
+    }
+
+    #[test]
+    fn backend_root_publication_handoff_restores_last_good_root_on_rollback() {
+        let root = Arc::new(Mutex::new(PublishedBackendRoot {
+            publications: 7,
+            additions: 11,
+            deletions: 3,
+            ..PublishedBackendRoot::default()
+        }));
+        let mut handoff = PublishedBackendRootHandoff {
+            root: root.clone(),
+            pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
+            functions: Some(BTreeSet::new()),
+            cfg_terminals: 2,
+            optimized_cfg_terminals: 1,
+            codegen_unit_terminals: 1,
+            previous: None,
+            installed: false,
+        };
+        rue_query::QueryAttemptHandoff::commit(&mut handoff);
+        assert_eq!(
+            root.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .publications,
+            8
+        );
+        rue_query::QueryAttemptHandoff::abort(&mut handoff);
+        let restored = root
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(restored.publications, 7);
+        assert_eq!(restored.additions, 11);
+        assert_eq!(restored.deletions, 3);
+    }
+
+    #[test]
     fn foreign_signature_agreement_uses_resolved_identity_mode_and_comptime_not_names() {
         use crate::durable_semantics::{
             DurableParameterMode as Mode, DurableSemanticParameter as Parameter,
@@ -23295,14 +23667,14 @@ mod tests {
         }));
         let mut closure_handoff = PublishedBodyClosureTerminalHandoff {
             root: closure_root.clone(),
-            pending: Some(rue_query::RetainedPinSet::new()),
+            pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
             pending_reached: Some(BTreeSet::new()),
             previous: None,
             installed: false,
         };
         let mut reachability_handoff = PublishedBodyReachabilityTerminalHandoff {
             root: reachability_root,
-            pending: Some(rue_query::RetainedPinSet::new()),
+            pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
             previous: None,
             installed: false,
         };

@@ -860,12 +860,13 @@ pub(crate) struct RootedCfgUnit {
     pub(crate) body_span: rue_span::Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct RootedCfgOutput {
     graph: RootedBodyGraph,
     pub(crate) cfgs: Vec<RootedCfgUnit>,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) work: crate::CanonicalSemanticWork,
+    backend_root: crate::revisioned_query_database::BackendRootCandidate,
 }
 
 pub(crate) struct RootedCodegenOutput {
@@ -4870,6 +4871,7 @@ impl CompilerSession {
         let accessor_dependencies = accessor_subgraph.dependencies;
         let accessor_functions = accessor_subgraph.accessors;
         let mut cfgs = Vec::with_capacity(cfg_inputs.len());
+        let mut backend_root = self.queries.revisioned.begin_backend_root();
         #[cfg(test)]
         self.rooted_cfg_executions.clear();
         let _cfg_collection_span =
@@ -4916,6 +4918,14 @@ impl CompilerSession {
                     work.cfg.cfg_reuses += 1;
                 }
                 rue_query::RequestExecution::Aborted => {}
+            }
+            if let Some(terminal) = attempt.terminal() {
+                self.queries.revisioned.retain_backend_optimized_cfg(
+                    &mut backend_root,
+                    function.clone(),
+                    &optimized_cfg_key,
+                    terminal,
+                );
             }
             let terminal = attempt.into_result().map_err(|abort| {
                 CompileError::without_span(ErrorKind::InternalError(format!(
@@ -5001,6 +5011,7 @@ impl CompilerSession {
             cfgs,
             warnings,
             work,
+            backend_root,
         })
     }
 
@@ -5014,9 +5025,11 @@ impl CompilerSession {
             cfgs,
             warnings,
             work,
+            mut backend_root,
         } = self.rooted_cfg(options)?;
 
         let mut units = Vec::with_capacity(cfgs.len());
+        let mut backend_root_keys = Vec::with_capacity(cfgs.len());
         #[cfg(test)]
         {
             self.codegen_executions.clear();
@@ -5049,6 +5062,11 @@ impl CompilerSession {
                 self.codegen_attempt_work
                     .push((cfg.function.clone(), attempt.work().to_vec()));
             }
+            if let Some(terminal) = attempt.terminal() {
+                self.queries
+                    .revisioned
+                    .retain_backend_codegen_unit(&mut backend_root, terminal);
+            }
             let terminal = attempt.into_result().map_err(|abort| {
                 CompileError::without_span(ErrorKind::InternalError(format!(
                     "codegen query aborted: {abort:?}"
@@ -5059,6 +5077,12 @@ impl CompilerSession {
             };
             match value {
                 crate::codegen_query::CodegenUnitValue::Available(unit) => {
+                    backend_root_keys.push(crate::codegen_query::CodegenUnitQueryKey::new(
+                        cfg.optimized_cfg_key.clone(),
+                        options.target,
+                        request,
+                        options.opt_level,
+                    ));
                     units.push(crate::codegen_query::CollectedCodegenUnit {
                         function: cfg.function.clone(),
                         unit: unit.clone(),
@@ -5107,6 +5131,14 @@ impl CompilerSession {
                 }
             })
             .collect();
+        self.queries
+            .revisioned
+            .publish_backend_root(graph.revision, backend_root, backend_root_keys.into())
+            .map_err(|abort| {
+                CompileError::without_span(ErrorKind::InternalError(format!(
+                    "backend root publication aborted: {abort:?}"
+                )))
+            })?;
         Ok(RootedCodegenOutput {
             units,
             cfgs,
@@ -5249,6 +5281,25 @@ impl CompilerSession {
     #[cfg(test)]
     pub(crate) fn codegen_collections(&self) -> usize {
         self.codegen_collections
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend_root_metrics(
+        &self,
+    ) -> crate::revisioned_query_database::PublishedBackendRootMetrics {
+        self.queries.revisioned.backend_root_metrics_for_test()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn backend_cfg_key_is_retained(&self, key: &crate::cfg_query::CfgQueryKey) -> bool {
+        self.queries
+            .revisioned
+            .backend_cfg_key_is_retained_for_test(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_evictions_for_test(&self) -> u64 {
+        self.queries.revisioned.query_evictions_for_test()
     }
 
     /// Analyze the current revision, surfacing an unsatisfied trusted-toolchain

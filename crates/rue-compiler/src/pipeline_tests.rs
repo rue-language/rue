@@ -18,6 +18,16 @@ mod tests {
         SourceSnapshot::new(metadata, vec![(file_id, Arc::new(source.to_owned()))]).unwrap()
     }
 
+    fn wide_reached_program(functions: usize, leaf_value: i32) -> SourceSnapshot {
+        assert!(functions > 0);
+        let mut source = format!("fn f0() -> i32 {{ {leaf_value} }} ");
+        for index in 1..functions {
+            source.push_str(&format!("fn f{index}() -> i32 {{ f{}() }} ", index - 1));
+        }
+        source.push_str(&format!("fn main() -> i32 {{ f{}() }}", functions - 1));
+        SourceSnapshot::single("<wide-backend-root>", source).unwrap()
+    }
+
     #[cfg(unix)]
     fn execute_compiled_output(output: &CompileOutput, label: &str) -> std::process::Output {
         use std::os::unix::fs::PermissionsExt;
@@ -246,6 +256,304 @@ mod tests {
         );
         assert!(execution.stdout.is_empty());
         assert!(execution.stderr.is_empty());
+    }
+
+    #[test]
+    fn published_backend_root_keeps_wide_no_edit_and_single_edit_builds_exactly_warm() {
+        const CHAIN_FUNCTIONS: usize = 33;
+        const REACHED_FUNCTIONS: usize = CHAIN_FUNCTIONS + 1;
+        let before = wide_reached_program(CHAIN_FUNCTIONS, 1);
+        let after = wide_reached_program(CHAIN_FUNCTIONS, 2);
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+
+        session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &before, &options).unwrap();
+        let cold_root = session.backend_root_metrics();
+        assert_eq!(cold_root.functions, REACHED_FUNCTIONS, "{cold_root:?}");
+        assert_eq!(cold_root.cfg_terminals, REACHED_FUNCTIONS, "{cold_root:?}");
+        assert_eq!(
+            cold_root.optimized_cfg_terminals, REACHED_FUNCTIONS,
+            "{cold_root:?}"
+        );
+        assert_eq!(
+            cold_root.codegen_unit_terminals, REACHED_FUNCTIONS,
+            "{cold_root:?}"
+        );
+
+        let no_edit =
+            crate::queries::compile_with_session(&mut session, &before, &options).unwrap();
+        assert_eq!(session.rooted_cfg_executions().len(), REACHED_FUNCTIONS);
+        assert!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused),
+            "{:?}",
+            session.rooted_cfg_executions()
+        );
+        assert_eq!(session.codegen_executions().len(), REACHED_FUNCTIONS);
+        assert!(
+            session
+                .codegen_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused),
+            "{:?}",
+            session.codegen_executions()
+        );
+
+        session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        let warm = crate::queries::compile_with_session(&mut session, &after, &options).unwrap();
+        assert_eq!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .filter(|(_, execution)| *execution == rue_query::RequestExecution::Computed)
+                .count(),
+            1,
+            "{:?}",
+            session.rooted_cfg_executions()
+        );
+        assert_eq!(
+            session
+                .codegen_executions()
+                .iter()
+                .filter(|(_, execution)| *execution == rue_query::RequestExecution::Computed)
+                .count(),
+            1,
+            "{:?}",
+            session.codegen_executions()
+        );
+        let edited_root = session.backend_root_metrics();
+        assert_eq!(edited_root.functions, REACHED_FUNCTIONS, "{edited_root:?}");
+
+        let mut fresh = CompilerSession::new();
+        fresh.update_for_presentation(&after).into_result().unwrap();
+        let expected = crate::queries::compile_with_session(&mut fresh, &after, &options).unwrap();
+        assert_eq!(warm.elf, expected.elf);
+        assert_eq!(warm.warnings, expected.warnings);
+        assert_ne!(no_edit.elf, warm.elf);
+    }
+
+    #[test]
+    fn published_backend_root_releases_unreachable_functions_after_successful_handoff() {
+        const CHAIN_FUNCTIONS: usize = 33;
+        const REACHED_FUNCTIONS: usize = CHAIN_FUNCTIONS + 1;
+        let before = wide_reached_program(CHAIN_FUNCTIONS, 1);
+        let after =
+            SourceSnapshot::single("<wide-backend-root>", "fn main() -> i32 { 7 }").unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+
+        session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &before, &options).unwrap();
+        let before_root = session.backend_root_metrics();
+        assert_eq!(before_root.functions, REACHED_FUNCTIONS, "{before_root:?}");
+
+        session
+            .update_for_presentation(&after)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &after, &options).unwrap();
+        let after_root = session.backend_root_metrics();
+        assert_eq!(after_root.functions, 1, "{after_root:?}");
+        assert_eq!(after_root.cfg_terminals, 1, "{after_root:?}");
+        assert_eq!(after_root.optimized_cfg_terminals, 1, "{after_root:?}");
+        assert_eq!(after_root.codegen_unit_terminals, 1, "{after_root:?}");
+        assert_eq!(
+            after_root.deletions - before_root.deletions,
+            (REACHED_FUNCTIONS - 1) as u64,
+            "{before_root:?}\n{after_root:?}"
+        );
+
+        let evictions_before_pressure = session.query_evictions_for_test();
+        for value in 100..116 {
+            let pressure = SourceSnapshot::single(
+                "<wide-backend-root>",
+                format!("fn main() -> i32 {{ {value} }}"),
+            )
+            .unwrap();
+            session
+                .update_for_presentation(&pressure)
+                .into_result()
+                .unwrap();
+            crate::queries::compile_with_session(&mut session, &pressure, &options).unwrap();
+        }
+        assert!(
+            session.query_evictions_for_test() > evictions_before_pressure,
+            "the released chain must face real query-family eviction pressure"
+        );
+
+        session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &before, &options).unwrap();
+        assert_eq!(session.rooted_cfg_executions().len(), REACHED_FUNCTIONS);
+        assert!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Computed),
+            "released CFGs should recompute after re-entry: {:?}",
+            session.rooted_cfg_executions()
+        );
+        assert_eq!(session.codegen_executions().len(), REACHED_FUNCTIONS);
+        assert!(
+            session
+                .codegen_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Computed),
+            "released codegen units should recompute after re-entry: {:?}",
+            session.codegen_executions()
+        );
+    }
+
+    #[test]
+    fn failed_and_canceled_backend_collections_preserve_the_last_good_root() {
+        let before =
+            SourceSnapshot::single("<backend-root-control>", "fn main() -> i32 { 0 }").unwrap();
+        let failing =
+            SourceSnapshot::single("<backend-root-control>", "fn main() -> i32 { 1 }").unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&before)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &before, &options).unwrap();
+        let last_good = session.backend_root_metrics();
+
+        session
+            .update_for_presentation(&failing)
+            .into_result()
+            .unwrap();
+        crate::codegen_query::with_test_codegen_failure_injection(|| {
+            assert!(
+                session
+                    .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                    .is_err()
+            );
+        });
+        assert_eq!(session.backend_root_metrics(), last_good);
+
+        let recovered =
+            SourceSnapshot::single("<backend-root-control>", "fn main() -> i32 { 2 }").unwrap();
+        session
+            .update_for_presentation(&recovered)
+            .into_result()
+            .unwrap();
+        let (owner, joiner) = session.exercise_codegen_schedule_for_test(&options, true);
+        assert_eq!(owner, rue_query::RequestExecution::Computed);
+        assert_eq!(joiner, rue_query::RequestExecution::Aborted);
+        assert_eq!(session.backend_root_metrics(), last_good);
+
+        crate::queries::compile_with_session(&mut session, &recovered, &options).unwrap();
+        let recovered_root = session.backend_root_metrics();
+        assert_eq!(recovered_root.functions, 1, "{recovered_root:?}");
+        assert_eq!(recovered_root.publications, last_good.publications + 1);
+    }
+
+    #[test]
+    fn published_backend_root_explicitly_retains_accessor_raw_cfg_dependencies() {
+        let snapshot = SourceSnapshot::single(
+            "<backend-root-accessor>",
+            "struct P { x: i64, fn value(borrow self) -> borrow i64 { yield self.x; } } \
+             fn helper() -> i64 { 1 } \
+             fn main() -> i32 { let p = P { x: 7 }; if p.value() + helper() == 8 { 0 } else { 1 } }",
+        )
+        .unwrap();
+        let mut options = CompileOptions::default();
+        options
+            .preview_features
+            .insert(rue_error::PreviewFeature::BorrowAccessors);
+        let mut session = CompilerSession::new();
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap();
+
+        let root = session.backend_root_metrics();
+        assert_eq!(
+            root.functions, 2,
+            "accessor has no standalone unit: {root:?}"
+        );
+        assert_eq!(root.optimized_cfg_terminals, 2, "{root:?}");
+        assert_eq!(root.codegen_unit_terminals, 2, "{root:?}");
+        assert_eq!(
+            root.cfg_terminals, 3,
+            "main's spliced accessor CFG must be retained explicitly: {root:?}"
+        );
+
+        let inspected = session.rooted_cfg(&options).unwrap();
+        let accessor_raw_cfg = inspected
+            .cfgs
+            .iter()
+            .find(|unit| {
+                matches!(
+                    &unit.function,
+                    FunctionInstanceKey::Definition(definition) if definition.name() == "main"
+                )
+            })
+            .and_then(|unit| unit.optimized_cfg_key.accessor_dependencies.first())
+            .cloned()
+            .expect("main's optimized CFG records the accessor raw-CFG dependency");
+        drop(inspected);
+        assert!(session.backend_cfg_key_is_retained(&accessor_raw_cfg));
+
+        let evictions_before_pressure = session.query_evictions_for_test();
+        for value in 100..116 {
+            let pressure = SourceSnapshot::single(
+                "<backend-root-accessor-pressure>",
+                format!("fn main() -> i32 {{ {value} }}"),
+            )
+            .unwrap();
+            session
+                .update_for_presentation(&pressure)
+                .into_result()
+                .unwrap();
+            drop(session.rooted_cfg(&options).unwrap());
+        }
+        assert!(
+            session.query_evictions_for_test() > evictions_before_pressure,
+            "the accessor dependency must face real raw-CFG eviction pressure"
+        );
+        assert!(
+            session.backend_cfg_key_is_retained(&accessor_raw_cfg),
+            "the published backend cone must keep the exact raw accessor CFG retained"
+        );
+
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &snapshot, &options).unwrap();
+        assert!(
+            session
+                .rooted_cfg_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused),
+            "the accessor-dependent optimized CFGs should stay reusable: {:?}",
+            session.rooted_cfg_executions()
+        );
+        assert!(
+            session
+                .codegen_executions()
+                .iter()
+                .all(|(_, execution)| *execution == rue_query::RequestExecution::Reused),
+            "the accessor-dependent codegen units should stay reusable: {:?}",
+            session.codegen_executions()
+        );
     }
 
     /// Opt-in Phase 12 latency witness. This deliberately has no pass/fail

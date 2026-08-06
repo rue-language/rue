@@ -421,6 +421,69 @@ mod registered_batch_tests {
     }
 
     #[test]
+    fn exact_terminal_cones_walk_one_deduplicated_union() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime
+            .family_with_evaluator::<Slot, u64, _>("exact-cones-union-leaf", 0, |_, _, key| {
+                Ok(QueryOutput::success(key.0))
+            })
+            .unwrap();
+        let leaf_for_root = leaf.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "exact-cones-union-root",
+                0,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_root, Slot(0))?;
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let root_for_publication = root.clone();
+        let runtime_for_publication = runtime.clone();
+        let publication = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "exact-cones-union-publication",
+                0,
+                move |context, _, _| {
+                    let _proof = context.endorse_registered_validations();
+                    let first = context.query_registered(&root_for_publication, Key("first"))?;
+                    let second = context.query_registered(&root_for_publication, Key("second"))?;
+                    let before = runtime_for_publication.metrics().active_retained_pins;
+                    let retained = context
+                        .retain_observed_terminal_cones_from(&[first, second], &[])
+                        .unwrap();
+                    assert_eq!(retained.len(), 3, "the shared leaf is retained once");
+                    assert_eq!(
+                        runtime_for_publication.metrics().active_retained_pins,
+                        before + 3,
+                        "deduplication accounting matches the exact union"
+                    );
+                    drop(retained);
+                    assert_eq!(
+                        runtime_for_publication.metrics().active_retained_pins,
+                        before
+                    );
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        assert!(
+            runtime
+                .request_registered(
+                    &publication,
+                    revision(1),
+                    Key("publish"),
+                    CancellationToken::new(),
+                )
+                .terminal()
+                .is_some()
+        );
+    }
+
+    #[test]
     fn exact_terminal_cone_requires_proof_authority_and_an_observed_root() {
         let runtime = QueryRuntime::new(1);
         publish_empty(&runtime, [revision(1)]);
@@ -523,6 +586,276 @@ mod registered_batch_tests {
         assert!(
             runtime
                 .request_registered(&check, revision(1), Key("check"), CancellationToken::new(),)
+                .terminal()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn exact_terminal_cone_inherits_a_missing_grandchild_from_a_published_snapshot() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+        let leaf = runtime
+            .family_with_evaluator::<Slot, u64, _>("fallback-grandchild-leaf", 8, |_, _, key| {
+                Ok(QueryOutput::success(key.0))
+            })
+            .unwrap();
+        let leaf_for_middle = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "fallback-grandchild-middle",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_middle, Slot(1))?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        let middle_for_root = middle.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "fallback-grandchild-root",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&middle_for_root, Key("middle"))?;
+                    Ok(QueryOutput::success(3))
+                },
+            )
+            .unwrap();
+
+        let old_root = runtime
+            .request_registered(&root, revision(1), Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let old_middle = runtime
+            .request_registered(
+                &middle,
+                revision(1),
+                Key("middle"),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .unwrap();
+        let old_leaf = runtime
+            .request_registered(&leaf, revision(1), Slot(1), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let mut fallback = RetainedPinSet::new();
+        fallback.lease(root.pin_terminal(&old_root).unwrap());
+        fallback.lease(middle.pin_terminal(&old_middle).unwrap());
+        fallback.lease(leaf.pin_terminal(&old_leaf).unwrap());
+        let fallback = Arc::new(fallback);
+
+        let root_for_check = root.clone();
+        let check = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "fallback-grandchild-check",
+                1,
+                move |context, _, _| {
+                    let _proof = context.endorse_registered_validations();
+                    let current = context.query_registered(&root_for_check, Key("root"))?;
+                    let middle_edge = current.dependencies()[0].clone();
+                    let leaf_edge = {
+                        let leases = lock(&context.task.leases);
+                        leases
+                            .held
+                            .iter()
+                            .find(|lease| {
+                                let identity = lease.identity();
+                                identity.0 == middle_edge.incarnation
+                                    && identity.1 == middle_edge.stamp
+                            })
+                            .unwrap()
+                            .dependencies()[0]
+                            .clone()
+                    };
+                    let removed = {
+                        let mut leases = lock(&context.task.leases);
+                        let index = leases
+                            .held
+                            .iter()
+                            .position(|lease| {
+                                let identity = lease.identity();
+                                identity.0 == leaf_edge.incarnation && identity.1 == leaf_edge.stamp
+                            })
+                            .unwrap();
+                        leases.held.remove(index)
+                    };
+                    context.task.core.metrics.task_leases_released(1);
+                    drop(removed);
+                    let retained = context
+                        .retain_observed_terminal_cone_from(
+                            &current,
+                            std::slice::from_ref(&fallback),
+                        )
+                        .unwrap();
+                    assert_eq!(retained.len(), 3);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .request_registered(&check, revision(2), Key("check"), CancellationToken::new())
+                .terminal()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn exact_terminal_cone_prefers_current_same_stamp_dependencies_over_predecessor() {
+        let runtime = QueryRuntime::new(1);
+        let input = InputIdentity::new("source", "fallback-choice");
+        runtime
+            .publish_revision(revision(1), [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(revision(2), [(input.clone(), 2)])
+            .unwrap();
+        let leaf = runtime
+            .family_with_evaluator::<Slot, u64, _>("fallback-choice-leaf", 8, |_, _, key| {
+                Ok(QueryOutput::success(key.0))
+            })
+            .unwrap();
+        let leaf_for_choice = leaf.clone();
+        let input_for_choice = input.clone();
+        let choice = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "fallback-choice-root",
+                8,
+                move |context, _, _| {
+                    let selected = context.input(input_for_choice.clone())?;
+                    context.query_registered(&leaf_for_choice, Slot(selected))?;
+                    Ok(QueryOutput::success(7))
+                },
+            )
+            .unwrap();
+        let old_root = runtime
+            .request_registered(&choice, revision(1), Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let old_leaf = runtime
+            .request_registered(&leaf, revision(1), Slot(1), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let mut fallback = RetainedPinSet::new();
+        fallback.lease(choice.pin_terminal(&old_root).unwrap());
+        fallback.lease(leaf.pin_terminal(&old_leaf).unwrap());
+        let fallback = Arc::new(fallback);
+
+        let choice_for_check = choice.clone();
+        let old_root_for_check = old_root.clone();
+        let check = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "fallback-choice-check",
+                1,
+                move |context, _, _| {
+                    let _proof = context.endorse_registered_validations();
+                    let current = context.query_registered(&choice_for_check, Key("root"))?;
+                    assert_eq!(
+                        current.node_incarnation(),
+                        old_root_for_check.node_incarnation()
+                    );
+                    assert_eq!(current.stamp(), old_root_for_check.stamp());
+                    assert_ne!(current.dependencies(), old_root_for_check.dependencies());
+                    let current_leaf = current.dependencies()[0].clone();
+                    let retained = context
+                        .retain_observed_terminal_cone_from(
+                            &current,
+                            std::slice::from_ref(&fallback),
+                        )
+                        .unwrap();
+                    assert_eq!(retained.len(), 2, "the old leaf is excluded");
+                    assert!(retained.held.iter().any(|lease| {
+                        let identity = lease.identity();
+                        identity.0 == current_leaf.incarnation && identity.1 == current_leaf.stamp
+                    }));
+                    assert!(
+                        retained
+                            .held
+                            .iter()
+                            .all(|lease| lease.identity().0 != old_leaf.node_incarnation()),
+                        "the fallback's old leaf identity must not replace the current leaf"
+                    );
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .request_registered(&check, revision(2), Key("check"), CancellationToken::new())
+                .terminal()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn exact_terminal_cone_rejects_fallback_roots_and_foreign_runtime_snapshots() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let family = runtime
+            .family_with_evaluator::<Key, u64, _>("fallback-authority", 8, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let terminal = runtime
+            .request_registered(&family, revision(1), Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let mut inherited_only = RetainedPinSet::new();
+        inherited_only.lease(family.pin_terminal(&terminal).unwrap());
+        let inherited_only = Arc::new(inherited_only);
+
+        let foreign_runtime = QueryRuntime::new(1);
+        publish_empty(&foreign_runtime, [revision(1)]);
+        let foreign_family = foreign_runtime
+            .family_with_evaluator::<Key, u64, _>("fallback-foreign", 8, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let foreign_terminal = foreign_runtime
+            .request_registered(
+                &foreign_family,
+                revision(1),
+                Key("root"),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .unwrap();
+        let mut foreign = RetainedPinSet::new();
+        foreign.lease(foreign_family.pin_terminal(&foreign_terminal).unwrap());
+        let foreign = Arc::new(foreign);
+
+        let family_for_check = family.clone();
+        let terminal_for_check = terminal.clone();
+        let check = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "fallback-authority-check",
+                1,
+                move |context, _, _| {
+                    let _proof = context.endorse_registered_validations();
+                    assert!(matches!(
+                        context.retain_observed_terminal_cone_from(
+                            &terminal_for_check,
+                            std::slice::from_ref(&inherited_only),
+                        ),
+                        Err(RetainTerminalConeError::RootNotObserved)
+                    ));
+                    let current = context.query_registered(&family_for_check, Key("current"))?;
+                    assert!(matches!(
+                        context.retain_observed_terminal_cone_from(
+                            &current,
+                            std::slice::from_ref(&foreign),
+                        ),
+                        Err(RetainTerminalConeError::ForeignRuntime)
+                    ));
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        assert!(
+            runtime
+                .request_registered(&check, revision(1), Key("check"), CancellationToken::new())
                 .terminal()
                 .is_some()
         );
@@ -4763,6 +5096,8 @@ pub enum RetainTerminalConeError {
     NoRegisteredValidationScope,
     /// The proposed root was not observed by this task.
     RootNotObserved,
+    /// A fallback lease universe belongs to another query runtime.
+    ForeignRuntime,
     /// One immutable edge in the proposed root's transitive cone had no
     /// matching live task lease.
     DependencyNotObserved(Observation),
@@ -5274,12 +5609,7 @@ impl QueryContext {
     /// live, so a publication handoff can promote the exact dependency cone
     /// past request completion without an eviction window.
     pub fn retain_observed_terminals(&self) -> RetainedPinSet {
-        let leases = lock(&self.task.leases);
-        let mut retained = RetainedPinSet::new();
-        for lease in &leases.held {
-            retained.lease_erased(lease.duplicate());
-        }
-        retained
+        retain_task_observations(&self.task)
     }
 
     /// Duplicates only the observed terminals reachable from one exact root.
@@ -5296,42 +5626,103 @@ impl QueryContext {
     where
         V: Clone + Send + Sync + 'static,
     {
+        self.retain_observed_terminal_cones_from(std::slice::from_ref(root), &[])
+    }
+
+    /// Retain one exact current-task terminal cone, filling validation leaves
+    /// omitted by green reuse from prioritized published snapshots.
+    pub fn retain_observed_terminal_cone_from<V>(
+        &self,
+        root: &Arc<QueryTerminal<V>>,
+        fallbacks: &[Arc<RetainedPinSet>],
+    ) -> Result<RetainedPinSet, RetainTerminalConeError>
+    where
+        V: Clone + Send + Sync + 'static,
+    {
+        self.retain_observed_terminal_cones_from(std::slice::from_ref(root), fallbacks)
+    }
+
+    /// Retain the union of exact current-task terminal cones, filling
+    /// validation leaves omitted by green reuse from prioritized published
+    /// snapshots. Every root must be observed by this task; fallback snapshots
+    /// may satisfy only dependency edges. Current observations always override
+    /// fallbacks, and within one source an edge selects the greatest terminal
+    /// revision with the requested incarnation and stamp.
+    ///
+    /// The hash-indexed lease universe is built once and exact identities are
+    /// hash-deduplicated while the union is walked once. Promotion is therefore
+    /// expected O(N + E) in available leases and selected dependency edges,
+    /// rather than rescanning or tree-searching leases per edge and per root.
+    pub fn retain_observed_terminal_cones_from<V>(
+        &self,
+        roots: &[Arc<QueryTerminal<V>>],
+        fallbacks: &[Arc<RetainedPinSet>],
+    ) -> Result<RetainedPinSet, RetainTerminalConeError>
+    where
+        V: Clone + Send + Sync + 'static,
+    {
         if lock(&self.task.validation_endorsements).is_empty() {
             return Err(RetainTerminalConeError::NoRegisteredValidationScope);
         }
+        if fallbacks.iter().any(|fallback| {
+            fallback
+                .held
+                .iter()
+                .any(|lease| lease.runtime_identity() != self.task.core.identity)
+        }) {
+            return Err(RetainTerminalConeError::ForeignRuntime);
+        }
         let leases = lock(&self.task.leases);
-        let mut by_observation = BTreeMap::new();
-        let mut root_index = None;
-        for (index, lease) in leases.held.iter().enumerate() {
+        let mut current_exact = HashMap::with_capacity(leases.held.len());
+        let mut selected = HashMap::with_capacity(leases.held.len());
+        for lease in &leases.held {
             let identity = lease.identity();
-            by_observation
+            current_exact.insert(identity, lease.as_ref());
+            let selected_for_stamp = selected
                 .entry((identity.0, identity.1))
-                .and_modify(|current: &mut usize| {
-                    if leases.held[*current].identity().2 < identity.2 {
-                        *current = index;
-                    }
-                })
-                .or_insert(index);
-            if identity == (root.node_incarnation, root.stamp, root.revision) {
-                root_index = Some(index);
+                .or_insert(lease.as_ref());
+            if selected_for_stamp.identity().2 < identity.2 {
+                *selected_for_stamp = lease.as_ref();
             }
         }
+        for fallback in fallbacks {
+            let mut fallback_selected = HashMap::with_capacity(fallback.held.len());
+            for lease in &fallback.held {
+                let identity = lease.identity();
+                let selected_for_stamp = fallback_selected
+                    .entry((identity.0, identity.1))
+                    .or_insert(lease.as_ref());
+                if selected_for_stamp.identity().2 < identity.2 {
+                    *selected_for_stamp = lease.as_ref();
+                }
+            }
+            for (identity, lease) in fallback_selected {
+                selected.entry(identity).or_insert(lease);
+            }
+        }
+
+        let mut pending = Vec::with_capacity(roots.len());
+        for root in roots {
+            pending.push(
+                *current_exact
+                    .get(&(root.node_incarnation, root.stamp, root.revision))
+                    .ok_or(RetainTerminalConeError::RootNotObserved)?,
+            );
+        }
         let mut retained = RetainedPinSet::new();
-        let root_index = root_index.ok_or(RetainTerminalConeError::RootNotObserved)?;
-        let mut pending = vec![root_index];
-        let mut visited = BTreeSet::new();
-        while let Some(index) = pending.pop() {
-            let lease = &leases.held[index];
+        let mut visited = HashSet::with_capacity(selected.len());
+        while let Some(lease) = pending.pop() {
             if !visited.insert(lease.identity()) {
                 continue;
             }
             for dependency in lease.dependencies() {
-                let index = by_observation
-                    .get(&(dependency.incarnation, dependency.stamp))
-                    .ok_or_else(|| {
-                        RetainTerminalConeError::DependencyNotObserved(dependency.clone())
-                    })?;
-                pending.push(*index);
+                pending.push(
+                    *selected
+                        .get(&(dependency.incarnation, dependency.stamp))
+                        .ok_or_else(|| {
+                            RetainTerminalConeError::DependencyNotObserved(dependency.clone())
+                        })?,
+                );
             }
             retained.lease_erased(lease.duplicate());
         }
@@ -5341,6 +5732,15 @@ impl QueryContext {
     fn task_runtime(&self) -> Arc<RuntimeCore> {
         self.task.core.clone()
     }
+}
+
+fn retain_task_observations(task: &Task) -> RetainedPinSet {
+    let leases = lock(&task.leases);
+    let mut retained = RetainedPinSet::new();
+    for lease in &leases.held {
+        retained.lease_erased(lease.duplicate());
+    }
+    retained
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -5652,7 +6052,7 @@ pub struct RetainedPinSet {
     /// `(node incarnation, stamp, terminal revision)` of every terminal already
     /// leased here, mirroring [`TaskLeases::observed`] so a redundant re-lease is
     /// dropped rather than double-held.
-    observed: BTreeSet<(u64, u64, Revision)>,
+    observed: HashSet<(u64, u64, Revision)>,
     /// Live pins, type-erased across families. Dropping the set drops these
     /// through the batched two-phase release.
     held: Vec<Box<dyn ObservedLease>>,
@@ -5737,6 +6137,7 @@ impl Drop for RetainedPinSet {
 /// touches without a second retention structure.
 trait ObservedLease: Send + Sync {
     fn metrics(&self) -> &Metrics;
+    fn runtime_identity(&self) -> u64;
     fn identity(&self) -> (u64, u64, Revision);
 
     fn dependencies(&self) -> &[Observation];
@@ -5760,6 +6161,10 @@ where
 {
     fn metrics(&self) -> &Metrics {
         &self.family.core.metrics
+    }
+
+    fn runtime_identity(&self) -> u64 {
+        self.family.core.identity
     }
 
     fn identity(&self) -> (u64, u64, Revision) {
