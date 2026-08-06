@@ -292,12 +292,18 @@ compile_fail = true
 error_contains = ["E0255", "place rooted at `self`"]
 
 # ---------------------------------------------------------------------------
-# Declared but never called (RUE-1212). 6.6:3-6.6:5 are legality rules on the
-# declaration, so they hold with no call site anywhere in the program; the
-# trailing-exit half of 6.6:6 is decidable from the declaration's body shape
-# and holds too. The remaining 6.6:6/6.6:7 body rules need the per-instruction
-# analysis, which the driver runs only for a body something demands, so they
-# are covered above with a call site.
+# Declared but never called (RUE-1212). 6.6:3-6.6:7 are legality rules on the
+# declaration, so they hold with no call site anywhere in the program: the
+# signature, the body's exits, and the yielded projection's root are all
+# decidable from the declaration's own syntax.
+#
+# Two parts of 6.6 remain demand-driven, both because they need resolved
+# types. A projection chain through a nested method call is legal only when
+# that method is itself an accessor, which the declaration cannot tell from a
+# plain method (covered with a call site by
+# `accessor_yield_through_plain_method_is_rejected`); and a `yield` in a body
+# that is not an accessor's is E0256 from the body analysis, since an ordinary
+# declaration retains no body to inspect.
 # ---------------------------------------------------------------------------
 
 [[case]]
@@ -397,6 +403,161 @@ fn main() -> i32 { 0 }
 """
 compile_fail = true
 error_contains = ["E0254", "single trailing `yield`"]
+
+[[case]]
+name = "uncalled_accessor_body_rejects_a_second_yield"
+spec = ["6.6:6"]
+description = "A second `yield` bypasses the trailing exit, with no call site (E0254)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0254", "single trailing `yield`", "a second `yield`"]
+
+[[case]]
+name = "uncalled_accessor_body_rejects_return"
+spec = ["6.6:6"]
+description = "An accessor body may not contain `return`, with no call site (E0254)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self, k: i64) -> borrow i64 {
+        if k == 0 {
+            return 1;
+        }
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0254", "single trailing `yield`", "a `return`"]
+
+[[case]]
+name = "uncalled_accessor_body_rejects_try"
+spec = ["6.6:6"]
+description = "An accessor body may not contain `?`, with no call site (E0254)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        let parsed = @parse_i64("1")?;
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0254", "single trailing `yield`", "a `?`"]
+
+[[case]]
+name = "uncalled_accessor_yield_must_root_at_receiver"
+spec = ["6.6:7"]
+description = "Yielding a parameter other than the receiver is rejected with no call site (E0255)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self, other: i64) -> borrow i64 {
+        yield other;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0255", "place rooted at `self`", "`other`"]
+
+[[case]]
+name = "uncalled_accessor_yield_of_a_computed_value_is_rejected"
+spec = ["6.6:7"]
+description = "Yielding a computed value, not a place, is rejected with no call site (E0255)."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x + 1;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+compile_fail = true
+error_contains = ["E0255", "place rooted at `self`", "a value expression"]
+
+[[case]]
+name = "uncalled_nested_accessor_yield_compiles"
+spec = ["6.6:7"]
+description = "Control: a nested accessor call is a legal projection link, so an uncalled accessor chain compiles."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+    cells: [i64; 4],
+
+    @allow(unused_function)
+    fn inner(borrow self) -> borrow i64 { yield self.x; }
+
+    @allow(unused_function)
+    fn outer(borrow self) -> borrow i64 { yield self.inner(); }
+
+    @allow(unused_function)
+    fn at(borrow self, i: u64) -> borrow i64 {
+        if i >= 4 {
+            @panic("index out of bounds");
+        }
+        yield self.cells[i];
+    }
+}
+fn main() -> i32 { 0 }
+"""
+exit_code = 0
+
+[[case]]
+name = "accessor_yield_through_plain_method_is_rejected"
+spec = ["6.6:7"]
+description = "A projection link through a non-accessor method is rejected (E0255); this link is the one part of 6.6:7 that needs the receiver's resolved type, so it is diagnosed from the call site."
+preview = "borrow_accessors"
+preview_should_pass = true
+source = """
+struct P {
+    x: i64,
+
+    fn plain(borrow self) -> i64 { self.x }
+    fn xr(borrow self) -> borrow i64 { yield self.plain(); }
+}
+fn main() -> i32 {
+    let p = P { x: 1 };
+    if p.xr() == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0255", "not an accessor projection"]
 
 [[case]]
 name = "uncalled_legal_accessor_compiles"

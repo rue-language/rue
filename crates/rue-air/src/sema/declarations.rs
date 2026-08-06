@@ -1459,6 +1459,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // function can never satisfy: it has no receiver to project from.
         check_accessor_declaration_shape(
             self.rir,
+            self.interner,
             declaration,
             Some(body),
             false,
@@ -1777,6 +1778,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 // in the signature resolves.
                 check_accessor_declaration_shape(
                     self.rir,
+                    self.interner,
                     method_ref,
                     Some(*body),
                     true,
@@ -3195,15 +3197,20 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
     }
 }
 
-/// The declaration-shape legality of a `-> borrow T` accessor (ADR-0062):
-/// the result position requires the `borrow_accessors` preview (6.6:3), the
-/// receiver is a shared `borrow self` (6.6:4), and every other parameter is a
-/// plain by-value guard input (6.6:5).
+/// The declaration legality of a `-> borrow T` accessor (ADR-0062): the result
+/// position requires the `borrow_accessors` preview (6.6:3), the receiver is a
+/// shared `borrow self` (6.6:4), every other parameter is a plain by-value
+/// guard input (6.6:5), the body's only exit is its trailing `yield` (6.6:6),
+/// and that `yield` hands out a receiver-rooted place (6.6:7).
 ///
 /// These are legality rules on the declaration, so a declared-but-uncalled
 /// accessor is exactly as ill-formed as a called one. Every producer runs this
-/// over every accessor declaration it admits, which is what keeps the rule
-/// independent of the driver's on-demand body analysis.
+/// over every accessor declaration it admits, which is what keeps the rules
+/// independent of the driver's on-demand body analysis. The body rules are
+/// syntactic over the RIR, so they belong here with the signature rules; the
+/// single part that is not — whether a method-call link in the yielded chain
+/// names an accessor — is documented on [`check_accessor_yield_root`] and
+/// stays with the demanded path.
 ///
 /// The declaring `FnDecl` is the only carrier of `returns_borrow`: the durable
 /// signature records the result type's source spelling, which never contains
@@ -3213,6 +3220,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
 /// than a shape error about a form it cannot name yet.
 pub(super) fn check_accessor_declaration_shape(
     rir: &rue_rir::Rir,
+    interner: &lasso::ThreadedRodeo,
     declaration: InstRef,
     body: Option<InstRef>,
     has_named_owner: bool,
@@ -3293,9 +3301,135 @@ pub(super) fn check_accessor_declaration_shape(
         }
     }
     if let Some(body) = body {
-        accessor_trailing_yield(rir, body)?;
+        let trailing = accessor_trailing_yield(rir, body)?;
+        check_accessor_body_exits(rir, body, trailing)?;
+        check_accessor_yield_root(rir, interner, trailing)?;
     }
     Ok(())
+}
+
+/// Every instruction lexically contained in `body`, `body` itself included,
+/// in lowering (source) order.
+///
+/// The walk stops at a nested declaration — a nested `fn`, drop function,
+/// struct, or anonymous type owns its own body, and predeclaration reaches
+/// that declaration on its own entry — so a containment question answered
+/// here is answered about this body alone.
+fn body_instructions(rir: &rue_rir::Rir, body: InstRef) -> Vec<InstRef> {
+    let mut pending = vec![body];
+    let mut seen = HashSet::new();
+    let mut contained = Vec::new();
+    let mut children = Vec::new();
+    while let Some(current) = pending.pop() {
+        if !seen.insert(current) {
+            continue;
+        }
+        contained.push(current);
+        if current != body
+            && matches!(
+                rir.get(current).data,
+                InstData::FnDecl { .. }
+                    | InstData::DropFnDecl { .. }
+                    | InstData::StructDecl { .. }
+                    | InstData::EnumDecl { .. }
+                    | InstData::AnonStructType { .. }
+                    | InstData::AnonEnumType { .. }
+            )
+        {
+            continue;
+        }
+        children.clear();
+        rir.child_instructions(current, &mut children);
+        pending.extend(children.iter().copied());
+    }
+    // Instruction indices are assigned as astgen lowers, so ordering by index
+    // reports the first offending form in the source rather than an arbitrary
+    // one from the traversal.
+    contained.sort_unstable_by_key(|inst_ref| inst_ref.as_u32());
+    contained
+}
+
+/// The rest of 6.6:6: an accessor body's trailing `yield` is its *only* exit —
+/// no second `yield`, no `return`, no `?` (E0254).
+///
+/// "Contains" is the spec's own wording, and containment is decidable from the
+/// RIR, so this runs at the declaration for every accessor the program
+/// declares rather than only for a body some call site demands. The
+/// comptime-pruned branch of an `if` counts: 6.6:6 forbids the form appearing
+/// in the body, not merely on a path the specialization keeps.
+fn check_accessor_body_exits(
+    rir: &rue_rir::Rir,
+    body: InstRef,
+    trailing: InstRef,
+) -> CompileResult<()> {
+    for inst_ref in body_instructions(rir, body) {
+        let inst = rir.get(inst_ref);
+        let found = match &inst.data {
+            InstData::Yield(_) if inst_ref != trailing => "a second `yield`",
+            InstData::Ret(_) => "a `return`",
+            InstData::Try { .. } => "a `?`",
+            _ => continue,
+        };
+        return Err(CompileError::new(
+            ErrorKind::AccessorBodyOtherExit {
+                found: found.to_string(),
+            },
+            inst.span,
+        ));
+    }
+    Ok(())
+}
+
+/// 6.6:7 over the RIR: the trailing `yield`'s operand is a projection chain
+/// rooted at the receiver (E0255).
+///
+/// Everything this rule needs is syntactic except one link. A nested
+/// method-call link is legal only when the callee is *itself* an accessor,
+/// and which method a call names is a resolved-type question, so this walk
+/// accepts any method call and keeps descending to the chain's root. That
+/// leaves exactly one residual for a declaration nothing calls: a chain
+/// through a plain (non-accessor) method of the receiver, such as
+/// `yield self.plain();`, whose rejection stays with
+/// [`super::control_flow`]'s demanded-path check. Every other shape — a local,
+/// a non-receiver parameter, a computed value, a chain rooted at anything but
+/// `self` — is rejected here with no call site.
+fn check_accessor_yield_root(
+    rir: &rue_rir::Rir,
+    interner: &lasso::ThreadedRodeo,
+    trailing: InstRef,
+) -> CompileResult<()> {
+    let InstData::Yield(operand) = rir.get(trailing).data else {
+        return Ok(());
+    };
+    let self_sym = interner.get_or_intern("self");
+    let mut current = operand;
+    loop {
+        let inst = rir.get(current);
+        let span = inst.span;
+        match &inst.data {
+            InstData::VarRef { name, .. } => {
+                if *name == self_sym {
+                    return Ok(());
+                }
+                return Err(CompileError::new(
+                    ErrorKind::AccessorYieldNotReceiverRooted {
+                        found: format!("a place rooted at `{}`", interner.resolve(name)),
+                    },
+                    span,
+                ));
+            }
+            InstData::FieldGet { base, .. } | InstData::IndexGet { base, .. } => current = *base,
+            InstData::MethodCall { receiver, .. } => current = *receiver,
+            _ => {
+                return Err(CompileError::new(
+                    ErrorKind::AccessorYieldNotReceiverRooted {
+                        found: "a value expression".to_string(),
+                    },
+                    span,
+                ));
+            }
+        }
+    }
 }
 
 /// The single trailing `yield` that an accessor body must fall through to
@@ -3303,9 +3437,8 @@ pub(super) fn check_accessor_declaration_shape(
 ///
 /// Which instruction is the trailing exit is decidable from the RIR alone, so
 /// the declaration seam rejects a body with no trailing `yield` for every
-/// accessor in the program. Rejecting the *other* exits — a second `yield`, a
-/// `return`, a `?` — needs the per-instruction analysis, which the driver runs
-/// only for a body something demands.
+/// accessor in the program. [`check_accessor_body_exits`] then rejects the
+/// *other* exits from the same seam.
 pub(super) fn accessor_trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> CompileResult<InstRef> {
     // A single-statement body lowers to the instruction itself; a
     // multi-statement body lowers to a block whose last instruction is the

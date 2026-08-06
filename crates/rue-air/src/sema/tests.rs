@@ -4321,7 +4321,7 @@ struct P {{
     fn uncalled_accessor_body_requires_a_trailing_yield() {
         // 6.6:6 with no call site. Which instruction is the trailing exit is
         // decidable from the RIR, so this half of the rule holds without body
-        // analysis; rejecting the other exits still needs a demanded body.
+        // analysis.
         let source = format!(
             "
 struct P {{
@@ -4338,6 +4338,91 @@ struct P {{
                 .iter()
                 .any(|error| matches!(&error.kind, ErrorKind::AccessorBodyMissingYield))
         );
+    }
+
+    #[test]
+    fn uncalled_accessor_body_rejects_a_second_yield() {
+        // The rest of 6.6:6 with no call site: containment of a second exit
+        // is decidable from the RIR, so it is decided at the declaration.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(borrow self) -> borrow i64 {{
+        yield self.x;
+        yield self.x;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("second yield");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorBodyOtherExit { found } if found == "a second `yield`"
+        )));
+    }
+
+    #[test]
+    fn uncalled_accessor_body_rejects_return() {
+        // 6.6:6 forbids `return` appearing in the body, with no call site.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(borrow self, k: i64) -> borrow i64 {{
+        if k == 0 {{
+            return 1;
+        }}
+        yield self.x;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("return in accessor");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorBodyOtherExit { found } if found == "a `return`"
+        )));
+    }
+
+    #[test]
+    fn uncalled_accessor_yield_must_root_at_receiver() {
+        // 6.6:7 with no call site: the yielded chain's root is syntactic.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    fn xr(borrow self, other: i64) -> borrow i64 {{
+        yield other;
+    }}
+}}{UNCALLED_MAIN}"
+        );
+        let errors = compile_with_accessors(&source).expect_err("yield of a non-receiver place");
+        assert!(errors.iter().any(|error| matches!(
+            &error.kind,
+            ErrorKind::AccessorYieldNotReceiverRooted { found } if found.contains("`other`")
+        )));
+    }
+
+    #[test]
+    fn uncalled_nested_accessor_yield_compiles() {
+        // Control for the one link 6.6:7 leaves to the demanded path: a
+        // method-call link is accepted at the declaration, so a legal nested
+        // accessor chain nothing calls still compiles.
+        let source = format!(
+            "
+struct P {{
+    x: i64,
+
+    @allow(unused_function)
+    fn inner(borrow self) -> borrow i64 {{ yield self.x; }}
+
+    @allow(unused_function)
+    fn outer(borrow self) -> borrow i64 {{ yield self.inner(); }}
+}}{UNCALLED_MAIN}"
+        );
+        compile_with_accessors(&source).expect("a legal uncalled accessor chain compiles");
     }
 
     #[test]

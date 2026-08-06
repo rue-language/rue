@@ -9996,7 +9996,7 @@ fn resolve_parsed_semantic_signature(
             is_extern,
             is_c_export,
             is_accessor,
-            accessor_body_has_trailing_yield,
+            accessor_body,
         } => {
             if *is_accessor {
                 if !provider
@@ -10057,8 +10057,29 @@ fn resolve_parsed_semantic_signature(
                         },
                     ));
                 }
-                if !*accessor_body_has_trailing_yield {
-                    return Err(diagnostic(rue_error::ErrorKind::AccessorBodyMissingYield));
+                // 6.6:6 and 6.6:7 over the accessor's own retained body. These
+                // are legality rules on the declaration, so they hold with no
+                // call site anywhere in the program (RUE-1212); see
+                // `AccessorBodyShape` for the single link they leave to the
+                // demanded path.
+                use crate::semantic_query_nucleus::AccessorBodyShape as Shape;
+                match accessor_body {
+                    Shape::WellFormed => {}
+                    Shape::MissingTrailingYield => {
+                        return Err(diagnostic(rue_error::ErrorKind::AccessorBodyMissingYield));
+                    }
+                    Shape::OtherExit { found } => {
+                        return Err(diagnostic(rue_error::ErrorKind::AccessorBodyOtherExit {
+                            found: found.to_string(),
+                        }));
+                    }
+                    Shape::YieldNotReceiverRooted { found } => {
+                        return Err(diagnostic(
+                            rue_error::ErrorKind::AccessorYieldNotReceiverRooted {
+                                found: found.to_string(),
+                            },
+                        ));
+                    }
                 }
             }
             let mut generic_index = 0_u32;

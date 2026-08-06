@@ -1359,6 +1359,103 @@ impl Expr {
             Expr::Error(span) => *span,
         }
     }
+
+    /// Append this expression's direct sub-expressions to `out`.
+    ///
+    /// The match is exhaustive with no catch-all arm, so a new [`Expr`]
+    /// variant does not compile until its sub-expressions are listed here.
+    /// That is what lets a consumer decide a containment question over a body
+    /// — "does this accessor body contain a `return`?" (spec 6.6:6) — from
+    /// syntax alone, with no chance of silently missing a form.
+    ///
+    /// Statements are traversed through the blocks that hold them. Types are
+    /// not expressions and are never reported, so an anonymous struct type
+    /// written inside a body keeps its own method bodies to itself.
+    pub fn child_exprs<'a>(&'a self, out: &mut Vec<&'a Expr>) {
+        fn block<'a>(block: &'a BlockExpr, out: &mut Vec<&'a Expr>) {
+            for statement in &block.statements {
+                match statement {
+                    Statement::Let(binding) => out.push(&binding.init),
+                    Statement::Assign(assignment) => {
+                        match &assignment.target {
+                            AssignTarget::Var(_) => {}
+                            AssignTarget::Field(field) => out.push(&field.base),
+                            AssignTarget::Index(index) => {
+                                out.extend([index.base.as_ref(), index.index.as_ref()])
+                            }
+                        }
+                        out.push(&assignment.value);
+                    }
+                    Statement::Expr(expr) => out.push(expr),
+                }
+            }
+            out.push(&block.expr);
+        }
+        fn args<'a>(args: &'a [CallArg], out: &mut Vec<&'a Expr>) {
+            out.extend(args.iter().map(|arg| &arg.expr));
+        }
+        match self {
+            Expr::Int(_)
+            | Expr::String(_)
+            | Expr::Bool(_)
+            | Expr::Unit(_)
+            | Expr::Ident(_)
+            | Expr::Continue(_)
+            | Expr::SelfExpr(_)
+            | Expr::TypeLit(_)
+            | Expr::Error(_) => {}
+            Expr::Binary(binary) => out.extend([binary.left.as_ref(), binary.right.as_ref()]),
+            Expr::Unary(unary) => out.push(&unary.operand),
+            Expr::Paren(paren) => out.push(&paren.inner),
+            Expr::Block(body) => block(body, out),
+            Expr::If(expr) => {
+                out.push(&expr.cond);
+                block(&expr.then_block, out);
+                if let Some(otherwise) = &expr.else_block {
+                    block(otherwise, out);
+                }
+            }
+            Expr::Match(expr) => {
+                out.push(&expr.scrutinee);
+                out.extend(expr.arms.iter().map(|arm| arm.body.as_ref()));
+            }
+            Expr::While(expr) => {
+                out.push(&expr.cond);
+                block(&expr.body, out);
+            }
+            Expr::Loop(expr) => block(&expr.body, out),
+            Expr::For(expr) => {
+                out.push(&expr.iterable);
+                block(&expr.body, out);
+            }
+            Expr::Call(call) => args(&call.args, out),
+            Expr::Break(expr) => out.extend(expr.value.as_deref()),
+            Expr::Return(expr) => out.extend(expr.value.as_deref()),
+            Expr::Yield(expr) => out.push(&expr.value),
+            Expr::StructLit(literal) => {
+                out.extend(literal.base.as_deref());
+                if let Some(ctor_args) = &literal.ctor_args {
+                    args(ctor_args, out);
+                }
+                out.extend(literal.fields.iter().map(|field| field.value.as_ref()));
+            }
+            Expr::Field(field) => out.push(&field.base),
+            Expr::MethodCall(call) => {
+                out.push(&call.receiver);
+                args(&call.args, out);
+            }
+            Expr::Try(expr) => out.push(&expr.operand),
+            Expr::IntrinsicCall(call) => out.extend(call.args.iter().filter_map(|arg| match arg {
+                IntrinsicArg::Expr(expr) => Some(expr),
+                IntrinsicArg::Type(_) => None,
+            })),
+            Expr::ArrayLit(literal) => out.extend(literal.elements.iter()),
+            Expr::Index(index) => out.extend([index.base.as_ref(), index.index.as_ref()]),
+            Expr::Path(path) => out.extend(path.base.as_deref()),
+            Expr::Comptime(expr) => out.push(&expr.expr),
+            Expr::Checked(expr) => out.push(&expr.expr),
+        }
+    }
 }
 
 fn rebind_span(span: &mut Span, file_id: FileId) {

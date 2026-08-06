@@ -29,6 +29,30 @@ pub(crate) struct ParsedSemanticParameter {
     pub(crate) ty: Arc<str>,
 }
 
+/// The accessor-body legality facts that are decidable from the declaration's
+/// own retained syntax (spec 6.6:6, 6.6:7).
+///
+/// An accessor is the one declaration whose body its signature query reads:
+/// 6.6:6 and 6.6:7 are legality rules on the declaration, so a
+/// declared-but-uncalled accessor is exactly as ill-formed as a called one,
+/// and the driver analyzes a body only when something demands it (RUE-1212).
+/// Everything here is syntactic; the one accessor-body question that is not —
+/// whether a method-call link in the yielded projection chain names an
+/// accessor — stays with the demanded path and is documented on
+/// [`accessor_body_shape`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AccessorBodyShape {
+    /// The body's final statement is not a `yield` (E0254).
+    MissingTrailingYield,
+    /// A trailing `yield` exists, but another exit bypasses it (E0254).
+    OtherExit { found: Arc<str> },
+    /// The trailing `yield` hands out something that is not a place rooted at
+    /// the receiver (E0255).
+    YieldNotReceiverRooted { found: Arc<str> },
+    /// Well-formed as far as the declaration alone can decide.
+    WellFormed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedSemanticSignature {
     Callable {
@@ -40,7 +64,11 @@ pub(crate) enum ParsedSemanticSignature {
         is_extern: bool,
         is_c_export: bool,
         is_accessor: bool,
-        accessor_body_has_trailing_yield: bool,
+        /// What the accessor body's own syntax decides about spec 6.6:6 and
+        /// 6.6:7. Meaningful only when `is_accessor`; an ordinary signature
+        /// retains no body and always reports
+        /// [`AccessorBodyShape::MissingTrailingYield`] for the empty stand-in.
+        accessor_body: AccessorBodyShape,
     },
     Struct {
         fields: Arc<[(Arc<str>, Arc<str>)]>,
@@ -132,6 +160,92 @@ fn parsed_parameters(
         .map(Into::into)
 }
 
+/// The `yield` an accessor body falls through to: the body itself, the
+/// block's final expression, or its final statement (spec 6.6:6).
+fn trailing_yield(body: &rue_parser::ast::Expr) -> Option<&rue_parser::ast::YieldExpr> {
+    use rue_parser::ast::{Expr, Statement};
+    match body {
+        Expr::Yield(exit) => Some(exit),
+        Expr::Block(block) => match (block.expr.as_ref(), block.statements.last()) {
+            (Expr::Yield(exit), _) | (_, Some(Statement::Expr(Expr::Yield(exit)))) => Some(exit),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Decide 6.6:6 and 6.6:7 from an accessor body's own syntax.
+///
+/// Both rules are containment and shape questions — "the final statement is a
+/// `yield`, no other `yield` may appear, ... the body **MUST NOT** contain
+/// `return` or `?`", and "the operand ... **MUST** be a place rooted at the
+/// receiver parameter" — so an accessor the program merely declares is
+/// judged exactly like one something calls (RUE-1212). Containment is read
+/// off the syntax, which is why a `return` in a branch a specialization would
+/// later prune still counts: 6.6:6 forbids the form appearing in the body.
+///
+/// One link of 6.6:7 is not syntactic. A projection chain may pass through a
+/// nested accessor call, and whether `self.f()` names an accessor or a plain
+/// method is a resolved-type question the declaration cannot answer. This
+/// walk therefore accepts any method-call link and keeps descending to the
+/// chain's root, leaving exactly one residual for a declaration nothing
+/// calls: `yield self.plain();`, where the chain is receiver-rooted but the
+/// link is not an accessor. `rue_air::sema::control_flow` rejects that on the
+/// demanded path, with the receiver's type in hand.
+fn accessor_body_shape(
+    body: &rue_parser::ast::Expr,
+    interner: &crate::ThreadedRodeo,
+) -> AccessorBodyShape {
+    use rue_parser::ast::Expr;
+    let Some(trailing) = trailing_yield(body) else {
+        return AccessorBodyShape::MissingTrailingYield;
+    };
+    let mut pending = vec![body];
+    while let Some(expr) = pending.pop() {
+        let found = match expr {
+            // Occurrences are distinguished by span: the reparsed signature
+            // source holds each `yield` exactly once.
+            Expr::Yield(exit) if exit.span != trailing.span => "a second `yield`",
+            Expr::Return(_) => "a `return`",
+            Expr::Try(_) => "a `?`",
+            _ => {
+                expr.child_exprs(&mut pending);
+                continue;
+            }
+        };
+        return AccessorBodyShape::OtherExit {
+            found: Arc::from(found),
+        };
+    }
+    let mut current = trailing.value.as_ref();
+    loop {
+        let found = match current {
+            Expr::SelfExpr(_) => return AccessorBodyShape::WellFormed,
+            Expr::Paren(paren) => {
+                current = &paren.inner;
+                continue;
+            }
+            Expr::Field(field) => {
+                current = &field.base;
+                continue;
+            }
+            Expr::Index(index) => {
+                current = &index.base;
+                continue;
+            }
+            Expr::MethodCall(call) => {
+                current = &call.receiver;
+                continue;
+            }
+            Expr::Ident(name) => format!("a place rooted at `{}`", interner.resolve(&name.name)),
+            _ => "a value expression".to_owned(),
+        };
+        return AccessorBodyShape::YieldNotReceiverRooted {
+            found: Arc::from(found),
+        };
+    }
+}
+
 /// Reparse one exact body-free syntax terminal into a value-only shape. This
 /// parser owns no name or type resolution policy; every type fragment is later
 /// routed through `rue_air::resolve_semantic_type_syntax`.
@@ -156,19 +270,7 @@ pub(crate) fn parse_semantic_signature(
         .first()
         .ok_or_else(|| Arc::from("semantic signature parsed no declaration"))?;
     let unit: Arc<str> = Arc::from("()");
-    let has_trailing_yield = |body: &rue_parser::ast::Expr| match body {
-        rue_parser::ast::Expr::Yield(_) => true,
-        rue_parser::ast::Expr::Block(block) => {
-            matches!(block.expr.as_ref(), rue_parser::ast::Expr::Yield(_))
-                || matches!(
-                    block.statements.last(),
-                    Some(rue_parser::ast::Statement::Expr(
-                        rue_parser::ast::Expr::Yield(_)
-                    ))
-                )
-        }
-        _ => false,
-    };
+    let body_shape = |body: &rue_parser::ast::Expr| accessor_body_shape(body, &interner);
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
                     has_self,
@@ -177,7 +279,7 @@ pub(crate) fn parse_semantic_signature(
                     is_extern,
                     is_c_export,
                     is_accessor,
-                    accessor_body_has_trailing_yield|
+                    accessor_body|
      -> Result<ParsedSemanticSignature, Arc<str>> {
         Ok(ParsedSemanticSignature::Callable {
             parameters: parsed_parameters(&source, &interner, parameters)?,
@@ -191,7 +293,7 @@ pub(crate) fn parse_semantic_signature(
             is_extern,
             is_c_export,
             is_accessor,
-            accessor_body_has_trailing_yield,
+            accessor_body,
         })
     };
     match (key.category, item) {
@@ -204,7 +306,7 @@ pub(crate) fn parse_semantic_signature(
             false,
             function.export_abi.is_some(),
             function.borrow_return.is_some(),
-            has_trailing_yield(&function.body),
+            body_shape(&function.body),
         ),
         (Category::ExternFunction, rue_parser::ast::Item::Extern(block)) => {
             let function = block
@@ -220,7 +322,7 @@ pub(crate) fn parse_semantic_signature(
                 true,
                 false,
                 false,
-                false,
+                AccessorBodyShape::MissingTrailingYield,
             )
         }
         (Category::Method | Category::AssociatedFunction, rue_parser::ast::Item::Struct(owner)) => {
@@ -240,7 +342,7 @@ pub(crate) fn parse_semantic_signature(
                 false,
                 false,
                 method.borrow_return.is_some(),
-                has_trailing_yield(&method.body),
+                body_shape(&method.body),
             )
         }
         (Category::Struct, rue_parser::ast::Item::Struct(structure)) => {

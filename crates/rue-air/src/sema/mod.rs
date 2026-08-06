@@ -1456,13 +1456,20 @@ impl<'a> Sema<'a, MutableDeclarations> {
 
     /// Reject every declaration whose legality is decided by its own shape,
     /// before any signature type is resolved: ill-formed `-> borrow T`
-    /// accessors (6.6:3-6.6:5, ADR-0062) and `extern "C"` declarations of the
+    /// accessors (6.6:3-6.6:7, ADR-0062) and `extern "C"` declarations of the
     /// program entry symbol (9.3:6, RUE-1220).
     ///
     /// Predeclaration is the one point every producer reaches for every
     /// declaration the program contains, whether or not anything calls it.
     /// The driver analyzes bodies only on demand, so a rule that runs from a
     /// body would let an uncalled accessor escape the preview gate entirely.
+    ///
+    /// A `yield` in a body whose declaration is *not* an accessor (E0256, the
+    /// last sentence of 6.6:6) is deliberately not decided here: an ordinary
+    /// declaration's legality never depends on its own body, and reaching that
+    /// rule for an uncalled ordinary function means analyzing every body the
+    /// program declares. It stays with the demanded path in
+    /// [`super::control_flow`].
     fn check_declaration_shapes(
         &self,
         pending_payloads: &[binding_manifest::PendingDeclarationPayload],
@@ -1474,6 +1481,7 @@ impl<'a> Sema<'a, MutableDeclarations> {
             };
             declarations::check_accessor_declaration_shape(
                 self.rir,
+                self.interner,
                 pending.declaration,
                 body,
                 pending.shell.identity.owner.is_some(),

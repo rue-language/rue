@@ -24,3 +24,44 @@ fn main() -> i32 {
 preview = "borrow_accessors"
 compile_fail = true
 error_contains = ["E0250", "cannot return an accessor result", "`xr`", "`p`"]
+
+[[case]]
+name = "uncalled_accessor_body_exit_names_the_offending_form"
+description = "The declaration-seam E0254 names which exit bypasses the trailing `yield`, since it has no body analysis to anchor a note to."
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self) -> borrow i64 {
+        yield self.x;
+        yield self.x;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+preview = "borrow_accessors"
+compile_fail = true
+error_contains = [
+    "E0254",
+    "a second `yield`",
+    "guards may only diverge or fall through to the trailing `yield`",
+]
+
+[[case]]
+name = "uncalled_accessor_yield_root_names_the_offending_root"
+description = "The declaration-seam E0255 names the root the body actually yielded from."
+source = """
+struct P {
+    x: i64,
+
+    @allow(unused_function)
+    fn xr(borrow self, other: i64) -> borrow i64 {
+        yield other;
+    }
+}
+fn main() -> i32 { 0 }
+"""
+preview = "borrow_accessors"
+compile_fail = true
+error_contains = ["E0255", "place rooted at `self`", "`other`"]

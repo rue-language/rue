@@ -2823,6 +2823,7 @@ where
     fn reject_free_function_accessor(&self, declaration: InstRef) -> CompileResult<()> {
         super::declarations::check_accessor_declaration_shape(
             self.rir.rir(),
+            &self.interner,
             declaration,
             None,
             false,
