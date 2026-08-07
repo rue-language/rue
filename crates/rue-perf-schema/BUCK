@@ -5,6 +5,9 @@ load("//crates:defs.bzl", "rue_crate")
 # should have to link the compiler to read a run object.
 rue_crate(
     name = "rue-perf-schema",
+    mapped_srcs = {
+        "//performance:incremental.toml": "src/incremental.toml",
+    },
     deps = [
         "//third-party:serde",
         "//third-party:serde_json",

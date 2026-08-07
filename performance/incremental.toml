@@ -1,0 +1,89 @@
+# Retained-session edit performance (ADR-0068 / RUE-1245).
+#
+# This suite is intentionally separate from both `manifest.toml` (ADR-0067's
+# fresh-process headline) and `scaling.toml` (fresh maintained-program scale).
+# Fixture edits are added under a new `fixture_revision`; raw report syntax
+# advances independently under `report_schema_version`.
+schema_version = 1
+report_schema_version = 1
+fixture_revision = 1
+samples_per_row = 5
+retention_revisions = 1000
+rotation = "left_by_sample"
+target = "x86-64-linux"
+optimization = "default"
+compiler_args = []
+
+[[scenarios]]
+scenario = "no_op_reobservation"
+expected_outcome = "success"
+structural_claim = "No compiler artifact recomputes."
+
+[[scenarios]]
+scenario = "unreachable_body"
+expected_outcome = "success"
+structural_claim = "Reached semantic, CFG, codegen, and object terminals remain green."
+
+[[scenarios]]
+scenario = "reached_body_only"
+expected_outcome = "success"
+structural_claim = "Only the edited body cone and its function-local backend products recompute."
+
+[[scenarios]]
+scenario = "callable_signature"
+expected_outcome = "success"
+structural_claim = "Exact semantic and ABI consumers invalidate."
+
+[[scenarios]]
+scenario = "layout_abi"
+expected_outcome = "success"
+structural_claim = "Exact layout, CFG, codegen, and image consumers invalidate."
+
+[[scenarios]]
+scenario = "import_set"
+expected_outcome = "success"
+structural_claim = "Discovery and only the changed reachability cone recompute."
+
+[[scenarios]]
+scenario = "reachability_deletion"
+expected_outcome = "success"
+structural_claim = "Removed units leave the rooted image and unaffected units remain reusable."
+
+[[scenarios]]
+scenario = "error_introduction"
+expected_outcome = "diagnostics"
+structural_claim = "Only the exact diagnostic cone recomputes and no successful downstream artifact publishes."
+
+[[workers]]
+mode = "one"
+compiler_arg = "-j1"
+
+[[workers]]
+mode = "automatic"
+compiler_arg = "-j0"
+
+[[workloads]]
+id = "mosaic"
+source = "examples/mosaic/main.rue"
+question = "How does a retained edit behave in the medium maintained multi-module development rung?"
+
+[[workloads]]
+id = "lattice"
+source = "examples/lattice/main.rue"
+question = "How does a retained edit behave in the largest maintained program and its fresh-link boundary?"
+
+# GitHub documents the standard public Linux x64 runner as 4 CPUs and 16 GB.
+# The memory probe sees usable host memory rather than the marketing capacity,
+# so eligibility uses a conservative 15 GB minimum while keeping the class,
+# architecture, core count, target, and automatic worker count exact.
+[reference_host]
+target = "x86-64-linux"
+automatic_workers = 4
+
+[reference_host.class]
+id = "github-public-ubuntu-24.04-x64-4cpu-16gb-v1"
+runner_label = "github-hosted"
+runner_image = "ubuntu-24.04"
+architecture = "x86_64"
+logical_cores = 4
+minimum_memory_bytes = 15000000000
