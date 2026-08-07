@@ -557,11 +557,15 @@ struct TypeInternPoolInner {
     /// `__rue_*` and `_start` are reserved — so "was this generated?" is
     /// membership here, never a name prefix (RUE-1050). This is the authority
     /// for consumers below semantic analysis, which cannot see the sema-side
-    /// registry: CFG destructor discovery and drop glue.
+    /// registry: CFG destructor discovery, drop glue, and symbol spelling
+    /// (`struct_symbol_name` / `enum_symbol_name`).
     ///
-    /// Symbol spelling still tests the prefix. It cannot read this registry
-    /// until the provider boundary carries the same marks, because durable
-    /// export re-derives identities from the rendered symbol; see RUE-1193.
+    /// Every path that mints a generated anonymous nominal must mark it here:
+    /// the epoch-local `find_or_create_anon_struct` / `_enum` and the
+    /// producer-nominal `mint_anon_struct` / `mint_anon_enum` mirror at the
+    /// provider boundary. A pool that carries the type but not the mark spells
+    /// a generated anonymous type as if it were a user nominal and desyncs the
+    /// callable symbols joined across that boundary (RUE-1193).
     anonymous_structs: HashSet<StructId>,
     anonymous_enums: HashSet<EnumId>,
 
@@ -2008,16 +2012,21 @@ impl TypeInternPoolInner {
         // different files are distinct, so their symbols must never depend on
         // whether a collision happened to be observed. Builtins keep their bare
         // source names because they pair with runtime-provided definitions.
-        // Anonymous structs already carry a globally-unique synthetic name
-        // (`__anon_struct_<id>`) that distinguishes every producer, and their
-        // destructor/member symbols are spelled from that bare name; qualifying
-        // them would only desynchronize those spellings, so they are exempt.
+        // Generated anonymous structs already carry a globally-unique synthetic
+        // name (`__anon_struct_<digest>`) that distinguishes every producer, and
+        // their destructor/member symbols are spelled from that bare name;
+        // qualifying them would only desynchronize those spellings, so they are
+        // exempt. That exemption is REGISTRY MEMBERSHIP, never the generated-name
+        // prefix: `__anon_struct_N` is a legal source declaration (only `__rue_*`
+        // and `_start` are reserved, RUE-125), and a prefix test hands such a
+        // declaration the bare symbol of a generated type it collides with
+        // (RUE-1050, RUE-1193).
         // Language-item builtins (`str`, `StrBuf`, `Str(N)`) also keep their bare
         // names: they pair with runtime-provided definitions, and the lang-item
         // marker survives durable import even when `is_builtin` is not carried.
         if data.def.is_builtin
             || self.struct_lang_items.contains_key(&id)
-            || data.def.name.starts_with("__anon_struct_")
+            || self.is_anonymous_struct(id)
         {
             return data.def.name.to_string();
         }
@@ -2034,11 +2043,9 @@ impl TypeInternPoolInner {
             other => panic!("Expected enum at pool index {}, got {:?}", id.0, other),
         };
         // See `struct_symbol_name`: unconditional qualification, with the
-        // reserved built-in enums and the uniquely-named anonymous enums
-        // (`__anon_enum_<id> { … }`) keeping their bare names.
-        if rue_builtins::is_reserved_enum_name(&data.def.name)
-            || data.def.name.starts_with("__anon_enum_")
-        {
+        // reserved built-in enums and the registry-marked generated anonymous
+        // enums (`__anon_enum_<digest> { … }`) keeping their bare names.
+        if rue_builtins::is_reserved_enum_name(&data.def.name) || self.is_anonymous_enum(id) {
             return data.def.name.to_string();
         }
         format!(
@@ -5119,6 +5126,112 @@ mod tests {
         // is, so the pair stays distinct.
         assert_eq!(pool.struct_symbol_name(b1), "StrBufTest");
         assert_eq!(pool.struct_symbol_name(b2), "StrBufTest$3");
+    }
+
+    /// RUE-1193: the bare-symbol exemption is registry membership, not the
+    /// generated-name spelling. A source declaration may legally spell the exact
+    /// generated form -- including the full 32-hex-digit one -- and must still be
+    /// file-qualified, or it collides with the generated type it names.
+    #[test]
+    fn anonymity_exemption_is_membership_not_the_generated_name_spelling() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let struct_def = |name: &str, file: u32| StructDef {
+            name: name.into(),
+            fields: vec![],
+            is_copy: false,
+            is_linear: false,
+            destructor: None,
+            is_builtin: false,
+            is_pub: true,
+            file_id: rue_span::FileId::new(file),
+        };
+        let digest_name = "__anon_struct_daa98b889bc477390889f83e53d5c4c3";
+
+        // Source declarations wearing the generated spelling.
+        let short_sym = interner.get_or_intern("__anon_struct_5");
+        let (short, _) = pool.register_struct(short_sym, struct_def("__anon_struct_5", 1));
+        let digest_sym = interner.get_or_intern(digest_name);
+        let (lookalike, _) = pool.register_struct(digest_sym, struct_def(digest_name, 1));
+
+        // The type the compiler actually generated, marked at creation.
+        let generated_sym = interner.get_or_intern("__anon_struct_deadbeef");
+        let (generated, _) =
+            pool.register_struct(generated_sym, struct_def("__anon_struct_deadbeef", 0));
+        pool.mark_anonymous_struct(generated);
+
+        assert_eq!(pool.struct_symbol_name(short), "__anon_struct_5$1");
+        assert_eq!(
+            pool.struct_symbol_name(lookalike),
+            format!("{digest_name}$1")
+        );
+        assert_eq!(pool.struct_symbol_name(generated), "__anon_struct_deadbeef");
+
+        // The enum half of the same rule.
+        let enum_def = |name: &str, file: u32| EnumDef {
+            name: name.into(),
+            variants: Arc::from(["A".into()]),
+            variant_payloads: vec![vec![]],
+            is_pub: true,
+            file_id: rue_span::FileId::new(file),
+        };
+        let source_enum_sym = interner.get_or_intern("__anon_enum_5");
+        let (source_enum, _) = pool.register_enum(source_enum_sym, enum_def("__anon_enum_5", 1));
+        let generated_enum_sym = interner.get_or_intern("__anon_enum_deadbeef { A }");
+        let (generated_enum, _) = pool.register_enum(
+            generated_enum_sym,
+            enum_def("__anon_enum_deadbeef { A }", 0),
+        );
+        pool.mark_anonymous_enum(generated_enum);
+
+        assert_eq!(pool.enum_symbol_name(source_enum), "__anon_enum_5$1");
+        assert_eq!(
+            pool.enum_symbol_name(generated_enum),
+            "__anon_enum_deadbeef { A }"
+        );
+    }
+
+    /// RUE-1193: symbol spelling reads the anonymity registry, so the registry
+    /// has to survive every representation the pool takes on downstream --
+    /// freezing for post-semantic phases and the per-body overlay derivation.
+    /// A mark that does not travel spells a generated anonymous type as if it
+    /// were a user nominal.
+    #[test]
+    fn anonymity_marks_survive_freezing_and_overlay_derivation() {
+        let pool = TypeInternPool::new();
+        let interner = ThreadedRodeo::default();
+        let name = "__anon_struct_deadbeef";
+        let symbol = interner.get_or_intern(name);
+        let (generated, _) = pool.register_struct(
+            symbol,
+            StructDef {
+                name: name.into(),
+                fields: vec![],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: rue_span::FileId::new(0),
+            },
+        );
+        pool.mark_anonymous_struct(generated);
+
+        assert!(pool.is_anonymous_struct(generated));
+        assert_eq!(pool.struct_symbol_name(generated), name);
+
+        let cloned = pool.clone();
+        assert!(cloned.is_anonymous_struct(generated));
+        assert_eq!(cloned.struct_symbol_name(generated), name);
+
+        // The per-body overlay reads the mark through its shared base.
+        cloned.rebase_overlay_in_place();
+        assert!(cloned.is_anonymous_struct(generated));
+        assert_eq!(cloned.struct_symbol_name(generated), name);
+
+        let frozen = pool.freeze();
+        assert!(frozen.is_anonymous_struct(generated));
+        assert_eq!(frozen.struct_symbol_name(generated), name);
     }
 
     #[test]

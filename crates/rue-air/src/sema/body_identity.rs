@@ -1887,6 +1887,12 @@ where
             },
         );
         let ty = Type::new_struct(id);
+        // Mirror the epoch's `find_or_create_anon_struct`: the pool-level
+        // anonymity registry is the authority for symbol spelling, CFG
+        // destructor discovery, and drop glue, and it has to survive the
+        // producer-nominal re-mint or those consumers see a generated
+        // anonymous type as an ordinary user nominal (RUE-1050, RUE-1193).
+        self.type_pool.mark_anonymous_struct(id);
         self.anon_nominals.insert(key.clone(), ty);
 
         let mut resolved = Vec::with_capacity(fields.len());
@@ -1971,6 +1977,8 @@ where
                 file_id: FileId::DEFAULT,
             },
         );
+        // See `mint_anon_struct` (RUE-1050, RUE-1193).
+        self.type_pool.mark_anonymous_enum(id);
         Ok(Type::new_enum(id))
     }
 
@@ -4314,6 +4322,57 @@ mod tests {
             def.variants.iter().map(Arc::as_ref).collect::<Vec<_>>(),
             ["Some", "None"]
         );
+    }
+
+    /// The producer-nominal mint records the pool-level anonymity mark, exactly
+    /// as the epoch's `find_or_create_anon_struct` / `_enum` do (RUE-1050).
+    ///
+    /// This is the drift guard for RUE-1193. The pool registry — not the
+    /// `__anon_struct_`/`__anon_enum_` spelling, which is a legal source name —
+    /// is what decides that symbol spelling keeps the bare synthetic name and
+    /// that CFG destructor discovery and drop glue treat the type as generated.
+    /// A mint that registers the type but forgets the mark republishes a
+    /// generated anonymous type as an ordinary user nominal: its callable
+    /// symbols become file-qualified here while the rooted image still spells
+    /// them bare, and the two sides stop joining.
+    #[test]
+    fn minted_anonymous_nominals_carry_the_pool_anonymity_mark() {
+        let struct_key = anon_key(AnonymousNominalKind::Struct, 0, 7);
+        let enum_key = anon_key(AnonymousNominalKind::Enum, 0, 8);
+        let struct_shape = DurableAnonymousShape::Struct {
+            fields: vec![(Arc::from("x"), DType::I32)],
+            struct_method_names: vec![Arc::from("get")],
+        };
+        let enum_shape = DurableAnonymousShape::Enum {
+            variants: vec![(Arc::from("A"), vec![])],
+        };
+        let mut pool = anon_pool(
+            [],
+            [
+                (struct_key.clone(), struct_shape),
+                (enum_key.clone(), enum_shape),
+            ],
+            [],
+        );
+
+        let struct_ty = pool.find_or_create_anon(&struct_key).unwrap();
+        let struct_id = struct_ty.as_struct().unwrap();
+        assert!(
+            pool.type_pool().is_anonymous_struct(struct_id),
+            "the mint must register the anonymity mark, not rely on the name",
+        );
+        // Membership is what keeps the symbol bare; the name is only evidence.
+        let struct_name = pool.type_pool().struct_def(struct_id).name.to_string();
+        assert_eq!(pool.type_pool().struct_symbol_name(struct_id), struct_name);
+
+        let enum_ty = pool.find_or_create_anon(&enum_key).unwrap();
+        let enum_id = enum_ty.as_enum().unwrap();
+        assert!(
+            pool.type_pool().is_anonymous_enum(enum_id),
+            "the enum mint must register the anonymity mark too",
+        );
+        let enum_name = pool.type_pool().enum_def(enum_id).name.to_string();
+        assert_eq!(pool.type_pool().enum_symbol_name(enum_id), enum_name);
     }
 
     /// Distinct producer keys forced onto one digest fail closed: the second is
