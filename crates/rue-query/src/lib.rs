@@ -4,9 +4,10 @@
 //! their typed keys, results, equality, and algorithms outside the runtime.
 
 use std::cell::Cell;
+use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{BuildHasher, BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
@@ -2923,7 +2924,7 @@ impl QueryRuntime {
             value_equal,
             retained_value_charge,
             evaluator,
-            nodes: Mutex::new(HashMap::new()),
+            nodes: ShardedNodeIndex::new(),
             retention: Mutex::new(FamilyRetentionQueue::new(self.core.retention_budgets)),
             retained_count: AtomicUsize::new(0),
             next_publish_sweep: AtomicUsize::new(retention_limit.saturating_add(1)),
@@ -3540,6 +3541,64 @@ where
     }
 }
 
+/// Number of memo-index shards per family. A power of two so shard selection
+/// is a mask; fixed rather than host-derived so the index's shape is identical
+/// on every machine. 32 shards keep expected same-shard collisions rare for
+/// the worker counts Rue schedules (currently ≤ 16) while costing only a few
+/// kilobytes per family.
+const NODE_INDEX_SHARDS: usize = 32;
+
+/// Sharded typed-key memo index (RUE-1241).
+///
+/// Every memo hit needs only to clone an existing `Arc`, yet a single-mutex
+/// index serializes all hits in the family — the dominant measured lock convoy
+/// at high worker counts after the registry and revision stores became
+/// concurrent. A reader-writer lock was prototyped and measured flat: its
+/// read-side acquisition is dearer than an uncontended mutex, which taxed the
+/// serial path without repaying at `-j10`. Sharding instead keeps the cheap
+/// mutex acquisition and removes cross-key contention by splitting the key
+/// space; hits on the *same* key still serialize briefly on one shard, which
+/// preserves the hit/removal race rules unchanged per shard.
+///
+/// Shard selection hashes with this index's own `RandomState` (SipHash, keyed
+/// per index), and each shard map keeps its own `RandomState` — the
+/// adversarial-resistance property of the previous single map is preserved,
+/// never weakened to a fixed or truncated hash.
+///
+/// Lock-order contract: a shard guard may be held while acquiring the global
+/// node-incarnation registry or a node's state lock (mirroring the previous
+/// whole-index mutex); nothing acquires a shard guard while holding either of
+/// those, and no path holds two shard guards at once.
+struct ShardedNodeIndex<K: QueryKey, V: Clone + Send + Sync + 'static> {
+    selector: RandomState,
+    shards: [Mutex<HashMap<K, Arc<Node<K, V>>>>; NODE_INDEX_SHARDS],
+}
+
+impl<K, V> ShardedNodeIndex<K, V>
+where
+    K: QueryKey,
+    V: Clone + Send + Sync + 'static,
+{
+    fn new() -> Self {
+        Self {
+            selector: RandomState::new(),
+            shards: std::array::from_fn(|_| Mutex::new(HashMap::new())),
+        }
+    }
+
+    fn shard_index(&self, key: &K) -> usize {
+        self.selector.hash_one(key) as usize & (NODE_INDEX_SHARDS - 1)
+    }
+
+    /// Locks and returns the one shard that can own `key`. Exclusive per
+    /// shard: get-miss-insert sequences and the removal re-checks (`users`,
+    /// `attempts`, pointer identity) stay atomic under this guard exactly as
+    /// they were under the whole-index mutex.
+    fn shard(&self, key: &K) -> MutexGuard<'_, HashMap<K, Arc<Node<K, V>>>> {
+        lock(&self.shards[self.shard_index(key)])
+    }
+}
+
 struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     core: Weak<RuntimeCore>,
     name: Arc<str>,
@@ -3554,13 +3613,13 @@ struct FamilyInner<K: QueryKey, V: Clone + Send + Sync + 'static> {
     value_equal: fn(&V, &V) -> bool,
     retained_value_charge: fn(&V) -> u64,
     evaluator: Option<Arc<FamilyEvaluator<K, V>>>,
-    // Hashed typed-key memo index. Exact `K` equality is authoritative: the map
-    // is keyed by the typed key itself, so hash collisions resolve through `Eq`
-    // and never conflate distinct keys. Default `RandomState` (SipHash, keyed
-    // per process) is used deliberately for adversarial resistance. The map is
-    // unordered: eviction order lives in `retention` below (the memo index never
-    // encoded eviction order), so no companion order structure is required.
-    nodes: Mutex<HashMap<K, Arc<Node<K, V>>>>,
+    // Hashed typed-key memo index, sharded so hits on unrelated keys do not
+    // convoy on one lock (RUE-1241). Exact `K` equality is authoritative: each
+    // shard map is keyed by the typed key itself, so hash collisions resolve
+    // through `Eq` and never conflate distinct keys. The maps are unordered:
+    // eviction order lives in `retention` below (the memo index never encoded
+    // eviction order), so no companion order structure is required.
+    nodes: ShardedNodeIndex<K, V>,
     retention: Mutex<FamilyRetentionQueue<K, V>>,
     retained_count: AtomicUsize,
     /// Retained-count watermark for the next publish-side sweep. A pass that
@@ -3598,10 +3657,12 @@ where
             return;
         };
         let mut terminals = 0_u64;
-        for node in lock(&self.nodes).values() {
-            for attempt in &lock(&node.state).attempts {
-                if let AttemptState::Terminal { .. } = &attempt.state {
-                    terminals += 1;
+        for shard in &self.nodes.shards {
+            for node in lock(shard).values() {
+                for attempt in &lock(&node.state).attempts {
+                    if let AttemptState::Terminal { .. } = &attempt.state {
+                        terminals += 1;
+                    }
                 }
             }
         }
@@ -4014,7 +4075,7 @@ where
         family.retained_count.fetch_sub(1, Ordering::Relaxed);
         retention.remove_charge(terminal.retained_charge, terminal.dependency_pin_charge);
         if empty && node.users.load(Ordering::Acquire) == 0 {
-            let mut nodes = lock(&family.nodes);
+            let mut nodes = family.nodes.shard(&node.key);
             if node.users.load(Ordering::Acquire) == 0
                 && lock(&node.state).attempts.is_empty()
                 && nodes
@@ -4088,7 +4149,7 @@ where
         let Some(family) = self.family.upgrade() else {
             return;
         };
-        let mut nodes = lock(&family.nodes);
+        let mut nodes = family.nodes.shard(&self.key);
         if self.node.users.load(Ordering::Acquire) == 0
             && lock(&self.node.state).attempts.is_empty()
             && nodes
@@ -4129,7 +4190,14 @@ where
     /// This exact O(n) Phase 1 bridge supports lifetime-coupled input
     /// identities. ADR-0063 Phase 7 replaces it for high-cardinality families.
     pub fn any_retained_key(&self, mut predicate: impl FnMut(&K) -> bool) -> bool {
-        lock(&self.inner.nodes).keys().any(|key| predicate(key))
+        // Shards are visited one at a time; the probe was never a cross-key
+        // atomic snapshot (its answer could go stale the moment the old
+        // whole-index lock released), so per-shard consistency is unchanged.
+        self.inner
+            .nodes
+            .shards
+            .iter()
+            .any(|shard| lock(shard).keys().any(&mut predicate))
     }
 
     /// Whether the exact key currently owns a live memo node in this family.
@@ -4141,15 +4209,15 @@ where
     /// the memo node's lifetime semantics while using the index's O(1)
     /// average-case lookup instead of enumerating every retained key.
     pub fn contains_retained_key(&self, key: &K) -> bool {
-        lock(&self.inner.nodes).contains_key(key)
+        self.inner.nodes.shard(key).contains_key(key)
     }
 
     /// Caller-owned provenance identities for every retained reusable terminal.
     pub fn retained_origin_request_ids(&self) -> BTreeSet<u64> {
-        let nodes = lock(&self.inner.nodes)
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
+        let mut nodes = Vec::new();
+        for shard in &self.inner.nodes.shards {
+            nodes.extend(lock(shard).values().cloned());
+        }
         nodes
             .iter()
             .flat_map(|node| {
@@ -4172,8 +4240,10 @@ where
         // typed key's `Hash`, but exact `K` equality remains authoritative:
         // `HashMap<K, _>` resolves any hash collision through `Eq`, so distinct
         // keys that hash alike still map to distinct nodes. Display identity is
-        // never consulted for lookup.
-        let mut nodes = lock(&self.inner.nodes);
+        // never consulted for lookup. The guard covers the whole hit/miss
+        // sequence including the `users` increment below, so removal's
+        // `users == 0` re-check under the same shard guard cannot race a hit.
+        let mut nodes = self.inner.nodes.shard(&key);
         let node = if let Some(node) = nodes.get(&key) {
             node.clone()
         } else {
@@ -8074,6 +8144,94 @@ mod tests {
     }
 
     #[test]
+    fn memo_hits_in_distinct_shards_proceed_while_one_shard_is_held() {
+        let runtime = QueryRuntime::new(2);
+        let family = runtime
+            .family::<Slot, u64>("sharded-memo-independence", 4)
+            .unwrap();
+        // Precreate both nodes so the cross-thread access below is a pure hit.
+        let held_key = Slot(0);
+        let held_lease = family.node(held_key.clone()).unwrap();
+        let other_key = (1_u64..)
+            .map(Slot)
+            .find(|candidate| {
+                family.inner.nodes.shard_index(candidate)
+                    != family.inner.nodes.shard_index(&held_key)
+            })
+            .expect("an unbounded key supply reaches a second shard");
+        let other_lease = family.node(other_key.clone()).unwrap();
+
+        // Hold one shard exclusively. A hit on a key in a different shard must
+        // complete anyway; under the retired whole-index mutex this join would
+        // deadlock, so completion is the deterministic concurrency witness.
+        let shard_guard = family.inner.nodes.shard(&held_key);
+        let hit = thread::spawn({
+            let family = family.clone();
+            let other_key = other_key.clone();
+            move || family.node(other_key).unwrap()
+        });
+        let hit_lease = hit.join().unwrap();
+        assert!(
+            Arc::ptr_eq(&hit_lease.node, &other_lease.node),
+            "the concurrent hit must observe the already-published node"
+        );
+        drop(shard_guard);
+
+        // Once released, the held shard serves its key again unchanged.
+        let held_again = family.node(held_key).unwrap();
+        assert!(Arc::ptr_eq(&held_again.node, &held_lease.node));
+
+        drop((held_lease, held_again, other_lease, hit_lease));
+        assert_eq!(
+            family.retention().memo_nodes,
+            0,
+            "lifetime-coupled removal must still reclaim both shards' nodes"
+        );
+    }
+
+    #[test]
+    fn concurrent_memo_misses_publish_one_canonical_node() {
+        const RACERS: usize = 8;
+        let runtime = QueryRuntime::new(2);
+        let family = runtime
+            .family::<Key, u64>("sharded-memo-single-mint", 4)
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(RACERS));
+        let racers = (0..RACERS)
+            .map(|_| {
+                let family = family.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    family.node(Key("contested")).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let leases = racers
+            .into_iter()
+            .map(|racer| racer.join().unwrap())
+            .collect::<Vec<_>>();
+
+        let canonical = &leases[0].node;
+        for lease in &leases {
+            assert!(
+                Arc::ptr_eq(&lease.node, canonical),
+                "every concurrent miss must land on one published node"
+            );
+        }
+        assert_eq!(family.retention().memo_nodes, 1);
+        assert_eq!(
+            read(&runtime.core.nodes).len(),
+            1,
+            "exactly one incarnation is minted for the contested key"
+        );
+
+        drop(leases);
+        assert_eq!(family.retention().memo_nodes, 0);
+        assert_eq!(read(&runtime.core.nodes).len(), 0);
+    }
+
+    #[test]
     fn node_registry_distinguishes_incarnations_and_removes_only_the_matching_node() {
         let runtime = QueryRuntime::new(1);
         let family = runtime
@@ -8171,14 +8329,16 @@ mod tests {
         assert!(family.contains_retained_key(&CountingKey(63)));
         assert_eq!(
             CONTAINS_HASH_CALLS.load(Ordering::Relaxed),
-            1,
-            "an exact retained-key probe hashes the requested key once"
+            2,
+            "an exact retained-key probe hashes the requested key a bounded \
+             number of times (shard selection plus one in-shard lookup), \
+             independent of the retained population"
         );
         assert!(!family.contains_retained_key(&CountingKey(64)));
         assert_eq!(
             CONTAINS_HASH_CALLS.load(Ordering::Relaxed),
-            2,
-            "a missing exact retained-key probe still performs one lookup"
+            4,
+            "a missing exact retained-key probe performs the same bounded lookup"
         );
 
         let predicate_visits = AtomicUsize::new(0);
