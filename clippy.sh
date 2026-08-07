@@ -20,7 +20,14 @@ cd "$(dirname "$0")"
 
 echo "Enumerating first-party Rust targets..."
 # One target per rust_library / rust_binary / rust_test under //crates/...
-mapfile -t TARGETS < <(./buck2 uquery \
+TARGETS=()
+# macOS ships Bash 3.2, which predates `mapfile`. Keep this entry point usable
+# through its declared /bin/bash interpreter while preserving every target as
+# one array element (RUE-1234).
+while IFS= read -r target || [ -n "$target" ]; do
+    [ -z "$target" ] && continue
+    TARGETS+=("$target")
+done < <(./buck2 uquery \
     "kind('rust_(library|binary|test)', 'root//crates/...')" 2>/dev/null)
 
 if [ "${#TARGETS[@]}" -eq 0 ]; then

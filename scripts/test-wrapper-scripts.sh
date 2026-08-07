@@ -270,6 +270,61 @@ test_rue_cli_examples_survive_case_chdir() {
   rm -rf "$sb"
 }
 
+# clippy.sh is a developer entry point with a /bin/bash shebang. macOS still
+# ships Bash 3.2, so target enumeration cannot rely on Bash 4's mapfile. Disable
+# mapfile through BASH_ENV even on newer CI hosts to exercise that compatibility
+# path, while a fake Buck proves every discovered target remains a distinct
+# build argument and empty discovery still fails closed (RUE-1234).
+test_clippy_target_enumeration_supports_bash_3_2() {
+  local sb; sb="$(mktemp -d)"
+  cp "$SRC_ROOT/clippy.sh" "$sb/clippy.sh"; chmod +x "$sb/clippy.sh"
+  cat >"$sb/bash3-env" <<'EOF'
+enable -n mapfile 2>/dev/null || true
+EOF
+  cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+  uquery)
+    if [ "${FAKE_EMPTY:-0}" != 1 ]; then
+      printf '%s\n' \
+        'root//crates/alpha:alpha' \
+        'root//crates/beta:beta-test'
+    fi
+    ;;
+  build)
+    printf '%s\n' "$@" >"$FAKE_BUCK_ARGS"
+    : >"$PWD/alpha-clippy.txt"
+    : >"$PWD/beta-clippy.txt"
+    printf '%s %s\n' \
+      'root//crates/alpha:alpha[clippy.txt]' "$PWD/alpha-clippy.txt" \
+      'root//crates/beta:beta-test[clippy.txt]' "$PWD/beta-clippy.txt"
+    ;;
+  *) exit 90 ;;
+esac
+EOF
+  chmod +x "$sb/buck2"
+
+  local rc=0 out
+  out="$(cd "$sb" && BASH_ENV="$sb/bash3-env" FAKE_BUCK_ARGS="$sb/build-args" \
+    /bin/bash ./clippy.sh 2>&1)" || rc=$?
+  check "clippy.sh: Bash 3.2-compatible enumeration succeeds" \
+    "$([ "$rc" -eq 0 ] && grep -Fq 'clippy gate passed' <<<"$out" && echo 0 || echo 1)"
+  check "clippy.sh: every discovered target reaches the build" \
+    "$([ "$(grep -c '\[clippy.txt\]$' "$sb/build-args")" -eq 2 ] && \
+       grep -Fxq 'root//crates/alpha:alpha[clippy.txt]' "$sb/build-args" && \
+       grep -Fxq 'root//crates/beta:beta-test[clippy.txt]' "$sb/build-args" && echo 0 || echo 1)"
+
+  rm -f "$sb/build-args"
+  rc=0
+  out="$(cd "$sb" && BASH_ENV="$sb/bash3-env" FAKE_EMPTY=1 \
+    FAKE_BUCK_ARGS="$sb/build-args" /bin/bash ./clippy.sh 2>&1)" || rc=$?
+  check "clippy.sh: empty target discovery fails clearly" \
+    "$([ "$rc" -ne 0 ] && grep -Fq 'no Rust targets found' <<<"$out" && echo 0 || echo 1)"
+  check "clippy.sh: empty target discovery never starts a build" \
+    "$([ ! -e "$sb/build-args" ] && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
 # Canonical tier commands are intentionally thin: scripts/rue names the
 # selection while test.sh owns execution and reads Buck's tier metadata. The
 # required tier additionally fronts the clippy gate (RUE-1205): required CI
@@ -1064,6 +1119,7 @@ test_fmt_uses_one_buck_run_and_preserves_paths
 test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
+test_clippy_target_enumeration_supports_bash_3_2
 test_rue_named_test_tiers_delegate_to_testsh
 test_testsh_cli_examples_survive_case_chdir
 test_rue_unit_maps_crate_and_forwards_args
