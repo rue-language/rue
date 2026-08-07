@@ -683,7 +683,7 @@ mod tests {
             );
 
             let image = crate::program_image_plan::ProgramImage::from_rooted(
-                rooted.units,
+                rooted.objects,
                 rooted.exports,
                 &options,
             )
@@ -1181,7 +1181,7 @@ mod tests {
                 .map(|warning| (warning.to_string(), format!("{:?}", warning.diagnostic())))
                 .collect::<Vec<_>>();
             let image = crate::program_image_plan::ProgramImage::from_rooted(
-                rooted.units,
+                rooted.objects,
                 rooted.exports,
                 &options,
             )
@@ -1279,6 +1279,180 @@ mod tests {
             many_cold[SAMPLES / 2],
             many_broad,
             many_broad[SAMPLES / 2],
+        );
+    }
+
+    #[test]
+    fn retained_object_projection_is_local_bounded_and_released_with_the_backend_root() {
+        const FUNCTIONS: usize = 32;
+        let options = CompileOptions::default();
+        let snapshot = |edited: Option<usize>, count: usize| {
+            let mut source = String::new();
+            for index in 0..count {
+                let value = if edited == Some(index) { 99 } else { index };
+                source.push_str(&format!("fn f{index}() -> i32 {{ {value} }} "));
+            }
+            source.push_str("fn main() -> i32 { ");
+            for index in 0..count {
+                if index != 0 {
+                    source.push_str(" + ");
+                }
+                source.push_str(&format!("f{index}()"));
+            }
+            source.push_str(" }");
+            SourceSnapshot::single("<retained-object-projection>", source).unwrap()
+        };
+        let computed = |session: &CompilerSession| {
+            session
+                .object_projection_executions()
+                .iter()
+                .filter(|(_, execution)| *execution == rue_query::RequestExecution::Computed)
+                .count()
+        };
+
+        let initial = snapshot(None, FUNCTIONS);
+        let mut session = CompilerSession::with_query_concurrency(4);
+        session
+            .update_for_presentation(&initial)
+            .into_result()
+            .unwrap();
+        let cold = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        let removed_object_key = cold
+            .cfgs
+            .iter()
+            .find(|cfg| format!("{:?}", cfg.function).contains("f17"))
+            .map(|cfg| {
+                crate::object_query::ObjectProjectionQueryKey::new(
+                    crate::codegen_query::CodegenUnitQueryKey::new(
+                        cfg.optimized_cfg_key.clone(),
+                        options.target,
+                        rue_codegen::BackendArtifactRequest::default(),
+                        options.opt_level,
+                    ),
+                )
+            })
+            .unwrap();
+        assert!(session.object_projection_key_is_retained(&removed_object_key));
+        assert_eq!(computed(&session), FUNCTIONS + 1);
+        assert_eq!(session.object_projection_collections(), FUNCTIONS + 1);
+        let canonical_objects = cold
+            .units
+            .iter()
+            .map(|unit| {
+                crate::backend::project_backend_object(unit.unit.backend_product(), options.target)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let cold_image = crate::program_image_plan::ProgramImage::from_rooted(
+            cold.objects,
+            cold.exports,
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            cold_image.fresh_objects(&options).unwrap(),
+            canonical_objects
+        );
+
+        let warm = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        assert_eq!(computed(&session), 0, "a no-edit build reprojects no units");
+        let warm_plan = crate::program_image_plan::ProgramImage::from_rooted(
+            warm.objects,
+            warm.exports,
+            &options,
+        )
+        .unwrap()
+        .plan;
+
+        let edited = snapshot(Some(17), FUNCTIONS);
+        session
+            .update_for_presentation(&edited)
+            .into_result()
+            .unwrap();
+        let changed = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        assert_eq!(computed(&session), 1, "only f17 has new object content");
+        let changed_plan = crate::program_image_plan::ProgramImage::from_rooted(
+            changed.objects,
+            changed.exports,
+            &options,
+        )
+        .unwrap()
+        .plan;
+        let delta = changed_plan.delta_from(&warm_plan).unwrap();
+        assert!(delta.added.is_empty(), "{delta:?}");
+        assert_eq!(delta.changed.len(), 1, "{delta:?}");
+        assert!(delta.removed.is_empty(), "{delta:?}");
+        assert!(
+            format!("{:?}", delta.changed[0].function).contains("f17"),
+            "{delta:?}"
+        );
+
+        let reduced = snapshot(None, 1);
+        session
+            .update_for_presentation(&reduced)
+            .into_result()
+            .unwrap();
+        session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        let root = session.backend_root_metrics();
+        assert_eq!(root.functions, 2, "{root:?}");
+        assert_eq!(root.object_projection_terminals, 2, "{root:?}");
+        assert_eq!(root.deletions, FUNCTIONS as u64 - 1, "{root:?}");
+        let retention = session.unstable_metrics().retention();
+        assert!(retention.retained_bytes > 0);
+        assert!(
+            retention.retained_bytes <= retention.retained_byte_budget,
+            "{retention:?}"
+        );
+
+        let mut pressure_source = String::new();
+        for index in 0..70 {
+            pressure_source.push_str(&format!("fn g{index}() -> i32 {{ {index} }} "));
+        }
+        pressure_source.push_str("fn main() -> i32 { ");
+        for index in 0..70 {
+            if index != 0 {
+                pressure_source.push_str(" + ");
+            }
+            pressure_source.push_str(&format!("g{index}()"));
+        }
+        pressure_source.push_str(" }");
+        let pressure =
+            SourceSnapshot::single("<retained-object-projection>", pressure_source).unwrap();
+        session
+            .update_for_presentation(&pressure)
+            .into_result()
+            .unwrap();
+        session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        assert!(
+            !session.object_projection_key_is_retained(&removed_object_key),
+            "an object absent from the published root is evictable under pressure"
+        );
+
+        session
+            .update_for_presentation(&initial)
+            .into_result()
+            .unwrap();
+        session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        assert!(
+            session
+                .object_projection_executions()
+                .iter()
+                .any(|(function, execution)| {
+                    format!("{function:?}").contains("f17")
+                        && *execution == rue_query::RequestExecution::Computed
+                })
         );
     }
 

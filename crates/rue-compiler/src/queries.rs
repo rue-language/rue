@@ -1167,7 +1167,7 @@ pub(crate) fn pre_link_object_bytes_with_session(
     let _span = info_span!("compile_pipeline_pre_link").entered();
     let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
     let image = crate::program_image_plan::ProgramImage::from_rooted(
-        rooted.units,
+        rooted.objects,
         rooted.exports,
         options,
     )?;
@@ -1204,7 +1204,7 @@ pub(crate) fn compile_with_session(
     let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
     let session_work = session.work().clone();
     let image = crate::program_image_plan::ProgramImage::from_rooted(
-        rooted.units,
+        rooted.objects,
         rooted.exports,
         options,
     )?;
