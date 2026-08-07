@@ -1113,6 +1113,30 @@ struct PublishedBodyReachabilityRoot {
     lease: Arc<rue_query::RetainedPinSet>,
 }
 
+fn backend_retention_fallbacks(
+    backend: &Arc<Mutex<PublishedBackendRoot>>,
+    body_closure: &Arc<Mutex<PublishedBodyClosureRoot>>,
+    body_reachability: &Arc<Mutex<PublishedBodyReachabilityRoot>>,
+) -> [Arc<rue_query::RetainedPinSet>; 3] {
+    [
+        backend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease
+            .clone(),
+        body_closure
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease
+            .clone(),
+        body_reachability
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lease
+            .clone(),
+    ]
+}
+
 /// One in-flight rooted backend collection. Merely collecting or pinning a
 /// terminal cannot alter the session's published root: only
 /// [`RevisionedQueryDatabase::publish_backend_root`] installs this candidate.
@@ -14581,8 +14605,15 @@ impl RevisionedQueryDatabase {
             )
             .expect("the OptimizedCfg family has one canonical name");
         let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
+        // Backend terminals extend the already-published semantic/body graph.
+        // Keep those independent roots available as retention fallbacks while
+        // each backend batch promotes its exact transitive cone.
+        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
+        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let optimized_cfgs_for_batch = optimized_cfgs.clone();
         let backend_root_for_optimized_cfg_batch = backend_root.clone();
+        let body_closure_root_for_optimized_cfg_batch = body_closure_root.clone();
+        let body_reachability_root_for_optimized_cfg_batch = body_reachability_root.clone();
         let optimized_cfg_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.optimized-cfg-batch",
@@ -14596,12 +14627,12 @@ impl RevisionedQueryDatabase {
                             .all(|(left, right)| crate::cfg_query::cfg_value_equal(left, right))
                 },
                 move |context, _, key: &OptimizedCfgBatchKey| {
+                    let fallbacks = backend_retention_fallbacks(
+                        &backend_root_for_optimized_cfg_batch,
+                        &body_closure_root_for_optimized_cfg_batch,
+                        &body_reachability_root_for_optimized_cfg_batch,
+                    );
                     let _validated_registered = context.endorse_registered_validations();
-                    let fallback = backend_root_for_optimized_cfg_batch
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .lease
-                        .clone();
                     let _attempts = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
                     let terminals = context.query_registered_batch(
                         &optimized_cfgs_for_batch,
@@ -14617,10 +14648,7 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_children = Arc::new(
                         context
-                            .retain_observed_terminal_cones_from(
-                                &terminals,
-                                std::slice::from_ref(&fallback),
-                            )
+                            .retain_observed_terminal_cones_from(&terminals, &fallbacks)
                             .expect(
                                 "the registered optimized-CFG batch observes every selected child cone",
                             ),
@@ -14686,6 +14714,8 @@ impl RevisionedQueryDatabase {
             .expect("the CodegenUnit family has one canonical name");
         let codegen_units_for_batch = codegen_units.clone();
         let backend_root_for_codegen_batch = backend_root.clone();
+        let body_closure_root_for_codegen_batch = body_closure_root.clone();
+        let body_reachability_root_for_codegen_batch = body_reachability_root.clone();
         let codegen_unit_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.codegen-unit-batch",
@@ -14701,12 +14731,12 @@ impl RevisionedQueryDatabase {
                             })
                 },
                 move |context, _, key: &CodegenUnitBatchKey| {
+                    let fallbacks = backend_retention_fallbacks(
+                        &backend_root_for_codegen_batch,
+                        &body_closure_root_for_codegen_batch,
+                        &body_reachability_root_for_codegen_batch,
+                    );
                     let _validated_registered = context.endorse_registered_validations();
-                    let fallback = backend_root_for_codegen_batch
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .lease
-                        .clone();
                     let _attempts = context.retain_nested_attempts_for(&["compiler.codegen-unit"]);
                     let terminals = context.query_registered_batch(
                         &codegen_units_for_batch,
@@ -14722,10 +14752,7 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_children = Arc::new(
                         context
-                            .retain_observed_terminal_cones_from(
-                                &terminals,
-                                std::slice::from_ref(&fallback),
-                            )
+                            .retain_observed_terminal_cones_from(&terminals, &fallbacks)
                             .expect(
                                 "the registered CodegenUnit batch observes every selected child cone",
                             ),
@@ -14765,6 +14792,8 @@ impl RevisionedQueryDatabase {
             .expect("the ObjectProjection family has one canonical name");
         let object_projections_for_batch = object_projections.clone();
         let backend_root_for_object_projection_batch = backend_root.clone();
+        let body_closure_root_for_object_projection_batch = body_closure_root.clone();
+        let body_reachability_root_for_object_projection_batch = body_reachability_root.clone();
         let object_projection_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.object-projection-batch",
@@ -14778,12 +14807,12 @@ impl RevisionedQueryDatabase {
                         )
                 },
                 move |context, _, key: &ObjectProjectionBatchKey| {
+                    let fallbacks = backend_retention_fallbacks(
+                        &backend_root_for_object_projection_batch,
+                        &body_closure_root_for_object_projection_batch,
+                        &body_reachability_root_for_object_projection_batch,
+                    );
                     let _validated_registered = context.endorse_registered_validations();
-                    let fallback = backend_root_for_object_projection_batch
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .lease
-                        .clone();
                     let _attempts =
                         context.retain_nested_attempts_for(&["compiler.object-projection"]);
                     let terminals = context.query_registered_batch(
@@ -14800,10 +14829,7 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_children = Arc::new(
                         context
-                            .retain_observed_terminal_cones_from(
-                                &terminals,
-                                std::slice::from_ref(&fallback),
-                            )
+                            .retain_observed_terminal_cones_from(&terminals, &fallbacks)
                             .expect(
                                 "the registered ObjectProjection batch observes every selected child cone",
                             ),
@@ -14828,10 +14854,10 @@ impl RevisionedQueryDatabase {
             .expect("the ObjectProjectionBatch family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
-        let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
-        let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let object_projections_for_backend_publication = object_projections.clone();
         let backend_root_for_publication = backend_root.clone();
+        let body_closure_root_for_backend_publication = body_closure_root.clone();
+        let body_reachability_root_for_backend_publication = body_reachability_root.clone();
         let backend_root_publications = runtime
             .family_with_equality_and_evaluator(
                 "compiler.backend-root-publication",
@@ -14839,11 +14865,11 @@ impl RevisionedQueryDatabase {
                 |left: &bool, right: &bool| left == right,
                 move |context, _, key: &BackendRootPublicationKey| {
                     let _validated_registered = context.endorse_registered_validations();
-                    let fallback = backend_root_for_publication
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .lease
-                        .clone();
+                    let fallbacks = backend_retention_fallbacks(
+                        &backend_root_for_publication,
+                        &body_closure_root_for_backend_publication,
+                        &body_reachability_root_for_backend_publication,
+                    );
                     let terminals = context.query_registered_batch(
                         &object_projections_for_backend_publication,
                         key.objects.keys.iter().cloned(),
@@ -14860,10 +14886,7 @@ impl RevisionedQueryDatabase {
                             .with_terminal_kind(QueryTerminalKind::Failure));
                     }
                     let pending = context
-                        .retain_observed_terminal_cones_from(
-                            &terminals,
-                            std::slice::from_ref(&fallback),
-                        )
+                        .retain_observed_terminal_cones_from(&terminals, &fallbacks)
                         .expect(
                             "registered backend-root validation observes every final ObjectProjection dependency cone",
                         );
