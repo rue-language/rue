@@ -8,6 +8,7 @@
 //! retain the current and last-good terminals.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::hash::Hash;
 use std::ops::Deref;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -1131,6 +1132,17 @@ pub(crate) struct PublishedBackendRootMetrics {
     pub(crate) deletions: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct InputStampRetentionMetrics {
+    pub module_views: usize,
+    pub module_source_stamps: usize,
+    pub import_views: usize,
+    pub import_context_stamps: usize,
+    pub accepted_topology_stamps: usize,
+    pub accepted_read_provenance_stamps: usize,
+    pub import_observation_stamps: usize,
+}
+
 #[derive(Debug)]
 struct PublishedBodyReachabilityTerminalHandoff {
     root: Arc<Mutex<PublishedBodyReachabilityRoot>>,
@@ -1672,7 +1684,7 @@ struct ModuleRirValue {
     work: crate::CanonicalRirWork,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ModuleInputLeaf {
     revision: ModuleRevision,
 }
@@ -1681,13 +1693,31 @@ struct ModuleInputLeaf {
 struct ModuleInputView {
     revision: Revision,
     snapshot: SourceSnapshot,
+    stamp_lease: Arc<ModuleInputStampLease>,
+}
+
+#[derive(Debug)]
+struct ModuleInputStampLease {
+    parent: Option<Arc<ModuleInputStampLease>>,
+    sources: Arc<[ModuleRevision]>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RetainedValueStamp {
+    stamp: u64,
+    retained_views: usize,
 }
 
 #[derive(Debug)]
 struct ModuleInputStore {
     revisions: VecDeque<Arc<ModuleInputView>>,
+    /// Runtime selection roots may outlive the ordinary recency window. At
+    /// most current and last-good are protected, so retained views are bounded
+    /// by the window plus two.
+    protected_revisions: BTreeSet<Revision>,
+    retention_limit: usize,
     next_stamp: u64,
-    stamps: Vec<(ModuleInputLeaf, u64)>,
+    stamps: HashMap<ModuleInputLeaf, RetainedValueStamp>,
 }
 
 #[cfg(test)]
@@ -1709,8 +1739,10 @@ impl Default for ModuleInputStore {
     fn default() -> Self {
         Self {
             revisions: VecDeque::new(),
+            protected_revisions: BTreeSet::new(),
+            retention_limit: MODULE_INPUT_REVISION_RETENTION,
             next_stamp: 1,
-            stamps: Vec::new(),
+            stamps: HashMap::new(),
         }
     }
 }
@@ -2227,9 +2259,12 @@ struct ImportInputView {
     sources: SourceRevision,
     accepted_reads: AcceptedReadManifest,
     ledger: ImportObservationLedger,
+    accepted_topology_stamp: u64,
+    accepted_topology: AcceptedImportTopologyValue,
+    stamp_lease: Arc<ImportInputStampLease>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct AcceptedImportTopologyFact {
     importer: ModuleId,
     exact_specifier: Arc<str>,
@@ -2237,7 +2272,7 @@ struct AcceptedImportTopologyFact {
     outcome: AcceptedImportTopologyOutcome,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum AcceptedImportTopologyOutcome {
     Resolved(ModuleId),
     Absent,
@@ -2249,25 +2284,47 @@ enum AcceptedImportTopologyOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum AcceptedImportTopologyValue {
+    Full(Arc<[AcceptedImportTopologyFact]>),
+    Overlay {
+        parent_stamp: u64,
+        added: Arc<[AcceptedImportTopologyFact]>,
+    },
+}
+
+#[derive(Debug)]
+struct ImportInputStampLease {
+    parent: Option<Arc<ImportInputStampLease>>,
+    context: Option<ImportDiscoveryContext>,
+    provenance: Arc<[AcceptedReadManifestEntry]>,
+    observations: Arc<[ImportObservation]>,
+    topology: Option<AcceptedImportTopologyValue>,
+}
+
 #[derive(Debug)]
 struct ImportInputStore {
     revisions: VecDeque<Arc<ImportInputView>>,
+    /// Matches module-input retention: current and last-good may add at most
+    /// two protected revisions beyond the ordinary recency window.
+    protected_revisions: BTreeSet<Revision>,
     next_stamp: u64,
-    context_stamps: Vec<(ImportDiscoveryContext, u64)>,
-    provenance_stamps: Vec<(AcceptedReadManifestEntry, u64)>,
-    observation_stamps: Vec<(ImportObservation, u64)>,
-    topology_stamps: Vec<(Arc<[AcceptedImportTopologyFact]>, u64)>,
+    context_stamps: HashMap<ImportDiscoveryContext, RetainedValueStamp>,
+    provenance_stamps: HashMap<AcceptedReadManifestEntry, RetainedValueStamp>,
+    observation_stamps: HashMap<ImportObservation, RetainedValueStamp>,
+    topology_stamps: HashMap<AcceptedImportTopologyValue, RetainedValueStamp>,
 }
 
 impl Default for ImportInputStore {
     fn default() -> Self {
         Self {
             revisions: VecDeque::new(),
+            protected_revisions: BTreeSet::new(),
             next_stamp: 1,
-            context_stamps: Vec::new(),
-            provenance_stamps: Vec::new(),
-            observation_stamps: Vec::new(),
-            topology_stamps: Vec::new(),
+            context_stamps: HashMap::new(),
+            provenance_stamps: HashMap::new(),
+            observation_stamps: HashMap::new(),
+            topology_stamps: HashMap::new(),
         }
     }
 }
@@ -2311,7 +2368,28 @@ fn import_input_error(message: impl Into<String>) -> CompileError {
     CompileError::without_span(ErrorKind::InvalidCompilerInput(message.into()))
 }
 
-fn exact_value_stamp<T: Clone + Eq>(
+fn exact_value_stamp<T: Clone + Eq + Hash>(
+    next_stamp: &mut u64,
+    values: &mut HashMap<T, RetainedValueStamp>,
+    value: &T,
+) -> u64 {
+    if let Some(retained) = values.get(value) {
+        return retained.stamp;
+    }
+    let stamp = *next_stamp;
+    *next_stamp += 1;
+    values.insert(
+        value.clone(),
+        RetainedValueStamp {
+            stamp,
+            retained_views: 0,
+        },
+    );
+    stamp
+}
+
+#[cfg(test)]
+fn exact_test_value_stamp<T: Clone + Eq>(
     next_stamp: &mut u64,
     values: &mut Vec<(T, u64)>,
     value: &T,
@@ -2333,6 +2411,196 @@ fn lock_import_store(
     store
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn retain_stamp_value<T: Eq + Hash>(stamps: &mut HashMap<T, RetainedValueStamp>, value: &T) {
+    stamps
+        .get_mut(value)
+        .expect("a published input view retains only values with assigned stamps")
+        .retained_views += 1;
+}
+
+fn release_stamp_value<T: Eq + Hash>(stamps: &mut HashMap<T, RetainedValueStamp>, value: &T) {
+    let remove = {
+        let retained = stamps
+            .get_mut(value)
+            .expect("an evicted input view releases an assigned stamp");
+        retained.retained_views = retained
+            .retained_views
+            .checked_sub(1)
+            .expect("input stamp view references stay balanced");
+        retained.retained_views == 0
+    };
+    if remove {
+        stamps.remove(value);
+    }
+}
+
+#[cfg(test)]
+fn retain_module_input_view(store: &mut ModuleInputStore, view: Arc<ModuleInputView>) {
+    store.revisions.push_back(view);
+    trim_module_input_views(store);
+}
+
+fn trim_module_input_views(store: &mut ModuleInputStore) {
+    loop {
+        let evictable_prefix = store.revisions.len().saturating_sub(store.retention_limit);
+        let Some(index) = (0..evictable_prefix).find(|&index| {
+            !store
+                .protected_revisions
+                .contains(&store.revisions[index].revision)
+        }) else {
+            break;
+        };
+        let evicted = store
+            .revisions
+            .remove(index)
+            .expect("an evictable module input view has a valid index");
+        let lease = evicted.stamp_lease.clone();
+        drop(evicted);
+        release_orphaned_module_stamp_leases(store, lease);
+    }
+}
+
+fn release_orphaned_module_stamp_leases(
+    store: &mut ModuleInputStore,
+    lease: Arc<ModuleInputStampLease>,
+) {
+    let mut next = Some(lease);
+    while let Some(lease) = next {
+        let Ok(lease) = Arc::try_unwrap(lease) else {
+            break;
+        };
+        for source in lease.sources.iter() {
+            release_stamp_value(
+                &mut store.stamps,
+                &ModuleInputLeaf {
+                    revision: source.clone(),
+                },
+            );
+        }
+        next = lease.parent;
+    }
+}
+
+fn discard_module_input_view(store: &Mutex<ModuleInputStore>, revision: Revision) {
+    let mut store = store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let view = store
+        .revisions
+        .pop_back()
+        .expect("a failed runtime publication has a pending module view");
+    assert_eq!(view.revision, revision);
+    let lease = view.stamp_lease.clone();
+    drop(view);
+    release_orphaned_module_stamp_leases(&mut store, lease);
+}
+
+fn commit_module_input_view(store: &Mutex<ModuleInputStore>, revision: Revision) {
+    let mut store = store
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    assert_eq!(
+        store.revisions.back().map(|view| view.revision),
+        Some(revision),
+        "runtime publication commits the pending module view"
+    );
+    trim_module_input_views(&mut store);
+}
+
+fn retain_import_input_view(store: &mut ImportInputStore, view: Arc<ImportInputView>) {
+    store.revisions.push_back(view);
+    trim_import_input_views(store);
+}
+
+fn trim_import_input_views(store: &mut ImportInputStore) {
+    loop {
+        let evictable_prefix = store
+            .revisions
+            .len()
+            .saturating_sub(IMPORT_INPUT_REVISION_RETENTION);
+        let Some(index) = (0..evictable_prefix).find(|&index| {
+            !store
+                .protected_revisions
+                .contains(&store.revisions[index].revision)
+        }) else {
+            break;
+        };
+        let evicted = store
+            .revisions
+            .remove(index)
+            .expect("an evictable import input view has a valid index");
+        let lease = evicted.stamp_lease.clone();
+        drop(evicted);
+        release_orphaned_import_stamp_leases(store, lease);
+    }
+}
+
+fn release_orphaned_import_stamp_leases(
+    store: &mut ImportInputStore,
+    lease: Arc<ImportInputStampLease>,
+) {
+    let mut next = Some(lease);
+    while let Some(lease) = next {
+        let Ok(lease) = Arc::try_unwrap(lease) else {
+            break;
+        };
+        if let Some(context) = lease.context.as_ref() {
+            release_stamp_value(&mut store.context_stamps, context);
+        }
+        for accepted in lease.provenance.iter() {
+            release_stamp_value(&mut store.provenance_stamps, accepted);
+        }
+        for observation in lease.observations.iter() {
+            release_stamp_value(&mut store.observation_stamps, observation);
+        }
+        if let Some(topology) = lease.topology.as_ref() {
+            release_stamp_value(&mut store.topology_stamps, topology);
+        }
+        next = lease.parent;
+    }
+}
+
+fn accepted_import_topology<'a>(
+    observations: impl IntoIterator<Item = &'a ImportObservation>,
+    accepted_reads: &AcceptedReadManifest,
+) -> CompileResult<Arc<[AcceptedImportTopologyFact]>> {
+    let mut topology = observations
+        .into_iter()
+        .map(|observation| {
+            let request = observation.request();
+            let outcome = if let Some(source) = observation.accepted_source() {
+                AcceptedImportTopologyOutcome::Resolved(
+                    crate::import_discovery::accepted_import_module(source, accepted_reads)?,
+                )
+            } else {
+                use crate::ImportObservationStatus as S;
+                match observation.status() {
+                    S::Absent => AcceptedImportTopologyOutcome::Absent,
+                    S::PresentReadable { .. } => {
+                        unreachable!("a readable import observation retains its accepted source")
+                    }
+                    S::PresentUnreadable(_) => AcceptedImportTopologyOutcome::PresentUnreadable,
+                    S::DeniedLexical => AcceptedImportTopologyOutcome::DeniedLexical,
+                    S::DeniedCanonical { .. } => AcceptedImportTopologyOutcome::DeniedCanonical,
+                    S::InvalidPhysicalType { .. } => {
+                        AcceptedImportTopologyOutcome::InvalidPhysicalType
+                    }
+                    S::UnstableRead(_) => AcceptedImportTopologyOutcome::UnstableRead,
+                    S::Cancelled => AcceptedImportTopologyOutcome::Cancelled,
+                }
+            };
+            Ok(AcceptedImportTopologyFact {
+                importer: request.occurrence().importer().clone(),
+                exact_specifier: Arc::from(request.exact_specifier()),
+                normalized_specifier: Arc::from(request.normalized_specifier()),
+                outcome,
+            })
+        })
+        .collect::<CompileResult<Vec<_>>>()?;
+    topology.sort();
+    Ok(topology.into())
 }
 
 fn pending_occurrence_requests(
@@ -2668,6 +2936,12 @@ fn publish_module_inputs_delta(
     let mut store = store
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let parent_lease = store
+        .revisions
+        .back()
+        .expect("a module overlay extends a retained parent view")
+        .stamp_lease
+        .clone();
     let mut leaves = Vec::new();
     for source in new_sources {
         let leaf = ModuleInputLeaf {
@@ -2680,14 +2954,17 @@ fn publish_module_inputs_delta(
             module_source_input(&source.module),
             exact_value_stamp(next_stamp, stamps, &leaf),
         ));
+        retain_stamp_value(stamps, &leaf);
     }
+    let stamp_lease = Arc::new(ModuleInputStampLease {
+        parent: Some(parent_lease),
+        sources: new_sources.to_vec().into(),
+    });
     store.revisions.push_back(Arc::new(ModuleInputView {
         revision,
         snapshot: snapshot.clone(),
+        stamp_lease,
     }));
-    while store.revisions.len() > MODULE_INPUT_REVISION_RETENTION {
-        store.revisions.pop_front();
-    }
     leaves
 }
 
@@ -2700,6 +2977,7 @@ fn publish_module_inputs(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut leaves = Vec::new();
+    let sources = snapshot.source_revision().modules().to_vec();
     for source in snapshot.source_revision().modules() {
         let leaf = ModuleInputLeaf {
             revision: source.clone(),
@@ -2711,23 +2989,17 @@ fn publish_module_inputs(
             module_source_input(&source.module),
             exact_value_stamp(next_stamp, stamps, &leaf),
         ));
+        retain_stamp_value(stamps, &leaf);
     }
+    let stamp_lease = Arc::new(ModuleInputStampLease {
+        parent: None,
+        sources: sources.into(),
+    });
     store.revisions.push_back(Arc::new(ModuleInputView {
         revision,
         snapshot: snapshot.clone(),
+        stamp_lease,
     }));
-    while store.revisions.len() > MODULE_INPUT_REVISION_RETENTION {
-        store.revisions.pop_front();
-    }
-    let retained = store.revisions.iter().cloned().collect::<Vec<_>>();
-    store.stamps.retain(|(leaf, _)| {
-        retained.iter().any(|view| {
-            view.snapshot
-                .source_revision()
-                .modules()
-                .contains(&leaf.revision)
-        })
-    });
     leaves
 }
 
@@ -15919,7 +16191,7 @@ impl RevisionedQueryDatabase {
             let TestImportInputStore {
                 next_stamp, stamps, ..
             } = &mut *store;
-            exact_value_stamp(next_stamp, stamps, &graph)
+            exact_test_value_stamp(next_stamp, stamps, &graph)
         };
         let mut leaves = vec![(test_import_graph_input(), stamp)];
         leaves.extend(publish_module_inputs(
@@ -15930,6 +16202,7 @@ impl RevisionedQueryDatabase {
         self.runtime
             .publish_revision(revision, leaves)
             .expect("test import revisions are immutable and uniquely numbered");
+        commit_module_input_view(&self.module_store, revision);
         let mut store = self
             .test_import_store
             .lock()
@@ -18631,9 +18904,10 @@ impl RevisionedQueryDatabase {
                 "import observation belongs to a different discovery epoch",
             ));
         }
-        for source in ledger.iter().filter_map(ImportObservation::accepted_source) {
-            crate::import_discovery::accepted_import_module(source, &accepted_reads)?;
-        }
+        let accepted_topology = AcceptedImportTopologyValue::Full(accepted_import_topology(
+            ledger.iter(),
+            &accepted_reads,
+        )?);
         // RUE-1137/RUE-1202: the runtime revision's compatibility slot carries
         // one shared observation namespace for both ordinary updates and
         // rooted publication. The first rooted request may bind an existing
@@ -18643,43 +18917,7 @@ impl RevisionedQueryDatabase {
         let revision = Revision::new(self.next_revision, compatibility_token);
         self.next_revision += 1;
         let mut leaves = Vec::new();
-        let mut accepted_topology = ledger
-            .iter()
-            .map(|observation| {
-                let request = observation.request();
-                let outcome = if let Some(source) = observation.accepted_source() {
-                    AcceptedImportTopologyOutcome::Resolved(
-                        crate::import_discovery::accepted_import_module(source, &accepted_reads)
-                            .expect("accepted import topology was validated above"),
-                    )
-                } else {
-                    use crate::ImportObservationStatus as S;
-                    match observation.status() {
-                        S::Absent => AcceptedImportTopologyOutcome::Absent,
-                        S::PresentReadable { .. } => unreachable!(
-                            "a readable import observation retains its accepted source"
-                        ),
-                        S::PresentUnreadable(_) => AcceptedImportTopologyOutcome::PresentUnreadable,
-                        S::DeniedLexical => AcceptedImportTopologyOutcome::DeniedLexical,
-                        S::DeniedCanonical { .. } => AcceptedImportTopologyOutcome::DeniedCanonical,
-                        S::InvalidPhysicalType { .. } => {
-                            AcceptedImportTopologyOutcome::InvalidPhysicalType
-                        }
-                        S::UnstableRead(_) => AcceptedImportTopologyOutcome::UnstableRead,
-                        S::Cancelled => AcceptedImportTopologyOutcome::Cancelled,
-                    }
-                };
-                AcceptedImportTopologyFact {
-                    importer: request.occurrence().importer().clone(),
-                    exact_specifier: Arc::from(request.exact_specifier()),
-                    normalized_specifier: Arc::from(request.normalized_specifier()),
-                    outcome,
-                }
-            })
-            .collect::<Vec<_>>();
-        accepted_topology.sort();
-        let accepted_topology: Arc<[AcceptedImportTopologyFact]> = accepted_topology.into();
-        {
+        let (accepted_topology_stamp, stamp_lease) = {
             let mut store = lock_import_store(&self.import_store);
             let ImportInputStore {
                 next_stamp,
@@ -18689,14 +18927,15 @@ impl RevisionedQueryDatabase {
                 topology_stamps,
                 ..
             } = &mut *store;
-            leaves.push((
-                accepted_import_topology_input(),
-                exact_value_stamp(next_stamp, topology_stamps, &accepted_topology),
-            ));
+            let accepted_topology_stamp =
+                exact_value_stamp(next_stamp, topology_stamps, &accepted_topology);
+            leaves.push((accepted_import_topology_input(), accepted_topology_stamp));
+            retain_stamp_value(topology_stamps, &accepted_topology);
             leaves.push((
                 import_context_input(),
                 exact_value_stamp(next_stamp, context_stamps, &context),
             ));
+            retain_stamp_value(context_stamps, &context);
             for source in sources.iter() {
                 let accepted = provenance[&source.module];
                 leaves.push((
@@ -18709,27 +18948,44 @@ impl RevisionedQueryDatabase {
                     accepted_import_provenance_input(accepted.metadata_identity()),
                     exact_value_stamp(next_stamp, provenance_stamps, accepted),
                 ));
+                retain_stamp_value(provenance_stamps, accepted);
             }
             for observation in ledger.iter() {
                 leaves.push((
                     import_observation_input(observation.request()),
                     exact_value_stamp(next_stamp, observation_stamps, observation),
                 ));
+                retain_stamp_value(observation_stamps, observation);
             }
-        }
+            let stamp_lease = Arc::new(ImportInputStampLease {
+                parent: None,
+                context: Some(context.clone()),
+                provenance: accepted_reads.iter().cloned().collect::<Vec<_>>().into(),
+                observations: ledger.iter().cloned().collect::<Vec<_>>().into(),
+                topology: Some(accepted_topology.clone()),
+            });
+            (accepted_topology_stamp, stamp_lease)
+        };
         leaves.extend(publish_module_inputs(
             &self.module_store,
             revision,
             snapshot,
         ));
+        let published_leaf_count = leaves.len() as u64;
+        if let Err(error) = self.runtime.publish_revision(revision, leaves) {
+            release_orphaned_import_stamp_leases(
+                &mut lock_import_store(&self.import_store),
+                stamp_lease,
+            );
+            discard_module_input_view(&self.module_store, revision);
+            return Err(import_input_error(format!(
+                "cannot publish import revision: {error:?}"
+            )));
+        }
+        commit_module_input_view(&self.module_store, revision);
         self.import_view_full_leaves_published = self
             .import_view_full_leaves_published
-            .saturating_add(leaves.len() as u64);
-        self.runtime
-            .publish_revision(revision, leaves)
-            .map_err(|error| {
-                import_input_error(format!("cannot publish import revision: {error:?}"))
-            })?;
+            .saturating_add(published_leaf_count);
         self.active_compatibility_token = compatibility_token;
         self.active_import_context = Some(context.clone());
         let view = Arc::new(ImportInputView {
@@ -18739,26 +18995,12 @@ impl RevisionedQueryDatabase {
             sources: source_revision,
             accepted_reads,
             ledger,
+            accepted_topology_stamp,
+            accepted_topology,
+            stamp_lease,
         });
         let mut store = lock_import_store(&self.import_store);
-        store.revisions.push_back(view);
-        while store.revisions.len() > IMPORT_INPUT_REVISION_RETENTION {
-            store.revisions.pop_front();
-        }
-        let retained = store.revisions.iter().cloned().collect::<Vec<_>>();
-        store
-            .context_stamps
-            .retain(|(candidate, _)| retained.iter().any(|view| &view.context == candidate));
-        store.provenance_stamps.retain(|(candidate, _)| {
-            retained
-                .iter()
-                .any(|view| view.accepted_reads.contains_entry(candidate))
-        });
-        store.observation_stamps.retain(|(candidate, _)| {
-            retained
-                .iter()
-                .any(|view| view.ledger.iter().any(|value| value == candidate))
-        });
+        retain_import_input_view(&mut store, view);
         let published = ImportInputRevision {
             revision_id: revision.id(),
             request_generation: generation,
@@ -18948,29 +19190,43 @@ impl RevisionedQueryDatabase {
                 ));
             }
         }
+        let added_topology = (!new_observations.is_empty())
+            .then(|| accepted_import_topology(&new_observations, &accepted_reads))
+            .transpose()?;
+        let accepted_topology = added_topology.as_ref().map_or_else(
+            || parent_view.accepted_topology.clone(),
+            |added| AcceptedImportTopologyValue::Overlay {
+                parent_stamp: parent_view.accepted_topology_stamp,
+                added: added.clone(),
+            },
+        );
 
         // An overlay successor stays inside its parent's observation regime, so
         // it inherits the parent's compatibility token verbatim (RUE-1137).
         let revision = Revision::new(self.next_revision, parent.compatibility_token);
         self.next_revision += 1;
         let mut leaves = Vec::new();
-        {
+        let (accepted_topology_stamp, stamp_lease) = {
             let mut store = lock_import_store(&self.import_store);
             let ImportInputStore {
                 next_stamp,
                 provenance_stamps,
                 observation_stamps,
+                topology_stamps,
                 ..
             } = &mut *store;
-            if !new_observations.is_empty() {
+            let accepted_topology_stamp = if added_topology.is_some() {
                 // The observation set strictly grew, so the aggregate topology is
-                // a genuinely new value: re-stamp the SAME stable identity with a
-                // fresh stamp. Observers of the topology dirty through ordinary
-                // red/green validation; every other inherited leaf stays green.
-                let stamp = *next_stamp;
-                *next_stamp += 1;
+                // a genuinely new structural value. Its exact representation is
+                // the parent stamp plus this overlay's sorted fact delta, so
+                // lookup and retention stay O(delta) without a whole-ledger scan.
+                let stamp = exact_value_stamp(next_stamp, topology_stamps, &accepted_topology);
                 leaves.push((accepted_import_topology_input(), stamp));
-            }
+                retain_stamp_value(topology_stamps, &accepted_topology);
+                stamp
+            } else {
+                parent_view.accepted_topology_stamp
+            };
             for source in &new_sources {
                 let accepted = accepted_reads
                     .find_module(&source.module)
@@ -18985,28 +19241,48 @@ impl RevisionedQueryDatabase {
                     accepted_import_provenance_input(read.metadata_identity()),
                     exact_value_stamp(next_stamp, provenance_stamps, read),
                 ));
+                retain_stamp_value(provenance_stamps, read);
             }
             for observation in &new_observations {
                 leaves.push((
                     import_observation_input(observation.request()),
                     exact_value_stamp(next_stamp, observation_stamps, observation),
                 ));
+                retain_stamp_value(observation_stamps, observation);
             }
-        }
+            let stamp_lease = Arc::new(ImportInputStampLease {
+                parent: Some(parent_view.stamp_lease.clone()),
+                context: None,
+                provenance: new_reads.clone().into(),
+                observations: new_observations.clone().into(),
+                topology: added_topology.as_ref().map(|_| accepted_topology.clone()),
+            });
+            (accepted_topology_stamp, stamp_lease)
+        };
         leaves.extend(publish_module_inputs_delta(
             &self.module_store,
             revision,
             snapshot,
             &new_sources,
         ));
+        let published_leaf_count = leaves.len() as u64;
+        if let Err(error) = self
+            .runtime
+            .publish_revision_overlay(revision, parent_runtime, leaves)
+        {
+            release_orphaned_import_stamp_leases(
+                &mut lock_import_store(&self.import_store),
+                stamp_lease,
+            );
+            discard_module_input_view(&self.module_store, revision);
+            return Err(import_input_error(format!(
+                "cannot publish successor overlay: {error:?}"
+            )));
+        }
+        commit_module_input_view(&self.module_store, revision);
         self.import_view_overlay_leaves_published = self
             .import_view_overlay_leaves_published
-            .saturating_add(leaves.len() as u64);
-        self.runtime
-            .publish_revision_overlay(revision, parent_runtime, leaves)
-            .map_err(|error| {
-                import_input_error(format!("cannot publish successor overlay: {error:?}"))
-            })?;
+            .saturating_add(published_leaf_count);
         // Record this step's exact additions on the session-owned lineage; the
         // successor stage/close derive their module delta from this record.
         self.lineage_additions.extend(new_sources.iter().cloned());
@@ -19017,12 +19293,12 @@ impl RevisionedQueryDatabase {
             sources: snapshot.source_revision().clone(),
             accepted_reads,
             ledger,
+            accepted_topology_stamp,
+            accepted_topology,
+            stamp_lease,
         });
         let mut store = lock_import_store(&self.import_store);
-        store.revisions.push_back(view);
-        while store.revisions.len() > IMPORT_INPUT_REVISION_RETENTION {
-            store.revisions.pop_front();
-        }
+        retain_import_input_view(&mut store, view);
         let published = ImportInputRevision {
             revision_id: revision.id(),
             request_generation: parent.request_generation,
@@ -19069,6 +19345,7 @@ impl RevisionedQueryDatabase {
         self.runtime
             .publish_revision(revision, leaves)
             .expect("compiler input revisions are immutable and uniquely numbered");
+        commit_module_input_view(&self.module_store, revision);
         self.ordinary_lineage_published = true;
         revision
     }
@@ -19487,6 +19764,27 @@ impl RevisionedQueryDatabase {
             // the diagnostic attempt index retains this request.
             attempt.release_result_lease();
         }
+        let protected_revisions = [
+            self.parse_selection.current(),
+            self.parse_selection.last_good(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|terminal| terminal.revision())
+        .collect::<BTreeSet<_>>();
+        {
+            let mut store = self
+                .module_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            store.protected_revisions = protected_revisions.clone();
+            trim_module_input_views(&mut store);
+        }
+        {
+            let mut store = lock_import_store(&self.import_store);
+            store.protected_revisions = protected_revisions;
+            trim_import_input_views(&mut store);
+        }
         // Exact source stamps live exactly as long as a parse memo key (or the
         // current request before selection). They are never independently FIFO
         // evicted while a terminal can still observe the stamp.
@@ -19550,6 +19848,46 @@ impl RevisionedQueryDatabase {
 
     pub(crate) fn runtime_retention_metrics(&self) -> rue_query::RuntimeMetrics {
         self.runtime.metrics()
+    }
+
+    pub(crate) fn input_stamp_retention_metrics(&self) -> InputStampRetentionMetrics {
+        let module_store = self
+            .module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let import_store = lock_import_store(&self.import_store);
+        InputStampRetentionMetrics {
+            module_views: module_store.revisions.len(),
+            module_source_stamps: module_store.stamps.len(),
+            import_views: import_store.revisions.len(),
+            import_context_stamps: import_store.context_stamps.len(),
+            accepted_topology_stamps: import_store.topology_stamps.len(),
+            accepted_read_provenance_stamps: import_store.provenance_stamps.len(),
+            import_observation_stamps: import_store.observation_stamps.len(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_module_input_retention_for_test(&self, retention_limit: usize) {
+        assert!(retention_limit > 0);
+        let mut store = self
+            .module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        store.retention_limit = retention_limit;
+        trim_module_input_views(&mut store);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn module_source_stamp_for_test(&self, source: &ModuleRevision) -> Option<u64> {
+        self.module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .stamps
+            .get(&ModuleInputLeaf {
+                revision: source.clone(),
+            })
+            .map(|retained| retained.stamp)
     }
 }
 
@@ -29956,6 +30294,342 @@ fn main() -> i32 {
                 .map(|request| request.requested_path().to_owned())
                 .collect::<BTreeSet<_>>(),
             first_paths
+        );
+    }
+
+    #[test]
+    fn input_stamp_tables_follow_exact_retained_full_and_overlay_views() {
+        const GENERATIONS: u64 = IMPORT_INPUT_REVISION_RETENTION as u64 + 32;
+        fn assert_exact_values<T: Eq + Hash + std::fmt::Debug>(
+            actual: &HashMap<T, RetainedValueStamp>,
+            expected: &HashMap<T, usize>,
+        ) {
+            assert_eq!(actual.len(), expected.len());
+            for value in expected.keys() {
+                assert!(actual[value].retained_views > 0);
+            }
+        }
+
+        let mut database = RevisionedQueryDatabase::default();
+        let first_context =
+            ImportDiscoveryContext::new(10_000, "/project", Some("/sdk"), "retention-stress")
+                .unwrap();
+        let mut latest_context = first_context.clone();
+
+        for generation in 0..GENERATIONS {
+            let context = ImportDiscoveryContext::new(
+                10_000 + generation,
+                "/project",
+                Some("/sdk"),
+                "retention-stress",
+            )
+            .unwrap();
+            latest_context = context.clone();
+            let mut assembler = DiscoverySourceAssembler::new(
+                context.clone(),
+                "/project/main.rue",
+                "/physical/main.rue",
+                PhysicalFileIdentity::new(1, 1),
+                FileMetadataFingerprint::new(1, 2, 3),
+                Arc::new(
+                    "const dependency = @import(\"dep.rue\"); fn main() -> i32 { 0 }".to_owned(),
+                ),
+            )
+            .unwrap();
+            let (initial_snapshot, initial_reads, revision, plan) =
+                begin_database_plan(&mut database, &mut assembler, context);
+            let frontier = database
+                .import_frontier(
+                    revision,
+                    &plan,
+                    ImportDemandMode::Rooted,
+                    &plan.demand_roots(),
+                )
+                .unwrap();
+
+            let recover = generation % 2 == 1;
+            let (successor_snapshot, successor_reads) = if recover {
+                let accepted_request = frontier
+                    .requests()
+                    .iter()
+                    .find(|request| request.requested_path() == "/project/dep.rue")
+                    .expect("the project-relative candidate is in the compiler frontier");
+                let canonical_path = format!("/physical/dep-{generation}.rue");
+                assembler
+                    .add_explicit(
+                        accepted_request.requested_path(),
+                        &canonical_path,
+                        PhysicalFileIdentity::new(2, generation + 1),
+                        FileMetadataFingerprint::new(generation + 1, 5, 6),
+                        Arc::new(format!("const value = {generation};")),
+                    )
+                    .unwrap();
+                (
+                    assembler.snapshot().unwrap(),
+                    assembler.accepted_read_manifest(),
+                )
+            } else {
+                (initial_snapshot, initial_reads)
+            };
+            let observations = frontier
+                .requests()
+                .iter()
+                .cloned()
+                .map(|request| {
+                    let Some(entry) = successor_reads
+                        .iter()
+                        .find(|entry| entry.requested_path() == request.requested_path())
+                    else {
+                        return ImportObservation::absent(request);
+                    };
+                    let file_id = successor_snapshot
+                        .files()
+                        .find(|source| {
+                            successor_snapshot.module_id(source.file_id) == Some(entry.module())
+                        })
+                        .unwrap()
+                        .file_id;
+                    let accepted = crate::AcceptedImportSource::new(
+                        entry.requested_path(),
+                        entry.canonical_path(),
+                        entry.metadata_identity(),
+                        entry.metadata_fingerprint(),
+                        successor_snapshot.shared_source_text(file_id).unwrap(),
+                    )
+                    .unwrap();
+                    ImportObservation::accepted(request, accepted).unwrap()
+                })
+                .collect();
+            database
+                .publish_import_batch(
+                    &frontier,
+                    &successor_snapshot,
+                    successor_reads,
+                    observations,
+                )
+                .unwrap();
+
+            let metrics = database.input_stamp_retention_metrics();
+            assert!(metrics.module_views <= MODULE_INPUT_REVISION_RETENTION);
+            assert!(metrics.import_views <= IMPORT_INPUT_REVISION_RETENTION);
+            assert!(metrics.module_source_stamps <= metrics.module_views.saturating_mul(2));
+            assert!(metrics.import_context_stamps <= metrics.import_views);
+            assert!(metrics.accepted_topology_stamps <= metrics.import_views);
+            assert!(metrics.accepted_read_provenance_stamps <= metrics.import_views * 2);
+            assert!(metrics.import_observation_stamps <= metrics.import_views * 4);
+        }
+
+        let import_store = lock_import_store(&database.import_store);
+        assert_eq!(
+            import_store.revisions.len(),
+            IMPORT_INPUT_REVISION_RETENTION
+        );
+        assert!(
+            !import_store.context_stamps.contains_key(&first_context),
+            "a context used only by evicted views must not keep its stamp"
+        );
+        assert!(
+            import_store.context_stamps.contains_key(&latest_context),
+            "the current view must keep its context stamp"
+        );
+
+        let mut context_refs = HashMap::new();
+        let mut topology_refs = HashMap::new();
+        let mut provenance_refs = HashMap::new();
+        let mut observation_refs = HashMap::new();
+        for view in &import_store.revisions {
+            *context_refs.entry(view.context.clone()).or_insert(0) += 1;
+            *topology_refs
+                .entry(view.accepted_topology.clone())
+                .or_insert(0) += 1;
+            for read in view.accepted_reads.iter() {
+                *provenance_refs.entry(read.clone()).or_insert(0) += 1;
+            }
+            for observation in view.ledger.iter() {
+                *observation_refs.entry(observation.clone()).or_insert(0) += 1;
+            }
+        }
+        assert_exact_values(&import_store.context_stamps, &context_refs);
+        assert_exact_values(&import_store.topology_stamps, &topology_refs);
+        assert_exact_values(&import_store.provenance_stamps, &provenance_refs);
+        assert_exact_values(&import_store.observation_stamps, &observation_refs);
+        drop(import_store);
+
+        let module_store = database
+            .module_store
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(module_store.revisions.len(), GENERATIONS as usize * 2);
+        let mut module_refs = HashMap::new();
+        for view in &module_store.revisions {
+            for source in view.snapshot.source_revision().modules() {
+                *module_refs
+                    .entry(ModuleInputLeaf {
+                        revision: source.clone(),
+                    })
+                    .or_insert(0) += 1;
+            }
+        }
+        assert_exact_values(&module_store.stamps, &module_refs);
+        drop(module_store);
+
+        // Exercise the same centralized module-view trimming primitive at a
+        // small limit so this stress test proves eviction without making the
+        // compiler parse thousands of otherwise identical generations.
+        const TEST_MODULE_RETENTION: usize = 8;
+        let mut bounded_module_store = ModuleInputStore {
+            retention_limit: TEST_MODULE_RETENTION,
+            ..ModuleInputStore::default()
+        };
+        bounded_module_store
+            .protected_revisions
+            .insert(Revision::new(1, 0));
+        for generation in 0..TEST_MODULE_RETENTION * 2 {
+            let source_text = format!("fn main() -> i32 {{ {generation} }}");
+            let snapshot = source_snapshot(
+                &[(
+                    (generation + 1) as u32,
+                    "/main.rue",
+                    "main.rue",
+                    &source_text,
+                )],
+                (generation + 1) as u32,
+            );
+            let sources = snapshot.source_revision().modules().to_vec();
+            for source in snapshot.source_revision().modules() {
+                let leaf = ModuleInputLeaf {
+                    revision: source.clone(),
+                };
+                let ModuleInputStore {
+                    next_stamp, stamps, ..
+                } = &mut bounded_module_store;
+                exact_value_stamp(next_stamp, stamps, &leaf);
+                retain_stamp_value(stamps, &leaf);
+            }
+            retain_module_input_view(
+                &mut bounded_module_store,
+                Arc::new(ModuleInputView {
+                    revision: Revision::new(generation as u64 + 1, 0),
+                    snapshot,
+                    stamp_lease: Arc::new(ModuleInputStampLease {
+                        parent: None,
+                        sources: sources.into(),
+                    }),
+                }),
+            );
+        }
+        assert_eq!(
+            bounded_module_store.revisions.len(),
+            TEST_MODULE_RETENTION + 1,
+            "one old selection root is the documented constant allowance"
+        );
+        assert_eq!(bounded_module_store.stamps.len(), TEST_MODULE_RETENTION + 1);
+        assert_eq!(
+            bounded_module_store
+                .revisions
+                .front()
+                .unwrap()
+                .revision
+                .id(),
+            1
+        );
+        assert!(
+            bounded_module_store
+                .stamps
+                .values()
+                .all(|retained| retained.retained_views == 1)
+        );
+    }
+
+    #[test]
+    fn failed_runtime_publication_releases_pending_input_stamp_leases() {
+        let (_, mut assembler, context) = import_fixture(12_000, "fn main() -> i32 { 0 }");
+        let mut database = RevisionedQueryDatabase::default();
+        database.set_module_input_retention_for_test(1);
+        let (snapshot, reads, published, _) =
+            begin_database_plan(&mut database, &mut assembler, context.clone());
+        let before = database.input_stamp_retention_metrics();
+        let published_leaves_before = database.import_view_full_leaves_published();
+
+        let mut changed = DiscoverySourceAssembler::new(
+            context.clone(),
+            "/project/main.rue",
+            "/physical/main.rue",
+            PhysicalFileIdentity::new(1, 1),
+            FileMetadataFingerprint::new(4, 5, 6),
+            Arc::new("fn main() -> i32 { 1 }".to_owned()),
+        )
+        .unwrap();
+        let changed_snapshot = changed.snapshot().unwrap();
+        let changed_reads = changed.accepted_read_manifest();
+        database.next_revision = published.revision_id;
+        assert!(
+            database
+                .begin_import_inputs(&changed_snapshot, context, changed_reads)
+                .is_err(),
+            "reusing an immutable runtime revision must reject publication"
+        );
+        assert_eq!(database.input_stamp_retention_metrics(), before);
+        assert_eq!(
+            database.import_view_full_leaves_published(),
+            published_leaves_before,
+            "a rejected runtime publication is not counted as published work"
+        );
+        assert_eq!(
+            database
+                .module_store
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .revisions
+                .back()
+                .unwrap()
+                .snapshot
+                .source_revision(),
+            snapshot.source_revision()
+        );
+        assert_eq!(reads, assembler.accepted_read_manifest());
+    }
+
+    #[test]
+    fn last_good_module_stamp_survives_beyond_the_revision_window_and_recovers_green() {
+        const RETENTION: usize = 8;
+        let good = source_snapshot(
+            &[(
+                1,
+                "/main.rue",
+                "main.rue",
+                "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+            )],
+            1,
+        );
+        let good_source = good.source_revision().modules()[0].clone();
+        let mut session = CompilerSession::new();
+        session.set_module_input_retention_for_test(RETENTION);
+        assert!(session.update(&good).result().is_ok());
+        let good_stamp = session
+            .module_source_stamp_for_test(&good_source)
+            .expect("the selected successful source owns a stamp");
+
+        for generation in 0..RETENTION + 4 {
+            let text = format!("fn main() -> i32 {{ missing_{generation} }} @");
+            let failed = source_snapshot(&[(1, "/main.rue", "main.rue", &text)], 1);
+            assert!(session.update(&failed).result().is_err());
+        }
+        assert_eq!(
+            session.module_source_stamp_for_test(&good_source),
+            Some(good_stamp),
+            "last-good selection keeps its exact content-to-stamp mapping past the recency window"
+        );
+        let retained = session.unstable_metrics().retention();
+        assert_eq!(retained.retained_module_input_views, RETENTION + 1);
+
+        let recovered = session.update(&good);
+        assert!(recovered.result().is_ok());
+        assert_eq!(recovered.work().syntax.parser_invocations, 0);
+        assert_eq!(
+            session.module_source_stamp_for_test(&good_source),
+            Some(good_stamp),
+            "recovery reuses the protected last-good stamp"
         );
     }
 

@@ -1436,6 +1436,13 @@ pub struct RetentionMetrics {
     pub active_retained_pins: usize,
     pub peak_retained_pins: usize,
     pub retained_revisions: usize,
+    pub retained_module_input_views: usize,
+    pub retained_module_source_stamps: usize,
+    pub retained_import_input_views: usize,
+    pub retained_import_context_stamps: usize,
+    pub retained_import_topology_stamps: usize,
+    pub retained_import_provenance_stamps: usize,
+    pub retained_import_observation_stamps: usize,
     pub retained_byte_pressure_events: usize,
     pub dependency_pin_pressure_events: usize,
     pub retained_byte_overflow_events: usize,
@@ -1695,6 +1702,19 @@ impl MetricsSnapshot {
             active_retained_pins: self.inner.retention.active_retained_pins,
             peak_retained_pins: self.inner.retention.peak_retained_pins,
             retained_revisions: self.inner.retention.retained_revisions,
+            retained_module_input_views: self.inner.retention.retained_module_input_views,
+            retained_module_source_stamps: self.inner.retention.retained_module_source_stamps,
+            retained_import_input_views: self.inner.retention.retained_import_input_views,
+            retained_import_context_stamps: self.inner.retention.retained_import_context_stamps,
+            retained_import_topology_stamps: self.inner.retention.retained_import_topology_stamps,
+            retained_import_provenance_stamps: self
+                .inner
+                .retention
+                .retained_import_provenance_stamps,
+            retained_import_observation_stamps: self
+                .inner
+                .retention
+                .retained_import_observation_stamps,
             retained_byte_pressure_events: self.inner.retention.retained_byte_pressure_events,
             dependency_pin_pressure_events: self.inner.retention.dependency_pin_pressure_events,
             retained_byte_overflow_events: self.inner.retention.retained_byte_overflow_events,
