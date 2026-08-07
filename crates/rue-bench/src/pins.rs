@@ -9,6 +9,12 @@
 //!
 //! Resolving must therefore never consult the epoch. A resolver that fell back
 //! to the declared value on error would defeat the check it exists to feed.
+//!
+//! Not everything resolved here is compared. [`stdlib_hash`] is recorded on the
+//! run and gates nothing: `std` is part of the product being measured, so a
+//! change to it moves the series rather than invalidating it, and the dashboard
+//! annotates where that happened. [`workload_source_hash`] excludes std reads
+//! for the same reason (ADR-0067 "The product boundary", RUE-1256).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -128,7 +134,8 @@ struct AcceptedRead {
     canonical_path: PathBuf,
 }
 
-/// Hash a workload's full transitive source closure.
+/// Hash a workload's own transitive source closure, excluding the standard
+/// library.
 ///
 /// The closure comes from the compiler's own `--emit deps`, so it is the set
 /// the compiler would actually read rather than a guess at the import graph.
@@ -139,6 +146,13 @@ struct AcceptedRead {
 /// Files are keyed by module path, which is relative to the project root, so
 /// two checkouts of the same tree at different absolute paths resolve to the
 /// same hash.
+///
+/// Standard-library reads are excluded deliberately. `std` is part of the
+/// product being measured, not an input pinned against it, so a std edit must
+/// move the series the way a compiler change does. Folding std into this hash
+/// would invalidate every series whose workload reads it — including the
+/// std-compiling workload, on every std commit — which is the same failure as
+/// the removed `stdlib_hash` pin wearing a different name (RUE-1256).
 pub fn workload_source_hash(
     compiler: &Path,
     source: &Path,
@@ -174,17 +188,50 @@ pub fn workload_source_hash(
         });
     }
 
+    let std_root = std_root.map(resolve_for_comparison);
     let mut entries = BTreeMap::new();
+    let mut standard_library_reads = 0usize;
     for read in &report.accepted_reads {
+        if is_stdlib_read(&read.canonical_path, std_root.as_deref()) {
+            standard_library_reads += 1;
+            continue;
+        }
         entries.insert(read.module.clone(), hash_file(&read.canonical_path)?);
     }
     if entries.is_empty() {
         return Err(PinError {
             subject,
-            detail: "dependency discovery accepted no reads".to_string(),
+            detail: if standard_library_reads > 0 {
+                // Distinguished from "no reads at all": a workload whose whole
+                // closure is std has no identity of its own to pin, which is a
+                // corpus mistake rather than a discovery failure.
+                format!(
+                    "dependency discovery accepted {standard_library_reads} read(s), all within \
+                     the standard library, so the workload has no source identity of its own"
+                )
+            } else {
+                "dependency discovery accepted no reads".to_string()
+            },
         });
     }
     Ok(fold(&entries))
+}
+
+/// Whether a resolved read belongs to the standard library rather than to the
+/// workload itself.
+fn is_stdlib_read(canonical_path: &Path, std_root: Option<&Path>) -> bool {
+    std_root.is_some_and(|root| canonical_path.starts_with(root))
+}
+
+/// Resolve a path so it can be prefix-compared against the dependency report.
+///
+/// The report's paths are canonical, so the standard-library root must be too.
+/// A relative or symlinked `--std-root` would otherwise fail every comparison
+/// and silently fold the whole standard library back into the workload's
+/// identity — the exact failure this exclusion exists to prevent, and one that
+/// would look like nothing at all until a std edit froze the series.
+fn resolve_for_comparison(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -258,6 +305,64 @@ mod tests {
 
         std::fs::write(directory.path().join("nested/b.rue"), "fn b() { 1 }").unwrap();
         assert_ne!(first, stdlib_hash(directory.path()).unwrap());
+    }
+
+    #[test]
+    fn standard_library_reads_are_excluded_from_a_workloads_identity() {
+        let std_root = Path::new("/repo/std");
+        assert!(is_stdlib_read(
+            Path::new("/repo/std/math.rue"),
+            Some(std_root)
+        ));
+        assert!(is_stdlib_read(
+            Path::new("/repo/std/nested/deep.rue"),
+            Some(std_root)
+        ));
+        assert!(!is_stdlib_read(
+            Path::new("/repo/performance/workloads/startup/main.rue"),
+            Some(std_root)
+        ));
+    }
+
+    #[test]
+    fn a_sibling_directory_sharing_a_prefix_is_not_the_standard_library() {
+        // Component-wise, not textual: `/repo/stdlib-tests` merely starts with
+        // the same characters as `/repo/std`, and excluding it would silently
+        // drop real workload sources from the hash.
+        assert!(!is_stdlib_read(
+            Path::new("/repo/stdlib-tests/main.rue"),
+            Some(Path::new("/repo/std"))
+        ));
+    }
+
+    #[test]
+    fn without_a_standard_library_root_nothing_is_excluded() {
+        assert!(!is_stdlib_read(Path::new("/repo/std/math.rue"), None));
+    }
+
+    #[test]
+    fn the_standard_library_root_is_resolved_before_comparison() {
+        // The dependency report's paths are canonical. A relative std root that
+        // stayed relative would match nothing, folding std back into every
+        // workload's identity without any visible symptom until a std edit.
+        let directory = tempfile::tempdir().expect("temp dir");
+        let std_root = directory.path().join("std");
+        std::fs::create_dir(&std_root).unwrap();
+
+        let resolved = resolve_for_comparison(&std_root);
+        assert!(resolved.is_absolute());
+        assert!(is_stdlib_read(
+            &resolved.join("math.rue"),
+            Some(resolved.as_path())
+        ));
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_resolved_is_kept_as_given() {
+        // Falling back rather than failing: an unresolvable std root is not
+        // this function's error to report.
+        let missing = Path::new("/definitely/not/here");
+        assert_eq!(resolve_for_comparison(missing), missing.to_path_buf());
     }
 
     #[test]

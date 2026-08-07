@@ -353,7 +353,13 @@ pub struct Invocation {
 pub struct ResolvedPins {
     /// Content hash of the toolchain as built for this target.
     pub toolchain_hash: String,
-    /// Content hash of the standard library.
+    /// Content hash of the standard library at the measured revision.
+    ///
+    /// Recorded, not pinned. `std` is part of the product under measurement, so
+    /// a change here moves the series rather than invalidating it; validation
+    /// does not compare this against the epoch, and the dashboard annotates the
+    /// point where it changed. It stays in the run object because the
+    /// observation is worth keeping even though nothing gates on it.
     pub stdlib_hash: String,
     /// Content hash of each workload's full source closure, keyed by workload.
     pub workload_source_hashes: BTreeMap<String, String>,

@@ -569,7 +569,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = ["-O2"]
 toolchain_hash = "toolchain"
-stdlib_hash = "stdlib"
 
 [epoch.workload_source_hashes]
 startup = "startup-hash"

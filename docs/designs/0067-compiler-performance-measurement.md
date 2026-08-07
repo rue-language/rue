@@ -170,14 +170,39 @@ A **platform epoch** pins, per platform:
 - the suite revision it implements;
 - the target and the complete compiler invocation (optimization level, linker
   mode, feature flags, and any behavior-affecting arguments);
-- the resolved transitive content hashes: each workload's full source
-  closure, the standard library, and the toolchain as built for this target;
+- the resolved transitive content hash of each workload's **own** source
+  closure, excluding the standard library (see "The product boundary" below);
+- the content hash of the Rust toolchain the compiler is built with;
 - the per-workload sampling and batching policy;
 - the environment policy: runner environment class and image label
   (e.g. `github-hosted`, `ubuntu-24.04`);
 - the headline baseline: the first **complete, valid** run at a declared
   trunk revision, whose per-workload medians define ratio 1.0. An attempted
   or partial run is never a baseline.
+
+**The product boundary.** The Rue language, `std`, and the first-party
+toolchain are a single product, and this suite measures that product. They are
+therefore the *subject* of measurement, never pinned inputs: a `std` change
+moves a series exactly as a change to compiler internals does. Each run records
+the standard library's resolved hash, validation does not compare it against
+the epoch, and the dashboard annotates the point where it changed. The
+annotation is deliberately not marked advisory — unlike an environment change,
+this is real movement in the thing being tracked.
+
+What remains pinned is everything that is *not* the product: each workload's
+own sources, the target and invocation, the environment policy, and the Rust
+toolchain the compiler is built with. That last one is build environment rather
+than product — changing it changes generated code while shipping nothing.
+
+This boundary replaces an earlier rule under which an epoch pinned the standard
+library outright. That rule was exercised once, by a mechanical
+`i = i + 1` -> `i += 1` sweep across `std/` that changed no measured behaviour:
+output binaries were byte-identical on all three platforms, and every run for
+the next ten days was refused while collection, the data branch, and the site
+build all reported success. An input change should be visible, but a pin
+reports only that a hash moved. A workload that compiles `std` reports what the
+change cost, which is both a stronger signal and one that cannot stop the
+series.
 
 A change to what a workload *is* creates a new suite revision and therefore
 new epochs on every participating platform. Raising only the macOS sample
@@ -213,7 +238,22 @@ baseline while the headline continues.
 The guarantee, stated precisely: observations that are invalid for a series'
 suite revision or platform configuration cannot enter it; environment
 variation within the epoch's policy remains possible, is recorded via
-fingerprints, and makes the affected comparisons advisory.
+fingerprints, and makes the affected comparisons advisory. Product changes —
+compiler, `std`, first-party toolchain — are what the series exists to show,
+and never invalidate anything.
+
+**Versioning a workload rather than refusing its runs.** Refusal is the
+forcing function, not the resolution. When a workload genuinely must change,
+the answer is a new workload identity rather than an edit under the old name:
+suffix the identifier (`caldera`, then `caldera-2`, then `caldera-3`), declare
+it in the next suite revision, and add the new one before removing the old so
+coverage is continuous across the change. Both series render, the old one
+ending where the new one begins. This follows `rustc-perf`, which versions its
+benchmarks the same way and keeps a deliberately frozen set for long-horizon
+comparison; the cost is a bounded loss of continuity in exchange for measuring
+something that is still worth measuring. What must never happen is a workload
+silently changing meaning under a continuing headline, which is exactly what
+refusal prevents.
 
 ### 5. Sampling and noise
 
