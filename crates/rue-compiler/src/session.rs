@@ -71,6 +71,16 @@ pub struct FrontendRetentionMetrics {
     pub active_retained_pins: usize,
     pub peak_retained_pins: usize,
     pub retained_revisions: usize,
+    /// Exact retained views and value stamps for the compiler-owned input
+    /// families. These expose per-family bounds independently of runtime
+    /// aggregate retention.
+    pub retained_module_input_views: usize,
+    pub retained_module_source_stamps: usize,
+    pub retained_import_input_views: usize,
+    pub retained_import_context_stamps: usize,
+    pub retained_import_topology_stamps: usize,
+    pub retained_import_provenance_stamps: usize,
+    pub retained_import_observation_stamps: usize,
     /// Protected soft-budget overflow and pressure evidence.
     pub retained_byte_pressure_events: usize,
     pub dependency_pin_pressure_events: usize,
@@ -2951,6 +2961,19 @@ impl CompilerSession {
     pub fn unstable_metrics(&self) -> crate::unstable::MetricsSnapshot {
         crate::unstable::MetricsSnapshot::new(self.metrics.work().clone())
     }
+    #[cfg(test)]
+    pub(crate) fn set_module_input_retention_for_test(&self, retention_limit: usize) {
+        self.queries
+            .revisioned
+            .set_module_input_retention_for_test(retention_limit);
+    }
+    #[cfg(test)]
+    pub(crate) fn module_source_stamp_for_test(
+        &self,
+        source: &crate::ModuleRevision,
+    ) -> Option<u64> {
+        self.queries.revisioned.module_source_stamp_for_test(source)
+    }
     /// Diagnostic snapshot from the most recently attempted query, whether it
     /// succeeded or failed.
     pub fn latest_diagnostics(&self) -> Option<&Arc<FrontendDiagnosticSnapshot>> {
@@ -3084,6 +3107,7 @@ impl CompilerSession {
     fn refresh_retention_metrics(&mut self) {
         let diagnostics = self.diagnostics.retention_metrics();
         let runtime = self.queries.revisioned.runtime_retention_metrics();
+        let input_stamps = self.queries.revisioned.input_stamp_retention_metrics();
 
         let mut pinned_attempts = BTreeSet::new();
         pinned_attempts.extend(self.queries.revisioned.parse_origin_attempt_ids());
@@ -3109,6 +3133,13 @@ impl CompilerSession {
             active_retained_pins: runtime.active_retained_pins as usize,
             peak_retained_pins: runtime.peak_retained_pins as usize,
             retained_revisions: runtime.retained_revisions as usize,
+            retained_module_input_views: input_stamps.module_views,
+            retained_module_source_stamps: input_stamps.module_source_stamps,
+            retained_import_input_views: input_stamps.import_views,
+            retained_import_context_stamps: input_stamps.import_context_stamps,
+            retained_import_topology_stamps: input_stamps.accepted_topology_stamps,
+            retained_import_provenance_stamps: input_stamps.accepted_read_provenance_stamps,
+            retained_import_observation_stamps: input_stamps.import_observation_stamps,
             retained_byte_pressure_events: runtime.retained_byte_pressure_events as usize,
             dependency_pin_pressure_events: runtime.dependency_pin_pressure_events as usize,
             retained_byte_overflow_events: runtime.retained_byte_overflow_events as usize,
@@ -3738,6 +3769,7 @@ impl CompilerSession {
         guard.bind(view);
         guard.finish(execution, None, &result, QueryStructuralWork::None);
         self.metrics.synchronize();
+        self.refresh_retention_metrics();
         match result {
             Ok(candidate) => {
                 if self.open_discovery.as_deref().is_some_and(|artifact| {
@@ -3764,7 +3796,6 @@ impl CompilerSession {
                         .project_dependency_invalidations(downstream_invalidated);
                     self.published = Some(candidate.clone());
                     self.published_snapshot = Some(snapshot.clone());
-                    self.refresh_retention_metrics();
                     CompilerSessionUpdate {
                         result: Ok(candidate),
                         work: parse_work,
