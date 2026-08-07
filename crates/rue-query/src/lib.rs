@@ -10,10 +10,14 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
+
+const VALIDATION_PROOF_REGISTERED: u8 = 0;
+const VALIDATION_PROOF_RETRYABLE: u8 = 1;
+const VALIDATION_PROOF_UNREGISTERED: u8 = 2;
 
 /// Initial runtime-wide soft budget for deterministic retained terminal charge.
 ///
@@ -3534,10 +3538,11 @@ where
                 } => {
                     // A validation-only computation or join returns an exact
                     // stamp but does not transfer its candidate pin into the
-                    // task's proof cone. Taint every enclosing certificate;
-                    // a later ordinary Reused validation can capture it.
+                    // task's proof cone. Mark every enclosing certificate for
+                    // one repair traversal: now that the terminal is published,
+                    // an ordinary Reused validation can capture it.
                     if execution != RequestExecution::Reused {
-                        task.taint_validation_proofs();
+                        task.defer_validation_proofs();
                     }
                     Ok(Some(terminal.stamp))
                 }
@@ -4189,13 +4194,21 @@ where
                 let endorsement_enabled =
                     self.inner.evaluator.is_some() && task.validation_endorsements_active();
                 let endorsement_hit = endorsement_enabled && task.validation_endorsed(&terminal);
-                let validation = if endorsement_hit {
-                    Ok((true, true))
+                let mut validation = if endorsement_hit {
+                    Ok((true, true, false))
                 } else {
                     self.core.valid_for_revision(&terminal, &task)
                 };
+                if matches!(validation, Ok((true, false, true))) {
+                    // A registered validation-only compute or join proved the
+                    // value current but could not transfer its dependency pin.
+                    // The joined/computed terminal is published now, so one
+                    // ordinary reuse traversal repairs and leases the complete
+                    // registered cone before this root can be endorsed.
+                    validation = self.core.valid_for_revision(&terminal, &task);
+                }
                 match validation {
-                    Ok((true, registered_only)) => {
+                    Ok((true, registered_only, _)) => {
                         if observe_result && !task.observe_handoff(handoffs) {
                             self.detach_terminal_attempt(node, attempt_id);
                             continue;
@@ -4222,7 +4235,7 @@ where
                             work: Vec::new(),
                         };
                     }
-                    Ok((false, _)) => {}
+                    Ok((false, _, _)) => {}
                     Err(abort) => {
                         return TaskQueryResult::Aborted {
                             abort,
@@ -5767,7 +5780,7 @@ struct Task {
     validation_endorsements: Mutex<Vec<BTreeSet<(u64, u64, Revision)>>>,
     /// Active recursive validation certificates. Encountering an unregistered
     /// node taints every enclosing traversal.
-    validation_proofs: Mutex<Vec<Arc<AtomicBool>>>,
+    validation_proofs: Mutex<Vec<Arc<AtomicU8>>>,
     /// Request-scoped retention leases. This task, which owns one rooted request
     /// and all of its nested observations (nested queries share the task), holds
     /// one pin per distinct terminal it has observed. The pins release together
@@ -5909,12 +5922,16 @@ impl Drop for ValidationEndorsementGuard {
 
 struct ValidationProofGuard {
     task: Arc<Task>,
-    registered_only: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
 }
 
 impl ValidationProofGuard {
     fn registered_only(&self) -> bool {
-        self.registered_only.load(Ordering::Acquire)
+        self.state.load(Ordering::Acquire) == VALIDATION_PROOF_REGISTERED
+    }
+
+    fn retryable(&self) -> bool {
+        self.state.load(Ordering::Acquire) == VALIDATION_PROOF_RETRYABLE
     }
 }
 
@@ -5924,7 +5941,7 @@ impl Drop for ValidationProofGuard {
             .pop()
             .expect("validation proof guard owns one traversal");
         assert!(
-            Arc::ptr_eq(&popped, &self.registered_only),
+            Arc::ptr_eq(&popped, &self.state),
             "validation proof guards drop in lexical order"
         );
     }
@@ -6740,17 +6757,28 @@ impl Task {
     }
 
     fn begin_validation(self: &Arc<Self>) -> ValidationProofGuard {
-        let registered_only = Arc::new(AtomicBool::new(true));
-        lock(&self.validation_proofs).push(registered_only.clone());
+        let state = Arc::new(AtomicU8::new(VALIDATION_PROOF_REGISTERED));
+        lock(&self.validation_proofs).push(state.clone());
         ValidationProofGuard {
             task: self.clone(),
-            registered_only,
+            state,
         }
     }
 
     fn taint_validation_proofs(&self) {
         for proof in lock(&self.validation_proofs).iter() {
-            proof.store(false, Ordering::Release);
+            proof.store(VALIDATION_PROOF_UNREGISTERED, Ordering::Release);
+        }
+    }
+
+    fn defer_validation_proofs(&self) {
+        for proof in lock(&self.validation_proofs).iter() {
+            let _ = proof.compare_exchange(
+                VALIDATION_PROOF_REGISTERED,
+                VALIDATION_PROOF_RETRYABLE,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
         }
     }
 
@@ -7367,14 +7395,15 @@ impl RuntimeCore {
         &self,
         terminal: &QueryTerminal<V>,
         task: &Arc<Task>,
-    ) -> Result<(bool, bool), QueryAbort> {
+    ) -> Result<(bool, bool, bool), QueryAbort> {
         let proof = task.begin_validation();
         let valid = self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new())?;
         let registered_only = proof.registered_only();
+        let retryable = proof.retryable();
         if valid {
             self.mark_terminal_validated(terminal, task.revision, registered_only);
         }
-        Ok((valid, registered_only))
+        Ok((valid, registered_only, retryable))
     }
 
     fn mark_terminal_validated<V>(
@@ -12163,7 +12192,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_only_computation_taints_registered_endorsement() {
+    fn validation_only_computation_repairs_registered_endorsement() {
         let runtime = QueryRuntime::new(1);
         let input = InputIdentity::new("source", "endorsement-compute");
         let first = Revision::new(60, 1);
@@ -12220,9 +12249,12 @@ mod tests {
                     let _endorsements = context.endorse_registered_validations();
                     let parent = context.query_registered(&parent_for_root, Key("parent"))?;
                     assert!(
-                        !context.task.validation_endorsed(&parent),
-                        "a validation-only computed child cannot certify its parent"
+                        context.task.validation_endorsed(&parent),
+                        "a published computed child allows one reuse traversal to certify its parent"
                     );
+                    context
+                        .retain_observed_terminal_cone(&parent)
+                        .expect("the repair traversal leases the computed child's complete cone");
                     Ok(QueryOutput::success(0))
                 },
             )
@@ -12232,7 +12264,7 @@ mod tests {
     }
 
     #[test]
-    fn validation_only_join_taints_registered_endorsement() {
+    fn validation_only_join_repairs_registered_endorsement() {
         let runtime = QueryRuntime::new(2);
         let input = InputIdentity::new("source", "endorsement-join");
         let first = Revision::new(70, 1);
@@ -12303,9 +12335,12 @@ mod tests {
                     let _endorsements = context.endorse_registered_validations();
                     let parent = context.query_registered(&waiter_parent, Key("parent"))?;
                     assert!(
-                        !context.task.validation_endorsed(&parent),
-                        "a validation-only joined child cannot certify its parent"
+                        context.task.validation_endorsed(&parent),
+                        "a published joined child allows one reuse traversal to certify its parent"
                     );
+                    context
+                        .retain_observed_terminal_cone(&parent)
+                        .expect("the repair traversal leases the joined child's complete cone");
                     Ok(QueryOutput::success(0))
                 },
             )
