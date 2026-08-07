@@ -30,6 +30,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
 | - | [ci.md](ci.md) | - | Maintain required CI and its pinned tools |
 | - | [profiling.md](profiling.md) | - | Build symbolized executables for native profiling |
+| - | [compiler-scaling.md](compiler-scaling.md) | - | Measure maintained-program compiler scaling |
 | - | [compiler-facade.md](compiler-facade.md) | - | Review compiler API and tooling-view changes |
 | - | [tutorial.md](tutorial.md) | - | Maintain tutorial outline, style, and snippet checks |
 | - | [issue-tracking.md](issue-tracking.md) | Linear MCP tools | Track work with Linear |

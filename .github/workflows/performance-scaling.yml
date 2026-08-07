@@ -1,0 +1,56 @@
+# Lower-frequency maintained-program scale curve (RUE-1038).
+#
+# Unlike the fast ADR-0067 collection workflow, this does not run on every
+# trunk push and does not publish into the startup headline. Three independent
+# fresh compiler processes per workload provide a median and MAD without
+# inheriting startup's platform-specific high sample counts.
+name: Compiler scaling
+
+on:
+  schedule:
+    - cron: "17 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two scale runs on one hosted machine would measure contention, not Rue.
+concurrency:
+  group: compiler-scaling
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the compiler and measurement runner
+        run: ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
+
+      - name: Measure maintained programs
+        env:
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: ubuntu-24.04
+        run: |
+          set -euo pipefail
+          mkdir -p scaling-report
+          RUE="$(scripts/rue-bin)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          "$BENCH" scaling \
+            --manifest performance/scaling.toml \
+            --compiler "$RUE" \
+            --commit "${{ github.sha }}" \
+            --repo-root . \
+            --out scaling-report/report.json
+
+      - name: Publish report artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-scaling-${{ github.sha }}
+          path: scaling-report/
+          retention-days: 90

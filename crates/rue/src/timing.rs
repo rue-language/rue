@@ -295,7 +295,7 @@ pub struct BenchmarkTiming {
     pub driver_phases: Vec<DriverPhaseTiming>,
     /// Total compilation time in milliseconds.
     pub total_ms: f64,
-    /// Source code metrics (lines, bytes, tokens).
+    /// Source and program-shape metrics for throughput calculations.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_metrics: Option<SourceMetrics>,
     /// Peak memory usage in bytes (if available).
@@ -303,17 +303,21 @@ pub struct BenchmarkTiming {
     pub peak_memory_bytes: Option<u64>,
 }
 
-/// Source code metrics for throughput calculations.
+/// Source and program-shape metrics for throughput calculations.
 #[derive(Debug, Clone, Serialize)]
 pub struct SourceMetrics {
     /// Number of source files compiled.
     pub files: usize,
+    /// Number of modules consumed by parsing.
+    pub modules: usize,
     /// Total bytes across source files.
     pub bytes: usize,
     /// Total lines across source files.
     pub lines: usize,
     /// Total tokens produced by the lexer invocations consumed by parsing.
     pub tokens: usize,
+    /// Number of source and synthesized functions considered for CFG construction.
+    pub functions: usize,
 }
 
 /// Metadata about a benchmark run for historical analysis.
@@ -630,7 +634,7 @@ impl TimingData {
     /// # Arguments
     /// * `target` - The target platform string (e.g., "x86_64-linux")
     /// * `version` - The compiler version string
-    /// * `source_metrics` - Optional source code metrics (bytes, lines, tokens)
+    /// * `source_metrics` - Optional source and program-shape metrics
     /// * `peak_memory_bytes` - Optional peak memory usage in bytes
     pub fn to_benchmark_timing_with_metrics(
         &self,
@@ -693,7 +697,7 @@ impl TimingData {
         };
 
         BenchmarkTiming {
-            schema_version: 3,
+            schema_version: 4,
             timing_model: "inclusive_spans",
             phase_accounting,
             metadata,
@@ -710,7 +714,7 @@ impl TimingData {
     /// # Arguments
     /// * `target` - The target platform string
     /// * `version` - The compiler version string
-    /// * `source_metrics` - Source code metrics (bytes, lines, tokens)
+    /// * `source_metrics` - Source and program-shape metrics
     /// * `peak_memory_bytes` - Optional peak memory usage
     pub fn to_json_with_metrics(
         &self,
@@ -2042,7 +2046,7 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None);
-        assert!(json.contains("\"schema_version\":3"));
+        assert!(json.contains("\"schema_version\":4"));
         assert!(json.contains("\"timing_model\":\"inclusive_spans\""));
         assert!(json.contains("\"passes\""));
         assert!(json.contains("\"name\""));
@@ -2629,7 +2633,7 @@ mod phase_accounting_tests {
         });
 
         let timing = data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None);
-        assert_eq!(timing.schema_version, 3);
+        assert_eq!(timing.schema_version, 4);
         assert_eq!(timing.timing_model, "inclusive_spans");
         assert_invariant(&timing.phase_accounting);
 

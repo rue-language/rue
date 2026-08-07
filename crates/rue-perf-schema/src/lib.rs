@@ -34,6 +34,7 @@
 mod canonical;
 mod manifest;
 mod run;
+mod scaling;
 mod series;
 mod stats;
 mod validate;
@@ -46,6 +47,10 @@ pub use manifest::{
 pub use run::{
     Band, EnvironmentFingerprint, FailureRecord, Invocation, Phase, PhaseAccounting, ResolvedPins,
     RunIdentity, RunObject, Sample, WorkloadObservation,
+};
+pub use scaling::{
+    SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest, ScalingObservation,
+    ScalingRegime, ScalingReport, ScalingWorkload, WorkloadShape,
 };
 pub use series::{Metric, SeriesId};
 pub use stats::{

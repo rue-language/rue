@@ -17,6 +17,7 @@ mod derive;
 mod environment;
 mod measure;
 mod pins;
+mod scaling;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -77,6 +78,10 @@ Subcommands:
                        batching factors, and the flagging rule. Produces
                        artifacts only; nothing here enters a series.
 
+  scaling --manifest <path> --compiler <path> --commit <sha> --out <path>
+                       measure maintained programs with independent fresh
+                       compiler processes; also writes a Markdown report.
+
 Optional:
   --repo-root <path>   root for resolving workload sources (default: .)
   --std-root <path>    standard-library root (default: <repo-root>/std)
@@ -98,6 +103,15 @@ fn main() -> ExitCode {
     }
     if std::env::args().nth(1).as_deref() == Some("calibrate") {
         return match run_calibration() {
+            Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("rue-bench: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("scaling") {
+        return match scaling::run() {
             Ok(()) => ExitCode::from(exit::OK),
             Err(message) => {
                 eprintln!("rue-bench: {message}");
@@ -485,7 +499,7 @@ fn report(run: &RunObject, outcome: &ValidationOutcome, output: &Path) {
 /// One spelling, because two identical measurements formatting the same instant
 /// differently would produce two content addresses. Computed from the Unix
 /// epoch rather than pulling in a date library for two fields.
-fn utc_timestamp() -> String {
+pub(crate) fn utc_timestamp() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_secs())

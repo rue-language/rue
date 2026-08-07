@@ -1,0 +1,31 @@
+# Lower-frequency compiler scale curve (RUE-1038).
+#
+# This is intentionally separate from `manifest.toml`: these maintained
+# programs take seconds rather than milliseconds, so they must not inherit the
+# startup probe's calibrated sample counts or enter the fast headline index.
+# Every sample launches the canonical compiler binary in a fresh process. The
+# compiled program is never run.
+schema_version = 1
+revision = 1
+samples = 3
+args = []
+
+[[workloads]]
+id = "ruelex"
+source = "examples/ruelex/main.rue"
+question = "How does the compiler handle a small maintained compiler frontend?"
+
+[[workloads]]
+id = "mosaic"
+source = "examples/mosaic/main.rue"
+question = "How does compilation scale to a medium multi-module application?"
+
+[[workloads]]
+id = "harbor"
+source = "examples/harbor/main.rue"
+question = "How does compilation scale with a broad domain model and many analysis passes?"
+
+[[workloads]]
+id = "lattice"
+source = "examples/lattice/main.rue"
+question = "How does compilation scale to the largest maintained maturity rung in the scheduled curve?"

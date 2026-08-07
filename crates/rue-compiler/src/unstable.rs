@@ -1525,6 +1525,7 @@ pub struct SemanticManifestMetrics {
 }
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SemanticCfgMetrics {
+    pub functions_considered: usize,
     pub cfg_builds_attempted: usize,
     pub cfg_builds_succeeded: usize,
     pub cfg_builds_failed: usize,
@@ -1566,6 +1567,7 @@ impl SemanticMetrics {
                 analyses_invalidated: work.body_analysis.body_analyses_invalidated,
             },
             cfg: SemanticCfgMetrics {
+                functions_considered: work.cfg.functions_considered,
                 cfg_builds_attempted: work.cfg.cfg_builds_attempted,
                 cfg_builds_succeeded: work.cfg.cfg_builds_succeeded,
                 cfg_builds_failed: work.cfg.cfg_builds_failed,
