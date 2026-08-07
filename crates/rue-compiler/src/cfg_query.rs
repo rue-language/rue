@@ -797,12 +797,20 @@ fn materialize_and_build_cfg(
             body_span,
         } => {
             let mut slots = std::collections::BTreeMap::new();
-            for ty in collect_plan_types(owner, facts) {
-                let dependency = crate::type_queries::TypeQueryKey {
-                    ty: ty.clone(),
-                    configuration: key.configuration.clone(),
-                };
-                let terminal = context.query_registered(layouts, dependency)?;
+            let plan_types = collect_plan_types(owner, facts)
+                .into_iter()
+                .collect::<Vec<_>>();
+            let terminals = context.query_registered_batch(
+                layouts,
+                plan_types
+                    .iter()
+                    .cloned()
+                    .map(|ty| crate::type_queries::TypeQueryKey {
+                        ty,
+                        configuration: key.configuration.clone(),
+                    }),
+            )?;
+            for (ty, terminal) in plan_types.into_iter().zip(terminals) {
                 let QueryOutcome::Success(value) = terminal.outcome() else {
                     unreachable!("Layout publishes typed values")
                 };
@@ -823,12 +831,17 @@ fn materialize_and_build_cfg(
         }
     };
     let mut builtin_facts = Vec::with_capacity(facts.builtin_nominals.len());
-    for request in facts.builtin_nominals.iter() {
-        let dependency = crate::type_queries::TypeQueryKey {
-            ty: request.query_ty.clone(),
-            configuration: key.configuration.clone(),
-        };
-        let terminal = context.query_registered(type_facts, dependency)?;
+    let builtin_terminals = context.query_registered_batch(
+        type_facts,
+        facts
+            .builtin_nominals
+            .iter()
+            .map(|request| crate::type_queries::TypeQueryKey {
+                ty: request.query_ty.clone(),
+                configuration: key.configuration.clone(),
+            }),
+    )?;
+    for (request, terminal) in facts.builtin_nominals.iter().zip(builtin_terminals) {
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("TypeFacts publishes typed values")
         };
@@ -932,23 +945,24 @@ fn materialize_and_build_cfg(
         collect_type_dependencies(ty, &mut layout_dependencies);
         collect_drop_type_dependency(ty, &mut drop_dependencies);
     }
-    for ty in layout_dependencies {
-        context.query_registered(
-            layouts,
-            crate::type_queries::TypeQueryKey {
+    context.query_registered_batch(
+        layouts,
+        layout_dependencies
+            .into_iter()
+            .map(|ty| crate::type_queries::TypeQueryKey {
                 ty,
                 configuration: key.configuration.clone(),
-            },
-        )?;
-    }
-    for ty in drop_dependencies {
-        let dependency = crate::type_queries::TypeQueryKey {
+            }),
+    )?;
+    let drop_dependencies = drop_dependencies
+        .into_iter()
+        .map(|ty| crate::type_queries::TypeQueryKey {
             ty,
             configuration: key.configuration.clone(),
-        };
-        context.query_registered(type_facts, dependency.clone())?;
-        context.query_registered(drop_glues, dependency)?;
-    }
+        })
+        .collect::<Vec<_>>();
+    context.query_registered_batch(type_facts, drop_dependencies.iter().cloned())?;
+    context.query_registered_batch(drop_glues, drop_dependencies)?;
     build_cfg(context, call_abis, key, materialized, domains)
 }
 
@@ -1021,15 +1035,17 @@ fn build_cfg(
             ));
         }
     };
-    let mut call_abi_facts = std::collections::BTreeMap::new();
-    for callable in callables {
-        let terminal = context.query_registered(
-            call_abis,
-            crate::type_queries::CallAbiQueryKey {
+    let call_abi_terminals = context.query_registered_batch(
+        call_abis,
+        callables
+            .iter()
+            .map(|callable| crate::type_queries::CallAbiQueryKey {
                 callable: callable.clone(),
                 configuration: key.configuration.clone(),
-            },
-        )?;
+            }),
+    )?;
+    let mut call_abi_facts = std::collections::BTreeMap::new();
+    for (callable, terminal) in callables.into_iter().zip(call_abi_terminals) {
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("CallAbi publishes typed values")
         };
@@ -1151,9 +1167,10 @@ pub(crate) fn evaluate_optimized_cfg(
         .collect::<std::collections::BTreeSet<_>>();
     let mut implicit_destructor_dependencies_complete =
         record.implicit_destructor_dependencies_complete;
+    let accessor_terminals =
+        context.query_registered_batch(cfgs, key.accessor_dependencies.iter().cloned())?;
     let mut accessor_cfgs = std::collections::BTreeMap::new();
-    for dependency in key.accessor_dependencies.iter() {
-        let terminal = context.query_registered(cfgs, dependency.clone())?;
+    for (dependency, terminal) in key.accessor_dependencies.iter().zip(accessor_terminals) {
         let QueryOutcome::Success(value) = terminal.outcome() else {
             unreachable!("Cfg publishes typed values")
         };

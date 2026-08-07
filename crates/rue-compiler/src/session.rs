@@ -1454,6 +1454,41 @@ impl CompilerSession {
         });
         (owner_execution, joiner_execution)
     }
+
+    /// Gate the first `gated_children` production CodegenUnit evaluators in one
+    /// rooted batch and return their peak simultaneous occupancy.
+    #[cfg(test)]
+    pub(crate) fn exercise_codegen_batch_overlap_for_test(
+        &mut self,
+        options: &CompileOptions,
+        gated_children: usize,
+        rendezvous: bool,
+    ) -> (usize, usize) {
+        let gate = self
+            .queries
+            .revisioned
+            .arm_codegen_batch_evaluator_gate_for_test(gated_children, rendezvous);
+        if rendezvous {
+            std::thread::scope(|scope| {
+                let compilation = scope.spawn(|| {
+                    self.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())
+                });
+                let all_entered = gate.wait_until_all_entered_and_release();
+                compilation
+                    .join()
+                    .expect("CodegenUnit batch compilation did not panic")
+                    .expect("CodegenUnit batch fixture compiles successfully");
+                assert!(
+                    all_entered,
+                    "CodegenUnit evaluators did not reach the requested concurrent occupancy"
+                );
+            });
+        } else {
+            self.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())
+                .expect("CodegenUnit batch fixture compiles successfully");
+        }
+        (gate.peak(), gate.entered())
+    }
     /// Perturb one canonical observation for the in-tree differential oracle.
     #[doc(hidden)]
     pub(crate) fn inject_stale_query_for_oracle(
@@ -4901,41 +4936,84 @@ impl CompilerSession {
         let accessor_roots = accessor_subgraph.roots;
         let accessor_dependencies = accessor_subgraph.dependencies;
         let accessor_functions = accessor_subgraph.accessors;
-        let mut cfgs = Vec::with_capacity(cfg_inputs.len());
-        let mut backend_root = self.queries.revisioned.begin_backend_root();
-        #[cfg(test)]
-        self.rooted_cfg_executions.clear();
-        let _cfg_collection_span =
-            tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
-                .entered();
-        for (function, semantic_input, body_span) in cfg_inputs {
-            if accessor_functions.contains(&function) {
-                continue;
-            }
-            let (optimized_cfg_key, attempt) = self
-                .queries
-                .revisioned
-                .optimized_cfg(
-                    graph.revision,
+        let cfg_requests = cfg_inputs
+            .into_iter()
+            .filter(|(function, _, _)| !accessor_functions.contains(function))
+            .map(|(function, semantic_input, body_span)| {
+                let cfg = crate::cfg_query::CfgQueryKey::new(
                     function.clone(),
                     graph.configuration.clone(),
                     accessor_roots
                         .get(&function)
                         .map(|key| key.semantic_input.clone())
                         .unwrap_or(semantic_input),
+                );
+                let optimized_cfg_key = crate::cfg_query::OptimizedCfgQueryKey::new(
+                    cfg,
                     options.opt_level,
                     accessor_dependencies
                         .get(&function)
                         .cloned()
                         .unwrap_or_else(|| Arc::new([])),
-                    rue_query::CancellationToken::new(),
-                )
-                .map_err(|abort| {
-                    CompileError::without_span(ErrorKind::InternalError(format!(
-                        "optimized CFG query aborted: {abort:?}"
-                    )))
-                })?;
-            let execution = attempt.execution();
+                );
+                (function, optimized_cfg_key, body_span)
+            })
+            .collect::<Vec<_>>();
+        let optimized_keys = cfg_requests
+            .iter()
+            .map(|(_, key, _)| key.clone())
+            .collect::<Vec<_>>()
+            .into();
+        let mut cfgs = Vec::with_capacity(cfg_requests.len());
+        let mut backend_root = self.queries.revisioned.begin_backend_root();
+        #[cfg(test)]
+        self.rooted_cfg_executions.clear();
+        let _cfg_collection_span =
+            tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
+                .entered();
+        let (cfg_batch_key, attempt) = self.queries.revisioned.optimized_cfg_batch(
+            graph.revision,
+            optimized_keys,
+            rue_query::CancellationToken::new(),
+        );
+        let batch_execution = attempt.execution();
+        let executions = if batch_execution == rue_query::RequestExecution::Computed {
+            let executions = attempt
+                .nested_attempts()
+                .iter()
+                .filter(|attempt| attempt.node().family() == "compiler.optimized-cfg")
+                .map(rue_query::NestedQueryAttempt::execution)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                executions.len(),
+                cfg_requests.len(),
+                "an evaluated optimized-CFG batch records one direct child per key"
+            );
+            executions
+        } else {
+            vec![batch_execution; cfg_requests.len()]
+        };
+        if let Some(terminal) = attempt.terminal() {
+            self.queries.revisioned.retain_backend_optimized_cfg_batch(
+                &mut backend_root,
+                &cfg_batch_key,
+                terminal,
+            );
+        }
+        let batch = attempt.into_result().map_err(|abort| {
+            CompileError::without_span(ErrorKind::InternalError(format!(
+                "optimized CFG batch query aborted: {abort:?}"
+            )))
+        })?;
+        let rue_query::QueryOutcome::Success(batch) = batch.outcome() else {
+            unreachable!("OptimizedCfgBatch publishes typed values")
+        };
+        assert_eq!(batch.values.len(), cfg_requests.len());
+        for (((function, optimized_cfg_key, body_span), value), execution) in cfg_requests
+            .into_iter()
+            .zip(batch.values.iter())
+            .zip(executions)
+        {
             #[cfg(test)]
             self.rooted_cfg_executions
                 .push((function.clone(), execution));
@@ -4950,22 +5028,6 @@ impl CompilerSession {
                 }
                 rue_query::RequestExecution::Aborted => {}
             }
-            if let Some(terminal) = attempt.terminal() {
-                self.queries.revisioned.retain_backend_optimized_cfg(
-                    &mut backend_root,
-                    function.clone(),
-                    &optimized_cfg_key,
-                    terminal,
-                );
-            }
-            let terminal = attempt.into_result().map_err(|abort| {
-                CompileError::without_span(ErrorKind::InternalError(format!(
-                    "optimized CFG query aborted: {abort:?}"
-                )))
-            })?;
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("OptimizedCfg publishes typed values")
-            };
             let record = match value {
                 crate::cfg_query::CfgValue::Available(record) => {
                     if execution == rue_query::RequestExecution::Computed {
@@ -5059,8 +5121,19 @@ impl CompilerSession {
             mut backend_root,
         } = self.rooted_cfg(options)?;
 
+        let codegen_keys = cfgs
+            .iter()
+            .map(|cfg| {
+                crate::codegen_query::CodegenUnitQueryKey::new(
+                    cfg.optimized_cfg_key.clone(),
+                    options.target,
+                    request,
+                    options.opt_level,
+                )
+            })
+            .collect::<Vec<_>>()
+            .into();
         let mut units = Vec::with_capacity(cfgs.len());
-        let mut backend_root_keys = Vec::with_capacity(cfgs.len());
         #[cfg(test)]
         {
             self.codegen_executions.clear();
@@ -5069,51 +5142,66 @@ impl CompilerSession {
         }
         let _codegen_collection_span =
             tracing::info_span!("codegen_collection", phase = "backend").entered();
-        for cfg in &cfgs {
-            let attempt = self
-                .queries
-                .revisioned
-                .codegen_unit(
-                    graph.revision,
-                    cfg.optimized_cfg_key.clone(),
-                    options.target,
-                    request,
-                    options.opt_level,
-                    rue_query::CancellationToken::new(),
-                )
-                .map_err(|abort| {
-                    CompileError::without_span(ErrorKind::InternalError(format!(
-                        "codegen query aborted: {abort:?}"
-                    )))
-                })?;
+        let (codegen_batch_key, attempt) = self.queries.revisioned.codegen_unit_batch(
+            graph.revision,
+            codegen_keys,
+            rue_query::CancellationToken::new(),
+        );
+        #[cfg(test)]
+        let batch_execution = attempt.execution();
+        #[cfg(test)]
+        let child_attempts = if batch_execution == rue_query::RequestExecution::Computed {
+            let attempts = attempt
+                .nested_attempts()
+                .iter()
+                .filter(|attempt| attempt.node().family() == "compiler.codegen-unit")
+                .map(|attempt| (attempt.execution(), attempt.work().to_vec()))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                attempts.len(),
+                cfgs.len(),
+                "an evaluated CodegenUnit batch records one direct child per key"
+            );
+            Some(attempts)
+        } else {
+            None
+        };
+        if let Some(terminal) = attempt.terminal() {
+            self.queries.revisioned.retain_backend_codegen_batch(
+                &mut backend_root,
+                &codegen_batch_key,
+                terminal,
+            );
+        }
+        let batch = attempt.into_result().map_err(|abort| {
+            CompileError::without_span(ErrorKind::InternalError(format!(
+                "codegen batch query aborted: {abort:?}"
+            )))
+        })?;
+        let rue_query::QueryOutcome::Success(batch) = batch.outcome() else {
+            unreachable!("CodegenUnitBatch publishes typed terminals")
+        };
+        assert_eq!(batch.values.len(), cfgs.len());
+        for (index, (cfg, value)) in cfgs.iter().zip(batch.values.iter()).enumerate() {
+            #[cfg(not(test))]
+            let _ = index;
+            #[cfg(test)]
+            let execution = child_attempts
+                .as_ref()
+                .map_or(batch_execution, |attempts| attempts[index].0);
             #[cfg(test)]
             {
                 self.codegen_executions
-                    .push((cfg.function.clone(), attempt.execution()));
-                self.codegen_attempt_work
-                    .push((cfg.function.clone(), attempt.work().to_vec()));
+                    .push((cfg.function.clone(), execution));
+                self.codegen_attempt_work.push((
+                    cfg.function.clone(),
+                    child_attempts
+                        .as_ref()
+                        .map_or_else(Vec::new, |attempts| attempts[index].1.clone()),
+                ));
             }
-            if let Some(terminal) = attempt.terminal() {
-                self.queries
-                    .revisioned
-                    .retain_backend_codegen_unit(&mut backend_root, terminal);
-            }
-            let terminal = attempt.into_result().map_err(|abort| {
-                CompileError::without_span(ErrorKind::InternalError(format!(
-                    "codegen query aborted: {abort:?}"
-                )))
-            })?;
-            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                unreachable!("CodegenUnit publishes typed terminals")
-            };
             match value {
                 crate::codegen_query::CodegenUnitValue::Available(unit) => {
-                    backend_root_keys.push(crate::codegen_query::CodegenUnitQueryKey::new(
-                        cfg.optimized_cfg_key.clone(),
-                        options.target,
-                        request,
-                        options.opt_level,
-                    ));
                     units.push(crate::codegen_query::CollectedCodegenUnit {
                         function: cfg.function.clone(),
                         unit: unit.clone(),
@@ -5164,7 +5252,7 @@ impl CompilerSession {
             .collect();
         self.queries
             .revisioned
-            .publish_backend_root(graph.revision, backend_root, backend_root_keys.into())
+            .publish_backend_root(graph.revision, backend_root, codegen_batch_key)
             .map_err(|abort| {
                 CompileError::without_span(ErrorKind::InternalError(format!(
                     "backend root publication aborted: {abort:?}"
