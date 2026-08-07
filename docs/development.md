@@ -29,6 +29,7 @@ scripts/rue fmt                      # format first-party Rust
 scripts/rue storage status           # inventory Buck usage across worktrees
 scripts/rue storage plan             # dry-run host-wide stale cleanup
 scripts/rue storage clean            # remove stale Buck artifacts host-wide
+scripts/rue storage guard            # run the emergency low-disk preflight now
 ```
 
 For direct compiler invocations, resolve the binary through `scripts/rue-bin`:
