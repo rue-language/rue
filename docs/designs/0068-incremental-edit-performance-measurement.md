@@ -88,8 +88,9 @@ This ADR owns **retained-session edit performance**. One independent sample is:
 5. time canonical re-observation, successor publication, and compilation to the
    selected endpoint;
 6. collect structural work and retention gauges immediately at the endpoint;
-7. outside the timed interval, compile revision B in a fresh session and compare
-   diagnostics, warnings, and executable bytes when the scenario succeeds; and
+7. compare revision B with the exact fixture state's precomputed fresh-session
+   identity: diagnostics, warnings, and executable bytes when the scenario
+   succeeds; and
 8. discard the host and isolated fixture before the next independent sample.
 
 Operating-system page-cache and scheduler state are uncontrolled. Reports call
@@ -195,15 +196,27 @@ The initial report is lower-frequency and advisory. It publishes raw JSON plus a
 derived Markdown report as a workflow artifact; it does not append to
 ADR-0067's content-addressed history or dashboard.
 
-The initial suite declares two query-worker modes for every workload/scenario
-row: exactly one worker (`-j1`) and the production automatic setting (`-j0`).
-The raw observation records both the declared mode and the exact worker count
-to which automatic mode resolved. Neither lane may substitute for the other.
+The scheduled suite measures the production automatic worker setting (`-j0`)
+and records the exact worker count to which it resolved. Exactly-one-worker
+(`-j1`) runs remain useful focused diagnostics, but they are not part of the
+versioned reference-host report and cannot decide the linker gate.
 
-Each workload/scenario/worker row uses at least five independent sessions.
-Scenario order rotates deterministically between samples so one scenario does
-not always receive the same thermal position. The report retains every raw
-observation and shows median and median absolute deviation for each endpoint.
+Every workload/scenario row uses one independent session to prove its
+deterministic structural claim and warm/fresh equality. The reached body-only
+row uses five independent sessions because it is the latency and linker-
+decision row; the report derives its median and median absolute deviation from
+those five observations. Single-sample structural rows retain their raw timing
+as diagnostic context but are not statistical latency claims. Repeating their
+identical baseline setup five times adds collection cost without strengthening
+their deterministic counters or oracle result.
+
+Before collecting those sessions, the runner compiles each workload/scenario
+revision-B fixture state once in a fresh host and retains only its deterministic
+outcome identity. Every scheduled independent warm sample compares with that
+same exact oracle. Recompiling an identical deterministic oracle for every
+sample adds fresh-build cost without adding correctness evidence; oracle
+preparation remains outside all retained-session latency endpoints and is
+reported separately as collection overhead.
 
 Infrastructure invalidity and compiler divergence have opposite publication
 rules:
@@ -225,15 +238,20 @@ compiler correctness failure.
 ### 6. Long-edit retention row
 
 In addition to independent edit samples, the suite has one untimed or separately
-timed bounded-retention sequence on a representative multi-module fixture. It
-alternates a finite set of valid edits, errors, fixes, reachability additions,
-and deletions through at least 1,000 revisions. Before the sequence starts, the
-runner prepares one fresh oracle for every distinct fixture state; every warm
-success compares with the corresponding precomputed oracle without paying a
-fresh compile on each revision. The row asserts:
+timed bounded-retention sequence on a compact, dedicated multi-module fixture.
+Maintained-program scale belongs to the Mosaic and Lattice edit rows; repeating
+a medium maintained-program baseline 1,000 times does not strengthen the query-
+lifecycle claim. The compact sequence alternates the same finite set of valid
+edits, errors, fixes, reachability additions, and deletions through at least
+1,000 revisions. Before the sequence starts, the runner prepares one fresh
+oracle for every distinct fixture state; every warm success compares with the
+corresponding precomputed oracle without paying a fresh compile on each
+revision. The row asserts:
 
 - every successful warm result matches a fresh session;
 - canceled and failed revisions never publish a successful artifact;
+- the sequence causes at least one retained query-terminal eviction, proving
+  that it exercises cleanup rather than only remaining below every limit;
 - retained bytes and dependency observations respect the existing soft-budget
   and protected-overflow contract; and
 - after protection releases, retained gauges return within their configured
@@ -262,10 +280,21 @@ determinism, compaction, fallback, atomic publication, target runtime inputs,
 and signing. Failing the gate records a measured deferral and shifts effort to
 the dominant warm interval.
 
+Fixture revision 2 crossed the absolute reference-host gate in
+[run 31337749929](https://github.com/rue-language/rue/actions/runs/31337749929)
+at compiler commit `a9739f03381e3df2cf99a588c35600f7057db485`. The automatic-worker
+Lattice reached-body row used five independent samples and reported a median
+objects-ready-to-runnable interval of 204,341,060 ns (MAD 1,102,274 ns), or 109
+basis points (MAD 1) of the 18,788,578,912 ns median warm interval. It did not
+cross the combined 10-millisecond/20% rule, but it exceeded the independent
+20-millisecond rule by more than ten times. RUE-1096 therefore advances to
+linker ADR work; implementation remains unauthorized until that design is
+accepted.
+
 The versioned incremental manifest declares the reference-host identity and its
 required hardware, operating-system, target, and automatic-worker fingerprint.
 Only a matching host's automatic-worker Lattice row may decide the numerical
-gate; other hosts and the `-j1` lane remain valid diagnostic evidence.
+gate; other hosts and focused `-j1` runs remain valid diagnostic evidence.
 
 The numerical gate is a project-prioritization rule tied to that manifest's
 reference host and fixture revision, not a language guarantee or permanent user
@@ -321,8 +350,9 @@ projects. None may introduce a peer compilation path.
 - [x] **Phase 6: Product host.** Add and measure `rue --watch` on the same seam,
   including cancellation, error/fix, import-set, and atomic-publication tests. —
   RUE-1254
-- [ ] **Phase 7: Linker gate.** Record the Lattice decision result on RUE-1096
-  and either advance its ADR or explicitly defer it. — RUE-1096
+- [x] **Phase 7: Linker gate.** Fixture revision 2 measured a 204.34 ms median
+  Lattice fresh-link interval on the reference host, crossing the independent
+  20 ms gate and advancing RUE-1096 to ADR work. — RUE-1096
 
 ## Consequences
 
@@ -338,12 +368,14 @@ projects. None may introduce a peer compilation path.
 
 ### Negative
 
-- Independent retained-session samples repeatedly pay an untimed large-program
-  baseline, making the scheduled suite expensive.
+- Each retained-session sample pays an untimed large-program baseline. The
+  scheduled suite limits that repeated cost to the reached body-only latency
+  row while collecting structural rows once.
 - Exact source transformations create maintained fixture work whenever example
   programs change.
-- Five samples expose trends rather than laboratory-grade microbenchmark
-  certainty; very small endpoints still need focused local witnesses.
+- Five reached body-only samples expose trends rather than laboratory-grade
+  microbenchmark certainty; single-sample structural-row timings and very small
+  endpoints still need focused local witnesses.
 - Warm measurement adds a second report schema that must remain explicitly
   separate from the fresh-build system.
 

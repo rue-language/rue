@@ -7,9 +7,11 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use rue_compiler::unstable::{EndpointQueryWork, EndpointWork, MetricsSnapshot};
+use rue_compiler::unstable::{
+    EndpointQueryWork, EndpointWork, MetricsSnapshot, QueryRuntimeMetrics,
+};
 use rue_compiler::{CompileErrors, CompileOptions, CompileOutput, CompileWarning, OptLevel};
 use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
 use rue_perf_schema::{
@@ -99,6 +101,7 @@ impl FixtureManifest {
         let manifest_ids: Vec<_> = manifest
             .workloads
             .iter()
+            .chain(std::iter::once(&manifest.retention_workload))
             .map(|workload| &workload.id)
             .collect();
         if declared_ids != manifest_ids {
@@ -120,6 +123,7 @@ impl FixtureManifest {
             let manifest_workload = manifest
                 .workloads
                 .iter()
+                .chain(std::iter::once(&manifest.retention_workload))
                 .find(|entry| entry.id == workload.id)
                 .expect("workload ids were compared above");
             if source != Path::new(&manifest_workload.source) {
@@ -277,11 +281,47 @@ pub(crate) struct SampleRequest<'a> {
     pub sample_index: u32,
     pub session_id: String,
     pub collection_order: u32,
+    pub fresh_oracle: Option<&'a OutcomeIdentity>,
 }
 
 pub(crate) struct SampleObservation {
     pub shape: SourceShape,
     pub sample: EditSample,
+    collection_timing: CollectionTiming,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CollectionTiming {
+    setup_and_baseline: Duration,
+    warm: Duration,
+    fresh_oracle: Duration,
+    total: Duration,
+    query_runtime: QueryRuntimeMetrics,
+}
+
+impl CollectionTiming {
+    fn add(&mut self, other: Self) {
+        self.setup_and_baseline += other.setup_and_baseline;
+        self.warm += other.warm;
+        self.fresh_oracle += other.fresh_oracle;
+        self.total += other.total;
+        self.query_runtime.validation_memo_hits += other.query_runtime.validation_memo_hits;
+        self.query_runtime.validation_memo_misses += other.query_runtime.validation_memo_misses;
+        self.query_runtime.retention_enforcements += other.query_runtime.retention_enforcements;
+        self.query_runtime.retention_scan_entries += other.query_runtime.retention_scan_entries;
+    }
+
+    fn other(self) -> Duration {
+        self.total.saturating_sub(
+            self.setup_and_baseline
+                .saturating_add(self.warm)
+                .saturating_add(self.fresh_oracle),
+        )
+    }
+}
+
+fn elapsed_ms(duration: Duration) -> u128 {
+    duration.as_millis()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,22 +384,51 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
                     },
                     scenario: scenario.scenario,
                     worker_mode: worker.mode,
-                    samples: Vec::with_capacity(manifest.samples_per_row as usize),
+                    samples: Vec::with_capacity(manifest.samples_for(scenario.scenario) as usize),
                 });
             }
         }
     }
 
+    let collection_started = Instant::now();
+    let matrix_started = Instant::now();
+    let mut matrix_timing = CollectionTiming::default();
     let scenario_count = manifest.scenarios.len();
     for (workload_index, workload) in manifest.workloads.iter().enumerate() {
         let fixture = fixtures.workload(&workload.id);
         let fixture_root = options.repo_root.join(&fixture.fixture_root);
+        let oracle_started = Instant::now();
+        let fresh_oracles = manifest
+            .scenarios
+            .iter()
+            .map(|declaration| {
+                eprintln!(
+                    "rue-bench: preparing fresh oracle for {} {}",
+                    workload.id,
+                    declaration.scenario.wire_name()
+                );
+                fresh_fixture_identity(
+                    &fixture_root,
+                    &fixture.root_source,
+                    &fixture.overlays,
+                    options.std_root.as_deref(),
+                    &compile_options,
+                    Some(&fixture.edit(declaration.scenario)),
+                    declaration.expected_outcome,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        matrix_timing.fresh_oracle += oracle_started.elapsed();
         for (worker_index, worker) in manifest.workers.iter().enumerate() {
-            for sample_index in 0..manifest.samples_per_row {
+            for sample_index in 0..manifest.timing_samples_per_row {
                 for collection_order in 0..scenario_count {
                     let scenario_index =
                         (collection_order + sample_index as usize) % scenario_count;
                     let declaration = &manifest.scenarios[scenario_index];
+                    let sample_count = manifest.samples_for(declaration.scenario);
+                    if sample_index >= sample_count {
+                        continue;
+                    }
                     let operation = fixture.edit(declaration.scenario);
                     eprintln!(
                         "rue-bench: incremental {} {} {} sample {}/{}",
@@ -367,7 +436,7 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
                         declaration.scenario.wire_name(),
                         worker.mode.wire_name(),
                         sample_index + 1,
-                        manifest.samples_per_row
+                        sample_count
                     );
                     let observation = measure_sample(SampleRequest {
                         fixture_root: &fixture_root,
@@ -389,11 +458,44 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
                             sample_index
                         ),
                         collection_order: collection_order as u32,
+                        fresh_oracle: Some(&fresh_oracles[scenario_index]),
                     })?;
                     validate_structural_expectation(
                         declaration.scenario,
                         &observation.sample.work,
                     )?;
+                    eprintln!(
+                        "rue-bench: incremental {} {} {} sample {}/{} completed in {} ms \
+                         (setup+baseline {} ms, warm {} ms, fresh-oracle {} ms, other {} ms; \
+                         validation hits {}, misses {}; retention passes {}, scan entries {})",
+                        workload.id,
+                        declaration.scenario.wire_name(),
+                        worker.mode.wire_name(),
+                        sample_index + 1,
+                        sample_count,
+                        elapsed_ms(observation.collection_timing.total),
+                        elapsed_ms(observation.collection_timing.setup_and_baseline),
+                        elapsed_ms(observation.collection_timing.warm),
+                        elapsed_ms(observation.collection_timing.fresh_oracle),
+                        elapsed_ms(observation.collection_timing.other()),
+                        observation
+                            .collection_timing
+                            .query_runtime
+                            .validation_memo_hits,
+                        observation
+                            .collection_timing
+                            .query_runtime
+                            .validation_memo_misses,
+                        observation
+                            .collection_timing
+                            .query_runtime
+                            .retention_enforcements,
+                        observation
+                            .collection_timing
+                            .query_runtime
+                            .retention_scan_entries,
+                    );
+                    matrix_timing.add(observation.collection_timing);
                     let row_index = ((workload_index * scenario_count + scenario_index)
                         * manifest.workers.len())
                         + worker_index;
@@ -416,7 +518,18 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
         }
     }
 
+    eprintln!(
+        "rue-bench: incremental edit matrix completed in {} ms \
+         (sample totals: setup+baseline {} ms, warm {} ms, fresh-oracle {} ms, other {} ms)",
+        elapsed_ms(matrix_started.elapsed()),
+        elapsed_ms(matrix_timing.setup_and_baseline),
+        elapsed_ms(matrix_timing.warm),
+        elapsed_ms(matrix_timing.fresh_oracle),
+        elapsed_ms(matrix_timing.other()),
+    );
+
     eprintln!("rue-bench: incremental bounded-retention sequence");
+    let retention_started = Instant::now();
     let retention = collect_retention(
         &manifest,
         &fixtures,
@@ -424,6 +537,14 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
         options.std_root.as_deref(),
         &compile_options,
     )?;
+    eprintln!(
+        "rue-bench: incremental bounded-retention sequence completed in {} ms",
+        elapsed_ms(retention_started.elapsed())
+    );
+    eprintln!(
+        "rue-bench: incremental collection completed in {} ms",
+        elapsed_ms(collection_started.elapsed())
+    );
     let report = EditReport {
         schema_version: EDIT_REPORT_SCHEMA_VERSION,
         identity: EditReportIdentity {
@@ -437,7 +558,8 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
         regime: EditReportRegime {
             compiler_state: "retained_session".into(),
             os_page_cache: "uncontrolled".into(),
-            samples_per_row: manifest.samples_per_row,
+            timing_samples_per_row: manifest.timing_samples_per_row,
+            structural_samples_per_row: manifest.structural_samples_per_row,
             retention_revisions: manifest.retention_revisions,
             rotation: manifest.rotation,
             optimization: manifest.optimization,
@@ -559,6 +681,7 @@ pub(crate) fn write_validated_report(
 }
 
 pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObservation, String> {
+    let total_started = Instant::now();
     let resolved_workers = resolve_workers(request.worker_mode);
     rue_compiler::configure_thread_pool(resolved_workers as usize);
 
@@ -581,7 +704,11 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
     let one_shot = baseline.unstable_metrics();
     let shape = SourceShape {
         files: one_shot.files as u64,
-        modules: one_shot.parsed.modules_considered as u64,
+        // The accepted filesystem closure has one source file per Rue module.
+        // `modules_considered` is a work counter and may be zero when retained
+        // query terminals satisfy the baseline without running the retired
+        // whole-program parse projection.
+        modules: one_shot.files as u64,
         bytes: one_shot.bytes as u64,
         lines: one_shot.lines as u64,
         tokens: one_shot.tokens as u64,
@@ -589,6 +716,7 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
     };
 
     apply_operation(isolated.path(), request.operation)?;
+    let setup_and_baseline = total_started.elapsed();
     let started = Instant::now();
     warm.reobserve().map_err(source_load_error)?;
     warm.acquire_reached_toolchain_modules(request.options)
@@ -645,6 +773,10 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
         ),
     };
     let endpoint_metrics = warm.unstable_metrics();
+    let query_runtime = query_runtime_delta(
+        baseline_metrics.query_runtime(),
+        endpoint_metrics.query_runtime(),
+    );
     let work = structural_work(
         &baseline_metrics,
         &endpoint_metrics,
@@ -653,15 +785,31 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
     );
     let retention = retained_gauges(endpoint_metrics);
     let warm_identity = outcome_identity(&outcome);
+    let warm = match &outcome {
+        EditOutcome::Success { endpoints, .. } => Duration::from_nanos(endpoints.runnable_ready_ns),
+        EditOutcome::ExpectedDiagnostics {
+            diagnostics_ready_ns,
+            ..
+        } => Duration::from_nanos(*diagnostics_ready_ns),
+        EditOutcome::UnexpectedFailure { .. } => started.elapsed(),
+    };
 
-    // The correctness oracle owns a new session over revision B and is wholly
-    // outside the measured interval.
-    let mut fresh = open_host(&root, manifest.as_deref(), request.std_root)?;
-    fresh
-        .acquire_reached_toolchain_modules(request.options)
-        .map_err(source_load_error)?;
-    let fresh_identity = fresh_identity(&mut fresh, request.options, request.expected_outcome);
+    // The correctness oracle is wholly outside the measured interval. The
+    // report runner precomputes one fresh identity per exact fixture state;
+    // focused callers may still request an inline independent oracle.
+    let oracle_started = Instant::now();
+    let fresh_identity = match request.fresh_oracle {
+        Some(identity) => identity.clone(),
+        None => {
+            let mut fresh = open_host(&root, manifest.as_deref(), request.std_root)?;
+            fresh
+                .acquire_reached_toolchain_modules(request.options)
+                .map_err(source_load_error)?;
+            fresh_identity(&mut fresh, request.options, request.expected_outcome)
+        }
+    };
     let oracle = compare_identities(warm_identity, fresh_identity);
+    let fresh_oracle = oracle_started.elapsed();
 
     Ok(SampleObservation {
         shape,
@@ -676,7 +824,34 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
             retention,
             oracle,
         },
+        collection_timing: CollectionTiming {
+            setup_and_baseline,
+            warm,
+            fresh_oracle,
+            total: total_started.elapsed(),
+            query_runtime,
+        },
     })
+}
+
+fn query_runtime_delta(
+    before: QueryRuntimeMetrics,
+    after: QueryRuntimeMetrics,
+) -> QueryRuntimeMetrics {
+    QueryRuntimeMetrics {
+        validation_memo_hits: after
+            .validation_memo_hits
+            .saturating_sub(before.validation_memo_hits),
+        validation_memo_misses: after
+            .validation_memo_misses
+            .saturating_sub(before.validation_memo_misses),
+        retention_enforcements: after
+            .retention_enforcements
+            .saturating_sub(before.retention_enforcements),
+        retention_scan_entries: after
+            .retention_scan_entries
+            .saturating_sub(before.retention_scan_entries),
+    }
 }
 
 fn validate_structural_expectation(
@@ -777,10 +952,7 @@ fn collect_retention(
     std_root: Option<&Path>,
     options: &CompileOptions,
 ) -> Result<RetentionSequence, String> {
-    let workload = manifest
-        .workloads
-        .first()
-        .expect("the validated manifest has a workload");
+    let workload = &manifest.retention_workload;
     let fixture = fixtures.workload(&workload.id);
     let fixture_root = repo_root.join(&fixture.fixture_root);
     let resolved_workers = resolve_workers(WorkerMode::Automatic);
@@ -851,6 +1023,7 @@ fn collect_retention(
         .map_err(source_load_error)?;
     run_success(&mut warm, options)
         .map_err(|errors| format!("retention baseline did not compile: {errors}"))?;
+    let initial_query_evictions = warm.unstable_metrics().retention().query_evictions as u64;
 
     let mut revisions = Vec::with_capacity(manifest.retention_revisions as usize);
     for revision_index in 0..manifest.retention_revisions {
@@ -900,11 +1073,32 @@ fn collect_retention(
             )),
             retention: retained_gauges(warm.unstable_metrics()),
         });
+        let completed = revision_index + 1;
+        if completed % 100 == 0 || completed == manifest.retention_revisions {
+            let gauges = &revisions
+                .last()
+                .expect("the completed retention revision was just recorded")
+                .retention;
+            eprintln!(
+                "rue-bench: incremental bounded-retention revision {completed}/{} \
+                 (current {} bytes, peak {} bytes, observations {}/{})",
+                manifest.retention_revisions,
+                gauges.current_bytes,
+                gauges.peak_bytes,
+                gauges
+                    .dependency_observations
+                    .saturating_add(gauges.input_observations),
+                gauges.observation_budget,
+            );
+        }
     }
+    let query_evictions = (warm.unstable_metrics().retention().query_evictions as u64)
+        .saturating_sub(initial_query_evictions);
     Ok(RetentionSequence {
         workload: workload.id.clone(),
         worker_mode: WorkerMode::Automatic,
         resolved_workers,
+        query_evictions,
         revisions,
     })
 }
@@ -919,7 +1113,7 @@ fn fresh_fixture_identity(
     expected: ExpectedEditOutcome,
 ) -> Result<OutcomeIdentity, String> {
     let isolated = tempfile::tempdir()
-        .map_err(|error| format!("could not create fresh retention oracle: {error}"))?;
+        .map_err(|error| format!("could not create fresh fixture oracle: {error}"))?;
     copy_tree(fixture_root, isolated.path())?;
     apply_overlays(isolated.path(), overlays)?;
     if let Some(operation) = operation {
@@ -1356,6 +1550,24 @@ mod tests {
         OptimizationSetting, RetentionSequence, RotationRule,
     };
 
+    #[test]
+    fn collection_timing_attributes_only_time_outside_declared_stages() {
+        let timing = CollectionTiming {
+            setup_and_baseline: Duration::from_millis(20),
+            warm: Duration::from_millis(5),
+            fresh_oracle: Duration::from_millis(10),
+            total: Duration::from_millis(40),
+            query_runtime: QueryRuntimeMetrics::default(),
+        };
+        assert_eq!(timing.other(), Duration::from_millis(5));
+
+        let overlapping_clocks = CollectionTiming {
+            total: Duration::from_millis(1),
+            ..timing
+        };
+        assert_eq!(overlapping_clocks.other(), Duration::ZERO);
+    }
+
     fn fixture(source: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("main.rue"), source).unwrap();
@@ -1394,6 +1606,7 @@ mod tests {
             sample_index: 0,
             session_id: "test-session".into(),
             collection_order: 0,
+            fresh_oracle: None,
         }
     }
 
@@ -1423,14 +1636,59 @@ mod tests {
             observation.sample.oracle,
             OracleComparison::Matched { .. }
         ));
-        assert_eq!(observation.shape.files, 1);
+        assert!(
+            observation.shape.files > 0
+                && observation.shape.modules > 0
+                && observation.shape.bytes > 0
+                && observation.shape.lines > 0
+                && observation.shape.tokens > 0
+                && observation.shape.functions > 0,
+            "compiler-derived source shape must be complete: {:?}",
+            observation.shape
+        );
+    }
+
+    #[test]
+    fn successful_edit_accepts_a_precomputed_fresh_oracle() {
+        let fixture = fixture("fn main() -> i32 { 1 }\n");
+        let operation = EditOperation::Replace {
+            id: "body".into(),
+            logical_file: "main.rue".into(),
+            before: "{ 1 }".into(),
+            after: "{ 2 }".into(),
+        };
+        let options = CompileOptions::default();
+        let fresh_oracle = fresh_fixture_identity(
+            fixture.path(),
+            Path::new("main.rue"),
+            &[],
+            None,
+            &options,
+            Some(&operation),
+            ExpectedEditOutcome::Success,
+        )
+        .unwrap();
+        let mut request = request(
+            fixture.path(),
+            &operation,
+            &options,
+            ExpectedEditOutcome::Success,
+        );
+        request.fresh_oracle = Some(&fresh_oracle);
+
+        let observation = measure_sample(request).unwrap();
+
+        assert!(matches!(
+            observation.sample.oracle,
+            OracleComparison::Matched { .. }
+        ));
     }
 
     #[test]
     fn maintained_fixture_manifest_covers_the_exact_versioned_matrix() {
         let (manifest, fixtures) = maintained_fixtures();
         assert_eq!(fixtures.fixture_revision, manifest.fixture_revision);
-        assert_eq!(fixtures.workloads.len(), 2);
+        assert_eq!(fixtures.workloads.len(), 3);
         assert!(
             fixtures
                 .workload("mosaic")
@@ -1444,6 +1702,13 @@ mod tests {
                 .edit(EditScenario::ImportSet)
                 .id()
                 .starts_with("lattice-")
+        );
+        assert!(
+            fixtures
+                .workload("retention")
+                .edit(EditScenario::ReachedBodyOnly)
+                .id()
+                .starts_with("retention-")
         );
     }
 
@@ -1490,6 +1755,7 @@ mod tests {
                         declaration.scenario.wire_name()
                     ),
                     collection_order: 0,
+                    fresh_oracle: None,
                 })
                 .unwrap_or_else(|error| {
                     panic!(
@@ -1498,6 +1764,34 @@ mod tests {
                         declaration.scenario.wire_name()
                     )
                 });
+                eprintln!(
+                    "rue-bench: maintained fixture {} {} completed in {} ms \
+                     (setup+baseline {} ms, warm {} ms, fresh-oracle {} ms, other {} ms; \
+                     validation hits {}, misses {}; retention passes {}, scan entries {})",
+                    workload.id,
+                    declaration.scenario.wire_name(),
+                    elapsed_ms(observation.collection_timing.total),
+                    elapsed_ms(observation.collection_timing.setup_and_baseline),
+                    elapsed_ms(observation.collection_timing.warm),
+                    elapsed_ms(observation.collection_timing.fresh_oracle),
+                    elapsed_ms(observation.collection_timing.other()),
+                    observation
+                        .collection_timing
+                        .query_runtime
+                        .validation_memo_hits,
+                    observation
+                        .collection_timing
+                        .query_runtime
+                        .validation_memo_misses,
+                    observation
+                        .collection_timing
+                        .query_runtime
+                        .retention_enforcements,
+                    observation
+                        .collection_timing
+                        .query_runtime
+                        .retention_scan_entries,
+                );
                 assert!(matches!(
                     observation.sample.oracle,
                     OracleComparison::Matched { .. }
@@ -1505,6 +1799,55 @@ mod tests {
                 validate_structural_expectation(declaration.scenario, &observation.sample.work)
                     .unwrap();
             }
+        }
+    }
+
+    #[test]
+    #[ignore = "the full 1000-revision retention witness belongs to the slow measurement lane"]
+    fn maintained_retention_sequence_reaches_every_declared_state() {
+        let (mut manifest, fixtures) = maintained_fixtures();
+        manifest.retention_revisions = std::env::var("RUE_INCREMENTAL_TEST_RETENTION_REVISIONS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(16);
+        let options = CompileOptions {
+            target: manifest
+                .target
+                .parse()
+                .expect("manifest target is supported"),
+            ..CompileOptions::default()
+        };
+        let started = Instant::now();
+        let retention = collect_retention(
+            &manifest,
+            &fixtures,
+            Path::new("."),
+            Some(Path::new("std")),
+            &options,
+        )
+        .unwrap();
+        eprintln!(
+            "rue-bench: maintained retention diagnostic completed {} revisions with {} query \
+             evictions in {} ms",
+            retention.revisions.len(),
+            retention.query_evictions,
+            elapsed_ms(started.elapsed()),
+        );
+        assert_eq!(
+            retention.revisions.len(),
+            manifest.retention_revisions as usize
+        );
+        assert!(
+            retention
+                .revisions
+                .iter()
+                .all(|revision| matches!(revision.oracle, Some(OracleComparison::Matched { .. })))
+        );
+        if manifest.retention_revisions >= 1_000 {
+            assert!(
+                retention.query_evictions > 0,
+                "the full retention witness must exercise query cleanup"
+            );
         }
     }
 
@@ -1632,7 +1975,8 @@ mod tests {
             regime: EditReportRegime {
                 compiler_state: "retained_session".into(),
                 os_page_cache: "uncontrolled".into(),
-                samples_per_row: manifest.samples_per_row,
+                timing_samples_per_row: manifest.timing_samples_per_row,
+                structural_samples_per_row: manifest.structural_samples_per_row,
                 retention_revisions: manifest.retention_revisions,
                 rotation: RotationRule::LeftBySample,
                 optimization: OptimizationSetting::Default,
@@ -1640,9 +1984,10 @@ mod tests {
             },
             rows: Vec::new(),
             retention: RetentionSequence {
-                workload: "mosaic".into(),
-                worker_mode: WorkerMode::One,
+                workload: manifest.retention_workload.id.clone(),
+                worker_mode: WorkerMode::Automatic,
                 resolved_workers: 1,
+                query_evictions: 0,
                 revisions: Vec::new(),
             },
         };

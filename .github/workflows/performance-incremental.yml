@@ -23,7 +23,9 @@ concurrency:
 jobs:
   measure:
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    # A report that cannot finish within this bounded evidence window is itself
+    # too expensive to keep as a scheduled compiler-performance instrument.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v6
 

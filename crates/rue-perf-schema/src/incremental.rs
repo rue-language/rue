@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 1;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -66,7 +66,7 @@ impl EditScenario {
     }
 }
 
-/// The two worker modes every retained-session row must measure.
+/// Query-worker modes available to retained-session measurements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WorkerMode {
@@ -77,8 +77,11 @@ pub enum WorkerMode {
 }
 
 impl WorkerMode {
-    /// Canonical worker-mode order.
+    /// Canonical order of every supported worker mode.
     pub const ALL: [Self; 2] = [Self::One, Self::Automatic];
+
+    /// Worker modes retained by the scheduled reference-host report.
+    pub const SCHEDULED: [Self; 1] = [Self::Automatic];
 
     /// Stable display name.
     pub const fn wire_name(self) -> &'static str {
@@ -215,8 +218,10 @@ pub struct EditManifest {
     pub report_schema_version: u32,
     /// Revision of maintained-program edit fixtures.
     pub fixture_revision: u32,
-    /// Independent retained sessions per workload/scenario/worker row.
-    pub samples_per_row: u32,
+    /// Independent sessions for the latency/linker-decision scenario.
+    pub timing_samples_per_row: u32,
+    /// Independent sessions for deterministic structural-coverage scenarios.
+    pub structural_samples_per_row: u32,
     /// Revisions in the bounded long-edit sequence.
     pub retention_revisions: u32,
     /// Deterministic interleaving rule.
@@ -234,6 +239,8 @@ pub struct EditManifest {
     pub workers: Vec<WorkerDeclaration>,
     /// Maintained programs, in report order.
     pub workloads: Vec<EditWorkload>,
+    /// Compact multi-module workload used only by the long retention witness.
+    pub retention_workload: EditWorkload,
     /// Host allowed to decide the numerical linker gate.
     pub reference_host: ReferenceHost,
 }
@@ -266,7 +273,7 @@ impl EditManifest {
     /// Validate an already-deserialized manifest.
     pub fn validate(&self) -> Result<(), EditManifestError> {
         let fail = |detail: String| Err(EditManifestError { detail });
-        if self.schema_version != 1 {
+        if self.schema_version != 2 {
             return fail(format!(
                 "unsupported incremental manifest schema version {}",
                 self.schema_version
@@ -281,8 +288,13 @@ impl EditManifest {
         if self.fixture_revision == 0 {
             return fail("fixture revision must be nonzero".to_string());
         }
-        if self.samples_per_row < 5 {
-            return fail("retained-session rows require at least five samples".to_string());
+        if self.timing_samples_per_row < 5 {
+            return fail("retained-session timing rows require at least five samples".to_string());
+        }
+        if self.structural_samples_per_row != 1 {
+            return fail(
+                "deterministic structural-coverage rows require exactly one sample".to_string(),
+            );
         }
         if self.retention_revisions < 1_000 {
             return fail(
@@ -326,10 +338,10 @@ impl EditManifest {
         }
 
         let workers: Vec<_> = self.workers.iter().map(|entry| entry.mode).collect();
-        if workers != WorkerMode::ALL {
+        if workers != WorkerMode::SCHEDULED {
             return fail(format!(
                 "worker modes must be exactly {:?}, got {workers:?}",
-                WorkerMode::ALL
+                WorkerMode::SCHEDULED
             ));
         }
         for worker in &self.workers {
@@ -349,7 +361,11 @@ impl EditManifest {
             return fail("the incremental manifest declares no workloads".to_string());
         }
         let mut workload_ids = BTreeSet::new();
-        for workload in &self.workloads {
+        for workload in self
+            .workloads
+            .iter()
+            .chain(std::iter::once(&self.retention_workload))
+        {
             if workload.id.trim().is_empty() || !workload_ids.insert(&workload.id) {
                 return fail(format!(
                     "invalid or duplicate workload id {:?}",
@@ -398,6 +414,15 @@ impl EditManifest {
 
     fn workload(&self, id: &str) -> Option<&EditWorkload> {
         self.workloads.iter().find(|entry| entry.id == id)
+    }
+
+    /// Declared independent-session count for one scenario row.
+    pub fn samples_for(&self, scenario: EditScenario) -> u32 {
+        if scenario == EditScenario::ReachedBodyOnly {
+            self.timing_samples_per_row
+        } else {
+            self.structural_samples_per_row
+        }
     }
 }
 
@@ -770,8 +795,10 @@ pub struct EditReportRegime {
     pub compiler_state: String,
     /// Always `uncontrolled`.
     pub os_page_cache: String,
-    /// Manifest sampling count.
-    pub samples_per_row: u32,
+    /// Manifest sampling count for latency/linker-decision rows.
+    pub timing_samples_per_row: u32,
+    /// Manifest sampling count for deterministic structural rows.
+    pub structural_samples_per_row: u32,
     /// Manifest long-sequence revision count.
     pub retention_revisions: u32,
     /// Manifest rotation rule.
@@ -820,6 +847,8 @@ pub struct RetentionSequence {
     pub worker_mode: WorkerMode,
     /// Exact worker count used.
     pub resolved_workers: u32,
+    /// Lifetime query terminals evicted during this sequence.
+    pub query_evictions: u64,
     /// Ordered revision observations.
     pub revisions: Vec<RetentionStep>,
 }
@@ -1052,7 +1081,8 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
     let regime = &report.regime;
     if regime.compiler_state != "retained_session"
         || regime.os_page_cache != "uncontrolled"
-        || regime.samples_per_row != manifest.samples_per_row
+        || regime.timing_samples_per_row != manifest.timing_samples_per_row
+        || regime.structural_samples_per_row != manifest.structural_samples_per_row
         || regime.retention_revisions != manifest.retention_revisions
         || regime.rotation != manifest.rotation
         || regime.optimization != manifest.optimization
@@ -1130,7 +1160,7 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
                 "revision-A source shape changed within a workload",
             ));
         }
-        if row.samples.len() != manifest.samples_per_row as usize {
+        if row.samples.len() != manifest.samples_for(row.scenario) as usize {
             errors.push(finding(
                 &row_path,
                 "row has the wrong number of independent samples",
@@ -1300,10 +1330,10 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
     }
 
     let sequence = &report.retention;
-    if manifest.workload(&sequence.workload).is_none() {
+    if sequence.workload != manifest.retention_workload.id {
         errors.push(finding(
             "retention.workload",
-            "retention row names an unknown workload",
+            "retention row differs from the manifest's dedicated workload",
         ));
     }
     if sequence.worker_mode != WorkerMode::Automatic
@@ -1320,6 +1350,12 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
         errors.push(finding(
             "retention.revisions",
             "retention row has the wrong revision count",
+        ));
+    }
+    if sequence.query_evictions == 0 {
+        errors.push(finding(
+            "retention.query_evictions",
+            "long retention sequence did not exercise query eviction",
         ));
     }
     for (position, step) in sequence.revisions.iter().enumerate() {
@@ -1451,6 +1487,8 @@ pub struct EditRowSummary {
     pub scenario: EditScenario,
     /// Worker mode.
     pub worker_mode: WorkerMode,
+    /// Number of independent sessions summarized by this row.
+    pub sample_count: u32,
     /// Diagnostics-ready timing for the error row.
     pub diagnostics_ready_ns: Option<EndpointSummary>,
     /// Codegen-ready timing for successful rows.
@@ -1485,6 +1523,8 @@ pub struct EditSummary {
     pub divergences: Vec<ValidationFinding>,
     /// Number of long-sequence revisions.
     pub retention_revisions: u32,
+    /// Query terminals evicted during the long sequence.
+    pub retention_query_evictions: u64,
     /// Maximum current retained charge in the long sequence.
     pub retention_max_current_bytes: u64,
     /// Maximum peak retained charge in the long sequence.
@@ -1579,6 +1619,7 @@ pub fn derive_edit_report(
                     workload: row.workload.clone(),
                     scenario: row.scenario,
                     worker_mode: row.worker_mode,
+                    sample_count: row.samples.len() as u32,
                     diagnostics_ready_ns: (!diagnostics.is_empty())
                         .then(|| summarize(&diagnostics)),
                     codegen_ready_ns: (!codegen.is_empty()).then(|| summarize(&codegen)),
@@ -1616,7 +1657,7 @@ pub fn derive_edit_report(
         .map(|step| step.retention.current_bytes)
         .unwrap_or(0);
     Ok(EditSummary {
-        schema_version: 1,
+        schema_version: 2,
         fixture_revision: report.identity.fixture_revision,
         commit: report.identity.commit.clone(),
         target: report.identity.target.clone(),
@@ -1624,6 +1665,7 @@ pub fn derive_edit_report(
         rows,
         divergences: validation.divergences,
         retention_revisions: report.retention.revisions.len() as u32,
+        retention_query_evictions: report.retention.query_evictions,
         retention_max_current_bytes,
         retention_peak_bytes,
         retention_final_bytes,
@@ -1648,9 +1690,9 @@ pub fn render_edit_report_markdown(summary: &EditSummary) -> String {
         }
         out.push('\n');
     } else {
-        out.push_str("| workload | scenario | workers | diagnostics ns | codegen ns | objects ns | runnable ns | link ns | link bp | computed | reused |\n");
+        out.push_str("| workload | scenario | workers | n | diagnostics ns | codegen ns | objects ns | runnable ns | link ns | link bp | computed | reused |\n");
         out.push_str(
-            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
         );
         for row in &summary.rows {
             let value = |summary: &Option<EndpointSummary>| {
@@ -1675,10 +1717,11 @@ pub fn render_edit_report_markdown(summary: &EditSummary) -> String {
                 })
                 .unwrap_or_else(|| "—".to_string());
             out.push_str(&format!(
-                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ± {} | {} ± {} |\n",
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ± {} | {} ± {} |\n",
                 row.workload,
                 row.scenario.wire_name(),
                 row.worker_mode.wire_name(),
+                row.sample_count,
                 value(&row.diagnostics_ready_ns),
                 value(&row.codegen_ready_ns),
                 value(&row.objects_ready_ns),
@@ -1694,8 +1737,9 @@ pub fn render_edit_report_markdown(summary: &EditSummary) -> String {
         out.push('\n');
     }
     out.push_str(&format!(
-        "Retention sequence: {} revisions; max current {} bytes; peak {} bytes; final {} bytes.\n",
+        "Retention sequence: {} revisions; {} query evictions; max current {} bytes; peak {} bytes; final {} bytes.\n",
         summary.retention_revisions,
+        summary.retention_query_evictions,
         summary.retention_max_current_bytes,
         summary.retention_peak_bytes,
         summary.retention_final_bytes,
@@ -1710,10 +1754,11 @@ mod tests {
     const CHECKED_IN_MANIFEST: &str = include_str!("incremental.toml");
 
     const MANIFEST: &str = r#"
-schema_version = 1
-report_schema_version = 1
+schema_version = 2
+report_schema_version = 2
 fixture_revision = 3
-samples_per_row = 5
+timing_samples_per_row = 5
+structural_samples_per_row = 1
 retention_revisions = 1000
 rotation = "left_by_sample"
 target = "x86-64-linux"
@@ -1754,9 +1799,6 @@ expected_outcome = "diagnostics"
 structural_claim = "only the diagnostic cone recomputes"
 
 [[workers]]
-mode = "one"
-compiler_arg = "-j1"
-[[workers]]
 mode = "automatic"
 compiler_arg = "-j0"
 
@@ -1768,6 +1810,11 @@ question = "medium maintained program"
 id = "lattice"
 source = "examples/lattice/main.rue"
 question = "largest maintained program"
+
+[retention_workload]
+id = "retention"
+source = "performance/fixtures/incremental-retention/main.rue"
+question = "compact multi-module long-edit retention witness"
 
 [reference_host]
 target = "x86-64-linux"
@@ -1908,7 +1955,7 @@ minimum_memory_bytes = 15000000000
                         },
                         scenario: scenario.scenario,
                         worker_mode: worker.mode,
-                        samples: (0..manifest.samples_per_row)
+                        samples: (0..manifest.samples_for(scenario.scenario))
                             .map(|index| {
                                 sample(
                                     scenario.scenario,
@@ -1937,7 +1984,8 @@ minimum_memory_bytes = 15000000000
             regime: EditReportRegime {
                 compiler_state: "retained_session".to_string(),
                 os_page_cache: "uncontrolled".to_string(),
-                samples_per_row: manifest.samples_per_row,
+                timing_samples_per_row: manifest.timing_samples_per_row,
+                structural_samples_per_row: manifest.structural_samples_per_row,
                 retention_revisions: manifest.retention_revisions,
                 rotation: manifest.rotation,
                 optimization: manifest.optimization,
@@ -1945,9 +1993,10 @@ minimum_memory_bytes = 15000000000
             },
             rows,
             retention: RetentionSequence {
-                workload: "mosaic".to_string(),
+                workload: manifest.retention_workload.id.clone(),
                 worker_mode: WorkerMode::Automatic,
                 resolved_workers: 4,
+                query_evictions: 12,
                 revisions: (0..manifest.retention_revisions)
                     .map(|index| RetentionStep {
                         revision_index: index,
@@ -1970,16 +2019,21 @@ minimum_memory_bytes = 15000000000
     fn parses_the_versioned_adr_0068_manifest() {
         let manifest = EditManifest::parse(CHECKED_IN_MANIFEST).unwrap();
         assert_eq!(manifest.scenarios.len(), 8);
-        assert_eq!(manifest.workers.len(), 2);
-        assert_eq!(manifest.samples_per_row, 5);
+        assert_eq!(manifest.workers.len(), 1);
+        assert_eq!(manifest.workers[0].mode, WorkerMode::Automatic);
+        assert_eq!(manifest.timing_samples_per_row, 5);
+        assert_eq!(manifest.structural_samples_per_row, 1);
+        assert_eq!(manifest.samples_for(EditScenario::ReachedBodyOnly), 5);
+        assert_eq!(manifest.samples_for(EditScenario::LayoutAbi), 1);
         assert_eq!(manifest.retention_revisions, 1_000);
+        assert_eq!(manifest.retention_workload.id, "retention");
     }
 
     #[test]
     fn manifest_rejects_unknown_fields_and_incomplete_matrixes() {
         let unknown = MANIFEST.replacen(
-            "schema_version = 1",
-            "schema_version = 1\nsurprise = true",
+            "schema_version = 2",
+            "schema_version = 2\nsurprise = true",
             1,
         );
         assert!(
@@ -2010,8 +2064,15 @@ minimum_memory_bytes = 15000000000
         let first = derive_edit_report(&manifest, &report).unwrap();
         let second = derive_edit_report(&manifest, &report).unwrap();
         assert_eq!(first, second);
-        assert_eq!(first.rows.len(), 32);
+        assert_eq!(first.rows.len(), 16);
+        assert_eq!(
+            first.rows.iter().map(|row| row.sample_count).sum::<u32>(),
+            24
+        );
+        assert_eq!(first.schema_version, 2);
         assert!(first.reference_host_eligible);
+        assert_eq!(first.retention_query_evictions, 12);
+        assert!(render_edit_report_markdown(&first).contains("12 query evictions"));
         assert_eq!(
             render_edit_report_markdown(&first),
             render_edit_report_markdown(&second)
@@ -2030,7 +2091,7 @@ minimum_memory_bytes = 15000000000
 
         let mut malformed = report(&manifest);
         let sample = &mut malformed.rows[0].samples[0];
-        sample.resolved_workers = 2;
+        sample.resolved_workers = 0;
         if let EditOutcome::Success { endpoints, .. } = &mut sample.outcome {
             endpoints.objects_ready_ns = endpoints.codegen_ready_ns - 1;
         }
@@ -2039,7 +2100,7 @@ minimum_memory_bytes = 15000000000
             validation
                 .errors
                 .iter()
-                .any(|error| error.detail.contains("one-worker"))
+                .any(|error| error.detail.contains("automatic-worker"))
         );
         assert!(
             validation
@@ -2064,6 +2125,16 @@ minimum_memory_bytes = 15000000000
                 .any(|error| error.detail.contains("detected parallelism"))
         );
 
+        let mut no_cleanup = report(&manifest);
+        no_cleanup.retention.query_evictions = 0;
+        let validation = validate_edit_report(&manifest, &no_cleanup);
+        assert!(
+            validation
+                .errors
+                .iter()
+                .any(|error| error.detail.contains("did not exercise query eviction"))
+        );
+
         let mut overflowed = report(&manifest);
         let work = &mut overflowed.rows[0].samples[0].work;
         work.source_observation.computed = u64::MAX;
@@ -2078,8 +2149,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":1",
-            "\"schema_version\":1,\"surprise\":true",
+            "\"schema_version\":2",
+            "\"schema_version\":2,\"surprise\":true",
             1,
         );
         assert!(

@@ -126,6 +126,14 @@ pub struct FrontendRetentionMetrics {
     pub diagnostic_source_bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FrontendRuntimeMetrics {
+    pub(crate) validation_memo_hits: u64,
+    pub(crate) validation_memo_misses: u64,
+    pub(crate) retention_enforcements: u64,
+    pub(crate) retention_scan_entries: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompilerSessionWork {
     pub updates: usize,
@@ -157,6 +165,7 @@ pub struct CompilerSessionWork {
     pub declaration_reuse_fallbacks: usize,
     /// Current bounded-retention gauges for long-lived service integrations.
     pub retention: FrontendRetentionMetrics,
+    pub(crate) runtime: FrontendRuntimeMetrics,
 }
 
 trait SessionQueryMetricsFamily {
@@ -543,6 +552,10 @@ impl CompilerSessionMetrics {
 
     fn set_retention(&mut self, retention: FrontendRetentionMetrics) {
         self.aggregate.retention = retention;
+    }
+
+    fn set_runtime(&mut self, runtime: FrontendRuntimeMetrics) {
+        self.aggregate.runtime = runtime;
     }
 }
 
@@ -3277,6 +3290,12 @@ impl CompilerSession {
             diagnostic_entries: diagnostics.entries,
             diagnostic_source_attempts: diagnostics.source_attempts,
             diagnostic_source_bytes: diagnostics.source_bytes,
+        });
+        self.metrics.set_runtime(FrontendRuntimeMetrics {
+            validation_memo_hits: runtime.validation_memo_hits,
+            validation_memo_misses: runtime.validation_memo_misses,
+            retention_enforcements: runtime.retention_enforcements,
+            retention_scan_entries: runtime.retention_scan_entries,
         });
     }
 
