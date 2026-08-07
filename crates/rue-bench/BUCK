@@ -6,7 +6,9 @@ load("//crates:defs.bzl", "rue_binary")
 rue_binary(
     name = "rue-bench",
     deps = [
+        "//crates/rue-compiler:rue-compiler",
         "//crates/rue-perf-schema:rue-perf-schema",
+        "//crates/rue:rue-driver",
         "//third-party:libc",
         "//third-party:serde",
         "//third-party:serde_json",

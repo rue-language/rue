@@ -15,6 +15,10 @@
 mod calibrate;
 mod derive;
 mod environment;
+// Phase 3 supplies the canonical engine; Phase 4's maintained fixture matrix
+// wires it to the binary entry point.
+#[allow(dead_code)]
+mod incremental;
 mod measure;
 mod pins;
 mod scaling;

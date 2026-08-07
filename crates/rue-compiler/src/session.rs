@@ -40,6 +40,28 @@ pub struct FrontendQueryWork {
     pub reuses: usize,
 }
 
+/// Aggregate lifecycle work for one collection of per-function backend
+/// queries. The aggregate deliberately omits query keys and artifacts so an
+/// external metrics consumer cannot become a second query-graph owner.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BackendQueryWork {
+    pub(crate) computed: usize,
+    pub(crate) reused: usize,
+    pub(crate) joined: usize,
+    pub(crate) canceled: usize,
+}
+
+impl BackendQueryWork {
+    fn observe(&mut self, execution: rue_query::RequestExecution) {
+        match execution {
+            rue_query::RequestExecution::Computed => self.computed += 1,
+            rue_query::RequestExecution::Reused => self.reused += 1,
+            rue_query::RequestExecution::Joined => self.joined += 1,
+            rue_query::RequestExecution::Aborted => self.canceled += 1,
+        }
+    }
+}
+
 /// Session-owned indexed historical artifacts retained after the latest query.
 ///
 /// These are gauges, not cumulative work counters. Caller-owned
@@ -880,6 +902,7 @@ pub(crate) struct RootedCfgOutput {
     pub(crate) cfgs: Vec<RootedCfgUnit>,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) work: crate::CanonicalSemanticWork,
+    backend_work: BackendQueryWork,
     backend_root: crate::revisioned_query_database::BackendRootCandidate,
 }
 
@@ -891,6 +914,9 @@ pub(crate) struct RootedCodegenOutput {
     pub(crate) exports: Vec<crate::program_image_plan::RootedExportThunk>,
     pub(crate) warnings: Vec<CompileWarning>,
     pub(crate) work: crate::CanonicalSemanticWork,
+    pub(crate) cfg_work: BackendQueryWork,
+    pub(crate) codegen_work: BackendQueryWork,
+    pub(crate) object_projection_work: BackendQueryWork,
 }
 
 /// Opaque in-crate continuation between the canonical codegen-ready and
@@ -903,6 +929,8 @@ pub(crate) struct RootedCodegenReadyOutput {
     cfgs: Vec<RootedCfgUnit>,
     warnings: Vec<CompileWarning>,
     work: crate::CanonicalSemanticWork,
+    pub(crate) cfg_work: BackendQueryWork,
+    pub(crate) codegen_work: BackendQueryWork,
     backend_root: crate::revisioned_query_database::BackendRootCandidate,
     codegen_batch_key: crate::revisioned_query_database::CodegenUnitBatchKey,
 }
@@ -5020,6 +5048,10 @@ impl CompilerSession {
         } else {
             vec![batch_execution; cfg_requests.len()]
         };
+        let mut backend_work = BackendQueryWork::default();
+        for execution in &executions {
+            backend_work.observe(*execution);
+        }
         if let Some(terminal) = attempt.terminal() {
             self.queries.revisioned.retain_backend_optimized_cfg_batch(
                 &mut backend_root,
@@ -5131,6 +5163,7 @@ impl CompilerSession {
             cfgs,
             warnings,
             work,
+            backend_work,
             backend_root,
         })
     }
@@ -5156,6 +5189,7 @@ impl CompilerSession {
             cfgs,
             warnings,
             work,
+            backend_work: cfg_work,
             mut backend_root,
         } = self.rooted_cfg(options)?;
 
@@ -5187,15 +5221,13 @@ impl CompilerSession {
             codegen_keys,
             rue_query::CancellationToken::new(),
         );
-        #[cfg(test)]
         let batch_execution = attempt.execution();
-        #[cfg(test)]
         let child_attempts = if batch_execution == rue_query::RequestExecution::Computed {
             let attempts = attempt
                 .nested_attempts()
                 .iter()
                 .filter(|attempt| attempt.node().family() == "compiler.codegen-unit")
-                .map(|attempt| (attempt.execution(), attempt.work().to_vec()))
+                .map(rue_query::NestedQueryAttempt::execution)
                 .collect::<Vec<_>>();
             assert_eq!(
                 attempts.len(),
@@ -5206,6 +5238,20 @@ impl CompilerSession {
         } else {
             None
         };
+        #[cfg(test)]
+        let child_attempt_work = if batch_execution == rue_query::RequestExecution::Computed {
+            Some(
+                attempt
+                    .nested_attempts()
+                    .iter()
+                    .filter(|attempt| attempt.node().family() == "compiler.codegen-unit")
+                    .map(|attempt| attempt.work().to_vec())
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
+        let mut codegen_work = BackendQueryWork::default();
         if let Some(terminal) = attempt.terminal() {
             self.queries.revisioned.retain_backend_codegen_batch(
                 &mut backend_root,
@@ -5223,21 +5269,19 @@ impl CompilerSession {
         };
         assert_eq!(batch.values.len(), cfgs.len());
         for (index, (cfg, value)) in cfgs.iter().zip(batch.values.iter()).enumerate() {
-            #[cfg(not(test))]
-            let _ = index;
-            #[cfg(test)]
             let execution = child_attempts
                 .as_ref()
-                .map_or(batch_execution, |attempts| attempts[index].0);
+                .map_or(batch_execution, |attempts| attempts[index]);
+            codegen_work.observe(execution);
             #[cfg(test)]
             {
                 self.codegen_executions
                     .push((cfg.function.clone(), execution));
                 self.codegen_attempt_work.push((
                     cfg.function.clone(),
-                    child_attempts
+                    child_attempt_work
                         .as_ref()
-                        .map_or_else(Vec::new, |attempts| attempts[index].1.clone()),
+                        .map_or_else(Vec::new, |attempts| attempts[index].clone()),
                 ));
             }
             match value {
@@ -5263,6 +5307,8 @@ impl CompilerSession {
             cfgs,
             warnings,
             work,
+            cfg_work,
+            codegen_work,
             backend_root,
             codegen_batch_key,
         })
@@ -5280,6 +5326,8 @@ impl CompilerSession {
             cfgs,
             warnings,
             work,
+            cfg_work,
+            codegen_work,
             mut backend_root,
             codegen_batch_key,
         } = ready;
@@ -5295,9 +5343,7 @@ impl CompilerSession {
             object_keys,
             rue_query::CancellationToken::new(),
         );
-        #[cfg(test)]
         let object_batch_execution = object_attempt.execution();
-        #[cfg(test)]
         let object_child_attempts =
             if object_batch_execution == rue_query::RequestExecution::Computed {
                 let attempts = object_attempt
@@ -5315,6 +5361,7 @@ impl CompilerSession {
             } else {
                 None
             };
+        let mut object_projection_work = BackendQueryWork::default();
         if let Some(terminal) = object_attempt.terminal() {
             self.queries
                 .revisioned
@@ -5336,15 +5383,13 @@ impl CompilerSession {
         let mut objects = Vec::with_capacity(units.len());
         for (index, (collected, value)) in units.iter().zip(object_batch.values.iter()).enumerate()
         {
-            #[cfg(not(test))]
-            let _ = index;
+            let execution = object_child_attempts
+                .as_ref()
+                .map_or(object_batch_execution, |attempts| attempts[index]);
+            object_projection_work.observe(execution);
             #[cfg(test)]
-            self.object_projection_executions.push((
-                collected.function.clone(),
-                object_child_attempts
-                    .as_ref()
-                    .map_or(object_batch_execution, |attempts| attempts[index]),
-            ));
+            self.object_projection_executions
+                .push((collected.function.clone(), execution));
             match value {
                 crate::object_query::ObjectProjectionValue::Available(object) => {
                     objects.push(crate::object_query::CollectedObjectProjection {
@@ -5410,6 +5455,9 @@ impl CompilerSession {
             exports,
             warnings,
             work,
+            cfg_work,
+            codegen_work,
+            object_projection_work,
         })
     }
 

@@ -74,6 +74,12 @@ impl FilesystemCompilerHost {
         &self.state.resolution.context
     }
 
+    /// Return owned unstable instrumentation without exposing the retained
+    /// session or any query artifacts.
+    pub fn unstable_metrics(&self) -> rue_compiler::unstable::MetricsSnapshot {
+        self.state.session.unstable_metrics()
+    }
+
     /// Query RIR through the retained session for the CLI presentation path.
     pub fn rir(&mut self) -> MultiErrorResult<std::sync::Arc<RirView>> {
         self.state.session.rir()
