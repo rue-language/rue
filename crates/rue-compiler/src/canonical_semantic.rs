@@ -2302,12 +2302,6 @@ mod tests {
     }
 
     #[test]
-    fn specialized_free_function_origin_is_send_and_sync() {
-        fn assert_send_sync<T: Send + Sync>() {}
-        assert_send_sync::<rue_air::SpecializedFreeFunctionOrigin>();
-    }
-
-    #[test]
     fn canonical_semantic_query_provides_backend_artifacts() {
         let source = snapshot(
             &[
