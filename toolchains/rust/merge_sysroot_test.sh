@@ -8,26 +8,27 @@ test_root=$(mktemp -d "${TMPDIR:-/tmp}/rue-merge-sysroot.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 
 producer="$test_root/original/producer"
-dist="$producer/dist"
+rustc_dist="$producer/rustc-dist"
+std_dist="$producer/std-dist"
 sysroot="$producer/sysroot"
 
 mkdir -p \
-    "$dist/rustc/bin" \
-    "$dist/rustc/libexec" \
-    "$dist/rustc/lib/rustlib/etc" \
-    "$dist/rustc/lib/rustlib/$triple/bin" \
-    "$dist/rust-std-$triple/lib/rustlib/$triple/lib"
+    "$rustc_dist/rustc/bin" \
+    "$rustc_dist/rustc/libexec" \
+    "$rustc_dist/rustc/lib/rustlib/etc" \
+    "$rustc_dist/rustc/lib/rustlib/$triple/bin" \
+    "$std_dist/rust-std-$triple/lib/rustlib/$triple/lib"
 
-printf 'rustc\n' > "$dist/rustc/bin/rustc"
-printf 'rustdoc\n' > "$dist/rustc/bin/rustdoc"
-printf 'libexec\n' > "$dist/rustc/libexec/rust-analyzer-proc-macro-srv"
-printf 'compiler dylib\n' > "$dist/rustc/lib/librustc_driver.fake"
-printf 'debugger helpers\n' > "$dist/rustc/lib/rustlib/etc/gdb_load_rust_pretty_printers.py"
-printf 'linker\n' > "$dist/rustc/lib/rustlib/$triple/bin/rust-lld"
+printf 'rustc\n' > "$rustc_dist/rustc/bin/rustc"
+printf 'rustdoc\n' > "$rustc_dist/rustc/bin/rustdoc"
+printf 'libexec\n' > "$rustc_dist/rustc/libexec/rust-analyzer-proc-macro-srv"
+printf 'compiler dylib\n' > "$rustc_dist/rustc/lib/librustc_driver.fake"
+printf 'debugger helpers\n' > "$rustc_dist/rustc/lib/rustlib/etc/gdb_load_rust_pretty_printers.py"
+printf 'linker\n' > "$rustc_dist/rustc/lib/rustlib/$triple/bin/rust-lld"
 printf 'standard library\n' > \
-    "$dist/rust-std-$triple/lib/rustlib/$triple/lib/libstd.fake.rlib"
+    "$std_dist/rust-std-$triple/lib/rustlib/$triple/lib/libstd.fake.rlib"
 
-/bin/bash "$merge_script" "$dist" "$sysroot" "$triple"
+/bin/bash "$merge_script" "$rustc_dist" "$std_dist" "$sysroot" "$triple"
 
 assert_relative_link() {
     local path=$1

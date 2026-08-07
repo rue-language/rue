@@ -1,9 +1,11 @@
 # Hermetic Rust toolchain configuration
 #
-# Downloads prebuilt Rust toolchains for reproducible builds.
-# The toolchain includes rustc, cargo, rust-lld, and the standard library.
+# Downloads only the prebuilt Rust components Rue uses: rustc/rustdoc and
+# rust-lld, the standard library, Clippy, and rustfmt. The monolithic Rust
+# archive also contains Cargo, rust-analyzer, LLVM tools, and large documentation
+# trees; materializing those unused payloads in every worktree is wasteful.
 
-load(":defs.bzl", "RUST_VERSION", "RUST_RELEASES", "RUST_STD_RELEASES", "hermetic_rust_toolchain", "rustfmt", "host_rustfmt")
+load(":defs.bzl", "RUST_VERSION", "RUST_STD_RELEASES", "hermetic_rust_toolchain", "rust_host_archives", "rustfmt", "host_rustfmt")
 load("@root//:test_defs.bzl", "rue_sh_test")
 
 export_file(
@@ -17,49 +19,14 @@ rue_sh_test(
     args = ["$(location :merge-sysroot)"],
 )
 
-# Download Rust for Linux x86_64
-http_archive(
-    name = "rust-linux-x86_64",
-    urls = [RUST_RELEASES["x86_64-unknown-linux-gnu"].url],
-    sha256 = RUST_RELEASES["x86_64-unknown-linux-gnu"].sha256,
-    strip_prefix = "rust-{}-x86_64-unknown-linux-gnu".format(RUST_VERSION),
-    type = "tar.xz",
-    visibility = [],
-)
+rust_host_archives("linux-x86_64", "x86_64-unknown-linux-gnu")
+rust_host_archives("linux-aarch64", "aarch64-unknown-linux-gnu")
+rust_host_archives("macos-aarch64", "aarch64-apple-darwin")
+rust_host_archives("macos-x86_64", "x86_64-apple-darwin")
 
-# Download Rust for Linux ARM64
-http_archive(
-    name = "rust-linux-aarch64",
-    urls = [RUST_RELEASES["aarch64-unknown-linux-gnu"].url],
-    sha256 = RUST_RELEASES["aarch64-unknown-linux-gnu"].sha256,
-    strip_prefix = "rust-{}-aarch64-unknown-linux-gnu".format(RUST_VERSION),
-    type = "tar.xz",
-    visibility = [],
-)
-
-# Download Rust for macOS ARM64 (Apple Silicon)
-http_archive(
-    name = "rust-macos-aarch64",
-    urls = [RUST_RELEASES["aarch64-apple-darwin"].url],
-    sha256 = RUST_RELEASES["aarch64-apple-darwin"].sha256,
-    strip_prefix = "rust-{}-aarch64-apple-darwin".format(RUST_VERSION),
-    type = "tar.xz",
-    visibility = [],
-)
-
-# Download Rust for macOS x86_64 (Intel)
-http_archive(
-    name = "rust-macos-x86_64",
-    urls = [RUST_RELEASES["x86_64-apple-darwin"].url],
-    sha256 = RUST_RELEASES["x86_64-apple-darwin"].sha256,
-    strip_prefix = "rust-{}-x86_64-apple-darwin".format(RUST_VERSION),
-    type = "tar.xz",
-    visibility = [],
-)
-
-# Target standard-library components used by the fixed-target Rue runtime
-# rules. Unlike the full distributions above, these are compiler-host agnostic:
-# whichever hermetic rustc runs consumes the same pinned target sysroot.
+# Standard-library components used by the host toolchains and fixed-target Rue
+# runtime rules. They are compiler-host agnostic: whichever hermetic rustc runs
+# consumes the same pinned target sysroot.
 http_archive(
     name = "rust-std-x86_64-unknown-linux-gnu",
     urls = [RUST_STD_RELEASES["x86_64-unknown-linux-gnu"].url],
@@ -83,6 +50,15 @@ http_archive(
     urls = [RUST_STD_RELEASES["aarch64-apple-darwin"].url],
     sha256 = RUST_STD_RELEASES["aarch64-apple-darwin"].sha256,
     strip_prefix = "rust-std-{}-aarch64-apple-darwin".format(RUST_VERSION),
+    type = "tar.xz",
+    visibility = ["PUBLIC"],
+)
+
+http_archive(
+    name = "rust-std-x86_64-apple-darwin",
+    urls = [RUST_STD_RELEASES["x86_64-apple-darwin"].url],
+    sha256 = RUST_STD_RELEASES["x86_64-apple-darwin"].sha256,
+    strip_prefix = "rust-std-{}-x86_64-apple-darwin".format(RUST_VERSION),
     type = "tar.xz",
     visibility = ["PUBLIC"],
 )
@@ -195,7 +171,9 @@ _CLIPPY_ALLOW = [
 # Hermetic toolchain for Linux x86_64
 hermetic_rust_toolchain(
     name = "hermetic-linux-x86_64",
-    distribution = ":rust-linux-x86_64",
+    rustc_distribution = ":rustc-linux-x86_64",
+    standard_library_distribution = ":rust-std-x86_64-unknown-linux-gnu",
+    clippy_distribution = ":clippy-linux-x86_64",
     merge_script = ":merge-sysroot",
     target_triple = "x86_64-unknown-linux-gnu",
     default_edition = "2024",
@@ -208,7 +186,9 @@ hermetic_rust_toolchain(
 # Hermetic toolchain for Linux ARM64
 hermetic_rust_toolchain(
     name = "hermetic-linux-aarch64",
-    distribution = ":rust-linux-aarch64",
+    rustc_distribution = ":rustc-linux-aarch64",
+    standard_library_distribution = ":rust-std-aarch64-unknown-linux-gnu",
+    clippy_distribution = ":clippy-linux-aarch64",
     merge_script = ":merge-sysroot",
     target_triple = "aarch64-unknown-linux-gnu",
     default_edition = "2024",
@@ -221,7 +201,9 @@ hermetic_rust_toolchain(
 # Hermetic toolchain for macOS ARM64
 hermetic_rust_toolchain(
     name = "hermetic-macos-aarch64",
-    distribution = ":rust-macos-aarch64",
+    rustc_distribution = ":rustc-macos-aarch64",
+    standard_library_distribution = ":rust-std-aarch64-apple-darwin",
+    clippy_distribution = ":clippy-macos-aarch64",
     merge_script = ":merge-sysroot",
     target_triple = "aarch64-apple-darwin",
     default_edition = "2024",
@@ -234,7 +216,9 @@ hermetic_rust_toolchain(
 # Hermetic toolchain for macOS x86_64
 hermetic_rust_toolchain(
     name = "hermetic-macos-x86_64",
-    distribution = ":rust-macos-x86_64",
+    rustc_distribution = ":rustc-macos-x86_64",
+    standard_library_distribution = ":rust-std-x86_64-apple-darwin",
+    clippy_distribution = ":clippy-macos-x86_64",
     merge_script = ":merge-sysroot",
     target_triple = "x86_64-apple-darwin",
     default_edition = "2024",
@@ -247,25 +231,29 @@ hermetic_rust_toolchain(
 # Rustfmt for each platform
 rustfmt(
     name = "rustfmt-linux-x86_64",
-    distribution = ":rust-linux-x86_64",
+    rustc_distribution = ":rustc-linux-x86_64",
+    rustfmt_distribution = ":rustfmt-dist-linux-x86_64",
     visibility = ["PUBLIC"],
 )
 
 rustfmt(
     name = "rustfmt-linux-aarch64",
-    distribution = ":rust-linux-aarch64",
+    rustc_distribution = ":rustc-linux-aarch64",
+    rustfmt_distribution = ":rustfmt-dist-linux-aarch64",
     visibility = ["PUBLIC"],
 )
 
 rustfmt(
     name = "rustfmt-macos-aarch64",
-    distribution = ":rust-macos-aarch64",
+    rustc_distribution = ":rustc-macos-aarch64",
+    rustfmt_distribution = ":rustfmt-dist-macos-aarch64",
     visibility = ["PUBLIC"],
 )
 
 rustfmt(
     name = "rustfmt-macos-x86_64",
-    distribution = ":rust-macos-x86_64",
+    rustc_distribution = ":rustc-macos-x86_64",
+    rustfmt_distribution = ":rustfmt-dist-macos-x86_64",
     visibility = ["PUBLIC"],
 )
 

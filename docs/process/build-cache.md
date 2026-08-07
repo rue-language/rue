@@ -140,10 +140,17 @@ they're recorded here so a future config change doesn't silently regress:
    knob are required — without them the client connects and downloads CAS
    inputs, but locally compiled Rust results never populate the action cache.
 4. **rustc under RE** (`toolchains/rust/defs.bzl`): rustc finds `librustc_driver.so`
-   via its native `$ORIGIN/../lib` RPATH, which only resolves if the whole toolchain
-   tree is materialized on the remote worker. The `compiler`/`rustdoc` RunInfo carry
-   the full distribution as a hidden input so RE uploads it co-located. This is the
-   relocatable, canonical fix — *not* an absolute-path `LD_LIBRARY_PATH` hack.
+   via its native `$ORIGIN/../lib` RPATH, which only resolves if the whole rustc
+   component tree is materialized on the remote worker. The `compiler`/`rustdoc`
+   RunInfo carry that component plus the separate standard-library component as
+   hidden inputs, so RE uploads the compiler co-located and preserves the merged
+   sysroot's relative links. This is the relocatable, canonical fix — *not* an
+   absolute-path `LD_LIBRARY_PATH` hack. Clippy and rustfmt are separate official
+   component archives; Rue does not materialize the monolithic distribution's
+   unused Cargo, rust-analyzer, LLVM tools, or documentation payloads. On macOS
+   ARM64 this reduces the unpacked host toolchain from about 1.67 GiB to 492 MiB
+   (71 percent), and the archives are execution dependencies so debug and
+   release target configurations share that payload.
 5. **Container** (`platforms/remote_cache.bzl`): pinned to `rbe-ubuntu22-04`
    (Python 3.10 — the prelude's rustc wrapper needs ≥3.9; the default image ships
    3.6), by immutable digest rather than by its moving tag. See

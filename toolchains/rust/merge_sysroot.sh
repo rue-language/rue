@@ -2,15 +2,17 @@
 
 set -euo pipefail
 
-dist=$1
-sysroot=$2
-triple=$3
+rustc_dist=$1
+std_dist=$2
+sysroot=$3
+triple=$4
 
 # Work with absolute paths while calculating each link, but only store the
 # relative path between the link's directory and its target. Unlike `ln -r` or
 # `realpath --relative-to`, this uses only shell path manipulation available in
 # the Bash shipped by macOS as well as Linux.
-dist=$(cd "$dist" && pwd)
+rustc_dist=$(cd "$rustc_dist" && pwd)
+std_dist=$(cd "$std_dist" && pwd)
 sysroot_parent=$(cd "$(dirname "$sysroot")" && pwd)
 sysroot="$sysroot_parent/$(basename "$sysroot")"
 
@@ -74,13 +76,13 @@ link_relative() {
 # Create the sysroot structure and merge the separately packaged compiler and
 # standard-library components into the layout rustc expects.
 mkdir -p "$sysroot"
-link_relative "$dist/rustc/bin" "$sysroot/bin"
-link_relative "$dist/rustc/libexec" "$sysroot/libexec"
+link_relative "$rustc_dist/rustc/bin" "$sysroot/bin"
+link_relative "$rustc_dist/rustc/libexec" "$sysroot/libexec"
 
 mkdir -p "$sysroot/lib/rustlib/$triple"
 
 # Link compiler libraries while reserving rustlib for the merged structure.
-for file in "$dist/rustc/lib/"*; do
+for file in "$rustc_dist/rustc/lib/"*; do
     name=$(basename "$file")
     if [ "$name" != "rustlib" ]; then
         link_relative "$file" "$sysroot/lib/$name"
@@ -88,11 +90,11 @@ for file in "$dist/rustc/lib/"*; do
 done
 
 link_relative \
-    "$dist/rustc/lib/rustlib/etc" \
+    "$rustc_dist/rustc/lib/rustlib/etc" \
     "$sysroot/lib/rustlib/etc"
 link_relative \
-    "$dist/rustc/lib/rustlib/$triple/bin" \
+    "$rustc_dist/rustc/lib/rustlib/$triple/bin" \
     "$sysroot/lib/rustlib/$triple/bin"
 link_relative \
-    "$dist/rust-std-$triple/lib/rustlib/$triple/lib" \
+    "$std_dist/rust-std-$triple/lib/rustlib/$triple/lib" \
     "$sysroot/lib/rustlib/$triple/lib"
