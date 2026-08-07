@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::fmt;
-use std::hash::Hash;
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
@@ -2340,12 +2340,43 @@ struct NodeRegistry {
     // The index never owns a node. Its entries are removed by the matching
     // node's destructor, so registration and cleanup each address one
     // incarnation rather than scanning the live population.
-    entries: BTreeMap<u64, RegisteredNode>,
+    entries: HashMap<u64, RegisteredNode, BuildHasherDefault<IncarnationHasher>>,
     // Deterministic structural work: every inspection of a stored registry
     // value charges this counter. The counter is shared with the values so a
     // retain-style population traversal cannot hide behind one API call.
     #[cfg(test)]
     entry_visits: Arc<AtomicUsize>,
+}
+
+/// Identity hashing for runtime-owned, monotonically assigned incarnation IDs.
+///
+/// These keys are never caller-controlled, and the registry does not expose
+/// iteration order. This hasher is deliberately private to `NodeRegistry`:
+/// caller-controlled typed family keys must keep their randomized hashers.
+/// Using the ID directly gives exact registry operations expected O(1) lookup
+/// without paying a general-purpose string-resistant hashing cost.
+#[derive(Debug, Default)]
+struct IncarnationHasher(u64);
+
+impl Hasher for IncarnationHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // `Hash for u64` uses `write_u64`; this fallback only keeps the Hasher
+        // implementation total if the standard hashing route ever changes.
+        let mut hash = 0xcbf29ce484222325_u64;
+        for byte in bytes {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+        self.0 = hash;
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        self.0 = value;
+    }
 }
 
 #[derive(Debug)]
@@ -2433,7 +2464,7 @@ impl NodeRegistry {
             #[cfg(test)]
             entry_visits: self.entry_visits.clone(),
         };
-        if let std::collections::btree_map::Entry::Vacant(entry) = self.entries.entry(incarnation) {
+        if let std::collections::hash_map::Entry::Vacant(entry) = self.entries.entry(incarnation) {
             entry.insert(node);
             true
         } else {
@@ -7966,6 +7997,19 @@ mod tests {
     }
 
     #[test]
+    fn incarnation_hasher_preserves_the_exact_u64_hash() {
+        for incarnation in [0, 1, 2, u32::MAX as u64, u64::MAX - 1, u64::MAX] {
+            let mut hasher = IncarnationHasher::default();
+            std::hash::Hash::hash(&incarnation, &mut hasher);
+            assert_eq!(
+                hasher.finish(),
+                incarnation,
+                "the private registry hasher must use the runtime-owned incarnation directly"
+            );
+        }
+    }
+
+    #[test]
     fn node_registry_avoids_population_traversal() {
         const NODE_COUNT: usize = 512;
 
@@ -8027,6 +8071,48 @@ mod tests {
             .expect("the same leased node remains registered");
 
         assert!(Arc::ptr_eq(&first_node, &second_node));
+    }
+
+    #[test]
+    fn node_registry_distinguishes_incarnations_and_removes_only_the_matching_node() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .family::<Key, u64>("exact-node-registry-removal", 1)
+            .unwrap();
+        let first = family.node(Key("first")).unwrap();
+        let second = family.node(Key("second")).unwrap();
+        let first_incarnation = first.node.incarnation;
+        let second_incarnation = second.node.incarnation;
+        assert_ne!(first_incarnation, second_incarnation);
+
+        {
+            let registry = read(&runtime.core.nodes);
+            let registered_first = registry
+                .get(&first_incarnation)
+                .and_then(Weak::upgrade)
+                .expect("the first incarnation is registered");
+            let registered_second = registry
+                .get(&second_incarnation)
+                .and_then(Weak::upgrade)
+                .expect("the second incarnation is registered");
+            let expected_first: Arc<dyn ErasedNode> = first.node.clone();
+            let expected_second: Arc<dyn ErasedNode> = second.node.clone();
+            assert!(Arc::ptr_eq(&registered_first, &expected_first));
+            assert!(Arc::ptr_eq(&registered_second, &expected_second));
+        }
+
+        write(&runtime.core.nodes).remove(first_incarnation, &second.node.registry_self);
+        assert!(
+            runtime.core.registered_node(first_incarnation).is_some(),
+            "a different allocation must not remove the occupied incarnation"
+        );
+        assert!(runtime.core.registered_node(second_incarnation).is_some());
+
+        drop(first);
+        assert!(runtime.core.registered_node(first_incarnation).is_none());
+        assert!(runtime.core.registered_node(second_incarnation).is_some());
+        drop(second);
+        assert_eq!(read(&runtime.core.nodes).len(), 0);
     }
 
     static CONTAINS_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
