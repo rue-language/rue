@@ -16,10 +16,12 @@ use crate::FunctionWithCfg;
 
 use crate::{
     CompileError, CompileErrors, CompileOptions, CompileOutput, CompileWarning, ErrorKind,
-    LinkerMode, MultiErrorResult, Target, backend,
-    codegen_query::{CodegenSection, CollectedCodegenUnit, NormalizedRelocation, SectionKind},
-    linking,
+    LinkerMode, MultiErrorResult, Target, backend, linking,
+    object_query::CollectedObjectProjection,
 };
+
+#[cfg(test)]
+use crate::codegen_query::CollectedCodegenUnit;
 
 /// Stable, link-relevant identity for one reached codegen terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,11 +71,7 @@ pub(crate) struct ProgramImagePlan {
 
 /// Stable local representation avoids making the linker implementation type
 /// part of the plan's API surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProgramObjectFormat {
-    Elf,
-    MachO,
-}
+pub(crate) use crate::object_query::ObjectFormat as ProgramObjectFormat;
 
 /// Collision-resistant, deterministic content identity. Every digest below is
 /// SHA-256 over a domain-separated, length-framed byte encoding.
@@ -163,7 +161,7 @@ impl ProgramImagePlan {
 /// lowering, allocation, or emission.
 pub(crate) struct ProgramImage {
     pub(crate) plan: ProgramImagePlan,
-    units: Vec<CollectedCodegenUnit>,
+    objects: Vec<CollectedObjectProjection>,
     export_thunk_objects: Vec<Vec<u8>>,
 }
 
@@ -171,11 +169,11 @@ impl ProgramImage {
     /// Construct the production image directly from rooted codegen terminals
     /// and their exact C-export projections.
     pub(crate) fn from_rooted(
-        units: Vec<CollectedCodegenUnit>,
+        objects: Vec<CollectedObjectProjection>,
         exports: Vec<RootedExportThunk>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
-        validate_rooted_program_image_inputs(&units, &exports)?;
+        validate_rooted_program_image_inputs(&objects, &exports)?;
         let export_thunk_objects: Vec<Vec<u8>> = exports
             .iter()
             .map(|export| {
@@ -187,11 +185,15 @@ impl ProgramImage {
                 )
             })
             .collect();
-        let plan =
-            ProgramImagePlan::from_rooted_inputs(&units, &exports, options, &export_thunk_objects)?;
+        let plan = ProgramImagePlan::from_rooted_inputs(
+            &objects,
+            &exports,
+            options,
+            &export_thunk_objects,
+        )?;
         Ok(Self {
             plan,
-            units,
+            objects,
             export_thunk_objects,
         })
     }
@@ -226,8 +228,22 @@ impl ProgramImage {
                 ),
             )));
         }
+        let objects = units
+            .into_iter()
+            .map(|collected| {
+                backend::project_backend_object(collected.unit.backend_product(), options.target)
+                    .map(|bytes| CollectedObjectProjection {
+                        function: collected.function,
+                        unit: collected.unit,
+                        object: std::sync::Arc::new(crate::object_query::ObjectProjection {
+                            bytes: bytes.into(),
+                        }),
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(CompileErrors::from)?;
         let plan = ProgramImagePlan::from_inputs(
-            &units,
+            &objects,
             functions,
             export_symbols,
             options,
@@ -235,13 +251,14 @@ impl ProgramImage {
         )?;
         Ok(Self {
             plan,
-            units,
+            objects,
             export_thunk_objects,
         })
     }
 
-    /// Project the existing terminal bytes to ordinary object files. This is
-    /// the only production object-generation path after aggregation.
+    /// Collect the already-projected per-unit bytes for the fresh linker.
+    /// Object serialization happened in the registered query graph; this
+    /// adapter only materializes the linker's existing owned byte-vector API.
     pub(crate) fn fresh_objects(&self, options: &CompileOptions) -> MultiErrorResult<Vec<Vec<u8>>> {
         if self.plan.target != options.target {
             return Err(CompileErrors::from(CompileError::without_span(
@@ -251,15 +268,12 @@ impl ProgramImage {
             )));
         }
         let mut objects = self
-            .units
+            .objects
             .iter()
-            .map(|collected| {
-                backend::project_backend_object(collected.unit.backend_product(), options.target)
-            })
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(CompileErrors::from)?;
+            .map(|collected| collected.object.bytes.to_vec())
+            .collect::<Vec<_>>();
         info!(
-            function_count = self.units.len(),
+            function_count = self.objects.len(),
             object_bytes = objects.iter().map(Vec::len).sum::<usize>(),
             "codegen complete"
         );
@@ -288,7 +302,7 @@ impl ProgramImage {
 
 impl ProgramImagePlan {
     fn from_rooted_inputs(
-        units: &[CollectedCodegenUnit],
+        units: &[CollectedObjectProjection],
         exports: &[RootedExportThunk],
         options: &CompileOptions,
         export_thunk_objects: &[Vec<u8>],
@@ -299,7 +313,7 @@ impl ProgramImagePlan {
                 function: collected.function.clone(),
                 identity: stable_function_identity(&collected.function),
                 defined_symbol: collected.unit.defined_symbol.to_string(),
-                content_digest: unit_digest(&collected.unit),
+                content_digest: object_digest(&collected.object.bytes),
             })
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -318,12 +332,17 @@ impl ProgramImagePlan {
                 .cmp(&right.exported_symbol)
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
         });
-        Self::finish(plan_units, export_thunks, units, options)
+        Self::finish(
+            plan_units,
+            export_thunks,
+            units.iter().map(|unit| unit.unit.as_ref()),
+            options,
+        )
     }
 
     #[cfg(test)]
     fn from_inputs(
-        units: &[CollectedCodegenUnit],
+        units: &[CollectedObjectProjection],
         functions: &[FunctionWithCfg],
         export_symbols: &[String],
         options: &CompileOptions,
@@ -335,7 +354,7 @@ impl ProgramImagePlan {
                 function: collected.function.clone(),
                 identity: stable_function_identity(&collected.function),
                 defined_symbol: collected.unit.defined_symbol.to_string(),
-                content_digest: unit_digest(&collected.unit),
+                content_digest: object_digest(&collected.object.bytes),
             })
             .collect::<Vec<_>>();
         plan_units.sort_by(|left, right| left.identity.cmp(&right.identity));
@@ -367,13 +386,18 @@ impl ProgramImagePlan {
                 .then_with(|| left.native_symbol.cmp(&right.native_symbol))
         });
 
-        Self::finish(plan_units, export_thunks, units, options)
+        Self::finish(
+            plan_units,
+            export_thunks,
+            units.iter().map(|unit| unit.unit.as_ref()),
+            options,
+        )
     }
 
-    fn finish(
+    fn finish<'a>(
         plan_units: Vec<ProgramImageUnit>,
         export_thunks: Vec<ProgramImageExportThunk>,
-        units: &[CollectedCodegenUnit],
+        units: impl IntoIterator<Item = &'a crate::codegen_query::CodegenUnit>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
         let entry_point = if options.target.is_macho() {
@@ -385,7 +409,7 @@ impl ProgramImagePlan {
         required_runtime_symbols.insert(entry_point.to_owned());
         required_runtime_symbols.insert(rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL.to_owned());
         for unit in units {
-            for symbol in unit.unit.referenced_symbols.iter() {
+            for symbol in unit.referenced_symbols.iter() {
                 if rue_runtime_abi::classify_export(symbol).is_some() {
                     required_runtime_symbols.insert(symbol.to_string());
                 }
@@ -488,7 +512,7 @@ fn validate_program_image_inputs(
 }
 
 fn validate_rooted_program_image_inputs(
-    units: &[CollectedCodegenUnit],
+    units: &[CollectedObjectProjection],
     exports: &[RootedExportThunk],
 ) -> MultiErrorResult<()> {
     let mut units_by_identity = BTreeMap::new();
@@ -574,22 +598,8 @@ fn validate_program_image_plan(plan: &ProgramImagePlan) -> MultiErrorResult<()> 
     Ok(())
 }
 
-fn unit_digest(unit: &crate::codegen_query::CodegenUnit) -> ContentDigest {
-    let mut digest = StableDigest::new(b"rue.program-image.unit\0v1\0");
-    digest.bytes(unit.defined_symbol.as_bytes());
-    digest.usize(unit.referenced_symbols.len());
-    for symbol in unit.referenced_symbols.iter() {
-        digest.bytes(symbol.as_bytes());
-    }
-    digest.usize(unit.relocations.len());
-    for relocation in unit.relocations.iter() {
-        digest.relocation(relocation);
-    }
-    digest.usize(unit.sections.len());
-    for section in unit.sections.iter() {
-        digest.section(section);
-    }
-    digest.finish()
+fn object_digest(bytes: &[u8]) -> ContentDigest {
+    bytes_digest(b"rue.program-image.object\0v1\0", bytes)
 }
 
 fn bytes_digest(domain: &[u8], bytes: &[u8]) -> ContentDigest {
@@ -628,10 +638,6 @@ impl StableDigest {
         Self(digest)
     }
 
-    fn byte(&mut self, byte: u8) {
-        self.0.update([byte]);
-    }
-
     fn bytes(&mut self, bytes: &[u8]) {
         self.u64(bytes.len() as u64);
         self.0.update(bytes);
@@ -639,40 +645,6 @@ impl StableDigest {
 
     fn u64(&mut self, value: u64) {
         self.0.update(value.to_le_bytes());
-    }
-
-    fn usize(&mut self, value: usize) {
-        self.u64(value as u64);
-    }
-
-    fn relocation(&mut self, relocation: &NormalizedRelocation) {
-        self.u64(relocation.offset);
-        self.bytes(relocation.symbol.as_bytes());
-        self.byte(match relocation.kind {
-            rue_codegen::RelocationKind::X86Pc32 => 0,
-            rue_codegen::RelocationKind::X86Plt32 => 1,
-            rue_codegen::RelocationKind::Aarch64AdrpPage21 => 2,
-            rue_codegen::RelocationKind::Aarch64AddLo12 => 3,
-            rue_codegen::RelocationKind::Aarch64Call26 => 4,
-        });
-        self.u64(relocation.addend as u64);
-    }
-
-    fn section(&mut self, section: &CodegenSection) {
-        self.byte(match section.kind {
-            SectionKind::Text => 0,
-            SectionKind::Rodata => 1,
-            SectionKind::Data => 2,
-            SectionKind::Bss => 3,
-        });
-        self.bytes(&section.contents.bytes);
-        self.u64(u64::from(section.contents.alignment));
-        self.byte(u8::from(section.contents.executable));
-        self.byte(u8::from(section.contents.writable));
-        self.usize(section.atoms.len());
-        for atom in section.atoms.iter() {
-            self.bytes(atom);
-        }
     }
 
     fn finish(self) -> ContentDigest {
@@ -776,6 +748,25 @@ mod tests {
         assert_eq!(delta.added, vec![unit("added", 1)]);
         assert_eq!(delta.changed, vec![unit("changed", 2)]);
         assert_eq!(delta.removed, vec![unit("removed", 1)]);
+
+        let reordered = plan(vec![unit("changed", 2), unit("added", 1), unit("a", 1)]);
+        assert_eq!(
+            reordered.delta_from(&after).unwrap(),
+            ProgramImagePlanDelta::default(),
+            "input enumeration order is not a program-image change"
+        );
+    }
+
+    #[test]
+    fn delta_tracks_serialized_object_bytes_not_only_codegen_metadata() {
+        let mut before = unit("same", 1);
+        before.content_digest = object_digest(b"first object encoding");
+        let mut after = before.clone();
+        after.content_digest = object_digest(b"second object encoding");
+        let delta = plan(vec![after.clone()])
+            .delta_from(&plan(vec![before]))
+            .unwrap();
+        assert_eq!(delta.changed, vec![after]);
     }
 
     #[test]
@@ -1032,13 +1023,28 @@ mod tests {
     #[test]
     fn fresh_adapter_matches_the_prior_object_projection_on_every_target() {
         let source = "fn callee() -> i32 { 7 } fn main() -> i32 { callee() }";
+        let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
         for target in [
             Target::X86_64Linux,
             Target::Aarch64Linux,
             Target::Aarch64Macos,
         ] {
-            let (_, objects, _) = image_for(source, target, 1);
-            assert_eq!(objects, old_objects_for(source, target), "{target:?}");
+            let options = CompileOptions {
+                target,
+                ..CompileOptions::default()
+            };
+            let mut session = crate::CompilerSession::new();
+            crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+            let rooted = session
+                .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                .unwrap();
+            let image =
+                ProgramImage::from_rooted(rooted.objects, rooted.exports, &options).unwrap();
+            assert_eq!(
+                image.fresh_objects(&options).unwrap(),
+                old_objects_for(source, target),
+                "{target:?}"
+            );
         }
     }
 
@@ -1075,28 +1081,11 @@ mod tests {
 
         let mut fresh_session = crate::CompilerSession::new();
         crate::publish_test_snapshot(&mut fresh_session, &snapshot).unwrap();
-        let fresh_rir = fresh_session.canonical_rir().unwrap();
-        let fresh_semantic = fresh_session.canonical_semantic(&options).unwrap();
-        let exports = backend::collect_export_symbols(
-            fresh_rir.rir(),
-            fresh_rir.semantic_symbols().interner(),
-        );
-        let image = ProgramImage::new(
-            fresh_session
-                .codegen_units(
-                    &fresh_semantic,
-                    &options,
-                    rue_codegen::BackendArtifactRequest::default(),
-                )
-                .unwrap(),
-            fresh_semantic.functions(),
-            &options,
-            &exports,
-        )
-        .unwrap();
-        let fresh = image
-            .fresh_link(&options, fresh_semantic.warnings())
+        let rooted = fresh_session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
             .unwrap();
+        let image = ProgramImage::from_rooted(rooted.objects, rooted.exports, &options).unwrap();
+        let fresh = image.fresh_link(&options, &rooted.warnings).unwrap();
         assert_eq!(fresh.elf, old.elf);
         assert_eq!(fresh.warnings, old.warnings);
     }

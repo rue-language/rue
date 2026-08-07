@@ -55,6 +55,7 @@ mod import_discovery;
 mod import_graph;
 mod linking;
 mod local_semantic_materialization;
+mod object_query;
 mod parsed_modules;
 mod program_image_plan;
 mod queries;

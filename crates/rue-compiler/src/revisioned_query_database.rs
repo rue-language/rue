@@ -404,6 +404,12 @@ pub(crate) struct RevisionedQueryDatabase {
         crate::codegen_query::CodegenUnitValue,
     >,
     codegen_unit_batches: QueryFamily<CodegenUnitBatchKey, CodegenUnitBatchOutput>,
+    #[allow(dead_code)] // The registered batch evaluator owns production reads.
+    object_projections: QueryFamily<
+        crate::object_query::ObjectProjectionQueryKey,
+        crate::object_query::ObjectProjectionValue,
+    >,
+    object_projection_batches: QueryFamily<ObjectProjectionBatchKey, ObjectProjectionBatchOutput>,
     backend_root_publications: QueryFamily<BackendRootPublicationKey, bool>,
     /// One-shot rendezvous inside the registered CodegenUnit evaluator. Unit
     /// tests use it to force an exact-key owner to remain live while a second
@@ -1119,6 +1125,7 @@ pub(crate) struct BackendRootCandidate {
     cfg_keys: HashSet<crate::cfg_query::CfgQueryKey>,
     optimized_cfg_terminals: usize,
     codegen_unit_terminals: usize,
+    object_projection_terminals: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -1182,9 +1189,39 @@ impl RetainedCharge for CodegenUnitBatchOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ObjectProjectionBatchKey {
+    pub(crate) keys: Arc<[crate::object_query::ObjectProjectionQueryKey]>,
+}
+
+impl QueryKey for ObjectProjectionBatchKey {
+    fn stable_identity(&self) -> String {
+        let mut identity = format!("object-projection-batch;units={}", self.keys.len());
+        for key in self.keys.iter() {
+            identity.push('\u{1e}');
+            identity.push_str(&key.stable_identity());
+        }
+        identity
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ObjectProjectionBatchOutput {
+    pub(crate) values: Arc<[crate::object_query::ObjectProjectionValue]>,
+    /// Exact object children and their CodegenUnit dependency cones are pinned
+    /// from evaluation through backend-root publication.
+    _retained_children: Arc<rue_query::RetainedPinSet>,
+}
+
+impl RetainedCharge for ObjectProjectionBatchOutput {
+    fn retained_charge(&self) -> u64 {
+        self.values.retained_charge()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BackendRootPublicationKey {
     epoch: u64,
-    codegen_units: CodegenUnitBatchKey,
+    objects: ObjectProjectionBatchKey,
     functions: Arc<[crate::FunctionInstanceKey]>,
     cfg_terminals: usize,
 }
@@ -1205,7 +1242,7 @@ impl QueryKey for BackendRootPublicationKey {
         format!(
             "backend-root;epoch={};units={}",
             self.epoch,
-            self.codegen_units.keys.len()
+            self.objects.keys.len()
         )
     }
 }
@@ -1221,6 +1258,8 @@ struct PublishedBackendRoot {
     optimized_cfg_terminals: usize,
     #[allow(dead_code)]
     codegen_unit_terminals: usize,
+    #[allow(dead_code)]
+    object_projection_terminals: usize,
     publications: u64,
     additions: u64,
     deletions: u64,
@@ -1234,6 +1273,7 @@ struct PublishedBackendRootHandoff {
     cfg_terminals: usize,
     optimized_cfg_terminals: usize,
     codegen_unit_terminals: usize,
+    object_projection_terminals: usize,
     previous: Option<PublishedBackendRoot>,
     installed: bool,
 }
@@ -1260,6 +1300,7 @@ impl rue_query::QueryAttemptHandoff for PublishedBackendRootHandoff {
             cfg_terminals: self.cfg_terminals,
             optimized_cfg_terminals: self.optimized_cfg_terminals,
             codegen_unit_terminals: self.codegen_unit_terminals,
+            object_projection_terminals: self.object_projection_terminals,
             publications: root.publications.saturating_add(1),
             additions: root.additions.saturating_add(additions),
             deletions: root.deletions.saturating_add(deletions),
@@ -1296,6 +1337,7 @@ pub(crate) struct PublishedBackendRootMetrics {
     pub(crate) cfg_terminals: usize,
     pub(crate) optimized_cfg_terminals: usize,
     pub(crate) codegen_unit_terminals: usize,
+    pub(crate) object_projection_terminals: usize,
     pub(crate) publications: u64,
     pub(crate) additions: u64,
     pub(crate) deletions: u64,
@@ -14687,12 +14729,81 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the CodegenUnitBatch family has one canonical name");
+        let codegen_units_for_object_projection = codegen_units.clone();
+        let object_projections = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.object-projection",
+                BODY_QUERY_MEMO_RETENTION,
+                crate::object_query::object_projection_value_equal,
+                move |context, _, key: &crate::object_query::ObjectProjectionQueryKey| {
+                    crate::object_query::evaluate_object_projection(
+                        context,
+                        &codegen_units_for_object_projection,
+                        key,
+                    )
+                },
+            )
+            .expect("the ObjectProjection family has one canonical name");
+        let object_projections_for_batch = object_projections.clone();
+        let object_projection_batches = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.object-projection-batch",
+                0,
+                |left: &ObjectProjectionBatchOutput, right: &ObjectProjectionBatchOutput| {
+                    left.values.len() == right.values.len()
+                        && left.values.iter().zip(right.values.iter()).all(
+                            |(left, right)| {
+                                crate::object_query::object_projection_value_equal(left, right)
+                            },
+                        )
+                },
+                move |context, _, key: &ObjectProjectionBatchKey| {
+                    let _validated_registered = context.endorse_registered_validations();
+                    let _attempts =
+                        context.retain_nested_attempts_for(&["compiler.object-projection"]);
+                    let terminals = context.query_registered_batch(
+                        &object_projections_for_batch,
+                        key.keys.iter().cloned(),
+                    )?;
+                    let kind = if terminals
+                        .iter()
+                        .all(|terminal| terminal.kind() == QueryTerminalKind::Success)
+                    {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .expect(
+                                "the registered ObjectProjection batch observes every selected child cone",
+                            ),
+                    );
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("ObjectProjection publishes typed values")
+                            };
+                            value.clone()
+                        })
+                        .collect::<Vec<_>>()
+                        .into();
+                    Ok(QueryOutput::success(ObjectProjectionBatchOutput {
+                        values,
+                        _retained_children: retained_children,
+                    })
+                    .with_terminal_kind(kind))
+                },
+            )
+            .expect("the ObjectProjectionBatch family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
         let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
         let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
-        let codegen_units_for_backend_publication = codegen_units.clone();
+        let object_projections_for_backend_publication = object_projections.clone();
         let backend_root_for_publication = backend_root.clone();
         let backend_root_publications = runtime
             .family_with_equality_and_evaluator(
@@ -14707,14 +14818,14 @@ impl RevisionedQueryDatabase {
                         .lease
                         .clone();
                     let terminals = context.query_registered_batch(
-                        &codegen_units_for_backend_publication,
-                        key.codegen_units.keys.iter().cloned(),
+                        &object_projections_for_backend_publication,
+                        key.objects.keys.iter().cloned(),
                     )?;
                     if terminals.iter().any(|terminal| {
                         matches!(
                             terminal.outcome(),
                             rue_query::QueryOutcome::Success(
-                                crate::codegen_query::CodegenUnitValue::Failure(_)
+                                crate::object_query::ObjectProjectionValue::Failure(_)
                             )
                         )
                     }) {
@@ -14727,15 +14838,16 @@ impl RevisionedQueryDatabase {
                             std::slice::from_ref(&fallback),
                         )
                         .expect(
-                            "registered backend-root validation observes every final CodegenUnit dependency cone",
+                            "registered backend-root validation observes every final ObjectProjection dependency cone",
                         );
                     context.register_attempt_handoff(PublishedBackendRootHandoff {
                         root: backend_root_for_publication.clone(),
                         pending: Some(Arc::new(pending)),
                         functions: Some(key.functions.iter().cloned().collect()),
                         cfg_terminals: key.cfg_terminals,
-                        optimized_cfg_terminals: key.codegen_units.keys.len(),
-                        codegen_unit_terminals: key.codegen_units.keys.len(),
+                        optimized_cfg_terminals: key.objects.keys.len(),
+                        codegen_unit_terminals: key.objects.keys.len(),
+                        object_projection_terminals: key.objects.keys.len(),
                         previous: None,
                         installed: false,
                     });
@@ -15919,6 +16031,8 @@ impl RevisionedQueryDatabase {
             optimized_cfg_batches,
             codegen_units,
             codegen_unit_batches,
+            object_projections,
+            object_projection_batches,
             backend_root_publications,
             #[cfg(test)]
             codegen_evaluator_gate,
@@ -16402,6 +16516,27 @@ impl RevisionedQueryDatabase {
         (key, attempt)
     }
 
+    /// Request one stable-ordered production root of retained per-unit object
+    /// projections through the runtime's registered structured scheduler.
+    pub(crate) fn object_projection_batch(
+        &self,
+        revision: Revision,
+        keys: Arc<[crate::object_query::ObjectProjectionQueryKey]>,
+        cancellation: CancellationToken,
+    ) -> (
+        ObjectProjectionBatchKey,
+        QueryRequestAttempt<ObjectProjectionBatchOutput>,
+    ) {
+        let key = ObjectProjectionBatchKey { keys };
+        let attempt = self.runtime.request_registered(
+            &self.object_projection_batches,
+            revision,
+            key.clone(),
+            cancellation,
+        );
+        (key, attempt)
+    }
+
     /// Start an unpublished backend-root handoff. Every terminal retained into
     /// this candidate is acquired while its request attempt still owns the
     /// result lease, closing the birth-to-publication eviction window.
@@ -16453,6 +16588,22 @@ impl RevisionedQueryDatabase {
         candidate.codegen_unit_terminals = key.keys.len();
     }
 
+    /// Retain the registered object batch from result birth until publication
+    /// installs the exact object-to-codegen dependency cones.
+    pub(crate) fn retain_backend_object_projection_batch(
+        &self,
+        candidate: &mut BackendRootCandidate,
+        key: &ObjectProjectionBatchKey,
+        terminal: &Arc<rue_query::QueryTerminal<ObjectProjectionBatchOutput>>,
+    ) {
+        let pin = self
+            .object_projection_batches
+            .pin_terminal(terminal)
+            .expect("object projection batch result belongs to the registered family");
+        candidate.lease.lease(pin);
+        candidate.object_projection_terminals = key.keys.len();
+    }
+
     /// Publish the full transitive query cone behind a successful backend
     /// collection. Direct candidate pins bridge the host collection into this
     /// registered request; its query context then observes and atomically hands
@@ -16462,7 +16613,7 @@ impl RevisionedQueryDatabase {
         &self,
         revision: Revision,
         candidate: BackendRootCandidate,
-        codegen_units: CodegenUnitBatchKey,
+        objects: ObjectProjectionBatchKey,
     ) -> Result<(), QueryAbort> {
         // A root-publication request is transactional through its handoff
         // callbacks. Serialize only these short, whole-program swaps so a
@@ -16474,7 +16625,7 @@ impl RevisionedQueryDatabase {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let key = BackendRootPublicationKey {
             epoch,
-            codegen_units,
+            objects,
             functions: candidate.functions.iter().cloned().collect(),
             cfg_terminals: candidate.cfg_keys.len(),
         };
@@ -16508,6 +16659,7 @@ impl RevisionedQueryDatabase {
             cfg_terminals: root.cfg_terminals,
             optimized_cfg_terminals: root.optimized_cfg_terminals,
             codegen_unit_terminals: root.codegen_unit_terminals,
+            object_projection_terminals: root.object_projection_terminals,
             publications: root.publications,
             additions: root.additions,
             deletions: root.deletions,
@@ -16520,6 +16672,14 @@ impl RevisionedQueryDatabase {
         key: &crate::cfg_query::CfgQueryKey,
     ) -> bool {
         self.cfgs.contains_retained_key(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn object_projection_key_is_retained_for_test(
+        &self,
+        key: &crate::object_query::ObjectProjectionQueryKey,
+    ) -> bool {
+        self.object_projections.contains_retained_key(key)
     }
 
     #[cfg(test)]
@@ -24268,6 +24428,7 @@ mod tests {
             cfg_terminals: 2,
             optimized_cfg_terminals: 1,
             codegen_unit_terminals: 1,
+            object_projection_terminals: 1,
             previous: None,
             installed: false,
         };

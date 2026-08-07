@@ -766,6 +766,10 @@ pub struct CompilerSession {
     codegen_attempt_work: Vec<(crate::FunctionInstanceKey, Vec<(std::sync::Arc<str>, u64)>)>,
     #[cfg(test)]
     codegen_collections: usize,
+    #[cfg(test)]
+    object_projection_executions: Vec<(crate::FunctionInstanceKey, rue_query::RequestExecution)>,
+    #[cfg(test)]
+    object_projection_collections: usize,
     /// One-shot cancellation injections, each consumed with `mem::take` at a
     /// fixed point inside an attempt.
     ///
@@ -881,6 +885,7 @@ pub(crate) struct RootedCfgOutput {
 
 pub(crate) struct RootedCodegenOutput {
     pub(crate) units: Vec<crate::codegen_query::CollectedCodegenUnit>,
+    pub(crate) objects: Vec<crate::object_query::CollectedObjectProjection>,
     #[allow(dead_code)]
     pub(crate) cfgs: Vec<RootedCfgUnit>,
     pub(crate) exports: Vec<crate::program_image_plan::RootedExportThunk>,
@@ -5139,6 +5144,8 @@ impl CompilerSession {
             self.codegen_executions.clear();
             self.codegen_attempt_work.clear();
             self.codegen_collections = 0;
+            self.object_projection_executions.clear();
+            self.object_projection_collections = 0;
         }
         let _codegen_collection_span =
             tracing::info_span!("codegen_collection", phase = "backend").entered();
@@ -5217,6 +5224,85 @@ impl CompilerSession {
             }
         }
         drop(_codegen_collection_span);
+        let object_keys = codegen_batch_key
+            .keys
+            .iter()
+            .cloned()
+            .map(crate::object_query::ObjectProjectionQueryKey::new)
+            .collect::<Vec<_>>()
+            .into();
+        let (object_batch_key, object_attempt) = self.queries.revisioned.object_projection_batch(
+            graph.revision,
+            object_keys,
+            rue_query::CancellationToken::new(),
+        );
+        #[cfg(test)]
+        let object_batch_execution = object_attempt.execution();
+        #[cfg(test)]
+        let object_child_attempts =
+            if object_batch_execution == rue_query::RequestExecution::Computed {
+                let attempts = object_attempt
+                    .nested_attempts()
+                    .iter()
+                    .filter(|attempt| attempt.node().family() == "compiler.object-projection")
+                    .map(|attempt| attempt.execution())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    attempts.len(),
+                    cfgs.len(),
+                    "an evaluated ObjectProjection batch records one direct child per key"
+                );
+                Some(attempts)
+            } else {
+                None
+            };
+        if let Some(terminal) = object_attempt.terminal() {
+            self.queries
+                .revisioned
+                .retain_backend_object_projection_batch(
+                    &mut backend_root,
+                    &object_batch_key,
+                    terminal,
+                );
+        }
+        let object_batch = object_attempt.into_result().map_err(|abort| {
+            CompileError::without_span(ErrorKind::InternalError(format!(
+                "object projection batch query aborted: {abort:?}"
+            )))
+        })?;
+        let rue_query::QueryOutcome::Success(object_batch) = object_batch.outcome() else {
+            unreachable!("ObjectProjectionBatch publishes typed terminals")
+        };
+        assert_eq!(object_batch.values.len(), units.len());
+        let mut objects = Vec::with_capacity(units.len());
+        for (index, (collected, value)) in units.iter().zip(object_batch.values.iter()).enumerate()
+        {
+            #[cfg(not(test))]
+            let _ = index;
+            #[cfg(test)]
+            self.object_projection_executions.push((
+                collected.function.clone(),
+                object_child_attempts
+                    .as_ref()
+                    .map_or(object_batch_execution, |attempts| attempts[index]),
+            ));
+            match value {
+                crate::object_query::ObjectProjectionValue::Available(object) => {
+                    objects.push(crate::object_query::CollectedObjectProjection {
+                        function: collected.function.clone(),
+                        unit: collected.unit.clone(),
+                        object: object.clone(),
+                    });
+                    #[cfg(test)]
+                    {
+                        self.object_projection_collections += 1;
+                    }
+                }
+                crate::object_query::ObjectProjectionValue::Failure(errors) => {
+                    return Err(errors.clone());
+                }
+            }
+        }
         let export_roots = graph
             .c_export_roots
             .iter()
@@ -5252,7 +5338,7 @@ impl CompilerSession {
             .collect();
         self.queries
             .revisioned
-            .publish_backend_root(graph.revision, backend_root, codegen_batch_key)
+            .publish_backend_root(graph.revision, backend_root, object_batch_key)
             .map_err(|abort| {
                 CompileError::without_span(ErrorKind::InternalError(format!(
                     "backend root publication aborted: {abort:?}"
@@ -5260,6 +5346,7 @@ impl CompilerSession {
             })?;
         Ok(RootedCodegenOutput {
             units,
+            objects,
             cfgs,
             exports,
             warnings,
@@ -5403,6 +5490,18 @@ impl CompilerSession {
     }
 
     #[cfg(test)]
+    pub(crate) fn object_projection_executions(
+        &self,
+    ) -> &[(crate::FunctionInstanceKey, rue_query::RequestExecution)] {
+        &self.object_projection_executions
+    }
+
+    #[cfg(test)]
+    pub(crate) fn object_projection_collections(&self) -> usize {
+        self.object_projection_collections
+    }
+
+    #[cfg(test)]
     pub(crate) fn backend_root_metrics(
         &self,
     ) -> crate::revisioned_query_database::PublishedBackendRootMetrics {
@@ -5414,6 +5513,16 @@ impl CompilerSession {
         self.queries
             .revisioned
             .backend_cfg_key_is_retained_for_test(key)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn object_projection_key_is_retained(
+        &self,
+        key: &crate::object_query::ObjectProjectionQueryKey,
+    ) -> bool {
+        self.queries
+            .revisioned
+            .object_projection_key_is_retained_for_test(key)
     }
 
     #[cfg(test)]
