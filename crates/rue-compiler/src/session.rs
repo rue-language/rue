@@ -3410,6 +3410,20 @@ impl CompilerSession {
             .parse_modules_dispatched
             .saturating_add(demanded_modules.len() as u64);
         drop(key_span);
+        // The per-module parses run OUTSIDE the outer query body below, as
+        // top-level requests, so the outer `compiler.parse` node never records
+        // them as dependencies (RUE-1145). This is deliberate, and safe only
+        // because the node is key-identified: `ExactSourceInput` embeds every
+        // file's exact content identity, so any source change selects a
+        // different node and its recorded edge set is never what invalidates
+        // it. The single synthetic whole-source leaf recorded in the closure is
+        // NOT a real dependency graph — no consumer may read this node's edges
+        // to learn which modules it consumed. (The successor path is different:
+        // it adopts the predecessor terminal and records the appended modules'
+        // input leaves, so its edges are real.) This shim node is deleted by
+        // ADR-0063 Phase 12 (RUE-1033); recording real module edges here would
+        // mean growing an out-of-band observation API in rue-query for a node
+        // scheduled for removal.
         let (modular_result, modular_work) = {
             let _span = tracing::info_span!("parse_program").entered();
             self.queries.revisioned.parse_program(
@@ -3427,6 +3441,10 @@ impl CompilerSession {
             self.queries
                 .revisioned
                 .request_parse(revision, attempt_id, key.clone(), |context| {
+                    // Key-identified-only node: this synthetic leaf exists so
+                    // the terminal has a non-empty input set, not to model the
+                    // per-module parses consumed above (RUE-1145; see the
+                    // deletion-gate comment at `parse_program`).
                     context.input(rue_query::InputIdentity::new(
                         crate::revisioned_query_database::RevisionedQueryDatabase::SOURCE_INPUT,
                         "current",
