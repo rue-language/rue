@@ -1013,7 +1013,15 @@ impl RetainedCharge for crate::declaration_candidate::RawDeclarationSignatureSyn
         self.declaration_fragments
             .retained_charge()
             .saturating_add(self.extern_abi.retained_charge())
-            .saturating_add(self.accessor_body.retained_charge())
+            .saturating_add(self.accessor.retained_charge())
+    }
+}
+
+impl RetainedCharge for crate::declaration_candidate::RawAccessorSignatureSyntax {
+    fn retained_charge(&self) -> u64 {
+        self.body
+            .retained_charge()
+            .saturating_add(self.owner_methods.retained_charge())
     }
 }
 

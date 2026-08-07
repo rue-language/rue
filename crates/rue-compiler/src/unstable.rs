@@ -1054,6 +1054,56 @@ mod codegen_unit_tests {
     }
 
     #[test]
+    fn accessor_yield_link_verdict_follows_a_sibling_method_s_borrow_qualifier() {
+        // 6.6:7 admits `yield self.link()` only when `link` is itself an
+        // accessor. The declaration-time producer decides that from the
+        // owner's other *parsed* declarations, so editing `link`'s result
+        // qualifier has to invalidate the verdict recorded for `xr` — in both
+        // directions (RUE-1232).
+        let source = |link: &str| {
+            crate::SourceSnapshot::single(
+                "main.rue",
+                format!(
+                    "struct P {{ x: i64, fn link(borrow self) -> {link} fn xr(borrow self) -> borrow i64 {{ yield self.link(); }} }} fn main() -> i32 {{ let p = P {{ x: 0 }}; @intCast(p.xr()) }}"
+                ),
+            )
+            .unwrap()
+        };
+        let plain = "i64 { self.x }";
+        let accessor = "borrow i64 { yield self.x; }";
+        let mut options = crate::CompileOptions::default();
+        options
+            .preview_features
+            .insert(rue_error::PreviewFeature::BorrowAccessors);
+
+        let mut session = crate::CompilerSession::new();
+        session.update(&source(plain)).into_result().unwrap();
+        let errors = session.canonical_semantic(&options).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                rue_error::ErrorKind::AccessorYieldNotReceiverRooted { .. }
+            )),
+            "{errors:?}"
+        );
+
+        session.update(&source(accessor)).into_result().unwrap();
+        session
+            .canonical_semantic(&options)
+            .expect("an accessor link is a legal projection");
+
+        session.update(&source(plain)).into_result().unwrap();
+        let errors = session.canonical_semantic(&options).unwrap_err();
+        assert!(
+            errors.iter().any(|error| matches!(
+                &error.kind,
+                rue_error::ErrorKind::AccessorYieldNotReceiverRooted { .. }
+            )),
+            "{errors:?}"
+        );
+    }
+
+    #[test]
     fn accessor_edit_recomputes_caller_without_publishing_accessor_abi() {
         let source = |value| {
             crate::SourceSnapshot::single(

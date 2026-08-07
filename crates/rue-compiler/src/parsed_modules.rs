@@ -391,20 +391,53 @@ impl ParsedDefinitionIndex {
                 (vec![fragment(declaration)?].into(), Some(fragment(abi)?))
             }
         };
-        let accessor_body = if candidate.is_accessor {
-            Some(fragment(candidate.raw_body_span?)?)
+        // 6.6:7 lets an accessor yield through a nested *accessor* call. For a
+        // link whose receiver is this accessor's own `self`, the callee is one
+        // of the owner's methods, so the deciding fact is the sibling
+        // declaration's parsed `-> borrow` qualifier — retained here, where
+        // the terminal is already materialized from this module's parse, so an
+        // edit to a sibling invalidates this accessor's signature.
+        let accessor = if candidate.is_accessor {
+            Some(Arc::new(
+                crate::declaration_candidate::RawAccessorSignatureSyntax {
+                    body: fragment(candidate.raw_body_span?)?,
+                    owner_methods: key.owner.as_ref().map_or_else(
+                        || Arc::from(Vec::new()),
+                        |owner| self.owner_method_accessor_facts(owner),
+                    ),
+                },
+            ))
         } else {
             None
         };
         let syntax = RawDeclarationSignatureSyntax {
             declaration_fragments,
             extern_abi,
-            accessor_body,
+            accessor,
         };
         #[cfg(test)]
         self.raw_declaration_signature_terminal_materializations
             .fetch_add(1, Ordering::Relaxed);
         Some(syntax)
+    }
+
+    /// Every method one owner declares in this module, paired with whether it
+    /// is itself a `-> borrow` accessor, in the normalized form the raw
+    /// signature terminal retains.
+    fn owner_method_accessor_facts(
+        &self,
+        owner: &crate::declaration_candidate::DeclarationCandidateOwner,
+    ) -> Arc<[(Arc<str>, bool)]> {
+        use crate::declaration_candidate::DeclarationCandidateCategory as Category;
+        crate::semantic_query_nucleus::owner_method_accessor_facts(
+            self.declarations
+                .iter()
+                .filter(|candidate| {
+                    candidate.fact.key.category == Category::Method
+                        && candidate.fact.key.owner.as_ref() == Some(owner)
+                })
+                .map(|candidate| (candidate.fact.key.name.clone(), candidate.is_accessor)),
+        )
     }
 
     #[cfg(test)]

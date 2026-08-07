@@ -6,6 +6,7 @@
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use lasso::Spur;
 use rue_error::{CompileError, CompileResult, CompileWarning, ErrorKind, OptionExt, WarningKind};
@@ -16,6 +17,10 @@ use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
 use super::call_resolution::CallResolutionFacts;
 use super::context::{AnalysisContext, AnalysisResult, ConstValue, LocalVar};
+use crate::declaration_validation::{
+    AccessorExitForm, AccessorMethodLink, AccessorYieldRootForm, accessor_method_link_error,
+    accessor_yield_root_error,
+};
 use crate::inst::{Air, AirInst, AirInstData, AirPattern, AirRef};
 use crate::scope::ScopedContext;
 use crate::types::{Type, TypeKind};
@@ -1353,9 +1358,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // accessor body's single trailing `yield` (ADR-0062 phase 1).
         if ctx.accessor_trailing_yield.is_some() {
             return Err(CompileError::new(
-                ErrorKind::AccessorBodyOtherExit {
-                    found: "a `?`".to_string(),
-                },
+                crate::declaration_validation::accessor_exit_error(AccessorExitForm::Try),
                 span,
             ));
         }
@@ -1806,9 +1809,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         };
         if trailing != inst_ref {
             return Err(CompileError::new(
-                ErrorKind::AccessorBodyOtherExit {
-                    found: "a second `yield`".to_string(),
-                },
+                crate::declaration_validation::accessor_exit_error(AccessorExitForm::SecondYield),
                 span,
             ));
         }
@@ -1825,9 +1826,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // return ABI exists (RUE-1208).
         let trace = self.try_trace_place(operand, air, ctx)?.ok_or_else(|| {
             CompileError::new(
-                ErrorKind::AccessorYieldNotReceiverRooted {
-                    found: "a value expression".to_string(),
-                },
+                accessor_yield_root_error(&AccessorYieldRootForm::Value),
                 span,
             )
         })?;
@@ -1877,39 +1876,37 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     if *name == self_sym {
                         return Ok(());
                     }
-                    let found =
-                        format!("a place rooted at `{}`", self.body_interner().resolve(name));
-                    return Err(CompileError::new(
-                        ErrorKind::AccessorYieldNotReceiverRooted { found },
-                        span,
-                    ));
+                    let root =
+                        AccessorYieldRootForm::Named(Arc::from(self.body_interner().resolve(name)));
+                    return Err(CompileError::new(accessor_yield_root_error(&root), span));
                 }
                 InstData::FieldGet { base, .. } => current = *base,
                 InstData::IndexGet { base, .. } => current = *base,
                 InstData::MethodCall {
                     receiver, method, ..
                 } => {
+                    // The demanded path holds the receiver's resolved type, so
+                    // it decides every link: an unresolvable callee here is a
+                    // plain method as far as 6.6:7 is concerned, since a
+                    // legal link has to name an accessor.
                     let is_accessor = ctx
                         .resolved_type_of(*receiver)
                         .and_then(|ty| ty.as_struct())
                         .and_then(|struct_id| self.call_facts().method_info(struct_id, *method))
                         .is_some_and(|info| info.returns_borrow);
-                    if !is_accessor {
-                        return Err(CompileError::new(
-                            ErrorKind::AccessorYieldNotReceiverRooted {
-                                found: "a method-call result that is not an accessor projection"
-                                    .to_string(),
-                            },
-                            span,
-                        ));
+                    let link = if is_accessor {
+                        AccessorMethodLink::Accessor
+                    } else {
+                        AccessorMethodLink::PlainMethod
+                    };
+                    if let Some(kind) = accessor_method_link_error(link) {
+                        return Err(CompileError::new(kind, span));
                     }
                     current = *receiver;
                 }
                 _ => {
                     return Err(CompileError::new(
-                        ErrorKind::AccessorYieldNotReceiverRooted {
-                            found: "a value expression".to_string(),
-                        },
+                        accessor_yield_root_error(&AccessorYieldRootForm::Value),
                         span,
                     ));
                 }
@@ -1929,9 +1926,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // that bypasses it.
         if ctx.accessor_trailing_yield.is_some() {
             return Err(CompileError::new(
-                ErrorKind::AccessorBodyOtherExit {
-                    found: "a `return`".to_string(),
-                },
+                crate::declaration_validation::accessor_exit_error(AccessorExitForm::Return),
                 span,
             ));
         }
