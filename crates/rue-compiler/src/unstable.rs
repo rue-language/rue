@@ -510,6 +510,71 @@ pub fn executable_in_compile_scope(
     session.executable_in_compile_scope(options)
 }
 
+/// Cloneable cancellation authority for one retained-host compile cycle.
+///
+/// This deliberately hides query-runtime identities and keys. Canceling a
+/// request prevents its unpublished backend root and linked bytes from being
+/// selected for publication; already retained terminals remain reusable.
+#[derive(Clone, Default)]
+pub struct CompilationCancellation {
+    token: rue_query::CancellationToken,
+}
+
+impl CompilationCancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.token.cancel();
+    }
+
+    pub fn is_canceled(&self) -> bool {
+        self.token.is_canceled()
+    }
+}
+
+/// Host-facing outcome of a cancellable retained compilation.
+pub enum CancellableCompileOutcome {
+    Completed(Box<crate::CompileOutput>),
+    Errors(crate::CompileErrors),
+    Canceled,
+}
+
+/// Compile the current closed discovery revision with cooperative
+/// cancellation, inside a tracing span owned by the filesystem driver.
+pub fn cancellable_executable_in_compile_scope(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+    cancellation: CompilationCancellation,
+) -> CancellableCompileOutcome {
+    let snapshot = match session.committed_snapshot_for_executable() {
+        Ok(snapshot) => snapshot,
+        Err(errors) => return CancellableCompileOutcome::Errors(errors),
+    };
+    match crate::queries::compile_with_session_with_cancellation(
+        session,
+        &snapshot,
+        options,
+        cancellation.token,
+    ) {
+        Ok(output) => CancellableCompileOutcome::Completed(Box::new(output)),
+        Err(crate::session::PipelineRequestControl::Compile(errors)) => {
+            CancellableCompileOutcome::Errors(errors)
+        }
+        Err(crate::session::PipelineRequestControl::Abort(rue_query::QueryAbort::Canceled)) => {
+            CancellableCompileOutcome::Canceled
+        }
+        Err(crate::session::PipelineRequestControl::Abort(abort)) => {
+            CancellableCompileOutcome::Errors(crate::CompileErrors::from(
+                crate::CompileError::without_span(crate::ErrorKind::InternalError(format!(
+                    "cancellable compile query aborted: {abort:?}"
+                ))),
+            ))
+        }
+    }
+}
+
 /// Opaque continuation at ADR-0068's codegen-ready endpoint.
 ///
 /// It owns the unpublished backend-root protection acquired with the rooted

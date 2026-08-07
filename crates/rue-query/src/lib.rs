@@ -403,6 +403,97 @@ mod registered_batch_tests {
         );
     }
 
+    fn run_stale_reverse_dependency_validation(worker_count: usize) {
+        let runtime = QueryRuntime::new(worker_count);
+        let first = Revision::new(3, 11);
+        let second = Revision::new(4, 11);
+        let shape_input = InputIdentity::new("source", "stale-reverse-dependency-shape");
+        runtime
+            .publish_revision(first, [(shape_input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(shape_input.clone(), 2)])
+            .unwrap();
+
+        // Keep the graph family ordered before the shape family. Retained
+        // dependency validation is canonical rather than evaluation ordered,
+        // so the stale reverse graph edge is checked before the changed shape
+        // edge which would otherwise dirty the predecessor immediately.
+        let shape_input_for_evaluator = shape_input.clone();
+        let shapes = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "z-stale-reverse-shape",
+                8,
+                move |context, _, _| {
+                    Ok(QueryOutput::success(
+                        context.input(shape_input_for_evaluator.clone())?,
+                    ))
+                },
+            )
+            .unwrap();
+        let graph_slot = Arc::new(std::sync::OnceLock::<QueryFamily<Key, u64>>::new());
+        let graph_slot_for_evaluator = graph_slot.clone();
+        let shapes_for_graph = shapes.clone();
+        let graph = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "a-stale-reverse-graph",
+                8,
+                move |context, _, key| {
+                    let shape = context.query_registered(&shapes_for_graph, key.clone())?;
+                    let QueryOutcome::Success(shape) = shape.outcome() else {
+                        unreachable!()
+                    };
+                    let dependency = match (key.0, *shape) {
+                        ("a", 1) | ("b", 2) => None,
+                        ("b", 1) => Some(Key("a")),
+                        ("a", 2) => Some(Key("b")),
+                        _ => unreachable!(),
+                    };
+                    if let Some(dependency) = dependency {
+                        context.query_registered_batch(
+                            graph_slot_for_evaluator.get().unwrap(),
+                            [dependency],
+                        )?;
+                    }
+                    Ok(QueryOutput::success(*shape))
+                },
+            )
+            .unwrap();
+        graph_slot.set(graph.clone()).unwrap();
+
+        // Revision one is B -> A. Revision two reverses the legal graph to
+        // A -> B. While computing the new A, validating old B observes its
+        // stale B -> A edge before B's changed shape. That speculative edge
+        // must dirty B, whose current leaf evaluation then lets A finish.
+        runtime
+            .request_registered(&graph, first, Key("b"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let current =
+            runtime.request_registered(&graph, second, Key("a"), CancellationToken::new());
+        assert_eq!(
+            current.abort(),
+            None,
+            "a stale predecessor edge is not a current dependency cycle"
+        );
+        assert_eq!(
+            current.terminal().unwrap().outcome(),
+            &QueryOutcome::Success(2)
+        );
+        assert_eq!(
+            runtime.metrics().cycles,
+            0,
+            "speculative validation cycles are not reported as current cycles"
+        );
+    }
+
+    #[test]
+    fn stale_reverse_dependency_validation_recomputes_with_one_and_many_workers() {
+        for worker_count in [1, 4] {
+            run_stale_reverse_dependency_validation(worker_count);
+        }
+    }
+
     #[test]
     fn registered_batch_transfers_exact_leases_and_handoffs_before_child_teardown() {
         let runtime = QueryRuntime::new(1);
@@ -4394,7 +4485,9 @@ where
             incarnation: node.incarnation,
         };
         if let Some(cycle) = task.stack_cycle(&exact_node) {
-            self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+            if observe_result {
+                self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+            }
             return TaskQueryResult::Aborted {
                 abort: QueryAbort::Cycle(cycle),
                 dependencies: Vec::new(),
@@ -4550,7 +4643,7 @@ where
                     self.core.metrics.joins.fetch_add(1, Ordering::Relaxed);
                     #[cfg(test)]
                     self.core.test_changed();
-                    match self.join(&task, node, attempt, owner) {
+                    match self.join(&task, node, attempt, owner, observe_result) {
                         Err(abort) => {
                             return TaskQueryResult::Aborted {
                                 abort,
@@ -4696,6 +4789,7 @@ where
         node: &Arc<Node<K, V>>,
         attempt_id: u64,
         owner: TaskId,
+        record_cycle: bool,
     ) -> Result<Option<(u64, Arc<AttemptHandoffLifecycle>, TerminalPin<K, V>)>, QueryAbort> {
         let mut state = lock(&node.state);
         if task.cancellation.is_canceled() {
@@ -4742,7 +4836,9 @@ where
         }
         if let Err(cycle) = self.core.begin_wait(task.id, owner, node.identity.clone()) {
             decrement_waiter(&mut state, attempt_id);
-            self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+            if record_cycle {
+                self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+            }
             return Err(QueryAbort::Cycle(cycle));
         }
         let cancellation_watch = task.cancellation.watch(&node.wait);
@@ -7737,6 +7833,14 @@ impl RuntimeCore {
                     Err(QueryAbort::Canceled) if !task.cancellation.is_canceled() => {
                         return Ok(false);
                     }
+                    // Validation follows the predecessor's dependency graph.
+                    // A legal edit may reverse an edge: while computing the
+                    // current parent, checking the stale child can temporarily
+                    // point back to that parent. This is evidence that the
+                    // retained candidate is dirty, not that the current graph
+                    // is cyclic. Recompute from current inputs; a real cycle is
+                    // then rediscovered by the ordinary observed request.
+                    Err(QueryAbort::Cycle(_)) => return Ok(false),
                     Err(abort) => return Err(abort),
                 },
                 None => None,

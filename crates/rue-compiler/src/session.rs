@@ -863,6 +863,31 @@ enum SemanticRequestControl {
     Parked(Box<crate::ParkedToolchainModules>),
 }
 
+#[derive(Debug)]
+pub(crate) enum PipelineRequestControl {
+    Compile(CompileErrors),
+    Abort(rue_query::QueryAbort),
+}
+
+impl From<CompileErrors> for PipelineRequestControl {
+    fn from(errors: CompileErrors) -> Self {
+        Self::Compile(errors)
+    }
+}
+
+impl From<CompileError> for PipelineRequestControl {
+    fn from(error: CompileError) -> Self {
+        Self::Compile(error.into())
+    }
+}
+
+fn pipeline_abort_errors(context: &str, abort: rue_query::QueryAbort) -> CompileErrors {
+    CompileError::without_span(ErrorKind::InternalError(format!(
+        "{context} query aborted: {abort:?}"
+    )))
+    .into()
+}
+
 /// The outcome of the rooted, park-aware semantic entry
 /// [`CompilerSession::semantic_or_toolchain_park`] (RUE-1112), consumed by the
 /// host source-loading driver through the unstable facade.
@@ -4680,7 +4705,8 @@ impl CompilerSession {
     fn rooted_warning_references(
         &mut self,
         graph: &RootedBodyGraph,
-    ) -> Result<BTreeSet<crate::StableDefinitionKey>, CompileErrors> {
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<BTreeSet<crate::StableDefinitionKey>, PipelineRequestControl> {
         let functions = graph
             .declarations
             .iter()
@@ -4764,13 +4790,9 @@ impl CompilerSession {
                         instance: crate::FunctionInstanceKey::Definition(declaration.key.clone()),
                         configuration: graph.configuration.clone(),
                     },
-                    rue_query::CancellationToken::new(),
+                    cancellation.clone(),
                 )
-                .map_err(|abort| {
-                    CompileError::without_span(ErrorKind::InternalError(format!(
-                        "warning body-reference query aborted: {abort:?}"
-                    )))
-                })?;
+                .map_err(PipelineRequestControl::Abort)?;
             #[cfg(not(test))]
             let _ = execution;
             #[cfg(test)]
@@ -4800,16 +4822,32 @@ impl CompilerSession {
         &mut self,
         options: &CompileOptions,
     ) -> Result<RootedCfgOutput, CompileErrors> {
-        let graph = match self
-            .rooted_body_graph_with_cancellation(options, rue_query::CancellationToken::new())
-        {
+        match self.rooted_cfg_with_cancellation(options, rue_query::CancellationToken::new()) {
+            Ok(output) => Ok(output),
+            Err(PipelineRequestControl::Compile(errors)) => Err(errors),
+            Err(PipelineRequestControl::Abort(abort)) => {
+                Err(pipeline_abort_errors("rooted CFG", abort))
+            }
+        }
+    }
+
+    pub(crate) fn rooted_cfg_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedCfgOutput, PipelineRequestControl> {
+        let graph = match self.rooted_body_graph_with_cancellation(options, cancellation.clone()) {
             Ok(graph) => graph,
-            Err(SemanticRequestControl::Compile(errors)) => return Err(errors),
+            Err(SemanticRequestControl::Compile(errors)) => {
+                return Err(PipelineRequestControl::Compile(errors));
+            }
             Err(SemanticRequestControl::Parked(park)) => {
-                return Err(unresolved_toolchain_park_errors(&park));
+                return Err(PipelineRequestControl::Compile(
+                    unresolved_toolchain_park_errors(&park),
+                ));
             }
             Err(SemanticRequestControl::Abort(abort)) => {
-                panic!("uncanceled rooted CFG request aborted: {abort:?}")
+                return Err(PipelineRequestControl::Abort(abort));
             }
         };
         let mut work = graph.work;
@@ -4841,7 +4879,7 @@ impl CompilerSession {
             })
             .collect::<BTreeMap<_, _>>();
         let mut cfg_inputs = Vec::with_capacity(identities.len());
-        let warning_references = self.rooted_warning_references(&graph)?;
+        let warning_references = self.rooted_warning_references(&graph, cancellation.clone())?;
         let mut warnings = rooted_unused_function_warnings(&graph, &warning_references);
         for closure_body in graph.closure.bodies.iter() {
             let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
@@ -4857,13 +4895,9 @@ impl CompilerSession {
                 .body_source_locator_projection(
                     graph.revision,
                     closure_body.key.clone(),
-                    rue_query::CancellationToken::new(),
+                    cancellation.clone(),
                 )
-                .map_err(|abort| {
-                    CompileError::without_span(ErrorKind::InternalError(format!(
-                        "body source locator query aborted: {abort:?}"
-                    )))
-                })?;
+                .map_err(PipelineRequestControl::Abort)?;
             let rue_query::QueryOutcome::Success(locator) = locator.outcome() else {
                 unreachable!("BodySourceLocator publishes typed values")
             };
@@ -5047,7 +5081,7 @@ impl CompilerSession {
         let (cfg_batch_key, attempt) = self.queries.revisioned.optimized_cfg_batch(
             graph.revision,
             optimized_keys,
-            rue_query::CancellationToken::new(),
+            cancellation,
         );
         let batch_execution = attempt.execution();
         let executions = if batch_execution == rue_query::RequestExecution::Computed {
@@ -5077,11 +5111,9 @@ impl CompilerSession {
                 terminal,
             );
         }
-        let batch = attempt.into_result().map_err(|abort| {
-            CompileError::without_span(ErrorKind::InternalError(format!(
-                "optimized CFG batch query aborted: {abort:?}"
-            )))
-        })?;
+        let batch = attempt
+            .into_result()
+            .map_err(PipelineRequestControl::Abort)?;
         let rue_query::QueryOutcome::Success(batch) = batch.outcome() else {
             unreachable!("OptimizedCfgBatch publishes typed values")
         };
@@ -5117,8 +5149,8 @@ impl CompilerSession {
                     errors,
                     body_span: old_span,
                 } => {
-                    return Err(crate::cfg_query::import_errors(
-                        errors, *old_span, body_span,
+                    return Err(PipelineRequestControl::Compile(
+                        crate::cfg_query::import_errors(errors, *old_span, body_span),
                     ));
                 }
             };
@@ -5191,8 +5223,28 @@ impl CompilerSession {
         options: &CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<RootedCodegenOutput, CompileErrors> {
-        let ready = self.rooted_codegen_ready(options, request)?;
-        self.rooted_objects_ready(ready)
+        match self.rooted_codegen_with_cancellation(
+            options,
+            request,
+            rue_query::CancellationToken::new(),
+        ) {
+            Ok(output) => Ok(output),
+            Err(PipelineRequestControl::Compile(errors)) => Err(errors),
+            Err(PipelineRequestControl::Abort(abort)) => {
+                Err(pipeline_abort_errors("rooted codegen", abort))
+            }
+        }
+    }
+
+    pub(crate) fn rooted_codegen_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedCodegenOutput, PipelineRequestControl> {
+        let ready =
+            self.rooted_codegen_ready_with_cancellation(options, request, cancellation.clone())?;
+        self.rooted_objects_ready_with_cancellation(ready, cancellation)
     }
 
     /// Collect the rooted reached set's canonical CodegenUnits while retaining
@@ -5202,6 +5254,25 @@ impl CompilerSession {
         options: &CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<RootedCodegenReadyOutput, CompileErrors> {
+        match self.rooted_codegen_ready_with_cancellation(
+            options,
+            request,
+            rue_query::CancellationToken::new(),
+        ) {
+            Ok(output) => Ok(output),
+            Err(PipelineRequestControl::Compile(errors)) => Err(errors),
+            Err(PipelineRequestControl::Abort(abort)) => {
+                Err(pipeline_abort_errors("codegen-ready", abort))
+            }
+        }
+    }
+
+    pub(crate) fn rooted_codegen_ready_with_cancellation(
+        &mut self,
+        options: &CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedCodegenReadyOutput, PipelineRequestControl> {
         let RootedCfgOutput {
             graph,
             cfgs,
@@ -5209,7 +5280,7 @@ impl CompilerSession {
             work,
             backend_work: cfg_work,
             mut backend_root,
-        } = self.rooted_cfg(options)?;
+        } = self.rooted_cfg_with_cancellation(options, cancellation.clone())?;
 
         let codegen_keys = cfgs
             .iter()
@@ -5234,11 +5305,10 @@ impl CompilerSession {
         }
         let _codegen_collection_span =
             tracing::info_span!("codegen_collection", phase = "backend").entered();
-        let (codegen_batch_key, attempt) = self.queries.revisioned.codegen_unit_batch(
-            graph.revision,
-            codegen_keys,
-            rue_query::CancellationToken::new(),
-        );
+        let (codegen_batch_key, attempt) =
+            self.queries
+                .revisioned
+                .codegen_unit_batch(graph.revision, codegen_keys, cancellation);
         let batch_execution = attempt.execution();
         let child_attempts = if batch_execution == rue_query::RequestExecution::Computed {
             let attempts = attempt
@@ -5277,11 +5347,9 @@ impl CompilerSession {
                 terminal,
             );
         }
-        let batch = attempt.into_result().map_err(|abort| {
-            CompileError::without_span(ErrorKind::InternalError(format!(
-                "codegen batch query aborted: {abort:?}"
-            )))
-        })?;
+        let batch = attempt
+            .into_result()
+            .map_err(PipelineRequestControl::Abort)?;
         let rue_query::QueryOutcome::Success(batch) = batch.outcome() else {
             unreachable!("CodegenUnitBatch publishes typed terminals")
         };
@@ -5314,7 +5382,7 @@ impl CompilerSession {
                     }
                 }
                 crate::codegen_query::CodegenUnitValue::Failure(errors) => {
-                    return Err(errors.clone());
+                    return Err(PipelineRequestControl::Compile(errors.clone()));
                 }
             }
         }
@@ -5338,6 +5406,22 @@ impl CompilerSession {
         &mut self,
         ready: RootedCodegenReadyOutput,
     ) -> Result<RootedCodegenOutput, CompileErrors> {
+        match self
+            .rooted_objects_ready_with_cancellation(ready, rue_query::CancellationToken::new())
+        {
+            Ok(output) => Ok(output),
+            Err(PipelineRequestControl::Compile(errors)) => Err(errors),
+            Err(PipelineRequestControl::Abort(abort)) => {
+                Err(pipeline_abort_errors("objects-ready", abort))
+            }
+        }
+    }
+
+    pub(crate) fn rooted_objects_ready_with_cancellation(
+        &mut self,
+        ready: RootedCodegenReadyOutput,
+        cancellation: rue_query::CancellationToken,
+    ) -> Result<RootedCodegenOutput, PipelineRequestControl> {
         let RootedCodegenReadyOutput {
             graph,
             units,
@@ -5359,7 +5443,7 @@ impl CompilerSession {
         let (object_batch_key, object_attempt) = self.queries.revisioned.object_projection_batch(
             graph.revision,
             object_keys,
-            rue_query::CancellationToken::new(),
+            cancellation.clone(),
         );
         let object_batch_execution = object_attempt.execution();
         let object_child_attempts =
@@ -5389,11 +5473,9 @@ impl CompilerSession {
                     terminal,
                 );
         }
-        let object_batch = object_attempt.into_result().map_err(|abort| {
-            CompileError::without_span(ErrorKind::InternalError(format!(
-                "object projection batch query aborted: {abort:?}"
-            )))
-        })?;
+        let object_batch = object_attempt
+            .into_result()
+            .map_err(PipelineRequestControl::Abort)?;
         let rue_query::QueryOutcome::Success(object_batch) = object_batch.outcome() else {
             unreachable!("ObjectProjectionBatch publishes typed terminals")
         };
@@ -5421,7 +5503,7 @@ impl CompilerSession {
                     }
                 }
                 crate::object_query::ObjectProjectionValue::Failure(errors) => {
-                    return Err(errors.clone());
+                    return Err(PipelineRequestControl::Compile(errors.clone()));
                 }
             }
         }
@@ -5458,14 +5540,15 @@ impl CompilerSession {
                 }
             })
             .collect();
+        if cancellation.is_canceled() {
+            return Err(PipelineRequestControl::Abort(
+                rue_query::QueryAbort::Canceled,
+            ));
+        }
         self.queries
             .revisioned
             .publish_backend_root(graph.revision, backend_root, object_batch_key)
-            .map_err(|abort| {
-                CompileError::without_span(ErrorKind::InternalError(format!(
-                    "backend root publication aborted: {abort:?}"
-                )))
-            })?;
+            .map_err(PipelineRequestControl::Abort)?;
         Ok(RootedCodegenOutput {
             units,
             objects,

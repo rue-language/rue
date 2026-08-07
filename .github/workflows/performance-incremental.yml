@@ -1,0 +1,69 @@
+# Lower-frequency retained-session edit report (ADR-0068 / RUE-1253).
+#
+# This suite is advisory performance evidence and intentionally does not append
+# to ADR-0067's raw history, dashboard, or headline index. Structural invalidity
+# produces no report. A warm/fresh divergence publishes its JSON and Markdown
+# evidence before the workflow preserves the runner's nonzero status.
+name: Incremental compiler performance
+
+on:
+  schedule:
+    - cron: "43 8 * * 4"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two retained-session runs on one hosted machine would measure contention,
+# not Rue. Let an active weekly or manually dispatched run finish.
+concurrency:
+  group: compiler-incremental-performance
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dotslash
+        uses: facebook/install-dotslash@v2
+
+      - name: Build the retained-session runner
+        run: ./buck2 build //crates/rue-bench:rue-bench
+
+      - name: Measure retained-session edits
+        id: measure
+        env:
+          RUE_BENCH_RUNNER_LABEL: github-hosted
+          RUE_BENCH_RUNNER_IMAGE: ubuntu-24.04
+        run: |
+          set -euo pipefail
+          mkdir -p incremental-report
+          set +e
+          ./buck2 run //crates/rue-bench:rue-bench -- incremental \
+            --manifest performance/incremental.toml \
+            --fixtures performance/incremental-fixtures.toml \
+            --commit "${{ github.sha }}" \
+            --repo-root . \
+            --std-root std \
+            --out incremental-report/report.json
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Publish report artifact
+        if: steps.measure.outputs.status == '0' || steps.measure.outputs.status == '3'
+        uses: actions/upload-artifact@v6
+        with:
+          name: compiler-incremental-${{ github.sha }}
+          path: incremental-report/
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Preserve collection status
+        if: steps.measure.outputs.status != '0'
+        env:
+          MEASUREMENT_STATUS: ${{ steps.measure.outputs.status }}
+        run: exit "${MEASUREMENT_STATUS:-2}"

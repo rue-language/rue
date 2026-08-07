@@ -1,8 +1,9 @@
 use std::path::Path;
 
 use rue_compiler::unstable::{
-    CodegenReady, ObjectsReady, PresentationOutput, PresentationRequest, codegen_ready,
-    executable_in_compile_scope, objects_ready, runnable_ready,
+    CancellableCompileOutcome, CodegenReady, CompilationCancellation, ObjectsReady,
+    PresentationOutput, PresentationRequest, cancellable_executable_in_compile_scope,
+    codegen_ready, executable_in_compile_scope, objects_ready, runnable_ready,
 };
 use rue_compiler::{
     AcceptedReadManifest, CompileOptions, CompileOutput, ImportDiscoveryContext,
@@ -66,6 +67,12 @@ impl FilesystemCompilerHost {
         &self.state.read_manifest
     }
 
+    /// Exact accepted filesystem closure, plus the policy manifest that can
+    /// change which reads are allowed on the next observation.
+    pub fn watch_inputs(&self) -> Vec<(std::path::PathBuf, u64)> {
+        self.state.watch_inputs()
+    }
+
     pub fn root_path(&self) -> &Path {
         &self.state.resolution.root_path
     }
@@ -99,6 +106,14 @@ impl FilesystemCompilerHost {
         options: &CompileOptions,
     ) -> MultiErrorResult<CompileOutput> {
         executable_in_compile_scope(&mut self.state.session, options)
+    }
+
+    pub fn cancellable_executable_in_compile_scope(
+        &mut self,
+        options: &CompileOptions,
+        cancellation: CompilationCancellation,
+    ) -> CancellableCompileOutcome {
+        cancellable_executable_in_compile_scope(&mut self.state.session, options, cancellation)
     }
 
     /// Reach ADR-0068's codegen-ready endpoint without projecting objects.
@@ -315,5 +330,19 @@ mod tests {
 
         assert!(!errors.is_empty());
         assert!(errors.to_string().contains("missing_name"));
+    }
+
+    #[test]
+    fn canceled_compile_does_not_produce_linked_bytes() {
+        let dir = TestDir::new("canceled-compile");
+        dir.write("main.rue", "fn main() -> i32 { 0 }\n");
+        let mut host = dir.open();
+        let cancellation = CompilationCancellation::new();
+        cancellation.cancel();
+
+        assert!(matches!(
+            host.cancellable_executable_in_compile_scope(&CompileOptions::default(), cancellation,),
+            CancellableCompileOutcome::Canceled
+        ));
     }
 }
