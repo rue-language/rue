@@ -1,0 +1,33 @@
+const support = @import("support.rue");
+
+const incremental_import_value: u64 = 0;
+fn incremental_import_probe() -> u64 { incremental_import_value }
+
+fn incremental_unreachable() -> u64 { 101 }
+
+fn incremental_body() -> u64 { 201 }
+
+fn incremental_signature(value: u64) -> u64 { value + 1 }
+fn incremental_signature_probe() -> u64 { incremental_signature(301) }
+
+struct IncrementalLayout {
+    first: u64,
+}
+
+fn incremental_layout_probe() -> u64 {
+    let value = IncrementalLayout { first: 401 };
+    value.first
+}
+
+fn incremental_reachable_leaf() -> u64 { 501 }
+
+fn incremental_anchor() -> u64 {
+    incremental_import_probe()
+        + incremental_body()
+        + incremental_signature_probe()
+        + incremental_layout_probe()
+        + incremental_reachable_leaf()
+        + support.value()
+}
+
+fn main() -> i32 { @intCast(incremental_anchor()) }

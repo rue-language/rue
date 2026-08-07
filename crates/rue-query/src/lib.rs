@@ -19,6 +19,7 @@ static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 const VALIDATION_PROOF_REGISTERED: u8 = 0;
 const VALIDATION_PROOF_RETRYABLE: u8 = 1;
 const VALIDATION_PROOF_UNREGISTERED: u8 = 2;
+const VALIDATION_PUBLISH_SWEEP_QUANTUM: usize = 64;
 
 /// Initial runtime-wide soft budget for deterministic retained terminal charge.
 ///
@@ -4798,6 +4799,7 @@ where
                 match validation {
                     Ok((true, registered_only, _)) => {
                         if observe_result && !task.observe_handoff(handoffs) {
+                            task.defer_pin_release(pin);
                             self.detach_terminal_attempt(node, attempt_id);
                             continue;
                         }
@@ -4814,18 +4816,18 @@ where
                         }
                         if observe_result || endorse {
                             self.lease_observed_pin(&task, pin);
+                        } else {
+                            task.defer_pin_release(pin);
                         }
-                        // An unobserved validation reuse drops `pin` here,
-                        // releasing it, as a stale candidate does at the end of
-                        // its own iteration.
                         return TaskQueryResult::Terminal {
                             terminal,
                             execution: RequestExecution::Reused,
                             work: Vec::new(),
                         };
                     }
-                    Ok((false, _, _)) => {}
+                    Ok((false, _, _)) => task.defer_pin_release(pin),
                     Err(abort) => {
+                        task.defer_pin_release(pin);
                         return TaskQueryResult::Aborted {
                             abort,
                             dependencies: Vec::new(),
@@ -5366,9 +5368,15 @@ where
         if lease {
             self.enforce_retention_after_publish();
         } else {
-            // A validation-only publication has no birth lease. It can be
-            // evicted immediately, so preserve eager enforcement for it.
-            self.enforce_retention();
+            // A validation-only publication has no birth lease and can be
+            // evicted immediately. Sweep in bounded batches rather than once
+            // per publication: when a large protected prefix occupies the
+            // queue, evicting one new unpinned terminal per full scan is
+            // quadratic in the validation cone. The rooted task schedules one
+            // final strict pass, so the family is back at its configured bound
+            // when the request completes.
+            task.defer_family_enforcement(self.retention_enforcer());
+            self.enforce_retention_after_publish_with_margin(VALIDATION_PUBLISH_SWEEP_QUANTUM);
         }
         if aggregate_probe {
             self.core.enforce_runtime_retention_after_probe();
@@ -5377,6 +5385,10 @@ where
     }
 
     fn enforce_retention_after_publish(&self) {
+        self.enforce_retention_after_publish_with_margin(1);
+    }
+
+    fn enforce_retention_after_publish_with_margin(&self, sweep_margin: usize) {
         let retained = self.inner.retained_count.load(Ordering::Acquire);
         loop {
             let threshold = self.inner.next_publish_sweep.load(Ordering::Acquire);
@@ -5392,13 +5404,17 @@ where
                 .compare_exchange(threshold, usize::MAX, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                self.enforce_retention();
+                self.enforce_retention_with_margin(sweep_margin);
                 return;
             }
         }
     }
 
     fn enforce_retention(&self) {
+        self.enforce_retention_with_margin(1);
+    }
+
+    fn enforce_retention_with_margin(&self, sweep_margin: usize) {
         self.core
             .metrics
             .retention_enforcements
@@ -5419,11 +5435,22 @@ where
         let next_publish_sweep = if retained > self.inner.retention_limit {
             retained.saturating_mul(2).max(retained.saturating_add(1))
         } else {
-            self.inner.retention_limit.saturating_add(1)
+            self.inner.retention_limit.saturating_add(sweep_margin)
         };
         self.inner
             .next_publish_sweep
             .store(next_publish_sweep, Ordering::Release);
+    }
+
+    fn retention_enforcer(&self) -> FamilyEnforcer {
+        FamilyEnforcer {
+            family_id: Arc::as_ptr(&self.inner) as *const () as usize,
+            core: self.core.clone(),
+            enforce: Box::new({
+                let family = self.clone();
+                move || family.enforce_retention()
+            }),
+        }
     }
 
     /// Pins a retained terminal against eviction.
@@ -6600,6 +6627,10 @@ struct TaskLeases {
     /// each of which decrements its terminal's pin count and re-enforces the
     /// owning family's retention bound.
     held: Vec<Box<dyn ObservedLease>>,
+    /// Family/runtime retention passes deferred until this rooted request has
+    /// finished publishing and all of its task leases can be released in the
+    /// same one-per-family batch.
+    deferred: DeferredEnforcements,
 }
 
 impl fmt::Debug for TaskLeases {
@@ -6608,6 +6639,7 @@ impl fmt::Debug for TaskLeases {
             .debug_struct("TaskLeases")
             .field("observed", &self.observed.len())
             .field("held", &self.held.len())
+            .field("deferred_families", &self.deferred.enforcers.len())
             .finish()
     }
 }
@@ -6631,7 +6663,8 @@ impl Drop for TaskLeases {
     /// that family's decrements are visible. The result is O(pins) decrements
     /// plus O(distinct families) enforcement passes.
     fn drop(&mut self) {
-        batched_release(&mut self.held);
+        batched_release_into(&mut self.held, &mut self.deferred);
+        std::mem::take(&mut self.deferred).enforce();
     }
 }
 
@@ -6649,22 +6682,17 @@ fn batched_release(held: &mut Vec<Box<dyn ObservedLease>>) {
     if held.is_empty() {
         return;
     }
-    let mut enforcers: BTreeMap<usize, FamilyEnforcer> = BTreeMap::new();
-    let mut runtimes: BTreeMap<u64, Arc<RuntimeCore>> = BTreeMap::new();
+    let mut deferred = DeferredEnforcements::default();
+    batched_release_into(held, &mut deferred);
+    deferred.enforce();
+}
+
+fn batched_release_into(
+    held: &mut Vec<Box<dyn ObservedLease>>,
+    deferred: &mut DeferredEnforcements,
+) {
     for lease in held.drain(..) {
-        let Some(enforcer) = lease.release_deferred() else {
-            continue;
-        };
-        runtimes
-            .entry(enforcer.core.identity)
-            .or_insert_with(|| enforcer.core.clone());
-        enforcers.entry(enforcer.family_id).or_insert(enforcer);
-    }
-    for (_family_id, enforcer) in enforcers {
-        enforcer.enforce();
-    }
-    for (_runtime_id, runtime) in runtimes {
-        runtime.enforce_runtime_retention();
+        deferred.release(lease);
     }
 }
 
@@ -6841,19 +6869,7 @@ where
         // Suppress the `Drop` decrement/enforce so the boxed pin can free its
         // Arcs normally without double-releasing or scanning.
         self.deferred.store(true, Ordering::Relaxed);
-        // Stable per-family identity: the address of the shared `FamilyInner`,
-        // identical across every pin and clone of one family, distinct across
-        // families even when their types coincide. This is the dedup key that
-        // collapses N pins in a family to one enforcement.
-        let family_id = Arc::as_ptr(&self.family.inner) as *const () as usize;
-        (previous == 1).then(|| FamilyEnforcer {
-            family_id,
-            core: self.family.core.clone(),
-            enforce: Box::new({
-                let family = self.family.clone();
-                move || family.enforce_retention()
-            }),
-        })
+        (previous == 1).then(|| self.family.retention_enforcer())
     }
 }
 
@@ -6866,6 +6882,37 @@ struct FamilyEnforcer {
     family_id: usize,
     core: Arc<RuntimeCore>,
     enforce: Box<dyn FnOnce() + Send>,
+}
+
+#[derive(Default)]
+struct DeferredEnforcements {
+    enforcers: BTreeMap<usize, FamilyEnforcer>,
+    runtimes: BTreeMap<u64, Arc<RuntimeCore>>,
+}
+
+impl DeferredEnforcements {
+    fn insert(&mut self, enforcer: FamilyEnforcer) {
+        self.runtimes
+            .entry(enforcer.core.identity)
+            .or_insert_with(|| enforcer.core.clone());
+        self.enforcers.entry(enforcer.family_id).or_insert(enforcer);
+    }
+
+    fn release(&mut self, lease: Box<dyn ObservedLease>) {
+        let Some(enforcer) = lease.release_deferred() else {
+            return;
+        };
+        self.insert(enforcer);
+    }
+
+    fn enforce(self) {
+        for (_family_id, enforcer) in self.enforcers {
+            enforcer.enforce();
+        }
+        for (_runtime_id, runtime) in self.runtimes {
+            runtime.enforce_runtime_retention();
+        }
+    }
 }
 
 impl FamilyEnforcer {
@@ -7218,6 +7265,18 @@ impl Drop for AttemptHandoffLifecycle {
 }
 
 impl Task {
+    fn defer_pin_release<K, V>(&self, pin: TerminalPin<K, V>)
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        lock(&self.leases).deferred.release(Box::new(pin));
+    }
+
+    fn defer_family_enforcement(&self, enforcer: FamilyEnforcer) {
+        lock(&self.leases).deferred.insert(enforcer);
+    }
+
     fn batch_child(self: &Arc<Self>, id: u64) -> Arc<Self> {
         let inherited_filter = lock(&self.nested_attempt_filters).last().cloned();
         let inherits_registered_validation = !lock(&self.validation_endorsements).is_empty();
@@ -14573,6 +14632,90 @@ mod tests {
         assert_eq!(
             deep, shallow,
             "one reuse costs the same whether the node retains 4 attempts or 32"
+        );
+    }
+
+    // A rooted request which invalidates many parent/child pairs used to run
+    // retention once for every stale discovery pin and every speculative child
+    // publication. The task boundary is the safe batching boundary: all pins
+    // release before one strict pass per family, and the runtime-wide pass runs
+    // only after those family passes have converged.
+    #[test]
+    fn validation_only_publication_sweeps_are_batched_per_rooted_request() {
+        const CHILDREN: u64 = 64;
+
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 1);
+        let second = Revision::new(2, 1);
+        let inputs = (0..CHILDREN)
+            .map(|slot| InputIdentity::new("source", format!("child-{slot}")))
+            .collect::<Vec<_>>();
+        runtime
+            .publish_revision(first, inputs.iter().cloned().map(|input| (input, 1)))
+            .unwrap();
+
+        let child = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "batched-validation-publish-child",
+                4096,
+                move |context, _, key| {
+                    let input = InputIdentity::new("source", format!("child-{}", key.0));
+                    Ok(QueryOutput::success(context.input(input)?))
+                },
+            )
+            .unwrap();
+        let child_for_parent = child.clone();
+        let parent = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "batched-validation-publish-parent",
+                4096,
+                move |context, _, key| {
+                    let child = context.query_registered(&child_for_parent, key.clone())?;
+                    let QueryOutcome::Success(value) = child.outcome() else {
+                        unreachable!("the child publishes typed values")
+                    };
+                    Ok(QueryOutput::success(*value))
+                },
+            )
+            .unwrap();
+        for slot in 0..CHILDREN {
+            runtime
+                .request_registered(&parent, first, Slot(slot), CancellationToken::new())
+                .into_result()
+                .unwrap();
+        }
+
+        runtime
+            .publish_revision(second, inputs.into_iter().map(|input| (input, 2)))
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("batched-validation-publish-root", 4096)
+            .unwrap();
+        let before = runtime.metrics();
+        runtime
+            .query(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                |context| {
+                    for slot in 0..CHILDREN {
+                        let terminal = context.query_registered(&parent, Slot(slot))?;
+                        assert_eq!(terminal.outcome(), &QueryOutcome::Success(2));
+                    }
+                    Ok(QueryOutput::success(CHILDREN))
+                },
+            )
+            .unwrap();
+        let after = runtime.metrics();
+
+        assert_eq!(
+            after.retention_enforcements - before.retention_enforcements,
+            3
+        );
+        assert_eq!(
+            after.retention_scan_entries - before.retention_scan_entries,
+            0
         );
     }
 

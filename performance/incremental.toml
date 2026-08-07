@@ -4,10 +4,13 @@
 # fresh-process headline) and `scaling.toml` (fresh maintained-program scale).
 # Fixture edits are added under a new `fixture_revision`; raw report syntax
 # advances independently under `report_schema_version`.
-schema_version = 1
-report_schema_version = 1
-fixture_revision = 1
-samples_per_row = 5
+schema_version = 2
+report_schema_version = 2
+fixture_revision = 2
+# Two workloads each collect seven one-sample structural rows and one five-
+# sample latency row: 24 independent retained sessions in the scheduled matrix.
+timing_samples_per_row = 5
+structural_samples_per_row = 1
 retention_revisions = 1000
 rotation = "left_by_sample"
 target = "x86-64-linux"
@@ -55,10 +58,6 @@ expected_outcome = "diagnostics"
 structural_claim = "Only the exact diagnostic cone recomputes and no successful downstream artifact publishes."
 
 [[workers]]
-mode = "one"
-compiler_arg = "-j1"
-
-[[workers]]
 mode = "automatic"
 compiler_arg = "-j0"
 
@@ -71,6 +70,11 @@ question = "How does a retained edit behave in the medium maintained multi-modul
 id = "lattice"
 source = "examples/lattice/main.rue"
 question = "How does a retained edit behave in the largest maintained program and its fresh-link boundary?"
+
+[retention_workload]
+id = "retention"
+source = "performance/fixtures/incremental-retention/main.rue"
+question = "Does a compact multi-module host remain correct and bounded across a long edit sequence?"
 
 # GitHub documents the standard public Linux x64 runner as 4 CPUs and 16 GB.
 # The memory probe sees usable host memory rather than the marketing capacity,

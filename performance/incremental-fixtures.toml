@@ -5,7 +5,7 @@
 # maintained Mosaic and Lattice sources remain unchanged. Every replacement
 # fragment must occur exactly once.
 schema_version = 1
-fixture_revision = 1
+fixture_revision = 2
 
 [[workloads]]
 id = "mosaic"
@@ -265,6 +265,95 @@ after = "        + incremental_layout_probe()"
 scenario = "error_introduction"
 kind = "replace"
 id = "lattice-error-introduction-v1"
+logical_file = "main.rue"
+before = "fn incremental_body() -> u64 { 201 }"
+after = "fn incremental_body() -> u64 { incremental_missing_name }"
+
+[[workloads]]
+id = "retention"
+fixture_root = "performance/fixtures/incremental-retention"
+root_source = "main.rue"
+overlays = []
+
+[[workloads.edits]]
+scenario = "no_op_reobservation"
+kind = "reobserve"
+id = "retention-no-op-v1"
+
+[[workloads.edits]]
+scenario = "unreachable_body"
+kind = "replace"
+id = "retention-unreachable-body-v1"
+logical_file = "main.rue"
+before = "fn incremental_unreachable() -> u64 { 101 }"
+after = "fn incremental_unreachable() -> u64 { 102 }"
+
+[[workloads.edits]]
+scenario = "reached_body_only"
+kind = "replace"
+id = "retention-reached-body-v1"
+logical_file = "main.rue"
+before = "fn incremental_body() -> u64 { 201 }"
+after = "fn incremental_body() -> u64 { 202 }"
+
+[[workloads.edits]]
+scenario = "callable_signature"
+kind = "replace"
+id = "retention-callable-signature-v1"
+logical_file = "main.rue"
+before = '''fn incremental_signature(value: u64) -> u64 { value + 1 }
+fn incremental_signature_probe() -> u64 { incremental_signature(301) }'''
+after = '''fn incremental_signature(value: u64, extra: u64) -> u64 { value + extra }
+fn incremental_signature_probe() -> u64 { incremental_signature(301, 1) }'''
+
+[[workloads.edits]]
+scenario = "layout_abi"
+kind = "replace"
+id = "retention-layout-abi-v1"
+logical_file = "main.rue"
+before = '''struct IncrementalLayout {
+    first: u64,
+}
+
+fn incremental_layout_probe() -> u64 {
+    let value = IncrementalLayout { first: 401 };
+    value.first
+}'''
+after = '''struct IncrementalLayout {
+    first: u64,
+    second: u64,
+}
+
+fn incremental_layout_probe() -> u64 {
+    let value = IncrementalLayout { first: 401, second: 1 };
+    value.first + value.second
+}'''
+
+[[workloads.edits]]
+scenario = "import_set"
+kind = "replace"
+id = "retention-import-set-v1"
+logical_file = "main.rue"
+before = '''const incremental_import_value: u64 = 0;
+fn incremental_import_probe() -> u64 { incremental_import_value }'''
+after = '''const incremental_fixture = @import("incremental_fixture.rue");
+fn incremental_import_probe() -> u64 { incremental_fixture.value() }'''
+
+[[workloads.edits]]
+scenario = "reachability_deletion"
+kind = "replace"
+id = "retention-reachability-deletion-v1"
+logical_file = "main.rue"
+before = '''        + incremental_layout_probe()
+        + incremental_reachable_leaf()
+        + support.value()'''
+after = '''        + incremental_layout_probe()
+        + support.value()'''
+
+[[workloads.edits]]
+scenario = "error_introduction"
+kind = "replace"
+id = "retention-error-introduction-v1"
 logical_file = "main.rue"
 before = "fn incremental_body() -> u64 { 201 }"
 after = "fn incremental_body() -> u64 { incremental_missing_name }"

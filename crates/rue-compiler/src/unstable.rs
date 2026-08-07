@@ -1615,6 +1615,19 @@ pub struct QueryMetrics {
     pub reuses: usize,
 }
 
+/// Query-runtime validation and retention work contained in [`MetricsSnapshot`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueryRuntimeMetrics {
+    /// Dependency validations satisfied by a revision-scoped memo.
+    pub validation_memo_hits: u64,
+    /// Dependency validations that inspected or re-demanded the node.
+    pub validation_memo_misses: u64,
+    /// Family-local retention passes run.
+    pub retention_enforcements: u64,
+    /// Retention-queue entries examined by those passes.
+    pub retention_scan_entries: u64,
+}
+
 impl From<crate::session::FrontendQueryWork> for QueryMetrics {
     fn from(work: crate::session::FrontendQueryWork) -> Self {
         Self {
@@ -1944,6 +1957,14 @@ impl MetricsSnapshot {
             diagnostic_entries: self.inner.retention.diagnostic_entries,
             diagnostic_source_attempts: self.inner.retention.diagnostic_source_attempts,
             diagnostic_source_bytes: self.inner.retention.diagnostic_source_bytes,
+        }
+    }
+    pub fn query_runtime(&self) -> QueryRuntimeMetrics {
+        QueryRuntimeMetrics {
+            validation_memo_hits: self.inner.runtime.validation_memo_hits,
+            validation_memo_misses: self.inner.runtime.validation_memo_misses,
+            retention_enforcements: self.inner.runtime.retention_enforcements,
+            retention_scan_entries: self.inner.runtime.retention_scan_entries,
         }
     }
     pub fn semantic_work_json(&self, from: usize) -> Value {
