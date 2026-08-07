@@ -26,7 +26,9 @@ scripts/rue all                      # union of every test tier
 scripts/rue spec 4.2                 # filtered specification cases
 scripts/rue cli abi                  # filtered CLI integration cases
 scripts/rue fmt                      # format first-party Rust
-scripts/rue gc                       # remove stale Buck artifacts
+scripts/rue storage status           # inventory Buck usage across worktrees
+scripts/rue storage plan             # dry-run host-wide stale cleanup
+scripts/rue storage clean            # remove stale Buck artifacts host-wide
 ```
 
 For direct compiler invocations, resolve the binary through `scripts/rue-bin`:

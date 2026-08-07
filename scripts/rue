@@ -21,7 +21,8 @@
 #   scripts/rue ui [pattern]       UI/diagnostics tests, optional filter
 #   scripts/rue frontend-manifest  Refresh the audited frontend corpus manifest
 #   scripts/rue fmt                Format the code (./fmt.sh)
-#   scripts/rue gc                 Reclaim disk: drop buck-out artifacts unused for 1+ week
+#   scripts/rue storage [args...]  Inspect or reclaim Buck outputs across worktrees
+#   scripts/rue gc [age]           Compatibility alias for host-wide stale cleanup
 #   scripts/rue cache [args...]    Provision the shared BuildBuddy action cache
 #   scripts/rue path               Print the absolute binary path (build if needed)
 #
@@ -196,9 +197,10 @@ case "$cmd" in
         ./fmt.sh "$@"
         ;;
     gc)
-        # buck-out grows without bound; drop artifacts not used in the last
-        # week. An optional argument overrides the window: scripts/rue gc 1d
-        ./buck2 clean --stale "${1:-1w}"
+        scripts/rue-storage clean "${1:-1w}"
+        ;;
+    storage)
+        scripts/rue-storage "$@"
         ;;
     cache)
         scripts/provision-build-cache "$@"

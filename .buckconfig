@@ -23,6 +23,15 @@ execution_platforms = prelude//platforms:default
 
 [buck2]
 materializations = deferred
+sqlite_materializer_state = true
+defer_write_actions = true
+clean_stale_enabled = true
+# Keep one week of locally used outputs. Buck performs the cleanup after a
+# daemon has been up for twelve hours and then once a day; the materializer
+# coordinates the deletion with active builds.
+clean_stale_artifact_ttl_hours = 168
+clean_stale_period_hours = 24
+clean_stale_start_offset_hours = 12
 
 [project]
 # Keep buck2 from parsing/watching non-source trees inside the project root:

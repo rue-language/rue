@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
-# test-cleanup-scripts.sh — fail-closed regression tests for the destructive
-# maintenance scripts jj-tidy and worktree-gc (RUE-567).
+# test-cleanup-scripts.sh — fail-closed regression tests for maintenance
+# scripts jj-tidy and rue-storage (RUE-567, RUE-1225).
 #
-# Both scripts perform irreversible operations (remote branch deletion,
-# `rm -rf`) driven by Git/GitHub inventory. The bug these tests pin: treating a
-# FAILED or incomplete inventory query as proof that a resource is stale, so a
-# `gh`/`git` failure — or a branch merely absent from one user's open-PR list —
-# caused live resources to be destroyed.
+# jj-tidy performs remote branch deletion. rue-storage only deletes rebuildable
+# Buck outputs, but it still refuses to infer targets from a failed inventory.
 #
-# Each test runs a COPY of the real script in a throwaway sandbox with fake
-# `gh`/`git`/`jj`/`df`/`buck2` on PATH, so no real repo, remote, or disk is
-# touched. The fakes log every invocation; we assert that destructive commands
-# (`git push --delete`, `rm -rf`) are or are not issued as the fail-closed
-# contract requires.
+# Each test runs a copy of the real script in a throwaway sandbox with fake
+# tools, so no real repo, remote, or Buck output is touched.
 set -uo pipefail
 
 # Directory holding the scripts under test. Under buck2 sh_test this is the
@@ -175,87 +169,80 @@ EOF
 }
 
 # ===========================================================================
-# worktree-gc — worktree removal must be fail-closed
+# rue-storage — Buck cleanup must be host-wide and fail-closed
 # ===========================================================================
 
-# Common fakes: df reports high usage (past threshold) so step 2 runs; buck2 and
-# jj no-op. Real `rm`/`git` behavior is per-test.
-setup_gc_common() {
-  local sb="$1"
-  fake "$sb" df 'echo "Use% "; echo "99%"'
-  fake "$sb" buck2 'true'
-  mkdir -p "$sb/.claude/worktrees/live-1" "$sb/.claude/worktrees/live-2"
+setup_storage_root() {
+  local root="$1"
+  mkdir -p "$root/buck-out"
+  : >"$root/.buckconfig"
+  cat >"$root/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s:%s\n' "$PWD" "$*" >>"$CALLS"
+EOF
+  chmod +x "$root/buck2"
 }
 
-# Test 3: `git worktree list` FAILS (exit 128) -> no worktree dir removed.
-test_gc_git_failure_preserves_worktrees() {
-  local sb; sb="$(make_sandbox worktree-gc)"
-  setup_gc_common "$sb"
+test_storage_git_failure_is_fail_closed() {
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  : >"$sb/.buckconfig"
+  printf '#!/bin/sh\nexit 0\n' >"$sb/buck2"; chmod +x "$sb/buck2"
   cat >"$sb/fakebin/git" <<'EOF'
 #!/usr/bin/env bash
 printf 'git ' >>"$CALLS"; printf '%s\n' "$*" >>"$CALLS"
-case "$1 $2" in
-  "worktree prune") exit 0 ;;
-  "worktree list") exit 128 ;;   # jj workspace w/o local .git
-esac
-exit 0
+exit 128
 EOF
   chmod +x "$sb/fakebin/git"
-
-  run_script "$sb" worktree-gc
-  if [ -d "$sb/.claude/worktrees/live-1" ] && [ -d "$sb/.claude/worktrees/live-2" ]; then
-    check "worktree-gc: git-list failure preserves ALL worktrees" 0
-  else
-    check "worktree-gc: git-list failure preserves ALL worktrees" 1
-  fi
-  grep -q 'fail-closed' "$sb/out.log" || fail "worktree-gc: expected fail-closed notice on git failure"
+  run_script "$sb" rue-storage clean || rc=$?
+  check "storage: failed inventory refuses cleanup" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "storage: failed inventory invokes no Buck cleaner" "$(! grep -q ':clean ' "$sb/calls.log" && echo 0 || echo 1)"
+  grep -q 'fail-closed' "$sb/out.log" || fail "storage: expected fail-closed notice on git failure"
   rm -rf "$sb"
 }
 
-# Test 4 (positive control): git succeeds and lists live-1 as active; live-2 is
-# absent -> only the genuinely-orphaned live-2 is removed.
-test_gc_removes_only_orphans_when_git_ok() {
-  local sb; sb="$(make_sandbox worktree-gc)"
-  setup_gc_common "$sb"
-  # Emit live-1's absolute path as an active worktree; omit live-2.
+test_storage_plans_every_registered_root() {
+  local sb; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  setup_storage_root "$sb/root-2"
   cat >"$sb/fakebin/git" <<EOF
 #!/usr/bin/env bash
 printf 'git ' >>"\$CALLS"; printf '%s\n' "\$*" >>"\$CALLS"
-case "\$1 \$2" in
-  "worktree prune") exit 0 ;;
-  "worktree list") printf 'worktree %s/.claude/worktrees/live-1\n' "$sb"; exit 0 ;;
-esac
-exit 0
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n\nworktree %s/root-2\n' "$sb" "$sb"
+  exit 0
+fi
+exit 1
 EOF
   chmod +x "$sb/fakebin/git"
-
-  run_script "$sb" worktree-gc
-  if [ -d "$sb/.claude/worktrees/live-1" ]; then
-    check "worktree-gc: active worktree kept when git succeeds" 0
-  else
-    check "worktree-gc: active worktree kept when git succeeds" 1
-  fi
-  if [ -d "$sb/.claude/worktrees/live-2" ]; then
-    check "worktree-gc: genuinely-orphaned worktree removed" 1
-  else
-    check "worktree-gc: genuinely-orphaned worktree removed" 0
-  fi
+  run_script "$sb" rue-storage plan 2d
+  check "storage: dry-run covers every registered Rue worktree" \
+    "$([ "$(grep -c ':clean --stale 2d --dry-run' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: dry-run never performs a full reset" \
+    "$(! grep -Eq ':clean$' "$sb/calls.log" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
-# Test 5: disk below threshold -> step 2 never runs, nothing removed.
-test_gc_below_threshold_is_noop() {
-  local sb; sb="$(make_sandbox worktree-gc)"
-  fake "$sb" df 'echo "Use% "; echo "10%"'
-  fake "$sb" buck2 'true'
-  fake "$sb" git 'true'
-  mkdir -p "$sb/.claude/worktrees/live-1"
-  run_script "$sb" worktree-gc
-  if [ -d "$sb/.claude/worktrees/live-1" ]; then
-    check "worktree-gc: below threshold removes nothing" 0
-  else
-    check "worktree-gc: below threshold removes nothing" 1
-  fi
+test_storage_reset_validates_all_targets_first() {
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n' "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+  run_script "$sb" rue-storage reset "$sb/root-1" "$sb/not-registered" || rc=$?
+  check "storage: reset rejects an unregistered target" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "storage: reset validates every target before deleting output" \
+    "$(! grep -Eq ':clean$' "$sb/calls.log" 2>/dev/null && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"
+  run_script "$sb" rue-storage reset "$sb/root-1"
+  check "storage: exact registered target can be reset" \
+    "$(grep -Eq ':clean$' "$sb/calls.log" && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -263,9 +250,9 @@ test_gc_below_threshold_is_noop() {
 
 test_jjtidy_gh_failure_deletes_nothing
 test_jjtidy_only_deletes_proven_merged
-test_gc_git_failure_preserves_worktrees
-test_gc_removes_only_orphans_when_git_ok
-test_gc_below_threshold_is_noop
+test_storage_git_failure_is_fail_closed
+test_storage_plans_every_registered_root
+test_storage_reset_validates_all_targets_first
 
 echo "--------------------------------------------------"
 if [ "$FAILURES" -eq 0 ]; then

@@ -14,11 +14,12 @@ usage: scripts/provision-build-cache install
 install reads BUILDBUDDY_API_KEY, or prompts without echo on a terminal, and
 writes the central config with mode 0600. apply links .buckconfig.local in the
 current checkout (or named roots) to that config. --all also discovers Git and
-Codex worktrees. No credential is printed.
+Codex worktrees. A private config from before the Rust upload gate was added is
+upgraded in place without replacing or printing its credential.
 EOF
 }
 
-validate_config() {
+validate_private_config() {
     if [[ ! -f "$central_config" ]] || [[ ! -r "$central_config" ]]; then
         echo "error: BuildBuddy config is unavailable; run scripts/provision-build-cache install" >&2
         return 1
@@ -40,8 +41,57 @@ validate_config() {
         echo "error: BuildBuddy config does not contain a configured API key" >&2
         return 1
     fi
+}
+
+migrate_config() {
+    validate_private_config || return 1
+    if grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=' "$central_config"; then
+        if ! grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$central_config"; then
+            echo "error: BuildBuddy config explicitly disables Rust action uploads" >&2
+            return 1
+        fi
+        return 0
+    fi
+
+    # This is the one recognized legacy shape: a secure, user-owned config
+    # with a configured credential but no upload gate. Preserve every existing
+    # byte (especially the credential) and atomically add only the public knob.
+    umask 077
+    local tmp="${central_config}.tmp.$$"
+    if ! awk '
+        BEGIN { in_buck2 = 0; saw_buck2 = 0; inserted = 0 }
+        /^\[buck2\][[:space:]]*$/ { in_buck2 = 1; saw_buck2 = 1; print; next }
+        /^\[/ && in_buck2 && !inserted {
+            print "default_allow_cache_upload = true"
+            inserted = 1
+            in_buck2 = 0
+        }
+        { print }
+        END {
+            if (saw_buck2 && !inserted) print "default_allow_cache_upload = true"
+            if (!saw_buck2) {
+                print ""
+                print "[buck2]"
+                print "default_allow_cache_upload = true"
+            }
+        }
+    ' "$central_config" >"$tmp"; then
+        rm -f "$tmp"
+        echo "error: could not prepare BuildBuddy config migration" >&2
+        return 1
+    fi
+    if ! chmod 600 "$tmp" || ! mv "$tmp" "$central_config"; then
+        rm -f "$tmp"
+        echo "error: could not install BuildBuddy config migration" >&2
+        return 1
+    fi
+    echo "Upgraded private BuildBuddy config with the Rust upload gate"
+}
+
+validate_config() {
+    migrate_config || return 1
     if ! grep -Eq '^[[:space:]]*default_allow_cache_upload[[:space:]]*=[[:space:]]*true([[:space:]]|$)' "$central_config"; then
-        echo "error: BuildBuddy config does not enable Rust action uploads; rerun scripts/provision-build-cache install" >&2
+        echo "error: BuildBuddy config does not enable Rust action uploads" >&2
         return 1
     fi
 }

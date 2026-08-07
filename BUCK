@@ -901,14 +901,14 @@ rue_test_suite(
     tests = ["//crates/rue-rir:rue-rir[doc]"],
 )
 
-# The destructive maintenance scripts under test (jj-tidy, worktree-gc). Their
-# fail-closed contract is pinned by scripts/test-cleanup-scripts.sh (RUE-567),
-# which runs copies of them against fake gh/git/df on PATH — no real repo,
-# remote, or disk touched.
+# Maintenance scripts with deletion behavior. Their fail-closed contract is
+# pinned by scripts/test-cleanup-scripts.sh (RUE-567, RUE-1225), which runs
+# copies against fake tools — no real repo, remote, or Buck output is touched.
 filegroup(
     name = "cleanup-script-inputs",
     srcs = [
         "scripts/jj-tidy",
+        "scripts/rue-storage",
         "scripts/worktree-gc",
     ],
 )
@@ -940,6 +940,7 @@ filegroup(
         "scripts/check-cache-probe",
         "scripts/rue",
         "scripts/rue-bin",
+        "scripts/rue-storage",
         "scripts/provision-build-cache",
         "scripts/run-large-example.sh",
         "scripts/run-sanitizer.sh",

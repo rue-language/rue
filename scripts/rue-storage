@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Inspect and reclaim Rue's rebuildable Buck outputs across this Git worktree
+# family. This script never removes a worktree or source file.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+usage() {
+    cat <<'EOF'
+usage: scripts/rue-storage status
+       scripts/rue-storage plan [STALE_AGE]
+       scripts/rue-storage clean [STALE_AGE]
+       scripts/rue-storage reset RUE_ROOT [RUE_ROOT ...]
+
+status inventories every registered Rue worktree and its buck-out size. plan
+asks Buck what stale or untracked output it would remove. clean performs that
+coordinated stale cleanup (default age: 1w). reset fully removes Buck outputs
+only from the exact registered roots named by the caller. Source worktrees are
+never removed.
+EOF
+}
+
+collect_roots() {
+    local inventory
+    if ! inventory="$(git -C "$repo_root" worktree list --porcelain 2>/dev/null)"; then
+        echo "error: cannot inventory registered worktrees; refusing cleanup (fail-closed)" >&2
+        return 1
+    fi
+    awk '/^worktree / { sub(/^worktree /, ""); print }' <<<"$inventory"
+}
+
+is_rue_root() {
+    [[ -f "$1/.buckconfig" && -x "$1/buck2" ]]
+}
+
+size_kib() {
+    if [[ -d "$1/buck-out" ]]; then
+        du -sk "$1/buck-out" 2>/dev/null | awk '{print $1}'
+    else
+        printf '0\n'
+    fi
+}
+
+human_kib() {
+    awk -v kib="$1" 'BEGIN {
+        if (kib >= 1048576) printf "%.1f GiB", kib / 1048576;
+        else if (kib >= 1024) printf "%.1f MiB", kib / 1024;
+        else printf "%d KiB", kib;
+    }'
+}
+
+source_state() {
+    local out
+    if ! out="$(git -C "$1" status --porcelain 2>/dev/null)"; then
+        printf 'unknown'
+    elif [[ -n "$out" ]]; then
+        printf 'dirty'
+    else
+        printf 'clean'
+    fi
+}
+
+cache_state() {
+    local destination="$1/.buckconfig.local"
+    if [[ -L "$destination" && -e "$destination" ]]; then
+        printf 'shared'
+    elif [[ -e "$destination" || -L "$destination" ]]; then
+        printf 'custom'
+    else
+        printf 'off'
+    fi
+}
+
+registered_roots() {
+    local root roots
+    roots="$(collect_roots)" || return 1
+    while IFS= read -r root; do
+        [[ -n "$root" ]] || continue
+        if is_rue_root "$root"; then
+            printf '%s\n' "$root"
+        else
+            echo "warning: registered worktree is not a usable Rue checkout: $root" >&2
+        fi
+    done <<<"$roots"
+}
+
+status_all() {
+    local root kib roots total=0 count=0
+    roots="$(registered_roots)" || return 1
+    printf 'BUCK-OUT\tSOURCE\tCACHE\tWORKTREE\n'
+    while IFS= read -r root; do
+        kib="$(size_kib "$root")"
+        total=$((total + kib))
+        count=$((count + 1))
+        printf '%s\t%s\t%s\t%s\n' "$(human_kib "$kib")" "$(source_state "$root")" "$(cache_state "$root")" "$root"
+    done <<<"$roots"
+    printf 'Total: %s in %d registered Rue worktree(s)\n' "$(human_kib "$total")" "$count"
+    df -Pk "$repo_root" | awk 'NR == 2 { printf "Host filesystem: %s used, %.1f GiB available\n", $5, $4 / 1048576 }'
+}
+
+stale_all() {
+    local mode="$1" age="$2" root roots failed=0
+    roots="$(registered_roots)" || return 1
+    while IFS= read -r root; do
+        printf '\n%s: %s\n' "$mode" "$root"
+        if [[ "$mode" == plan ]]; then
+            (cd "$root" && ./buck2 clean --stale "$age" --dry-run) || failed=1
+        else
+            (cd "$root" && ./buck2 clean --stale "$age") || failed=1
+        fi
+    done <<<"$roots"
+    return "$failed"
+}
+
+canonical_registered_root() {
+    local requested="$1" canonical root roots
+    if ! canonical="$(cd "$requested" 2>/dev/null && pwd -P)"; then
+        echo "error: reset target is not a directory: $requested" >&2
+        return 1
+    fi
+    roots="$(registered_roots)" || return 1
+    while IFS= read -r root; do
+        [[ "$(cd "$root" && pwd -P)" == "$canonical" ]] && { printf '%s\n' "$root"; return 0; }
+    done <<<"$roots"
+    echo "error: reset target is not a registered Rue worktree: $requested" >&2
+    return 1
+}
+
+reset_roots() {
+    local requested root
+    # Resolve every target before cleaning any of them, so a typo cannot cause
+    # a partially applied reset.
+    local roots=()
+    for requested in "$@"; do
+        roots+=("$(canonical_registered_root "$requested")") || return 1
+    done
+    for root in "${roots[@]}"; do
+        printf 'reset: %s\n' "$root"
+        (cd "$root" && ./buck2 clean)
+    done
+}
+
+command="${1:-status}"
+shift || true
+case "$command" in
+    status)
+        [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+        status_all
+        ;;
+    plan|clean)
+        [[ $# -le 1 ]] || { usage >&2; exit 2; }
+        stale_all "$command" "${1:-1w}"
+        ;;
+    reset)
+        [[ $# -gt 0 ]] || { usage >&2; exit 2; }
+        reset_roots "$@"
+        ;;
+    -h|--help|help)
+        usage
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac

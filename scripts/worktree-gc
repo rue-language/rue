@@ -1,62 +1,10 @@
 #!/usr/bin/env bash
-# worktree-gc — reclaim disk from workflow worktrees, SAFELY.
-#
-# Replaces the old blanket `rm -rf .claude/worktrees`, which raced running
-# workers (they reported "worktree deleted mid-run"). This only acts when disk
-# is actually low, and only removes worktrees git no longer lists as live — so
-# in-flight workers are never touched. Removal is FAIL CLOSED (RUE-567): if the
-# `git worktree list` inventory command fails (e.g. a jj workspace with no local
-# .git, where it exits 128), nothing is removed — a failed query is never read
-# as "zero active worktrees".
-#
-# Usage: scripts/worktree-gc [THRESHOLD_PERCENT]   (default 85)
-set -uo pipefail
-cd "$(dirname "$0")/.."
-THRESHOLD=${1:-85}
-
-used=$(df --output=pcent . 2>/dev/null | tail -1 | tr -dc '0-9')
-used=${used:-0}
-if [ "$used" -lt "$THRESHOLD" ]; then
-  echo "worktree-gc: disk ${used}% < ${THRESHOLD}% — nothing to do"
-  exit 0
+# Compatibility entry point. Worktree deletion is deliberately no longer a
+# disk-management side effect; only Buck's rebuildable outputs are reclaimed.
+set -euo pipefail
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ $# -gt 0 ]]; then
+    echo "warning: the legacy disk-percentage argument is ignored" >&2
 fi
-echo "worktree-gc: disk ${used}% >= ${THRESHOLD}% — reclaiming"
-
-# 1. Prune admin entries for worktrees whose directory is already gone.
-git worktree prune 2>/dev/null || true
-
-# 2. Remove ORPHANED worktree dirs — present on disk but no longer in git's live
-#    list (i.e. a finished worker's leftover, holding a stale buck-out). Anything
-#    git still lists is live and left alone. This is where the disk actually is.
-#
-#    FAIL CLOSED (RUE-567): a FAILED `git worktree list` is not the same as an
-#    empty one. In a linked jj workspace with no local `.git`, `git worktree
-#    list` exits 128; if that failure were read as "zero active worktrees",
-#    every live worker's dir would be classified orphaned and rm -rf'd. So gate
-#    on the command's real exit status — proceed only when it SUCCEEDS, and skip
-#    removal entirely otherwise.
-if [ -d .claude/worktrees ]; then
-  if wt_porcelain="$(git worktree list --porcelain 2>/dev/null)"; then
-    active="$(printf '%s\n' "$wt_porcelain" | awk '/^worktree /{print $2}')"
-    for d in .claude/worktrees/*/; do
-      [ -d "$d" ] || continue
-      d="${d%/}"
-      abs="$(cd "$d" 2>/dev/null && pwd)" || continue
-      # Herestring, not a pipe: under `pipefail` a matching `grep -q` kills the
-      # producer with EPIPE and the pipeline reports failure. This test is
-      # negated and guards an `rm -rf`, so that inversion would delete a live
-      # worktree precisely because it IS active (RUE-1155).
-      if ! grep -qxF "$abs" <<<"$active"; then
-        rm -rf "${d:?}" && echo "  removed orphaned worktree ${d##*/}"
-      fi
-    done
-  else
-    echo "worktree-gc: 'git worktree list' failed — skipping worktree removal (fail-closed)"
-  fi
-fi
-
-# 3. Stale main-repo buck artifacts (safe; rebuilds on demand).
-./buck2 clean --stale 1h >/dev/null 2>&1 || true
-
-now=$(df --output=pcent . 2>/dev/null | tail -1 | tr -dc '0-9')
-echo "worktree-gc: done — disk now ${now:-?}%"
+echo "worktree-gc: worktree removal retired; cleaning stale Buck outputs host-wide"
+exec "$repo_root/scripts/rue-storage" clean 1w
