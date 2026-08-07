@@ -17,7 +17,8 @@ use rue_perf_schema::{
     EditReportIdentity, EditReportRegime, EditRow, EditSample, EditScenario, ExpectedEditOutcome,
     FailureStage, OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork,
     RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, SourceShape,
-    StructuralWork, TransformationIdentity, WorkerMode, canonical_json, validate_edit_report,
+    StructuralWork, TransformationIdentity, WorkerMode, canonical_json, derive_edit_report,
+    render_edit_report_markdown, validate_edit_report,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -531,8 +532,25 @@ pub(crate) fn write_validated_report(
     }
     let encoded = canonical_json(report)
         .map_err(|error| format!("could not serialize incremental report: {error}"))?;
+    let derived = derive_edit_report(manifest, report).map_err(|findings| {
+        let details = findings
+            .iter()
+            .map(|finding| format!("{}: {}", finding.path, finding.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        format!("could not derive incremental report: {details}")
+    })?;
+    let markdown = render_edit_report_markdown(&derived);
     fs::write(path, encoded)
         .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    let markdown_path = path.with_extension("md");
+    fs::write(&markdown_path, markdown)
+        .map_err(|error| format!("could not write {}: {error}", markdown_path.display()))?;
+    eprintln!(
+        "rue-bench: wrote {} and {}",
+        path.display(),
+        markdown_path.display()
+    );
     Ok(if validation.divergences.is_empty() {
         ReportStatus::Valid
     } else {
@@ -1631,5 +1649,6 @@ mod tests {
         let output = tempfile::tempdir().unwrap().path().join("report.json");
         assert!(write_validated_report(&output, &manifest, &report).is_err());
         assert!(!output.exists());
+        assert!(!output.with_extension("md").exists());
     }
 }
