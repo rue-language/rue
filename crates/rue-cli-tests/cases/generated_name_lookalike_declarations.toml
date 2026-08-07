@@ -10,11 +10,20 @@
 # issue a named identity, both surfacing as an E9000 ICE rather than a working
 # program.
 #
-# Generated names are `__anon_struct_{32 hex digits}`, so these short names
+# Generated names are `__anon_struct_{32 hex digits}`, so the short names below
 # never collide with a real generated one by value -- classification is the
 # whole defect. Each case therefore declares the lookalike AND forces a genuine
 # generated anonymous type into the same program, so the two must be told apart
 # by identity rather than by spelling.
+#
+# RUE-1193 is the value-collision half. A source declaration may legally spell
+# the full 32-hex-digit form too, and symbol spelling still classified by prefix
+# long after semantic analysis stopped doing so: the source declaration was
+# handed the BARE symbol of the generated type whose digest it matched, so both
+# receivers' methods resolved to one callable and the program silently computed
+# the wrong answer. Symbol spelling now reads the same anonymity registry, which
+# in turn has to survive the producer-nominal re-mint at the provider boundary
+# (`body_identity::mint_anon_struct` / `mint_anon_enum`).
 
 [section]
 id = "cli.generated_name_lookalike_declarations"
@@ -99,3 +108,108 @@ fn main() -> i32 {
 args = ["main.rue", "-o", "prog"]
 stdout = "100\n9\n"
 exit_code = 2
+
+# RUE-1193 reproducer: a source declaration spelled with the FULL generated
+# form, matching the digest the compiler mints for this module's own anonymous
+# struct. Before the fix both `n.get()` and `a.get()` were spelled
+# `__anon_struct_daa9....get` -- the source declaration's qualified definition
+# was emitted and never called -- so the program returned 2 + 2 = 4 with no
+# diagnostic. The exit code is the whole assertion: 41 + 2 = 43.
+#
+# The digest is a function of this module's logical path (`main.rue`), the
+# producing function (`A`), and the literal's anchor. Renaming the file or
+# moving the `struct { ... }` literal changes it, at which point the two names
+# no longer collide and the case stops exercising RUE-1193 -- re-derive it with
+# `rue --emit air main.rue` if this case is ever edited.
+[[case]]
+name = "source_declaration_matching_a_generated_digest_keeps_its_own_method"
+description = "A source __anon_struct_<32 hex> whose name equals a live generated anonymous type's digest still resolves to its own method (RUE-1193)."
+files = [{ path = "main.rue", source = """
+struct __anon_struct_daa98b889bc477390889f83e53d5c4c3 { x: i32, fn get(self) -> i32 { 41 } }
+fn A() -> type { struct { x: i32, fn get(self) -> i32 { 2 } } }
+fn main() -> i32 {
+    let n = __anon_struct_daa98b889bc477390889f83e53d5c4c3 { x: 0 };
+    let T = A();
+    let a: T = T { x: 0 };
+    n.get() + a.get()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+exit_code = 43
+
+# The cross-file half of RUE-1193: two files each declare the same lookalike
+# name. Producer-nominal identity makes them distinct types, so their callable
+# symbols must be file-qualified and each `get` must keep its own body.
+# 1 + 7 = 8.
+[[case]]
+name = "cross_file_lookalike_structs_keep_separate_methods"
+description = "The same source __anon_struct_N declared in two files stays two types with two methods (RUE-1193)."
+files = [
+    { path = "main.rue", source = """
+const helper = @import("helper.rue");
+
+struct __anon_struct_5 { x: i32, fn get(self) -> i32 { 1 } }
+
+fn main() -> i32 {
+    let n = __anon_struct_5 { x: 0 };
+    n.get() + helper.make()
+}
+""" },
+    { path = "helper.rue", source = """
+pub struct __anon_struct_5 {
+    x: i32,
+
+    fn get(self) -> i32 { 7 }
+}
+
+pub fn make() -> i32 {
+    let h = __anon_struct_5 { x: 0 };
+    h.get()
+}
+""" },
+]
+args = ["main.rue", "-o", "prog"]
+exit_code = 8
+
+# The ordinary-type control: a source lookalike alone in its module, with no
+# generated anonymous type anywhere in the program, behaves like any other named
+# struct -- fields, method, and a destructor that runs at scope end. 6 + 1 = 7.
+[[case]]
+name = "single_file_lookalike_is_an_ordinary_named_struct"
+description = "A source __anon_struct_N with no generated anonymous type in the program is an ordinary named struct (RUE-1193)."
+files = [{ path = "main.rue", source = """
+struct __anon_struct_5 {
+    x: i32,
+
+    fn get(self) -> i32 { self.x + 1 }
+}
+drop fn __anon_struct_5(self) { @dbg(self.x); }
+
+fn main() -> i32 {
+    let n = __anon_struct_5 { x: 6 };
+    n.get()
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "6\n"
+exit_code = 7
+
+# The registry that symbol spelling now reads is also what CFG destructor
+# discovery (`rue-cfg` build) and drop-glue construction classify by, and those
+# run on the frozen pool -- past the producer-nominal re-mint that used to drop
+# the mark. A generated anonymous struct with its own `drop fn` exercises that
+# whole path end to end.
+[[case]]
+name = "generated_anonymous_struct_destructor_runs_through_the_anonymous_path"
+description = "A generated anonymous struct's own destructor runs, with the anonymity mark intact past the provider boundary (RUE-1050, RUE-1193)."
+files = [{ path = "main.rue", source = """
+fn A() -> type { struct { x: i32, drop fn (self) { @dbg(self.x); } } }
+fn main() -> i32 {
+    let T = A();
+    let a: T = T { x: 5 };
+    0
+}
+""" }]
+args = ["main.rue", "-o", "prog"]
+stdout = "5\n"
+exit_code = 0
