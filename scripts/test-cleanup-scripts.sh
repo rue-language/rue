@@ -45,6 +45,13 @@ make_sandbox() {
   mkdir -p "$sb/scripts" "$sb/fakebin"
   cp "$SCRIPTS_DIR/$name" "$sb/scripts/$name"
   chmod +x "$sb/scripts/$name"
+  if [[ "$name" == rue-storage ]]; then
+    cat >"$sb/buck2" <<'EOF'
+#!/usr/bin/env bash
+printf '%s:%s\n' "$PWD" "$*" >>"$CALLS"
+EOF
+    chmod +x "$sb/buck2"
+  fi
   printf '%s\n' "$sb"
 }
 
@@ -178,7 +185,8 @@ setup_storage_root() {
   : >"$root/.buckconfig"
   cat >"$root/buck2" <<'EOF'
 #!/usr/bin/env bash
-printf '%s:%s\n' "$PWD" "$*" >>"$CALLS"
+printf 'unexpected worktree-local Buck invocation\n' >>"$CALLS"
+exit 99
 EOF
   chmod +x "$root/buck2"
 }
@@ -216,9 +224,97 @@ EOF
   chmod +x "$sb/fakebin/git"
   run_script "$sb" rue-storage plan 2d
   check "storage: dry-run covers every registered Rue worktree" \
-    "$([ "$(grep -c ':clean --stale 2d --dry-run' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+    "$([ "$(grep -c ':clean --stale 2d' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: plan never applies its cleanup" \
+    "$([ "$(grep -c -- '--dry-run' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: dry-run includes the adaptive host-free target" \
+    "$([ "$(grep -c -- '--adaptive-low-disk-threshold 20' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: dry-run protects the minimum TTL" \
+    "$([ "$(grep -c -- '--adaptive-min-ttl 12h' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
   check "storage: dry-run never performs a full reset" \
     "$(! grep -Eq ':clean$' "$sb/calls.log" && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+test_storage_guard_is_host_wide_only_under_pressure() {
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  setup_storage_root "$sb/root-2"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n\nworktree %s/root-2\n' "$sb" "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+
+  # First probe is below the 10% emergency threshold; the post-clean probe is
+  # above the 20% target.
+  cat >"$sb/fakebin/df" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ -f "$sb/df-count" ]] && count=\$(cat "$sb/df-count")
+printf '%d\n' \$((count + 1)) >"$sb/df-count"
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+if [[ \$count -eq 0 ]]; then
+  printf 'disk 100000 95000 5000 95%% /\n'
+else
+  printf 'disk 100000 75000 25000 75%% /\n'
+fi
+EOF
+  chmod +x "$sb/fakebin/df"
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: pressure guard succeeds after recovering headroom" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "storage: pressure guard cleans every registered worktree" \
+    "$([ "$(grep -c ':clean --stale 1w' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+  check "storage: pressure guard uses adaptive materializer cleanup" \
+    "$([ "$(grep -c -- '--adaptive-low-disk-threshold 20 --adaptive-min-ttl 12h' "$sb/calls.log")" -eq 2 ] && echo 0 || echo 1)"
+
+  : >"$sb/calls.log"
+  cat >"$sb/fakebin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'disk 100000 89500 10500 89.5%% /\n'
+EOF
+  chmod +x "$sb/fakebin/df"
+  rc=0
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: healthy guard succeeds without cleanup" "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "storage: healthy guard starts no Buck cleanup" \
+    "$(! grep -q ':clean ' "$sb/calls.log" 2>/dev/null && echo 0 || echo 1)"
+  rm -rf "$sb"
+}
+
+test_storage_guard_blocks_when_pressure_remains_critical() {
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  printf 'legacy output\n' >"$sb/root-1/buck-out/legacy"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n' "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+  cat >"$sb/fakebin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'disk 100000 95000 5000 95%% /\n'
+EOF
+  chmod +x "$sb/fakebin/df"
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: guard refuses a build when cleanup cannot escape critical pressure" \
+    "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+  check "storage: critical guard tries a materializer-consistent legacy reset" \
+    "$(grep -q ':clean --exit-when notidle' "$sb/calls.log" && echo 0 || echo 1)"
+  check "storage: coordinator never trusts a worktree-local Buck wrapper" \
+    "$(! grep -q 'unexpected worktree-local' "$sb/calls.log" && echo 0 || echo 1)"
+  grep -q 'stopped before risking ENOSPC\|still has only' "$sb/out.log" || \
+    fail "storage: expected actionable ENOSPC prevention notice"
   rm -rf "$sb"
 }
 
@@ -252,6 +348,8 @@ test_jjtidy_gh_failure_deletes_nothing
 test_jjtidy_only_deletes_proven_merged
 test_storage_git_failure_is_fail_closed
 test_storage_plans_every_registered_root
+test_storage_guard_is_host_wide_only_under_pressure
+test_storage_guard_blocks_when_pressure_remains_critical
 test_storage_reset_validates_all_targets_first
 
 echo "--------------------------------------------------"

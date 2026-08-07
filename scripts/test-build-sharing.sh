@@ -103,12 +103,17 @@ EOF
 }
 
 test_buck_wrapper_prefers_local_cache_misses() {
-    local sb
+    local sb guard_calls rc
     sb="$(mktemp -d)"
-    mkdir -p "$sb/fakebin"
+    mkdir -p "$sb/fakebin" "$sb/scripts"
     cp "$SRC_ROOT/buck2" "$sb/buck2"
     cp "$SRC_ROOT/buck2-bin" "$sb/buck2-bin"
     chmod +x "$sb/buck2"
+    cat >"$sb/scripts/rue-storage" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$STORAGE_ARGS"
+EOF
+    chmod +x "$sb/scripts/rue-storage"
     cat >"$sb/.buckconfig.local" <<'EOF'
 [build]
 execution_platforms = root//platforms:remote_cache
@@ -119,20 +124,38 @@ printf '%s\n' "$@" >"$DOTSLASH_ARGS"
 EOF
     chmod +x "$sb/fakebin/dotslash"
 
-    DOTSLASH_ARGS="$sb/build.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" build //:probe
+    STORAGE_ARGS="$sb/storage.args" DOTSLASH_ARGS="$sb/build.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" build //:probe
     check "buck wrapper: cache misses prefer local execution" \
         "$(grep -Fxq -- '--prefer-local' "$sb/build.args" && echo 0 || echo 1)"
 
-    DOTSLASH_ARGS="$sb/remote.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" build --prefer-remote //:probe
+    STORAGE_ARGS="$sb/storage.args" DOTSLASH_ARGS="$sb/remote.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" build --prefer-remote //:probe
     check "buck wrapper: explicit execution preference is preserved" \
         "$(! grep -Fxq -- '--prefer-local' "$sb/remote.args" && grep -Fxq -- '--prefer-remote' "$sb/remote.args" && echo 0 || echo 1)"
 
-    DOTSLASH_ARGS="$sb/run.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" run //:probe -- program-arg
+    STORAGE_ARGS="$sb/storage.args" DOTSLASH_ARGS="$sb/run.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" run //:probe -- program-arg
     local local_line separator_line
     local_line="$(grep -nFx -- '--prefer-local' "$sb/run.args" | cut -d: -f1)"
     separator_line="$(grep -nFx -- '--' "$sb/run.args" | cut -d: -f1)"
     check "buck wrapper: preference stays before executable arguments" \
         "$([ "$local_line" -lt "$separator_line" ] && echo 0 || echo 1)"
+    guard_calls="$(grep -c '^guard$' "$sb/storage.args")"
+    check "buck wrapper: every execution command runs the disk-pressure guard" \
+        "$([ "$guard_calls" -eq 3 ] && echo 0 || echo 1)"
+
+    STORAGE_ARGS="$sb/storage.args" DOTSLASH_ARGS="$sb/clean.args" PATH="$sb/fakebin:$PATH" "$sb/buck2" clean
+    check "buck wrapper: cleanup commands do not recurse through the guard" \
+        "$([ "$(grep -c '^guard$' "$sb/storage.args")" -eq "$guard_calls" ] && echo 0 || echo 1)"
+
+    cat >"$sb/scripts/rue-storage" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+    chmod +x "$sb/scripts/rue-storage"
+    rc=0
+    STORAGE_ARGS="$sb/storage.args" DOTSLASH_ARGS="$sb/blocked.args" PATH="$sb/fakebin:$PATH" \
+        "$sb/buck2" test //:probe || rc=$?
+    check "buck wrapper: a failed pressure guard blocks disk-heavy work" \
+        "$([ "$rc" -ne 0 ] && [ ! -e "$sb/blocked.args" ] && echo 0 || echo 1)"
     rm -rf "$sb"
 }
 

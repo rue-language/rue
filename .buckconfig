@@ -32,6 +32,12 @@ clean_stale_enabled = true
 clean_stale_artifact_ttl_hours = 168
 clean_stale_period_hours = 24
 clean_stale_start_offset_hours = 12
+# When the host falls to 20% free space, promote the oldest non-active outputs
+# until Buck projects that the threshold has been restored. Outputs accessed in
+# the last twelve hours remain protected even under pressure.
+clean_stale_low_disk_threshold = 20
+clean_stale_low_disk_adaptive_enabled = true
+clean_stale_low_disk_adaptive_min_ttl_hours = 12
 
 [project]
 # Keep buck2 from parsing/watching non-source trees inside the project root:

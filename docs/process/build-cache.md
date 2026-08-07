@@ -56,18 +56,38 @@ have not been used for one week. Cleanup starts twelve hours after daemon startu
 and repeats daily. Buck coordinates those deletions with active builds; Rue does
 not infer that a worktree is disposable from its age or directory name.
 
+The background cleaner also watches the host filesystem. At 20% free space or
+lower it adaptively promotes the oldest non-active outputs until Buck projects
+that 20% will be free again. Outputs accessed in the last twelve hours remain
+protected even under pressure. This threshold is host-wide—the worktrees have
+separate materializer databases, but they consume the same filesystem budget.
+
 Use the host-wide storage command from any current Rue checkout:
 
 ```bash
 scripts/rue storage status            # sizes, source state, and cache state
 scripts/rue storage plan [AGE]        # Buck dry-run in every registered worktree
-scripts/rue storage clean [AGE]       # coordinated stale cleanup; default 1w
+scripts/rue storage clean [AGE]       # stale + adaptive cleanup; default 1w
+scripts/rue storage guard             # run the build preflight explicitly
 scripts/rue storage reset /exact/root # full Buck reset of an explicit target
 ```
 
+Every `./buck2 build`, `test`, `run`, or `install` invocation runs the same
+portable free-space preflight. Above 10% free it is only a `df` read. At 10% or
+lower it synchronously requests adaptive cleanup from every registered Rue
+worktree before allowing more disk-heavy work. If inventory or cleanup fails,
+the command stops with recovery guidance instead of proceeding toward ENOSPC.
+If tracked cleanup cannot escape the emergency threshold, the guard may fully
+reset the largest legacy `buck-out` trees whose checked-out revisions predate
+deferred materializer state. It uses the coordinator checkout's pinned Buck and
+refuses to reset a root with an active command. Dirty source state is unrelated
+and remains untouched. Between 10% and 20%, Buck's ordinary background policy
+restores headroom without putting every build behind a host-wide scan.
+
 The inventory comes from `git worktree list` and fails closed: if the registered
-set cannot be read, no cleanup runs. `clean` removes only stale or untracked Buck
-outputs. `reset` is the migration escape hatch for an older worktree whose
+set cannot be read, no cleanup runs. `clean` removes stale or untracked Buck
+outputs and may promote older tracked, non-active outputs when the host is below
+the 20% target. `reset` is the migration escape hatch for an older worktree whose
 artifacts predate persisted materializer state; it validates every named path as
 a registered Rue worktree before it resets any of them. Neither command removes
 source files or worktrees. `scripts/rue gc` remains a compatibility alias for

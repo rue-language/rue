@@ -983,6 +983,7 @@ filegroup(
         "scripts/ci-heavy-suite",
         "scripts/cli-timeout-policy.py",
         "scripts/provision-build-cache",
+        "scripts/rue-storage",
         "test.sh",
     ],
 )
