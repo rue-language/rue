@@ -21,6 +21,10 @@ use rue_span::{FileId, Span};
 
 use super::{ConstInfo, ConstValue, DeclarationPhase, InferenceContext, Sema};
 use super::{FunctionInfo, MethodInfo};
+use crate::declaration_validation::{
+    AccessorBodyVerdict, AccessorExitForm, AccessorParameterForm, AccessorReceiverForm,
+    AccessorYieldRootForm,
+};
 use crate::path_norm::{mangle_symbol_component, normalize_module_path};
 use crate::types::StructField;
 use crate::types::{EnumDef, EnumId, StructDef, StructId, Type, TypeKind};
@@ -3204,13 +3208,15 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
 /// and that `yield` hands out a receiver-rooted place (6.6:7).
 ///
 /// These are legality rules on the declaration, so a declared-but-uncalled
-/// accessor is exactly as ill-formed as a called one. Every producer runs this
+/// accessor is exactly as ill-formed as a called one. Every producer runs them
 /// over every accessor declaration it admits, which is what keeps the rules
-/// independent of the driver's on-demand body analysis. The body rules are
-/// syntactic over the RIR, so they belong here with the signature rules; the
-/// single part that is not — whether a method-call link in the yielded chain
-/// names an accessor — is documented on [`check_accessor_yield_root`] and
-/// stays with the demanded path.
+/// independent of the driver's on-demand body analysis. What this function
+/// owns is the *RIR walk*; which forms are illegal and how each one reads is
+/// [`crate::declaration_validation`]'s, shared with the driver's reparsed-AST
+/// producer. The body rules are syntactic over the RIR, so they belong here
+/// with the signature rules; the single part that is not — whether a
+/// method-call link in the yielded chain names an accessor — is documented on
+/// [`accessor_yield_root`] and stays with the demanded path.
 ///
 /// The declaring `FnDecl` is the only carrier of `returns_borrow`: the durable
 /// signature records the result type's source spelling, which never contains
@@ -3240,72 +3246,103 @@ pub(super) fn check_accessor_declaration_shape(
     let span = inst.span;
     super::require_preview_feature(
         preview_features,
-        PreviewFeature::BorrowAccessors,
-        "a `-> borrow` accessor",
+        crate::declaration_validation::ACCESSOR_PREVIEW_FEATURE,
+        crate::declaration_validation::ACCESSOR_PREVIEW_SUBJECT,
         span,
     )?;
     // An accessor hands out a projection of its receiver, so the receiver is
-    // the first thing that has to exist and be a shared borrow. `inout self`
-    // accessors (exclusive results) are a later phase.
+    // the first thing that has to exist and be a shared borrow. `self` is
+    // carried by `has_self`, so the parameter list is exactly the guard
+    // inputs.
     let receiver = if !has_named_owner {
-        Some(("a free function", false))
+        AccessorReceiverForm::FreeFunction
     } else if !*has_self {
-        Some(("an associated function with no receiver", false))
+        AccessorReceiverForm::AssociatedFunction
     } else {
         match self_mode {
-            RirParamMode::Borrow => None,
-            RirParamMode::Inout => Some(("an `inout self` receiver", true)),
-            RirParamMode::Normal => Some(("a by-value `self` receiver", false)),
+            RirParamMode::Borrow => AccessorReceiverForm::BorrowSelf,
+            RirParamMode::Inout => AccessorReceiverForm::InoutSelf,
+            RirParamMode::Normal => AccessorReceiverForm::ValueSelf,
         }
     };
-    if let Some((found, is_later_phase)) = receiver {
-        let error = CompileError::new(
-            ErrorKind::AccessorRequiresBorrowSelf {
-                found: found.to_string(),
-            },
-            span,
-        );
-        return Err(if is_later_phase {
-            error.with_note(
-                "mutable accessors (`inout self` -> exclusive result) are a later phase (RUE-1016)",
-            )
-        } else {
-            error
+    let params = rir.params(params);
+    if let Some(violation) = crate::declaration_validation::accessor_signature(
+        receiver,
+        params
+            .iter()
+            .map(|param| accessor_parameter_form(param.mode, param.is_comptime)),
+    ) {
+        use crate::declaration_validation::AccessorSignatureViolation as Violation;
+        return Err(match violation {
+            Violation::Receiver { kind, note } => {
+                let error = CompileError::new(kind, span);
+                match note {
+                    Some(note) => error.with_note(note),
+                    None => error,
+                }
+            }
+            Violation::Parameter { kind, ordinal } => {
+                let span = params
+                    .iter()
+                    .nth(ordinal)
+                    .map_or(span, |parameter| parameter.span);
+                CompileError::new(kind, span)
+            }
         });
     }
-    // `self` is carried by `has_self`, so this list is exactly the guard
-    // inputs: by-value runtime values, evaluated once at the call site.
-    for param in rir.params(params).iter() {
-        if param.mode != RirParamMode::Normal {
-            return Err(CompileError::new(
-                ErrorKind::AccessorParamModeUnsupported {
-                    mode: format!(
-                        "`{}`",
-                        match param.mode {
-                            RirParamMode::Inout => "inout",
-                            RirParamMode::Borrow => "borrow",
-                            RirParamMode::Normal => unreachable!(),
-                        }
-                    ),
-                },
-                param.span,
-            ));
-        }
-        if param.is_comptime {
-            return Err(CompileError::new(
-                ErrorKind::AccessorParamModeUnsupported {
-                    mode: "`comptime`".to_string(),
-                },
-                param.span,
-            ));
-        }
-    }
     if let Some(body) = body {
-        let trailing = accessor_trailing_yield(rir, body)?;
-        check_accessor_body_exits(rir, body, trailing)?;
-        check_accessor_yield_root(rir, interner, trailing)?;
+        let (verdict, span) = accessor_body_verdict(rir, interner, body);
+        if let Some(kind) = crate::declaration_validation::accessor_body_error(&verdict) {
+            return Err(CompileError::new(kind, span));
+        }
     }
     Ok(())
+}
+
+/// The 6.6:5 form of one RIR parameter.
+pub(super) fn accessor_parameter_form(
+    mode: RirParamMode,
+    is_comptime: bool,
+) -> AccessorParameterForm {
+    if is_comptime {
+        return AccessorParameterForm::Comptime;
+    }
+    match mode {
+        RirParamMode::Normal => AccessorParameterForm::ByValue,
+        RirParamMode::Borrow => AccessorParameterForm::Borrow,
+        RirParamMode::Inout => AccessorParameterForm::Inout,
+    }
+}
+
+/// Decide 6.6:6 and 6.6:7 for one accessor body over the RIR, with the span of
+/// the offending form.
+///
+/// The rules apply in the spec's own order — a body with no trailing `yield`
+/// is reported as that, not as whatever its last expression yields — and each
+/// verdict is turned into a diagnostic by
+/// [`crate::declaration_validation::accessor_body_error`], so this producer
+/// and the driver's reparsed-AST producer cannot disagree on wording.
+fn accessor_body_verdict(
+    rir: &rue_rir::Rir,
+    interner: &lasso::ThreadedRodeo,
+    body: InstRef,
+) -> (AccessorBodyVerdict, Span) {
+    let Some(trailing) = trailing_yield(rir, body) else {
+        return (
+            AccessorBodyVerdict::MissingTrailingYield,
+            rir.get(body).span,
+        );
+    };
+    if let Some((exit, span)) = accessor_body_exit(rir, body, trailing) {
+        return (AccessorBodyVerdict::OtherExit(exit), span);
+    }
+    let InstData::Yield(operand) = rir.get(trailing).data else {
+        unreachable!("the trailing exit is a `yield` by construction")
+    };
+    match accessor_yield_root(rir, interner, operand) {
+        Some((root, span)) => (AccessorBodyVerdict::YieldNotReceiverRooted(root), span),
+        None => (AccessorBodyVerdict::WellFormed, rir.get(body).span),
+    }
 }
 
 /// Every instruction lexically contained in `body`, `body` itself included,
@@ -3357,50 +3394,43 @@ fn body_instructions(rir: &rue_rir::Rir, body: InstRef) -> Vec<InstRef> {
 /// declares rather than only for a body some call site demands. The
 /// comptime-pruned branch of an `if` counts: 6.6:6 forbids the form appearing
 /// in the body, not merely on a path the specialization keeps.
-fn check_accessor_body_exits(
+fn accessor_body_exit(
     rir: &rue_rir::Rir,
     body: InstRef,
     trailing: InstRef,
-) -> CompileResult<()> {
+) -> Option<(AccessorExitForm, Span)> {
     for inst_ref in body_instructions(rir, body) {
         let inst = rir.get(inst_ref);
-        let found = match &inst.data {
-            InstData::Yield(_) if inst_ref != trailing => "a second `yield`",
-            InstData::Ret(_) => "a `return`",
-            InstData::Try { .. } => "a `?`",
+        let exit = match &inst.data {
+            InstData::Yield(_) if inst_ref != trailing => AccessorExitForm::SecondYield,
+            InstData::Ret(_) => AccessorExitForm::Return,
+            InstData::Try { .. } => AccessorExitForm::Try,
             _ => continue,
         };
-        return Err(CompileError::new(
-            ErrorKind::AccessorBodyOtherExit {
-                found: found.to_string(),
-            },
-            inst.span,
-        ));
+        return Some((exit, inst.span));
     }
-    Ok(())
+    None
 }
 
-/// 6.6:7 over the RIR: the trailing `yield`'s operand is a projection chain
-/// rooted at the receiver (E0255).
+/// 6.6:7 over the RIR: what the trailing `yield`'s operand chain is rooted at,
+/// and the span of the form that decided it (E0255).
 ///
 /// Everything this rule needs is syntactic except one link. A nested
 /// method-call link is legal only when the callee is *itself* an accessor,
 /// and which method a call names is a resolved-type question, so this walk
-/// accepts any method call and keeps descending to the chain's root. That
-/// leaves exactly one residual for a declaration nothing calls: a chain
-/// through a plain (non-accessor) method of the receiver, such as
-/// `yield self.plain();`, whose rejection stays with
+/// accepts any method call and keeps descending to the chain's root — it never
+/// reports [`AccessorYieldRootForm::PlainMethod`], which only a producer with
+/// the callee in hand may claim. That leaves exactly one residual for a
+/// declaration nothing calls: a chain through a plain (non-accessor) method of
+/// the receiver, such as `yield self.plain();`, whose rejection stays with
 /// [`super::control_flow`]'s demanded-path check. Every other shape — a local,
 /// a non-receiver parameter, a computed value, a chain rooted at anything but
-/// `self` — is rejected here with no call site.
-fn check_accessor_yield_root(
+/// `self` — is decided here with no call site.
+fn accessor_yield_root(
     rir: &rue_rir::Rir,
     interner: &lasso::ThreadedRodeo,
-    trailing: InstRef,
-) -> CompileResult<()> {
-    let InstData::Yield(operand) = rir.get(trailing).data else {
-        return Ok(());
-    };
+    operand: InstRef,
+) -> Option<(AccessorYieldRootForm, Span)> {
     let self_sym = interner.get_or_intern("self");
     let mut current = operand;
     loop {
@@ -3409,37 +3439,26 @@ fn check_accessor_yield_root(
         match &inst.data {
             InstData::VarRef { name, .. } => {
                 if *name == self_sym {
-                    return Ok(());
+                    return None;
                 }
-                return Err(CompileError::new(
-                    ErrorKind::AccessorYieldNotReceiverRooted {
-                        found: format!("a place rooted at `{}`", interner.resolve(name)),
-                    },
-                    span,
-                ));
+                let root = AccessorYieldRootForm::Named(Arc::from(interner.resolve(name)));
+                return Some((root, span));
             }
             InstData::FieldGet { base, .. } | InstData::IndexGet { base, .. } => current = *base,
             InstData::MethodCall { receiver, .. } => current = *receiver,
-            _ => {
-                return Err(CompileError::new(
-                    ErrorKind::AccessorYieldNotReceiverRooted {
-                        found: "a value expression".to_string(),
-                    },
-                    span,
-                ));
-            }
+            _ => return Some((AccessorYieldRootForm::Value, span)),
         }
     }
 }
 
-/// The single trailing `yield` that an accessor body must fall through to
-/// (6.6:6, ADR-0062 phase 1), or E0254.
+/// The single trailing `yield` that an accessor body falls through to
+/// (6.6:6, ADR-0062 phase 1), if it has one.
 ///
 /// Which instruction is the trailing exit is decidable from the RIR alone, so
-/// the declaration seam rejects a body with no trailing `yield` for every
-/// accessor in the program. [`check_accessor_body_exits`] then rejects the
-/// *other* exits from the same seam.
-pub(super) fn accessor_trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> CompileResult<InstRef> {
+/// the declaration seam decides a body with no trailing `yield` for every
+/// accessor in the program. [`accessor_body_exit`] then finds the *other*
+/// exits from the same seam.
+fn trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> Option<InstRef> {
     // A single-statement body lowers to the instruction itself; a
     // multi-statement body lowers to a block whose last instruction is the
     // trailing exit.
@@ -3447,9 +3466,18 @@ pub(super) fn accessor_trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> Comp
         InstData::Block { instructions } => rir.block_insts(instructions).values().last(),
         _ => Some(body),
     };
-    trailing
-        .filter(|inst_ref| matches!(rir.get(*inst_ref).data, InstData::Yield(_)))
-        .ok_or_else(|| CompileError::new(ErrorKind::AccessorBodyMissingYield, rir.get(body).span))
+    trailing.filter(|inst_ref| matches!(rir.get(*inst_ref).data, InstData::Yield(_)))
+}
+
+/// [`trailing_yield`] as the body engine demands it: the trailing exit it
+/// records for the body it is about to analyze, or E0254.
+pub(super) fn accessor_trailing_yield(rir: &rue_rir::Rir, body: InstRef) -> CompileResult<InstRef> {
+    trailing_yield(rir, body).ok_or_else(|| {
+        CompileError::new(
+            crate::declaration_validation::accessor_missing_yield_error(),
+            rir.get(body).span,
+        )
+    })
 }
 
 /// A constant declaration projected from the canonical RIR declaration index.

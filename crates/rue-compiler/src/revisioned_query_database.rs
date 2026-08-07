@@ -7295,6 +7295,16 @@ impl SemanticConstEvaluator<'_, '_> {
                         crate::durable_semantics::DurableParameterMode::Inout
                     }
                 };
+                // 6.6:7's accessor-link fact for this anonymous owner's own
+                // methods, exactly as a named owner's members retain it.
+                let owner_methods = crate::semantic_query_nucleus::owner_method_accessor_facts(
+                    methods.iter().map(|method| {
+                        (
+                            Arc::from(self.interner.resolve(&method.name.name)),
+                            method.borrow_return.is_some(),
+                        )
+                    }),
+                );
                 let methods = methods
                     .iter()
                     .map(|method| {
@@ -7436,10 +7446,12 @@ impl SemanticConstEvaluator<'_, '_> {
                                         crate::declaration_candidate::RawDeclarationSignatureSyntax {
                                             declaration_fragments: Arc::from([Arc::from(signature)]),
                                             extern_abi: None,
-                                            accessor_body: method
-                                                .borrow_return
-                                                .is_some()
-                                                .then(|| Arc::from(body)),
+                                            accessor: method.borrow_return.is_some().then(|| {
+                                                Arc::new(crate::declaration_candidate::RawAccessorSignatureSyntax {
+                                                    body: Arc::from(body),
+                                                    owner_methods: owner_methods.clone(),
+                                                })
+                                            }),
                                         },
                                     body:
                                         crate::declaration_candidate::RawDeclarationBodySyntax {
@@ -9999,87 +10011,76 @@ fn resolve_parsed_semantic_signature(
             accessor_body,
         } => {
             if *is_accessor {
-                if !provider
-                    .configuration
-                    .preview_features
-                    .contains(rue_error::PreviewFeature::BorrowAccessors)
-                {
-                    return Err(diagnostic(rue_error::ErrorKind::PreviewFeatureRequired {
-                        feature: rue_error::PreviewFeature::BorrowAccessors,
-                        what: "a `-> borrow` accessor".to_owned(),
-                    }));
+                // 6.6:3-6.6:7 over the reparsed declaration. Which forms are
+                // illegal, in which order, and how each diagnostic reads are
+                // `rue_air::declaration_validation`'s, shared with the RIR
+                // producers (RUE-1232); this seam owns only the lowering of
+                // the reparsed signature into that vocabulary. This
+                // transport carries no note, so the `inout self` phase
+                // pointer is dropped here.
+                use rue_air::declaration_validation as rules;
+                use rue_air::declaration_validation::{
+                    AccessorParameterForm, AccessorReceiverForm,
+                };
+                if let Some(kind) = rules::accessor_preview_gate(
+                    provider
+                        .configuration
+                        .preview_features
+                        .contains(rules::ACCESSOR_PREVIEW_FEATURE),
+                ) {
+                    return Err(diagnostic(kind));
                 }
                 let receiver = if provider.dependency_source.owner().is_none() {
-                    Some("a free function")
+                    AccessorReceiverForm::FreeFunction
                 } else if !*has_self {
-                    Some("an associated function with no receiver")
+                    AccessorReceiverForm::AssociatedFunction
                 } else {
                     match self_mode {
-                        crate::declaration_candidate::DeclarationParameterMode::Borrow => None,
+                        crate::declaration_candidate::DeclarationParameterMode::Borrow => {
+                            AccessorReceiverForm::BorrowSelf
+                        }
                         crate::declaration_candidate::DeclarationParameterMode::Inout => {
-                            Some("an `inout self` receiver")
+                            AccessorReceiverForm::InoutSelf
                         }
                         crate::declaration_candidate::DeclarationParameterMode::Value => {
-                            Some("a by-value `self` receiver")
+                            AccessorReceiverForm::ValueSelf
                         }
                     }
                 };
-                if let Some(found) = receiver {
-                    return Err(diagnostic(
-                        rue_error::ErrorKind::AccessorRequiresBorrowSelf {
-                            found: found.to_owned(),
-                        },
-                    ));
-                }
-                if let Some(parameter) = parameters.iter().find(|parameter| {
-                    parameter.is_comptime
-                        || parameter.mode
-                            != crate::declaration_candidate::DeclarationParameterMode::Value
-                }) {
-                    let mode = if parameter.is_comptime {
-                        "`comptime`"
-                    } else {
+                if let Some(violation) = rules::accessor_signature(
+                    receiver,
+                    parameters.iter().map(|parameter| {
+                        if parameter.is_comptime {
+                            return AccessorParameterForm::Comptime;
+                        }
                         match parameter.mode {
+                            crate::declaration_candidate::DeclarationParameterMode::Value => {
+                                AccessorParameterForm::ByValue
+                            }
                             crate::declaration_candidate::DeclarationParameterMode::Borrow => {
-                                "`borrow`"
+                                AccessorParameterForm::Borrow
                             }
                             crate::declaration_candidate::DeclarationParameterMode::Inout => {
-                                "`inout`"
-                            }
-                            crate::declaration_candidate::DeclarationParameterMode::Value => {
-                                unreachable!()
+                                AccessorParameterForm::Inout
                             }
                         }
+                    }),
+                ) {
+                    use rue_air::declaration_validation::AccessorSignatureViolation as Violation;
+                    let kind = match violation {
+                        Violation::Receiver { kind, .. } | Violation::Parameter { kind, .. } => {
+                            kind
+                        }
                     };
-                    return Err(diagnostic(
-                        rue_error::ErrorKind::AccessorParamModeUnsupported {
-                            mode: mode.to_owned(),
-                        },
-                    ));
+                    return Err(diagnostic(kind));
                 }
                 // 6.6:6 and 6.6:7 over the accessor's own retained body. These
                 // are legality rules on the declaration, so they hold with no
                 // call site anywhere in the program (RUE-1212); see
-                // `AccessorBodyShape` for the single link they leave to the
+                // `AccessorBodyVerdict` for the single link they leave to the
                 // demanded path.
-                use crate::semantic_query_nucleus::AccessorBodyShape as Shape;
-                match accessor_body {
-                    Shape::WellFormed => {}
-                    Shape::MissingTrailingYield => {
-                        return Err(diagnostic(rue_error::ErrorKind::AccessorBodyMissingYield));
-                    }
-                    Shape::OtherExit { found } => {
-                        return Err(diagnostic(rue_error::ErrorKind::AccessorBodyOtherExit {
-                            found: found.to_string(),
-                        }));
-                    }
-                    Shape::YieldNotReceiverRooted { found } => {
-                        return Err(diagnostic(
-                            rue_error::ErrorKind::AccessorYieldNotReceiverRooted {
-                                found: found.to_string(),
-                            },
-                        ));
-                    }
+                if let Some(kind) = rules::accessor_body_error(accessor_body) {
+                    return Err(diagnostic(kind));
                 }
             }
             let mut generic_index = 0_u32;

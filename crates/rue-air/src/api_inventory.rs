@@ -48,6 +48,40 @@ fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
 }
 
 #[test]
+fn accessor_producers_do_not_spell_their_own_declaration_diagnostics() {
+    // RUE-1232: the 6.6:3-6.6:7 accessor rules have one source of truth in
+    // `declaration_validation`. Each producer lowers its own representation
+    // into that vocabulary and reports what it hands back; none of them may
+    // construct an accessor declaration diagnostic itself, which is how the
+    // RIR walks and the driver's reparsed-AST walk stay unable to drift on
+    // wording.
+    let producers = [
+        include_str!("sema/declarations.rs"),
+        include_str!("sema/ordinary_engine.rs"),
+        include_str!("sema/control_flow.rs"),
+    ]
+    .concat();
+
+    for kind in [
+        ["ErrorKind::Accessor", "RequiresBorrowSelf"].concat(),
+        ["ErrorKind::Accessor", "ParamModeUnsupported"].concat(),
+        ["ErrorKind::Accessor", "BodyMissingYield"].concat(),
+        ["ErrorKind::Accessor", "BodyOtherExit"].concat(),
+        ["ErrorKind::Accessor", "YieldNotReceiverRooted"].concat(),
+    ] {
+        assert!(
+            !producers.contains(&kind),
+            "an accessor producer regained its own copy of a declaration rule: {kind}"
+        );
+    }
+    // The preview subject is a rule too: 6.6:3 names the same form everywhere.
+    assert!(
+        !producers.contains("\"a `-> borrow` accessor\""),
+        "an accessor producer regained its own 6.6:3 gate subject"
+    );
+}
+
+#[test]
 fn canonical_import_consumers_do_not_grow_resolution_policy() {
     let consumers = [
         include_str!("canonical_imports.rs"),

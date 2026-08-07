@@ -139,11 +139,37 @@ pub(crate) enum RawConstSyntaxFailure {
 pub(crate) struct RawDeclarationSignatureSyntax {
     pub(crate) declaration_fragments: Arc<[Arc<str>]>,
     pub(crate) extern_abi: Option<Arc<str>>,
-    /// The exact body is attached only for a `-> borrow` accessor. Its
-    /// declaration-shape rules include a trailing-yield check even when no
-    /// caller demands body analysis, so that one signature query legitimately
-    /// depends on its own body while ordinary signatures remain body-agnostic.
-    pub(crate) accessor_body: Option<Arc<str>>,
+    /// Present only for a `-> borrow` accessor: the extra syntax its
+    /// declaration rules read (spec 6.6:6, 6.6:7). `None` keeps every ordinary
+    /// signature body-agnostic.
+    pub(crate) accessor: Option<Arc<RawAccessorSignatureSyntax>>,
+}
+
+/// The syntax an accessor declaration's own legality rules read beyond its
+/// signature (spec 6.6:6, 6.6:7).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct RawAccessorSignatureSyntax {
+    /// The accessor's exact body. Its declaration-shape rules include a
+    /// trailing-yield check even when no caller demands body analysis, so this
+    /// one signature query legitimately depends on its own body.
+    pub(crate) body: Arc<str>,
+    /// Every method the accessor's owner declares, paired with whether it is
+    /// itself an accessor, sorted by name and with ambiguous duplicate names
+    /// dropped.
+    ///
+    /// 6.6:7 admits a method-call link in the yielded chain only when the
+    /// callee is an accessor. For a link whose receiver is the accessor's own
+    /// `self`, the callee is a method of this owner, and whether it is an
+    /// accessor is a *parsed* fact of a sibling declaration — no signature or
+    /// body of that sibling is demanded, so there is no query cycle between
+    /// mutually recursive accessors. Retaining the facts here is what records
+    /// the dependency: this terminal is materialized from the module's parse,
+    /// so editing a sibling method's `-> borrow` qualifier changes this value
+    /// and re-runs every consumer of this accessor's signature.
+    ///
+    /// Empty for an accessor with no owning type, or whose owner declares no
+    /// other methods.
+    pub(crate) owner_methods: Arc<[(Arc<str>, bool)]>,
 }
 
 /// Stable, position-free failure retained by the exact raw-signature family.

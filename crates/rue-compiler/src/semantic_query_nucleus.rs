@@ -7,6 +7,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use rue_air::declaration_validation::{
+    AccessorBodyVerdict, AccessorExitForm, AccessorYieldRootForm,
+};
+
 use crate::retained_charge::RetainedCharge;
 
 use crate::declaration_candidate::{
@@ -29,30 +33,6 @@ pub(crate) struct ParsedSemanticParameter {
     pub(crate) ty: Arc<str>,
 }
 
-/// The accessor-body legality facts that are decidable from the declaration's
-/// own retained syntax (spec 6.6:6, 6.6:7).
-///
-/// An accessor is the one declaration whose body its signature query reads:
-/// 6.6:6 and 6.6:7 are legality rules on the declaration, so a
-/// declared-but-uncalled accessor is exactly as ill-formed as a called one,
-/// and the driver analyzes a body only when something demands it (RUE-1212).
-/// Everything here is syntactic; the one accessor-body question that is not —
-/// whether a method-call link in the yielded projection chain names an
-/// accessor — stays with the demanded path and is documented on
-/// [`accessor_body_shape`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum AccessorBodyShape {
-    /// The body's final statement is not a `yield` (E0254).
-    MissingTrailingYield,
-    /// A trailing `yield` exists, but another exit bypasses it (E0254).
-    OtherExit { found: Arc<str> },
-    /// The trailing `yield` hands out something that is not a place rooted at
-    /// the receiver (E0255).
-    YieldNotReceiverRooted { found: Arc<str> },
-    /// Well-formed as far as the declaration alone can decide.
-    WellFormed,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ParsedSemanticSignature {
     Callable {
@@ -65,10 +45,12 @@ pub(crate) enum ParsedSemanticSignature {
         is_c_export: bool,
         is_accessor: bool,
         /// What the accessor body's own syntax decides about spec 6.6:6 and
-        /// 6.6:7. Meaningful only when `is_accessor`; an ordinary signature
-        /// retains no body and always reports
-        /// [`AccessorBodyShape::MissingTrailingYield`] for the empty stand-in.
-        accessor_body: AccessorBodyShape,
+        /// 6.6:7, in the producer-neutral vocabulary every accessor producer
+        /// shares (RUE-1232). Meaningful only when `is_accessor`; an ordinary
+        /// signature retains no body and always reports
+        /// [`AccessorBodyVerdict::MissingTrailingYield`] for the empty
+        /// stand-in.
+        accessor_body: AccessorBodyVerdict,
     },
     Struct {
         fields: Arc<[(Arc<str>, Arc<str>)]>,
@@ -80,6 +62,17 @@ pub(crate) enum ParsedSemanticSignature {
         variants: Arc<[(Arc<str>, Arc<[Arc<str>]>)]>,
     },
     Destructor,
+}
+
+/// The body an accessor's signature reparse carries, or the empty stand-in
+/// every ordinary signature reconstructs with.
+fn accessor_body_source(
+    syntax: &crate::declaration_candidate::RawDeclarationSignatureSyntax,
+) -> &str {
+    syntax
+        .accessor
+        .as_ref()
+        .map_or("{}", |accessor| accessor.body.as_ref())
 }
 
 fn signature_source(
@@ -97,11 +90,9 @@ fn signature_source(
         // brace reconstructs valid field-only syntax; inserting a bare block
         // here would itself be parsed as a malformed field.
         Category::Struct => fragments.concat(),
-        Category::Function | Category::Destructor => format!(
-            "{} {}",
-            fragments.concat(),
-            syntax.accessor_body.as_deref().unwrap_or("{}")
-        ),
+        Category::Function | Category::Destructor => {
+            format!("{} {}", fragments.concat(), accessor_body_source(syntax))
+        }
         Category::Method | Category::AssociatedFunction => format!(
             "struct {} {{ {} {} }}",
             key.owner
@@ -109,7 +100,7 @@ fn signature_source(
                 .map(|owner| owner.name.as_ref())
                 .unwrap_or("__missing_owner"),
             fragments.concat(),
-            syntax.accessor_body.as_deref().unwrap_or("{}"),
+            accessor_body_source(syntax),
         ),
         Category::ExternFunction => format!(
             "extern {} {{ {} }}",
@@ -174,6 +165,63 @@ fn trailing_yield(body: &rue_parser::ast::Expr) -> Option<&rue_parser::ast::Yiel
     }
 }
 
+/// Normalize one owner's `(method name, is accessor)` pairs into the form
+/// [`crate::declaration_candidate::RawAccessorSignatureSyntax`] retains:
+/// sorted by name, with every ambiguously duplicated name dropped.
+///
+/// A duplicate method is its own diagnostic, and 6.6:7 stays permissive
+/// wherever it cannot *prove* a callee is a plain method, so a name that two
+/// declarations claim is simply not decided here.
+pub(crate) fn owner_method_accessor_facts(
+    methods: impl IntoIterator<Item = (Arc<str>, bool)>,
+) -> Arc<[(Arc<str>, bool)]> {
+    let mut facts: Vec<(Arc<str>, bool)> = methods.into_iter().collect();
+    facts.sort();
+    let mut duplicated: BTreeSet<Arc<str>> = BTreeSet::new();
+    for window in facts.windows(2) {
+        if window[0].0 == window[1].0 {
+            duplicated.insert(window[0].0.clone());
+        }
+    }
+    facts.dedup_by(|left, right| left.0 == right.0);
+    facts.retain(|(name, _)| !duplicated.contains(name));
+    Arc::from(facts)
+}
+
+/// What one method-call link in a yielded projection chain is, as far as the
+/// declaration's own parsed neighborhood can prove (spec 6.6:7).
+///
+/// Only a link applied directly to the receiver is decidable here: `self.m()`
+/// calls a method of this accessor's owner, so `owner_methods` names it. A
+/// receiver that is anything else — a chained call, a field, an index — has a
+/// type this query does not resolve, and a callee this query must not guess.
+fn accessor_method_link(
+    call: &rue_parser::ast::MethodCallExpr,
+    interner: &crate::ThreadedRodeo,
+    owner_methods: &[(Arc<str>, bool)],
+) -> rue_air::declaration_validation::AccessorMethodLink {
+    use rue_air::declaration_validation::AccessorMethodLink as Link;
+    use rue_parser::ast::Expr;
+    let mut receiver = &*call.receiver;
+    while let Expr::Paren(paren) = receiver {
+        receiver = &paren.inner;
+    }
+    if !matches!(receiver, Expr::SelfExpr(_)) {
+        return Link::Unresolved;
+    }
+    let name = interner.resolve(&call.method.name);
+    match owner_methods
+        .iter()
+        .find(|(method, _)| method.as_ref() == name)
+    {
+        Some((_, true)) => Link::Accessor,
+        Some((_, false)) => Link::PlainMethod,
+        // A name the owner does not declare is not this rule's error to
+        // report; call resolution names it.
+        None => Link::Unresolved,
+    }
+}
+
 /// Decide 6.6:6 and 6.6:7 from an accessor body's own syntax.
 ///
 /// Both rules are containment and shape questions — "the final statement is a
@@ -184,43 +232,58 @@ fn trailing_yield(body: &rue_parser::ast::Expr) -> Option<&rue_parser::ast::Yiel
 /// off the syntax, which is why a `return` in a branch a specialization would
 /// later prune still counts: 6.6:6 forbids the form appearing in the body.
 ///
+/// This function owns the *AST walk* only. Which forms are illegal, and how
+/// each one reads, are `rue_air::declaration_validation`'s, shared with the
+/// RIR producers (RUE-1232) — the walks differ because the representations do,
+/// but the rules cannot.
+///
 /// One link of 6.6:7 is not syntactic. A projection chain may pass through a
-/// nested accessor call, and whether `self.f()` names an accessor or a plain
-/// method is a resolved-type question the declaration cannot answer. This
-/// walk therefore accepts any method-call link and keeps descending to the
-/// chain's root, leaving exactly one residual for a declaration nothing
-/// calls: `yield self.plain();`, where the chain is receiver-rooted but the
-/// link is not an accessor. `rue_air::sema::control_flow` rejects that on the
-/// demanded path, with the receiver's type in hand.
+/// nested accessor call, and whether the callee is an accessor or a plain
+/// method is a resolved-callee question. `owner_methods` closes the part of it
+/// that is a *parsed* fact: a link whose receiver is the accessor's own `self`
+/// calls a method of the owner, and whether that method is an accessor is on
+/// the owner's other declarations (RUE-1232). Every other link — `self.a().b()`,
+/// `self.field.m()` — targets a type this query cannot name, so the walk stays
+/// permissive and leaves the rejection to the demanded path, which has the
+/// receiver's type in hand.
 fn accessor_body_shape(
     body: &rue_parser::ast::Expr,
     interner: &crate::ThreadedRodeo,
-) -> AccessorBodyShape {
+    owner_methods: &[(Arc<str>, bool)],
+) -> AccessorBodyVerdict {
     use rue_parser::ast::Expr;
     let Some(trailing) = trailing_yield(body) else {
-        return AccessorBodyShape::MissingTrailingYield;
+        return AccessorBodyVerdict::MissingTrailingYield;
     };
+    // The walk order is a stack, so an offending exit is kept only when it
+    // starts earlier in the body than any already found: both producers name
+    // the *first* illegal form in the source.
     let mut pending = vec![body];
+    let mut first_exit: Option<(AccessorExitForm, u32)> = None;
     while let Some(expr) = pending.pop() {
-        let found = match expr {
+        let exit = match expr {
             // Occurrences are distinguished by span: the reparsed signature
             // source holds each `yield` exactly once.
-            Expr::Yield(exit) if exit.span != trailing.span => "a second `yield`",
-            Expr::Return(_) => "a `return`",
-            Expr::Try(_) => "a `?`",
+            Expr::Yield(exit) if exit.span != trailing.span => AccessorExitForm::SecondYield,
+            Expr::Return(_) => AccessorExitForm::Return,
+            Expr::Try(_) => AccessorExitForm::Try,
             _ => {
                 expr.child_exprs(&mut pending);
                 continue;
             }
         };
-        return AccessorBodyShape::OtherExit {
-            found: Arc::from(found),
-        };
+        let start = expr.span().start;
+        if first_exit.is_none_or(|(_, earliest)| start < earliest) {
+            first_exit = Some((exit, start));
+        }
+    }
+    if let Some((exit, _)) = first_exit {
+        return AccessorBodyVerdict::OtherExit(exit);
     }
     let mut current = trailing.value.as_ref();
     loop {
-        let found = match current {
-            Expr::SelfExpr(_) => return AccessorBodyShape::WellFormed,
+        let root = match current {
+            Expr::SelfExpr(_) => return AccessorBodyVerdict::WellFormed,
             Expr::Paren(paren) => {
                 current = &paren.inner;
                 continue;
@@ -234,15 +297,21 @@ fn accessor_body_shape(
                 continue;
             }
             Expr::MethodCall(call) => {
+                let link = accessor_method_link(call, interner, owner_methods);
+                if rue_air::declaration_validation::accessor_method_link_error(link).is_some() {
+                    return AccessorBodyVerdict::YieldNotReceiverRooted(
+                        AccessorYieldRootForm::PlainMethod,
+                    );
+                }
                 current = &call.receiver;
                 continue;
             }
-            Expr::Ident(name) => format!("a place rooted at `{}`", interner.resolve(&name.name)),
-            _ => "a value expression".to_owned(),
+            Expr::Ident(name) => {
+                AccessorYieldRootForm::Named(Arc::from(interner.resolve(&name.name)))
+            }
+            _ => AccessorYieldRootForm::Value,
         };
-        return AccessorBodyShape::YieldNotReceiverRooted {
-            found: Arc::from(found),
-        };
+        return AccessorBodyVerdict::YieldNotReceiverRooted(root);
     }
 }
 
@@ -270,7 +339,12 @@ pub(crate) fn parse_semantic_signature(
         .first()
         .ok_or_else(|| Arc::from("semantic signature parsed no declaration"))?;
     let unit: Arc<str> = Arc::from("()");
-    let body_shape = |body: &rue_parser::ast::Expr| accessor_body_shape(body, &interner);
+    let owner_methods = syntax
+        .accessor
+        .as_ref()
+        .map_or::<&[(Arc<str>, bool)], _>(&[], |accessor| &accessor.owner_methods);
+    let body_shape =
+        |body: &rue_parser::ast::Expr| accessor_body_shape(body, &interner, owner_methods);
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
                     has_self,
@@ -322,7 +396,7 @@ pub(crate) fn parse_semantic_signature(
                 true,
                 false,
                 false,
-                AccessorBodyShape::MissingTrailingYield,
+                AccessorBodyVerdict::MissingTrailingYield,
             )
         }
         (Category::Method | Category::AssociatedFunction, rue_parser::ast::Item::Struct(owner)) => {

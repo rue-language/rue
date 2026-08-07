@@ -112,6 +112,48 @@ fn local_semantic_materialization_is_an_inert_exact_fact_boundary() {
 }
 
 #[test]
+fn the_driver_reads_accessor_declaration_rules_from_the_shared_rule_module() {
+    // RUE-1232: this producer walks its own reparsed AST, but the 6.6:3-6.6:7
+    // rules it applies — which forms are illegal, in which order, and how each
+    // diagnostic reads — are `rue_air::declaration_validation`'s, shared with
+    // the RIR producers. Spelling one here is how the two declaration-time
+    // producers drifted before.
+    let driver = [
+        include_str!("revisioned_query_database.rs"),
+        include_str!("semantic_query_nucleus.rs"),
+    ]
+    .concat();
+    for kind in [
+        ["ErrorKind::Accessor", "RequiresBorrowSelf"].concat(),
+        ["ErrorKind::Accessor", "ParamModeUnsupported"].concat(),
+        ["ErrorKind::Accessor", "BodyMissingYield"].concat(),
+        ["ErrorKind::Accessor", "BodyOtherExit"].concat(),
+        ["ErrorKind::Accessor", "YieldNotReceiverRooted"].concat(),
+    ] {
+        assert!(
+            !driver.contains(&kind),
+            "the driver regained its own copy of an accessor declaration rule: {kind}"
+        );
+    }
+    assert!(
+        !driver.contains("\"a `-> borrow` accessor\""),
+        "the driver regained its own 6.6:3 gate subject"
+    );
+    for required in [
+        "use rue_air::declaration_validation as rules;",
+        "rules::accessor_preview_gate(",
+        "rules::accessor_signature(",
+        "rules::accessor_body_error(",
+        "accessor_method_link_error(",
+    ] {
+        assert!(
+            driver.contains(required),
+            "the driver stopped reading an accessor rule from the shared module: {required}"
+        );
+    }
+}
+
+#[test]
 fn cfg_queries_own_local_semantic_materialization_and_terminal_domains() {
     let cfg = include_str!("cfg_query.rs");
     let database = include_str!("revisioned_query_database.rs");
