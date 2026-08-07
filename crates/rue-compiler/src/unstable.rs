@@ -532,6 +532,57 @@ pub struct ObjectsReady {
     generation: usize,
 }
 
+/// Aggregate lifecycle work for one canonical per-function query collection.
+///
+/// This is owned measurement data only. It contains no query keys, artifacts,
+/// or handles that can be installed back into a compiler session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndpointQueryWork {
+    pub computed: usize,
+    pub reused: usize,
+    pub joined: usize,
+    pub canceled: usize,
+}
+
+impl From<crate::session::BackendQueryWork> for EndpointQueryWork {
+    fn from(work: crate::session::BackendQueryWork) -> Self {
+        Self {
+            computed: work.computed,
+            reused: work.reused,
+            joined: work.joined,
+            canceled: work.canceled,
+        }
+    }
+}
+
+/// Structural work available at the retained compilation endpoints.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EndpointWork {
+    pub cfg: EndpointQueryWork,
+    pub codegen: EndpointQueryWork,
+    pub object_projection: EndpointQueryWork,
+}
+
+impl CodegenReady {
+    pub fn unstable_work(&self) -> EndpointWork {
+        EndpointWork {
+            cfg: self.rooted.cfg_work.into(),
+            codegen: self.rooted.codegen_work.into(),
+            object_projection: EndpointQueryWork::default(),
+        }
+    }
+}
+
+impl ObjectsReady {
+    pub fn unstable_work(&self) -> EndpointWork {
+        EndpointWork {
+            cfg: self.rooted.cfg_work.into(),
+            codegen: self.rooted.codegen_work.into(),
+            object_projection: self.rooted.object_projection_work.into(),
+        }
+    }
+}
+
 fn validate_endpoint_capability(
     session: &crate::CompilerSession,
     owner: &std::sync::Arc<()>,
@@ -1710,6 +1761,12 @@ impl MetricsSnapshot {
     }
     pub fn updates(&self) -> usize {
         self.inner.updates
+    }
+    pub fn imports(&self) -> QueryMetrics {
+        self.inner.imports.into()
+    }
+    pub fn import_diagnostics(&self) -> QueryMetrics {
+        self.inner.import_diagnostics.into()
     }
     pub fn merge(&self) -> QueryMetrics {
         self.inner.merge.into()

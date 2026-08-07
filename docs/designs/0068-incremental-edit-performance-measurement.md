@@ -306,10 +306,10 @@ projects. None may introduce a peer compilation path.
   filesystem-backed reload/session seam into the shared driver library, add the
   narrow unstable codegen-ready projection, and keep the CLI on that same
   owner. — RUE-1246
-- [ ] **Phase 3: Retained-session runner.** Drive the shared host through the
+- [x] **Phase 3: Retained-session runner.** Drive the shared host through the
   diagnostics and three successful-compilation endpoints and serialize
   validated raw observations without duplicating source loading or compiler
-  orchestration. — follow-up issue
+  orchestration. — RUE-1251
 - [ ] **Phase 4: Maintained edit fixtures.** Add exact Mosaic and Lattice
   transformations, structural expectations, and warm/fresh oracle coverage. —
   follow-up issue

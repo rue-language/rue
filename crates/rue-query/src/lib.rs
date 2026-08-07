@@ -8334,11 +8334,15 @@ mod tests {
              number of times (shard selection plus one in-shard lookup), \
              independent of the retained population"
         );
+        let present_probe_hashes = CONTAINS_HASH_CALLS.load(Ordering::Relaxed);
         assert!(!family.contains_retained_key(&CountingKey(64)));
-        assert_eq!(
-            CONTAINS_HASH_CALLS.load(Ordering::Relaxed),
-            4,
-            "a missing exact retained-key probe performs the same bounded lookup"
+        let missing_probe_hashes = CONTAINS_HASH_CALLS
+            .load(Ordering::Relaxed)
+            .saturating_sub(present_probe_hashes);
+        assert!(
+            (1..=2).contains(&missing_probe_hashes),
+            "a missing exact retained-key probe hashes only for shard selection \
+             and, when the selected shard exists, one in-shard lookup"
         );
 
         let predicate_visits = AtomicUsize::new(0);
