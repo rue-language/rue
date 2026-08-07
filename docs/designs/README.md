@@ -230,4 +230,5 @@ The table is generated from ADR frontmatter. Run
 | [0065](0065-floating-point.md) | Floating point: f32/f64, IEEE-754 semantics, and register classes | Accepted | types, semantics, codegen, numerics, abi |
 | [0066](0066-producer-nominal-anonymous-types-and-incremental-locality.md) | Producer-nominal anonymous types and incremental locality | Implemented | types, semantics, comptime, incremental, performance, parallelism |
 | [0067](0067-compiler-performance-measurement.md) | Compiler performance measurement, epochs, and dashboard | Proposal | tooling, ci, performance, website |
+| [0068](0068-incremental-edit-performance-measurement.md) | Incremental edit-scenario performance measurement | Accepted | tooling, compiler, incremental, performance |
 <!-- ADR-INDEX:END -->
