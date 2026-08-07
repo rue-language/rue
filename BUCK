@@ -932,6 +932,7 @@ rue_sh_test(
 filegroup(
     name = "wrapper-script-inputs",
     srcs = [
+        "clippy.sh",
         "fmt.sh",
         "scripts/ci-heavy-suite",
         "scripts/cli-timeout-policy.py",
