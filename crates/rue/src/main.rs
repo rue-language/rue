@@ -1242,9 +1242,15 @@ fn main() {
                     let source_stats = output.unstable_metrics();
                     timing::SourceMetrics {
                         files: source_stats.files,
+                        // Every accepted source file is one module in the
+                        // canonical import graph. Query-work counters do not
+                        // include the root module, so `files` is the exact
+                        // one-shot module count rather than a work estimate.
+                        modules: source_stats.files,
                         bytes: source_stats.bytes,
                         lines: source_stats.lines,
                         tokens: source_stats.tokens,
+                        functions: source_stats.semantic.cfg.functions_considered,
                     }
                 }),
                 options

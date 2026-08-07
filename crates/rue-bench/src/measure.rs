@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use rue_perf_schema::{FailureRecord, PhaseAccounting, Sample};
+use rue_perf_schema::{FailureRecord, PhaseAccounting, Sample, WorkloadShape};
 
 /// Everything needed to measure one sample.
 pub struct SampleRequest<'a> {
@@ -52,11 +52,48 @@ pub enum SampleOutcome {
     Failed(Box<FailureRecord>),
 }
 
-/// The compiler's `--benchmark-json` output, of which only the additive
-/// partition matters here.
+/// The compiler's `--benchmark-json` output.
 #[derive(serde::Deserialize)]
 struct BenchmarkJson {
     phase_accounting: PhaseAccounting,
+    metadata: BenchmarkMetadata,
+    source_metrics: SourceMetrics,
+    emitted_output: EmittedOutput,
+}
+
+#[derive(serde::Deserialize)]
+struct BenchmarkMetadata {
+    target: String,
+}
+
+#[derive(serde::Deserialize)]
+struct SourceMetrics {
+    files: u64,
+    modules: u64,
+    bytes: u64,
+    lines: u64,
+    tokens: u64,
+    functions: u64,
+}
+
+#[derive(serde::Deserialize)]
+struct EmittedOutput {
+    size_bytes: u64,
+}
+
+struct CompletedCompile {
+    accounting: PhaseAccounting,
+    peak_memory_bytes: u64,
+    output_binary_bytes: u64,
+    shape: WorkloadShape,
+    target: String,
+}
+
+/// The raw result of one fresh compiler process for the scaling report.
+pub struct FreshCompile {
+    pub sample: Sample,
+    pub shape: WorkloadShape,
+    pub target: String,
 }
 
 /// Measure one sample.
@@ -71,11 +108,11 @@ pub fn measure_sample(request: &SampleRequest<'_>) -> SampleOutcome {
     let started = Instant::now();
     for _ in 0..request.batch_size {
         match run_once(request) {
-            Ok((accounting, peak)) => {
-                peak_memory_bytes = peak_memory_bytes.max(peak);
+            Ok(completed) => {
+                peak_memory_bytes = peak_memory_bytes.max(completed.peak_memory_bytes);
                 total = Some(match total {
-                    None => accounting,
-                    Some(running) => add_accounting(running, &accounting),
+                    None => completed.accounting,
+                    Some(running) => add_accounting(running, &completed.accounting),
                 });
             }
             Err(detail) => {
@@ -111,6 +148,31 @@ pub fn measure_sample(request: &SampleRequest<'_>) -> SampleOutcome {
     }))
 }
 
+/// Measure exactly one fresh compiler process and retain its fixture shape.
+///
+/// Unlike [`measure_sample`], this has no batching path: heavyweight programs
+/// need independent samples and uncertainty, not the startup probe's timer
+/// amplification policy.
+pub fn measure_fresh_compile(request: &SampleRequest<'_>) -> Result<FreshCompile, String> {
+    if request.batch_size != 1 {
+        return Err("a scaling sample must launch exactly one compiler process".to_string());
+    }
+    let started = Instant::now();
+    let completed = run_once(request)?;
+    let process_elapsed_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    Ok(FreshCompile {
+        sample: Sample {
+            batch_size: 1,
+            process_elapsed_ns,
+            peak_memory_bytes: completed.peak_memory_bytes,
+            output_binary_bytes: completed.output_binary_bytes,
+            phases: completed.accounting,
+        },
+        shape: completed.shape,
+        target: completed.target,
+    })
+}
+
 /// Add two phase partitions band by band.
 ///
 /// Saturating throughout: a corrupt addend must not panic the runner. Any
@@ -133,7 +195,7 @@ fn add_accounting(mut running: PhaseAccounting, next: &PhaseAccounting) -> Phase
 
 /// Run the compiler once, returning its partition and externally measured peak
 /// resident memory.
-fn run_once(request: &SampleRequest<'_>) -> Result<(PhaseAccounting, u64), String> {
+fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
     let mut command = Command::new(request.compiler);
     command
         .arg(request.source)
@@ -180,7 +242,20 @@ fn run_once(request: &SampleRequest<'_>) -> Result<(PhaseAccounting, u64), Strin
         format!("no benchmark JSON on stdout ({error}); stderr tail:\n{tail}")
     })?;
 
-    Ok((parsed.phase_accounting, peak))
+    Ok(CompletedCompile {
+        accounting: parsed.phase_accounting,
+        peak_memory_bytes: peak,
+        output_binary_bytes: parsed.emitted_output.size_bytes,
+        shape: WorkloadShape {
+            files: parsed.source_metrics.files,
+            modules: parsed.source_metrics.modules,
+            bytes: parsed.source_metrics.bytes,
+            lines: parsed.source_metrics.lines,
+            tokens: parsed.source_metrics.tokens,
+            functions: parsed.source_metrics.functions,
+        },
+        target: parsed.metadata.target,
+    })
 }
 
 /// Reap one child and report *its* peak resident memory, in bytes.
