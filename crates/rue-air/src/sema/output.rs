@@ -88,59 +88,6 @@ impl AnalyzedBodyOwnerEvent {
         }
     }
 }
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct OrdinaryFreeFunctionDependencyEvent {
-    pub caller_token: BodyOwnerToken,
-    pub caller_file: u32,
-    pub caller_name: String,
-    pub callee_file: u32,
-    pub callee_name: String,
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SpecializedFreeFunctionOrigin {
-    pub specialized_name: String,
-    pub base_file: u32,
-    pub base_name: String,
-    pub type_arguments: Vec<u32>,
-    pub value_arguments: Vec<u32>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SpecializedFreeFunctionDependencyEvent {
-    pub specialized_name: String,
-    pub base_file: u32,
-    pub base_name: String,
-    pub callee_file: u32,
-    pub callee_name: String,
-    pub type_arguments: Vec<u32>,
-    pub value_arguments: Vec<u32>,
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum NamedMethodDependencyTargetEvent {
-    FreeFunction {
-        file: u32,
-        name: String,
-    },
-    NamedMethod {
-        file: u32,
-        owner_name: String,
-        method_name: String,
-    },
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NamedMethodDependencyEvent {
-    pub caller_token: BodyOwnerToken,
-    pub caller_file: u32,
-    pub caller_owner_name: String,
-    pub caller_method_name: String,
-    pub target: NamedMethodDependencyTargetEvent,
-}
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct NamedDestructorDependencyEvent {
-    pub caller_token: BodyOwnerToken,
-    pub caller_file: u32,
-    pub caller_owner_name: String,
-    pub target: NamedMethodDependencyTargetEvent,
-}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum DeclarationTypeDependencySourceKind {
     Function,
@@ -479,16 +426,6 @@ pub struct SemaOutput {
     /// Stable-capable provenance for every successfully analyzed source body.
     pub analyzed_body_owners: Vec<AnalyzedBodyOwnerEvent>,
     pub body_named_dependencies: Vec<BodyNamedDependencyEvent>,
-    pub ordinary_free_function_dependencies: Vec<OrdinaryFreeFunctionDependencyEvent>,
-    pub ordinary_free_function_dependencies_complete: bool,
-    pub specialized_free_function_origins: Vec<SpecializedFreeFunctionOrigin>,
-    pub specialized_free_function_dependencies: Vec<SpecializedFreeFunctionDependencyEvent>,
-    pub specialized_free_function_dependencies_complete: bool,
-    pub named_method_dependencies: Vec<NamedMethodDependencyEvent>,
-    pub non_generic_named_method_dependencies_complete: bool,
-    pub generic_named_method_dependencies_complete: bool,
-    pub named_destructor_dependencies: Vec<NamedDestructorDependencyEvent>,
-    pub named_destructor_dependencies_complete: bool,
     pub declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
     pub declaration_type_dependencies_complete: bool,
     pub declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
@@ -587,11 +524,6 @@ pub struct BodyAnalysisWork {
     pub specialized_bodies_attempted: usize,
     pub specialized_bodies_succeeded: usize,
     pub specialized_bodies_failed: usize,
-    pub ordinary_free_function_dependency_events: usize,
-    pub specialized_origin_records: usize,
-    pub specialized_free_function_dependency_events: usize,
-    pub named_method_dependency_events: usize,
-    pub named_destructor_dependency_events: usize,
     pub declaration_type_dependency_events: usize,
     pub declaration_type_call_head_dependency_events: usize,
     pub named_const_dependency_events: usize,

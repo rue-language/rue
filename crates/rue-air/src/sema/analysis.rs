@@ -1257,43 +1257,6 @@ fn finalize_function_body_analysis(
             sema.body_named_dependencies.dedup();
             sema.body_named_dependencies.clone()
         },
-        ordinary_free_function_dependencies: {
-            sema.ordinary_free_function_dependencies.sort();
-            sema.ordinary_free_function_dependencies.dedup();
-            sema.ordinary_free_function_dependencies.clone()
-        },
-        ordinary_free_function_dependencies_complete: true,
-        specialized_free_function_origins: {
-            sema.specialized_free_function_origins.sort();
-            sema.specialized_free_function_origins.dedup();
-            sema.specialized_free_function_origins.clone()
-        },
-        specialized_free_function_dependencies: {
-            sema.specialized_free_function_dependencies.sort();
-            sema.specialized_free_function_dependencies.dedup();
-            sema.specialized_free_function_dependencies.clone()
-        },
-        specialized_free_function_dependencies_complete: true,
-        named_method_dependencies: {
-            sema.named_method_dependencies.sort();
-            sema.named_method_dependencies.dedup();
-            sema.named_method_dependencies.clone()
-        },
-        non_generic_named_method_dependencies_complete: sema
-            .non_generic_named_method_dependencies_complete,
-        // Named methods currently have one analyzed runtime body even when
-        // they accept comptime parameters. Unlike free functions, there is no
-        // method-specialization table whose substitution identity could split
-        // this caller. The dependency events below therefore describe the
-        // authoritative method body for both generic and non-generic callers.
-        generic_named_method_dependencies_complete: sema
-            .non_generic_named_method_dependencies_complete,
-        named_destructor_dependencies: {
-            sema.named_destructor_dependencies.sort();
-            sema.named_destructor_dependencies.dedup();
-            sema.named_destructor_dependencies.clone()
-        },
-        named_destructor_dependencies_complete: true,
         declaration_type_dependencies: {
             sema.declaration_type_dependencies.sort();
             sema.declaration_type_dependencies.dedup();
@@ -1443,183 +1406,6 @@ fn enqueue_references_sorted(
     pending_methods.extend(meths);
 }
 
-fn named_method_dependency_events(
-    sema: &BodySema<'_>,
-    caller_struct: StructId,
-    caller_method: Spur,
-    referenced_functions: &HashSet<Spur>,
-    referenced_methods: &HashSet<(StructId, Spur)>,
-) -> CompileResult<Vec<super::NamedMethodDependencyEvent>> {
-    let caller_info = sema
-        .methods
-        .get(&(caller_struct, caller_method))
-        .copied()
-        .ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InvalidCompilerInput(
-                    "named-method dependency caller is absent from semantic declarations".into(),
-                ),
-                rue_span::Span::default(),
-            )
-        })?;
-    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.to_string();
-    let caller_method_name = sema.interner.resolve(&caller_method).to_string();
-    let mut events = Vec::new();
-    for callee in referenced_functions {
-        let info = sema.function_info(*callee).copied().ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InvalidCompilerInput(
-                    "named method references a free function absent from semantic declarations"
-                        .into(),
-                ),
-                caller_info.span,
-            )
-        })?;
-        events.push(super::NamedMethodDependencyEvent {
-            caller_token: sema.body_owner_token(
-                caller_info.span.file_id,
-                &caller_method_name,
-                Some(&caller_owner_name),
-                if caller_info.has_self {
-                    super::BodyOwnerKind::Method
-                } else {
-                    super::BodyOwnerKind::AssociatedFunction
-                },
-            ),
-            caller_file: caller_info.span.file_id.index(),
-            caller_owner_name: caller_owner_name.clone(),
-            caller_method_name: caller_method_name.clone(),
-            target: super::NamedMethodDependencyTargetEvent::FreeFunction {
-                file: info.file_id.index(),
-                name: sema
-                    .interner
-                    .resolve(&sema.call_facts().source_function_name(*callee))
-                    .to_string(),
-            },
-        });
-    }
-    for (callee_struct, callee_method) in referenced_methods {
-        let owner_name = sema.type_pool.struct_def(*callee_struct).name.to_string();
-        // Membership, not the generated-name prefix: `__anon_struct_N` is a
-        // legal source declaration, and only `anonymous_struct_ids` knows which
-        // structs the compiler generated (RUE-1050).
-        if sema.anonymous_struct_ids.contains(callee_struct) {
-            continue;
-        }
-        let info = sema
-            .methods
-            .get(&(*callee_struct, *callee_method))
-            .copied()
-            .ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::InvalidCompilerInput(
-                        "named method references a named method absent from semantic declarations"
-                            .into(),
-                    ),
-                    caller_info.span,
-                )
-            })?;
-        events.push(super::NamedMethodDependencyEvent {
-            caller_token: sema.body_owner_token(
-                caller_info.span.file_id,
-                &caller_method_name,
-                Some(&caller_owner_name),
-                if caller_info.has_self {
-                    super::BodyOwnerKind::Method
-                } else {
-                    super::BodyOwnerKind::AssociatedFunction
-                },
-            ),
-            caller_file: caller_info.span.file_id.index(),
-            caller_owner_name: caller_owner_name.clone(),
-            caller_method_name: caller_method_name.clone(),
-            target: super::NamedMethodDependencyTargetEvent::NamedMethod {
-                file: info.span.file_id.index(),
-                owner_name,
-                method_name: sema.interner.resolve(callee_method).to_string(),
-            },
-        });
-    }
-    Ok(events)
-}
-
-fn named_destructor_dependency_events(
-    sema: &BodySema<'_>,
-    caller_struct: StructId,
-    caller_span: rue_span::Span,
-    referenced_functions: &HashSet<Spur>,
-    referenced_methods: &HashSet<(StructId, Spur)>,
-) -> CompileResult<Vec<super::NamedDestructorDependencyEvent>> {
-    let caller_owner_name = sema.type_pool.struct_def(caller_struct).name.to_string();
-    let mut events = Vec::new();
-    for callee in referenced_functions {
-        let info = sema.function_info(*callee).copied().ok_or_else(|| {
-            CompileError::new(
-                ErrorKind::InvalidCompilerInput(
-                    "named destructor references an absent free function".into(),
-                ),
-                caller_span,
-            )
-        })?;
-        events.push(super::NamedDestructorDependencyEvent {
-            caller_token: sema.body_owner_token(
-                caller_span.file_id,
-                &caller_owner_name,
-                Some(&caller_owner_name),
-                super::BodyOwnerKind::Destructor,
-            ),
-            caller_file: caller_span.file_id.index(),
-            caller_owner_name: caller_owner_name.clone(),
-            target: super::NamedMethodDependencyTargetEvent::FreeFunction {
-                file: info.file_id.index(),
-                name: sema
-                    .interner
-                    .resolve(&sema.call_facts().source_function_name(*callee))
-                    .to_string(),
-            },
-        });
-    }
-    for (callee_struct, callee_method) in referenced_methods {
-        let owner_name = sema.type_pool.struct_def(*callee_struct).name.to_string();
-        // Membership, not the generated-name prefix: `__anon_struct_N` is a
-        // legal source declaration, and only `anonymous_struct_ids` knows which
-        // structs the compiler generated (RUE-1050).
-        if sema.anonymous_struct_ids.contains(callee_struct) {
-            continue;
-        }
-        let info = sema
-            .methods
-            .get(&(*callee_struct, *callee_method))
-            .copied()
-            .ok_or_else(|| {
-                CompileError::new(
-                    ErrorKind::InvalidCompilerInput(
-                        "named destructor references an absent named method".into(),
-                    ),
-                    caller_span,
-                )
-            })?;
-        events.push(super::NamedDestructorDependencyEvent {
-            caller_token: sema.body_owner_token(
-                caller_span.file_id,
-                &caller_owner_name,
-                Some(&caller_owner_name),
-                super::BodyOwnerKind::Destructor,
-            ),
-            caller_file: caller_span.file_id.index(),
-            caller_owner_name: caller_owner_name.clone(),
-            target: super::NamedMethodDependencyTargetEvent::NamedMethod {
-                file: info.span.file_id.index(),
-                owner_name,
-                method_name: sema.interner.resolve(callee_method).to_string(),
-            },
-        });
-    }
-    Ok(events)
-}
-
-/// Collect aggregate owners carried by committed AIR. Only owning aggregate
-/// edges recurse: raw pointers do not make their pointees live for drop glue.
 fn extend_owned_aggregate_types(
     sema: &BodySema<'_>,
     roots: impl IntoIterator<Item = Type>,
@@ -1800,13 +1586,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
     let baseline_ordinary_body_exports = sema.ordinary_body_exports.clone();
     let baseline_specialized_body_exports = sema.specialized_body_exports.clone();
     let baseline_body_named_dependencies = sema.body_named_dependencies.clone();
-    let baseline_ordinary_free_function_dependencies =
-        sema.ordinary_free_function_dependencies.clone();
-    let baseline_specialized_free_function_origins = sema.specialized_free_function_origins.clone();
-    let baseline_specialized_free_function_dependencies =
-        sema.specialized_free_function_dependencies.clone();
-    let baseline_named_method_dependencies = sema.named_method_dependencies.clone();
-    let baseline_named_destructor_dependencies = sema.named_destructor_dependencies.clone();
     let baseline_declaration_type_dependencies = sema.declaration_type_dependencies.clone();
     let baseline_declaration_type_call_head_dependencies =
         sema.declaration_type_call_head_dependencies.clone();
@@ -1825,13 +1604,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         sema.ordinary_body_exports = baseline_ordinary_body_exports.clone();
         sema.specialized_body_exports = baseline_specialized_body_exports.clone();
         sema.body_named_dependencies = baseline_body_named_dependencies.clone();
-        sema.ordinary_free_function_dependencies =
-            baseline_ordinary_free_function_dependencies.clone();
-        sema.specialized_free_function_origins = baseline_specialized_free_function_origins.clone();
-        sema.specialized_free_function_dependencies =
-            baseline_specialized_free_function_dependencies.clone();
-        sema.named_method_dependencies = baseline_named_method_dependencies.clone();
-        sema.named_destructor_dependencies = baseline_named_destructor_dependencies.clone();
         sema.declaration_type_dependencies = baseline_declaration_type_dependencies.clone();
         sema.declaration_type_call_head_dependencies =
             baseline_declaration_type_call_head_dependencies.clone();
@@ -2010,27 +1782,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 name: sema.interner.resolve(&source_name).to_string(),
                             },
                         );
-                        for callee in &ordered_referenced_fns {
-                            let callee_info = sema
-                                .call_facts()
-                                .function_info(*callee)
-                                .expect("referenced free function is present in declarations");
-                            let callee_name = sema
-                                .interner
-                                .resolve(&sema.call_facts().source_function_name(*callee))
-                                .to_string();
-                            sema.ordinary_free_function_dependencies.push(
-                                super::OrdinaryFreeFunctionDependencyEvent {
-                                    caller_token: ordinary_owner,
-                                    caller_file: fn_info.file_id.index(),
-                                    caller_name: sema.interner.resolve(&source_name).to_string(),
-                                    callee_file: callee_info.file_id.index(),
-                                    callee_name,
-                                },
-                            );
-                            sema.body_analysis_work
-                                .ordinary_free_function_dependency_events += 1;
-                        }
                         sema.body_analysis_work.ordinary_body_exports_attempted += 1;
                         match sema.export_ordinary_body(
                             ordinary_owner,
@@ -2171,34 +1922,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 file: fn_info.file_id.index(),
                                 name: sema.interner.resolve(&source_name).to_string(),
                             });
-                        for callee in &referenced_fns {
-                            let callee_info = sema.function_info(*callee).copied();
-                            if let Some(callee_info) = callee_info {
-                                let callee_name = sema
-                                    .interner
-                                    .resolve(&sema.call_facts().source_function_name(*callee))
-                                    .to_string();
-                                sema.ordinary_free_function_dependencies.push(
-                                    super::OrdinaryFreeFunctionDependencyEvent {
-                                        caller_token: sema.body_owner_token(
-                                            fn_info.file_id,
-                                            sema.interner.resolve(&source_name),
-                                            None,
-                                            super::BodyOwnerKind::FreeFunction,
-                                        ),
-                                        caller_file: fn_info.file_id.index(),
-                                        caller_name: sema
-                                            .interner
-                                            .resolve(&source_name)
-                                            .to_string(),
-                                        callee_file: callee_info.file_id.index(),
-                                        callee_name,
-                                    },
-                                );
-                                sema.body_analysis_work
-                                    .ordinary_free_function_dependency_events += 1;
-                            }
-                        }
                         functions_with_strings.push((analyzed, local_strings));
                         all_warnings.extend(warnings);
 
@@ -2538,23 +2261,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                     generic: false,
                                 },
                             );
-                            match named_method_dependency_events(
-                                sema,
-                                struct_id,
-                                method_name,
-                                &referenced_fns,
-                                &referenced_meths,
-                            ) {
-                                Ok(events) => {
-                                    sema.body_analysis_work.named_method_dependency_events +=
-                                        events.len();
-                                    sema.named_method_dependencies.extend(events);
-                                }
-                                Err(error) => {
-                                    errors.push(error);
-                                    continue;
-                                }
-                            }
                             sema.body_analysis_work.ordinary_body_exports_attempted += 1;
                             match sema.export_ordinary_body(
                                 ordinary_owner,
@@ -2730,23 +2436,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                 owner_name: type_name_str.clone(),
                                 method_name: method_name_str.clone(),
                             });
-                        match named_method_dependency_events(
-                            sema,
-                            struct_id,
-                            method_name,
-                            &referenced_fns,
-                            &referenced_meths,
-                        ) {
-                            Ok(events) => {
-                                sema.body_analysis_work.named_method_dependency_events +=
-                                    events.len();
-                                sema.named_method_dependencies.extend(events);
-                            }
-                            Err(error) => {
-                                errors.push(error);
-                                continue;
-                            }
-                        }
                         functions_with_strings.push((analyzed, local_strings));
                         all_warnings.extend(warnings);
                         enqueue_references_sorted(
@@ -2887,23 +2576,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                         owner_name: owner_name.clone(),
                                     },
                                 );
-                                match named_destructor_dependency_events(
-                                    sema,
-                                    struct_id,
-                                    destructor.span,
-                                    &referenced_fns,
-                                    &referenced_meths,
-                                ) {
-                                    Ok(events) => {
-                                        sema.body_analysis_work
-                                            .named_destructor_dependency_events += events.len();
-                                        sema.named_destructor_dependencies.extend(events);
-                                    }
-                                    Err(error) => {
-                                        errors.push(error);
-                                        continue;
-                                    }
-                                }
                                 sema.body_analysis_work.ordinary_body_exports_attempted += 1;
                                 match sema.export_ordinary_body(
                                     ordinary_owner,
@@ -3058,23 +2730,6 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
                                         .name
                                         .to_string(),
                                 });
-                            match named_destructor_dependency_events(
-                                sema,
-                                struct_id,
-                                destructor.span,
-                                &referenced_fns,
-                                &referenced_meths,
-                            ) {
-                                Ok(events) => {
-                                    sema.body_analysis_work.named_destructor_dependency_events +=
-                                        events.len();
-                                    sema.named_destructor_dependencies.extend(events);
-                                }
-                                Err(error) => {
-                                    errors.push(error);
-                                    continue;
-                                }
-                            }
                             functions_with_strings.push((analyzed, local_strings));
                             all_warnings.extend(warnings);
                             enqueue_references_sorted(
@@ -3569,16 +3224,6 @@ mod error_invariant_tests {
             specialized_body_exports: Vec::new(),
             analyzed_body_owners: Vec::new(),
             body_named_dependencies: Vec::new(),
-            ordinary_free_function_dependencies: Vec::new(),
-            ordinary_free_function_dependencies_complete: false,
-            specialized_free_function_origins: Vec::new(),
-            specialized_free_function_dependencies: Vec::new(),
-            specialized_free_function_dependencies_complete: false,
-            named_method_dependencies: Vec::new(),
-            non_generic_named_method_dependencies_complete: false,
-            generic_named_method_dependencies_complete: false,
-            named_destructor_dependencies: Vec::new(),
-            named_destructor_dependencies_complete: false,
             declaration_type_dependencies: Vec::new(),
             declaration_type_dependencies_complete: false,
             declaration_type_call_head_dependencies: Vec::new(),
