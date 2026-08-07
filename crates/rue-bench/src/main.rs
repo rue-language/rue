@@ -85,7 +85,8 @@ Subcommands:
 
   incremental --commit <sha> --out <path>
                        measure retained-session edits of Mosaic and Lattice,
-                       including the bounded 1,000-revision retention witness.
+                       including the bounded 1,000-revision retention witness;
+                       writes raw JSON and same-stem derived Markdown.
                        Defaults to performance/incremental.toml and
                        performance/incremental-fixtures.toml.
 

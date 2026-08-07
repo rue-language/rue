@@ -316,8 +316,8 @@ projects. None may introduce a peer compilation path.
 - [x] **Phase 4: Maintained edit fixtures.** Add exact Mosaic and Lattice
   transformations, structural expectations, and warm/fresh oracle coverage. —
   RUE-1252
-- [ ] **Phase 5: Scheduled report.** Publish lower-frequency JSON and Markdown
-  workflow artifacts with no dashboard/headline integration. — follow-up issue
+- [x] **Phase 5: Scheduled report.** Publish lower-frequency JSON and Markdown
+  workflow artifacts with no dashboard/headline integration. — RUE-1253
 - [ ] **Phase 6: Product host.** Add and measure `rue --watch` on the same seam,
   including cancellation, error/fix, import-set, and atomic-publication tests. —
   follow-up issue
