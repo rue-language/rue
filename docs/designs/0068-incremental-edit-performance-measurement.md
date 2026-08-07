@@ -318,9 +318,9 @@ projects. None may introduce a peer compilation path.
   RUE-1252
 - [x] **Phase 5: Scheduled report.** Publish lower-frequency JSON and Markdown
   workflow artifacts with no dashboard/headline integration. — RUE-1253
-- [ ] **Phase 6: Product host.** Add and measure `rue --watch` on the same seam,
+- [x] **Phase 6: Product host.** Add and measure `rue --watch` on the same seam,
   including cancellation, error/fix, import-set, and atomic-publication tests. —
-  follow-up issue
+  RUE-1254
 - [ ] **Phase 7: Linker gate.** Record the Lattice decision result on RUE-1096
   and either advance its ADR or explicitly defer it. — RUE-1096
 

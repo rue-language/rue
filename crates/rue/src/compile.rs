@@ -1,4 +1,4 @@
-use rue_compiler::unstable::OneShotMetrics;
+use rue_compiler::unstable::{CancellableCompileOutcome, CompilationCancellation, OneShotMetrics};
 use rue_compiler::{CompileErrors, CompileOptions, CompileWarning};
 use rue_driver::FilesystemCompilerHost;
 
@@ -9,6 +9,19 @@ pub(crate) struct CompileRequest<'a> {
     pub(crate) host: &'a mut FilesystemCompilerHost,
     pub(crate) options: CompileOptions,
     pub(crate) destination: PublicationDestination,
+}
+
+pub(crate) struct CancellableCompileRequest<'a> {
+    pub(crate) host: &'a mut FilesystemCompilerHost,
+    pub(crate) options: CompileOptions,
+    pub(crate) destination: PublicationDestination,
+    pub(crate) cancellation: CompilationCancellation,
+}
+
+pub(crate) enum CompileCycleOutcome {
+    Linked(Box<LinkedExecutable>),
+    Errors(CompileErrors),
+    Canceled,
 }
 
 pub(crate) struct LinkedExecutable {
@@ -40,6 +53,27 @@ pub(crate) fn execute(request: CompileRequest<'_>) -> Result<LinkedExecutable, C
         linked_bytes: output.elf,
         destination: request.destination,
     })
+}
+
+pub(crate) fn execute_cancellable(request: CancellableCompileRequest<'_>) -> CompileCycleOutcome {
+    let output = request
+        .host
+        .cancellable_executable_in_compile_scope(&request.options, request.cancellation);
+    match output {
+        CancellableCompileOutcome::Completed(output) => {
+            let output = *output;
+            let metrics = output.unstable_metrics();
+            CompileCycleOutcome::Linked(Box::new(LinkedExecutable {
+                target: request.options.target,
+                warnings: output.warnings,
+                metrics,
+                linked_bytes: output.elf,
+                destination: request.destination,
+            }))
+        }
+        CancellableCompileOutcome::Errors(errors) => CompileCycleOutcome::Errors(errors),
+        CancellableCompileOutcome::Canceled => CompileCycleOutcome::Canceled,
+    }
 }
 
 impl LinkedExecutable {

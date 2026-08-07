@@ -1194,6 +1194,38 @@ pub(crate) fn compile_with_session(
     compile_rooted_with_session(session, snapshot, options, rooted)
 }
 
+pub(crate) fn compile_with_session_with_cancellation(
+    session: &mut CompilerSession,
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+    cancellation: rue_query::CancellationToken,
+) -> Result<CompileOutput, crate::session::PipelineRequestControl> {
+    let _span = info_span!("compile_pipeline").entered();
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
+    let rooted = session.rooted_codegen_with_cancellation(
+        options,
+        rue_codegen::BackendArtifactRequest::default(),
+        cancellation.clone(),
+    )?;
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
+    let output = compile_rooted_with_session(session, snapshot, options, rooted)
+        .map_err(crate::session::PipelineRequestControl::Compile)?;
+    if cancellation.is_canceled() {
+        return Err(crate::session::PipelineRequestControl::Abort(
+            rue_query::QueryAbort::Canceled,
+        ));
+    }
+    Ok(output)
+}
+
 /// Finish a canonical compilation from the exact objects-ready continuation
 /// issued by this session. Used by the retained host's unstable endpoint API;
 /// the ordinary one-shot adapter reaches the same helper through
