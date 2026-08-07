@@ -15,9 +15,6 @@
 mod calibrate;
 mod derive;
 mod environment;
-// Phase 3 supplies the canonical engine; Phase 4's maintained fixture matrix
-// wires it to the binary entry point.
-#[allow(dead_code)]
 mod incremental;
 mod measure;
 mod pins;
@@ -86,6 +83,12 @@ Subcommands:
                        measure maintained programs with independent fresh
                        compiler processes; also writes a Markdown report.
 
+  incremental --commit <sha> --out <path>
+                       measure retained-session edits of Mosaic and Lattice,
+                       including the bounded 1,000-revision retention witness.
+                       Defaults to performance/incremental.toml and
+                       performance/incremental-fixtures.toml.
+
 Optional:
   --repo-root <path>   root for resolving workload sources (default: .)
   --std-root <path>    standard-library root (default: <repo-root>/std)
@@ -117,6 +120,15 @@ fn main() -> ExitCode {
     if std::env::args().nth(1).as_deref() == Some("scaling") {
         return match scaling::run() {
             Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("rue-bench: {message}");
+                ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("incremental") {
+        return match incremental::run() {
+            Ok(status) => ExitCode::from(status.exit_code()),
             Err(message) => {
                 eprintln!("rue-bench: {message}");
                 ExitCode::from(exit::USAGE)

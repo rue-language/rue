@@ -3,3 +3,9 @@ export_file(
     src = "incremental.toml",
     visibility = ["//crates/rue-perf-schema:"],
 )
+
+export_file(
+    name = "incremental-fixtures.toml",
+    src = "incremental-fixtures.toml",
+    visibility = ["//crates/rue-bench:"],
+)

@@ -152,6 +152,9 @@ it may not change the compiler, generate a scaled program, or bypass ordinary
 filesystem discovery. This keeps the workloads recognizably maintained Mosaic
 and Lattice while making every edit class explicit and reversible.
 
+The checked-in operations live in `performance/incremental-fixtures.toml` and
+must carry the same fixture revision as `performance/incremental.toml`.
+
 The initial maintained-program suite is **Mosaic and Lattice**. Mosaic supplies a
 faster multi-module development rung; Lattice is the largest maintained scaling
 rung and the decision workload for linker investment. Ruelex and Harbor may be
@@ -310,9 +313,9 @@ projects. None may introduce a peer compilation path.
   diagnostics and three successful-compilation endpoints and serialize
   validated raw observations without duplicating source loading or compiler
   orchestration. — RUE-1251
-- [ ] **Phase 4: Maintained edit fixtures.** Add exact Mosaic and Lattice
+- [x] **Phase 4: Maintained edit fixtures.** Add exact Mosaic and Lattice
   transformations, structural expectations, and warm/fresh oracle coverage. —
-  follow-up issue
+  RUE-1252
 - [ ] **Phase 5: Scheduled report.** Publish lower-frequency JSON and Markdown
   workflow artifacts with no dashboard/headline integration. — follow-up issue
 - [ ] **Phase 6: Product host.** Add and measure `rue --watch` on the same seam,
