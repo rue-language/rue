@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 
 static NEXT_RUNTIME_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -240,6 +240,166 @@ mod registered_batch_tests {
                 vec!["0", "1", "2", "3"]
             );
         }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct SharedValidationSnapshot {
+        execution: RequestExecution,
+        outcome: u64,
+        nested: Vec<(String, RequestExecution, Option<QueryAbort>)>,
+        leaf_runs: usize,
+        branch_runs: usize,
+        root_runs: usize,
+    }
+
+    fn run_parallel_shared_dependency_validation(worker_count: usize) -> SharedValidationSnapshot {
+        let runtime = QueryRuntime::new(worker_count);
+        let first = Revision::new(1, 7);
+        let second = Revision::new(2, 7);
+        let leaf_input = InputIdentity::new("source", "parallel-validation-leaf");
+        let root_input = InputIdentity::new("source", "parallel-validation-root");
+        runtime
+            .publish_revision(first, [(leaf_input.clone(), 1), (root_input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(leaf_input.clone(), 1), (root_input.clone(), 2)])
+            .unwrap();
+
+        let leaf_runs = Arc::new(AtomicUsize::new(0));
+        let leaf_runs_for_evaluator = leaf_runs.clone();
+        let leaf_input_for_evaluator = leaf_input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "parallel-validation-leaf",
+                8,
+                move |context, _, _| {
+                    leaf_runs_for_evaluator.fetch_add(1, Ordering::Relaxed);
+                    context.input(leaf_input_for_evaluator.clone())?;
+                    Ok(QueryOutput::success(10))
+                },
+            )
+            .unwrap();
+
+        let branch_runs = Arc::new(AtomicUsize::new(0));
+        let branch_runs_for_evaluator = branch_runs.clone();
+        let leaf_for_branch = leaf.clone();
+        let branch = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "parallel-validation-branch",
+                8,
+                move |context, _, key| {
+                    branch_runs_for_evaluator.fetch_add(1, Ordering::Relaxed);
+                    let leaf = context.query_registered(&leaf_for_branch, Key("leaf"))?;
+                    let QueryOutcome::Success(value) = leaf.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value + key.0))
+                },
+            )
+            .unwrap();
+
+        let root_runs = Arc::new(AtomicUsize::new(0));
+        let root_runs_for_evaluator = root_runs.clone();
+        let root_input_for_evaluator = root_input.clone();
+        let branch_for_root = branch.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "parallel-validation-root",
+                8,
+                move |context, _, _| {
+                    root_runs_for_evaluator.fetch_add(1, Ordering::Relaxed);
+                    context.input(root_input_for_evaluator.clone())?;
+                    let branches =
+                        context.query_registered_batch(&branch_for_root, [Slot(0), Slot(1)])?;
+                    let sum = branches
+                        .iter()
+                        .map(|terminal| match terminal.outcome() {
+                            QueryOutcome::Success(value) => *value,
+                            QueryOutcome::Failure(_) => unreachable!(),
+                        })
+                        .sum();
+                    Ok(QueryOutput::success(sum))
+                },
+            )
+            .unwrap();
+
+        let initial =
+            runtime.request_registered(&root, first, Key("root"), CancellationToken::new());
+        assert_eq!(initial.execution(), RequestExecution::Computed);
+        assert_eq!(
+            initial.terminal().unwrap().outcome(),
+            &QueryOutcome::Success(21)
+        );
+        drop(initial);
+
+        let validated =
+            runtime.request_registered(&root, second, Key("root"), CancellationToken::new());
+        assert_eq!(
+            validated.abort(),
+            None,
+            "shared validation must not report a cycle"
+        );
+        let QueryOutcome::Success(outcome) = validated.terminal().unwrap().outcome() else {
+            unreachable!()
+        };
+        let snapshot = SharedValidationSnapshot {
+            execution: validated.execution(),
+            outcome: *outcome,
+            nested: validated
+                .nested_attempts()
+                .iter()
+                .map(|attempt| {
+                    (
+                        format!("{}:{}", attempt.node().family(), attempt.node().key()),
+                        attempt.execution(),
+                        attempt.abort().cloned(),
+                    )
+                })
+                .collect(),
+            leaf_runs: leaf_runs.load(Ordering::Relaxed),
+            branch_runs: branch_runs.load(Ordering::Relaxed),
+            root_runs: root_runs.load(Ordering::Relaxed),
+        };
+        drop(validated);
+        drop(root);
+        drop(branch);
+        drop(leaf);
+        assert_eq!(
+            read(&runtime.core.nodes).len(),
+            0,
+            "parallel validation must leave no registry entries after family teardown"
+        );
+        snapshot
+    }
+
+    #[test]
+    fn registered_batch_shared_dependency_validation_matches_one_and_many_workers() {
+        let one = run_parallel_shared_dependency_validation(1);
+        let many = run_parallel_shared_dependency_validation(4);
+
+        assert_eq!(one, many);
+        assert_eq!(one.execution, RequestExecution::Computed);
+        assert_eq!(one.outcome, 21);
+        assert_eq!(one.leaf_runs, 1, "the shared leaf remains green");
+        assert_eq!(
+            one.branch_runs, 2,
+            "both branches validate without recomputing"
+        );
+        assert_eq!(
+            one.root_runs, 2,
+            "the changed root input forces one recomputation"
+        );
+        assert_eq!(
+            one.nested
+                .iter()
+                .filter(|(node, execution, abort)| {
+                    node.starts_with("parallel-validation-branch:")
+                        && *execution == RequestExecution::Reused
+                        && abort.is_none()
+                })
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -2142,7 +2302,7 @@ struct RuntimeCore {
     wait_graph: Mutex<BTreeMap<TaskId, BTreeMap<TaskId, NodeIdentity>>>,
     family_names: Mutex<BTreeSet<Arc<str>>>,
     revisions: Mutex<RevisionStore>,
-    nodes: Mutex<NodeRegistry>,
+    nodes: RwLock<NodeRegistry>,
     retention_families: Mutex<BTreeMap<u64, Weak<dyn RetentionFamily>>>,
     retention_budgets: RetentionBudgets,
     /// Aggregate thresholds are consulted only after a family-local probe, not
@@ -2470,7 +2630,7 @@ impl QueryRuntime {
                     entries: BTreeMap::new(),
                     retired_through: 0,
                 }),
-                nodes: Mutex::new(NodeRegistry::default()),
+                nodes: RwLock::new(NodeRegistry::default()),
                 retention_families: Mutex::new(BTreeMap::new()),
                 retention_budgets,
                 next_retained_byte_sweep: AtomicU64::new(
@@ -3459,7 +3619,7 @@ impl<K, V> Drop for Node<K, V> {
         let Some(core) = self.registry_core.upgrade() else {
             return;
         };
-        lock(&core.nodes).remove(self.incarnation, &self.registry_self);
+        write(&core.nodes).remove(self.incarnation, &self.registry_self);
     }
 }
 
@@ -4042,7 +4202,7 @@ where
                 }
             });
             let erased: Arc<dyn ErasedNode> = node.clone();
-            let mut registry = lock(&self.core.nodes);
+            let mut registry = write(&self.core.nodes);
             let inserted = registry.insert(incarnation, Arc::downgrade(&erased));
             drop(registry);
             assert!(inserted, "node incarnations are unique within a runtime");
@@ -4882,9 +5042,9 @@ where
             .map_err(|_| AdoptTerminalError::ForeignFamily)?;
         // Locate the node by INCARNATION — never by key hash or equality —
         // and recover this family's typed node from the erased handle.
-        let node = lock(&self.core.nodes)
-            .get(&terminal.node_incarnation)
-            .and_then(Weak::upgrade)
+        let node = self
+            .core
+            .registered_node(terminal.node_incarnation)
             .ok_or(AdoptTerminalError::Evicted)?;
         let node = node
             .as_any()
@@ -7163,6 +7323,16 @@ impl Drop for Task {
 }
 
 impl RuntimeCore {
+    /// Upgrades one exact registry entry while holding the registry read guard,
+    /// then releases that guard before the erased node can run callbacks or
+    /// recurse through validation.
+    fn registered_node(&self, incarnation: u64) -> Option<Arc<dyn ErasedNode>> {
+        let registry = read(&self.nodes);
+        let node = registry.get(&incarnation).and_then(Weak::upgrade);
+        drop(registry);
+        node
+    }
+
     fn live_retention_families(&self) -> Vec<(u64, Arc<dyn RetentionFamily>)> {
         let mut registered = lock(&self.retention_families);
         let mut live = Vec::with_capacity(registered.len());
@@ -7412,10 +7582,7 @@ impl RuntimeCore {
         revision: Revision,
         registered_only: bool,
     ) {
-        if let Some(node) = lock(&self.nodes)
-            .get(&terminal.node_incarnation)
-            .and_then(Weak::upgrade)
-        {
+        if let Some(node) = self.registered_node(terminal.node_incarnation) {
             node.mark_validated(revision, terminal.stamp, registered_only);
         }
     }
@@ -7452,9 +7619,7 @@ impl RuntimeCore {
             return Ok(false);
         }
         for observed in terminal.dependencies.iter() {
-            let node = lock(&self.nodes)
-                .get(&observed.incarnation)
-                .and_then(Weak::upgrade);
+            let node = self.registered_node(observed.incarnation);
             let stamp = match node {
                 Some(node) => match node.validated_stamp(self, task, active) {
                     Ok(stamp) => stamp,
@@ -7752,6 +7917,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
+    lock.read().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn write<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
+    lock.write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn wait<'a, T>(condvar: &Condvar, guard: MutexGuard<'a, T>) -> MutexGuard<'a, T> {
     condvar
         .wait(guard)
@@ -7800,7 +7974,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         {
-            let registry = lock(&runtime.core.nodes);
+            let registry = read(&runtime.core.nodes);
             assert_eq!(registry.len(), NODE_COUNT);
             assert_eq!(
                 registry.entry_visits.load(Ordering::Relaxed),
@@ -7811,7 +7985,7 @@ mod tests {
 
         drop(leases);
 
-        let registry = lock(&runtime.core.nodes);
+        let registry = read(&runtime.core.nodes);
         assert_eq!(
             registry.len(),
             0,
@@ -7822,6 +7996,33 @@ mod tests {
             NODE_COUNT,
             "each node drop must inspect only its exact incarnation entry"
         );
+    }
+
+    #[test]
+    fn node_registry_exact_reads_can_overlap() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .family::<Key, u64>("concurrent-node-registry-reads", 1)
+            .unwrap();
+        let lease = family.node(Key("node")).unwrap();
+        let incarnation = lease.node.incarnation;
+
+        let first_registry = read(&runtime.core.nodes);
+        let first_node = first_registry
+            .get(&incarnation)
+            .and_then(Weak::upgrade)
+            .expect("the leased node remains registered");
+        let second_registry = runtime
+            .core
+            .nodes
+            .try_read()
+            .expect("a second exact registry read must not wait for the first");
+        let second_node = second_registry
+            .get(&incarnation)
+            .and_then(Weak::upgrade)
+            .expect("the same leased node remains registered");
+
+        assert!(Arc::ptr_eq(&first_node, &second_node));
     }
 
     static CONTAINS_HASH_CALLS: AtomicUsize = AtomicUsize::new(0);
