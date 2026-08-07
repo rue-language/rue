@@ -510,6 +510,99 @@ pub fn executable_in_compile_scope(
     session.executable_in_compile_scope(options)
 }
 
+/// Opaque continuation at ADR-0068's codegen-ready endpoint.
+///
+/// It owns the unpublished backend-root protection acquired with the rooted
+/// CodegenUnit collection. Callers can only advance it through
+/// [`objects_ready`]; compiler query keys and mutable IR stay private.
+pub struct CodegenReady {
+    rooted: crate::session::RootedCodegenReadyOutput,
+    snapshot: crate::SourceSnapshot,
+    options: crate::CompileOptions,
+    owner: std::sync::Arc<()>,
+    generation: usize,
+}
+
+/// Opaque continuation at ADR-0068's objects-ready endpoint.
+pub struct ObjectsReady {
+    rooted: crate::session::RootedCodegenOutput,
+    snapshot: crate::SourceSnapshot,
+    options: crate::CompileOptions,
+    owner: std::sync::Arc<()>,
+    generation: usize,
+}
+
+fn validate_endpoint_capability(
+    session: &crate::CompilerSession,
+    owner: &std::sync::Arc<()>,
+    generation: usize,
+) -> crate::MultiErrorResult<()> {
+    if !std::sync::Arc::ptr_eq(owner, &session.endpoint_capability_owner()) {
+        return Err(crate::CompileErrors::from(
+            crate::CompileError::without_span(crate::ErrorKind::InvalidCompilerInput(
+                "retained endpoint capability belongs to another compiler session".into(),
+            )),
+        ));
+    }
+    if generation != session.endpoint_capability_generation() {
+        return Err(crate::CompileErrors::from(
+            crate::CompileError::without_span(crate::ErrorKind::InvalidCompilerInput(
+                "retained endpoint capability is stale after a newer source revision".into(),
+            )),
+        ));
+    }
+    Ok(())
+}
+
+/// Drive a closed retained session through rooted CodegenUnit collection only.
+/// Object projection and linking do not run before this function returns.
+pub fn codegen_ready(
+    session: &mut crate::CompilerSession,
+    options: &crate::CompileOptions,
+) -> crate::MultiErrorResult<CodegenReady> {
+    let snapshot = session.committed_snapshot_for_executable()?;
+    let rooted =
+        session.rooted_codegen_ready(options, rue_codegen::BackendArtifactRequest::default())?;
+    Ok(CodegenReady {
+        rooted,
+        snapshot,
+        options: options.clone(),
+        owner: session.endpoint_capability_owner(),
+        generation: session.endpoint_capability_generation(),
+    })
+}
+
+/// Consume a compiler-issued codegen-ready continuation and collect its exact
+/// retained object projections.
+pub fn objects_ready(
+    session: &mut crate::CompilerSession,
+    ready: CodegenReady,
+) -> crate::MultiErrorResult<ObjectsReady> {
+    validate_endpoint_capability(session, &ready.owner, ready.generation)?;
+    let rooted = session.rooted_objects_ready(ready.rooted)?;
+    Ok(ObjectsReady {
+        rooted,
+        snapshot: ready.snapshot,
+        options: ready.options,
+        owner: ready.owner,
+        generation: ready.generation,
+    })
+}
+
+/// Consume an objects-ready continuation and perform the canonical fresh link.
+pub fn runnable_ready(
+    session: &mut crate::CompilerSession,
+    ready: ObjectsReady,
+) -> crate::MultiErrorResult<crate::CompileOutput> {
+    validate_endpoint_capability(session, &ready.owner, ready.generation)?;
+    crate::queries::compile_rooted_with_session(
+        session,
+        &ready.snapshot,
+        &ready.options,
+        ready.rooted,
+    )
+}
+
 /// Drive this session through the pre-link boundary (RIR → semantic → CFG →
 /// codegen → object generation) without linking, returning the total generated
 /// object-byte count. Used by the RUE-1086 scaling-bench runner to time a

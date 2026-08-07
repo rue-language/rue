@@ -1138,7 +1138,7 @@ impl CompilerSession {
         compile_with_session(self, &snapshot, options)
     }
 
-    fn committed_snapshot_for_executable(&self) -> MultiErrorResult<SourceSnapshot> {
+    pub(crate) fn committed_snapshot_for_executable(&self) -> MultiErrorResult<SourceSnapshot> {
         let snapshot = self
             .committed_import_discovery_artifact()
             .ok_or_else(|| {
@@ -1189,6 +1189,21 @@ pub(crate) fn compile_with_session(
     snapshot: &SourceSnapshot,
     options: &CompileOptions,
 ) -> MultiErrorResult<CompileOutput> {
+    let _span = info_span!("compile_pipeline").entered();
+    let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
+    compile_rooted_with_session(session, snapshot, options, rooted)
+}
+
+/// Finish a canonical compilation from the exact objects-ready continuation
+/// issued by this session. Used by the retained host's unstable endpoint API;
+/// the ordinary one-shot adapter reaches the same helper through
+/// [`compile_with_session`].
+pub(crate) fn compile_rooted_with_session(
+    session: &mut CompilerSession,
+    snapshot: &SourceSnapshot,
+    options: &CompileOptions,
+    rooted: crate::session::RootedCodegenOutput,
+) -> MultiErrorResult<CompileOutput> {
     let source_tokens = session
         .published_owner()
         .filter(|program| program.belongs_to_exact_snapshot(snapshot))
@@ -1199,9 +1214,6 @@ pub(crate) fn compile_with_session(
             )))
         })?;
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
-    let _span = info_span!("compile_pipeline").entered();
-
-    let rooted = session.rooted_codegen(options, rue_codegen::BackendArtifactRequest::default())?;
     let session_work = session.work().clone();
     let image = crate::program_image_plan::ProgramImage::from_rooted(
         rooted.objects,

@@ -1,4 +1,4 @@
-load("//crates:defs.bzl", "rue_binary")
+load("//crates:defs.bzl", "rue_binary", "rue_crate")
 
 _DEPS = [
     "//crates/rue-compiler:rue-compiler",
@@ -22,9 +22,24 @@ export_file(
     visibility = ["PUBLIC"],
 )
 
+# Reusable filesystem/project host shared by the one-shot CLI, retained edit
+# measurements, and later long-lived product modes.
+rue_crate(
+    name = "rue-driver",
+    crate_root = "src/lib.rs",
+    deps = _DEPS,
+    rustc_flags = [
+        "--check-cfg=cfg(rue_benchmark_allocations)",
+        "--check-cfg=cfg(test)",
+    ],
+)
+
 rue_binary(
     name = "rue",
-    deps = _DEPS,
+    crate_root = "src/main.rs",
+    deps = _DEPS + [
+        ":rue-driver",
+    ],
     test_deps = [
         "//crates/rue-query:rue-query",
     ],
@@ -38,7 +53,10 @@ rue_binary(
 # isolated from the production compiler target.
 rue_binary(
     name = "rue-benchmark",
-    deps = _DEPS,
+    crate_root = "src/main.rs",
+    deps = _DEPS + [
+        ":rue-driver",
+    ],
     rustc_flags = [
         "--cfg=rue_benchmark_allocations",
         "--check-cfg=cfg(rue_benchmark_allocations)",

@@ -618,7 +618,7 @@ pub(crate) struct SourceLoadRequest<'a> {
 }
 
 #[derive(Debug)]
-pub(crate) enum SourceLoadError {
+pub enum SourceLoadError {
     Message(String),
     Compiler {
         snapshot: Option<SourceSnapshot>,
@@ -1094,20 +1094,10 @@ pub(crate) fn reload_from_filesystem(
         root.source().clone(),
     )
     .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-    for source in reobserved.values() {
-        if source.requested_path() != root.requested_path() {
-            assembler
-                .add_explicit(
-                    source.requested_path(),
-                    source.canonical_path(),
-                    source.metadata_identity(),
-                    source.metadata_fingerprint(),
-                    source.source().clone(),
-                )
-                .map_err(|error| SourceLoadError::Message(format!("Error: {error}")))?;
-        }
-    }
-
+    // Seed only the root. Reobserved predecessor reads are an observation cache
+    // for requests the new rooted frontier actually issues; making every old
+    // read explicit would keep modules that are no longer reachable after an
+    // import-set edit and grow the retained snapshot monotonically.
     let close = drive_import_discovery_to_close(
         &mut assembler,
         &mut result.session,
@@ -1400,7 +1390,7 @@ fn reclassify_reclose_failure(
 /// module; programs that never demand it never observe it. It is folded into
 /// [`SourceLoadError::Toolchain`] and kept distinct from a hermetic policy denial.
 #[derive(Debug)]
-pub(crate) enum ToolchainIntegrityError {
+pub enum ToolchainIntegrityError {
     /// A trusted toolchain module was demanded but no standard-library root is
     /// configured, so the host cannot resolve it at all.
     StdRootUnavailable { logical_path: String },
@@ -1476,7 +1466,7 @@ impl std::fmt::Display for ToolchainIntegrityError {
 /// / broken-installation framing. A manifest denial is enforced before any
 /// filesystem probe, so a denied path is never even stat-ed.
 #[derive(Debug)]
-pub(crate) struct HermeticDenialError {
+pub struct HermeticDenialError {
     pub(crate) logical_path: String,
     pub(crate) path: PathBuf,
     pub(crate) reason: String,
@@ -1791,6 +1781,160 @@ mod tests {
             fs::write(&path, source).unwrap();
             path
         }
+    }
+
+    #[test]
+    fn symbol_paths_are_root_relative_across_relocated_source_trees() {
+        fn sources_at(root: &Path) -> Vec<(String, String)> {
+            vec![
+                (
+                    root.join("project/main.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    root.join("project/./left/nested/../entry.rue")
+                        .display()
+                        .to_string(),
+                    String::new(),
+                ),
+                (root.join("dep.rue").display().to_string(), String::new()),
+                (
+                    root.join("project/right/shared.rue").display().to_string(),
+                    String::new(),
+                ),
+            ]
+        }
+
+        let base = std::env::temp_dir().join("rue-symbol-path-tests");
+        let short = sources_at(&base.join("a"));
+        let relocated = sources_at(&base.join("a-deliberately-much-longer-relocated-source-root"));
+        let expected = vec![
+            "main.rue",
+            "left/entry.rue",
+            "../dep.rue",
+            "right/shared.rue",
+        ];
+
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&short, None).unwrap(),
+            expected
+        );
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&relocated, None).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn symbol_paths_give_external_std_a_stable_namespace() {
+        fn sources_at(project: &Path, std_root: &Path) -> Vec<(String, String)> {
+            vec![
+                (
+                    project.join("main.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    std_root.join("_std.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    std_root.join("math/float.rue").display().to_string(),
+                    String::new(),
+                ),
+                (
+                    project
+                        .join("@rue-std/math/float.rue")
+                        .display()
+                        .to_string(),
+                    String::new(),
+                ),
+            ]
+        }
+
+        let base = std::env::temp_dir().join("rue-symbol-std-tests");
+        let std_a = base.join("toolchain-a/std");
+        let std_b = base.join("a-different-toolchain-location/std");
+        let first = sources_at(&base.join("build-a/project"), &std_a);
+        let second = sources_at(&base.join("different-depth/build-b/project"), &std_b);
+        let expected = vec![
+            "main.rue",
+            "\0rue-std/_std.rue",
+            "\0rue-std/math/float.rue",
+            "@rue-std/math/float.rue",
+        ];
+
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&first, Some(&std_a)).unwrap(),
+            expected
+        );
+        assert_eq!(
+            derive_symbol_paths_with_std_root(&second, Some(&std_b)).unwrap(),
+            expected
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symbol_paths_reject_unnamed_cross_volume_sources() {
+        let sources = vec![
+            (r"C:\project\main.rue".to_string(), String::new()),
+            (r"D:\dependency\helper.rue".to_string(), String::new()),
+        ];
+        let error = derive_symbol_paths_with_std_root(&sources, None).unwrap_err();
+        assert!(error.contains("another filesystem volume"));
+    }
+
+    #[test]
+    fn source_manifest_entry_parses_comments_and_escaped_hashes() {
+        assert_eq!(
+            parse_source_manifest_entry("main.rue # comment"),
+            "main.rue"
+        );
+        assert_eq!(
+            parse_source_manifest_entry("dir/has\\#hash.rue # comment"),
+            "dir/has#hash.rue"
+        );
+        assert_eq!(
+            parse_source_manifest_entry("dir/has\\\\#comment.rue"),
+            "dir/has\\\\"
+        );
+        assert_eq!(
+            parse_source_manifest_entry("dir/trailing-backslash\\"),
+            "dir/trailing-backslash\\"
+        );
+    }
+
+    #[test]
+    fn source_manifest_load_allows_escaped_hash_in_path() {
+        let dir = TestDir::new("source-manifest-escaped-hash");
+        let main = dir.write("main.rue", "fn main() -> i32 { 0 }\n");
+        let hashed = dir.write("has#hash.rue", "pub fn answer() -> i32 { 42 }\n");
+        let manifest = dir.write(
+            "sources.manifest",
+            "main.rue # normal comment\nhas\\#hash.rue # comment after escaped path\n",
+        );
+
+        let manifest = SourceManifest::load(manifest.to_str().unwrap()).unwrap();
+
+        assert!(manifest.allows_canonical(&fs::canonicalize(main).unwrap()));
+        assert!(manifest.allows_canonical(&fs::canonicalize(hashed).unwrap()));
+    }
+
+    #[test]
+    fn unreadable_import_candidate_is_an_error_not_absence() {
+        let dir = TestDir::new("unreadable-import");
+        let main_path = dir.write(
+            "main.rue",
+            "const h = @import(\"helper.rue\");\nfn main() -> i32 { 0 }\n",
+        );
+        fs::write(dir.path.join("helper.rue"), [0xFFu8]).unwrap();
+
+        let root_source = main_path.to_string_lossy().into_owned();
+        assert!(discover_and_load_imports(&root_source, None, None).is_err());
+
+        fs::write(dir.path.join("helper.rue"), "pub fn h() -> i32 { 1 }\n").unwrap();
+        let result = discover_and_load_imports(&root_source, None, None).unwrap();
+        assert_eq!(result.source_snapshot.len(), 2);
     }
 
     #[test]

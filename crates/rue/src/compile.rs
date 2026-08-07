@@ -1,11 +1,12 @@
-use rue_compiler::unstable::{OneShotMetrics, executable_in_compile_scope};
-use rue_compiler::{CompileErrors, CompileOptions, CompileWarning, CompilerSession};
+use rue_compiler::unstable::OneShotMetrics;
+use rue_compiler::{CompileErrors, CompileOptions, CompileWarning};
+use rue_driver::FilesystemCompilerHost;
 
 use crate::output::{PublicationDestination, PublishRequest, publish_executable};
 
 /// Typed ownership boundary for the compile/link/publish operation.
 pub(crate) struct CompileRequest<'a> {
-    pub(crate) session: &'a mut CompilerSession,
+    pub(crate) host: &'a mut FilesystemCompilerHost,
     pub(crate) options: CompileOptions,
     pub(crate) destination: PublicationDestination,
 }
@@ -30,7 +31,7 @@ pub(crate) struct PublicationAttempt {
 
 /// Execute the canonical compiler session through linking.
 pub(crate) fn execute(request: CompileRequest<'_>) -> Result<LinkedExecutable, CompileErrors> {
-    let output = executable_in_compile_scope(request.session, &request.options)?;
+    let output = request.host.executable_in_compile_scope(&request.options)?;
     let metrics = output.unstable_metrics();
     Ok(LinkedExecutable {
         target: request.options.target,

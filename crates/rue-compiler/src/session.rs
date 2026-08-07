@@ -893,6 +893,20 @@ pub(crate) struct RootedCodegenOutput {
     pub(crate) work: crate::CanonicalSemanticWork,
 }
 
+/// Opaque in-crate continuation between the canonical codegen-ready and
+/// objects-ready endpoints. The unpublished backend-root candidate keeps the
+/// exact CFG and CodegenUnit cones protected until object projection can
+/// atomically publish their successor root.
+pub(crate) struct RootedCodegenReadyOutput {
+    graph: RootedBodyGraph,
+    units: Vec<crate::codegen_query::CollectedCodegenUnit>,
+    cfgs: Vec<RootedCfgUnit>,
+    warnings: Vec<CompileWarning>,
+    work: crate::CanonicalSemanticWork,
+    backend_root: crate::revisioned_query_database::BackendRootCandidate,
+    codegen_batch_key: crate::revisioned_query_database::CodegenUnitBatchKey,
+}
+
 #[derive(Debug, Clone)]
 struct RootedBodyGraph {
     revision: rue_query::Revision,
@@ -2993,6 +3007,14 @@ impl CompilerSession {
     }
     pub(crate) fn work(&self) -> &CompilerSessionWork {
         self.metrics.work()
+    }
+
+    pub(crate) fn endpoint_capability_owner(&self) -> Arc<()> {
+        self.identity.clone()
+    }
+
+    pub(crate) fn endpoint_capability_generation(&self) -> usize {
+        self.metrics.work().updates
     }
     /// Return an owned snapshot of explicitly unstable compiler metrics.
     ///
@@ -5118,6 +5140,17 @@ impl CompilerSession {
         options: &CompileOptions,
         request: rue_codegen::BackendArtifactRequest,
     ) -> Result<RootedCodegenOutput, CompileErrors> {
+        let ready = self.rooted_codegen_ready(options, request)?;
+        self.rooted_objects_ready(ready)
+    }
+
+    /// Collect the rooted reached set's canonical CodegenUnits while retaining
+    /// the exact unpublished backend-root candidate for object projection.
+    pub(crate) fn rooted_codegen_ready(
+        &mut self,
+        options: &CompileOptions,
+        request: rue_codegen::BackendArtifactRequest,
+    ) -> Result<RootedCodegenReadyOutput, CompileErrors> {
         let RootedCfgOutput {
             graph,
             cfgs,
@@ -5224,6 +5257,32 @@ impl CompilerSession {
             }
         }
         drop(_codegen_collection_span);
+        Ok(RootedCodegenReadyOutput {
+            graph,
+            units,
+            cfgs,
+            warnings,
+            work,
+            backend_root,
+            codegen_batch_key,
+        })
+    }
+
+    /// Continue one compiler-issued codegen-ready capability through retained
+    /// per-unit object projection and atomically publish the backend root.
+    pub(crate) fn rooted_objects_ready(
+        &mut self,
+        ready: RootedCodegenReadyOutput,
+    ) -> Result<RootedCodegenOutput, CompileErrors> {
+        let RootedCodegenReadyOutput {
+            graph,
+            units,
+            cfgs,
+            warnings,
+            work,
+            mut backend_root,
+            codegen_batch_key,
+        } = ready;
         let object_keys = codegen_batch_key
             .keys
             .iter()

@@ -1283,6 +1283,82 @@ mod tests {
     }
 
     #[test]
+    fn retained_endpoint_capabilities_stop_and_continue_at_canonical_boundaries() {
+        let snapshot = SourceSnapshot::single(
+            "<retained-endpoints>",
+            "fn helper() -> i32 { 41 } fn main() -> i32 { helper() + 1 }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut session)
+            .unwrap();
+
+        let codegen = crate::unstable::codegen_ready(&mut session, &options).unwrap();
+        assert_eq!(session.codegen_collections(), 2);
+        assert!(
+            session.object_projection_executions().is_empty(),
+            "codegen-ready must not begin object projection"
+        );
+        assert_eq!(session.object_projection_collections(), 0);
+
+        let objects = crate::unstable::objects_ready(&mut session, codegen).unwrap();
+        assert_eq!(session.object_projection_collections(), 2);
+        let retained = crate::unstable::runnable_ready(&mut session, objects).unwrap();
+
+        let mut fresh = CompilerSession::new();
+        crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut fresh)
+            .unwrap();
+        let oracle = fresh.executable(&options).unwrap();
+        assert_eq!(retained.elf, oracle.elf);
+        assert_eq!(retained.warnings, oracle.warnings);
+    }
+
+    #[test]
+    fn retained_endpoint_capabilities_reject_another_session_or_revision() {
+        let snapshot =
+            SourceSnapshot::single("<retained-endpoint-owner>", "fn main() -> i32 { 42 }").unwrap();
+        let options = CompileOptions::default();
+
+        let mut first = CompilerSession::new();
+        crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut first)
+            .unwrap();
+        let wrong_owner = crate::unstable::codegen_ready(&mut first, &options).unwrap();
+
+        let mut second = CompilerSession::new();
+        crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut second)
+            .unwrap();
+        let wrong_owner_error = match crate::unstable::objects_ready(&mut second, wrong_owner) {
+            Err(errors) => errors,
+            Ok(_) => panic!("another session accepted a foreign endpoint capability"),
+        };
+        assert!(
+            wrong_owner_error
+                .to_string()
+                .contains("another compiler session")
+        );
+
+        let stale = crate::unstable::codegen_ready(&mut first, &options).unwrap();
+        crate::test_support::TestDiscoveryHost::new(&snapshot)
+            .unwrap()
+            .drive(&mut first)
+            .unwrap();
+        let stale_error = match crate::unstable::objects_ready(&mut first, stale) {
+            Err(errors) => errors,
+            Ok(_) => panic!("a newer revision accepted a stale endpoint capability"),
+        };
+        assert!(stale_error.to_string().contains("stale"));
+    }
+
+    #[test]
     fn retained_object_projection_is_local_bounded_and_released_with_the_backend_root() {
         const FUNCTIONS: usize = 32;
         let options = CompileOptions::default();

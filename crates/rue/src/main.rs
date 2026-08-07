@@ -13,7 +13,6 @@ mod compile;
 mod emit;
 mod output;
 mod platform_signing;
-mod source_loader;
 mod timing;
 
 use emit::EmitStage;
@@ -22,12 +21,7 @@ use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route, emit_req
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{MultiFileFormatter, MultiFileJsonFormatter, SourceInfo};
-use source_loader::{SourceLoadError, SourceLoadRequest};
-#[cfg(test)]
-use source_loader::{
-    SourceManifest, derive_symbol_paths_with_std_root, discover_and_load_imports,
-    parse_source_manifest_entry,
-};
+use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
 
 use rue_compiler::{
     CompileErrors, CompileOptions, CompileWarning, FileId, ImportDiscoveryStatus, LinkerMode,
@@ -1049,9 +1043,9 @@ fn main() {
     if options.benchmark_json {
         allocation::begin();
     }
-    let mut import_discovery = {
+    let mut compiler_host = {
         let _compile = compile_span.enter();
-        match source_loader::load(SourceLoadRequest {
+        match FilesystemCompilerHost::open(HostOpenRequest {
             root_source: &options.source_path,
             source_manifest_path: options.source_manifest_path.as_deref(),
             std_root: captured_std_root.as_deref(),
@@ -1088,10 +1082,7 @@ fn main() {
     // emit and compile, matching the acquire-before-everything ordering.
     if options.emit_stages.is_empty() || emit::emit_requires_semantic(&options.emit_stages) {
         let _compile = compile_span.enter();
-        if let Err(error) = source_loader::acquire_reached_toolchain_modules(
-            &mut import_discovery,
-            &compile_options,
-        ) {
+        if let Err(error) = compiler_host.acquire_reached_toolchain_modules(&compile_options) {
             report_source_load_error(error, options.error_format);
         }
     }
@@ -1100,13 +1091,13 @@ fn main() {
     if options.benchmark_json {
         allocation::pause();
     }
-    let source_snapshot = import_discovery.source_snapshot.clone();
+    let source_snapshot = compiler_host.source_snapshot().clone();
     tracing::debug!(
-        root = %import_discovery.resolution.root_path.display(),
-        project_root = import_discovery.resolution.context.project_root(),
-        std_root = import_discovery.resolution.context.std_root(),
-        read_policy_revision = import_discovery.resolution.context.read_policy_revision(),
-        accepted_reads = import_discovery.read_manifest.len(),
+        root = %compiler_host.root_path().display(),
+        project_root = compiler_host.discovery_context().project_root(),
+        std_root = compiler_host.discovery_context().std_root(),
+        read_policy_revision = compiler_host.discovery_context().read_policy_revision(),
+        accepted_reads = compiler_host.accepted_reads().len(),
         "source loading complete"
     );
 
@@ -1126,10 +1117,8 @@ fn main() {
         {
             let _compile = compile_span.enter();
             if let Err(()) = emit::execute(emit::EmitRequest {
-                source_snapshot: &source_snapshot,
-                session: &mut import_discovery.session,
+                host: &mut compiler_host,
                 stages: &options.emit_stages,
-                discovery_revision: &import_discovery.revision,
                 compile_options: compile_options.clone(),
                 diagnostics: &diagnostics,
             }) {
@@ -1148,8 +1137,8 @@ fn main() {
         return;
     }
 
-    if import_discovery.revision.status() != ImportDiscoveryStatus::ClosedValid {
-        diagnostics.print_errors(import_discovery.revision.diagnostics());
+    if compiler_host.discovery_status() != ImportDiscoveryStatus::ClosedValid {
+        diagnostics.print_errors(compiler_host.discovery_revision().diagnostics());
         std::process::exit(1);
     }
 
@@ -1182,7 +1171,7 @@ fn main() {
     let compile_result = {
         let _compile = compile_span.enter();
         compile::execute(compile::CompileRequest {
-            session: &mut import_discovery.session,
+            host: &mut compiler_host,
             options: compile_options,
             destination: publication_destination,
         })
@@ -1328,24 +1317,26 @@ mod tests {
 
         tracing::subscriber::with_default(subscriber, || {
             let compile_span = tracing::info_span!("compile", target = "test");
-            let mut discovery = {
+            let mut host = {
                 let _compile = compile_span.enter();
-                discover_and_load_imports(&root_source, None, None).unwrap()
+                FilesystemCompilerHost::open(HostOpenRequest {
+                    root_source: &root_source,
+                    source_manifest_path: None,
+                    std_root: None,
+                })
+                .unwrap()
             };
-            assert_eq!(discovery.source_snapshot.len(), 2);
-            assert_eq!(discovery.read_manifest.len(), 2);
-            assert_eq!(discovery.resolution.root_path, main);
+            assert_eq!(host.source_snapshot().len(), 2);
+            assert_eq!(host.accepted_reads().len(), 2);
+            assert_eq!(host.root_path(), main);
             assert_eq!(
-                discovery.resolution.context.project_root(),
+                host.discovery_context().project_root(),
                 dir.path.to_string_lossy().as_ref()
             );
             {
                 let _compile = compile_span.enter();
-                rue_compiler::unstable::executable_in_compile_scope(
-                    &mut discovery.session,
-                    &CompileOptions::default(),
-                )
-                .unwrap();
+                host.executable_in_compile_scope(&CompileOptions::default())
+                    .unwrap();
             }
             drop(compile_span);
         });
@@ -1356,7 +1347,8 @@ mod tests {
         // whole chain: the parse must still reach `compile`, and each link
         // names the phase that owns that share of discovery time.
         for expected in [
-            ("compile", "import_discovery_round"),
+            ("compile", "source_loading"),
+            ("source_loading", "import_discovery_round"),
             ("import_discovery_round", "import_plan"),
             ("import_plan", "import_stage"),
             ("import_stage", "import_parse_staging"),
@@ -1384,107 +1376,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn symbol_paths_are_root_relative_across_relocated_source_trees() {
-        fn sources_at(root: &Path) -> Vec<(String, String)> {
-            vec![
-                (
-                    root.join("project/main.rue").display().to_string(),
-                    String::new(),
-                ),
-                (
-                    root.join("project/./left/nested/../entry.rue")
-                        .display()
-                        .to_string(),
-                    String::new(),
-                ),
-                (root.join("dep.rue").display().to_string(), String::new()),
-                (
-                    root.join("project/right/shared.rue").display().to_string(),
-                    String::new(),
-                ),
-            ]
-        }
-
-        let base = std::env::temp_dir().join("rue-symbol-path-tests");
-        let short = sources_at(&base.join("a"));
-        let relocated = sources_at(&base.join("a-deliberately-much-longer-relocated-source-root"));
-        let expected = vec![
-            "main.rue",
-            "left/entry.rue",
-            "../dep.rue",
-            "right/shared.rue",
-        ];
-
-        assert_eq!(
-            derive_symbol_paths_with_std_root(&short, None).unwrap(),
-            expected
-        );
-        assert_eq!(
-            derive_symbol_paths_with_std_root(&relocated, None).unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn symbol_paths_give_external_std_a_stable_namespace() {
-        fn sources_at(project: &Path, std_root: &Path) -> Vec<(String, String)> {
-            vec![
-                (
-                    project.join("main.rue").display().to_string(),
-                    String::new(),
-                ),
-                (
-                    std_root.join("_std.rue").display().to_string(),
-                    String::new(),
-                ),
-                (
-                    std_root.join("math/float.rue").display().to_string(),
-                    String::new(),
-                ),
-                (
-                    project
-                        .join("@rue-std/math/float.rue")
-                        .display()
-                        .to_string(),
-                    String::new(),
-                ),
-            ]
-        }
-
-        let base = std::env::temp_dir().join("rue-symbol-std-tests");
-        let std_a = base.join("toolchain-a/std");
-        let std_b = base.join("a-different-toolchain-location/std");
-        let first = sources_at(&base.join("build-a/project"), &std_a);
-        let second = sources_at(&base.join("different-depth/build-b/project"), &std_b);
-        let expected = vec![
-            "main.rue",
-            "\0rue-std/_std.rue",
-            "\0rue-std/math/float.rue",
-            "@rue-std/math/float.rue",
-        ];
-
-        assert_eq!(
-            derive_symbol_paths_with_std_root(&first, Some(&std_a)).unwrap(),
-            expected
-        );
-        assert_eq!(
-            derive_symbol_paths_with_std_root(&second, Some(&std_b)).unwrap(),
-            expected
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn symbol_paths_reject_unnamed_cross_volume_sources() {
-        let sources = vec![
-            (r"C:\project\main.rue".to_string(), String::new()),
-            (r"D:\dependency\helper.rue".to_string(), String::new()),
-        ];
-        let error = derive_symbol_paths_with_std_root(&sources, None).unwrap_err();
-        assert!(error.contains("another filesystem volume"));
-    }
-
     impl Drop for TestDir {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
@@ -1508,42 +1399,6 @@ mod tests {
     /// Helper to check if result is an exit.
     fn is_exit(result: &ParseResult) -> bool {
         matches!(result, ParseResult::Exit)
-    }
-
-    #[test]
-    fn source_manifest_entry_parses_comments_and_escaped_hashes() {
-        assert_eq!(
-            parse_source_manifest_entry("main.rue # comment"),
-            "main.rue"
-        );
-        assert_eq!(
-            parse_source_manifest_entry("dir/has\\#hash.rue # comment"),
-            "dir/has#hash.rue"
-        );
-        assert_eq!(
-            parse_source_manifest_entry("dir/has\\\\#comment.rue"),
-            "dir/has\\\\"
-        );
-        assert_eq!(
-            parse_source_manifest_entry("dir/trailing-backslash\\"),
-            "dir/trailing-backslash\\"
-        );
-    }
-
-    #[test]
-    fn source_manifest_load_allows_escaped_hash_in_path() {
-        let dir = TestDir::new("source-manifest-escaped-hash");
-        let main = dir.write("main.rue", "fn main() -> i32 { 0 }\n");
-        let hashed = dir.write("has#hash.rue", "pub fn answer() -> i32 { 42 }\n");
-        let manifest = dir.write(
-            "sources.manifest",
-            "main.rue # normal comment\nhas\\#hash.rue # comment after escaped path\n",
-        );
-
-        let manifest = SourceManifest::load(manifest.to_str().unwrap()).unwrap();
-
-        assert!(manifest.allows_canonical(&fs::canonicalize(main).unwrap()));
-        assert!(manifest.allows_canonical(&fs::canonicalize(hashed).unwrap()));
     }
 
     // ========== Basic parsing tests ==========
@@ -1889,43 +1744,6 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn unreadable_import_candidate_is_an_error_not_absence() {
-        // RUE-529: an import candidate that EXISTS but cannot be read
-        // (invalid UTF-8 here) must be a hard error, not treated as absent —
-        // absence misreported the import as E0704 "cannot find module" and
-        // silently erased one arm of a file-vs-directory ambiguity. (Unit
-        // test rather than a CLI case: TOML case sources cannot express
-        // invalid-UTF-8 file content.)
-        let dir =
-            std::env::temp_dir().join(format!("rue-unreadable-import-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let main_path = dir.join("main.rue");
-        fs::write(
-            &main_path,
-            "const h = @import(\"helper.rue\");\nfn main() -> i32 { 0 }\n",
-        )
-        .unwrap();
-        fs::write(dir.join("helper.rue"), [0xFFu8]).unwrap();
-
-        let root_source = main_path.to_string_lossy().into_owned();
-        let result = discover_and_load_imports(&root_source, None, None);
-        assert!(
-            result.is_err(),
-            "unreadable existing candidate must error, not resolve or vanish"
-        );
-
-        // Control: once the candidate is valid text, discovery loads it.
-        fs::write(dir.join("helper.rue"), "pub fn h() -> i32 {{ 1 }}\n").unwrap();
-        let result = discover_and_load_imports(&root_source, None, None).unwrap();
-        assert_eq!(
-            result.source_snapshot.len(),
-            2,
-            "helper must be discovered and loaded"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
     #[test]
     fn parse_emit_ast() {
         let opts = unwrap_options(parse_args_from(&["--emit", "ast", "source.rue"]));
