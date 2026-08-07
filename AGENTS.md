@@ -83,7 +83,9 @@ scripts/rue spec 4.2                 # filtered specification tests
 scripts/rue cli abi                  # filtered CLI integration tests
 scripts/rue test [pattern]           # broad/full suite
 scripts/rue fmt                      # format changed Rust files
-scripts/rue gc                       # reclaim stale Buck2 artifacts
+scripts/rue storage status           # inventory Buck disk use across worktrees
+scripts/rue storage plan             # dry-run host-wide stale cleanup
+scripts/rue storage clean            # reclaim stale Buck2 artifacts host-wide
 scripts/rue cache install            # securely install the shared cache config
 scripts/rue cache apply --all        # provision current Git/Codex worktrees
 ```

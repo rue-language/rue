@@ -41,10 +41,14 @@ http_headers = x-buildbuddy-api-key:$key
 EOF
     chmod 600 "$config"
     rc=0
-    HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
-        "$SRC_ROOT/scripts/provision-build-cache" status "$sb/primary" >/dev/null 2>&1 || rc=$?
-    check "cache: pre-upload-gate configs require migration" \
-        "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+    out="$(HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
+        "$SRC_ROOT/scripts/provision-build-cache" apply "$sb/primary" "$sb/worktree" 2>&1)" || rc=$?
+    check "cache: private pre-upload-gate config migrates automatically" \
+        "$([ "$rc" -eq 0 ] && grep -Eq '^default_allow_cache_upload = true$' "$config" && echo 0 || echo 1)"
+    check "cache: migration preserves the credential without printing it" \
+        "$(grep -Fq "x-buildbuddy-api-key:$key" "$config" && [[ "$out" != *"$key"* ]] && echo 0 || echo 1)"
+    mode="$(stat -c '%a' "$config" 2>/dev/null || stat -f '%Lp' "$config")"
+    check "cache: migrated config remains private" "$([ $((8#$mode & 077)) -eq 0 ] && echo 0 || echo 1)"
 
     rc=0
     out="$(HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" BUILDBUDDY_API_KEY="$key" \
@@ -85,6 +89,16 @@ EOF
     HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
         "$SRC_ROOT/scripts/provision-build-cache" apply "$sb/primary" >/dev/null 2>&1 || rc=$?
     check "cache: insecure central permissions fail closed" "$([ "$rc" -ne 0 ] && echo 0 || echo 1)"
+
+    chmod 600 "$config"
+    sed 's/default_allow_cache_upload = true/default_allow_cache_upload = false/' "$config" >"$config.disabled"
+    mv "$config.disabled" "$config"
+    chmod 600 "$config"
+    rc=0
+    HOME="$sb/home" XDG_CONFIG_HOME="$sb/config" \
+        "$SRC_ROOT/scripts/provision-build-cache" apply "$sb/primary" >/dev/null 2>&1 || rc=$?
+    check "cache: an explicit upload opt-out is never rewritten" \
+        "$([ "$rc" -ne 0 ] && grep -Eq '^default_allow_cache_upload = false$' "$config" && echo 0 || echo 1)"
     rm -rf "$sb"
 }
 

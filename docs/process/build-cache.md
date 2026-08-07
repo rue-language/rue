@@ -34,7 +34,10 @@ scripts/rue cache apply --all   # primary checkout + current Git/Codex worktrees
 `apply` places only an ignored `.buckconfig.local` symlink in each checkout, so
 the credential is neither copied between worktrees nor stored in Git. It refuses
 to replace an existing local config and refuses a central config readable by
-another account. Commands never print the key.
+another account. Commands never print the key. A secure config installed before
+the Rust upload gate existed is upgraded atomically in place, preserving its
+credential; an explicit `default_allow_cache_upload = false` remains an error
+instead of being silently overridden.
 
 Once installed, direct `./buck2`, `scripts/rue ...`, and `test.sh` runs
 automatically link a new worktree on first use. If the central config is absent,
@@ -42,6 +45,34 @@ Rue simply uses its ordinary local Buck configuration. If it is malformed or
 insecure, Rue warns and continues without provisioning it. Existing local paths,
 including broken or unrelated symlinks, are left untouched. This keeps cache
 setup opt-in and prevents a credential problem from making local builds unusable.
+
+## Host-wide disk lifecycle
+
+Every worktree has its own `buck-out`; a large primary checkout and many smaller
+worktrees therefore share one host budget even though Buck daemons cannot share
+their local materializer state. Rue configures Buck's deferred materializer to
+persist that state, defer write actions, and continuously remove outputs that
+have not been used for one week. Cleanup starts twelve hours after daemon startup
+and repeats daily. Buck coordinates those deletions with active builds; Rue does
+not infer that a worktree is disposable from its age or directory name.
+
+Use the host-wide storage command from any current Rue checkout:
+
+```bash
+scripts/rue storage status            # sizes, source state, and cache state
+scripts/rue storage plan [AGE]        # Buck dry-run in every registered worktree
+scripts/rue storage clean [AGE]       # coordinated stale cleanup; default 1w
+scripts/rue storage reset /exact/root # full Buck reset of an explicit target
+```
+
+The inventory comes from `git worktree list` and fails closed: if the registered
+set cannot be read, no cleanup runs. `clean` removes only stale or untracked Buck
+outputs. `reset` is the migration escape hatch for an older worktree whose
+artifacts predate persisted materializer state; it validates every named path as
+a registered Rue worktree before it resets any of them. Neither command removes
+source files or worktrees. `scripts/rue gc` remains a compatibility alias for
+the host-wide one-week stale cleanup, and the older `scripts/worktree-gc` entry
+point now performs the same safe cleanup without deleting directories.
 
 The default setup is for the shared **action cache**. Normal commands stay on
 `--prefer-local`; add `--prefer-remote` explicitly when remote execution is the
