@@ -893,6 +893,10 @@ pub(crate) enum SemanticNucleusFailure {
         kind: rue_error::ErrorKind,
         help: Arc<str>,
     },
+    DiagnosticWithNote {
+        kind: rue_error::ErrorKind,
+        note: Arc<str>,
+    },
     SignatureReentry {
         signature: StableDefinitionKey,
         cycle: Arc<[Arc<str>]>,
@@ -1091,6 +1095,9 @@ impl RetainedCharge for SemanticNucleusFailure {
             Self::DiagnosticWithHelp { kind, help } => kind
                 .retained_charge()
                 .saturating_add(help.retained_charge()),
+            Self::DiagnosticWithNote { kind, note } => kind
+                .retained_charge()
+                .saturating_add(note.retained_charge()),
             Self::SignatureReentry { signature, cycle } => signature
                 .retained_charge()
                 .saturating_add(cycle.retained_charge()),

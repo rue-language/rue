@@ -109,16 +109,16 @@ pub fn duplicate_destructor(type_name: &str) -> ErrorKind {
 //
 // These rules are legality rules on the *declaration*, so a declared-but-
 // uncalled accessor is exactly as ill-formed as a called one, and every
-// producer that admits an accessor declaration runs them: RIR predeclaration
-// (`sema::declarations`), the body engine (`sema::ordinary_engine`), the
-// demanded body walk (`sema::control_flow`), and the driver's reparsed
-// signature query (`rue_compiler::semantic_query_nucleus`). The producers
-// necessarily differ in *what they walk* — RIR instructions, a resolved
-// parameter list, or a reparsed AST — so the forms below are named after the
-// spec's own vocabulary rather than any one IR, and every producer lowers its
-// nodes into them. The mapping from a form to its diagnostic, and the order in
-// which the rules apply, live here exactly once; without that, the two
-// declaration-time producers drift on wording the way they did before RUE-1232.
+// declaration producer runs them: RIR predeclaration (`sema::declarations`)
+// and the driver's reparsed signature query
+// (`rue_compiler::semantic_query_nucleus`). The demanded body walk
+// (`sema::control_flow`) additionally resolves whether a method-call link in a
+// yielded projection names another accessor. The producers necessarily differ
+// in *what they walk* — RIR instructions or a reparsed AST — so the forms below
+// are named after the spec's own vocabulary rather than either IR. The mapping
+// from a form to its diagnostic, and the order in which the rules apply, live
+// here exactly once; without that, the two declaration producers drift on
+// wording the way they did before RUE-1232.
 
 /// The preview feature the accessor form is gated behind (6.6:3).
 pub const ACCESSOR_PREVIEW_FEATURE: rue_error::PreviewFeature =
@@ -150,10 +150,6 @@ pub enum AccessorReceiverForm {
     FreeFunction,
     /// A declaration with an owning type but no receiver parameter.
     AssociatedFunction,
-    /// No receiver parameter, from a producer that sees only a resolved
-    /// parameter list and so cannot tell a free function from an associated
-    /// one.
-    MissingReceiver,
 }
 
 /// The mode of one non-receiver accessor parameter (6.6:5). Guard inputs are
@@ -243,8 +239,7 @@ pub enum AccessorBodyVerdict {
 
 /// A violation of the accessor signature rules, in the order the rules apply.
 pub enum AccessorSignatureViolation {
-    /// 6.6:4. `note` is the phase pointer for `inout self`; a producer whose
-    /// diagnostic transport carries no note may drop it.
+    /// 6.6:4. `note` is the phase pointer for `inout self`.
     Receiver {
         kind: ErrorKind,
         note: Option<&'static str>,
@@ -295,7 +290,6 @@ pub fn accessor_receiver_error(
         AccessorReceiverForm::AssociatedFunction => {
             ("an associated function with no receiver", None)
         }
-        AccessorReceiverForm::MissingReceiver => ("a function with no receiver", None),
     };
     Some((
         ErrorKind::AccessorRequiresBorrowSelf {

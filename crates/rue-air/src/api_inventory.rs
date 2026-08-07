@@ -79,6 +79,15 @@ fn accessor_producers_do_not_spell_their_own_declaration_diagnostics() {
         !producers.contains("\"a `-> borrow` accessor\""),
         "an accessor producer regained its own 6.6:3 gate subject"
     );
+
+    // Signature legality is decided before either body-analysis host can run:
+    // declaration binding owns the whole-RIR path, and the durable signature
+    // query owns the provider path. The ordinary engine therefore must not
+    // become a third signature producer again (RUE-1233).
+    assert!(
+        !include_str!("sema/ordinary_engine.rs").contains("accessor_signature("),
+        "the ordinary body engine regained an accessor signature re-check"
+    );
 }
 
 #[test]
