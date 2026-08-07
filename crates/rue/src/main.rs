@@ -14,6 +14,7 @@ mod emit;
 mod output;
 mod platform_signing;
 mod timing;
+mod watch;
 
 use emit::EmitStage;
 #[cfg(test)]
@@ -198,6 +199,7 @@ struct Options {
     error_format: ErrorFormat,
     time_passes: bool,
     benchmark_json: bool,
+    watch: bool,
     /// Number of parallel jobs (0 = auto-detect, use all cores).
     jobs: usize,
 }
@@ -263,6 +265,7 @@ Options:
                        Formats: {error_formats}
   --time-passes        Show timing for each compilation pass
   --benchmark-json     Output timing as JSON (for benchmarking)
+  --watch              Recompile when the accepted source closure changes
   --version            Show version information
   --help               Show this help message",
         targets = Target::all_names(),
@@ -365,6 +368,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
     let mut error_format: Option<ErrorFormat> = None;
     let mut time_passes = false;
     let mut benchmark_json = false;
+    let mut watch = false;
     let mut jobs: Option<usize> = None;
     let mut source_manifest_path: Option<String> = None;
     let mut output_path: Option<String> = None;
@@ -514,6 +518,9 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
             "--benchmark-json" => {
                 benchmark_json = true;
             }
+            "--watch" => {
+                watch = true;
+            }
             "--help" | "-h" => {
                 // Explicit help request: success, so write to stdout (RUE-518).
                 print_help();
@@ -652,6 +659,7 @@ fn parse_args_from(args: &[&str]) -> ParseResult {
         error_format: error_format.unwrap_or_default(),
         time_passes,
         benchmark_json,
+        watch,
         jobs: jobs.unwrap_or(0),
     }))
 }
@@ -664,6 +672,16 @@ fn parse_args() -> Option<Options> {
         ParseResult::Options(opts) => Some(*opts),
         ParseResult::Error => None,
         ParseResult::Exit => std::process::exit(0),
+    }
+}
+
+fn validate_watch_modes(options: &Options) -> Result<(), &'static str> {
+    if options.watch
+        && (!options.emit_stages.is_empty() || options.benchmark_json || options.time_passes)
+    {
+        Err("Error: --watch cannot be combined with --emit, --benchmark-json, or --time-passes")
+    } else {
+        Ok(())
     }
 }
 
@@ -1011,6 +1029,10 @@ fn main() {
         eprintln!("{message}");
         std::process::exit(1);
     }
+    if let Err(message) = validate_watch_modes(&options) {
+        eprintln!("{message}");
+        std::process::exit(1);
+    }
 
     // Initialize tracing based on CLI options
     // Returns timing data if --time-passes or --benchmark-json was specified
@@ -1085,6 +1107,16 @@ fn main() {
         if let Err(error) = compiler_host.acquire_reached_toolchain_modules(&compile_options) {
             report_source_load_error(error, options.error_format);
         }
+    }
+
+    if options.watch {
+        watch::run(watch::WatchRequest {
+            host: compiler_host,
+            compile_options,
+            source_path: options.source_path,
+            output_path: options.output_path,
+            error_format: options.error_format,
+        });
     }
 
     #[cfg(rue_benchmark_allocations)]
@@ -1374,6 +1406,56 @@ mod tests {
                 assert_eq!(pass.root_invocations, 0, "{}", pass.name);
             }
         }
+    }
+
+    #[test]
+    fn watch_cycle_preserves_last_good_output_across_error_and_fix() {
+        let dir = TestDir::new("watch-error-fix");
+        let main = dir.write("main.rue", "fn main() -> i32 { 1 }\n");
+        let destination = dir.path.join("program");
+        let mut host = FilesystemCompilerHost::open(HostOpenRequest {
+            root_source: main.to_str().unwrap(),
+            source_manifest_path: None,
+            std_root: None,
+        })
+        .unwrap();
+        let options = CompileOptions::default();
+
+        let compile_cycle = |host: &mut FilesystemCompilerHost| {
+            let publication = output::preflight_destination(
+                &destination,
+                host.source_snapshot().files().map(|source| source.path),
+            )
+            .unwrap();
+            compile::execute_cancellable(compile::CancellableCompileRequest {
+                host,
+                options: options.clone(),
+                destination: publication,
+                cancellation: rue_compiler::unstable::CompilationCancellation::new(),
+            })
+        };
+
+        let compile::CompileCycleOutcome::Linked(linked) = compile_cycle(&mut host) else {
+            panic!("initial watch cycle must compile")
+        };
+        (*linked).publish().result.unwrap();
+        let first = fs::read(&destination).unwrap();
+
+        fs::write(&main, "fn main() -> i32 { missing }\n").unwrap();
+        host.reobserve().unwrap();
+        assert!(matches!(
+            compile_cycle(&mut host),
+            compile::CompileCycleOutcome::Errors(_)
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), first);
+
+        fs::write(&main, "fn main() -> i32 { 2 }\n").unwrap();
+        host.reobserve().unwrap();
+        let compile::CompileCycleOutcome::Linked(linked) = compile_cycle(&mut host) else {
+            panic!("fixed watch cycle must compile")
+        };
+        (*linked).publish().result.unwrap();
+        assert_ne!(fs::read(&destination).unwrap(), first);
     }
 
     impl Drop for TestDir {
@@ -2255,6 +2337,33 @@ mod tests {
         ]));
         assert!(opts.time_passes);
         assert!(opts.benchmark_json);
+    }
+
+    // ========== --watch tests ==========
+
+    #[test]
+    fn parse_watch() {
+        let opts = unwrap_options(parse_args_from(&["--watch", "source.rue"]));
+        assert!(opts.watch);
+        assert!(validate_watch_modes(&opts).is_ok());
+    }
+
+    #[test]
+    fn watch_rejects_presentation_and_benchmark_modes() {
+        for args in [
+            &["--watch", "--emit", "air", "source.rue"][..],
+            &["--watch", "--benchmark-json", "source.rue"][..],
+            &["--watch", "--time-passes", "source.rue"][..],
+        ] {
+            let opts = unwrap_options(parse_args_from(args));
+            assert!(validate_watch_modes(&opts).is_err(), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn watch_is_disabled_by_default() {
+        let opts = unwrap_options(parse_args_from(&["source.rue"]));
+        assert!(!opts.watch);
     }
 
     // ========== --jobs tests ==========

@@ -38,6 +38,7 @@ use rue_compiler::{
 #[derive(Debug)]
 pub(crate) struct SourceManifest {
     path: PathBuf,
+    content_hash: u64,
     allowed: std::collections::HashSet<PathBuf>,
     declared_paths: std::collections::HashSet<PathBuf>,
 }
@@ -107,6 +108,7 @@ impl SourceManifest {
 
         Ok(Self {
             path: manifest_path.to_path_buf(),
+            content_hash: watch_content_hash(content.as_bytes()),
             allowed,
             declared_paths,
         })
@@ -697,6 +699,41 @@ pub(crate) struct SourceResolutionInputs {
     pub(crate) context: ImportDiscoveryContext,
 }
 
+impl ImportDiscoveryResult {
+    pub(crate) fn watch_inputs(&self) -> Vec<(PathBuf, u64)> {
+        let mut paths = Vec::with_capacity(self.read_manifest.len() * 2 + 1);
+        for entry in self.read_manifest.iter() {
+            let source = self
+                .source_snapshot
+                .files()
+                .find(|source| {
+                    self.source_snapshot.module_id(source.file_id) == Some(entry.module())
+                })
+                .expect("an accepted read has source bytes in the committed snapshot");
+            let hash = watch_content_hash(source.source.as_bytes());
+            paths.push((PathBuf::from(entry.requested_path()), hash));
+            paths.push((PathBuf::from(entry.canonical_path()), hash));
+        }
+        if let Some(manifest) = &self.source_manifest {
+            paths.push((manifest.path.clone(), manifest.content_hash));
+        }
+        paths.sort_by(|left, right| left.0.cmp(&right.0));
+        paths.dedup_by(|left, right| left.0 == right.0);
+        paths
+    }
+}
+
+pub(crate) fn watch_content_hash(bytes: &[u8]) -> u64 {
+    // A fixed FNV-1a hash keeps the polling watcher deterministic and avoids
+    // retaining another copy of every source buffer in its monitor thread.
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 /// The closed import-discovery revision produced by
 /// [`drive_import_discovery_to_close`].
 struct ClosedDiscovery {
@@ -1038,10 +1075,8 @@ pub(crate) fn discover_and_load_imports(
     })
 }
 
-// The command-line driver is intentionally one-shot today. Keep this host
-// entrypoint compiled in non-test builds so a long-lived caller can begin its
-// next request without reimplementing the filesystem soundness boundary.
-#[cfg_attr(not(test), allow(dead_code))]
+// Long-lived hosts begin each successor request by re-observing the exact
+// accepted-read closure through this filesystem soundness boundary.
 pub(crate) fn reload_from_filesystem(
     result: &mut ImportDiscoveryResult,
 ) -> Result<(), SourceLoadError> {
