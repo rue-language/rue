@@ -81,6 +81,24 @@ pub struct EpochData {
     /// The epoch pins an environment *policy*, not a machine, so hosted runners
     /// change underneath it. Comparisons crossing one of these are advisory.
     pub environment_annotations: Vec<EnvironmentAnnotation>,
+    /// Standard-library changes within this epoch.
+    ///
+    /// Deliberately *not* advisory, unlike an environment annotation. `std` is
+    /// part of the product being measured, so a change here is a real movement
+    /// in what the series tracks — the same status as a compiler change, which
+    /// gets no annotation only because every point already is one.
+    pub stdlib_annotations: Vec<StdlibAnnotation>,
+}
+
+/// A point at which the standard library changed underneath a series.
+#[derive(Debug, Serialize)]
+pub struct StdlibAnnotation {
+    /// The first commit measured against the new standard library.
+    pub commit: String,
+    pub finished_at: String,
+    /// The resolved hashes either side of the change, for provenance.
+    pub previous: String,
+    pub current: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -268,6 +286,8 @@ fn derive_epoch(
     let mut points: Vec<PointData> = Vec::new();
     let mut environment_annotations = Vec::new();
     let mut previous_environment: Option<(String, &rue_perf_schema::EnvironmentFingerprint)> = None;
+    let mut stdlib_annotations = Vec::new();
+    let mut previous_stdlib: Option<&str> = None;
 
     // History of each workload's summary, so the trailing window can be taken
     // over the *medians* of prior runs, matching the flagging rule's definition.
@@ -297,6 +317,22 @@ fn derive_epoch(
             });
         }
         previous_environment = Some((fingerprint.clone(), &run.identity.environment));
+
+        // Recorded, never a reason to exclude the run. This is the annotation
+        // that replaced the `stdlib_hash` pin: a std change moves the product,
+        // and the page should say where it moved rather than stop drawing.
+        let stdlib = run.identity.pins.stdlib_hash.as_str();
+        if let Some(previous) = previous_stdlib
+            && previous != stdlib
+        {
+            stdlib_annotations.push(StdlibAnnotation {
+                commit: run.identity.commit.clone(),
+                finished_at: run.identity.finished_at.clone(),
+                previous: previous.to_string(),
+                current: stdlib.to_string(),
+            });
+        }
+        previous_stdlib = Some(stdlib);
 
         let invalid: BTreeSet<(String, u32)> = outcome
             .invalid_samples
@@ -422,6 +458,7 @@ fn derive_epoch(
         baseline_commit: epoch.baseline.as_ref().map(|b| b.commit.clone()),
         points,
         environment_annotations,
+        stdlib_annotations,
     }
 }
 
@@ -566,7 +603,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = []
 toolchain_hash = "toolchain"
-stdlib_hash = "stdlib"
 
 [epoch.workload_source_hashes]
 startup = "startup-hash"
@@ -856,6 +892,51 @@ window = 3
         assert!(
             annotations[0].changed.iter().any(|c| c.contains("CPU")),
             "{annotations:?}"
+        );
+    }
+
+    #[test]
+    fn a_standard_library_change_annotates_the_series_without_breaking_it() {
+        // The regression this whole change exists to prevent: a std edit used
+        // to fail the `stdlib_hash` pin, so every later run was rejected and
+        // the published page silently stopped moving (RUE-1256).
+        let first = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
+        let manifest = manifest_with_baseline(std::slice::from_ref(&first));
+        let mut second = run_at("b", "2026-07-28T01:00:00Z", [110, 110, 110]);
+        second.identity.pins.stdlib_hash = "a-new-standard-library".to_string();
+
+        let data = derive(&manifest, &[first, second]);
+
+        assert!(data.rejected.is_empty(), "{:?}", data.rejected);
+        let epoch = &data.platforms[0].epochs[0];
+        assert_eq!(epoch.points.len(), 2, "both points belong to one series");
+
+        assert_eq!(epoch.stdlib_annotations.len(), 1);
+        assert_eq!(epoch.stdlib_annotations[0].commit, "b".repeat(40));
+        assert_eq!(
+            epoch.stdlib_annotations[0].current,
+            "a-new-standard-library"
+        );
+
+        // The point across the change is still measured against the same
+        // baseline: std moving is movement in the product, not a discontinuity
+        // that resets what 1.0 means.
+        assert_eq!(epoch.points[1].workloads["startup"].ratio, Some(1.1));
+    }
+
+    #[test]
+    fn an_unchanged_standard_library_produces_no_annotation() {
+        let manifest = Manifest::parse(MANIFEST).unwrap();
+        let data = derive(
+            &manifest,
+            &[
+                run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]),
+                run_at("b", "2026-07-28T01:00:00Z", [100, 100, 100]),
+            ],
+        );
+        assert!(
+            data.platforms[0].epochs[0].stdlib_annotations.is_empty(),
+            "an annotation on every point would be noise, not a finding"
         );
     }
 

@@ -512,7 +512,10 @@ fn check_pins(
         &epoch.toolchain_hash,
         &pins.toolchain_hash,
     );
-    compare("stdlib_hash", &epoch.stdlib_hash, &pins.stdlib_hash);
+    // `stdlib_hash` is deliberately not compared. `std` is part of the product
+    // under measurement, not an input to it, so a std change moves the series
+    // exactly as a compiler change does. The run still records the hash it
+    // resolved, and the dashboard annotates the point where it changed.
     compare("invocation/target", &epoch.target, &pins.invocation.target);
 
     if epoch.args != pins.invocation.args {
@@ -783,7 +786,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = ["-O2"]
 toolchain_hash = "toolchain-aaa"
-stdlib_hash = "stdlib-bbb"
 
 [epoch.workload_source_hashes]
 caldera = "caldera-ccc"
@@ -966,10 +968,6 @@ window = 10
                 Box::new(|run: &mut RunObject| {
                     run.identity.pins.toolchain_hash = "other".to_string()
                 }),
-            ),
-            (
-                "stdlib_hash",
-                Box::new(|run: &mut RunObject| run.identity.pins.stdlib_hash = "other".to_string()),
             ),
             (
                 "invocation/target",
@@ -1333,9 +1331,57 @@ window = 10
     fn every_problem_is_reported_rather_than_the_first() {
         let mut run = sample_run();
         run.identity.pins.toolchain_hash = "other".to_string();
-        run.identity.pins.stdlib_hash = "other".to_string();
+        run.identity.pins.invocation.target = "other".to_string();
         run.identity.environment.runner_image = "ubuntu-22.04".to_string();
         let outcome = validate_run(&manifest(), &run);
         assert_eq!(outcome.errors.len(), 3, "{:?}", outcome.errors);
+    }
+
+    #[test]
+    fn a_std_change_does_not_prevent_a_run_from_entering_its_series() {
+        // `std` is part of the product being measured, not an input pinned
+        // against it. A std edit must move the series exactly as a compiler
+        // change does — the alternative froze the published dashboard for ten
+        // days while collection stayed green (RUE-1256).
+        let mut run = sample_run();
+        run.identity.pins.stdlib_hash = "a-completely-different-standard-library".to_string();
+        let outcome = validate_run(&manifest(), &run);
+
+        assert!(
+            outcome.is_appendable(),
+            "a std change must not reject a run: {:?}",
+            outcome.errors
+        );
+        assert!(
+            !outcome.errors.iter().any(
+                |error| matches!(error, ValidationError::PinMismatch { field, .. }
+                    if field == "stdlib_hash")
+            ),
+            "{:?}",
+            outcome.errors
+        );
+    }
+
+    #[test]
+    fn a_workloads_own_source_change_still_rejects_the_run() {
+        // The counterpart to the test above. Relaxing the std pin must not
+        // relax the pin that gives a series its meaning: changing what a
+        // workload *is* still requires declaring the next revision.
+        let mut run = sample_run();
+        run.identity
+            .pins
+            .workload_source_hashes
+            .insert("startup".to_string(), "edited".to_string());
+        let outcome = validate_run(&manifest(), &run);
+
+        assert!(!outcome.is_appendable());
+        assert!(
+            outcome.errors.iter().any(
+                |error| matches!(error, ValidationError::PinMismatch { field, .. }
+                    if field == "workload_source_hashes/startup")
+            ),
+            "{:?}",
+            outcome.errors
+        );
     }
 }

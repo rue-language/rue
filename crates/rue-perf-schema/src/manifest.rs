@@ -164,11 +164,18 @@ pub struct PlatformEpoch {
     pub target: String,
     /// Every behavior-affecting compiler argument, in order.
     pub args: Vec<String>,
-    /// Content hash of the toolchain as built for this target.
+    /// Content hash of the Rust toolchain the compiler is built with.
+    ///
+    /// Build environment, not product: changing it changes generated code and
+    /// therefore measurements, while measuring nothing anyone ships. The Rue
+    /// compiler, `std`, and the first-party toolchain are the *subject* of
+    /// measurement and are deliberately not pinned here.
     pub toolchain_hash: String,
-    /// Content hash of the standard library.
-    pub stdlib_hash: String,
-    /// Content hash of each workload's full source closure, keyed by workload.
+    /// Content hash of each workload's own source closure, keyed by workload.
+    ///
+    /// The workload's own sources only. `std` is part of the product under
+    /// measurement, so std files a workload reads are excluded — otherwise a
+    /// std edit would invalidate every series that reads it.
     pub workload_source_hashes: BTreeMap<String, String>,
     /// The environment class this epoch requires.
     pub environment: EnvironmentPolicy,
@@ -495,7 +502,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = ["-O2"]
 toolchain_hash = "toolchain-aaa"
-stdlib_hash = "stdlib-bbb"
 
 [epoch.workload_source_hashes]
 startup = "startup-ccc"

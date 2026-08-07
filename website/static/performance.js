@@ -427,6 +427,18 @@
             note.changed.join("; ") + ". Comparisons across this point are advisory.";
           list.appendChild(item);
         });
+        // Deliberately not marked advisory. The standard library is part of the
+        // product being measured, so a change here is real movement in what the
+        // series tracks — the note says where it happened, not that the
+        // comparison is untrustworthy.
+        (epoch.stdlib_annotations || []).forEach(function (note) {
+          any = true;
+          var item = document.createElement("li");
+          item.textContent = shortHash(note.commit) +
+            " — standard library changed. Measured, not excluded: std is part of " +
+            "the product, so its cost moves the series like any compiler change.";
+          list.appendChild(item);
+        });
       });
       if (!any) {
         var item = document.createElement("li");

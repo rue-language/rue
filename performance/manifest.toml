@@ -3,25 +3,27 @@
 # Two layers. A `[[suite]]` pins the platform-independent logical contract:
 # which workloads exist, what program each one is, the phase taxonomy, and the
 # runner protocol. A `[[epoch]]` pins everything that varies per platform:
-# target and invocation, resolved content hashes, sampling policy, environment
-# policy, and the headline baseline.
+# target and invocation, each workload's own source identity, sampling policy,
+# environment policy, and the headline baseline.
 #
 # Changing what a workload *is* requires a new suite revision, and therefore new
 # epochs on every participating platform. Changing only one platform's sampling
 # creates a new epoch there alone. Both are deliberate, reviewable events.
+#
+# What is deliberately NOT pinned here is the product being measured: the Rue
+# compiler, `std`, and the first-party toolchain. A std change moves the series
+# exactly as a compiler change does, is annotated on the dashboard, and never
+# invalidates an observation. Pinning `std` was tried and removed in RUE-1256:
+# an `i = i + 1` -> `i += 1` sweep across `std/` rejected every subsequent run
+# for ten days while collection, the data branch, and the site build all stayed
+# green. `toolchain_hash` remains pinned because it names the *Rust* toolchain
+# the compiler is built with — build environment, not product.
 #
 # STATUS: the `local` epoch below exists so the runner can be exercised during
 # development. Its sampling counts are placeholders, not calibrated values, and
 # it declares no baseline. The published epochs — with counts, batching factors,
 # and the flagging multiplier established by the Phase 4 noise calibration —
 # arrive with suite revision 1's declaration in RUE-1188.
-#
-# Its `stdlib_hash` goes stale whenever the standard library changes, and a
-# local run then reports a pin mismatch and exits 3. That is the mechanism
-# working, not a bug: an epoch pins what was measured, so changing an input
-# means declaring a new epoch. Refresh the value from the mismatch the runner
-# prints. Whether a suite whose workloads never read `std` should pin `std` at
-# all is an open question for RUE-1188.
 
 [[suite]]
 revision = 1
@@ -42,7 +44,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = []
 toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
-stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
 
 [epoch.workload_source_hashes]
 startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
@@ -82,7 +83,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = []
 toolchain_hash = "calibration-epoch-pins-are-placeholders"
-stdlib_hash = "calibration-epoch-pins-are-placeholders"
 
 [epoch.workload_source_hashes]
 startup = "calibration-epoch-pins-are-placeholders"
@@ -108,7 +108,6 @@ suite_revision = 1
 target = "aarch64-unknown-linux-gnu"
 args = []
 toolchain_hash = "calibration-epoch-pins-are-placeholders"
-stdlib_hash = "calibration-epoch-pins-are-placeholders"
 
 [epoch.workload_source_hashes]
 startup = "calibration-epoch-pins-are-placeholders"
@@ -132,7 +131,6 @@ suite_revision = 1
 target = "aarch64-apple-darwin"
 args = []
 toolchain_hash = "calibration-epoch-pins-are-placeholders"
-stdlib_hash = "calibration-epoch-pins-are-placeholders"
 
 [epoch.workload_source_hashes]
 startup = "calibration-epoch-pins-are-placeholders"
@@ -199,7 +197,6 @@ suite_revision = 1
 target = "x86_64-unknown-linux-gnu"
 args = []
 toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
-stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
 
 [epoch.workload_source_hashes]
 startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
@@ -230,7 +227,6 @@ suite_revision = 1
 target = "aarch64-unknown-linux-gnu"
 args = []
 toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
-stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
 
 [epoch.workload_source_hashes]
 startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
@@ -259,7 +255,6 @@ suite_revision = 1
 target = "aarch64-apple-darwin"
 args = []
 toolchain_hash = "30f50af0ac7111ffb25d5ef1a423642eaeb2e381931a57583e190a84634ee3fe"
-stdlib_hash = "6b6ecc2e8550c6efb353c8aec4a8db4e2341880549544fc4d26fc5d421aa212f"
 
 [epoch.workload_source_hashes]
 startup = "87869467f94e34b8df41900bda44546b610296077c14fab6defda8939fe22be7"
