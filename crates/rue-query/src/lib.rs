@@ -2301,7 +2301,7 @@ struct RuntimeCore {
     permits: PermitBudget,
     wait_graph: Mutex<BTreeMap<TaskId, BTreeMap<TaskId, NodeIdentity>>>,
     family_names: Mutex<BTreeSet<Arc<str>>>,
-    revisions: Mutex<RevisionStore>,
+    revisions: RwLock<RevisionStore>,
     nodes: RwLock<NodeRegistry>,
     retention_families: Mutex<BTreeMap<u64, Weak<dyn RetentionFamily>>>,
     retention_budgets: RetentionBudgets,
@@ -2585,7 +2585,7 @@ struct RevisionLease {
 
 impl Drop for RevisionLease {
     fn drop(&mut self) {
-        let mut revisions = lock(&self.core.revisions);
+        let mut revisions = write(&self.core.revisions);
         let entry = revisions
             .entries
             .get_mut(&self.revision.id)
@@ -2626,7 +2626,7 @@ impl QueryRuntime {
                 permits: PermitBudget::new(max_concurrency),
                 wait_graph: Mutex::new(BTreeMap::new()),
                 family_names: Mutex::new(BTreeSet::new()),
-                revisions: Mutex::new(RevisionStore {
+                revisions: RwLock::new(RevisionStore {
                     entries: BTreeMap::new(),
                     retired_through: 0,
                 }),
@@ -2952,7 +2952,7 @@ impl QueryRuntime {
             }
         }
         let inputs = Arc::new(exact);
-        let mut revisions = lock(&self.core.revisions);
+        let mut revisions = write(&self.core.revisions);
         match revisions.entries.get(&revision.id) {
             Some(previous) if previous.revision == revision => match previous.inputs.as_ref() {
                 RevisionInputs::Full(previous_inputs)
@@ -3020,7 +3020,7 @@ impl QueryRuntime {
             }
         }
         let delta_map = Arc::new(delta_map);
-        let mut revisions = lock(&self.core.revisions);
+        let mut revisions = write(&self.core.revisions);
         let Some(parent_entry) = revisions
             .entries
             .get(&parent.id)
@@ -3380,7 +3380,7 @@ impl QueryRuntime {
             .core
             .metrics
             .snapshot(self.core.retention_budgets, retention);
-        metrics.retained_revisions = lock(&self.core.revisions).entries.len() as u64;
+        metrics.retained_revisions = read(&self.core.revisions).entries.len() as u64;
         metrics
     }
 
@@ -7550,7 +7550,7 @@ impl RuntimeCore {
     }
 
     fn revision_input(&self, revision: Revision, input: &InputIdentity) -> Option<u64> {
-        let revisions = lock(&self.revisions);
+        let revisions = read(&self.revisions);
         if revisions
             .entries
             .get(&revision.id)
@@ -7599,7 +7599,7 @@ impl RuntimeCore {
         // Compatibility tokens are only a scheduling hint. Direct inputs are
         // checked exactly, while dependency stamps are validated recursively
         // against the current compatible terminal of the exact child node.
-        let revisions = lock(&self.revisions);
+        let revisions = read(&self.revisions);
         if revisions
             .entries
             .get(&task.revision.id)
@@ -7614,6 +7614,10 @@ impl RuntimeCore {
                 revisions.input_stamp(task.revision.id, &observed.input) == Some(observed.stamp)
             }
         });
+        // Registered-node validation can reenter input lookup and recursively
+        // validate descendants. Never carry the revision guard across that
+        // boundary: publication, lease release, and retention must remain able
+        // to acquire the exclusive store guard.
         drop(revisions);
         if !direct_inputs_valid {
             return Ok(false);
@@ -7644,7 +7648,7 @@ impl RuntimeCore {
     }
 
     fn pin_revision(self: &Arc<Self>, revision: Revision) -> Option<RevisionLease> {
-        let mut revisions = lock(&self.revisions);
+        let mut revisions = write(&self.revisions);
         let entry = revisions
             .entries
             .get_mut(&revision.id)
@@ -12768,6 +12772,25 @@ mod tests {
                 stamp: 7
             }]
         );
+    }
+
+    #[test]
+    fn revision_store_exact_reads_can_overlap() {
+        let runtime = QueryRuntime::new(1);
+        let revision = Revision::new(1, 7);
+        let input = InputIdentity::new("source", "concurrent-revision-reads");
+        runtime
+            .publish_revision(revision, [(input.clone(), 11)])
+            .unwrap();
+
+        let first_store = read(&runtime.core.revisions);
+        assert_eq!(first_store.input_stamp(revision.id, &input), Some(11));
+        let second_store = runtime
+            .core
+            .revisions
+            .try_read()
+            .expect("a second exact revision-store read must not wait for the first");
+        assert_eq!(second_store.input_stamp(revision.id, &input), Some(11));
     }
 
     #[test]
