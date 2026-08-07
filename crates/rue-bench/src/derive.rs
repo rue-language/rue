@@ -318,9 +318,8 @@ fn derive_epoch(
         }
         previous_environment = Some((fingerprint.clone(), &run.identity.environment));
 
-        // Recorded, never a reason to exclude the run. This is the annotation
-        // that replaced the `stdlib_hash` pin: a std change moves the product,
-        // and the page should say where it moved rather than stop drawing.
+        // Recorded, never a reason to exclude the run: a std change moves the
+        // product, so the page says where it moved rather than stop drawing.
         let stdlib = run.identity.pins.stdlib_hash.as_str();
         if let Some(previous) = previous_stdlib
             && previous != stdlib
@@ -897,9 +896,9 @@ window = 3
 
     #[test]
     fn a_standard_library_change_annotates_the_series_without_breaking_it() {
-        // The regression this whole change exists to prevent: a std edit used
-        // to fail the `stdlib_hash` pin, so every later run was rejected and
-        // the published page silently stopped moving (RUE-1256).
+        // A std change must annotate the series, not truncate it: rejecting
+        // these runs would silently stop the published page at the last point
+        // measured before the edit.
         let first = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
         let manifest = manifest_with_baseline(std::slice::from_ref(&first));
         let mut second = run_at("b", "2026-07-28T01:00:00Z", [110, 110, 110]);

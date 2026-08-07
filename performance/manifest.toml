@@ -13,11 +13,9 @@
 # What is deliberately NOT pinned here is the product being measured: the Rue
 # compiler, `std`, and the first-party toolchain. A std change moves the series
 # exactly as a compiler change does, is annotated on the dashboard, and never
-# invalidates an observation. Pinning `std` was tried and removed in RUE-1256:
-# an `i = i + 1` -> `i += 1` sweep across `std/` rejected every subsequent run
-# for ten days while collection, the data branch, and the site build all stayed
-# green. `toolchain_hash` remains pinned because it names the *Rust* toolchain
-# the compiler is built with — build environment, not product.
+# invalidates an observation. `toolchain_hash` remains pinned because it names
+# the *Rust* toolchain the compiler is built with — build environment, not
+# product. See ADR-0067, "The product boundary".
 #
 # STATUS: the `local` epoch below exists so the runner can be exercised during
 # development. Its sampling counts are placeholders, not calibrated values, and

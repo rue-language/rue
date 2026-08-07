@@ -1340,9 +1340,8 @@ window = 10
     #[test]
     fn a_std_change_does_not_prevent_a_run_from_entering_its_series() {
         // `std` is part of the product being measured, not an input pinned
-        // against it. A std edit must move the series exactly as a compiler
-        // change does — the alternative froze the published dashboard for ten
-        // days while collection stayed green (RUE-1256).
+        // against it: a std edit moves the series exactly as a compiler change
+        // does. Rejecting the run instead would stop the series entirely.
         let mut run = sample_run();
         run.identity.pins.stdlib_hash = "a-completely-different-standard-library".to_string();
         let outcome = validate_run(&manifest(), &run);

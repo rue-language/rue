@@ -14,7 +14,7 @@
 //! run and gates nothing: `std` is part of the product being measured, so a
 //! change to it moves the series rather than invalidating it, and the dashboard
 //! annotates where that happened. [`workload_source_hash`] excludes std reads
-//! for the same reason (ADR-0067 "The product boundary", RUE-1256).
+//! for the same reason. See ADR-0067, "The product boundary".
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -150,9 +150,8 @@ struct AcceptedRead {
 /// Standard-library reads are excluded deliberately. `std` is part of the
 /// product being measured, not an input pinned against it, so a std edit must
 /// move the series the way a compiler change does. Folding std into this hash
-/// would invalidate every series whose workload reads it — including the
-/// std-compiling workload, on every std commit — which is the same failure as
-/// the removed `stdlib_hash` pin wearing a different name (RUE-1256).
+/// would invalidate every series whose workload reads it, and would invalidate
+/// a std-compiling workload on every std commit.
 pub fn workload_source_hash(
     compiler: &Path,
     source: &Path,
@@ -228,8 +227,7 @@ fn is_stdlib_read(canonical_path: &Path, std_root: Option<&Path>) -> bool {
 /// The report's paths are canonical, so the standard-library root must be too.
 /// A relative or symlinked `--std-root` would otherwise fail every comparison
 /// and silently fold the whole standard library back into the workload's
-/// identity — the exact failure this exclusion exists to prevent, and one that
-/// would look like nothing at all until a std edit froze the series.
+/// identity, which looks like nothing at all until the next std edit.
 fn resolve_for_comparison(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
