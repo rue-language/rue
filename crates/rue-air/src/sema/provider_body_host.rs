@@ -1138,6 +1138,27 @@ where
         self.function_tokens.borrow().get(&symbol).cloned()
     }
 
+    /// The callable symbol `Owner.method` / `Owner::method` for a member of
+    /// `struct_id`, with the owner component rendered by
+    /// [`TypeInternPool::struct_symbol_name`] — the same renderer call-site
+    /// analysis uses. Every map keyed by a member callable symbol
+    /// (`anonymous_function_identities`, `function_tokens`) must write and
+    /// read through this one spelling (RUE-1236); a second renderer would
+    /// reintroduce a join that only holds while two policies agree.
+    fn member_callable_name(&self, struct_id: StructId, method: &str, has_self: bool) -> String {
+        let owner = self.type_pool.struct_symbol_name(struct_id);
+        if has_self {
+            format!("{owner}.{method}")
+        } else {
+            format!("{owner}::{method}")
+        }
+    }
+
+    fn member_callable_symbol(&self, struct_id: StructId, method: &str, has_self: bool) -> Spur {
+        self.interner
+            .get_or_intern(self.member_callable_name(struct_id, method, has_self))
+    }
+
     fn named_method_info_for_symbol(
         &self,
         struct_id: StructId,
@@ -1179,13 +1200,7 @@ where
         {
             info.returns_borrow = *returns_borrow;
         }
-        let callable_owner = self.type_pool.struct_symbol_name(struct_id);
-        let full_name = if has_self {
-            format!("{callable_owner}.{name}")
-        } else {
-            format!("{callable_owner}::{name}")
-        };
-        let full_symbol = self.interner.get_or_intern(&full_name);
+        let full_symbol = self.member_callable_symbol(struct_id, name, has_self);
         let token = self.endpoint.register_body_owner(
             key.clone(),
             self.owner_file,
@@ -1261,13 +1276,8 @@ where
             return None;
         }
         let info = self.named_method_info_for_symbol(struct_id, symbol)?;
-        let callable_owner = self.type_pool.struct_symbol_name(struct_id);
-        let full_name = if info.has_self {
-            format!("{callable_owner}.{}", self.interner.resolve(&symbol))
-        } else {
-            format!("{callable_owner}::{}", self.interner.resolve(&symbol))
-        };
-        let full_symbol = self.interner.get_or_intern(&full_name);
+        let full_symbol =
+            self.member_callable_symbol(struct_id, self.interner.resolve(&symbol), info.has_self);
         self.function_tokens
             .borrow()
             .get(&full_symbol)
@@ -2046,7 +2056,6 @@ where
         if methods.is_empty() {
             return Some(());
         }
-        let owner_name = self.type_pool.struct_def(struct_id).name.clone();
         let mut infos = Vec::with_capacity(methods.len());
         let mut signatures = Vec::with_capacity(methods.len());
         for method in methods {
@@ -2068,12 +2077,7 @@ where
                 .collect::<Option<Vec<_>>>()?;
             let return_type = resolve(&method.result)?;
             let name = self.interner.get_or_intern(method.name.as_ref());
-            let callable_name = if method.has_self {
-                format!("{owner_name}.{}", method.name)
-            } else {
-                format!("{owner_name}::{}", method.name)
-            };
-            let callable = self.interner.get_or_intern(&callable_name);
+            let callable = self.member_callable_symbol(struct_id, &method.name, method.has_self);
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
@@ -2163,15 +2167,9 @@ where
         if methods.is_empty() {
             return Some(());
         }
-        let owner_name = self.type_pool.struct_def(struct_id).name.clone();
         for method in methods {
             let name = self.interner.get_or_intern(method.name.as_ref());
-            let callable_name = if method.has_self {
-                format!("{owner_name}.{}", method.name)
-            } else {
-                format!("{owner_name}::{}", method.name)
-            };
-            let callable = self.interner.get_or_intern(&callable_name);
+            let callable = self.member_callable_symbol(struct_id, &method.name, method.has_self);
             let kind = if method.name.as_ref() == "__drop" {
                 crate::AnonymousMemberKind::Destructor
             } else if method.has_self {
@@ -4231,18 +4229,13 @@ where
                 .params(&params)
                 .values()
                 .collect::<Vec<RirParam>>();
-            let full_name = {
-                let owner = host.type_pool.struct_symbol_name(
-                    info.struct_type
-                        .as_struct()
-                        .expect("named method receiver must be a struct"),
-                );
-                if has_self {
-                    format!("{owner}.{name}")
-                } else {
-                    format!("{owner}::{name}")
-                }
-            };
+            let full_name = host.member_callable_name(
+                info.struct_type
+                    .as_struct()
+                    .expect("named method receiver must be a struct"),
+                name,
+                has_self,
+            );
             let full_symbol = host.interner.get_or_intern(&full_name);
             let owner_token = host.function_tokens.borrow()[&host.function_symbol].clone();
             host.function_tokens
@@ -4344,19 +4337,8 @@ where
         crate::specialize::select_provider_body_specializations(&mut host, function)?;
     referenced_specializations.extend(referenced_methods.iter().filter_map(|(owner, method)| {
         let info = host.method_info_for_symbol(*owner, *method)?;
-        let callable = host.interner.get_or_intern(&if info.has_self {
-            format!(
-                "{}.{}",
-                host.type_pool.struct_symbol_name(*owner),
-                host.interner.resolve(method)
-            )
-        } else {
-            format!(
-                "{}::{}",
-                host.type_pool.struct_symbol_name(*owner),
-                host.interner.resolve(method)
-            )
-        });
+        let callable =
+            host.member_callable_symbol(*owner, host.interner.resolve(method), info.has_self);
         host.anonymous_function_identities
             .borrow()
             .get(&callable)
@@ -4678,14 +4660,7 @@ where
                 "anonymous member sibling endpoints are unavailable".into(),
             ))
         })?;
-    let full_name = {
-        let owner = host.type_pool.struct_symbol_name(struct_id);
-        if has_self {
-            format!("{owner}.{}", member.name)
-        } else {
-            format!("{owner}::{}", member.name)
-        }
-    };
+    let full_name = host.member_callable_name(struct_id, &member.name, has_self);
     let full_symbol = host.interner.get_or_intern(&full_name);
     host.function_symbol = full_symbol;
     let owner_token = host
@@ -4809,19 +4784,8 @@ where
         crate::specialize::select_provider_body_specializations(&mut host, function)?;
     referenced_specializations.extend(referenced_methods.iter().filter_map(|(owner, method)| {
         let info = host.method_info_for_symbol(*owner, *method)?;
-        let callable = host.interner.get_or_intern(&if info.has_self {
-            format!(
-                "{}.{}",
-                host.type_pool.struct_symbol_name(*owner),
-                host.interner.resolve(method)
-            )
-        } else {
-            format!(
-                "{}::{}",
-                host.type_pool.struct_symbol_name(*owner),
-                host.interner.resolve(method)
-            )
-        });
+        let callable =
+            host.member_callable_symbol(*owner, host.interner.resolve(method), info.has_self);
         host.anonymous_function_identities
             .borrow()
             .get(&callable)
