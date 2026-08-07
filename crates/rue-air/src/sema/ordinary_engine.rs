@@ -30,7 +30,6 @@ use super::{
     DeclarationPhase, DeclarationTypeDependencyKind, DeclarationTypeDependencySourceKind,
     FunctionInfo, InferenceContext, KnownSymbols, MethodInfo, ParamSlotModes, StructId, Type,
 };
-use crate::declaration_validation::AccessorReceiverForm;
 use crate::inference::InferType;
 use crate::inst::Air;
 use crate::inst::{AirInst, AirInstData};
@@ -2150,56 +2149,11 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
         // per-instruction `yield`/`return`/`?` analysis against the trailing
         // reference recorded here.
         if is_accessor {
-            // Declaration shape (ADR-0062 phase 1), re-checked at the engine
-            // so it holds on every host that analyzes the body: the receiver
-            // is a shared `borrow self`, and value parameters are plain
-            // by-value guard inputs. Predeclaration reports the same errors
-            // over the whole program before any body is demanded.
-            let body_span = self.body_rir_ref().get(body).span;
-            // The `-> borrow` result position alone demands the preview
-            // (6.6:3), so an ungated program reports E1100 rather than a shape
-            // error about a form it cannot name yet.
-            self.require_preview(
-                crate::declaration_validation::ACCESSOR_PREVIEW_FEATURE,
-                crate::declaration_validation::ACCESSOR_PREVIEW_SUBJECT,
-                body_span,
-            )?;
-            // 6.6:4 and 6.6:5 again, over the resolved parameter list. Which
-            // forms are illegal and how each one reads are
-            // `crate::declaration_validation`'s, shared with every other
-            // accessor producer; this seam sees no owner, so a missing
-            // receiver reports the less specific form.
-            let self_sym_check = self.storage.body_interner().get_or_intern("self");
-            let receiver = match params
-                .iter()
-                .find(|(name, _, _, _)| *name == self_sym_check)
-            {
-                Some((_, _, RirParamMode::Borrow, _)) => AccessorReceiverForm::BorrowSelf,
-                Some((_, _, RirParamMode::Inout, _)) => AccessorReceiverForm::InoutSelf,
-                Some(_) => AccessorReceiverForm::ValueSelf,
-                None => AccessorReceiverForm::MissingReceiver,
-            };
-            if let Some(violation) = crate::declaration_validation::accessor_signature(
-                receiver,
-                params
-                    .iter()
-                    .filter(|(name, _, _, _)| *name != self_sym_check)
-                    .map(|(_, _, mode, is_comptime)| {
-                        super::declarations::accessor_parameter_form(*mode, *is_comptime)
-                    }),
-            ) {
-                use crate::declaration_validation::AccessorSignatureViolation as Violation;
-                let (kind, note) = match violation {
-                    Violation::Receiver { kind, note } => (kind, note),
-                    Violation::Parameter { kind, .. } => (kind, None),
-                };
-                let error = CompileError::new(kind, body_span);
-                return Err(match note {
-                    Some(note) => error.with_note(note),
-                    None => error,
-                });
-            }
-
+            // Signature legality is a declaration invariant. The whole-RIR
+            // host freezes checked declarations before body analysis, and the
+            // provider host obtains this method's facts through its successful
+            // durable signature query. Re-checking 6.6:3-6.6:5 here would add
+            // a third producer without admitting any new body-analysis path.
             ctx.accessor_trailing_yield = Some(super::declarations::accessor_trailing_yield(
                 self.body_rir_ref(),
                 body,

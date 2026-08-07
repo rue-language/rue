@@ -6185,7 +6185,8 @@ pub(crate) fn semantic_nucleus_failure_is_internal_error(
         | F::DuplicateDeclaration { kind, .. }
         | F::DiagnosticAtProducerRange { kind, .. }
         | F::OwnershipGate { kind, .. }
-        | F::DiagnosticWithHelp { kind, .. } => kind,
+        | F::DiagnosticWithHelp { kind, .. }
+        | F::DiagnosticWithNote { kind, .. } => kind,
         F::Shell(_)
         | F::DuplicateDeclarations(_)
         | F::ForeignSignatureConflict(_)
@@ -10456,9 +10457,7 @@ fn resolve_parsed_semantic_signature(
                 // illegal, in which order, and how each diagnostic reads are
                 // `rue_air::declaration_validation`'s, shared with the RIR
                 // producers (RUE-1232); this seam owns only the lowering of
-                // the reparsed signature into that vocabulary. This
-                // transport carries no note, so the `inout self` phase
-                // pointer is dropped here.
+                // the reparsed signature into that vocabulary.
                 use rue_air::declaration_validation as rules;
                 use rue_air::declaration_validation::{
                     AccessorParameterForm, AccessorReceiverForm,
@@ -10508,12 +10507,19 @@ fn resolve_parsed_semantic_signature(
                     }),
                 ) {
                     use rue_air::declaration_validation::AccessorSignatureViolation as Violation;
-                    let kind = match violation {
-                        Violation::Receiver { kind, .. } | Violation::Parameter { kind, .. } => {
-                            kind
-                        }
-                    };
-                    return Err(diagnostic(kind));
+                    return Err(match violation {
+                        Violation::Receiver {
+                            kind,
+                            note: Some(note),
+                        } => ResolveSemanticSignatureError::failure(
+                            crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithNote {
+                                kind,
+                                note: Arc::from(note),
+                            },
+                        ),
+                        Violation::Receiver { kind, note: None }
+                        | Violation::Parameter { kind, .. } => diagnostic(kind),
+                    });
                 }
                 // 6.6:6 and 6.6:7 over the accessor's own retained body. These
                 // are legality rules on the declaration, so they hold with no
@@ -25455,7 +25461,8 @@ fn main() -> i32 {
                 | F::DiagnosticAtParameter { kind, .. }
                 | F::DiagnosticAtDeclaration { kind, .. }
                 | F::OwnershipGate { kind, .. }
-                | F::DiagnosticWithHelp { kind, .. },
+                | F::DiagnosticWithHelp { kind, .. }
+                | F::DiagnosticWithNote { kind, .. },
             ) => Some(kind.to_string()),
             _ => None,
         }

@@ -174,7 +174,7 @@ fn main() -> i32 {
 }
 """
 compile_fail = true
-error_contains = ["E0257", "requires a `borrow self` receiver"]
+error_contains = ["E0257", "requires a `borrow self` receiver", "mutable accessors"]
 
 [[case]]
 name = "free_function_accessor_is_rejected"
@@ -342,7 +342,7 @@ struct P {
 fn main() -> i32 { 0 }
 """
 compile_fail = true
-error_contains = ["E0257", "requires a `borrow self` receiver"]
+error_contains = ["E0257", "requires a `borrow self` receiver", "mutable accessors"]
 
 [[case]]
 name = "uncalled_associated_function_accessor_is_rejected"

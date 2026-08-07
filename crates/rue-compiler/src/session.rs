@@ -6761,18 +6761,19 @@ fn semantic_nucleus_failure_diagnostics(
             .and_then(|module| module.definitions().declaration_locator(key))
             .map(|locator| locator.declaration_span)
     });
-    let (kind, help) = match failure {
-        F::Diagnostic(kind) => (kind.clone(), None),
-        F::DiagnosticAtParameter { kind, .. } => (kind.clone(), None),
-        F::DiagnosticAtDeclaration { kind, .. } => (kind.clone(), None),
-        F::DuplicateDeclaration { kind, .. } => (kind.clone(), None),
+    let (kind, help, note) = match failure {
+        F::Diagnostic(kind) => (kind.clone(), None, None),
+        F::DiagnosticAtParameter { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticAtDeclaration { kind, .. } => (kind.clone(), None, None),
+        F::DuplicateDeclaration { kind, .. } => (kind.clone(), None, None),
         F::DuplicateDeclarations(_) => unreachable!("duplicate batches return above"),
         F::ForeignSignatureConflict(_) => {
             unreachable!("foreign-signature conflicts return above")
         }
-        F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None),
-        F::OwnershipGate { kind, .. } => (kind.clone(), None),
-        F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone())),
+        F::DiagnosticAtProducerRange { kind, .. } => (kind.clone(), None, None),
+        F::OwnershipGate { kind, .. } => (kind.clone(), None, None),
+        F::DiagnosticWithHelp { kind, help } => (kind.clone(), Some(help.clone()), None),
+        F::DiagnosticWithNote { kind, note } => (kind.clone(), None, Some(note.clone())),
         F::Cycle(nodes) => (
             ErrorKind::ConstInitializerCycle {
                 cycle: nodes
@@ -6781,6 +6782,7 @@ fn semantic_nucleus_failure_diagnostics(
                     .collect::<Vec<_>>()
                     .join(" -> "),
             },
+            None,
             None,
         ),
         F::SignatureReentry { cycle, .. } => (
@@ -6791,6 +6793,7 @@ fn semantic_nucleus_failure_diagnostics(
                     .collect::<Vec<_>>()
                     .join(" -> "),
             ),
+            None,
             None,
         ),
         F::Resolution(message) if message.starts_with("unknown array length") => (
@@ -6804,15 +6807,18 @@ fn semantic_nucleus_failure_diagnostics(
                     ),
             },
             None,
+            None,
         ),
         F::Resolution(message) => (
             ErrorKind::ComptimeEvaluationFailed {
                 reason: message.to_string(),
             },
             None,
+            None,
         ),
         F::Shell(message) | F::Syntax(message) => (
             ErrorKind::InternalError(format!("semantic query invariant failed: {message}")),
+            None,
             None,
         ),
     };
@@ -6820,8 +6826,12 @@ fn semantic_nucleus_failure_diagnostics(
         Some(span) => CompileError::new(kind, span),
         None => CompileError::without_span(kind),
     };
-    CompileErrors::from(match help {
+    let error = match help {
         Some(help) => error.with_help(help.to_string()),
+        None => error,
+    };
+    CompileErrors::from(match note {
+        Some(note) => error.with_note(note.to_string()),
         None => error,
     })
 }
