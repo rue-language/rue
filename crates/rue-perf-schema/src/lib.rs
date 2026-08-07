@@ -32,6 +32,7 @@
 //! [`Completeness`].
 
 mod canonical;
+mod incremental;
 mod manifest;
 mod run;
 mod scaling;
@@ -40,6 +41,17 @@ mod stats;
 mod validate;
 
 pub use canonical::{CanonicalError, canonical_json, content_address};
+pub use incremental::{
+    EDIT_REPORT_SCHEMA_VERSION, EditEndpoints, EditManifest, EditManifestError, EditOutcome,
+    EditReport, EditReportIdentity, EditReportRegime, EditRow, EditRowSummary, EditSample,
+    EditScenario, EditScenarioDeclaration, EditSummary, EditValidation, EditWorkload,
+    EndpointSummary, ExpectedEditOutcome, FailureStage, HostClass, LinkBandSummary,
+    OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork, ReferenceHost,
+    RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, RotationRule,
+    SourceShape, StructuralWork, StructuralWorkSummary, TransformationIdentity, ValidationFinding,
+    WorkerDeclaration, WorkerMode, derive_edit_report, render_edit_report_markdown,
+    validate_edit_report,
+};
 pub use manifest::{
     Baseline, EnvironmentPolicy, FlaggingPolicy, Manifest, ManifestError, PlatformEpoch,
     SamplingPolicy, SuiteRevision, Workload,
