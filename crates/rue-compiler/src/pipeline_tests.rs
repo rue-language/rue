@@ -425,7 +425,7 @@ mod tests {
         let failing =
             SourceSnapshot::single("<backend-root-control>", "fn main() -> i32 { 1 }").unwrap();
         let options = CompileOptions::default();
-        let mut session = CompilerSession::new();
+        let mut session = CompilerSession::with_query_concurrency(4);
         session
             .update_for_presentation(&before)
             .into_result()
@@ -461,6 +461,63 @@ mod tests {
         let recovered_root = session.backend_root_metrics();
         assert_eq!(recovered_root.functions, 1, "{recovered_root:?}");
         assert_eq!(recovered_root.publications, last_good.publications + 1);
+    }
+
+    #[test]
+    fn failed_wide_batches_release_their_unpublished_child_cones_under_pressure() {
+        const CHAIN_FUNCTIONS: usize = 33;
+        let options = CompileOptions::default();
+        let last_good_source =
+            SourceSnapshot::single("<backend-root-failure-pressure>", "fn main() -> i32 { 0 }")
+                .unwrap();
+        let failed_source = wide_reached_program(CHAIN_FUNCTIONS, 100);
+        let mut session = CompilerSession::with_query_concurrency(4);
+
+        session
+            .update_for_presentation(&last_good_source)
+            .into_result()
+            .unwrap();
+        crate::queries::compile_with_session(&mut session, &last_good_source, &options).unwrap();
+        let last_good = session.backend_root_metrics();
+
+        let fail = |session: &mut CompilerSession, source: &SourceSnapshot| {
+            session
+                .update_for_presentation(source)
+                .into_result()
+                .unwrap();
+            crate::codegen_query::with_test_codegen_failure_injection(|| {
+                assert!(
+                    session
+                        .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                        .is_err()
+                );
+            });
+            assert_eq!(session.backend_root_metrics(), last_good);
+        };
+
+        fail(&mut session, &failed_source);
+        let evictions_before_pressure = session.query_evictions_for_test();
+        for value in 101..117 {
+            fail(&mut session, &wide_reached_program(CHAIN_FUNCTIONS, value));
+        }
+        assert!(
+            session.query_evictions_for_test() > evictions_before_pressure,
+            "failed child cones must face real query-family eviction pressure"
+        );
+
+        fail(&mut session, &failed_source);
+        assert_eq!(
+            session.codegen_executions().len(),
+            1,
+            "host projection stops at the first deterministic CodegenUnit failure"
+        );
+        let (identity, execution) = &session.codegen_executions()[0];
+        assert!(
+            matches!(identity, FunctionInstanceKey::Definition(definition) if definition.name() == "f0")
+                && *execution == rue_query::RequestExecution::Computed,
+            "the changed failed leaf must recompute after its batch cone is released: {:?}",
+            session.codegen_executions()
+        );
     }
 
     #[test]
@@ -1013,6 +1070,216 @@ mod tests {
             assert!(execution.stdout.is_empty());
             assert!(execution.stderr.is_empty());
         }
+    }
+
+    /// A registered CodegenUnit root donates the caller permit and dispatches
+    /// independent children through the runtime's one structured worker budget.
+    /// The gate makes overlap (or its absence) deterministic rather than timing
+    /// dependent.
+    #[test]
+    fn codegen_root_batch_overlaps_with_many_workers_and_is_serial_with_one() {
+        let snapshot = SourceSnapshot::single(
+            "<backend-batch-overlap>",
+            "fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn main() -> i32 { a() + b() }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let run = |workers, gated_children, rendezvous| {
+            let mut session = CompilerSession::with_query_concurrency(workers);
+            session
+                .update_for_presentation(&snapshot)
+                .into_result()
+                .unwrap();
+            session.exercise_codegen_batch_overlap_for_test(&options, gated_children, rendezvous)
+        };
+
+        assert_eq!(run(1, 2, false), (1, 2));
+        assert_eq!(run(4, 2, true), (2, 2));
+    }
+
+    /// The batch memo bound is intentionally smaller than this root. Retaining
+    /// only the batch terminal without its exact child leases would evict and
+    /// recompute early CodegenUnits during final backend-root publication.
+    #[test]
+    fn codegen_root_batch_retains_more_than_the_child_memo_bound_until_publication() {
+        let snapshot = SourceSnapshot::single(
+            "<backend-batch-retention>",
+            "fn f00() -> i32 { 0 } fn f01() -> i32 { 1 } fn f02() -> i32 { 2 } \
+             fn f03() -> i32 { 3 } fn f04() -> i32 { 4 } fn f05() -> i32 { 5 } \
+             fn f06() -> i32 { 6 } fn f07() -> i32 { 7 } fn f08() -> i32 { 8 } \
+             fn f09() -> i32 { 9 } fn f10() -> i32 { 10 } fn f11() -> i32 { 11 } \
+             fn f12() -> i32 { 12 } fn f13() -> i32 { 13 } fn f14() -> i32 { 14 } \
+             fn f15() -> i32 { 15 } \
+             fn main() -> i32 { f00() + f01() + f02() + f03() + f04() + f05() + \
+                 f06() + f07() + f08() + f09() + f10() + f11() + f12() + f13() + \
+                 f14() + f15() }",
+        )
+        .unwrap();
+        let mut session = CompilerSession::with_query_concurrency(4);
+        session
+            .update_for_presentation(&snapshot)
+            .into_result()
+            .unwrap();
+
+        let (peak, evaluations) = session.exercise_codegen_batch_overlap_for_test(
+            &CompileOptions::default(),
+            usize::MAX,
+            false,
+        );
+
+        assert!(peak > 0);
+        assert_eq!(
+            evaluations, 17,
+            "publication must not recompute CodegenUnits"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backend_batches_preserve_all_one_and_many_worker_projections() {
+        let snapshot = SourceSnapshot::single(
+            "<backend-batch-determinism>",
+            "fn a() -> i32 { 1 } fn b() -> i32 { 2 } fn c() -> i32 { 3 } \
+             fn main() -> i32 { let unused = 9; a() + b() + c() }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let run = |workers| {
+            let mut session = CompilerSession::with_query_concurrency(workers);
+            session
+                .update_for_presentation(&snapshot)
+                .into_result()
+                .unwrap();
+            let rooted = session
+                .rooted_codegen(
+                    &options,
+                    rue_codegen::BackendArtifactRequest {
+                        asm: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let cfgs = rooted
+                .cfgs
+                .iter()
+                .map(|cfg| {
+                    (
+                        format!("{:?}", cfg.function),
+                        format!("{:?}", cfg.record.cfg),
+                        cfg.record.codegen.defined_symbol.to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let codegen_units = rooted
+                .units
+                .iter()
+                .map(|unit| (format!("{:?}", unit.function), format!("{:?}", unit.unit)))
+                .collect::<Vec<_>>();
+            let diagnostics = rooted
+                .warnings
+                .iter()
+                .map(|warning| (warning.to_string(), format!("{:?}", warning.diagnostic())))
+                .collect::<Vec<_>>();
+            let image = crate::program_image_plan::ProgramImage::from_rooted(
+                rooted.units,
+                rooted.exports,
+                &options,
+            )
+            .unwrap();
+            let plan = image.plan.clone();
+            let objects = image.fresh_objects(&options).unwrap();
+            let executable = image.fresh_link(&options, &rooted.warnings).unwrap().elf;
+            (cfgs, codegen_units, diagnostics, plan, objects, executable)
+        };
+
+        assert_eq!(run(1), run(4));
+    }
+
+    /// Opt-in cold and broad-invalidation backend wall-time witness. It has no
+    /// timing threshold: samples include exact child counts so noisy hosts do
+    /// not turn a performance observation into a correctness gate.
+    #[test]
+    #[ignore]
+    fn rue_1228_backend_batch_latency_witness() {
+        const FUNCTIONS: usize = 64;
+        const SAMPLES: usize = 7;
+        let options = CompileOptions::default();
+        let snapshot = |salt: usize| {
+            let mut source = String::new();
+            for index in 0..FUNCTIONS {
+                source.push_str(&format!("fn f{index}() -> i32 {{ {} }} ", index + salt));
+            }
+            source.push_str("fn main() -> i32 { ");
+            for index in 0..FUNCTIONS {
+                if index != 0 {
+                    source.push_str(" + ");
+                }
+                source.push_str(&format!("f{index}()"));
+            }
+            source.push_str(" }");
+            SourceSnapshot::single("<rue-1228-backend-latency>", source).unwrap()
+        };
+
+        let measure = |workers| {
+            let mut cold = Vec::with_capacity(SAMPLES);
+            let mut broad = Vec::with_capacity(SAMPLES);
+            for sample in 0..SAMPLES {
+                let before = snapshot(sample * 2);
+                let after = snapshot(sample * 2 + 1);
+                let mut session = CompilerSession::with_query_concurrency(workers);
+                session
+                    .update_for_presentation(&before)
+                    .into_result()
+                    .unwrap();
+                let start = std::time::Instant::now();
+                session
+                    .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                    .unwrap();
+                cold.push(start.elapsed().as_micros());
+
+                session
+                    .update_for_presentation(&after)
+                    .into_result()
+                    .unwrap();
+                let start = std::time::Instant::now();
+                session
+                    .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+                    .unwrap();
+                broad.push(start.elapsed().as_micros());
+                assert_eq!(
+                    session
+                        .codegen_executions()
+                        .iter()
+                        .filter(|(_, execution)| {
+                            *execution == rue_query::RequestExecution::Computed
+                        })
+                        .count(),
+                    FUNCTIONS,
+                    "every independently edited callee CodegenUnit recomputes"
+                );
+            }
+            cold.sort_unstable();
+            broad.sort_unstable();
+            (cold, broad)
+        };
+
+        let (one_cold, one_broad) = measure(1);
+        let (many_cold, many_broad) = measure(4);
+        eprintln!(
+            "RUE-1228 backend batch latency: functions={} samples={} \
+             workers=1 cold_us={:?} cold_median_us={} broad_us={:?} broad_median_us={} \
+             workers=4 cold_us={:?} cold_median_us={} broad_us={:?} broad_median_us={}",
+            FUNCTIONS,
+            SAMPLES,
+            one_cold,
+            one_cold[SAMPLES / 2],
+            one_broad,
+            one_broad[SAMPLES / 2],
+            many_cold,
+            many_cold[SAMPLES / 2],
+            many_broad,
+            many_broad[SAMPLES / 2],
+        );
     }
 
     #[cfg(unix)]

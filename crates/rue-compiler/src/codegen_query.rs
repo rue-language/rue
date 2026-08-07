@@ -62,6 +62,11 @@ pub(crate) struct CodegenUnitQueryKey {
     /// used by lowering. It is excluded from `stable_identity`, but remains in
     /// memo equality so a different function body/configuration cannot alias.
     pub(crate) optimized_cfg: crate::cfg_query::OptimizedCfgQueryKey,
+    /// Request-local transport for the deterministic test failure injection.
+    /// Registered batch children run on worker threads, so thread-local test
+    /// state is captured into the exact key at the host boundary.
+    #[cfg(test)]
+    inject_failure: bool,
     memo_hash: u64,
 }
 
@@ -87,6 +92,10 @@ impl CodegenUnitQueryKey {
         request.regalloc.hash(&mut hasher);
         request.asm.hash(&mut hasher);
         optimized_cfg.hash(&mut hasher);
+        #[cfg(test)]
+        let inject_failure = INJECT_CODEGEN_FAILURE.with(Cell::get);
+        #[cfg(test)]
+        inject_failure.hash(&mut hasher);
         let memo_hash = hasher.finish();
         Self {
             function,
@@ -98,6 +107,8 @@ impl CodegenUnitQueryKey {
             abi_layout_epoch: ABI_LAYOUT_EPOCH,
             request,
             optimized_cfg,
+            #[cfg(test)]
+            inject_failure,
             memo_hash,
         }
     }
@@ -114,6 +125,16 @@ impl PartialEq for CodegenUnitQueryKey {
             && self.abi_layout_epoch == other.abi_layout_epoch
             && self.request == other.request
             && self.optimized_cfg == other.optimized_cfg
+            && {
+                #[cfg(test)]
+                {
+                    self.inject_failure == other.inject_failure
+                }
+                #[cfg(not(test))]
+                {
+                    true
+                }
+            }
     }
 }
 impl Eq for CodegenUnitQueryKey {}
@@ -487,7 +508,7 @@ pub(crate) fn evaluate_codegen_unit(
         lowering.fn_name = record.codegen.defined_symbol.to_string();
     }
     #[cfg(test)]
-    if INJECT_CODEGEN_FAILURE.with(Cell::get) {
+    if key.inject_failure {
         product
             .machine_code
             .relocations

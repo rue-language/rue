@@ -397,10 +397,13 @@ pub(crate) struct RevisionedQueryDatabase {
     #[allow(dead_code)]
     cfgs: QueryFamily<crate::cfg_query::CfgQueryKey, crate::cfg_query::CfgValue>,
     optimized_cfgs: QueryFamily<crate::cfg_query::OptimizedCfgQueryKey, crate::cfg_query::CfgValue>,
+    optimized_cfg_batches: QueryFamily<OptimizedCfgBatchKey, OptimizedCfgBatchOutput>,
+    #[cfg_attr(not(test), allow(dead_code))]
     codegen_units: QueryFamily<
         crate::codegen_query::CodegenUnitQueryKey,
         crate::codegen_query::CodegenUnitValue,
     >,
+    codegen_unit_batches: QueryFamily<CodegenUnitBatchKey, CodegenUnitBatchOutput>,
     backend_root_publications: QueryFamily<BackendRootPublicationKey, bool>,
     /// One-shot rendezvous inside the registered CodegenUnit evaluator. Unit
     /// tests use it to force an exact-key owner to remain live while a second
@@ -408,6 +411,11 @@ pub(crate) struct RevisionedQueryDatabase {
     /// execute the production family and evaluator.
     #[cfg(test)]
     codegen_evaluator_gate: Arc<Mutex<Option<Arc<TestCodegenEvaluatorGate>>>>,
+    /// Multi-child rendezvous proving that the production CodegenUnit root
+    /// enters independent evaluators concurrently only when the shared query
+    /// budget has more than one worker.
+    #[cfg(test)]
+    codegen_batch_evaluator_gate: Arc<Mutex<Option<Arc<TestBackendBatchEvaluatorGate>>>>,
     lookup_names: QueryFamily<LookupNameKey, LookupNameValue>,
     /// Per-`(module, import-path)` binding-resolution family. Registered query
     /// machinery for the exact provider boundary. Production body import
@@ -560,6 +568,107 @@ impl TestCodegenEvaluatorGate {
 
     pub(crate) fn release(&self) {
         self.rendezvous.wait();
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct TestBackendBatchEvaluatorGate {
+    remaining: std::sync::atomic::AtomicUsize,
+    entered: std::sync::atomic::AtomicUsize,
+    active: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    rendezvous: Option<TestBackendBatchRendezvous>,
+}
+
+#[cfg(test)]
+struct TestBackendBatchRendezvous {
+    expected: usize,
+    released: Mutex<bool>,
+    changed: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl TestBackendBatchEvaluatorGate {
+    fn new(gated_children: usize, rendezvous: bool) -> Self {
+        assert!(gated_children > 0);
+        Self {
+            remaining: std::sync::atomic::AtomicUsize::new(gated_children),
+            entered: std::sync::atomic::AtomicUsize::new(0),
+            active: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            rendezvous: rendezvous.then(|| TestBackendBatchRendezvous {
+                expected: gated_children,
+                released: Mutex::new(false),
+                changed: std::sync::Condvar::new(),
+            }),
+        }
+    }
+
+    fn evaluator_wait(&self) {
+        use std::sync::atomic::Ordering;
+        if self
+            .remaining
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_err()
+        {
+            return;
+        }
+        self.entered.fetch_add(1, Ordering::AcqRel);
+        let active = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+        self.peak.fetch_max(active, Ordering::AcqRel);
+        if let Some(rendezvous) = &self.rendezvous {
+            rendezvous.changed.notify_all();
+            let mut released = rendezvous
+                .released
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            while !*released {
+                released = rendezvous
+                    .changed
+                    .wait(released)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+        }
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    pub(crate) fn wait_until_all_entered_and_release(&self) -> bool {
+        let rendezvous = self
+            .rendezvous
+            .as_ref()
+            .expect("only a rendezvous gate can wait for concurrent entry");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut released = rendezvous
+            .released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while self.entered() < rendezvous.expected {
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                break;
+            };
+            let (next, timeout) = rendezvous
+                .changed
+                .wait_timeout(released, remaining)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            released = next;
+            if timeout.timed_out() {
+                break;
+            }
+        }
+        let all_entered = self.entered() == rendezvous.expected;
+        *released = true;
+        rendezvous.changed.notify_all();
+        all_entered
+    }
+
+    pub(crate) fn peak(&self) -> usize {
+        self.peak.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn entered(&self) -> usize {
+        self.entered.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -1013,9 +1122,69 @@ pub(crate) struct BackendRootCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct OptimizedCfgBatchKey {
+    pub(crate) keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+}
+
+impl QueryKey for OptimizedCfgBatchKey {
+    fn stable_identity(&self) -> String {
+        let mut identity = format!("optimized-cfg-batch;units={}", self.keys.len());
+        for key in self.keys.iter() {
+            identity.push('\u{1e}');
+            identity.push_str(&key.stable_identity());
+        }
+        identity
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OptimizedCfgBatchOutput {
+    pub(crate) values: Arc<[crate::cfg_query::CfgValue]>,
+    /// Exact child leases acquired while the rooted batch evaluator still owns
+    /// every request lease. The memoized root encapsulates these pins so
+    /// retaining it also retains the scheduled children through publication.
+    _retained_children: Arc<rue_query::RetainedPinSet>,
+}
+
+impl RetainedCharge for OptimizedCfgBatchOutput {
+    fn retained_charge(&self) -> u64 {
+        self.values.retained_charge()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct CodegenUnitBatchKey {
+    pub(crate) keys: Arc<[crate::codegen_query::CodegenUnitQueryKey]>,
+}
+
+impl QueryKey for CodegenUnitBatchKey {
+    fn stable_identity(&self) -> String {
+        let mut identity = format!("codegen-unit-batch;units={}", self.keys.len());
+        for key in self.keys.iter() {
+            identity.push('\u{1e}');
+            identity.push_str(&key.stable_identity());
+        }
+        identity
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CodegenUnitBatchOutput {
+    pub(crate) values: Arc<[crate::codegen_query::CodegenUnitValue]>,
+    /// See `OptimizedCfgBatchOutput::_retained_children`.
+    _retained_children: Arc<rue_query::RetainedPinSet>,
+}
+
+impl RetainedCharge for CodegenUnitBatchOutput {
+    fn retained_charge(&self) -> u64 {
+        self.values.retained_charge()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct BackendRootPublicationKey {
     epoch: u64,
-    codegen_units: Arc<[crate::codegen_query::CodegenUnitQueryKey]>,
+    codegen_units: CodegenUnitBatchKey,
     functions: Arc<[crate::FunctionInstanceKey]>,
     cfg_terminals: usize,
 }
@@ -1036,7 +1205,7 @@ impl QueryKey for BackendRootPublicationKey {
         format!(
             "backend-root;epoch={};units={}",
             self.epoch,
-            self.codegen_units.len()
+            self.codegen_units.keys.len()
         )
     }
 }
@@ -14369,11 +14538,69 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the OptimizedCfg family has one canonical name");
+        let optimized_cfgs_for_batch = optimized_cfgs.clone();
+        let optimized_cfg_batches = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.optimized-cfg-batch",
+                0,
+                |left: &OptimizedCfgBatchOutput, right: &OptimizedCfgBatchOutput| {
+                    left.values.len() == right.values.len()
+                        && left
+                            .values
+                            .iter()
+                            .zip(right.values.iter())
+                            .all(|(left, right)| crate::cfg_query::cfg_value_equal(left, right))
+                },
+                move |context, _, key: &OptimizedCfgBatchKey| {
+                    let _validated_registered = context.endorse_registered_validations();
+                    let _attempts = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
+                    let terminals = context.query_registered_batch(
+                        &optimized_cfgs_for_batch,
+                        key.keys.iter().cloned(),
+                    )?;
+                    let kind = if terminals
+                        .iter()
+                        .all(|terminal| terminal.kind() == QueryTerminalKind::Success)
+                    {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .expect(
+                                "the registered optimized-CFG batch observes every selected child cone",
+                            ),
+                    );
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("OptimizedCfg publishes typed values")
+                            };
+                            value.clone()
+                        })
+                        .collect::<Vec<_>>()
+                        .into();
+                    Ok(QueryOutput::success(OptimizedCfgBatchOutput {
+                        values,
+                        _retained_children: retained_children,
+                    })
+                    .with_terminal_kind(kind))
+                },
+            )
+            .expect("the OptimizedCfgBatch family has one canonical name");
         let optimized_cfgs_for_codegen = optimized_cfgs.clone();
         #[cfg(test)]
         let codegen_evaluator_gate = Arc::new(Mutex::new(None::<Arc<TestCodegenEvaluatorGate>>));
         #[cfg(test)]
         let codegen_gate_for_evaluator = codegen_evaluator_gate.clone();
+        #[cfg(test)]
+        let codegen_batch_evaluator_gate =
+            Arc::new(Mutex::new(None::<Arc<TestBackendBatchEvaluatorGate>>));
+        #[cfg(test)]
+        let codegen_batch_gate_for_evaluator = codegen_batch_evaluator_gate.clone();
         let codegen_units = runtime
             .family_with_equality_and_evaluator(
                 "compiler.codegen-unit",
@@ -14388,6 +14615,15 @@ impl RevisionedQueryDatabase {
                     {
                         gate.evaluator_wait();
                     }
+                    #[cfg(test)]
+                    let batch_gate = codegen_batch_gate_for_evaluator
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    #[cfg(test)]
+                    if let Some(gate) = batch_gate {
+                        gate.evaluator_wait();
+                    }
                     crate::codegen_query::evaluate_codegen_unit(
                         context,
                         &optimized_cfgs_for_codegen,
@@ -14396,6 +14632,61 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the CodegenUnit family has one canonical name");
+        let codegen_units_for_batch = codegen_units.clone();
+        let codegen_unit_batches = runtime
+            .family_with_equality_and_evaluator(
+                "compiler.codegen-unit-batch",
+                0,
+                |left: &CodegenUnitBatchOutput, right: &CodegenUnitBatchOutput| {
+                    left.values.len() == right.values.len()
+                        && left
+                            .values
+                            .iter()
+                            .zip(right.values.iter())
+                            .all(|(left, right)| {
+                                crate::codegen_query::codegen_unit_value_equal(left, right)
+                            })
+                },
+                move |context, _, key: &CodegenUnitBatchKey| {
+                    let _validated_registered = context.endorse_registered_validations();
+                    let _attempts = context.retain_nested_attempts_for(&["compiler.codegen-unit"]);
+                    let terminals = context.query_registered_batch(
+                        &codegen_units_for_batch,
+                        key.keys.iter().cloned(),
+                    )?;
+                    let kind = if terminals
+                        .iter()
+                        .all(|terminal| terminal.kind() == QueryTerminalKind::Success)
+                    {
+                        QueryTerminalKind::Success
+                    } else {
+                        QueryTerminalKind::Failure
+                    };
+                    let retained_children = Arc::new(
+                        context
+                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .expect(
+                                "the registered CodegenUnit batch observes every selected child cone",
+                            ),
+                    );
+                    let values = terminals
+                        .iter()
+                        .map(|terminal| {
+                            let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
+                                unreachable!("CodegenUnit publishes typed values")
+                            };
+                            value.clone()
+                        })
+                        .collect::<Vec<_>>()
+                        .into();
+                    Ok(QueryOutput::success(CodegenUnitBatchOutput {
+                        values,
+                        _retained_children: retained_children,
+                    })
+                    .with_terminal_kind(kind))
+                },
+            )
+            .expect("the CodegenUnitBatch family has one canonical name");
         let provider_observation_meter = Arc::new(ProviderObservationCounters::default());
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
@@ -14415,20 +14706,20 @@ impl RevisionedQueryDatabase {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .lease
                         .clone();
-                    let mut terminals = Vec::with_capacity(key.codegen_units.len());
-                    for codegen_key in key.codegen_units.iter() {
-                        let terminal = context.query_registered(
-                            &codegen_units_for_backend_publication,
-                            codegen_key.clone(),
-                        )?;
-                        let rue_query::QueryOutcome::Success(value) = terminal.outcome() else {
-                            unreachable!("CodegenUnit publishes typed terminals")
-                        };
-                        if matches!(value, crate::codegen_query::CodegenUnitValue::Failure(_)) {
-                            return Ok(QueryOutput::success(false)
-                                .with_terminal_kind(QueryTerminalKind::Failure));
-                        }
-                        terminals.push(terminal);
+                    let terminals = context.query_registered_batch(
+                        &codegen_units_for_backend_publication,
+                        key.codegen_units.keys.iter().cloned(),
+                    )?;
+                    if terminals.iter().any(|terminal| {
+                        matches!(
+                            terminal.outcome(),
+                            rue_query::QueryOutcome::Success(
+                                crate::codegen_query::CodegenUnitValue::Failure(_)
+                            )
+                        )
+                    }) {
+                        return Ok(QueryOutput::success(false)
+                            .with_terminal_kind(QueryTerminalKind::Failure));
                     }
                     let pending = context
                         .retain_observed_terminal_cones_from(
@@ -14443,8 +14734,8 @@ impl RevisionedQueryDatabase {
                         pending: Some(Arc::new(pending)),
                         functions: Some(key.functions.iter().cloned().collect()),
                         cfg_terminals: key.cfg_terminals,
-                        optimized_cfg_terminals: key.codegen_units.len(),
-                        codegen_unit_terminals: key.codegen_units.len(),
+                        optimized_cfg_terminals: key.codegen_units.keys.len(),
+                        codegen_unit_terminals: key.codegen_units.keys.len(),
                         previous: None,
                         installed: false,
                     });
@@ -15625,10 +15916,14 @@ impl RevisionedQueryDatabase {
             drop_glues,
             cfgs,
             optimized_cfgs,
+            optimized_cfg_batches,
             codegen_units,
+            codegen_unit_batches,
             backend_root_publications,
             #[cfg(test)]
             codegen_evaluator_gate,
+            #[cfg(test)]
+            codegen_batch_evaluator_gate,
             lookup_names,
             lookup_imports,
             #[cfg(test)]
@@ -15685,6 +15980,28 @@ impl RevisionedQueryDatabase {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .replace(gate.clone());
         assert!(replaced.is_none(), "only one CodegenUnit gate may be armed");
+        gate
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_codegen_batch_evaluator_gate_for_test(
+        &self,
+        gated_children: usize,
+        rendezvous: bool,
+    ) -> Arc<TestBackendBatchEvaluatorGate> {
+        let gate = Arc::new(TestBackendBatchEvaluatorGate::new(
+            gated_children,
+            rendezvous,
+        ));
+        let replaced = self
+            .codegen_batch_evaluator_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(gate.clone());
+        assert!(
+            replaced.is_none(),
+            "only one CodegenUnit batch gate may be armed"
+        );
         gate
     }
 
@@ -16016,9 +16333,32 @@ impl RevisionedQueryDatabase {
         Ok((optimized, attempt))
     }
 
+    /// Request one stable-ordered production root of optimized CFGs. The
+    /// registered evaluator owns structured scheduling; the host only builds
+    /// exact keys and projects returned typed values in the same order.
+    pub(crate) fn optimized_cfg_batch(
+        &self,
+        revision: Revision,
+        keys: Arc<[crate::cfg_query::OptimizedCfgQueryKey]>,
+        cancellation: CancellationToken,
+    ) -> (
+        OptimizedCfgBatchKey,
+        QueryRequestAttempt<OptimizedCfgBatchOutput>,
+    ) {
+        let key = OptimizedCfgBatchKey { keys };
+        let attempt = self.runtime.request_registered(
+            &self.optimized_cfg_batches,
+            revision,
+            key.clone(),
+            cancellation,
+        );
+        (key, attempt)
+    }
+
     /// Request one canonical backend terminal from its registered optimized
     /// CFG. The nested terminal owns every current-domain lowering input, so
     /// this API requires no semantic output, type pool, or live function.
+    #[cfg(test)]
     pub(crate) fn codegen_unit(
         &self,
         revision: Revision,
@@ -16041,6 +16381,27 @@ impl RevisionedQueryDatabase {
         ))
     }
 
+    /// Request one stable-ordered production root of CodegenUnits through the
+    /// runtime's registered structured scheduler.
+    pub(crate) fn codegen_unit_batch(
+        &self,
+        revision: Revision,
+        keys: Arc<[crate::codegen_query::CodegenUnitQueryKey]>,
+        cancellation: CancellationToken,
+    ) -> (
+        CodegenUnitBatchKey,
+        QueryRequestAttempt<CodegenUnitBatchOutput>,
+    ) {
+        let key = CodegenUnitBatchKey { keys };
+        let attempt = self.runtime.request_registered(
+            &self.codegen_unit_batches,
+            revision,
+            key.clone(),
+            cancellation,
+        );
+        (key, attempt)
+    }
+
     /// Start an unpublished backend-root handoff. Every terminal retained into
     /// this candidate is acquired while its request attempt still owns the
     /// result lease, closing the birth-to-publication eviction window.
@@ -16048,43 +16409,48 @@ impl RevisionedQueryDatabase {
         BackendRootCandidate::default()
     }
 
-    /// Retain one reached optimized-CFG terminal across sequential collection.
-    /// Raw CFG identities are recorded for exact-root metrics; the registered
-    /// publication request captures their full terminal cones.
-    pub(crate) fn retain_backend_optimized_cfg(
+    /// Retain the registered optimized-CFG batch while its request lease is
+    /// live. The batch value encapsulates pins acquired for every observed
+    /// child while the evaluator's leases were live, so this one root pin
+    /// protects the exact child cones until codegen acquires successor pins.
+    pub(crate) fn retain_backend_optimized_cfg_batch(
         &self,
         candidate: &mut BackendRootCandidate,
-        function: crate::FunctionInstanceKey,
-        key: &crate::cfg_query::OptimizedCfgQueryKey,
-        terminal: &Arc<rue_query::QueryTerminal<crate::cfg_query::CfgValue>>,
+        key: &OptimizedCfgBatchKey,
+        terminal: &Arc<rue_query::QueryTerminal<OptimizedCfgBatchOutput>>,
     ) {
-        for cfg_key in std::iter::once(&key.cfg).chain(key.accessor_dependencies.iter()) {
-            candidate.cfg_keys.insert(cfg_key.clone());
-        }
         let pin = self
-            .optimized_cfgs
+            .optimized_cfg_batches
             .pin_terminal(terminal)
-            .expect("optimized-CFG result belongs to the registered family");
-        if candidate.lease.lease(pin) {
-            candidate.optimized_cfg_terminals += 1;
+            .expect("optimized-CFG batch result belongs to the registered family");
+        candidate.lease.lease(pin);
+        for optimized in key.keys.iter() {
+            for cfg_key in
+                std::iter::once(&optimized.cfg).chain(optimized.accessor_dependencies.iter())
+            {
+                candidate.cfg_keys.insert(cfg_key.clone());
+            }
+            candidate.functions.insert(optimized.cfg.function.clone());
         }
-        candidate.functions.insert(function);
+        candidate.optimized_cfg_terminals = key.keys.len();
     }
 
-    /// Retain one reached CodegenUnit terminal. Its optimized-CFG input was
-    /// pinned explicitly during the preceding rooted CFG collection.
-    pub(crate) fn retain_backend_codegen_unit(
+    /// Retain the registered CodegenUnit batch from result birth until the
+    /// backend publication handoff installs its exact transitive cone. Its
+    /// encapsulated child pins prevent bounded child memo retention from
+    /// recomputing wide roots during that handoff.
+    pub(crate) fn retain_backend_codegen_batch(
         &self,
         candidate: &mut BackendRootCandidate,
-        terminal: &Arc<rue_query::QueryTerminal<crate::codegen_query::CodegenUnitValue>>,
+        key: &CodegenUnitBatchKey,
+        terminal: &Arc<rue_query::QueryTerminal<CodegenUnitBatchOutput>>,
     ) {
         let pin = self
-            .codegen_units
+            .codegen_unit_batches
             .pin_terminal(terminal)
-            .expect("codegen result belongs to the registered family");
-        if candidate.lease.lease(pin) {
-            candidate.codegen_unit_terminals += 1;
-        }
+            .expect("codegen batch result belongs to the registered family");
+        candidate.lease.lease(pin);
+        candidate.codegen_unit_terminals = key.keys.len();
     }
 
     /// Publish the full transitive query cone behind a successful backend
@@ -16096,7 +16462,7 @@ impl RevisionedQueryDatabase {
         &self,
         revision: Revision,
         candidate: BackendRootCandidate,
-        codegen_units: Arc<[crate::codegen_query::CodegenUnitQueryKey]>,
+        codegen_units: CodegenUnitBatchKey,
     ) -> Result<(), QueryAbort> {
         // A root-publication request is transactional through its handoff
         // callbacks. Serialize only these short, whole-program swaps so a
