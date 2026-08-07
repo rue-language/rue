@@ -14580,7 +14580,9 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the OptimizedCfg family has one canonical name");
+        let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
         let optimized_cfgs_for_batch = optimized_cfgs.clone();
+        let backend_root_for_optimized_cfg_batch = backend_root.clone();
         let optimized_cfg_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.optimized-cfg-batch",
@@ -14595,6 +14597,11 @@ impl RevisionedQueryDatabase {
                 },
                 move |context, _, key: &OptimizedCfgBatchKey| {
                     let _validated_registered = context.endorse_registered_validations();
+                    let fallback = backend_root_for_optimized_cfg_batch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
                     let _attempts = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
                     let terminals = context.query_registered_batch(
                         &optimized_cfgs_for_batch,
@@ -14610,7 +14617,10 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_children = Arc::new(
                         context
-                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .retain_observed_terminal_cones_from(
+                                &terminals,
+                                std::slice::from_ref(&fallback),
+                            )
                             .expect(
                                 "the registered optimized-CFG batch observes every selected child cone",
                             ),
@@ -14675,6 +14685,7 @@ impl RevisionedQueryDatabase {
             )
             .expect("the CodegenUnit family has one canonical name");
         let codegen_units_for_batch = codegen_units.clone();
+        let backend_root_for_codegen_batch = backend_root.clone();
         let codegen_unit_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.codegen-unit-batch",
@@ -14691,6 +14702,11 @@ impl RevisionedQueryDatabase {
                 },
                 move |context, _, key: &CodegenUnitBatchKey| {
                     let _validated_registered = context.endorse_registered_validations();
+                    let fallback = backend_root_for_codegen_batch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
                     let _attempts = context.retain_nested_attempts_for(&["compiler.codegen-unit"]);
                     let terminals = context.query_registered_batch(
                         &codegen_units_for_batch,
@@ -14706,7 +14722,10 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_children = Arc::new(
                         context
-                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .retain_observed_terminal_cones_from(
+                                &terminals,
+                                std::slice::from_ref(&fallback),
+                            )
                             .expect(
                                 "the registered CodegenUnit batch observes every selected child cone",
                             ),
@@ -14745,6 +14764,7 @@ impl RevisionedQueryDatabase {
             )
             .expect("the ObjectProjection family has one canonical name");
         let object_projections_for_batch = object_projections.clone();
+        let backend_root_for_object_projection_batch = backend_root.clone();
         let object_projection_batches = runtime
             .family_with_equality_and_evaluator(
                 "compiler.object-projection-batch",
@@ -14759,6 +14779,11 @@ impl RevisionedQueryDatabase {
                 },
                 move |context, _, key: &ObjectProjectionBatchKey| {
                     let _validated_registered = context.endorse_registered_validations();
+                    let fallback = backend_root_for_object_projection_batch
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .lease
+                        .clone();
                     let _attempts =
                         context.retain_nested_attempts_for(&["compiler.object-projection"]);
                     let terminals = context.query_registered_batch(
@@ -14775,7 +14800,10 @@ impl RevisionedQueryDatabase {
                     };
                     let retained_children = Arc::new(
                         context
-                            .retain_observed_terminal_cones_from(&terminals, &[])
+                            .retain_observed_terminal_cones_from(
+                                &terminals,
+                                std::slice::from_ref(&fallback),
+                            )
                             .expect(
                                 "the registered ObjectProjection batch observes every selected child cone",
                             ),
@@ -14802,7 +14830,6 @@ impl RevisionedQueryDatabase {
         let lookup_root_lease = Arc::new(Mutex::new(PublishedRootLookupLease::default()));
         let body_closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot::default()));
         let body_reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
-        let backend_root = Arc::new(Mutex::new(PublishedBackendRoot::default()));
         let object_projections_for_backend_publication = object_projections.clone();
         let backend_root_for_publication = backend_root.clone();
         let backend_root_publications = runtime
