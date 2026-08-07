@@ -4,8 +4,9 @@
 # - Rust toolchain: Downloaded prebuilt binaries (Rust 1.92.0)
 # - C++ toolchain: System (clang/gcc)
 #
-# The hermetic Rust toolchain downloads prebuilt binaries for each platform,
-# ensuring reproducible builds without depending on system-installed rustc.
+# The hermetic Rust toolchain downloads the pinned rustc, rust-std, Clippy, and
+# rustfmt components for each platform, ensuring reproducible builds without
+# depending on system-installed Rust or materializing unused distribution parts.
 #
 # Note: Building the Rue *compiler* is hermetic. However, *running* the Rue
 # compiler to produce executables has platform-specific requirements:
