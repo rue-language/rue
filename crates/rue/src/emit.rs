@@ -6,11 +6,11 @@ use rue_compiler::unstable::update_for_presentation;
 use rue_compiler::unstable::{LowerMetrics, ParseMetrics, SemanticMetrics, semantic_metrics};
 use rue_compiler::unstable::{PresentationRequest, PresentationStage};
 #[cfg(test)]
-use rue_compiler::{CompileErrors, RirView};
+use rue_compiler::{CompileErrors, CompilerSession, RirView, SourceSnapshot};
 use rue_compiler::{
-    CompileOptions, CompilerSession, DependencyEnvelope, DependencyEnvelopeStatus,
-    ImportDiscoveryStatus, ImportDiscoveryView, SourceSnapshot,
+    CompileOptions, DependencyEnvelope, DependencyEnvelopeStatus, ImportDiscoveryStatus,
 };
+use rue_driver::FilesystemCompilerHost;
 #[cfg(test)]
 use rue_error::{CompileError, ErrorKind};
 #[cfg(test)]
@@ -225,23 +225,22 @@ pub(crate) fn validate_output_modes(
 /// For early stages (tokens, ast), each file is processed and labeled individually.
 /// For later stages (rir, air, cfg, etc.), the merged program is used.
 pub(crate) struct EmitRequest<'a, 'diagnostics> {
-    pub(crate) source_snapshot: &'a SourceSnapshot,
-    pub(crate) session: &'a mut CompilerSession,
+    pub(crate) host: &'a mut FilesystemCompilerHost,
     pub(crate) stages: &'a [EmitStage],
-    pub(crate) discovery_revision: &'a ImportDiscoveryView,
     pub(crate) compile_options: CompileOptions,
     pub(crate) diagnostics: &'a DiagnosticOutput<'diagnostics>,
 }
 
 pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
     let EmitRequest {
-        source_snapshot,
-        session,
+        host,
         stages,
-        discovery_revision,
         compile_options,
         diagnostics,
     } = request;
+
+    let source_snapshot = host.source_snapshot().clone();
+    let discovery_revision = host.discovery_revision().clone();
 
     if stages.contains(&EmitStage::Deps) {
         // `validate_output_modes` already rejected `--emit deps` mixed with any
@@ -251,7 +250,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             1,
             "validate_output_modes must reject --emit deps combined with other stages"
         );
-        let dependency_envelope = DependencyEnvelope::from_closed_revision(discovery_revision)
+        let dependency_envelope = DependencyEnvelope::from_closed_revision(&discovery_revision)
             .expect("closed valid or resolution-incomplete discovery has dependency topology");
         let incomplete = dependency_envelope.status == DependencyEnvelopeStatus::Incomplete;
         match serde_json::to_string_pretty(&dependency_envelope) {
@@ -284,7 +283,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             // a reached fallible intrinsic. Semantic-only diagnostics (e.g. an
             // undefined variable) belong to a normal build or a later `--emit`
             // stage, not to the untyped-IR presentation.
-            if let Err(errors) = session.rir() {
+            if let Err(errors) = host.rir() {
                 diagnostics.print_errors(&errors);
                 return Err(());
             }
@@ -320,7 +319,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
                     EmitStage::Ast => println!("=== AST ({}) ===", source.path),
                     _ => unreachable!(),
                 }
-                let output = match session.unstable_present(PresentationRequest {
+                let output = match host.present(PresentationRequest {
                     stage: unstable_stage,
                     options: &compile_options,
                     file_order: &[source.file_id],
@@ -336,7 +335,7 @@ pub(crate) fn execute(request: EmitRequest<'_, '_>) -> Result<(), ()> {
             }
             continue;
         }
-        let output = match session.unstable_present(PresentationRequest {
+        let output = match host.present(PresentationRequest {
             stage: unstable_stage,
             options: &compile_options,
             file_order: &file_order,

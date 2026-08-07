@@ -302,10 +302,10 @@ projects. None may introduce a peer compilation path.
 - [x] **Phase 1: Contract and schema.** Add the versioned incremental manifest,
   raw report types, strict validation, and deterministic report derivation. —
   RUE-1245
-- [ ] **Phase 2: Canonical retained-session host.** Factor the existing
+- [x] **Phase 2: Canonical retained-session host.** Factor the existing
   filesystem-backed reload/session seam into the shared driver library, add the
   narrow unstable codegen-ready projection, and keep the CLI on that same
-  owner. — follow-up issue
+  owner. — RUE-1246
 - [ ] **Phase 3: Retained-session runner.** Drive the shared host through the
   diagnostics and three successful-compilation endpoints and serialize
   validated raw observations without duplicating source loading or compiler
