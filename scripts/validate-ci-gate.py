@@ -172,6 +172,15 @@ def validate(
         "./test.sh",
         "Run explicit cross-backend compilation and encoding coverage",
         "//crates/rue-codegen:rue-codegen-test",
+        # RUE-1258: both performance gates. Losing either restores the silence
+        # that let the published series freeze for ten days while every job
+        # stayed green, so their presence is part of the CI contract rather
+        # than a step someone may quietly drop.
+        "check-pins",
+        "scripts/validate-performance-stall.py",
+        # The staleness gate counts trunk commits back to the newest measured
+        # one, which a depth-1 checkout cannot reach.
+        "fetch-depth: 0",
     ):
         if required not in linux:
             errors.append(f"linux-premerge responsibility missing {required!r}")

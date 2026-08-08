@@ -711,6 +711,21 @@ rue_sh_test(
     ],
 )
 
+# RUE-1258: the staleness rule, exercised without a repository or a data
+# branch. This gate fails every pull request while the series is stalled and
+# has no bypass, so what "stalled" means — and that an empty dashboard is not
+# stalled — is load-bearing rather than incidental.
+rue_sh_test(
+    name = "performance-stall-validator-tool-tests",
+    test = "scripts/test-validate-performance-stall.py",
+    resources = [
+        "scripts/validate-performance-stall.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 rue_sh_test(
     name = "ci-gate-validator-tool-tests",
     test = "scripts/test-validate-ci-gate.py",

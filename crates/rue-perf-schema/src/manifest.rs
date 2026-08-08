@@ -189,6 +189,17 @@ pub struct PlatformEpoch {
     /// can express them as an index.
     #[serde(default)]
     pub baseline: Option<Baseline>,
+    /// Whether scheduled collection measures this epoch.
+    ///
+    /// The manifest is the single place this is declared, so the collector, the
+    /// CI gate, and a maintainer resolving a stall all read the same answer. A
+    /// workflow that restated it would eventually disagree, and declaring the
+    /// next epoch would mean editing two files under time pressure.
+    ///
+    /// False for the `local` epoch and for calibration epochs, whose pins are
+    /// deliberate placeholders — checking those would fail permanently.
+    #[serde(default)]
+    pub collection: bool,
 }
 
 /// Why a manifest could not be loaded.
@@ -264,6 +275,19 @@ pub enum ManifestError {
         /// The workload whose policy is empty.
         workload: String,
     },
+    /// A platform declares more than one collection epoch.
+    ///
+    /// Collection measures one epoch per platform. Two would make "the epoch
+    /// being collected" ambiguous for the collector and the CI gate alike, and
+    /// they could resolve it differently.
+    DuplicateCollectionEpoch {
+        /// The platform carrying the ambiguity.
+        platform: String,
+        /// The epoch already marked for collection.
+        first: u32,
+        /// The epoch that also claims it.
+        second: u32,
+    },
 }
 
 impl std::fmt::Display for ManifestError {
@@ -311,6 +335,15 @@ impl std::fmt::Display for ManifestError {
                 f,
                 "epoch {epoch} on {platform} samples workload {workload:?} zero times or in \
                  zero-sized batches"
+            ),
+            ManifestError::DuplicateCollectionEpoch {
+                platform,
+                first,
+                second,
+            } => write!(
+                f,
+                "platform {platform} marks epochs {first} and {second} for collection; \
+                 exactly one epoch per platform may be collected"
             ),
         }
     }
@@ -381,7 +414,21 @@ impl Manifest {
 
     fn check_epochs(&self) -> Result<(), ManifestError> {
         let mut seen: Vec<(&str, u32)> = Vec::new();
+        let mut collected: Vec<(&str, u32)> = Vec::new();
         for epoch in &self.epochs {
+            if epoch.collection {
+                if let Some((_, first)) = collected
+                    .iter()
+                    .find(|(platform, _)| *platform == epoch.platform)
+                {
+                    return Err(ManifestError::DuplicateCollectionEpoch {
+                        platform: epoch.platform.clone(),
+                        first: *first,
+                        second: epoch.id,
+                    });
+                }
+                collected.push((epoch.platform.as_str(), epoch.id));
+            }
             let key = (epoch.platform.as_str(), epoch.id);
             if seen.contains(&key) {
                 return Err(ManifestError::DuplicateEpoch {
@@ -441,6 +488,18 @@ impl Manifest {
     /// Every declared epoch, in declaration order.
     pub fn epochs(&self) -> impl Iterator<Item = &PlatformEpoch> {
         self.epochs.iter()
+    }
+
+    /// Every epoch scheduled collection measures, in declaration order.
+    pub fn collection_epochs(&self) -> impl Iterator<Item = &PlatformEpoch> {
+        self.epochs.iter().filter(|epoch| epoch.collection)
+    }
+
+    /// The epoch scheduled collection measures on this platform, if any.
+    pub fn collection_epoch(&self, platform: &str) -> Option<&PlatformEpoch> {
+        self.epochs
+            .iter()
+            .find(|epoch| epoch.collection && epoch.platform == platform)
     }
 }
 

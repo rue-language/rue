@@ -13,6 +13,7 @@
 //! wrong.
 
 mod calibrate;
+mod check_pins;
 mod derive;
 mod environment;
 mod incremental;
@@ -49,7 +50,7 @@ mod exit {
 struct Options {
     manifest: PathBuf,
     platform: String,
-    epoch: u32,
+    epoch: Option<u32>,
     compiler: PathBuf,
     commit: String,
     repo_root: PathBuf,
@@ -65,6 +66,7 @@ Required:
   --manifest <path>    performance manifest declaring suites and epochs
   --platform <name>    platform whose epoch to run, e.g. x86_64-linux
   --epoch <n>          epoch identifier within that platform
+                       (default: the manifest's collection epoch)
   --compiler <path>    compiler binary under measurement
   --commit <sha>       40-character compiler revision being measured
   --out <path>         where to write the run object
@@ -73,6 +75,11 @@ Subcommands:
   derive --manifest <path> --data-root <dir> --out <path>
                        rebuild the dashboard's view from raw records. Reads the
                        performance-data-v1 checkout; writes derived JSON.
+
+  check-pins --manifest <path> --compiler <path> [--repo-root <path>]
+                       answer whether this tree still matches every collection
+                       epoch. Exits 3 on drift, which is the change stalling
+                       the series; nothing is measured.
 
   calibrate --runs <dir> [--report <path>]
                        analyse repeated runs and recommend sampling counts,
@@ -124,6 +131,15 @@ fn main() -> ExitCode {
             Err(message) => {
                 eprintln!("rue-bench: {message}");
                 ExitCode::from(exit::USAGE)
+            }
+        };
+    }
+    if std::env::args().nth(1).as_deref() == Some("check-pins") {
+        return match check_pins::run() {
+            Ok(()) => ExitCode::from(exit::OK),
+            Err(message) => {
+                eprintln!("rue-bench check-pins: {message}");
+                ExitCode::from(exit::NOT_APPENDABLE)
             }
         };
     }
@@ -299,7 +315,7 @@ fn parse_args() -> Result<Options, String> {
     Ok(Options {
         manifest: manifest.ok_or("--manifest is required")?,
         platform: platform.ok_or("--platform is required")?,
-        epoch: epoch.ok_or("--epoch is required")?,
+        epoch,
         compiler: compiler.ok_or("--compiler is required")?,
         commit: commit.ok_or("--commit is required")?,
         output: output.ok_or("--out is required")?,
@@ -314,14 +330,28 @@ fn run(options: &Options) -> Result<u8, String> {
         .map_err(|error| format!("could not read {}: {error}", options.manifest.display()))?;
     let manifest = Manifest::parse(&text).map_err(|error| error.to_string())?;
 
-    let epoch = manifest
-        .epoch(&options.platform, options.epoch)
-        .ok_or_else(|| {
+    // Without `--epoch`, the manifest's collection epoch for this platform is
+    // measured. Scheduled collection relies on that: a workflow naming an epoch
+    // number would have to be edited alongside the manifest whenever the next
+    // epoch is declared, and the two would eventually disagree about which
+    // epoch is being collected.
+    let epoch = match options.epoch {
+        Some(id) => manifest.epoch(&options.platform, id).ok_or_else(|| {
             format!(
-                "the manifest declares no epoch {} for platform {}",
-                options.epoch, options.platform
+                "the manifest declares no epoch {id} for platform {}",
+                options.platform
             )
-        })?;
+        })?,
+        None => manifest
+            .collection_epoch(&options.platform)
+            .ok_or_else(|| {
+                format!(
+                    "the manifest marks no collection epoch for platform {}; \
+                     pass --epoch to measure a specific one",
+                    options.platform
+                )
+            })?,
+    };
     let suite = manifest
         .suite(epoch.suite_revision)
         .ok_or_else(|| format!("suite revision {} is not declared", epoch.suite_revision))?;

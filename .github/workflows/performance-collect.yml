@@ -13,6 +13,11 @@
 # summaries are rebuilt from these records at site build time and never written
 # here. Anything derived that landed on the branch would eventually disagree
 # with the records it came from, and the stored copy would be believed.
+#
+# A series that stops advancing is a failure. A run that cannot enter its
+# series fails this workflow rather than warning, because the only thing worse
+# than a broken measurement is a broken measurement that reports success
+# (RUE-1258).
 name: Performance collection
 
 on:
@@ -76,14 +81,18 @@ jobs:
           RUE="$(scripts/rue-bin)"
           BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
 
-          # Exit 3 is "written but not appendable". That is a real finding —
-          # usually a pin that no longer resolves — and the evidence is worth
-          # keeping, so the artifact still uploads and the publish job decides.
+          # Exit 3 is "written but not appendable". The evidence is worth
+          # keeping either way, so the status is recorded here and judged after
+          # the artifact has uploaded.
+          #
+          # No --epoch: the manifest marks its own collection epoch. A number
+          # here would have to be edited alongside the manifest whenever the
+          # next epoch is declared, and the two would eventually disagree about
+          # what is being collected.
           set +e
           "$BENCH" \
             --manifest performance/manifest.toml \
             --platform "${{ matrix.platform }}" \
-            --epoch 2 \
             --compiler "$RUE" \
             --commit "${{ github.sha }}" \
             --repo-root . \
@@ -95,17 +104,37 @@ jobs:
             echo "::error::the runner could not produce a run object"
             exit 1
           fi
-          if [ "$status" -eq 3 ]; then
-            echo "::warning::run is not appendable; it will not be published"
-          fi
           echo "status=$status" > "collected/${{ matrix.platform }}.status"
 
       - name: Upload the run object
+        # Always, so a run that cannot enter its series is still kept as
+        # evidence when the next step fails the job.
+        if: always()
         uses: actions/upload-artifact@v6
         with:
           name: run-${{ matrix.platform }}
           path: collected/
           retention-days: 30
+
+      # RUE-1258. A run that cannot enter its series is the series stopping,
+      # which is the failure this workflow exists to surface rather than a
+      # warning to scroll past. Ten days of a frozen dashboard, hiding a 7x
+      # compile-time regression, went unnoticed behind the warning this
+      # replaces.
+      #
+      # Checked after the upload so the raw record still reaches the publish
+      # job: storing the observation is right even when publishing a point from
+      # it is not.
+      - name: Fail if the run cannot enter its series
+        run: |
+          set -euo pipefail
+          status="$(cut -d= -f2 "collected/${{ matrix.platform }}.status")"
+          if [ "$status" -eq 3 ]; then
+            echo "::error::the run measured at this commit cannot enter its series;" \
+                 "the published series stops advancing here. Declare the next epoch in" \
+                 "performance/manifest.toml, marking it \`collection = true\`."
+            exit 1
+          fi
 
   publish:
     needs: measure
