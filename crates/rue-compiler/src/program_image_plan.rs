@@ -9,7 +9,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::OnceLock,
 };
-use tracing::info;
+use tracing::{info, info_span};
 
 #[cfg(test)]
 use crate::FunctionWithCfg;
@@ -65,7 +65,7 @@ pub(crate) struct ProgramImagePlan {
     pub(crate) entry_point: &'static str,
     pub(crate) runtime_abi_version: u32,
     pub(crate) runtime_abi_symbol: &'static str,
-    pub(crate) runtime_archive_digest: ContentDigest,
+    pub(crate) runtime_archive: RuntimeArchiveIdentity,
     pub(crate) required_runtime_symbols: Vec<String>,
 }
 
@@ -150,7 +150,7 @@ impl ProgramImagePlan {
             || self.entry_point != previous.entry_point
             || self.runtime_abi_version != previous.runtime_abi_version
             || self.runtime_abi_symbol != previous.runtime_abi_symbol
-            || self.runtime_archive_digest != previous.runtime_archive_digest
+            || self.runtime_archive != previous.runtime_archive
             || self.required_runtime_symbols != previous.required_runtime_symbols;
         Ok(delta)
     }
@@ -173,6 +173,10 @@ impl ProgramImage {
         exports: Vec<RootedExportThunk>,
         options: &CompileOptions,
     ) -> MultiErrorResult<Self> {
+        // Aggregating link inputs is compiler-root work like any other pass. It
+        // stayed outside every phase span until RUE-1257, so ADR-0067's
+        // taxonomy could only report its cost as `unattributed`.
+        let _span = info_span!("program_image_plan", phase = "object_generation").entered();
         validate_rooted_program_image_inputs(&objects, &exports)?;
         let export_thunk_objects: Vec<Vec<u8>> = exports
             .iter()
@@ -260,6 +264,8 @@ impl ProgramImage {
     /// Object serialization happened in the registered query graph; this
     /// adapter only materializes the linker's existing owned byte-vector API.
     pub(crate) fn fresh_objects(&self, options: &CompileOptions) -> MultiErrorResult<Vec<Vec<u8>>> {
+        let _span =
+            info_span!("fresh_object_materialization", phase = "object_generation").entered();
         if self.plan.target != options.target {
             return Err(CompileErrors::from(CompileError::without_span(
                 ErrorKind::InvalidCompilerInput(
@@ -428,7 +434,7 @@ impl ProgramImagePlan {
             entry_point,
             runtime_abi_version: rue_runtime_abi::RUNTIME_ABI_VERSION,
             runtime_abi_symbol: rue_runtime_abi::RUNTIME_ABI_VERSION_SYMBOL,
-            runtime_archive_digest: runtime_archive_digest(options.target),
+            runtime_archive: RuntimeArchiveIdentity::for_target(options.target),
             required_runtime_symbols: required_runtime_symbols.into_iter().collect(),
         };
         validate_program_image_plan(&plan)?;
@@ -612,18 +618,53 @@ static X86_64_LINUX_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 static AARCH64_LINUX_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 static AARCH64_MACOS_RUNTIME_DIGEST: OnceLock<ContentDigest> = OnceLock::new();
 
-fn runtime_archive_digest(target: Target) -> ContentDigest {
-    let cache = match target {
-        Target::X86_64Linux => &X86_64_LINUX_RUNTIME_DIGEST,
-        Target::Aarch64Linux => &AARCH64_LINUX_RUNTIME_DIGEST,
-        Target::Aarch64Macos => &AARCH64_MACOS_RUNTIME_DIGEST,
-    };
-    *cache.get_or_init(|| {
-        bytes_digest(
-            b"rue.program-image.runtime-archive\0v1\0",
-            linking::runtime_for_target(target),
-        )
-    })
+/// Counts every request for archive content, cached or not, so a test can
+/// assert that an ordinary compilation never reaches for the archive bytes.
+#[cfg(test)]
+static RUNTIME_ARCHIVE_CONTENT_REQUESTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Which runtime archive a plan links against.
+///
+/// The archive is an `include_bytes!` constant of the compiler binary, so
+/// within one process the target names it exactly: two plans built by the same
+/// compiler link the same runtime whenever they agree on the target, and
+/// comparing them needs no bytes at all. [`Self::content_digest`] is the
+/// stronger identity a plan needs only once it outlives the process that built
+/// it, and is therefore materialized on demand.
+///
+/// The distinction is worth the type. Digesting several megabytes of archive
+/// costs multiples of an entire fresh compilation of a small program, so
+/// computing it during plan construction made every fresh link pay for a fact
+/// no fresh link reads (RUE-1257).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeArchiveIdentity {
+    target: Target,
+}
+
+impl RuntimeArchiveIdentity {
+    pub(crate) fn for_target(target: Target) -> Self {
+        Self { target }
+    }
+
+    /// SHA-256 over the exact embedded archive bytes, memoized for the process
+    /// because those bytes cannot change within one.
+    #[allow(dead_code)] // the durable identity a later incremental linker persists
+    pub(crate) fn content_digest(self) -> ContentDigest {
+        #[cfg(test)]
+        RUNTIME_ARCHIVE_CONTENT_REQUESTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let cache = match self.target {
+            Target::X86_64Linux => &X86_64_LINUX_RUNTIME_DIGEST,
+            Target::Aarch64Linux => &AARCH64_LINUX_RUNTIME_DIGEST,
+            Target::Aarch64Macos => &AARCH64_MACOS_RUNTIME_DIGEST,
+        };
+        *cache.get_or_init(|| {
+            bytes_digest(
+                b"rue.program-image.runtime-archive\0v1\0",
+                linking::runtime_for_target(self.target),
+            )
+        })
+    }
 }
 
 /// SHA-256 writer with a fixed domain and explicit length framing. This avoids
@@ -735,7 +776,7 @@ mod tests {
             entry_point: "_start",
             runtime_abi_version: 1,
             runtime_abi_symbol: "__rue_runtime_abi_v1",
-            runtime_archive_digest: [1; 32],
+            runtime_archive: RuntimeArchiveIdentity::for_target(Target::X86_64Linux),
             required_runtime_symbols: vec!["_start".to_owned()],
         }
     }
@@ -799,6 +840,51 @@ mod tests {
         assert_ne!(
             bytes_digest(b"test-domain", b"runtime"),
             bytes_digest(b"test-domain", b"Runtime")
+        );
+    }
+
+    /// The runtime archive is a build-time constant of the compiler binary, so
+    /// a plan identifies it by target and digests it only when something asks
+    /// for the durable identity. Digesting it during plan construction made a
+    /// fresh compilation of `fn main() -> i32 { return 0; }` several times
+    /// slower than the whole rest of the pipeline (RUE-1257).
+    ///
+    /// This is the only test that materializes the digest, so the counter it
+    /// reads is untouched by anything but production plan construction.
+    #[test]
+    fn a_fresh_program_image_never_digests_the_runtime_archive() {
+        use std::sync::atomic::Ordering;
+
+        let source = "fn callee() -> i32 { 7 } fn main() -> i32 { callee() }";
+        let snapshot = crate::SourceSnapshot::single("main.rue", source).unwrap();
+        let options = CompileOptions {
+            target: Target::X86_64Linux,
+            ..CompileOptions::default()
+        };
+        let mut session = crate::CompilerSession::new();
+        crate::publish_test_snapshot(&mut session, &snapshot).unwrap();
+        let rooted = session
+            .rooted_codegen(&options, rue_codegen::BackendArtifactRequest::default())
+            .unwrap();
+        let image = ProgramImage::from_rooted(rooted.objects, rooted.exports, &options).unwrap();
+        image.fresh_objects(&options).unwrap();
+        assert_eq!(
+            RUNTIME_ARCHIVE_CONTENT_REQUESTS.load(Ordering::Relaxed),
+            0,
+            "building and materializing a program image must not read the runtime archive"
+        );
+
+        // The durable identity is still exact when a caller does want it.
+        let identity = image.plan.runtime_archive;
+        assert_eq!(
+            identity,
+            RuntimeArchiveIdentity::for_target(Target::X86_64Linux)
+        );
+        assert_eq!(identity.content_digest(), identity.content_digest());
+        assert_ne!(
+            identity.content_digest(),
+            RuntimeArchiveIdentity::for_target(Target::Aarch64Linux).content_digest(),
+            "each target embeds its own archive"
         );
     }
 
