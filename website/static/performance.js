@@ -147,16 +147,35 @@
         return latest.point.workloads[name].flagged === true;
       });
       parts.push(flagged.length ? "Flagged: " + flagged.join(", ") + "." : "Nothing flagged.");
+      // When the newest point is stated, a page that stopped advancing reads as
+      // stopped. Without it a ten-day-old chart is indistinguishable from a
+      // current one, which is exactly how a frozen series went unnoticed.
+      parts.push("Newest measurement: " + latest.point.finished_at + ".");
       status.textContent = parts.join(" ");
 
-      if (latest.point.complete) {
-        health.hidden = true;
-      } else {
+      // Two different unhealthy states, and the second used to be invisible: a
+      // rejected run never reaches a chart, so a series can stop advancing
+      // while every point already drawn stays perfectly healthy.
+      var notices = [];
+      if (!latest.point.complete) {
+        notices.push(
+          "the latest run was incomplete. Did not complete validly: " +
+            latest.point.missing.join(", ") +
+            ". No headline point is published from a partial run."
+        );
+      }
+      if (data.rejected && data.rejected.length) {
+        notices.push(
+          data.rejected.length +
+            " collected run(s) could not enter a series and are not drawn here, so this " +
+            "chart may be behind the compiler. See Collection health below."
+        );
+      }
+      if (notices.length) {
         health.hidden = false;
-        health.textContent =
-          "Collection health: the latest run was incomplete. Did not complete validly: " +
-          latest.point.missing.join(", ") +
-          ". No headline point is published from a partial run.";
+        health.textContent = "Collection health: " + notices.join(" ");
+      } else {
+        health.hidden = true;
       }
     }
 

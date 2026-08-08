@@ -164,6 +164,12 @@ jobs:
     name: premerge (linux-x64)
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The performance-staleness gate counts trunk commits merged since the
+          # newest plotted measurement, so it needs the measured commit in local
+          # history. The default depth-1 checkout has none of them, and a gate
+          # that cannot see the history fails rather than passing. (RUE-1258)
+          fetch-depth: 0
 
       - name: Install dotslash
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
@@ -218,6 +224,49 @@ jobs:
         # Keep this named step visible even though the broad suite also reaches
         # the target, so platform responsibility cannot become implicit.
         run: scripts/ci-timed "cross-backend codegen" -- ./buck2 test //crates/rue-codegen:rue-codegen-test
+
+      # RUE-1258. Both performance gates live here because this job already has
+      # a built compiler and runner; a dedicated job would pay for a second
+      # compiler build to answer two cheap questions.
+      #
+      # Neither gate has a bypass. The remedy for either is declaring the next
+      # epoch, which is a small manifest change, and a genuine emergency is
+      # served by bypassing branch protection rather than by an escape hatch
+      # kept here for the purpose — an escape hatch would be a cheaper path
+      # than the emergency it exists for.
+      - name: Check the performance pins still match the tree
+        # Would this change stop runs entering their series? Decidable from this
+        # tree alone: every remaining pin is a content hash of a file in it.
+        run: |
+          set -euo pipefail
+          RUE="$(scripts/rue-bin)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          "$BENCH" check-pins \
+            --manifest performance/manifest.toml \
+            --repo-root . \
+            --compiler "$RUE"
+
+      - name: Check the performance series is still advancing
+        # Is the series *already* stalled? A repository-wide condition, so this
+        # fails every pull request rather than only the one that caused it: a
+        # stalled series hides regressions instead of reporting them.
+        run: |
+          set -euo pipefail
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          git fetch --no-tags origin trunk
+          git fetch --no-tags origin performance-data-v1
+          DATA="$(mktemp -d)"
+          git --work-tree="$DATA" checkout origin/performance-data-v1 -- .
+          git reset --quiet
+          DERIVED="$(mktemp)"
+          "$BENCH" derive \
+            --manifest performance/manifest.toml \
+            --data-root "$DATA" \
+            --out "$DERIVED"
+          scripts/validate-performance-stall.py \
+            --data "$DERIVED" \
+            --repo . \
+            --ref origin/trunk
 
   # Native ARM64 lanes own only behavior that requires their host ABI, linker,
   # runtime, or backend. Target-independent unit/spec coverage remains on

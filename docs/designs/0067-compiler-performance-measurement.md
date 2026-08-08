@@ -178,7 +178,23 @@ A **platform epoch** pins, per platform:
   (e.g. `github-hosted`, `ubuntu-24.04`);
 - the headline baseline: the first **complete, valid** run at a declared
   trunk revision, whose per-workload medians define ratio 1.0. An attempted
-  or partial run is never a baseline.
+  or partial run is never a baseline;
+- whether scheduled collection measures this epoch. The manifest is the only
+  place this is declared, so the collector, the CI gate, and a maintainer
+  resolving a stall cannot disagree about which epoch is being collected.
+
+**A series may not stall silently.** Refusing an observation protects
+comparability, but a refusal that nobody sees stops the series while every job
+reports success — measurement that has quietly ceased is worse than no
+measurement, because it is still believed. Two gates enforce this. A change
+that moves a pinned input fails its own pull request, decided from that tree
+alone. A series that has stopped advancing — more than five merged trunk
+commits with no new plotted point on some platform — fails *every* pull
+request until it is resolved, because a stall is a repository-wide condition
+rather than a property of whichever change caused it. Neither has a bypass:
+the remedy is declaring the next epoch, which needs no baseline and so is a
+small manifest change, and a genuine emergency is served by bypassing branch
+protection rather than by an escape hatch maintained for the purpose.
 
 **The product boundary.** The Rue language, `std`, and the first-party
 toolchain are a single product, and this suite measures that product. They are
