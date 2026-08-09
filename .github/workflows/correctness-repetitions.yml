@@ -41,17 +41,26 @@ jobs:
           path: ${{ runner.temp }}/repetitions
           if-no-files-found: error
 
-  # RUE-1260. The shard repetitions above run one execution at a time, which is
-  # the wrong schedule for the query runtime: each rue-compiler test process
-  # opens its own `available_parallelism()`-wide runtime, so repeating a single
-  # execution never oversubscribes the machine. Three separate intermittent
-  # failures in the differential oracle survived that lane and were caught only
-  # by the merge queue, each ejecting an unrelated pull request. Concurrent
-  # independent processes are the schedule that reproduces them, and the merge
-  # group applies the same pressure when Buck runs the target alongside the
-  # rest of the graph.
+  # RUE-1260. On demand only: this answers a question, it does not stand guard.
+  #
+  # The shard repetitions above run one execution at a time, which is the wrong
+  # schedule for the query runtime: each rue-compiler test process opens its own
+  # `available_parallelism()`-wide runtime, so repeating a single execution never
+  # oversubscribes the machine. Sixty sequential runs of the oracle found
+  # nothing while the same binary failed 5.4% of the time under eight concurrent
+  # processes, which is the pressure the merge group applies when Buck runs the
+  # target alongside the rest of the graph.
+  #
+  # So when a merge-group run goes red in a query-runtime target with no
+  # attributable cause, dispatch this against trunk: a clean sweep says the pull
+  # request under test is implicated, and a failure says it is not. It is
+  # deliberately not scheduled — RUE-1260 fixed the two root causes behind every
+  # occurrence so far, and a lane that only rediscovers fixed bugs is noise.
+  # Restoring `schedule:` above it is the change to make if that stops being
+  # true.
   soak-contended-oracle:
     name: soak (linux-x64 differential oracle)
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
