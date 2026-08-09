@@ -1297,3 +1297,139 @@ fn main() -> i32 {
 """
 exit_code = 0
 expected_stdout = "5\n5\n100\n"
+
+[[case]]
+name = "partial_payload_bind_drops_discarded_sibling"
+spec = ["4.7:30", "6.3:20"]
+description = "A match arm binding one payload field drops the `_`-discarded sibling exactly once (RUE-1270: it previously leaked)"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+enum E { Pair(A, A), None }
+
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, A { v: 2 });
+    let r = match e {
+        E.Pair(x, _) => x.v,   // discarded sibling (2) drops in the arm, bound x (1) at scope exit
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 1
+}
+"""
+exit_code = 0
+expected_stdout = "2\n1\n500\n"
+
+[[case]]
+name = "partial_payload_bind_drops_every_discarded_sibling_in_field_order"
+spec = ["4.7:30", "6.3:20"]
+description = "Both `_`-discarded fields of a three-field variant drop, in field order, before the bound field's scope exit (RUE-1270)"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+enum E { Trip(A, A, A), None }
+
+fn main() -> i32 {
+    let e = E.Trip(A { v: 1 }, A { v: 2 }, A { v: 3 });
+    let r = match e {
+        E.Trip(_, y, _) => y.v,
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 2
+}
+"""
+exit_code = 0
+expected_stdout = "1\n3\n2\n500\n"
+
+[[case]]
+name = "partial_payload_bind_linear_sibling_is_dropped_not_leaked"
+spec = ["6.3:19", "6.3:20"]
+description = "A linear sibling discarded by `_` in a partial bind runs its drop glue; the match consumed the enum (RUE-1270: it previously neither dropped nor errored)"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+linear struct L { v: i32 }
+
+drop fn L(self) {
+    @dbg(self.v);
+}
+
+enum E { Pair(A, L), None }
+
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, L { v: 2 });
+    let r = match e {
+        E.Pair(x, _) => x.v,
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 1
+}
+"""
+exit_code = 0
+expected_stdout = "2\n1\n500\n"
+
+[[case]]
+name = "all_discarded_payload_drops_through_enum_glue"
+spec = ["4.7:30", "6.3:20"]
+description = "A variant arm discarding every payload field drops the whole active payload via the enum's glue, in field order"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+enum E { Pair(A, A), None }
+
+fn main() -> i32 {
+    let e = E.Pair(A { v: 1 }, A { v: 2 });
+    let r = match e {
+        E.Pair(_, _) => 7,
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 7
+}
+"""
+exit_code = 0
+expected_stdout = "1\n2\n500\n"
+
+[[case]]
+name = "full_payload_bind_drops_bindings_at_scope_exit"
+spec = ["4.7:30", "3.9:2"]
+description = "Binding every payload field moves each into a local; all drop at arm scope exit in reverse declaration order, none twice"
+source = """
+struct A { v: i32 }
+
+drop fn A(self) {
+    @dbg(self.v);
+}
+
+enum E { Trip(A, A, A), None }
+
+fn main() -> i32 {
+    let e = E.Trip(A { v: 1 }, A { v: 2 }, A { v: 3 });
+    let r = match e {
+        E.Trip(a, b, c) => a.v + b.v + c.v,
+        E.None => 0,
+    };
+    @dbg(500);
+    r - 6
+}
+"""
+exit_code = 0
+expected_stdout = "3\n2\n1\n500\n"
