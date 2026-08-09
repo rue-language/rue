@@ -454,13 +454,6 @@ impl TraceabilityReport {
         }
     }
 
-    /// Prints a summary report to stdout.
-    ///
-    /// The summary includes:
-    /// - Overall normative and total coverage percentages
-    /// - Coverage breakdown by paragraph category
-    /// - List of uncovered normative paragraphs (if any)
-    /// - List of orphan references (if any)
     /// The report's headline figures, for machine consumers.
     ///
     /// Exists so the website's status board reads the same computation the
@@ -554,6 +547,13 @@ impl TraceabilityReport {
         );
     }
 
+    /// Prints a summary report to stdout.
+    ///
+    /// The summary includes:
+    /// - Overall normative and total coverage percentages
+    /// - Coverage breakdown by paragraph category
+    /// - List of uncovered normative paragraphs (if any)
+    /// - List of orphan references (if any)
     pub fn print_summary(&self) {
         println!("=== Rue Specification Traceability Report ===\n");
 
