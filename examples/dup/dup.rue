@@ -1,0 +1,172 @@
+// dup.rue: find duplicate files by hashing their contents.
+//
+// Usage: dup <file> <file> ...
+//
+// Takes one or more file paths as command-line arguments.  Each file
+// is read, its contents hashed, and files with identical hashes are
+// reported as duplicate groups.  A file that cannot be opened is
+// reported and skipped.
+//
+// Only individual file paths are supported because recursive directory
+// traversal is deferred in the standard library.
+
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
+const OFFSET: u64 = 14695981039346656037;
+const PRIME: u64 = 1099511628211;
+const BUF_SIZE: u64 = 4096;
+
+// FNV-1a 64-bit hash of a byte buffer.
+fn hash_bytes(borrow bytes: std.arraybuf.ArrayBuf(u8)) -> u64 {
+    let mut h: u64 = OFFSET;
+    let n = bytes.len();
+    let mut i: u64 = 0;
+    while i < n {
+        h ^= @intCast(bytes.get_or(i, 0));
+        h = @wrapping_mul(h, PRIME);
+        i += 1;
+    }
+    h
+}
+
+// Read a file and return its FNV-1a hash, or 0 if the file cannot
+// be opened or read.
+fn file_hash(borrow path: StrBuf) -> u64 {
+    let FileR = std.result.Result(std.fs.File, std.fs.FileError);
+    let ReadR = std.result.Result(u64, std.fs.FileError);
+
+    let mut f = match std.fs.File.open(borrow path) {
+        FileR.Ok(file) => file,
+        FileR.Err(_) => {
+            @dbg("cannot open:");
+            @dbg(path);
+            return 0;
+        },
+    };
+
+    let mut buf = std.arraybuf.ArrayBuf(u8).new();
+    loop {
+        buf.reserve(BUF_SIZE);
+        match f.read(inout buf) {
+            ReadR.Ok(n) => {
+                if n == 0 {
+                    break;
+                }
+            },
+            ReadR.Err(_) => break,
+        };
+    }
+
+    hash_bytes(borrow buf)
+}
+
+// Compute hashes for every file.  Returns an array of hashes in
+// argument order, skipping files that could not be opened (hash 0).
+fn calculate_hashes(count: u64) -> std.arraybuf.ArrayBuf(u64) {
+    let H = std.arraybuf.ArrayBuf(u64);
+    let mut hashes = H.new();
+    let OptStr = std.option.Option(StrBuf);
+    let mut i: u64 = 1; // skip program name in arg 0
+    while i < count {
+        let path = match std.env.arg(i) {
+            OptStr.Some(p) => p,
+            OptStr.None => break,
+        };
+        let h = file_hash(borrow path);
+        hashes.push(h);
+        i += 1;
+    }
+    hashes
+}
+
+// Find and report duplicate groups in an array of hashes.  Returns the
+// number of duplicate groups found (0 means no duplicates).
+fn find_duplicates(borrow hashes: std.arraybuf.ArrayBuf(u64), count: u64) -> u64 {
+    let B = std.arraybuf.ArrayBuf(bool);
+    let mut reported = B.new();
+    let n = hashes.len();
+    let mut i: u64 = 0;
+    while i < n {
+        reported.push(false);
+        i += 1;
+    }
+
+    let OptStr = std.option.Option(StrBuf);
+    let mut any_dups: u64 = 0;
+    i = 0;
+    while i < n {
+        if reported.get_or(i, false) {
+            i += 1;
+            continue;
+        }
+
+        let h = hashes.get_or(i, 0);
+        if h == 0 {
+            i += 1;
+            continue;
+        }
+
+        // Count how many other files share this hash.
+        let mut dup_count: u64 = 0;
+        let mut k = i + 1;
+        while k < n {
+            if !reported.get_or(k, false) && hashes.get_or(k, 0) == h {
+                dup_count += 1;
+            }
+            k += 1;
+        }
+
+        if dup_count > 0 {
+            // Print every file in this duplicate group.
+            let path = match std.env.arg(i + 1) {
+                OptStr.Some(p) => p,
+                OptStr.None => {
+                    i += 1;
+                    continue;
+                },
+            };
+            @dbg(path);
+            reported.set(i, true);
+
+            k = i + 1;
+            while k < n {
+                if !reported.get_or(k, false) && hashes.get_or(k, 0) == h {
+                    let path2 = match std.env.arg(k + 1) {
+                        OptStr.Some(p) => p,
+                        OptStr.None => {
+                            k += 1;
+                            continue;
+                        },
+                    };
+                    @dbg(path2);
+                    reported.set(k, true);
+                }
+                k += 1;
+            }
+
+            @dbg("");               // blank line between groups
+            any_dups += 1;
+        }
+        i += 1;
+    }
+    any_dups
+}
+
+// Main driver.
+fn main() -> i32 {
+    let count = std.env.arg_count();
+    if count < 2 {
+        @dbg("usage: dup <file>...");
+        return 1;
+    }
+
+    let hashes = calculate_hashes(count);
+    let any_dups = find_duplicates(borrow hashes, count);
+
+    if any_dups == 0 {
+        @dbg("no duplicates found");
+    }
+
+    0
+}

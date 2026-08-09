@@ -1,0 +1,34 @@
+# The duplicate file finder matcher written in Rue (RUE-939): examples/up/. This
+# case compiles the checked-in example directly via `source_path` (so the suite
+# stays pinned to the program users actually see), then runs it on the small
+# text files in the examples/dup/ directory and asserts exact stdout.
+
+[section]
+id = "cli.examples_dup"
+name = "Duplicate file finder written in Rue (dup)"
+description = "compile examples/dup/dup.rue and run it on examples/dup/*.txt, asserting the exact output"
+
+[[case]]
+name = "dup_fixture"
+description = "dup uses hashing to find duplicate files."
+source_path = "examples/dup/dup.rue"
+files = [
+  { path = "a1.txt", source = "aaa" },
+  { path = "a2.txt", source = "aaa" },
+  { path = "a3.txt", source = "aaa" },
+  { path = "b1.txt", source = "bbb" },
+  { path = "b2.txt", source = "bbb" },
+  { path = "c1.txt", source = "ccc" }
+]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+program_args = ["a1.txt", "a2.txt", "a3.txt", "b1.txt", "b2.txt", "c1.txt"]
+exit_code = 0
+stdout = """
+a1.txt
+a2.txt
+a3.txt
+
+b1.txt
+b2.txt
+
+"""
