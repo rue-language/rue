@@ -55,10 +55,11 @@ if [ -n "$BENCH" ] && [ -x "$BENCH" ]; then
         --manifest "$ROOT/performance/manifest.toml" \
         --data-root "$PERF_DATA_ROOT" \
         --out "$ROOT/website/static/performance-data.json"
-    # Tooltips need commit subjects, which the raw records deliberately do not
-    # carry: a run object stores what was measured, not how the commit was
-    # described. Resolving them here keeps the derivation free of git.
-    python3 "$ROOT/scripts/annotate-performance-subjects.py" \
+    # Tooltips need each commit's subject and its position on trunk, neither of
+    # which the raw records carry: a run object stores what was measured, not
+    # how the commit was described nor where it sat in history. Resolving them
+    # here keeps the derivation free of git.
+    python3 "$ROOT/scripts/annotate-performance-commits.py" \
         --data "$ROOT/website/static/performance-data.json" \
         --repo "$ROOT"
 else

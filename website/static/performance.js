@@ -51,6 +51,56 @@
     return holder.innerHTML;
   }
 
+  // Client coordinates into a chart's own viewBox. Both charts are drawn at a
+  // fixed viewBox and scaled to the container, so on a narrow screen the
+  // rendered box and the coordinate system disagree — and with the default
+  // `meet` fit the chart is letterboxed vertically, which reading `clientY` as
+  // a viewBox coordinate would land in the wrong band.
+  function svgLocation(svg, event) {
+    var matrix = svg.getScreenCTM();
+    if (!matrix) { return null; }
+    var point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    return point.matrixTransform(matrix.inverse());
+  }
+
+  function commitHeading(data, commit) {
+    var subject = (data.commit_subjects || {})[commit];
+    return "<strong>" + escapeHtml(shortHash(commit)) + "</strong>" +
+      (subject ? " — " + escapeHtml(subject) : " (subject unavailable)");
+  }
+
+  // §11's commits-since-last-measurement, required "when runs were skipped" —
+  // so an adjacent pair, a distance of exactly one, reports nothing.
+  //
+  // Both ordinals are positions on trunk's first-parent line, resolved at site
+  // build time; subtracting them counts the trunk commits between the two
+  // measurements. A commit the build could not place on that line has no
+  // ordinal, and an unknown gap is left unstated rather than guessed at — which
+  // is also what a non-positive distance means, since measured commits that are
+  // not ancestrally ordered cannot have a gap between them.
+  function skippedLine(data, previousCommit, commit) {
+    var ordinals = data.commit_ordinals || {};
+    var from = ordinals[previousCommit];
+    var to = ordinals[commit];
+    if (typeof from !== "number" || typeof to !== "number") { return null; }
+    var distance = to - from;
+    if (distance <= 1) { return null; }
+    var skipped = distance - 1;
+    return distance + " commits landed since the previous measurement; " +
+      skipped + (skipped === 1 ? " was" : " were") + " not measured.";
+  }
+
+  // Only touch the DOM when the text actually changes. Tooltips are aria-live
+  // regions, and rewriting one on every pointer sample would have a screen
+  // reader announce the same commit continuously as the cursor moves within a
+  // single band.
+  function setTooltip(node, lines) {
+    var html = lines.join("<br>");
+    if (node.innerHTML !== html) { node.innerHTML = html; }
+  }
+
   var root = document.getElementById("perf-root");
   var empty = document.getElementById("perf-empty");
 
@@ -77,14 +127,47 @@
       select.appendChild(option);
     });
 
-    var state = { platform: 0, workload: null, cursor: null };
+    var state = { platform: 0, workload: null, cursor: null, band: null, indexCursor: null };
 
     select.addEventListener("change", function () {
       state.platform = Number(select.value);
       state.workload = null;
       state.cursor = null;
+      state.band = null;
+      state.indexCursor = null;
       draw();
     });
+
+    // Chart interaction is bound once, here, and each redraw swaps in a handler
+    // closed over the series it just drew. Attaching listeners inside the draw
+    // functions instead would stack a new closure on every platform or workload
+    // change, leaving stale ones to answer the pointer with retired data.
+    //
+    // Pointer events rather than mouse events, so one handler serves a hover on
+    // a desktop and a tap or drag on a touchscreen. Mouse events alone are why
+    // these charts had no working cursor at all on a phone or tablet.
+    var interaction = { index: null, phases: null };
+
+    function bindChart(svg, key) {
+      function dispatch(event) {
+        if (interaction[key]) { interaction[key](event); }
+      }
+      svg.addEventListener("pointerdown", function (event) {
+        // Capture so a drag that wanders off the chart keeps scrubbing, which
+        // is the normal way a finger moves across a small screen.
+        //
+        // Focus is deliberately left to the browser. Calling focus() here would
+        // work, but it makes a tap indistinguishable from keyboard focus and
+        // draws the focus ring around the chart on every touch.
+        if (svg.setPointerCapture) { svg.setPointerCapture(event.pointerId); }
+        dispatch(event);
+      });
+      svg.addEventListener("pointermove", dispatch);
+      svg.addEventListener("keydown", dispatch);
+    }
+
+    bindChart(document.getElementById("perf-index"), "index");
+    bindChart(document.getElementById("perf-phases"), "phases");
 
     function current() { return platforms[state.platform]; }
 
@@ -106,7 +189,7 @@
         state.workload = names.length ? names[0] : null;
       }
       drawStatus(points);
-      drawIndex(points);
+      drawIndex(data, points);
       drawMultiples(data, points);
       drawPhases(data, points);
       drawNotes();
@@ -181,14 +264,17 @@
 
     // 2. Headline chart. One polyline per epoch, so a baseline change reads as
     // a labelled boundary rather than as a change in the compiler.
-    function drawIndex(points) {
+    function drawIndex(data, points) {
       var svg = document.getElementById("perf-index");
       var caption = document.getElementById("perf-index-caption");
+      var tooltip = document.getElementById("perf-index-tooltip");
       svg.textContent = "";
 
       var indexed = points.filter(function (entry) { return entry.point.index; });
       if (!indexed.length) {
         caption.textContent = "No index points yet. A ratio needs a baseline to be a ratio of.";
+        interaction.index = null;
+        setTooltip(tooltip, ["No index points to describe yet."]);
         return;
       }
 
@@ -243,8 +329,112 @@
         }
       });
 
+      // One mark per index point, carrying its position in the full series:
+      // points are placed by measurement order, so a stretch with skipped runs
+      // is not evenly spaced and the nearest mark has to be found by distance.
+      var marks = [];
+      points.forEach(function (entry, i) {
+        if (!entry.point.index) { return; }
+        marks.push({ at: i, entry: entry });
+        svg.appendChild(element("circle", {
+          cx: x(i), cy: y(entry.point.index.latency), r: 2.5,
+          fill: "#228833", "pointer-events": "none"
+        }));
+      });
+
+      var highlight = element("circle", {
+        r: 5, fill: "none", stroke: "#111", "stroke-width": 2, "pointer-events": "none"
+      });
+      svg.appendChild(highlight);
+
+      function selectMark(position) {
+        state.indexCursor = Math.max(0, Math.min(marks.length - 1, position));
+        var mark = marks[state.indexCursor];
+        highlight.setAttribute("cx", x(mark.at));
+        highlight.setAttribute("cy", y(mark.entry.point.index.latency));
+        drawIndexTooltip(data, marks, state.indexCursor);
+      }
+
+      interaction.index = function (event) {
+        if (event.type === "keydown") {
+          if (event.key === "ArrowRight") { selectMark(state.indexCursor + 1); event.preventDefault(); }
+          if (event.key === "ArrowLeft") { selectMark(state.indexCursor - 1); event.preventDefault(); }
+          return;
+        }
+        var at = svgLocation(svg, event);
+        if (!at) { return; }
+        var nearest = 0;
+        marks.forEach(function (mark, position) {
+          if (Math.abs(x(mark.at) - at.x) < Math.abs(x(marks[nearest].at) - at.x)) {
+            nearest = position;
+          }
+        });
+        selectMark(nearest);
+      };
+
+      svg.setAttribute("aria-label", "Headline index for " + current().platform +
+        ". Use left and right arrow keys to move between measured commits.");
+
       caption.textContent = indexed.length + " index point(s). Dashed orange marks an epoch " +
         "boundary; dotted blue marks an environment change, across which comparisons are advisory.";
+
+      selectMark(state.indexCursor === null
+        ? marks.length - 1
+        : Math.min(state.indexCursor, marks.length - 1));
+    }
+
+    // Tooltip for the headline chart, per §11. The index is dimensionless, so
+    // the value it reports is a ratio and never a duration.
+    function drawIndexTooltip(data, marks, position) {
+      var tooltip = document.getElementById("perf-index-tooltip");
+      var entry = marks[position].entry;
+      var value = entry.point.index.latency;
+
+      var lines = [
+        commitHeading(data, entry.point.commit),
+        "Index " + value.toFixed(3) + " against the epoch " + entry.epoch.epoch +
+          " baseline. Dimensionless: 1.000 is the baseline, lower is faster."
+      ];
+
+      if (position > 0) {
+        var previous = marks[position - 1].entry;
+        if (previous.epoch.epoch !== entry.epoch.epoch) {
+          // Each epoch normalizes against its own baseline, so these two
+          // numbers are ratios of different things. Subtracting them would
+          // report a baseline change as movement in the compiler, which is the
+          // same reason the line is drawn as one stretch per epoch.
+          lines.push("The previous measured commit (" +
+            escapeHtml(shortHash(previous.point.commit)) + ") is in epoch " +
+            previous.epoch.epoch + ", which has its own baseline. The two indexes are " +
+            "ratios of different things, so no delta is shown across the boundary.");
+        } else {
+          var delta = (value / previous.point.index.latency - 1) * 100;
+          lines.push("Versus the previous measured commit (" +
+            escapeHtml(shortHash(previous.point.commit)) + "): " +
+            (delta >= 0 ? "+" : "") + delta.toFixed(2) + "%");
+        }
+        var skipped = skippedLine(data, previous.point.commit, entry.point.commit);
+        if (skipped) { lines.push(skipped); }
+      } else {
+        lines.push("First index point in this view.");
+      }
+
+      var flagged = Object.keys(entry.point.workloads).filter(function (name) {
+        return entry.point.workloads[name].flagged === true;
+      });
+      lines.push(flagged.length
+        ? "Flagged here: " + escapeHtml(flagged.join(", ")) + "."
+        : "Nothing flagged here.");
+
+      var drift = entry.epoch.environment_annotations.filter(function (note) {
+        return note.commit === entry.point.commit;
+      });
+      if (drift.length) {
+        lines.push("Environment changed here, so comparisons across it are advisory: " +
+          escapeHtml(drift[0].changed.join("; ")));
+      }
+
+      setTooltip(tooltip, lines);
     }
 
     // 5. Small multiples: the full-size per-workload signal the index attenuates.
@@ -305,6 +495,10 @@
       });
       if (!series.length) {
         caption.textContent = "No observations for this workload.";
+        interaction.phases = null;
+        setTooltip(document.getElementById("perf-tooltip"),
+          ["No observations for this workload to describe."]);
+        document.getElementById("perf-composition").textContent = "";
         return;
       }
 
@@ -314,13 +508,19 @@
       var x = function (i) { return 40 + (i / Math.max(series.length - 1, 1)) * 840; };
       var y = function (v) { return 230 - (v / hi) * 200; };
 
+      // The stack as drawn, retained per column so the pointer can be resolved
+      // to a band and not merely to a commit: §11 asks for the hovered band and
+      // its value, which needs the cursor's height as well as its position.
+      var stacks = series.map(function () { return []; });
       var offsets = series.map(function () { return 0; });
       (data.bands || []).forEach(function (band) {
         var upper = [];
         var lower = [];
         series.forEach(function (entry, i) {
+          var value = entry.point.workloads[state.workload].bands_ns[band] || 0;
           lower.push(x(i) + "," + y(offsets[i]));
-          offsets[i] += entry.point.workloads[state.workload].bands_ns[band] || 0;
+          stacks[i].push({ band: band, from: offsets[i], to: offsets[i] + value });
+          offsets[i] += value;
           upper.push(x(i) + "," + y(offsets[i]));
         });
         svg.appendChild(element("polygon", {
@@ -333,28 +533,111 @@
       scale.textContent = ms(hi).toFixed(1) + " ms";
       svg.appendChild(scale);
 
-      function selectIndex(i) {
+      // Drawn once and moved, rather than redrawn. Without them a tap on a
+      // touchscreen changes the tooltip with nothing on the chart to say which
+      // commit or band it now describes.
+      var cursorLine = element("line", {
+        y1: 30, y2: 230, stroke: "#111", "stroke-dasharray": "3 2", "pointer-events": "none"
+      });
+      svg.appendChild(cursorLine);
+      var bandMark = element("circle", {
+        r: 4, fill: "none", stroke: "#111", "stroke-width": 2, "pointer-events": "none"
+      });
+      svg.appendChild(bandMark);
+
+      // Bands with no time at this commit are skipped: they are zero-height, so
+      // the cursor can never be meaningfully "on" one, and every band below the
+      // stack's top would otherwise match at the same coordinate.
+      function occupied(i) {
+        return stacks[i].filter(function (slice) { return slice.to > slice.from; });
+      }
+
+      function bandAt(i, height) {
+        var found = null;
+        occupied(i).forEach(function (slice) {
+          // y() descends as the value ascends, so the band's top edge is the
+          // smaller coordinate.
+          if (height <= y(slice.from) && height >= y(slice.to)) { found = slice.band; }
+        });
+        return found;
+      }
+
+      function moveCursor() {
+        cursorLine.setAttribute("x1", x(state.cursor));
+        cursorLine.setAttribute("x2", x(state.cursor));
+        var hovered = null;
+        occupied(state.cursor).forEach(function (slice) {
+          if (slice.band === state.band) { hovered = slice; }
+        });
+        if (hovered) {
+          bandMark.setAttribute("cx", x(state.cursor));
+          bandMark.setAttribute("cy", (y(hovered.from) + y(hovered.to)) / 2);
+          bandMark.setAttribute("visibility", "visible");
+        } else {
+          bandMark.setAttribute("visibility", "hidden");
+        }
+      }
+
+      function selectIndex(i, band) {
         state.cursor = Math.max(0, Math.min(series.length - 1, i));
+        if (band !== undefined) { state.band = band; }
+        moveCursor();
         drawComposition(data, series, state.cursor);
         drawTooltip(data, series, state.cursor);
       }
 
-      svg.addEventListener("mousemove", function (event) {
-        var box = svg.getBoundingClientRect();
-        selectIndex(Math.round(((event.clientX - box.left) / box.width) * (series.length - 1)));
-      });
-      // Arrow keys do exactly what the cursor does, so the interaction is not
-      // mouse-only and the tooltip's content is reachable without one.
-      svg.addEventListener("keydown", function (event) {
-        if (event.key === "ArrowRight") { selectIndex(state.cursor + 1); event.preventDefault(); }
-        if (event.key === "ArrowLeft") { selectIndex(state.cursor - 1); event.preventDefault(); }
-      });
+      // Arrow keys do exactly what the cursor does — left and right across
+      // commits, up and down through the stack — so both halves of the tooltip
+      // are reachable without a pointer.
+      interaction.phases = function (event) {
+        if (event.type === "keydown") {
+          if (event.key === "ArrowRight") { selectIndex(state.cursor + 1); event.preventDefault(); }
+          if (event.key === "ArrowLeft") { selectIndex(state.cursor - 1); event.preventDefault(); }
+          if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            var column = occupied(state.cursor);
+            if (column.length) {
+              // The stack is built from the axis upwards, so "up" is the next
+              // band away from it.
+              var step = event.key === "ArrowUp" ? 1 : -1;
+              var at = -1;
+              column.forEach(function (slice, k) { if (slice.band === state.band) { at = k; } });
+              var next = at === -1
+                ? (step === 1 ? 0 : column.length - 1)
+                : Math.max(0, Math.min(column.length - 1, at + step));
+              selectIndex(state.cursor, column[next].band);
+            }
+            event.preventDefault();
+          }
+          return;
+        }
+        var at = svgLocation(svg, event);
+        if (!at) { return; }
+        var i = Math.round(((at.x - 40) / 840) * (series.length - 1));
+        i = Math.max(0, Math.min(series.length - 1, i));
+        selectIndex(i, bandAt(i, at.y));
+      };
+
       svg.setAttribute("aria-label", "Phase composition for " + state.workload +
-        ". Use left and right arrow keys to move between measured commits.");
+        ". Use left and right arrow keys to move between measured commits, and up " +
+        "and down to move through the phase bands.");
 
       caption.textContent = series.length +
         " measured commit(s). Bands sum exactly to compiler-root time.";
-      selectIndex(state.cursor === null ? series.length - 1 : Math.min(state.cursor, series.length - 1));
+
+      var start = state.cursor === null
+        ? series.length - 1
+        : Math.min(state.cursor, series.length - 1);
+      // Open on the largest band rather than on none, so the band line is
+      // present before the first hover and the feature is visible at rest.
+      var initial = state.band;
+      if (initial === null) {
+        var largest = null;
+        occupied(start).forEach(function (slice) {
+          if (!largest || slice.to - slice.from > largest.to - largest.from) { largest = slice; }
+        });
+        initial = largest ? largest.band : null;
+      }
+      selectIndex(start, initial);
     }
 
     // 4. Composition bar for the cursored commit; also the stack's legend.
@@ -376,12 +659,19 @@
         var share = (value / total) * 100;
         var colour = BAND_COLOURS[band] || "#ccc";
 
+        // The hovered band is named in the tooltip; marking it here as well is
+        // what ties the two surfaces together, since this bar is also the
+        // stack's legend.
+        var hovered = band === state.band;
+
         var segment = document.createElement("div");
-        segment.style.cssText = "width:" + share + "%;background:" + colour + ";";
+        segment.style.cssText = "width:" + share + "%;background:" + colour + ";" +
+          (hovered ? "outline:2px solid #111;outline-offset:-2px;" : "");
         segment.title = band + " " + fmtMs(value);
         bar.appendChild(segment);
 
         var item = document.createElement("li");
+        if (hovered) { item.style.fontWeight = "600"; }
         item.innerHTML = '<span style="display:inline-block;width:0.75rem;height:0.75rem;background:' +
           colour + '"></span> ' + escapeHtml(band) + " " + fmtMs(value) + " (" + share.toFixed(1) + "%)";
         legend.appendChild(item);
@@ -391,20 +681,32 @@
       container.appendChild(legend);
     }
 
-    // Tooltip content per §11: commit and subject, the total, the delta against
-    // the previous measured commit, and whether the comparison is advisory.
+    // Tooltip content per §11: commit short hash and subject, the hovered band
+    // and its value, the total, the delta against the previous measured commit,
+    // and commits-since-last-measurement when runs were skipped. The flagging
+    // state and the environment advisory are additions to that list, not part
+    // of it.
     function drawTooltip(data, series, index) {
       var tooltip = document.getElementById("perf-tooltip");
       var entry = series[index];
       var point = entry.point.workloads[state.workload];
-      var subject = (data.commit_subjects || {})[entry.point.commit];
 
-      var lines = [
-        "<strong>" + escapeHtml(shortHash(entry.point.commit)) + "</strong>" +
-          (subject ? " — " + escapeHtml(subject) : " (subject unavailable)"),
-        "Total: " + fmtMs(point.compiler_root_ns) + " compiler root, " +
-          fmtMs(point.process_elapsed_ns) + " process"
-      ];
+      var lines = [commitHeading(data, entry.point.commit)];
+
+      // The composition bar carries every band for the whole commit. This is
+      // the one the cursor is actually on, which is what §11 asks the tooltip
+      // for and what the bar alone cannot say.
+      var total = point.compiler_root_ns || 1;
+      if (state.band) {
+        var value = point.bands_ns[state.band] || 0;
+        lines.push("Band: " + escapeHtml(state.band) + " " + fmtMs(value) +
+          " (" + ((value / total) * 100).toFixed(1) + "% of compiler root)");
+      } else {
+        lines.push("Band: none under the cursor, which is above the stack.");
+      }
+
+      lines.push("Total: " + fmtMs(point.compiler_root_ns) + " compiler root, " +
+        fmtMs(point.process_elapsed_ns) + " process");
 
       if (index > 0) {
         var previous = series[index - 1];
@@ -412,6 +714,8 @@
         lines.push("Versus the previous measured commit (" +
           escapeHtml(shortHash(previous.point.commit)) + "): " +
           (delta >= 0 ? "+" : "") + delta.toFixed(2) + "%");
+        var skipped = skippedLine(data, previous.point.commit, entry.point.commit);
+        if (skipped) { lines.push(skipped); }
       } else {
         lines.push("First measured commit in this view.");
       }
@@ -430,7 +734,7 @@
           escapeHtml(drift[0].changed.join("; ")));
       }
 
-      tooltip.innerHTML = lines.join("<br>");
+      setTooltip(tooltip, lines);
     }
 
     // 6. Field notes.
