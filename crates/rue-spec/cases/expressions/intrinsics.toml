@@ -42,6 +42,33 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "unknown intrinsic"
 
+# An unknown intrinsic is E0700 in every expression position. In a context with
+# an expected type (a function tail, an annotated let), inference used to
+# default the unknown call to `()` and mask the legality error behind an E0206
+# type mismatch pointing at the return type (RUE-1281).
+[[case]]
+name = "unknown_intrinsic_tail_position"
+spec = ["4.13:5"]
+error_contains = ["[E0700]", "unknown intrinsic"]
+source = """
+fn main() -> i32 {
+    @unknown(42)
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "unknown_intrinsic_annotated_let"
+spec = ["4.13:5"]
+error_contains = ["[E0700]", "unknown intrinsic"]
+source = """
+fn main() -> i32 {
+    let x: i32 = @unknown(42);
+    x
+}
+"""
+compile_fail = true
+
 # =============================================================================
 # Reserved-but-unspecified intrinsics: @panic / @assert / @cast (4.13:5b, RUE-319)
 #

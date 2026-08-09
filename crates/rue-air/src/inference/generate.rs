@@ -2109,13 +2109,25 @@ impl<'a> ConstraintGenerator<'a> {
                         self.generate(*arg_ref, ctx);
                     }
                     InferType::Concrete(Type::new_module(crate::types::ModuleId::UNRESOLVED))
-                } else {
-                    // Generate constraints for arguments (they need to be processed)
+                } else if intrinsic_name == "dbg"
+                    || intrinsic_name == "drop"
+                    || intrinsic_name == "test_preview_gate"
+                {
+                    // The remaining known intrinsics all return unit.
                     for arg_ref in args.iter() {
                         self.generate(*arg_ref, ctx);
                     }
-                    // @dbg and other intrinsics return Unit
                     InferType::Concrete(Type::UNIT)
+                } else {
+                    // Unknown intrinsic: a fresh var, so sema can reject it with
+                    // E0700 naming the bogus intrinsic instead of inference
+                    // masking it with a type-mismatch against the context's
+                    // expected type — the same treatment @cast gets (RUE-319,
+                    // here RUE-1281).
+                    for arg_ref in args.iter() {
+                        self.generate(*arg_ref, ctx);
+                    }
+                    InferType::Var(self.fresh_var())
                 }
             }
 
