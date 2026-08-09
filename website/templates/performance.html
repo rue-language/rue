@@ -26,6 +26,17 @@
     Compiler performance
   </h1>
 
+  <style>
+    /* Both charts are focusable so their tooltips are reachable by keyboard,
+       and a tap focuses them too so arrow keys work after one. Limiting the
+       ring to keyboard focus keeps every tap on a phone from leaving a box
+       drawn around the chart. */
+    #perf-index:focus:not(:focus-visible),
+    #perf-phases:focus:not(:focus-visible) { outline: none; }
+    #perf-index:focus-visible,
+    #perf-phases:focus-visible { outline: 2px solid #228833; outline-offset: 2px; }
+  </style>
+
   <noscript>
     <p style="color: var(--color-muted); margin-top: 1rem;">
       This page draws its charts in the browser. The measurements themselves are
@@ -51,11 +62,27 @@
       <em>n</em> workloads shifts it by roughly 1/<em>n</em> of its true size, so
       the per-workload panels carry the full-size signal.
     </p>
+    {#
+      Two rules both charts carry, and both are about small screens.
+
+      `touch-action: pan-y` is what makes the cursor work on a touchscreen. It
+      leaves a vertical swipe to the page, so the chart never traps scrolling,
+      while a tap or a horizontal drag reaches the chart as a pointer event.
+
+      `height: auto` lets the fixed viewBox scale by width alone. With the
+      height attribute governing, a narrow screen scales the drawing down to fit
+      the width and then letterboxes it inside the full-height box — the chart
+      is drawn a third of the size with the remainder as dead margin.
+    #}
     <figure style="margin-top: 0.75rem;">
       <svg id="perf-index" role="img" width="100%" height="220" viewBox="0 0 900 220"
-           aria-labelledby="perf-index-caption"></svg>
+           tabindex="0" style="touch-action: pan-y; height: auto;"
+           aria-label="Headline index. Chart not drawn yet."
+           aria-describedby="perf-index-caption"></svg>
       <figcaption id="perf-index-caption" style="color: var(--color-muted); font-size: 0.85rem;"></figcaption>
     </figure>
+    <div id="perf-index-tooltip" role="status" aria-live="polite"
+         style="margin-top: 0.5rem; padding: 0.75rem 1rem; border: 1px solid #ccc; font-size: 0.9rem; line-height: 1.5;"></div>
 
     <h2 style="margin-top: 2.5rem;">Workloads</h2>
     <div id="perf-multiples" role="list"
@@ -70,8 +97,17 @@
       describes. Both are findings, not rounding.
     </p>
     <figure style="margin-top: 0.75rem;">
+      {#
+        The caption is a description, not the name. Naming the chart with
+        `aria-labelledby` would win over the `aria-label` the script sets once
+        it knows the workload — and that label is where the arrow-key
+        instructions live, so the keyboard route to the tooltip would never be
+        announced.
+      #}
       <svg id="perf-phases" role="img" width="100%" height="260" viewBox="0 0 900 260"
-           tabindex="0" aria-labelledby="perf-phases-caption"></svg>
+           tabindex="0" style="touch-action: pan-y; height: auto;"
+           aria-label="Phase composition. Chart not drawn yet."
+           aria-describedby="perf-phases-caption"></svg>
       <figcaption id="perf-phases-caption" style="color: var(--color-muted); font-size: 0.85rem;"></figcaption>
     </figure>
     <div id="perf-composition" style="margin-top: 0.5rem;"></div>

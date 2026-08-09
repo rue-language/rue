@@ -726,6 +726,22 @@ rue_sh_test(
     },
 )
 
+# RUE-1194: the §11 tooltip needs a commit's subject and its distance from the
+# previous measurement, neither of which a run object carries. The ordinal
+# follows trunk's first parents, so these tests pin the one property that makes
+# subtracting two of them meaningful: a merged topic branch is not a run of
+# skipped trunk commits.
+rue_sh_test(
+    name = "performance-commit-annotation-tool-tests",
+    test = "scripts/test-annotate-performance-commits.py",
+    resources = [
+        "scripts/annotate-performance-commits.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 rue_sh_test(
     name = "ci-gate-validator-tool-tests",
     test = "scripts/test-validate-ci-gate.py",
