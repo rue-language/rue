@@ -157,21 +157,15 @@
       skipped + (skipped === 1 ? " was" : " were") + " not measured.";
   }
 
-  // What "flagged" means, stated rather than asserted.
+  // What a flag means, stated rather than asserted.
   //
   // The rule (ADR-0067 §5) compares this run's median against the median of the
   // trailing window's medians, and flags when they differ by more than `k`
-  // times the two dispersions combined in quadrature. Three consequences the
-  // bare word "flagged" hides, and which this line therefore spells out:
-  //
-  //   It is a noise-relative bound, not a percentage threshold. A 1% move on a
-  //   quiet workload can flag where 5% on a noisy one does not.
-  //
-  //   It is direction-agnostic. A large speedup flags exactly as a regression
-  //   does, because the rule takes the absolute difference.
-  //
-  //   The comparison is against a trailing window, not the previous commit, so
-  //   it can disagree with the delta shown directly above it.
+  // times the two dispersions combined in quadrature. The figures carry three
+  // things the bare word cannot: the bound is noise-relative rather than a
+  // percentage, the comparison is against a trailing window rather than the
+  // previous commit, and it is direction-agnostic — naming the direction here
+  // is what makes a flagged speedup read as one instead of as a regression.
   function flaggingLine(epoch, point) {
     var rule = epoch.flagging || {};
     if (point.flagged === null || point.flagged === undefined) {
@@ -187,11 +181,9 @@
     var comparison = fmtMs(point.median_ns) + " against a trailing " + rule.window +
       "-run median of " + fmtMs(point.window_median_ns) + ", " +
       Math.abs(delta).toFixed(2) + "% " + (delta >= 0 ? "slower" : "faster");
-    return point.flagged
-      ? "Flagged — moved: " + comparison + ". That gap is wider than " + rule.k +
-        "× the combined noise of the two, in either direction."
-      : "Not flagged: " + comparison + ", within " + rule.k +
-        "× the combined noise of the two.";
+    return (point.flagged ? "Flagged: " : "Not flagged: ") + comparison +
+      (point.flagged ? " — beyond " : " — within ") + rule.k +
+      "× the combined noise of the two.";
   }
 
   // Only touch the DOM when the text actually changes. Tooltips are aria-live
@@ -353,11 +345,7 @@
       var flagged = Object.keys(latest.point.workloads).filter(function (name) {
         return latest.point.workloads[name].flagged === true;
       });
-      // "Moved" is the honest verb: the rule takes an absolute difference, so
-      // this set includes workloads that got faster.
-      parts.push(flagged.length
-        ? "Moved beyond the noise bound: " + flagged.join(", ") + "."
-        : "Nothing moved beyond the noise bound.");
+      parts.push(flagged.length ? "Flagged: " + flagged.join(", ") + "." : "Nothing flagged.");
       // When the newest point is stated, a page that stopped advancing reads as
       // stopped. Without it a ten-day-old chart is indistinguishable from a
       // current one, which is exactly how a frozen series went unnoticed.
@@ -565,8 +553,8 @@
         return entry.point.workloads[name].flagged === true;
       });
       lines.push(flagged.length
-        ? "Moved beyond the noise bound here: " + escapeHtml(flagged.join(", ")) + "."
-        : "Nothing moved beyond the noise bound here.");
+        ? "Flagged here: " + escapeHtml(flagged.join(", ")) + "."
+        : "Nothing flagged here.");
 
       var drift = entry.epoch.environment_annotations.filter(function (note) {
         return note.commit === entry.point.commit;
@@ -612,12 +600,8 @@
           : "no prior point";
         // `null` means the trailing window is not full. Rendering that as
         // "stable" would be the comfortable wrong answer.
-        //
-        // "moved" rather than "flagged": the rule takes an absolute difference,
-        // so this fires on a large speedup too, and the word most readers hear
-        // as "regression" is the wrong one for what was measured.
         var flag = currentPoint.flagged === true
-          ? " · moved"
+          ? " · flagged"
           : (currentPoint.flagged === null ? " · not enough history" : "");
         // The full sentence on hover and for assistive technology, so the badge
         // can stay a badge without being a riddle.
