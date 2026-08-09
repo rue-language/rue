@@ -62,6 +62,9 @@ returns a string whose capacity is zero.
 {{ rule(id="3.10:9", cat="example") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let empty = StrBuf.new();
     let prealloc = StrBuf.with_capacity(1024);
@@ -90,6 +93,9 @@ Query methods use `borrow self` to access the string without consuming it, leavi
 {{ rule(id="3.10:14", cat="example") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let s = "hello";
     if s.len() == 5 && !s.is_empty() {
@@ -125,6 +131,9 @@ Mutation methods use `inout self` to modify the string in place. The variable mu
 {{ rule(id="3.10:20", cat="example") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
@@ -151,6 +160,9 @@ Heap promotion is transparent to the user. There is no separate "owned" vs "borr
 {{ rule(id="3.10:23", cat="example") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let mut s = "hello";     // literal: capacity = 0
     s.push_str("!");     // promotes to heap, then appends
@@ -182,6 +194,9 @@ Clone borrows `self` so the original string remains valid. Cloning always alloca
 {{ rule(id="3.10:28", cat="example") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let a = "hello";
     let b = a.clone();  // deep copy
@@ -205,6 +220,9 @@ The destructor automatically distinguishes between string literals and heap-allo
 {{ rule(id="3.10:31", cat="example") }}
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
     let mut s = "hello";
     s.push_str("!");  // promotes to heap

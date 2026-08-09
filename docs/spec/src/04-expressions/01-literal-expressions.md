@@ -24,9 +24,10 @@ Integer literals default to type `i32` unless the context requires a different t
 
 ```rue
 fn main() -> i32 {
-    0       // zero
-    42      // positive integer
-    255     // maximum u8 value
+    @dbg(0);      // zero
+    @dbg(42);     // positive integer
+    @dbg(255);    // maximum u8 value
+    0
 }
 ```
 

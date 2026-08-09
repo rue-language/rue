@@ -42,8 +42,9 @@ Parentheses can be used to override the default precedence of operators. A paren
 
 ```rue
 fn main() -> i32 {
-    1 + 2 * 3    // = 7 (not 9)
-    (1 + 2) * 3  // = 9 (parentheses override)
+    @dbg(1 + 2 * 3);      // = 7 (not 9)
+    @dbg((1 + 2) * 3);    // = 9 (parentheses override)
+    0
 }
 ```
 
@@ -57,8 +58,9 @@ All binary arithmetic operators are left-associative.
 
 ```rue
 fn main() -> i32 {
-    10 - 3 - 2   // = 5, parsed as (10 - 3) - 2
-    24 / 4 / 2   // = 3, parsed as (24 / 4) / 2
+    @dbg(10 - 3 - 2);    // = 5, parsed as (10 - 3) - 2
+    @dbg(24 / 4 / 2);    // = 3, parsed as (24 / 4) / 2
+    0
 }
 ```
 

@@ -55,6 +55,9 @@ Expression intrinsics (usable in any expression position):
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
+| `@wrapping_add` | Wrapping (modular) addition (§4.13:97) | 2 expressions (same integer type) | that integer type |
+| `@wrapping_sub` | Wrapping (modular) subtraction (§4.13:97) | 2 expressions (same integer type) | that integer type |
+| `@wrapping_mul` | Wrapping (modular) multiplication (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@to_string` | Format an integer as its decimal `StrBuf` | 1 expression (any integer) | `StrBuf` |
 | `@drop` | Run a value's drop glue and consume it (RUE-187) | 1 expression (any type) | `()` |
 | `@read_line` | Read line from stdin | none | `Option(StrBuf)` |
@@ -70,6 +73,7 @@ Expression intrinsics (usable in any expression position):
 | `@env_len` | Byte length of environment entry `i` (0 out of range) | 1 expression (`u64` index) | `u64` |
 | `@target_arch` | Get target architecture | none | `Arch` |
 | `@target_os` | Get target OS | none | `Os` |
+| `@target_data_model` | Get target C data model | none | `DataModel` |
 | `@import` | Import module | 1 expression (string literal) | module type |
 
 Unchecked intrinsics (only valid inside a `checked` block; see §9.2 for their
@@ -83,6 +87,8 @@ full semantics):
 | `@field_ptr` | `mut` pointer to a struct field place | 1 field-access expression | `ptr mut F` |
 | `@ptr_read` | Read through a pointer | 1 expression (`ptr const T`/`ptr mut T`) | `T` |
 | `@ptr_write` | Write through a pointer | 2 expressions (`ptr mut T`, `T`) | `()` |
+| `@ptr_read_unaligned` | Read through a possibly unaligned pointer (§9.2) | 1 expression (`ptr const T`/`ptr mut T`) | `T` |
+| `@ptr_write_unaligned` | Write through a possibly unaligned pointer (§9.2) | 2 expressions (`ptr mut T`, `T`) | `()` |
 | `@ptr_offset` | Pointer arithmetic | 2 expressions (`ptr T`, integer) | `ptr T` |
 | `@ptr_to_int` | Pointer to integer | 1 expression (pointer) | `u64` |
 | `@int_to_ptr` | Integer to pointer | 1 expression (`u64`) | inferred `ptr mut T` |
@@ -500,8 +506,10 @@ The result is `None` (a recoverable parse failure, not a panic) if:
 {{ rule(id="4.13:50") }}
 
 ```rue
+const std = @import("std");
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("42") {
         Opt.Some(n) => n,   // returns 42
         Opt.None => 0,
@@ -512,8 +520,10 @@ fn main() -> i32 {
 {{ rule(id="4.13:51") }}
 
 ```rue
+const std = @import("std");
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("-17") {
         Opt.Some(n) => n,   // returns -17
         Opt.None => 0,
@@ -524,8 +534,10 @@ fn main() -> i32 {
 {{ rule(id="4.13:52") }}
 
 ```rue
+const std = @import("std");
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(i32);
+    let Opt = std.option.Option(i32);
     let s = "42";
     // StrBuf is borrowed, not consumed
     let parsed: Opt = @parse_i32(s);
@@ -541,8 +553,10 @@ fn main() -> i32 {
 
 ```rue
 // An invalid character is a recoverable failure: `None`, not a panic.
+const std = @import("std");
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(i32);
+    let Opt = std.option.Option(i32);
     match @parse_i32("12abc") {
         Opt.Some(n) => n,
         Opt.None => -1,   // taken: "12abc" is not an integer
@@ -554,8 +568,10 @@ fn main() -> i32 {
 
 ```rue
 // A negative value for an unsigned type is a recoverable failure: `None`.
+const std = @import("std");
+
 fn main() -> i32 {
-    let Opt = @import("std/option.rue").Option(u32);
+    let Opt = std.option.Option(u32);
     match @parse_u32("-17") {
         Opt.Some(n) => @intCast(n),
         Opt.None => 0,   // taken: "-17" is negative
@@ -600,9 +616,12 @@ fn main() -> i32 {
 Using `@random_u32` in a guessing game:
 
 ```rue
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+
 fn main() -> i32 {
-    let OptStr = @import("std/option.rue").Option(StrBuf);
-    let OptU32 = @import("std/option.rue").Option(u32);
+    let OptStr = std.option.Option(StrBuf);
+    let OptU32 = std.option.Option(u32);
     let secret: u32 = (@random_u32() % 100) + 1;  // 1-100
     @dbg("Guess the number between 1 and 100!");
 
@@ -829,6 +848,49 @@ fn main() -> i32 {
                 Os.Macos => 66,
             }
         },
+    }
+}
+```
+
+## `@target_data_model`
+
+{{ rule(id="4.13:112", cat="normative") }}
+
+The `@target_data_model` intrinsic returns the compilation target's C data
+model — the width convention the target's C ABI assigns to `int`, `long`, and
+pointers, which selects the widths of the `std.c` transparent scalar aliases
+(ADR-0064 Amendment 1) — as a `DataModel` enum value.
+
+{{ rule(id="4.13:113", cat="normative") }}
+
+`@target_data_model` accepts no arguments.
+
+{{ rule(id="4.13:114", cat="normative") }}
+
+The return type of `@target_data_model` is `DataModel`.
+
+{{ rule(id="4.13:115", cat="normative") }}
+
+The `DataModel` enum is a built-in enum with the following variants:
+- `DataModel.Ilp32` - `int`, `long`, and pointers are 32-bit
+- `DataModel.Llp64` - `long long` and pointers are 64-bit; `long` remains 32-bit
+- `DataModel.Lp64` - `long` and pointers are 64-bit
+
+{{ rule(id="4.13:116", cat="normative") }}
+
+The value returned by `@target_data_model` is determined at compile time based
+on the compilation target. Every target the reference compiler currently
+supports (the x86-64 and AArch64 Linux/macOS targets reachable through
+`@target_arch`/`@target_os`) is `Lp64`.
+
+{{ rule(id="4.13:117") }}
+
+```rue
+fn main() -> i32 {
+    match @target_data_model() {
+        DataModel.Lp64 => 1,
+        DataModel.Llp64 => 2,
+        DataModel.Ilp32 => 3,
     }
 }
 ```
