@@ -17,8 +17,9 @@ status inventories every registered Rue worktree and its buck-out size. plan
 asks Buck what stale or untracked output it would remove. clean performs that
 coordinated stale cleanup (default age: 1w) and, below 20% host free space,
 adaptively removes the oldest eligible output while preserving a 12-hour
-minimum TTL. guard is the build preflight: at 10% free space or lower it runs
-that cleanup across every worktree before allowing more disk-heavy work. reset
+minimum TTL. guard is the build preflight: when free space is at or below 10%
+of the device AND below the absolute floor (16 GiB), it runs that cleanup
+across every worktree before allowing more disk-heavy work. reset
 fully removes Buck outputs only from the exact registered roots named by the
 caller. Source worktrees are never removed.
 EOF
@@ -27,6 +28,13 @@ EOF
 adaptive_target_percent=20
 adaptive_min_ttl=12h
 emergency_trigger_percent=10
+# Percent-of-total free space misleads wherever writable capacity is not the
+# device size: allowance-capped cloud containers report a large device with a
+# small quota (so the fraction reads permanently "low" while tens of GiB are
+# usable), and very large disks make 10% an enormous absolute reserve. The
+# emergency path therefore requires BOTH a low free fraction AND less absolute
+# headroom than a cold full build plus test outputs could consume.
+emergency_free_floor_gib=16
 
 collect_roots() {
     local inventory
@@ -104,8 +112,8 @@ status_all() {
     done <<<"$roots"
     printf 'Total: %s in %d registered Rue worktree(s)\n' "$(human_kib "$total")" "$count"
     df -Pk "$repo_root" | awk 'NR == 2 { printf "Host filesystem: %s used, %.1f GiB available\n", $5, $4 / 1048576 }'
-    printf 'Policy: adaptive cleanup targets %d%% free (minimum TTL %s); emergency guard starts at %d%%\n' \
-        "$adaptive_target_percent" "$adaptive_min_ttl" "$emergency_trigger_percent"
+    printf 'Policy: adaptive cleanup targets %d%% free (minimum TTL %s); emergency guard starts at %d%% only below %d GiB absolute free\n' \
+        "$adaptive_target_percent" "$adaptive_min_ttl" "$emergency_trigger_percent" "$emergency_free_floor_gib"
 }
 
 stale_all() {
@@ -144,6 +152,41 @@ format_basis_points() {
     printf '%d.%02d' "$((basis_points / 100))" "$((basis_points % 100))"
 }
 
+free_kib() {
+    local kib
+    if ! kib="$(df -Pk "$repo_root" 2>/dev/null | awk '
+        NR == 2 { print $4; found = 1 }
+        END { if (!found) exit 1 }
+    ')"; then
+        echo "error: cannot determine host free space; refusing disk-pressure preflight" >&2
+        return 1
+    fi
+    printf '%s\n' "$kib"
+}
+
+# Prints "low" when both emergency signals are low, "ok" otherwise. Fails (and
+# callers fail closed) when free space cannot be measured at all.
+emergency_pressure() {
+    local basis_points kib
+    basis_points="$(free_basis_points)" || return 1
+    kib="$(free_kib)" || return 1
+    if (( basis_points <= emergency_trigger_percent * 100 )) &&
+        (( kib <= emergency_free_floor_gib * 1048576 )); then
+        printf 'low\n'
+    else
+        printf 'ok\n'
+    fi
+}
+
+# "X.YZ% (N.M GiB)" for guard messages: the fraction alone reads as nonsense on
+# hosts where the device is much larger than the writable allowance.
+describe_free() {
+    local basis_points kib
+    basis_points="$(free_basis_points)" || return 1
+    kib="$(free_kib)" || return 1
+    printf '%s%% (%s)' "$(format_basis_points "$basis_points")" "$(human_kib "$kib")"
+}
+
 tracking_state() {
     local root="$1" config
     if ! config="$(cd "$root" && "$repo_root/buck2" audit config \
@@ -180,8 +223,8 @@ reset_legacy_under_pressure() {
             failed=1
             continue
         fi
-        now="$(free_basis_points)" || return 1
-        if (( now > emergency_trigger_percent * 100 )); then
+        now="$(emergency_pressure)" || return 1
+        if [[ "$now" == ok ]]; then
             return 0
         fi
     done <<<"$(printf '%s' "$entries" | sort -rn)"
@@ -191,34 +234,34 @@ reset_legacy_under_pressure() {
 }
 
 guard_low_disk() {
-    local before_basis_points after_basis_points before after
-    before_basis_points="$(free_basis_points)" || return 1
-    if (( before_basis_points > emergency_trigger_percent * 100 )); then
+    local pressure before after after_basis_points
+    pressure="$(emergency_pressure)" || return 1
+    if [[ "$pressure" == ok ]]; then
         return 0
     fi
-    before="$(format_basis_points "$before_basis_points")"
+    before="$(describe_free)" || return 1
 
-    echo "warning: host filesystem has ${before}% free; running Rue's host-wide adaptive cleanup before building" >&2
+    echo "warning: host filesystem has ${before} free; running Rue's host-wide adaptive cleanup before building" >&2
     if ! stale_all clean 1w; then
         echo "error: host-wide cleanup failed under disk pressure; build stopped before risking ENOSPC" >&2
         return 1
     fi
 
-    after_basis_points="$(free_basis_points)" || return 1
-    after="$(format_basis_points "$after_basis_points")"
-    if (( after_basis_points <= emergency_trigger_percent * 100 )); then
-        echo "warning: host filesystem still has only ${after}% free; trying largest legacy Buck roots while preserving active work" >&2
+    pressure="$(emergency_pressure)" || return 1
+    after="$(describe_free)" || return 1
+    if [[ "$pressure" == low ]]; then
+        echo "warning: host filesystem still has only ${after} free; trying largest legacy Buck roots while preserving active work" >&2
         if ! reset_legacy_under_pressure; then
             echo "error: host filesystem remains critically low after safe cleanup; inspect 'scripts/rue storage status' before building" >&2
             return 1
         fi
-        after_basis_points="$(free_basis_points)" || return 1
-        after="$(format_basis_points "$after_basis_points")"
+        after="$(describe_free)" || return 1
     fi
+    after_basis_points="$(free_basis_points)" || return 1
     if (( after_basis_points < adaptive_target_percent * 100 )); then
-        echo "warning: cleanup raised host free space to ${after}%, below the ${adaptive_target_percent}% target but above the emergency threshold" >&2
+        echo "warning: cleanup raised host free space to ${after}, below the ${adaptive_target_percent}% adaptive target but above the emergency threshold" >&2
     else
-        echo "Host free space after Rue cleanup: ${after}%" >&2
+        echo "Host free space after Rue cleanup: ${after}" >&2
     fi
 }
 

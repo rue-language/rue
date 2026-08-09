@@ -32,8 +32,9 @@ for arg in "${args[@]}"; do
 done
 
 # Starting another disk-heavy command while the host is near ENOSPC is unsafe.
-# The guard is normally just one portable `df` read. At 10% free or lower it
-# asks Buck to reclaim eligible outputs from every registered Rue worktree,
+# The guard is normally just one portable `df` read. When free space is both at
+# or below 10% of the device and below an absolute headroom floor, it asks
+# Buck to reclaim eligible outputs from every registered Rue worktree,
 # preserving materializer state and active artifacts. `clean` itself is not an
 # execution command, so the host-wide guard cannot recurse through this wrapper.
 if [[ "$execution_command" -eq 1 ]] && [[ -x "$repo_root/scripts/rue-storage" ]]; then
