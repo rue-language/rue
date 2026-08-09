@@ -27,9 +27,9 @@ Multiple whitespace characters between tokens are equivalent to a single space.
 ```rue
 // Minimal whitespace
 fn main()->i32{42}
+```
 
-// Generous whitespace
+```rue
+// Generous whitespace: an equivalent program
 fn   main()   ->   i32   {   42   }
-
-// Both programs are equivalent
 ```

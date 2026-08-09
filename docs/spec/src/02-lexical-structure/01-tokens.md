@@ -69,14 +69,15 @@ Base prefixes are lowercase. An uppercase base prefix (`0X`, `0O`, `0B`) is a co
 
 ```rue
 fn main() -> i32 {
-    0            // zero
-    42           // decimal integer
-    255          // maximum u8 value
-    1_000_000    // underscore separators
-    0xFF         // hexadecimal, value 255
-    0x_FF_       // underscores legal after the prefix and trailing
-    0o17         // octal, value 15
-    0b1010       // binary, value 10
+    @dbg(0);            // zero
+    @dbg(42);           // decimal integer
+    @dbg(255);          // maximum u8 value
+    @dbg(1_000_000);    // underscore separators
+    @dbg(0xFF);         // hexadecimal, value 255
+    @dbg(0x_FF_);       // underscores legal after the prefix and trailing
+    @dbg(0o17);         // octal, value 15
+    @dbg(0b1010);       // binary, value 10
+    0
 }
 ```
 

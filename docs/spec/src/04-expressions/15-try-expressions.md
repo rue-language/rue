@@ -94,7 +94,7 @@ fn halve_then_div(a: i64, b: i64) -> std.option.Option(i64) {
 fn main() -> i32 {
     let O = std.option.Option(i64);
     match halve_then_div(40, 4) {
-        O.Some(n) => n,      // 40 / 4 / 2 == 5
+        O.Some(n) => @intCast(n),   // 40 / 4 / 2 == 5
         O.None => 0 - 1,
     }
 }

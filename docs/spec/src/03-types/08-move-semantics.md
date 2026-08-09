@@ -21,6 +21,8 @@ The following types are Copy types:
 - All integer types (`i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`)
 - The boolean type (`bool`)
 - The unit type (`()`)
+- The first-class string types: `str` (3.7:44) and the fixed inline buffers
+  `Str(N)` (3.7:50)
 - Discriminant-only enum types (every variant is payload-free, C-like)
 - Array types `[T; N]` where `T` is a Copy type
 
@@ -97,7 +99,7 @@ struct Outer { inner: Inner }  // ERROR: field 'inner' has non-Copy type 'Inner'
 
 {{ rule(id="3.8:20", cat="normative") }}
 
-A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), discriminant-only enum types, arrays of Copy types, or other `@copy` struct types. A field whose type is a payload-carrying enum is admissible only when that enum is itself Copy under the join of 6.3:19 — that is, only when every one of its payloads is Copy; a `@copy` struct field must itself be a Copy type (3.8:18), so a move-typed enum field is rejected.
+A `@copy` struct **MAY** contain fields of primitive Copy types (integers, booleans, unit), first-class string types (`str`, `Str(N)` — 3.7:44, 3.7:50), discriminant-only enum types, arrays of Copy types, or other `@copy` struct types. A field whose type is a payload-carrying enum is admissible only when that enum is itself Copy under the join of 6.3:19 — that is, only when every one of its payloads is Copy; a `@copy` struct field must itself be a Copy type (3.8:18), so a move-typed enum field is rejected.
 
 {{ rule(id="3.8:21", cat="example") }}
 
@@ -225,7 +227,7 @@ fn main() -> i32 {
 
 {{ rule(id="3.8:60", cat="legality-rule") }}
 
-It is a compile-time error for a field access that consumes a linear value (destructuring, 3.8:33) to implicitly drop a *different* field that carries a linear value. Every struct level along the access path is checked: at each level, all fields other than the accessed one are dropped by the destructure.
+It is a compile-time error for a field access that consumes a linear value (destructuring, 3.8:33) to implicitly drop a *different* field that carries a linear value. Every struct level along the access path is checked. The access is a partial move of exactly the accessed field (3.8:22): sibling fields remain in place, and the residue — every field other than the accessed one, at each level — is dropped by the ordinary scope-exit walk of the destructured value's binding (3.9:2). A linear sibling in that residue would therefore be implicitly dropped at scope exit, which is what this rule rejects at the access itself.
 
 {{ rule(id="3.8:61", cat="example") }}
 
