@@ -23,32 +23,44 @@ Proposal
 Rue's CI has three good mechanisms for not doing work — a change determinator
 (RUE-1119), cacheable corpus actions (RUE-1118), and corpus sharding
 (RUE-1116/RUE-1158) — each applied to a different hand-picked subset of the work
-and composed in the wrong order. Measuring nine runs shows the consequence: the
-critical path is a single test function executed four times, and no topology
-change can move it.
+and composed in the wrong order. Measuring 120 runs — 55 classified by what they
+changed, 21 timed to job and step level — shows the consequence: the critical
+path is a single test function executed four times, and no topology change can
+move it.
 
 This ADR adopts a uniform model. Every unit of CI work is a Buck target carrying
 its own tier and platform scope; no workflow file names a target; every lane is a
-generated selection over the live graph. It also names the property that makes a
-compiler monorepo different from the systems these mechanisms were designed for:
-**the compiler is a universal dependency, so change-based selection and
-input-keyed caching share a blind spot covering the dominant change class.**
-Eliminating duplicated work — which helps in *every* regime — therefore ranks
-above both, and scheduling ranks above neither.
+generated selection over the live graph.
+
+It rests on two measurements that pull in opposite directions and are both true.
+A compiler monorepo has a property the mechanisms were not designed for — **the
+compiler is a universal dependency, so today three quarters of changes invalidate
+everything downstream**, and neither selection nor input-keyed caching can help
+them. Eliminating duplicated work therefore ranks above both, because it is the
+only lever that pays in every regime. But the converse measurement is sharper:
+**a two-file documentation change costs 444s against 465s for a compiler change —
+a 4.5% difference — while roughly 80% of that run is provably unnecessary.**
+Determination is not near its ceiling; it is not connected to the critical path
+at all. Both facts must survive into the design, because the change mix that
+makes the first one true today is deliberately being changed.
 
 ## Context
 
 ### What was measured
 
-Nine `CI` runs (2026-08-07/08, four `pull_request`, five `merge_group`), plus
-`buck2` run directly against the live graph. Full evidence is in
+120 `CI` runs were collected (2026-08-06 to 2026-08-09). Of those, **55 were
+classified by change class**, by resolving each run to its commit through the
+merge-queue branch name and reading the changed-file list from local git; **21
+have full job- and step-level timings**. `buck2` was also run directly against
+the live graph for per-target measurement. Full evidence is in
 `docs/notes/rue-1250-shard-topology-analysis.md`,
 `rue-1250-premerge-critical-path.md`, and `rue-1250-ci-architecture.md`.
 
 The finding that motivates this ADR is concentration, not imbalance:
 
-- `premerge (linux-x64)` was the longest job in **9 of 9** runs, 279–576s ahead
-  of the slowest CLI shard.
+- `premerge (linux-x64)` was the longest job in **18 of 21** timed runs (86%);
+  `native (linux-arm64)` took over in the other three, all of them cheap runs.
+  In the nine originally sampled it was 279–576s ahead of the slowest CLI shard.
 - That lane runs 80 targets. Two are **81.4%** of it — and
   `//crates/rue-compiler:scaling-matrix-test` turns out to be a strict superset
   of `//crates/rue-compiler:rue-compiler-test`: 816 tests versus 813, all 813
@@ -67,29 +79,75 @@ item weighs 181.7s against ~44s of everything else. LPT's makespan is bounded
 below by the largest indivisible item, and the lane's measured parallel wall
 (268s) is already within 19% of that bound.
 
-### The property that makes this repository different
+### The change mix, and why it is the wrong thing to design against
 
 The determinator and the action cache both key on change. In a compiler
-monorepo, that has a low ceiling, because the compiler is an input to nearly
-every downstream action. A change to any compiler crate changes the compiler
+monorepo that looks like a poor bet, because the compiler is an input to nearly
+every downstream action: a change to any compiler crate changes the compiler
 binary's digest, which invalidates every Rue-program compile action, hence every
-corpus.
+corpus. Classifying 55 runs by what they touched:
 
-This is measured from both directions. RUE-1130 records **zero deselections
-across 9 runs × 18 corpus jobs** — every job logged `SELECTIVE` and then selected
-everything, "because compiler-core changes legitimately reach the whole
-reverse-dependency closure." Independently, classifying the nine runs sampled
-here by their premerge build step:
+| area touched | runs | share |
+| --- | --- | --- |
+| compiler internals | 41 | 74.5% |
+| docs / website | 29 | 52.7% |
+| CI / build inputs | 18 | 32.7% |
+| test cases | 15 | 27.3% |
+| tooling crates | 12 | 21.8% |
+| performance manifests | 8 | 14.5% |
+| **`std/`** | **0** | **0%** |
+
+Collapsing that to what a determinator can act on: **74.5% touch compiler
+internals** and cannot be narrowed; **18.2%** touch a graph-global CI or build
+input and correctly force a full run; **7.3%** are peripheral and addressable
+today. RUE-1130 records the corresponding symptom — zero deselections across
+9 runs × 18 corpus jobs.
+
+**It would be a mistake to read that as the mechanism's ceiling.** Two facts say
+otherwise.
+
+First, determination is not failing on the runs it *can* address; it is not
+reaching them. Comparing timed runs by class:
+
+| change class | runs | median wall |
+| --- | --- | --- |
+| touches compiler internals | 9 | 465s |
+| peripheral (docs, tooling, performance) | 4 | **444s** |
+
+A two-file documentation change costs 4.5% less than a compiler change. It still
+builds the compiler, still runs 813 compiler unit tests on linux-x64, and still
+runs those same 813 again on linux-arm64 and again on macOS. The correct run for
+that change is the doc-consuming targets — `tutorial-snippet-tests` (11.8s),
+`adr-registry-validation` (0.7s), `spec-traceability` — plus the lint and
+aggregate gates: on the order of 80s including runner overhead, against 444s
+actually paid. **Roughly 80% of a peripheral run is provably unnecessary, and the
+determinator computes the right answer already; it is simply wired to 7 of ~14
+jobs, and not to the one on the critical path in 86% of runs.**
+
+Second, the 74.5% figure describes the repository's *current* shape, not a
+property of the design. Rue is at a compiler-building stage, and the planned work
+is explicitly elsewhere: an LSP, a test runner, code mods, and a substantial
+standard-library expansion — components that carry their own tests and mostly do
+not touch compiler internals. The `std/` row above is the tell: **zero of 55
+sampled changes touched `std/` at all.** That entire class of work, along with
+the other three components, is ahead of this measurement rather than behind it.
+A design that treated 7.3% as the ceiling would be tuned for a repository shape
+that is deliberately being replaced.
+
+So the honest statement is narrower than "determination has a low ceiling in a
+compiler monorepo." It is: *determination's addressable share is a function of
+the change mix; the mix is currently compiler-heavy; the mechanism is
+nevertheless leaving its entire current share on the table, and the share is
+designed to grow.* Keep it, wire it to everything, and make it report what it
+saved so the question is answered by data next time rather than by argument.
+
+Classifying the same runs by cache state gives the complementary picture:
 
 | regime | runs | compiler build | corpus |
 | --- | --- | --- | --- |
 | warm | 5 of 9 | ≤22s | cached |
 | corpus-cold | 1 of 9 | 19s | 900–1100s |
 | compiler-cold | 3 of 9 | 286–317s | 900–1100s |
-
-Determination and caching make the *warm* regime nearly free, which is real and
-worth keeping. Neither helps the compiler-cold regime at all, and that regime is
-a third of runs and most of the interesting ones.
 
 Two consequences follow, and they are the reason this ADR exists rather than a
 narrower one:
@@ -100,7 +158,9 @@ narrower one:
    against an unshardable native ARM64 lane at 341–407s. Four shards stay under
    that floor in 4 of 4 runs; two breach it in 4 of 4. **Keep four.**
 2. **Not doing duplicated work outranks both other mechanisms**, because it is
-   the only one that pays in every regime.
+   the only one that pays in every regime — while determination pays hugely in a
+   regime that is currently small and growing, and caching pays in a regime that
+   is currently large and shrinking as the compiler stabilizes.
 
 ### Why the current composition is inverted
 
@@ -174,6 +234,22 @@ emit the lane plan the matrix consumes
 (`strategy.matrix: ${{ fromJSON(...) }}`). `merge_group` keeps forcing the
 authoritative full run. The existing fail-open contract and
 `scripts/test-affected-targets.sh` pinning are retained unchanged.
+
+This is the decision RUE-1130 asks for, and the answer is *keep and extend*, not
+*remove*. The measured saving on a peripheral run is ~80% of its wall time, and
+none of it is currently reachable, because the determinator gates 7 of ~14 jobs
+and `premerge` — the critical path in 86% of runs — is not one of them. Extending
+the gate is a smaller change than the rest of this ADR and does not depend on it:
+the existing `steps.sel.outputs.run` pattern already used by `platform-corpus`
+generalizes to the other lanes directly, and BTD already computes the closure
+these lanes would consult. Docs and specification sources are ordinary in-graph
+inputs (`tutorial-snippet-tests`, `adr-registry-validation`, `spec-traceability`
+declare them), so a documentation change narrows to exactly those targets without
+any new force-full rule.
+
+The same applies to the native lanes. A documentation change currently runs 813
+compiler unit tests on linux-arm64 and again on macOS; nothing about that change
+can reach them.
 
 The coverage gate then becomes stronger *and* simpler than
 `validate-cli-shard-coverage.py`: **the union of planned lanes equals the tier
@@ -260,14 +336,18 @@ completely.
 
 - [ ] **Phase 1: Eliminate the duplicated critical path** — RUE-1262.
       56–59% of the critical path, no new machinery, needs one coverage ruling.
-- [ ] **Phase 2: Duplication gate** — new. Cheap, and it is what stops the class
-      from recurring; lands while the evidence is fresh.
-- [ ] **Phase 3: Platform scope as a target attribute** — new (RUE-1262 scope C).
-      Removes the `validate-ci-gate.py:204` pin and the per-test/per-target
-      granularity error.
-- [ ] **Phase 4: Determinator plans every lane and reports its regime** —
+- [ ] **Phase 2: Extend determination to every lane and report its regime** —
       RUE-1130, whose "make it discriminate or remove it" question this ADR
       answers with "keep it, extend it, and make it report what it saved."
+      Promoted ahead of the gates below by measurement: ~80% of a peripheral run
+      is currently unnecessary and none of it is reachable, and the change is
+      independent of the rest of this ADR.
+- [ ] **Phase 3: Duplication gate** — new. Cheap, and it is what stops the class
+      from recurring; lands while the evidence is fresh.
+- [ ] **Phase 4: Platform scope as a target attribute** — new (RUE-1262 scope C).
+      Removes the `validate-ci-gate.py:204` pin and the per-test/per-target
+      granularity error. Phase 2 already stops peripheral changes from reaching
+      the native lanes; this makes compiler changes stop over-selecting them too.
 - [ ] **Phase 5: Real input-keyed compile actions** — RUE-1164, milestone
       "Buck-native test actions"; RUE-1222 for the timing-refresh and
       undeclared-input follow-ups.
@@ -285,6 +365,10 @@ same fixed-cost problem this ADR names in the compiler-cold regime.
   median 820s → 361s, `merge_group` 456s → 185s, with the whole-sample range
   narrowing from 341–873s to 170–393s. The merge queue becomes predictable, not
   merely faster.
+- Phase 2 takes a peripheral change from a measured 444s to roughly 80s, and its
+  share of runs grows with every component added outside the compiler. The two
+  phases are complementary rather than competing: Phase 1 shrinks the work every
+  change must do, Phase 2 stops changes doing work they cannot affect.
 - The binding constraint stops being one defect and becomes distributed —
   `valgrind` in 4 of 9 runs, the cold compiler build in 3, reproducibility in 1,
   one CLI shard in 1. The next improvement becomes a real trade rather than a bug.
@@ -332,9 +416,14 @@ same fixed-cost problem this ADR names in the compiler-cold regime.
   build system would make invalidation proportional to the change rather than
   total. This is speculative and out of scope here, but it is the only idea in
   sight that would raise the determinator's ceiling in the regime that matters.
-- Reliability. This ADR's evidence is nine runs over two days and computes no
-  flake rate; `correctness-repetitions.yml` is the right source, and shard
-  reliability remains unquantified.
+- Reliability. This ADR classifies 55 runs and times 21, but computes no flake
+  rate; `correctness-repetitions.yml` is the right source, and shard reliability
+  remains unquantified.
+- The change-mix measurement is four days of one repository at one stage. It is
+  the right input for Phase 2's priority and the wrong input for a permanent
+  constant, which is the general argument this ADR makes about derived rather
+  than pinned numbers. The determinator should report its own saved share so the
+  mix is observed continuously rather than sampled once.
 - Per-target measurement on real ARM64 and macOS runners. The native-lane
   conclusions here scale CI step timings by locally measured target ratios; the
   99.1% concentration is inferred from target composition, not measured on those
