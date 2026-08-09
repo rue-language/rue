@@ -458,11 +458,20 @@ jobs:
             //crates/rue-target:rue-target-test
           )
           if [ "$NARROW_COUNT" -gt 0 ]; then
-            mapfile -t targets < <(scripts/affected-targets intersect "$NARROW_FILE" "${targets[@]}")
-          fi
-          if [ "${#targets[@]}" -eq 0 ]; then
-            echo "native units: no impacted unit targets on this diff; the merge-queue run covers them."
-            exit 0
+            # macOS runners execute this with the stock Bash 3.2, which has no
+            # `mapfile` (exit 127 killed every narrowed macOS run) and errors
+            # on empty-array expansion under `set -u`. Read the intersection
+            # into a string, early-exit while `targets` is still non-empty,
+            # and only then rebuild the array.
+            narrowed="$(scripts/affected-targets intersect "$NARROW_FILE" "${targets[@]}")"
+            if [ -z "$narrowed" ]; then
+              echo "native units: no impacted unit targets on this diff; the merge-queue run covers them."
+              exit 0
+            fi
+            targets=()
+            while IFS= read -r target; do
+              targets+=("$target")
+            done <<< "$narrowed"
           fi
           scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
 
