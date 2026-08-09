@@ -315,6 +315,96 @@ job-minutes across the sample. On warm runs four shard jobs bill four minutes to
 verify ~20s of cached stamps — the price of the cold-run insurance the table in
 "Decision" prices, and cheap against a wrong answer there.
 
+## End state, and what the packer's objective should be
+
+Modelling all three changes together — derived shard count, `scaling-matrix-test`
+de-duplicated, and the pressure test reduced to its measured floor — against the
+nine sampled runs, using each run's *own* build-step and suite-step durations:
+
+| event | critical path today | after | driver after |
+| --- | --- | --- | --- |
+| pull_request (median) | 820s | **388s** | native (linux-arm64) |
+| merge_group (median) | 456s | **342s** | native (linux-arm64) |
+| whole-sample range | 341–873s | **341–407s** | native in **9 of 9** |
+
+Two things matter more than the headline reduction. First, **no linux-x64 lane is
+the bottleneck in any run any more** — including the cold-build pull requests,
+where premerge lands at 354–393s, just under the ARM64 lane. Second, the spread
+collapses from 2.6× to 1.19×, so the merge queue becomes predictable rather than
+merely faster.
+
+That changes what a packer should optimize. Once every linux lane sits under a
+floor set elsewhere, **minimizing makespan is the wrong objective** — work
+already finishes before the floor, so the remaining gain is zero. The right
+objective is to *minimize runners subject to the slowest lane staying under the
+floor*: bin-packing under a capacity constraint, not makespan across fixed bins.
+The two produce different answers, and only the second can conclude "use fewer".
+
+### Three regimes, measured
+
+Solving `build + work/K + overhead ≤ floor` per run, with the ARM64 lane as the
+floor and each run's measured build cost:
+
+| regime | runs | poolable linux-x64 work | lanes needed | lanes today |
+| --- | --- | --- | --- | --- |
+| build warm, corpus warm | 5 of 9 | 42–66s | **1** | 8 |
+| build warm, corpus cold | 1 of 9 | 1073s | **4** | 8 |
+| build cold | 3 of 9 | 1208–1570s | 14–21 (unreachable) | 8 |
+
+Read the third row as a boundary rather than a target. A cold build costs
+286–317s of a 387–407s floor, leaving 75–88s of per-lane budget, so each
+additional runner buys almost nothing and no lane count reaches the floor. **When
+the per-lane fixed cost approaches the floor, the answer is to attack the fixed
+cost, not to add lanes** — a packer that only knows how to add runners would ask
+for 21 of them here and still miss.
+
+Note also what "build cold" correlates with: all three were compiler-crate
+changes, which invalidate most of the graph. That is the common case for this
+repository's work, not an anomaly.
+
+(The lane-count model assumes every lane pays the premerge build in full, which
+overstates the fixed cost for corpus-only lanes. Treat the regimes as directional
+and the ordering as the result.)
+
+### The property that makes it robust
+
+Cost concentration, not imbalance, is what defeats a packer — and it is invisible
+to one that reasons only about totals. A packer given the pre-fix premerge lane
+would have happily requested eight runners for a workload where one item was
+225.6s, and reported success while changing nothing.
+
+So the load-bearing requirement is an alarm, not an algorithm: **when the largest
+indivisible item exceeds the floor, the planner must fail loudly, name the item,
+and refuse to express the problem as a lane count.** Its remedies are the three
+this repository already has — split the item (the CLI corpus's intra-target
+sharding), cache it (RUE-1118's action-stamp pattern), or re-tier it (the canary
+plus `slow`/`stress` split). Choosing among them is a human call; noticing is
+not, and that alarm is what would have surfaced RUE-1262 the day it landed.
+
+Two smaller properties follow from the same idea. The planner should **name its
+binding constraint on every run** — the reason this issue had to ask about CLI
+shards at all is that nothing in CI said what the critical path was. And the
+balance guard should **compare observed lane walls to plan**, since stale weights
+surface as skew and skew is the signal to refresh.
+
+The pieces already exist: `affected-targets` runs first and emits JSON the matrix
+consumes, `ci-timed` records per-command wall time and cache-hit rates, and
+`cache-probe.yml` tracks cache health on a schedule. What is missing is the
+arithmetic between them.
+
+### What this promotes to next
+
+Finishing this work does not end the question, it moves it. Two constraints
+inherit the critical path, and neither is in RUE-1250's scope:
+
+- **The native ARM64 lane, 341–407s, in 9 of 9 runs.** It is one runner by
+  construction and this note never measured what it spends that time on.
+- **The compiler build, 286–317s whenever a compiler crate changes.** It does not
+  shard, so it caps what any linux topology can achieve.
+
+Both are worth measuring the way the premerge lane was measured, before anyone
+proposes a topology for them.
+
 ## What this note does not establish
 
 - **Reliability.** The acceptance criteria ask for it and this note does not
