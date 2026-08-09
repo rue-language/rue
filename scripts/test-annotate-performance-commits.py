@@ -95,6 +95,58 @@ def test_commits_are_collected_across_platforms_and_epochs() -> None:
     assert annotate.measured_commits(subject) == {"aaa", "bbb", "ccc"}
 
 
+def test_commit_links_are_built_from_recognized_github_remotes() -> None:
+    want = "https://github.com/rue-language/rue/commit/"
+    for url in [
+        "https://github.com/rue-language/rue.git",
+        "https://github.com/rue-language/rue",
+        "https://github.com/rue-language/rue/",
+        "git@github.com:rue-language/rue.git",
+        "git@github.com:rue-language/rue",
+        "ssh://git@github.com/rue-language/rue.git",
+        "  https://github.com/rue-language/rue.git\n",
+    ]:
+        assert annotate.commit_url_prefix(url) == want, url
+
+
+def test_a_credential_in_the_remote_never_reaches_the_published_prefix() -> None:
+    # GitHub Actions writes a token into the remote URL during checkout, and
+    # this value is published to a world-readable JSON file. The prefix is
+    # rebuilt from the owner and name, so nothing else can survive.
+    for url in [
+        "https://x-access-token:ghp_SECRETVALUE@github.com/rue-language/rue.git",
+        "https://someone:hunter2@github.com/rue-language/rue",
+        "ssh://deploy-key@github.com/rue-language/rue.git",
+    ]:
+        prefix = annotate.commit_url_prefix(url)
+        assert prefix == "https://github.com/rue-language/rue/commit/", url
+        assert "@" not in prefix
+        assert "SECRET" not in prefix and "hunter2" not in prefix
+
+
+def test_an_unrecognized_remote_yields_no_prefix() -> None:
+    # Better no link than a wrong one: the page falls back to plain text.
+    for url in [
+        None,
+        "",
+        "git@gitlab.com:rue-language/rue.git",
+        "https://example.com/rue-language/rue.git",
+        # Host must be github.com itself, not merely end with it.
+        "https://notgithub.com/rue-language/rue",
+        "https://github.com.evil.test/rue-language/rue",
+        "/srv/git/rue.git",
+    ]:
+        assert annotate.commit_url_prefix(url) is None, url
+
+
+def test_the_prefix_is_written_even_when_absent() -> None:
+    subject = data("aaa")
+    annotate.annotate(subject, missing, missing, None)
+    assert subject["commit_url_prefix"] is None
+    annotate.annotate(subject, missing, missing, "https://github.com/o/r/commit/")
+    assert subject["commit_url_prefix"] == "https://github.com/o/r/commit/"
+
+
 def run(repo: Path, *args: str) -> str:
     return subprocess.run(
         ["git", "-C", str(repo), *args],
