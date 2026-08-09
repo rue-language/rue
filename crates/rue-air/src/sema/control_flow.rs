@@ -1126,18 +1126,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             let mut binding_stmts =
                 self.materialize_match_bindings(air, pattern, scrutinee_result.air_ref, ctx)?;
 
-            // RUE-238: a non-binding arm (a wildcard `_`, or a variant matched
-            // without binding its payload) still *consumes* the scrutinee — the
+            // RUE-238: a non-binding arm (a wildcard `_`, a variant matched
+            // without binding its payload, or a variant whose payload
+            // positions are all `_`) still *consumes* the scrutinee — the
             // match marked it moved (see the `mark_moved` in the emitted AIR) —
             // but extracts nothing, so its active-variant payload would leak.
             // Emit a drop of the whole scrutinee value; for an enum this lowers
             // to the variant-dispatched drop glue (`__rue_drop_E`), which drops
             // exactly the active variant's payload (a no-op when that variant
-            // carries nothing droppable). Arms that DO bind the payload move it
-            // into their binding locals — dropped when those go out of scope —
-            // so they must not also drop the scrutinee, or the payload would be
-            // dropped twice; `binding_stmts.is_empty()` is precisely that guard
-            // (Rue variant patterns bind either all payload fields or none).
+            // carries nothing droppable). Arms that bind ANY payload position
+            // by name must not also drop the scrutinee, or the moved-out
+            // fields would be dropped twice; `binding_stmts.is_empty()` is
+            // precisely that guard. Those arms account for every field
+            // themselves: named positions move into binding locals (dropped
+            // at scope exit), and `_` positions are extracted and dropped in
+            // the binding statements (RUE-1270 — previously they leaked).
             if binding_stmts.is_empty() && scrutinee_type.is_enum() {
                 let drop_ref = air.add_inst(AirInst {
                     data: AirInstData::Drop {
@@ -1733,15 +1736,50 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             }
         }
 
+        // Whether any payload position is moved out by name. When one is, the
+        // arm's binding statements suppress the whole-scrutinee drop (see the
+        // RUE-238 guard at the call site), so every `_`-discarded sibling must
+        // be dropped HERE — extract-and-drop per field — or its payload leaks
+        // (RUE-1270: for a linear sibling this silently bypassed must-consume).
+        // When every position is `_`, no statement is emitted and the
+        // whole-scrutinee drop covers the entire payload via the enum's
+        // variant-dispatched glue, exactly as before.
+        let any_named = bindings
+            .iter()
+            .any(|name| self.body_interner().resolve(name) != "_");
+
         let mut stmts: Vec<u32> = Vec::with_capacity(bindings.len() * 2);
         for (i, binding_name) in bindings.iter().enumerate() {
-            // A `_` payload (RUE-601) discards its field: bind nothing and emit
-            // no read. The field is not moved out of the scrutinee, so it is
-            // dropped together with the scrutinee — exactly like a
-            // discriminant-only match on a payload-carrying variant. The
-            // enumerate index `i` still tracks the real field position for the
-            // other bindings.
+            // A `_` payload (RUE-601) discards its field: bind nothing. With
+            // no named sibling, the field is not moved out of the scrutinee
+            // and is dropped together with it — exactly like a
+            // discriminant-only match on a payload-carrying variant. With a
+            // named sibling, the scrutinee's own drop is suppressed, so the
+            // discarded field is read out and dropped in place (4.7:30's
+            // "dropped together with it", 6.3:20's exactly-once), in field
+            // order — matching the glue's order for the all-discarded case.
+            // The enumerate index `i` still tracks the real field position
+            // for the other bindings.
             if self.body_interner().resolve(binding_name) == "_" {
+                if any_named {
+                    let field_ty = payload[i];
+                    let get_ref = air.add_inst(AirInst {
+                        data: AirInstData::EnumPayloadGet {
+                            base: scrutinee_ref,
+                            enum_id,
+                            variant_index,
+                            field_index: i as u32,
+                        },
+                        ty: field_ty,
+                        span: pattern_span,
+                    });
+                    let drop_ref = air.add_inst(AirInst {
+                        data: AirInstData::Drop { value: get_ref },
+                        ty: Type::UNIT,
+                        span: pattern_span,
+                    });
+                    stmts.push(drop_ref.as_u32());
+                }
                 continue;
             }
             let field_ty = payload[i];
