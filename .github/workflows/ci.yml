@@ -434,6 +434,12 @@ jobs:
     outputs:
       full: ${{ steps.decide.outputs.full }}
       selected: ${{ steps.decide.outputs.selected }}
+      # RUE-1130. A referenced-but-undeclared job output silently resolves to
+      # the empty string, which for a lane gate means "selected nothing" —
+      # every gated lane would deselect on a selective run. validate-ci-gate.py
+      # now fails closed on that, because the failure only appears on the
+      # peripheral PRs the gating exists for, and never on a CI-touching one.
+      selected_lanes: ${{ steps.decide.outputs.selected_lanes }}
     steps:
       - uses: actions/checkout@v6
         # BTD compares the graph at the merge-base and at the head, so the base
