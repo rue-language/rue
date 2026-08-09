@@ -2098,6 +2098,71 @@ fn main() -> i32 {
 exit_code = 20
 
 # =============================================================================
+# @target_data_model Intrinsic (4.13:112-117, RUE-1271)
+#
+# Every target the reference compiler currently supports is LP64, so these
+# cases run everywhere without `only_on`. If an ILP32 or LLP64 target is ever
+# added, the value-asserting cases below need `only_on` splits like the
+# @target_arch/@target_os cases above.
+# =============================================================================
+
+[[case]]
+name = "target_data_model_returns_enum"
+spec = ["4.13:112", "4.13:114", "4.13:115"]
+description = "@target_data_model() returns a DataModel enum value; the built-in enum has exactly the Ilp32, Llp64, and Lp64 variants (an exhaustive match names all three)."
+source = """
+fn main() -> i32 {
+    match @target_data_model() {
+        DataModel.Lp64 => 1,
+        DataModel.Llp64 => 2,
+        DataModel.Ilp32 => 3,
+    }
+}
+"""
+exit_code = 1
+
+[[case]]
+name = "target_data_model_no_args"
+spec = ["4.13:113"]
+source = """
+fn main() -> i32 {
+    // Verify @target_data_model takes no arguments
+    let dm = @target_data_model();
+    0
+}
+"""
+exit_code = 0
+
+[[case]]
+name = "target_data_model_wrong_arg_count"
+spec = ["4.13:4", "4.13:113"]
+source = """
+fn main() -> i32 {
+    let dm = @target_data_model(42);
+    0
+}
+"""
+compile_fail = true
+error_contains = "argument"
+
+[[case]]
+name = "target_data_model_compile_time_lp64"
+spec = ["4.13:112", "4.13:116"]
+description = "The data model is determined at compile time from the compilation target; every currently supported target (x86-64/AArch64 Linux and macOS) is LP64."
+source = """
+fn main() -> i32 {
+    // The value is determined at compile time
+    let dm = @target_data_model();
+    match dm {
+        DataModel.Lp64 => 10,
+        DataModel.Llp64 => 20,
+        DataModel.Ilp32 => 30,
+    }
+}
+"""
+exit_code = 10
+
+# =============================================================================
 # Wrapping arithmetic intrinsics: @wrapping_add / @wrapping_sub / @wrapping_mul
 # (4.13:91-96, RUE-647)
 #
