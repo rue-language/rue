@@ -4,11 +4,18 @@ Measured reassessment of the four-way CLI corpus sharding introduced by
 RUE-1116 and cost-balanced by RUE-1158, against current cache and
 affected-target behavior.
 
-**Decision: reduce and generalize.** Keep parallel corpus execution — cold runs
-still need it — but stop expressing it as a hand-maintained shard count on one
-harness. The current topology spends its fan-out on the one corpus that caching
-already made cheap, while the actual critical path runs unsharded on a single
-runner.
+**Decision: keep four shards; fix the mechanism around them.** Four is the
+correct count — see "Decision" below, which supersedes an earlier draft of this
+note that recommended reducing to two. That draft measured the shards' slack
+against `premerge`, which is 279–576s ahead of them; but premerge's lead is a
+defect (`rue-1250-premerge-critical-path.md`), and the floor that actually
+governs the CLI corpus is the unshardable native ARM64 lane at 341–407s. At two
+shards the corpus exceeds that floor in 4 of 4 cold runs.
+
+What does need to change is the mechanism: a balance guard that cannot fire, a
+weights file that drifts undetected, and a count replicated by hand across 23
+files — so the right answer has to be re-derived from scratch every time the
+system moves, as this issue did.
 
 ## Method and sample
 
@@ -168,17 +175,37 @@ one.
 
 ## Decision
 
-**Reduce** the CLI shard count and **generalize** the mechanism. Do not remove
-sharding: on the four executing runs, a single unsharded CLI corpus projects to
-900–1100s (measured shard sums), which would exceed premerge on the merge-group
-miss run (548s) and become the new critical path. Parallel corpus execution is
-load-bearing; the CLI-specific, hand-maintained expression of it is not.
+**Keep four.** Reject *reduce*, *remove*, and *conditionalize*.
 
-Note that "how many CLI shards" has no fixed answer, which is itself the
-argument. Two lanes (≈495s) sit under today's 548s merge-group critical path by
-54s. Fix F7 and premerge drops to roughly 300s — at which point two CLI lanes
-are the critical path and three are correct. A constant cannot track that; a
-derivation can.
+The count must be judged against the slowest thing CI cannot shard away, not
+against whatever happens to be slowest today. That is the native ARM64 lane: it
+runs on every event, it is one runner by construction, and it measured 341–407s
+(median 351s) across all nine runs. Against that floor, on the four runs where
+the CLI corpus actually executed:
+
+| shards | corpus wall | exceeds the ARM64 floor |
+| --- | --- | --- |
+| 4 (today) | 269–297s | **0 of 4** |
+| 2 | 450–550s | **4 of 4** |
+| 1 | 900–1100s | 4 of 4 |
+
+Reducing to two would make the CLI corpus the critical path on every cold run
+the moment premerge is fixed. Removing sharding does so immediately.
+
+A derivation confirms the count rather than contradicting it.
+`ceil(total ÷ floor)` gives 3 on all four runs (327–366s per shard), but the
+measured shard skew is 8–25% (F4), and 366s × 1.25 = 458s breaches the 407s
+floor. With a skew allowance, the derivation lands on **4** — which is where the
+constant already is. Nobody had written down why, which is how this issue came
+to ask the question from scratch.
+
+Do not differ topology by event (F3): warmth tracks what the diff invalidated,
+not which event fired, so an event-conditional rule would drop fan-out on
+exactly the cold pull requests that need it.
+
+What remains wrong is the mechanism, not the number. The three defects below
+(F4, F5, F6) are worth fixing on their own terms, and none of them changes the
+count.
 
 ## Proposed topology
 
@@ -233,47 +260,69 @@ Keep one topology for `pull_request` and `merge_group` (F3). The determinator
 already deselects unaffected corpora, and a deselected lane already costs only
 spin-up.
 
-### 6. Concrete first move, runner-neutral
+### 6. Record the derivation next to the constant
 
-Reduce CLI shards 4 → 2 and give the two recovered slots to premerge halves.
-Same eight linux-x64 runners, materially better packing, and it exercises the
-generalized rule on the lane that actually needs it.
+`CLI_TEST_SHARD_COUNT = 4` should carry the reason it is 4 — the ARM64 floor and
+the skew allowance above — so the next reassessment starts from the rule instead
+of rediscovering it. Until step 3 computes the count, the comment is the
+mechanism.
 
-## Expected effect, with the Amdahl caveat
+## What not to do, and why
 
-The F2 ratios are an **upper bound**, not a forecast. Three floors apply:
+The obvious-looking move is to spend CLI shard slack on the premerge lane: same
+eight runners, better packing. Do not. The slack is not real — it exists only
+because premerge is 279–576s ahead, and that lead is a defect rather than a
+budget (`rue-1250-premerge-critical-path.md`). Two measurements close that door:
 
-- per-job overhead of 13–25s (setup, checkout, dotslash, post) per lane;
-- the largest indivisible test target, which this sample cannot measure;
-- the compiler build, which every premerge lane pays and which does not shard.
+- **Premerge does not want more lanes.** Its parallel wall is 268s against a
+  225.6s largest-indivisible-target floor, so target-level fan-out has at most
+  16% to give. Two source-level fixes take the same lane to a ~30s bound with no
+  extra runners at all.
+- **The CLI corpus cannot give lanes up.** At two shards it breaches the ARM64
+  floor in 4 of 4 cold runs.
 
-That last one dominates cold runs. On run 31230794223 the premerge job was 286s
-of build plus 505s of tests; a four-way split of the *tests* gives
-286 + 126 ≈ 412s, not 200s. On warm runs the build is 6s and the split is nearly
-linear. Fork PRs without the remote cache pay the full build in every lane
-concurrently — parallel, not serial, but real.
+Both halves of the trade fail independently. The runner budget is already in the
+right shape; what is mispriced is the work inside one lane.
 
-Realistic critical path after the first move (F2 sample, premerge halved and CLI
-at two lanes):
+The Amdahl caveat that applied to the old proposal is worth keeping for whoever
+revisits lane counts later: per-job overhead is 13–25s per lane, and the
+compiler build does not shard — on run 31230794223 premerge was 286s of build
+plus 505s of tests, so a four-way split of the *tests* would have given
+286 + 126 ≈ 412s, not 200s. Fork PRs without the remote cache pay that build in
+every lane concurrently.
 
-| scenario | today | projected |
+## Expected effect
+
+Keeping the count means required-CI latency is unchanged by this decision. The
+critical path moves when the premerge defects are fixed, and then it lands on the
+native ARM64 lane:
+
+| scenario | today | after the premerge fixes |
 | --- | --- | --- |
-| warm merge group | 450–463s | ~240–260s |
-| miss merge group | 548s | ~350–400s |
-| cold pull request | 802–873s | ~550–600s |
+| warm merge group | 450–463s (premerge) | ~351s (native ARM64) |
+| cold merge group | 548s (premerge) | ~349s (native ARM64) |
+| cold pull request | 802–873s (premerge) | ~390–407s (native ARM64) |
 
-Runner cost is unchanged by construction. For reference, CLI shards are
-currently 19.2% of runner-seconds and 10.8% of billed job-minutes across the
-sample; on warm runs four shard jobs bill four minutes to verify ~20s of cached
-stamps.
+At that point every linux-x64 lane, CLI shards included, sits below the floor,
+and the next honest CI question is about the native lanes rather than about
+sharding.
+
+For cost reference: CLI shards are 19.2% of runner-seconds and 10.8% of billed
+job-minutes across the sample. On warm runs four shard jobs bill four minutes to
+verify ~20s of cached stamps — the price of the cold-run insurance the table in
+"Decision" prices, and cheap against a wrong answer there.
 
 ## What this note does not establish
 
-- The per-target breakdown inside the premerge lane. The split in step 6 is
-  justified by the lane's total and by the structural argument in F7, but the
-  actual cut points need one instrumented run (`buck2 test` with per-target
-  timings, or the existing `ci-timed` job summaries read from a real run).
-- Behavior of genuinely cold fork PRs, which carry no BuildBuddy key.
-- Whether the largest indivisible premerge target sets a floor above the
-  projections above. This is the main risk to step 6 and should be measured
-  before K is tuned.
+- **Reliability.** The acceptance criteria ask for it and this note does not
+  supply it. One `merge_group` run in the sample failed (31225370145); it was
+  not investigated, and no flake rate was computed for the shards. The weekly
+  `correctness-repetitions.yml` workflow already owns that signal and is the
+  right place to read it from, not a nine-run sample.
+- Behavior of genuinely cold fork PRs, which carry no BuildBuddy key — every
+  sampled pull request was a same-repository branch.
+- Whether the ARM64 floor is itself reducible. It is treated here as fixed
+  because it is one runner by construction, but nothing in this note measures
+  what it spends its 341–407s on. If it were reduced, the shard-count derivation
+  would need re-running against the new floor — which is the argument for
+  computing the count rather than pinning it.

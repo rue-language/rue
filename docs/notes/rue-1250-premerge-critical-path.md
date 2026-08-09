@@ -203,11 +203,19 @@ The sharding question is answered in the negative for premerge. Do not add lanes
 to it. After A and B the lane is ~30s of well-distributed work and the case for
 any premerge fan-out disappears entirely.
 
-The separate conclusions of the first note stand unchanged: the CLI corpus still
-needs *some* parallelism for cold runs, the shard count should be derived rather
-than written down, and the balance guard should measure outcomes rather than the
-model. But the ordering changes — these two fixes are worth more than every
-topology change in that note combined, and they cost no extra runners.
+It also settles the CLI shard count, by removing the reason to move it. An
+earlier draft of the first note proposed reducing CLI shards 4 → 2 and spending
+the recovered runners on premerge halves. Both halves of that trade are wrong:
+premerge's parallel wall is already within 19% of its indivisible floor, so the
+runners would buy ~16%; and once premerge stops masking it, the floor that
+governs the CLI corpus is the native ARM64 lane at 341–407s, which two shards
+(450–550s) breach in 4 of 4 cold runs. The first note now records **keep four**.
+
+Its other conclusions stand: the balance guard should measure outcomes rather
+than the model, the weights should not drift undetected, and the count should be
+derived rather than replicated by hand. But the ordering changes — the two fixes
+above are worth more than every topology change in that note combined, and they
+cost no extra runners.
 
 ## Adjacent findings
 
