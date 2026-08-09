@@ -69,6 +69,31 @@ else
 fi
 rm -rf "$PERF_DATA_ROOT"
 
+# Rebuild the homepage Field Report from the repository (RUE-1261).
+#
+# The board asserts that this project can be checked rather than trusted, so
+# every figure on it is computed here. Both inputs are optional and the page
+# drops the rows it cannot fill: a spec figure needs the traceability report,
+# and the performance index needs a published baseline that does not exist
+# until collection has run.
+echo "Deriving homepage status..."
+TRACEABILITY_JSON="$(mktemp)"
+SPEC_BIN="$("$ROOT/buck2" build //crates/rue-spec:rue-spec --show-simple-output 2>/dev/null | tail -1)"
+if [ -n "$SPEC_BIN" ] && [ -x "$SPEC_BIN" ]; then
+    # `--json` exits 0 even on a coverage gap: failing that gap is the
+    # traceability gate's job, and a red gate must not also break the site.
+    RUE_SPEC_DIR="$ROOT/docs/spec/src" RUE_SPEC_CASES="$ROOT/crates/rue-spec/cases" \
+        "$SPEC_BIN" --traceability --json > "$TRACEABILITY_JSON" 2>/dev/null || true
+else
+    echo "  (rue-spec unavailable; the spec rows will be omitted)"
+fi
+python3 "$ROOT/scripts/generate-site-status.py" \
+    --out "$ROOT/website/static/status.json" \
+    --repo "$ROOT" \
+    --traceability "$TRACEABILITY_JSON" \
+    --performance-data "$ROOT/website/static/performance-data.json"
+rm -f "$TRACEABILITY_JSON"
+
 # Build Tailwind CSS
 echo "Building Tailwind CSS..."
 cd website

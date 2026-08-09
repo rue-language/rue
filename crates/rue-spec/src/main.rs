@@ -65,7 +65,11 @@ const SPEC_DIR_PATHS: &[&str] = &["docs/spec/src", "../docs/spec/src", "../../do
 const CASES_DIR_PATHS: &[&str] = &["crates/rue-spec/cases", "cases", "../rue-spec/cases"];
 
 /// Run the traceability report.
-fn run_traceability(detailed: bool) {
+///
+/// `json` prints only the machine-readable summary and skips the gate's exit
+/// code: the website build asks for the numbers, and a coverage gap is the
+/// traceability gate's business to fail, not the site build's.
+fn run_traceability(detailed: bool, json: bool) {
     let spec_dir = find_dir("RUE_SPEC_DIR", SPEC_DIR_PATHS, "docs/spec/src");
     let cases_dir = find_dir("RUE_SPEC_CASES", CASES_DIR_PATHS, "cases");
 
@@ -85,6 +89,11 @@ fn run_traceability(detailed: bool) {
         eprintln!("error: {error}");
         std::process::exit(1);
     });
+
+    if json {
+        report.print_summary_json();
+        return;
+    }
 
     if detailed {
         report.print_detailed();
@@ -256,7 +265,8 @@ fn main() {
 
     if raw_args.iter().any(|a| a == "--traceability") {
         let detailed = raw_args.iter().any(|a| a == "--detailed");
-        run_traceability(detailed);
+        let json = raw_args.iter().any(|a| a == "--json");
+        run_traceability(detailed, json);
         return;
     }
 
@@ -265,6 +275,7 @@ fn main() {
         println!();
         println!("  --traceability     Generate spec coverage report");
         println!("  --detailed         Show detailed traceability matrix");
+        println!("  --json             Print the headline figures as JSON and exit 0");
         println!();
         println!("Environment Variables:");
         println!("  RUE_SPEC_DIR       Path to spec markdown files (default: docs/spec/src)");

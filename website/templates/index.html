@@ -28,21 +28,78 @@
         </div>
     </div>
 
+    {#
+      Every row here is derived at build time by scripts/generate-site-status.py.
+      Two rules, both of which this board previously broke:
+
+      A ratio carries both of its sides. Rendering one number twice — as
+      `{{ n }} / {{ n }}` — can only ever report 100%, and it did, while three
+      normative rules were uncovered.
+
+      A figure that could not be computed is omitted, not defaulted. There is
+      no `| default(value=…)` anywhere below: a missing value means the row
+      does not appear and the foot line says why.
+    #}
     <aside class="md:col-span-5 field-report reveal d2" aria-label="Project status">
         <span class="plate-no">Field Report</span>
-        <h2>The experiment, illustrated</h2>
-        <p class="observed">mock data · not a live project report</p>
+        <h2>The experiment, observed</h2>
+        {% if status.commit_date %}
+        <p class="observed">as of trunk, {{ status.commit_date | date(format="%-d %B %Y") }}</p>
+        {% endif %}
         <ul class="report-rows">
-            <li><span class="k">sample trunk</span><span class="leader"></span>
-                <span class="v">{{ status.mock_commit }} · commit {{ status.mock_commit_count }}</span></li>
+            {% if status.commit %}
+            <li><span class="k">trunk</span><span class="leader"></span>
+                <span class="v">{{ status.commit }}{% if status.commit_count %} · commit {{ status.commit_count }}{% endif %}</span></li>
+            {% endif %}
+            {% if status.spec %}
             <li><span class="k">spec rules traced</span><span class="leader"></span>
-                <span class="v"><span class="ok">{{ status.mock_spec_rules }} / {{ status.mock_spec_rules }}</span></span></li>
+                <span class="v"><span class="{% if status.spec.complete %}ok{% endif %}">{{ status.spec.normative_traced }} / {{ status.spec.normative_total }}</span></span></li>
             <li><span class="k">spec test cases</span><span class="leader"></span>
-                <span class="v">{{ status.mock_spec_cases }}</span></li>
+                <span class="v">{{ status.spec.cases }}</span></li>
+            {% endif %}
             <li><span class="k">platforms</span><span class="leader"></span>
-                <span class="v">{{ status.mock_platforms | join(sep=" · ") }}</span></li>
+                <span class="v">{{ status.platforms | join(sep=" · ") }}</span></li>
         </ul>
-        <p class="report-foot">Illustrative values only. Live reporting is coming later.</p>
+
+        {% if status.performance %}
+        {# The index is dimensionless and per-platform. It is named with its
+           platform and never drawn beside another one: the two are normalized
+           against independent baselines, so a shared axis would compare ratios
+           of different things. #}
+        <div class="sparkline-block performance-snapshot">
+            <div class="spark-label"><b>compiler performance</b><span>{{ status.performance.platform }}</span></div>
+            <p class="performance-reading"><strong>{{ status.performance.index }}</strong> against the epoch {{ status.performance.epoch }} baseline</p>
+            {% if status.performance.delta_percent %}
+            <p class="performance-context">{{ status.performance.delta_percent }}% versus a week ago · lower is faster</p>
+            {% else %}
+            <p class="performance-context">No point a week old yet to compare against · lower is faster</p>
+            {% endif %}
+            {% if status.performance.spark.count > 1 %}
+            <svg viewBox="0 0 300 52" preserveAspectRatio="none" role="img"
+                 aria-label="Normalized compiler-performance index on {{ status.performance.platform }} across {{ status.performance.points_count }} measured commits; lower is faster.">
+                <polyline fill="none" stroke="var(--color-border-dark)" stroke-width="1" points="0,46 300,46"/>
+                <polyline fill="none" stroke="var(--color-olive)" stroke-width="1.6"
+                          stroke-linejoin="round" points="{{ status.performance.spark.points }}"/>
+                <circle cx="{{ status.performance.spark.last_x }}" cy="{{ status.performance.spark.last_y }}" r="3" fill="var(--color-gold)"/>
+            </svg>
+            {% endif %}
+        </div>
+        {% endif %}
+
+        <p class="report-foot">
+            Derived from the repository at build time.
+            {%- if status.spec %}
+            {% if status.spec.uncovered and status.spec.uncovered == status.spec.known_uncovered %}
+            {{ status.spec.uncovered }} normative rule{{ status.spec.uncovered | pluralize }} uncovered, each with a documented reason.
+            {% elif status.spec.uncovered %}
+            {{ status.spec.uncovered }} normative rule{{ status.spec.uncovered | pluralize }} uncovered.
+            {% endif %}
+            {%- endif %}
+            {%- if not status.performance %}
+            The performance index appears once collection publishes its first
+            baseline; see the <a href="{{ get_url(path='performance') }}">dashboard</a>.
+            {%- endif %}
+        </p>
     </aside>
 </section>
 

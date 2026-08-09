@@ -1,3 +1,7 @@
 public/
 static/spec/
 content/spec/
+# Derived at build time by build.sh; publishing a checked-in copy is how the
+# Field Report came to report invented numbers (RUE-1261).
+static/status.json
+static/performance-data.json
