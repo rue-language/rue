@@ -7,6 +7,7 @@
 //! configuration are absent because relocation of already-analyzed AIR is
 //! configuration-neutral; they remain part of the downstream CFG query key.
 
+use std::hash::Hash;
 use std::sync::Arc;
 
 use crate::durable_semantics::{
@@ -16,7 +17,7 @@ use crate::durable_semantics::{
 use crate::retained_charge::RetainedCharge;
 use crate::{FunctionInstanceKey, ModuleId, StableDefinitionKey, StableDefinitionKind};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LocalCallableFact {
     pub(crate) identity: FunctionInstanceKey,
     pub(crate) symbol: Arc<str>,
@@ -25,7 +26,7 @@ pub(crate) struct LocalCallableFact {
 /// Exact classification projected from the selected nominal's query-owned
 /// lookup/index fact. `None` is meaningful: every supplied named nominal has a
 /// record, so omission cannot silently strip compiler-recognized metadata.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct LocalNominalMetadataFact {
     identity: StableDefinitionKey,
     lang_item: Option<rue_air::LangItem>,
@@ -63,51 +64,60 @@ pub(crate) struct LocalMaterializationFacts {
 
 impl LocalMaterializationFacts {
     pub(crate) fn union<'a>(facts: impl IntoIterator<Item = &'a Self>) -> Self {
+        fn extend_unique<'a, T: Clone + Eq + Hash>(
+            destination: &mut Vec<T>,
+            seen: &mut std::collections::HashSet<&'a T>,
+            source: &'a [T],
+        ) {
+            for value in source {
+                if seen.insert(value) {
+                    destination.push(value.clone());
+                }
+            }
+        }
+
         let mut declarations = Vec::new();
+        let mut seen_declarations = std::collections::HashSet::new();
         let mut anonymous_nominals = Vec::new();
+        let mut seen_anonymous_nominals = std::collections::HashSet::new();
         let mut callables = Vec::new();
+        let mut seen_callables = std::collections::HashSet::new();
         let mut nominal_metadata = Vec::new();
+        let mut seen_nominal_metadata = std::collections::HashSet::new();
         let mut modules = Vec::new();
+        let mut seen_modules = std::collections::HashSet::new();
         let mut builtin_nominals = Vec::new();
+        let mut seen_builtin_nominals = std::collections::HashSet::new();
         let mut required_types = Vec::new();
+        let mut seen_required_types = std::collections::HashSet::new();
         for facts in facts {
-            for (source, destination) in [(facts.declarations.as_ref(), &mut declarations)] {
-                for value in source {
-                    if !destination.contains(value) {
-                        destination.push(value.clone());
-                    }
-                }
-            }
-            for value in facts.anonymous_nominals.iter() {
-                if !anonymous_nominals.contains(value) {
-                    anonymous_nominals.push(value.clone());
-                }
-            }
-            for value in facts.callables.iter() {
-                if !callables.contains(value) {
-                    callables.push(value.clone());
-                }
-            }
-            for value in facts.nominal_metadata.iter() {
-                if !nominal_metadata.contains(value) {
-                    nominal_metadata.push(value.clone());
-                }
-            }
-            for value in facts.modules.iter() {
-                if !modules.contains(value) {
-                    modules.push(value.clone());
-                }
-            }
-            for value in facts.builtin_nominals.iter() {
-                if !builtin_nominals.contains(value) {
-                    builtin_nominals.push(value.clone());
-                }
-            }
-            for value in facts.required_types.iter() {
-                if !required_types.contains(value) {
-                    required_types.push(value.clone());
-                }
-            }
+            extend_unique(
+                &mut declarations,
+                &mut seen_declarations,
+                &facts.declarations,
+            );
+            extend_unique(
+                &mut anonymous_nominals,
+                &mut seen_anonymous_nominals,
+                &facts.anonymous_nominals,
+            );
+            extend_unique(&mut callables, &mut seen_callables, &facts.callables);
+            extend_unique(
+                &mut nominal_metadata,
+                &mut seen_nominal_metadata,
+                &facts.nominal_metadata,
+            );
+            extend_unique(&mut modules, &mut seen_modules, &facts.modules);
+            extend_unique(
+                &mut builtin_nominals,
+                &mut seen_builtin_nominals,
+                &facts.builtin_nominals,
+            );
+            extend_unique(
+                &mut required_types,
+                &mut seen_required_types,
+                &facts.required_types,
+            );
         }
         Self {
             declarations: declarations.into(),
@@ -121,7 +131,7 @@ impl LocalMaterializationFacts {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct LocalBuiltinNominalRequest {
     pub(crate) kind: crate::AnonymousNominalKind,
     pub(crate) name: Arc<str>,
@@ -1359,6 +1369,31 @@ pub(crate) fn select_drop_glue_materialization_facts(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn facts_with_modules(modules: Vec<ModuleId>) -> LocalMaterializationFacts {
+        LocalMaterializationFacts {
+            declarations: Arc::new([]),
+            anonymous_nominals: Arc::new([]),
+            callables: Arc::new([]),
+            nominal_metadata: Arc::new([]),
+            modules: modules.into(),
+            builtin_nominals: Arc::new([]),
+            required_types: Arc::new([]),
+        }
+    }
+
+    #[test]
+    fn materialization_union_preserves_first_seen_order() {
+        let a = ModuleId::from_validated_canonical("a.rue");
+        let b = ModuleId::from_validated_canonical("b.rue");
+        let c = ModuleId::from_validated_canonical("c.rue");
+        let left = facts_with_modules(vec![a.clone(), b.clone()]);
+        let right = facts_with_modules(vec![b.clone(), c.clone(), a.clone()]);
+
+        let union = LocalMaterializationFacts::union([&left, &right]);
+
+        assert_eq!(union.modules.as_ref(), &[a, b, c]);
+    }
 
     fn body() -> rue_air::SemanticBody<StableDefinitionKey, ModuleId> {
         use rue_air::{SemanticBody, SemanticBodyAnchor, SemanticBodyInst, SemanticBodyInstData};

@@ -191,6 +191,119 @@ pub(crate) enum AccessorCfgSubgraphFailure {
     Cycle(crate::FunctionInstanceKey),
 }
 
+#[derive(Debug)]
+enum AccessorDagFailure<K> {
+    Missing(K),
+    Cycle(K),
+}
+
+#[derive(Debug, Default)]
+struct AccessorGraphWork {
+    #[cfg(test)]
+    validation_edges: usize,
+    #[cfg(test)]
+    closure_edges: usize,
+}
+
+impl AccessorGraphWork {
+    fn validation_edge(&mut self) {
+        #[cfg(test)]
+        {
+            self.validation_edges += 1;
+        }
+    }
+
+    fn closure_edge(&mut self) {
+        #[cfg(test)]
+        {
+            self.closure_edges += 1;
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VisitState {
+    Visiting,
+    Complete,
+}
+
+/// Validate the whole accessor graph once. Keeping validation separate from
+/// root closure construction prevents a chain of accessor-only functions from
+/// being walked again from every intermediate accessor.
+fn validate_accessor_dag<K: Clone + Ord>(
+    direct: &std::collections::BTreeMap<K, Vec<K>>,
+    mut contains_key: impl FnMut(&K) -> bool,
+    work: &mut AccessorGraphWork,
+) -> Result<(), AccessorDagFailure<K>> {
+    let mut states = std::collections::BTreeMap::new();
+    for start in direct.keys() {
+        if states.get(start) == Some(&VisitState::Complete) {
+            continue;
+        }
+        states.insert(start.clone(), VisitState::Visiting);
+        let mut stack = vec![(start.clone(), 0usize)];
+        while let Some((function, next)) = stack.last_mut() {
+            let Some(callee) = direct
+                .get(function)
+                .and_then(|callees| callees.get(*next))
+                .cloned()
+            else {
+                let function = function.clone();
+                states.insert(function, VisitState::Complete);
+                stack.pop();
+                continue;
+            };
+            *next += 1;
+            work.validation_edge();
+            if !contains_key(&callee) {
+                return Err(AccessorDagFailure::Missing(callee));
+            }
+            match states.get(&callee) {
+                Some(VisitState::Visiting) => return Err(AccessorDagFailure::Cycle(callee)),
+                Some(VisitState::Complete) => {}
+                None => {
+                    states.insert(callee.clone(), VisitState::Visiting);
+                    stack.push((callee, 0));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Return the unique transitive callees of one executable root in the same
+/// callee-before-caller order used by mandatory splicing. The graph has already
+/// been validated, so this walk only computes the flat query dependency list
+/// that the optimized-CFG key must own.
+fn accessor_postorder<K: Clone + Ord>(
+    root: &K,
+    direct: &std::collections::BTreeMap<K, Vec<K>>,
+    work: &mut AccessorGraphWork,
+) -> Vec<K> {
+    let mut seen = std::collections::BTreeSet::from([root.clone()]);
+    let mut stack = vec![(root.clone(), 0usize)];
+    let mut output = Vec::new();
+    while let Some((function, next)) = stack.last_mut() {
+        let Some(callee) = direct
+            .get(function)
+            .and_then(|callees| callees.get(*next))
+            .cloned()
+        else {
+            let (function, _) = stack.pop().expect("accessor traversal stack is nonempty");
+            if &function != root {
+                output.push(function);
+            }
+            continue;
+        };
+        *next += 1;
+        work.closure_edge();
+        if seen.insert(callee.clone()) {
+            stack.push((callee, 0));
+        }
+    }
+    output
+}
+
 pub(crate) fn accessor_source_name(identity: &crate::FunctionInstanceKey) -> String {
     match identity {
         crate::FunctionInstanceKey::Definition(definition) => definition.name().to_owned(),
@@ -238,33 +351,6 @@ pub(crate) fn accessor_cfg_subgraph(
         .collect::<std::collections::BTreeSet<_>>();
     accessors.extend(direct.values().flatten().cloned());
 
-    fn postorder(
-        function: &crate::FunctionInstanceKey,
-        direct: &std::collections::BTreeMap<
-            crate::FunctionInstanceKey,
-            Vec<crate::FunctionInstanceKey>,
-        >,
-        keys: &std::collections::BTreeMap<crate::FunctionInstanceKey, CfgQueryKey>,
-        visiting: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-        seen: &mut std::collections::BTreeSet<crate::FunctionInstanceKey>,
-        output: &mut Vec<CfgQueryKey>,
-    ) -> Result<(), AccessorCfgSubgraphFailure> {
-        for callee in direct.get(function).into_iter().flatten() {
-            if !keys.contains_key(callee) {
-                return Err(AccessorCfgSubgraphFailure::Missing(callee.clone()));
-            }
-            if !visiting.insert(callee.clone()) {
-                return Err(AccessorCfgSubgraphFailure::Cycle(callee.clone()));
-            }
-            if seen.insert(callee.clone()) {
-                postorder(callee, direct, keys, visiting, seen, output)?;
-                output.push(keys[callee].clone());
-            }
-            visiting.remove(callee);
-        }
-        Ok(())
-    }
-
     fn facts(
         key: &CfgQueryKey,
     ) -> Option<&crate::local_semantic_materialization::LocalMaterializationFacts> {
@@ -293,18 +379,29 @@ pub(crate) fn accessor_cfg_subgraph(
         )
     }
 
+    let mut graph_work = AccessorGraphWork::default();
+    validate_accessor_dag(
+        &direct,
+        |function| keys.contains_key(function),
+        &mut graph_work,
+    )
+    .map_err(|failure| match failure {
+        AccessorDagFailure::Missing(function) => AccessorCfgSubgraphFailure::Missing(function),
+        AccessorDagFailure::Cycle(function) => AccessorCfgSubgraphFailure::Cycle(function),
+    })?;
+
     let mut roots = std::collections::BTreeMap::new();
     let mut dependencies = std::collections::BTreeMap::new();
-    for function in keys.keys() {
-        let mut output = Vec::new();
-        postorder(
-            function,
-            &direct,
-            &keys,
-            &mut std::collections::BTreeSet::from([function.clone()]),
-            &mut std::collections::BTreeSet::new(),
-            &mut output,
-        )?;
+    // Accessors have no standalone ABI unit, so their own closure keys are
+    // never consumed. Build flat closures only for executable roots.
+    for function in keys
+        .keys()
+        .filter(|function| !accessors.contains(*function))
+    {
+        let output = accessor_postorder(function, &direct, &mut graph_work)
+            .into_iter()
+            .map(|callee| keys[&callee].clone())
+            .collect::<Vec<_>>();
         let root = &keys[function];
         if output.is_empty() {
             roots.insert(function.clone(), root.clone());
@@ -1337,5 +1434,67 @@ pub(crate) fn evaluate_optimized_cfg(
             })
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure))
         }
+    }
+}
+
+#[cfg(test)]
+mod accessor_graph_tests {
+    use super::*;
+
+    fn chain(size: usize) -> std::collections::BTreeMap<usize, Vec<usize>> {
+        (0..size)
+            .map(|node| {
+                let callees = (node + 1 < size).then_some(node + 1).into_iter().collect();
+                (node, callees)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn accessor_chain_work_is_linear_in_edges() {
+        for size in [32, 64, 128] {
+            let direct = chain(size);
+            let mut work = AccessorGraphWork::default();
+            validate_accessor_dag(&direct, |node| direct.contains_key(node), &mut work).unwrap();
+            let output = accessor_postorder(&0, &direct, &mut work);
+
+            assert_eq!(work.validation_edges, size - 1);
+            assert_eq!(work.closure_edges, size - 1);
+            assert_eq!(output, (1..size).rev().collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn accessor_fanout_work_is_linear_in_edges() {
+        for width in [32, 64, 128] {
+            let mut direct = std::collections::BTreeMap::new();
+            direct.insert(0, (1..=width).collect());
+            direct.extend((1..=width).map(|node| (node, Vec::new())));
+
+            let mut work = AccessorGraphWork::default();
+            validate_accessor_dag(&direct, |node| direct.contains_key(node), &mut work).unwrap();
+            let output = accessor_postorder(&0, &direct, &mut work);
+
+            assert_eq!(work.validation_edges, width);
+            assert_eq!(work.closure_edges, width);
+            assert_eq!(output, (1..=width).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn accessor_dag_validation_preserves_missing_and_cycle_failures() {
+        let mut missing = std::collections::BTreeMap::from([(0, vec![1])]);
+        let mut work = AccessorGraphWork::default();
+        assert!(matches!(
+            validate_accessor_dag(&missing, |node| missing.contains_key(node), &mut work),
+            Err(AccessorDagFailure::Missing(1))
+        ));
+
+        missing.insert(1, vec![0]);
+        let mut work = AccessorGraphWork::default();
+        assert!(matches!(
+            validate_accessor_dag(&missing, |node| missing.contains_key(node), &mut work),
+            Err(AccessorDagFailure::Cycle(0))
+        ));
     }
 }
