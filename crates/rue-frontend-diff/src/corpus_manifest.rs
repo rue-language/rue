@@ -826,6 +826,7 @@ pub(crate) const ROOTS: &[(&str, &[&str])] = &[
             "dijkstra/graphs/graph.rue",
             "dijkstra/graphs/heap.rue",
             "dijkstra/main.rue",
+            "dup/dup.rue",
             "fibonacci.rue",
             "first/option_try.rue",
             "first/result_try.rue",
