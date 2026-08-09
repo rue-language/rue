@@ -153,23 +153,27 @@ pub(crate) struct RawAccessorSignatureSyntax {
     /// trailing-yield check even when no caller demands body analysis, so this
     /// one signature query legitimately depends on its own body.
     pub(crate) body: Arc<str>,
-    /// Every method the accessor's owner declares, paired with whether it is
-    /// itself an accessor, sorted by name and with ambiguous duplicate names
+    /// Every method the accessor's owner declares — its name, whether it is
+    /// itself an accessor, and the method names its body calls on its own
+    /// `self` receiver — sorted by name and with ambiguous duplicate names
     /// dropped.
     ///
     /// 6.6:7 admits a method-call link in the yielded chain only when the
-    /// callee is an accessor. For a link whose receiver is the accessor's own
-    /// `self`, the callee is a method of this owner, and whether it is an
-    /// accessor is a *parsed* fact of a sibling declaration — no signature or
-    /// body of that sibling is demanded, so there is no query cycle between
-    /// mutually recursive accessors. Retaining the facts here is what records
-    /// the dependency: this terminal is materialized from the module's parse,
-    /// so editing a sibling method's `-> borrow` qualifier changes this value
-    /// and re-runs every consumer of this accessor's signature.
+    /// callee is an accessor, and 6.6:14 rejects a cycle of accessor
+    /// expansions (RUE-1282). For a link whose receiver is the accessor's own
+    /// `self`, the callee is a method of this owner, and both deciding facts —
+    /// the sibling's `-> borrow` qualifier and its own `self`-call targets —
+    /// are *parsed* facts of the sibling declaration: no signature or body of
+    /// that sibling is demanded, so there is no query cycle between mutually
+    /// recursive accessors. Retaining the facts here is what records the
+    /// dependency: this terminal is materialized from the module's parse, so
+    /// editing a sibling method's `-> borrow` qualifier or `self`-call set
+    /// changes this value and re-runs every consumer of this accessor's
+    /// signature.
     ///
     /// Empty for an accessor with no owning type, or whose owner declares no
     /// other methods.
-    pub(crate) owner_methods: Arc<[(Arc<str>, bool)]>,
+    pub(crate) owner_methods: Arc<[rue_air::declaration_validation::AccessorOwnerMethod]>,
 }
 
 /// Stable, position-free failure retained by the exact raw-signature family.

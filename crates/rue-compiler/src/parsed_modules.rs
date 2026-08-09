@@ -421,13 +421,13 @@ impl ParsedDefinitionIndex {
         Some(syntax)
     }
 
-    /// Every method one owner declares in this module, paired with whether it
-    /// is itself a `-> borrow` accessor, in the normalized form the raw
-    /// signature terminal retains.
+    /// Every method one owner declares in this module — its name, whether it
+    /// is itself a `-> borrow` accessor, and its `self`-call targets — in the
+    /// normalized form the raw signature terminal retains.
     fn owner_method_accessor_facts(
         &self,
         owner: &crate::declaration_candidate::DeclarationCandidateOwner,
-    ) -> Arc<[(Arc<str>, bool)]> {
+    ) -> Arc<[rue_air::declaration_validation::AccessorOwnerMethod]> {
         use crate::declaration_candidate::DeclarationCandidateCategory as Category;
         crate::semantic_query_nucleus::owner_method_accessor_facts(
             self.declarations
@@ -436,7 +436,13 @@ impl ParsedDefinitionIndex {
                     candidate.fact.key.category == Category::Method
                         && candidate.fact.key.owner.as_ref() == Some(owner)
                 })
-                .map(|candidate| (candidate.fact.key.name.clone(), candidate.is_accessor)),
+                .map(
+                    |candidate| rue_air::declaration_validation::AccessorOwnerMethod {
+                        name: candidate.fact.key.name.clone(),
+                        is_accessor: candidate.is_accessor,
+                        self_call_targets: candidate.self_call_targets.clone(),
+                    },
+                ),
         )
     }
 
@@ -536,6 +542,11 @@ pub(crate) struct ParsedDeclarationCandidate {
     raw_signature_locator: Option<RawDeclarationSignatureLocator>,
     raw_body_span: Option<Span>,
     is_accessor: bool,
+    /// The method names this declaration's body calls on its own `self`
+    /// receiver, normalized. Non-empty only for methods; the accessor
+    /// signature terminal retains it as a sibling's 6.6:14 cycle edge
+    /// (RUE-1282).
+    self_call_targets: Arc<[Arc<str>]>,
     raw_import_range: Option<RawDeclarationImportRange>,
     /// Value-position anonymous type literals inside this declaration's constant
     /// initializer or body, with module-relative spans and their frontend
@@ -1540,6 +1551,7 @@ fn bind_payload(
                 ),
                 raw_body_span: candidate.raw_body_span.map(remap_span),
                 is_accessor: candidate.is_accessor,
+                self_call_targets: candidate.self_call_targets.clone(),
                 raw_import_range: candidate.raw_import_range,
                 anonymous_sites: candidate
                     .anonymous_sites
@@ -2006,12 +2018,37 @@ fn build_definition_index(
         Option<RawDeclarationSignatureLocator>,
         Option<Span>,
         bool,
+        Arc<[Arc<str>]>,
         Option<RawDeclarationImportRange>,
         Arc<[rue_rir::AnonymousTypeSite]>,
     )>::new();
     let resolve_name = |ident: rue_parser::Ident| -> CompileResult<Arc<str>> {
         let symbol = resolver.symbol(ident.name)?;
         Ok(Arc::from(resolver.resolve(&symbol)?))
+    };
+    // The method names one body calls on its own `self` receiver, normalized
+    // (sorted, deduplicated). Retained per method candidate so an accessor's
+    // signature terminal can carry its siblings' 6.6:14 cycle edges
+    // (RUE-1282) exactly as it carries their `-> borrow` qualifiers.
+    let self_call_targets = |body: &rue_parser::ast::Expr| -> CompileResult<Arc<[Arc<str>]>> {
+        use rue_parser::ast::Expr;
+        let mut walk = vec![body];
+        let mut targets: Vec<Arc<str>> = Vec::new();
+        while let Some(expr) = walk.pop() {
+            if let Expr::MethodCall(call) = expr {
+                let mut receiver = &*call.receiver;
+                while let Expr::Paren(paren) = receiver {
+                    receiver = &paren.inner;
+                }
+                if matches!(receiver, Expr::SelfExpr(_)) {
+                    targets.push(resolve_name(call.method)?);
+                }
+            }
+            expr.child_exprs(&mut walk);
+        }
+        targets.sort();
+        targets.dedup();
+        Ok(Arc::from(targets))
     };
     let parameters =
         |params: &[rue_parser::Param]| -> CompileResult<Arc<[DeclarationParameterHeader]>> {
@@ -2084,6 +2121,7 @@ fn build_definition_index(
                         is_unchecked,
                         is_extern,
                         is_accessor,
+                        method_self_call_targets: Arc<[Arc<str>]>,
                         declaration_span,
                         signature_spans: Vec<Span>,
                         raw_const_syntax_spans: Option<RawConstSyntaxSpans>,
@@ -2157,6 +2195,7 @@ fn build_definition_index(
                 raw_signature_locator,
                 raw_body_span,
                 is_accessor,
+                method_self_call_targets,
                 raw_import_range,
                 anonymous_sites,
             ));
@@ -2176,6 +2215,7 @@ fn build_definition_index(
                 function.is_unchecked,
                 false,
                 function.borrow_return.is_some(),
+                Arc::from([]),
                 function.span,
                 vec![signature_prefix(function.span, function.body.span())?],
                 None,
@@ -2203,6 +2243,7 @@ fn build_definition_index(
                     false,
                     false,
                     false,
+                    Arc::from([]),
                     structure.span,
                     signature_fragments_excluding_method_bodies(structure)?,
                     None,
@@ -2238,6 +2279,7 @@ fn build_definition_index(
                         false,
                         false,
                         method.borrow_return.is_some(),
+                        self_call_targets(&method.body)?,
                         method.span,
                         vec![signature_prefix(method.span, method.body.span())?],
                         None,
@@ -2265,6 +2307,7 @@ fn build_definition_index(
                 false,
                 false,
                 false,
+                Arc::from([]),
                 value.span,
                 vec![value.span],
                 None,
@@ -2297,6 +2340,7 @@ fn build_definition_index(
                     false,
                     false,
                     false,
+                    Arc::from([]),
                     value.span,
                     vec![signature_prefix(value.span, value.init.span())?],
                     Some(raw_const_syntax_spans),
@@ -2320,6 +2364,7 @@ fn build_definition_index(
                 false,
                 false,
                 false,
+                Arc::from([]),
                 value.span,
                 vec![signature_prefix(value.span, value.body.span())?],
                 None,
@@ -2347,6 +2392,7 @@ fn build_definition_index(
                         false,
                         true,
                         false,
+                        Arc::from([]),
                         function.span,
                         vec![function.span],
                         None,
@@ -2431,6 +2477,7 @@ fn build_definition_index(
                 raw_signature_locator,
                 raw_body_span,
                 is_accessor,
+                self_call_targets,
                 raw_import_range,
                 anonymous_sites,
             )| {
@@ -2452,6 +2499,7 @@ fn build_definition_index(
                     raw_signature_locator,
                     raw_body_span,
                     is_accessor,
+                    self_call_targets,
                     raw_import_range,
                     anonymous_sites,
                 })

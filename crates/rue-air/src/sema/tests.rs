@@ -4081,24 +4081,52 @@ fn main() -> i32 {
     }
 
     #[test]
-    fn mutually_recursive_accessors_retain_marked_calls_for_cfg_cycle_rejection() {
-        // Cross-body cycle rejection belongs to the canonical CFG dependency
-        // graph; semantic analysis must preserve both exact accessor calls.
+    fn uncalled_accessor_cycle_is_rejected_at_declaration() {
+        // 6.6:14 is a legality rule on the declarations alone (RUE-1282): a
+        // cycle over `self`-receiver accessor calls needs no call site.
         let source = "
 struct P {
     x: i64,
 
-    fn a(borrow self) -> borrow i64 {
-        yield self.b();
+    @allow(unused_function)
+    fn a(borrow self) -> borrow i64 { yield self.b(); }
+    @allow(unused_function)
+    fn b(borrow self) -> borrow i64 { yield self.a(); }
+}
+fn main() -> i32 { 0 }";
+        let errors = compile_with_accessors(source).expect_err("uncalled accessor cycle");
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::AccessorRecursion { .. }))
+        );
+    }
+
+    #[test]
+    fn mutually_recursive_accessors_retain_marked_calls_for_cfg_cycle_rejection() {
+        // Cross-body cycle rejection belongs to the canonical CFG dependency
+        // graph; semantic analysis must preserve both exact accessor calls.
+        // The `a -> b` link runs through a by-value guard's receiver rather
+        // than `self`: a cycle whose every edge is a `self`-receiver call is
+        // now rejected at the declaration seam (6.6:14, RUE-1282), and this
+        // test pins the demanded-path division of labor for the edges that
+        // seam cannot see.
+        let source = "
+struct P {
+    x: i64,
+
+    fn a(borrow self, other: P) -> borrow i64 {
+        let _ = other.b();
+        yield self.x;
     }
 
     fn b(borrow self) -> borrow i64 {
-        yield self.a();
+        yield self.a(P { x: 3 });
     }
 }
 fn main() -> i32 {
     let p = P { x: 1 };
-    if p.a() == 1 { 0 } else { 1 }
+    if p.a(P { x: 2 }) == 1 { 0 } else { 1 }
 }";
         let output = compile_with_accessors(source).expect("sema preserves the accessor cycle");
         let calls = output

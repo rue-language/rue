@@ -7802,14 +7802,20 @@ impl SemanticConstEvaluator<'_, '_> {
                         crate::durable_semantics::DurableParameterMode::Inout
                     }
                 };
-                // 6.6:7's accessor-link fact for this anonymous owner's own
-                // methods, exactly as a named owner's members retain it.
+                // 6.6:7's accessor-link and 6.6:14 cycle-edge facts for this
+                // anonymous owner's own methods, exactly as a named owner's
+                // members retain them.
                 let owner_methods = crate::semantic_query_nucleus::owner_method_accessor_facts(
                     methods.iter().map(|method| {
-                        (
-                            Arc::from(self.interner.resolve(&method.name.name)),
-                            method.borrow_return.is_some(),
-                        )
+                        rue_air::declaration_validation::AccessorOwnerMethod {
+                            name: Arc::from(self.interner.resolve(&method.name.name)),
+                            is_accessor: method.borrow_return.is_some(),
+                            self_call_targets:
+                                crate::semantic_query_nucleus::ast_self_call_targets(
+                                    &method.body,
+                                    self.interner,
+                                ),
+                        }
                     }),
                 );
                 let methods = methods
@@ -10516,6 +10522,7 @@ fn resolve_parsed_semantic_signature(
             is_c_export,
             is_accessor,
             accessor_body,
+            accessor_cycle,
         } => {
             if *is_accessor {
                 // 6.6:3-6.6:7 over the reparsed declaration. Which forms are
@@ -10593,6 +10600,19 @@ fn resolve_parsed_semantic_signature(
                 // demanded path.
                 if let Some(kind) = rules::accessor_body_error(accessor_body) {
                     return Err(diagnostic(kind));
+                }
+                // 6.6:14 over the owner's retained `self`-call edges: an
+                // accessor cycle has no finite expansion, so it too is a
+                // legality rule on the declaration (RUE-1282). Exotic edges
+                // through a non-`self` receiver stay with the demanded-path
+                // checks.
+                if let Some(method) = accessor_cycle {
+                    return Err(ResolveSemanticSignatureError::failure(
+                        crate::semantic_query_nucleus::SemanticNucleusFailure::DiagnosticWithNote {
+                            kind: rules::accessor_recursion_error(method),
+                            note: Arc::from(rules::ACCESSOR_RECURSION_NOTE),
+                        },
+                    ));
                 }
             }
             let mut generic_index = 0_u32;
