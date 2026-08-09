@@ -7805,19 +7805,17 @@ impl SemanticConstEvaluator<'_, '_> {
                 // 6.6:7's accessor-link and 6.6:14 cycle-edge facts for this
                 // anonymous owner's own methods, exactly as a named owner's
                 // members retain them.
-                let owner_methods = crate::semantic_query_nucleus::owner_method_accessor_facts(
-                    methods.iter().map(|method| {
-                        rue_air::declaration_validation::AccessorOwnerMethod {
+                let owner_methods =
+                    crate::semantic_query_nucleus::owner_method_accessor_facts(methods.iter().map(
+                        |method| rue_air::declaration_validation::AccessorOwnerMethod {
                             name: Arc::from(self.interner.resolve(&method.name.name)),
                             is_accessor: method.borrow_return.is_some(),
-                            self_call_targets:
-                                crate::semantic_query_nucleus::ast_self_call_targets(
-                                    &method.body,
-                                    self.interner,
-                                ),
-                        }
-                    }),
-                );
+                            self_call_targets: crate::semantic_query_nucleus::ast_self_call_targets(
+                                &method.body,
+                                self.interner,
+                            ),
+                        },
+                    ));
                 let methods = methods
                     .iter()
                     .map(|method| {

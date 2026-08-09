@@ -372,7 +372,10 @@ pub(crate) fn parse_semantic_signature(
         .first()
         .ok_or_else(|| Arc::from("semantic signature parsed no declaration"))?;
     let unit: Arc<str> = Arc::from("()");
-    let owner_methods = syntax.accessor.as_ref().map_or::<&[rue_air::declaration_validation::AccessorOwnerMethod], _>(
+    let owner_methods = syntax
+        .accessor
+        .as_ref()
+        .map_or::<&[rue_air::declaration_validation::AccessorOwnerMethod], _>(
         &[],
         |accessor| &accessor.owner_methods,
     );
@@ -382,11 +385,9 @@ pub(crate) fn parse_semantic_signature(
     // declaration reaches itself through its siblings' `self`-receiver
     // accessor calls. Decided here so the accessor's own signature query
     // rejects the cycle with no call site anywhere in the program.
-    let accessor_cycle = rue_air::declaration_validation::accessor_self_call_cycle(
-        &key.name,
-        owner_methods,
-    )
-    .then(|| key.name.clone());
+    let accessor_cycle =
+        rue_air::declaration_validation::accessor_self_call_cycle(&key.name, owner_methods)
+            .then(|| key.name.clone());
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
                     has_self,
