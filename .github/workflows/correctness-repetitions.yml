@@ -40,3 +40,38 @@ jobs:
           name: correctness-repetitions-linux-x64-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/repetitions
           if-no-files-found: error
+
+  # RUE-1260. The shard repetitions above run one execution at a time, which is
+  # the wrong schedule for the query runtime: each rue-compiler test process
+  # opens its own `available_parallelism()`-wide runtime, so repeating a single
+  # execution never oversubscribes the machine. Three separate intermittent
+  # failures in the differential oracle survived that lane and were caught only
+  # by the merge queue, each ejecting an unrelated pull request. Concurrent
+  # independent processes are the schedule that reproduces them, and the merge
+  # group applies the same pressure when Buck runs the target alongside the
+  # rest of the graph.
+  soak-contended-oracle:
+    name: soak (linux-x64 differential oracle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: facebook/install-dotslash@v2
+      - uses: actions/cache@v5
+        with:
+          path: ~/.cache/dotslash
+          key: dotslash-soak-linux-x64-${{ hashFiles('buck2') }}
+          restore-keys: dotslash-soak-linux-x64-
+      - name: Soak the differential oracle under process oversubscription
+        env:
+          RUE_SOAK_LOG_DIR: ${{ runner.temp }}/soak
+        run: |
+          scripts/ci-soak-contended \
+            //crates/rue-compiler:rue-compiler-differential-oracle-test \
+            "${{ inputs.repetitions || '15' }}"
+      - name: Upload retained soak failures
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: contended-soak-linux-x64-differential-oracle
+          path: ${{ runner.temp }}/soak
+          if-no-files-found: error

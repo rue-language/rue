@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Soak one test target under process oversubscription, retaining every failure.
+#
+# The existing repetition lane (scripts/ci-repeat-correctness) runs a shard
+# again and again, one execution at a time. That schedule does not reproduce
+# the class of failure RUE-1260 tracked: each rue-compiler test process builds
+# a query runtime `available_parallelism()` wide, so a single execution never
+# oversubscribes the machine no matter how many times it is repeated, and 60
+# sequential runs of the differential oracle found nothing while the merge
+# queue kept ejecting pull requests.
+#
+# What does reproduce it is several INDEPENDENT processes at once, each opening
+# its own full-width runtime. On an N-core runner, P concurrent processes is
+# P*N-way oversubscription, threads are descheduled mid-window, and orderings
+# that are otherwise vanishingly rare become routine. That is also what the
+# merge-group runner does to a target when Buck schedules it alongside the rest
+# of the graph.
+#
+# Usage:
+#   scripts/ci-soak-contended //PACKAGE:TARGET [ROUNDS] [PROCESSES]
+#
+# ROUNDS defaults to 15 and PROCESSES to twice the detected core count. Every
+# failing execution's complete stdout/stderr is kept under
+# $RUE_SOAK_LOG_DIR; a later passing round never clears an earlier failure.
+set -uo pipefail
+
+if [[ $# -lt 1 || $# -gt 3 || "$1" != //*:* ]]; then
+    echo "usage: scripts/ci-soak-contended //PACKAGE:TARGET [ROUNDS] [PROCESSES]" >&2
+    exit 2
+fi
+target="$1"
+rounds="${2:-15}"
+cores="$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+processes="${3:-$((cores * 2))}"
+
+if [[ ! "$rounds" =~ ^[1-9][0-9]*$ || ! "$processes" =~ ^[1-9][0-9]*$ ]]; then
+    echo "error: ROUNDS and PROCESSES must be positive integers" >&2
+    exit 2
+fi
+if (( rounds > 200 || processes > 64 )); then
+    echo "error: refusing an unbounded soak (rounds <= 200, processes <= 64)" >&2
+    exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+log_dir="${RUE_SOAK_LOG_DIR:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/rue-contended-soak}"
+mkdir -p "$log_dir"
+
+# The soak drives the test binary directly rather than through `buck2 test`,
+# because the point is to control the concurrency: `buck2 test` owns scheduling
+# and would serialize a corpus target that declares the whole machine, which is
+# exactly the schedule that does not reproduce anything. There is no helper for
+# a test binary's path the way scripts/rue-bin exists for the compiler, so this
+# asks Buck for it directly.
+binary="$(./buck2 build "$target" --show-simple-output 2>"$log_dir/build.log" | tail -1)"
+if [[ -z "$binary" || ! -x "$binary" ]]; then
+    cat "$log_dir/build.log" >&2
+    echo "error: $target does not produce a single executable output" >&2
+    exit 1
+fi
+
+echo "soaking $target: $rounds round(s) of $processes concurrent process(es) on $cores core(s)"
+executions=0
+failures=0
+for ((round = 1; round <= rounds; round++)); do
+    pids=()
+    logs=()
+    for ((process = 1; process <= processes; process++)); do
+        log="$log_dir/round-$round-process-$process.log"
+        logs+=("$log")
+        "$binary" >"$log" 2>&1 &
+        pids+=($!)
+    done
+    for index in "${!pids[@]}"; do
+        executions=$((executions + 1))
+        if wait "${pids[$index]}"; then
+            # A passing execution is not evidence worth keeping; a failing one
+            # in the same round already has its own retained log.
+            rm -f "${logs[$index]}"
+        else
+            status=$?
+            failures=$((failures + 1))
+            printf '%s\t%s\t%s\n' "$round" "exit $status" "${logs[$index]}" \
+                >>"$log_dir/failures.tsv"
+            echo "FAILED round $round (exit $status): ${logs[$index]}"
+        fi
+    done
+done
+
+{
+    echo "## Contended soak report"
+    echo
+    echo "\`$target\`: $failures failure(s) across $executions execution(s)"
+    echo "($rounds rounds x $processes concurrent processes on $cores cores)."
+    echo
+    if (( failures > 0 )); then
+        echo "Each failing execution's complete output is retained; a later passing"
+        echo "round never clears an earlier failure."
+    fi
+} | tee "$log_dir/summary.md"
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    cat "$log_dir/summary.md" >>"$GITHUB_STEP_SUMMARY"
+fi
+(( failures == 0 ))
