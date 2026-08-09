@@ -372,8 +372,7 @@ pub struct AccessorOwnerMethod {
 }
 
 /// The note every producer attaches to the 6.6:14 recursion diagnostic.
-pub const ACCESSOR_RECURSION_NOTE: &str =
-    "an accessor call is expanded by mandatory CFG splicing, so a cycle of accessor calls has no finite expansion";
+pub const ACCESSOR_RECURSION_NOTE: &str = "an accessor call is expanded by mandatory CFG splicing, so a cycle of accessor calls has no finite expansion";
 
 /// 6.6:14: the diagnostic for an accessor that participates in an expansion
 /// cycle.
@@ -400,11 +399,7 @@ pub fn accessor_self_call_cycle(start: &str, methods: &[AccessorOwnerMethod]) ->
     let Some(origin) = accessor(start) else {
         return false;
     };
-    let mut pending: Vec<&str> = origin
-        .self_call_targets
-        .iter()
-        .map(AsRef::as_ref)
-        .collect();
+    let mut pending: Vec<&str> = origin.self_call_targets.iter().map(AsRef::as_ref).collect();
     let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     while let Some(name) = pending.pop() {
         let Some(method) = accessor(name) else {

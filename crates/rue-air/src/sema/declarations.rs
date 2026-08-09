@@ -3362,11 +3362,18 @@ pub(super) fn check_accessor_acyclicity(
         accessors.sort_by_key(|accessor| accessor.source_order);
         let methods: Vec<crate::declaration_validation::AccessorOwnerMethod> = accessors
             .iter()
-            .map(|accessor| crate::declaration_validation::AccessorOwnerMethod {
-                name: accessor.name.clone(),
-                is_accessor: true,
-                self_call_targets: rir_self_call_targets(rir, interner, self_sym, accessor.body),
-            })
+            .map(
+                |accessor| crate::declaration_validation::AccessorOwnerMethod {
+                    name: accessor.name.clone(),
+                    is_accessor: true,
+                    self_call_targets: rir_self_call_targets(
+                        rir,
+                        interner,
+                        self_sym,
+                        accessor.body,
+                    ),
+                },
+            )
             .collect();
         for accessor in accessors.iter() {
             if crate::declaration_validation::accessor_self_call_cycle(&accessor.name, &methods) {
