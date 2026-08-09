@@ -166,6 +166,17 @@ canary target in the Linux premerge graph;
 10k-per-axis ladder and belongs to `stress`. Caldera and Meridian likewise
 keep their 4x configurations in dedicated stress targets.
 
+Both scaling-matrix targets wrap the ordinary
+`//crates/rue-compiler:rue-compiler-test` binary and select its `#[ignore]`d
+`scaling_matrix_*` rows with `--ignored scaling_matrix`. They do not compile
+the crate again. Excluding heavy rows with `#[ignore]` rather than a
+target-specific `--cfg` is what keeps a dedicated target from silently
+becoming a superset of the unit target it was meant to be separate from — the
+defect RUE-1262 found, where the premerge lane ran 813 shared tests twice to
+gain three. A test named `scaling_matrix_*` and marked `#[ignore]` is in the
+premerge canary; anything else marked `#[ignore]` is opt-in only and no target
+runs it.
+
 Execution tier and discovery are separate concerns. A required pre-merge test
 may also carry `rue_heavy_suite` or `rue_dedicated_suite` so wrappers can
 select it explicitly without misrepresenting it as scheduled-only coverage.

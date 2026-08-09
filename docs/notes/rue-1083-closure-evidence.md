@@ -180,10 +180,10 @@ single raw ledger; it must not duplicate or silently revise the raw results.
 Run and record the exact structural commands:
 
 ```sh
-./buck2 build //crates/rue-compiler:scaling-matrix-test
-./buck2 run //crates/rue-compiler:scaling-matrix-test -- \
+./buck2 build //crates/rue-compiler:rue-compiler-test
+./buck2 run //crates/rue-compiler:rue-compiler-test -- --ignored \
   scaling_matrix_fixed_bodies_growing_declarations --nocapture
-RUE_SCALING_LARGE=1 ./buck2 run //crates/rue-compiler:scaling-matrix-test -- \
+RUE_SCALING_LARGE=1 ./buck2 run //crates/rue-compiler:rue-compiler-test -- --ignored \
   scaling_matrix_fixed_bodies_growing_declarations --nocapture
 ```
 
