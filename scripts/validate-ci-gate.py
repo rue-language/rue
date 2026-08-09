@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import subprocess
 from pathlib import Path
 
 RESULTS_SCRIPT = Path(__file__).with_name("ci-required-results.py")
@@ -135,6 +136,49 @@ def undeclared_need_outputs(workflow: str, jobs: dict[str, str]) -> list[str]:
                 "it would silently resolve to the empty string"
             )
     return sorted(problems)
+
+
+
+AFFECTED_TARGETS_SCRIPT = Path(__file__).with_name("affected-targets")
+
+
+def lane_targets(lane: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> set[str]:
+    """The Buck targets the determinator believes a gated lane executes."""
+    result = subprocess.run(
+        ["bash", str(script), "lane-targets", lane],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return set()
+    return set(result.stdout.split())
+
+
+def lane_target_drift(workflow: str, script: Path = AFFECTED_TARGETS_SCRIPT) -> list[str]:
+    """Targets a lane's job runs that its determinator entry does not represent.
+
+    RUE-1130 gates and narrows lanes against `lane_targets`, so a target the job
+    runs but the determinator does not know about is invisible to selection: the
+    lane can be deselected, or narrowed away, by a diff that actually reaches
+    it. That is the RUE-924 failure mode arriving through a stale list rather
+    than a missing job, and the two lists are far apart in the tree, so nothing
+    but a gate keeps them together.
+    """
+    jobs = job_blocks(workflow)
+    native = jobs.get("native-platforms", "")
+    ran = set(re.findall(r"^\s+(//[A-Za-z0-9_./-]+:[A-Za-z0-9_.-]+)$", native, re.MULTILINE))
+    if not ran:
+        return ["native-platforms declares no Buck targets; the lane gate cannot be checked"]
+    known = lane_targets("native-linux-arm64", script)
+    if not known:
+        return ["scripts/affected-targets lane-targets native-linux-arm64 produced nothing"]
+    missing = sorted(ran - known)
+    return [
+        f"native-platforms runs {target} but scripts/affected-targets does not list it "
+        "for native-linux-arm64, so selection cannot see it"
+        for target in missing
+    ]
 
 
 def validate(
@@ -329,6 +373,7 @@ def validate(
         errors.append("manual Valgrind large_program selection was not preserved")
 
     errors.extend(undeclared_need_outputs(workflow, jobs))
+    errors.extend(lane_target_drift(workflow))
 
     if "  pull_request:\n" not in workflow or "  merge_group:\n" not in workflow:
         errors.append("CI must run on both pull_request and merge_group")

@@ -346,6 +346,38 @@ is 3.90% — the guard cannot fail on real data. Observed skew reached **24.9%**
 Guards compare observed lane wall time against plan, and stale weights surface as
 skew. A guard that validates the model against itself is not a guard.
 
+## The standard this is held to
+
+CI is a platform, and the test of a platform is what it demands of the people
+using it. The standard is therefore not "CI is fast" but: **the repository can
+grow — new crates, new corpora, an LSP, a test runner, code mods, a much larger
+`std/` — without anyone editing CI to keep it correct or fast.** Every hand-
+maintained list is a future outage or a future slowdown with a delay fuse,
+because it is correct on the day it is written and nobody is reminded when it
+stops being.
+
+Rue is some way from that, and the honest way to close the distance is to
+enumerate what still needs a human. Anything on this ledger is either derived
+from the graph later, or gated so that drift fails closed rather than silently:
+
+| Hand-maintained today | What goes wrong when the repo grows | Status |
+| --- | --- | --- |
+| `CLI_TEST_SHARD_COUNT` + the `platform-corpus` matrix | count and matrix drift | gated (`//:cli-shard-coverage-validation`); derive in phase 6 |
+| `SELECTABLE_CORPUS` | a new corpus job is ungated, so it always runs | fails open (runs); not yet gated |
+| `SELECTABLE_LANES` / `lane_targets` | a lane's job runs a target selection cannot see | **gated** (`lane_target_drift`) |
+| the native lanes' eight-target list, in the job and in the contract | new platform-sensitive tests are not enrolled | partly gated; phase 4 removes the list |
+| `RUE_AFFECTED_NARROW_LIMIT` (600) | a threshold nobody revisits | unmeasured; should follow measurement |
+| the platform responsibility matrix | a responsibility silently moves | gated (`validate-ci-gate.py`) |
+| `shard-weights.json` refresh | weights go stale, shards skew | manual (RUE-1222); guard is vacuous (§6) |
+
+The pattern the ledger is meant to enforce: a list that must exist is paired
+with a gate that fails closed, and a list that need not exist is deleted in
+favour of a query against the live graph. Phases 1 and 4 delete rows; phases 3
+and 6 gate the rest. **A phase that adds a row without a gate has not met the
+standard**, which is the test this ADR's own implementation failed once already:
+RUE-1130 introduced `lane_targets` as a second copy of the native lane's target
+list before that row was gated.
+
 ## Implementation Phases
 
 Ordered by measured value, with the packer deliberately last: until the earlier

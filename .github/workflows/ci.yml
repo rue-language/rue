@@ -236,10 +236,13 @@ jobs:
       # and building its test binaries is the cost this narrowing exists to
       # avoid — measured at 286-317s whenever a compiler crate changes.
       - name: Build all targets
+        env:
+          NARROW_COUNT: ${{ steps.narrow.outputs.count }}
+          NARROW_FILE: ${{ steps.narrow.outputs.file }}
         run: |
           set -euo pipefail
-          if [ "${{ steps.narrow.outputs.count }}" -gt 0 ]; then
-            mapfile -t targets <"${{ steps.narrow.outputs.file }}"
+          if [ "$NARROW_COUNT" -gt 0 ]; then
+            mapfile -t targets <"$NARROW_FILE"
             scripts/ci-timed "linux-x64 build (narrowed)" -- ./buck2 build "${targets[@]}"
           else
             scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
@@ -396,6 +399,10 @@ jobs:
       # expensive part and an unimpacted one has nothing to prove.
       - name: Run native backend, linker, runtime, ABI, allocator, and target tests
         if: steps.sel.outputs.run == 'true'
+        env:
+          NARROW_COUNT: ${{ steps.narrow.outputs.count }}
+          NARROW_FILE: ${{ steps.narrow.outputs.file }}
+          LANE_NAME: ${{ matrix.name }}
         run: |
           set -euo pipefail
           targets=(
@@ -408,14 +415,14 @@ jobs:
             //crates/rue-allocator:rue-allocator-test
             //crates/rue-target:rue-target-test
           )
-          if [ "${{ steps.narrow.outputs.count }}" -gt 0 ]; then
-            mapfile -t targets < <(scripts/affected-targets intersect "${{ steps.narrow.outputs.file }}" "${targets[@]}")
+          if [ "$NARROW_COUNT" -gt 0 ]; then
+            mapfile -t targets < <(scripts/affected-targets intersect "$NARROW_FILE" "${targets[@]}")
           fi
           if [ "${#targets[@]}" -eq 0 ]; then
             echo "native units: no impacted unit targets on this diff; the merge-queue run covers them."
             exit 0
           fi
-          scripts/ci-timed "${{ matrix.name }} native units" -- ./buck2 test "${targets[@]}"
+          scripts/ci-timed "$LANE_NAME native units" -- ./buck2 test "${targets[@]}"
 
       - name: Run every declaratively platform-scoped spec and CLI case
         if: steps.sel.outputs.run == 'true'
