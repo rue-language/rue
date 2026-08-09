@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Affected-corpus selection for pull-request CI (RUE-1119).
+# Affected-target selection for pull-request CI (RUE-1119, extended by RUE-1130).
 #
 # On a pull_request run, only the heavy corpus suites a change actually affects
 # need to run; the merge queue (merge_group) remains the authoritative full
@@ -36,6 +36,8 @@
 #                      matrix. The matrix gate uses this as its one source of
 #                      truth, so an added matrix target fails open until it is
 #                      deliberately added here.
+#   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
+#   lane-targets       Print the Buck targets a gated lane executes.
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -76,9 +78,75 @@ SELECTABLE_CORPUS=(
     //crates/rue-oracle-diff:oracle-diff-spec-test
 )
 
+# RUE-1130. The corpus jobs above were the only gated lanes, and measurement
+# showed that gating them alone saves nothing: a documentation change costs 444s
+# against 465s for a compiler change, because the lanes that dominate a run were
+# not consulting this determinator at all. These are the remaining gateable
+# lanes, each named for its workflow job and represented by the Buck targets it
+# actually executes. A lane runs when any of its targets is in BTD's impacted
+# closure — the same rule the corpus targets already use, applied to a job whose
+# work is a set of targets rather than one.
+#
+# `linux-premerge` is deliberately absent. It is the broad-discovery lane and
+# the RUE-924 backstop: it runs whatever the tier selection contains, including
+# targets added since this list was written, so gating it on a representative
+# subset would be the one place where under-selection could silently drop a
+# suite nobody remembered to enumerate. Narrowing what it runs (rather than
+# whether it runs) needs the uniform-unit work in ADR-0069 phase 4.
+SELECTABLE_LANES=(
+    native-linux-arm64
+    native-macos-arm64
+    release
+    valgrind
+    asan
+    compiler-reproducibility
+)
+
+# Representative targets per lane, mirroring what each job executes in ci.yml.
+# An unknown lane prints nothing, and the gate treats that as "run".
+lane_targets() {
+    case "$1" in
+        native-linux-arm64|native-macos-arm64)
+            # The eight native unit targets, plus the two manifest-driven
+            # corpora whose `only_on` cases these lanes register.
+            echo //crates/rue-compiler:rue-compiler-test \
+                 //crates/rue-codegen:rue-codegen-test \
+                 //crates/rue-linker:rue-linker-test \
+                 //crates/rue-runtime:rue-runtime-test \
+                 //crates/rue-runtime:runtime-archives-test \
+                 //crates/rue-runtime-abi:rue-runtime-abi-test \
+                 //crates/rue-allocator:rue-allocator-test \
+                 //crates/rue-target:rue-target-test \
+                 //:spec-tests \
+                 //:cli-tests ;;
+        release)
+            echo //:release-smoke ;;
+        valgrind)
+            # Builds the compiler and runs generated programs under memcheck.
+            echo //crates/rue:rue //:cli-tests ;;
+        asan)
+            # A standalone Cargo harness over the arena allocator. Its own
+            # sources are outside the Buck graph, so they force a full run via
+            # FORCE_FULL_REGEX rather than being represented here.
+            echo //crates/rue-runtime:rue-runtime //crates/rue-allocator:rue-allocator ;;
+        compiler-reproducibility)
+            echo //crates/rue:rue ;;
+        *)
+            return 1 ;;
+    esac
+}
+
+is_selectable_lane() {
+    local wanted="$1" lane
+    for lane in "${SELECTABLE_LANES[@]}"; do
+        [[ "$lane" == "$wanted" ]] && return 0
+    done
+    return 1
+}
+
 # Out-of-graph (and belt-and-suspenders in-graph) paths that force a full run.
 # Anchored, repo-root-relative, extended-regex alternation.
-FORCE_FULL_REGEX='(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
+FORCE_FULL_REGEX='^crates/rue-runtime-asan/|(^|/)BUCK$|\.bzl$|^\.buckconfig|^\.buckroot$|^\.github/workflows/|^toolchains/|^platforms/|^constraints/|^third-party/|^prelude/|^rust-toolchain\.toml$|^buck2$|^buck2-bin$|^reindeer$|^btd$|^test\.sh$|^scripts/ci-|^scripts/affected-targets$|^scripts/provision-build-cache$|^scripts/with-full-suite-lock$|^scripts/rue$|^scripts/rue-bin$'
 
 # buck2 targets invocation BTD's own `targets` wrapper uses (td_util buck::run
 # targets_arguments). Both dumps use the identical command so their unconfigured
@@ -138,7 +206,7 @@ emit_output() {
 # as either RUN or DESELECTED, so an intentional deselection is never confused
 # with a silent drop.
 emit_manifest() {
-    local mode="$1" reason="$2" selected="$3"
+    local mode="$1" reason="$2" selected="$3" lanes="${4:-}"
     [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
     {
         echo "### Affected-corpus selection (RUE-1119)"
@@ -158,6 +226,20 @@ emit_manifest() {
             echo "| ${target} | ${state} |"
         done
         echo
+        echo "| Gated lane (RUE-1130) | Selection |"
+        echo "| --- | --- |"
+        local lane
+        for lane in "${SELECTABLE_LANES[@]}"; do
+            if [[ "$mode" == "full" ]] || [[ " ${lanes} " == *" ${lane} "* ]]; then
+                state="RUN"
+            else
+                state="DESELECTED (intentional)"
+            fi
+            echo "| ${lane} | ${state} |"
+        done
+        echo
+        echo "linux-premerge always runs: it is the broad-discovery lane and the RUE-924 backstop."
+        echo
     } >>"$GITHUB_STEP_SUMMARY"
 }
 
@@ -166,17 +248,20 @@ decide_full() {
     echo "affected-targets: FULL run — ${reason}"
     emit_output full "true"
     emit_output selected ""
-    emit_manifest "full" "$reason" ""
+    emit_output selected_lanes ""
+    emit_manifest "full" "$reason" "" ""
     exit 0
 }
 
 decide_select() {
-    local selected="$1" reason="$2"
+    local selected="$1" reason="$2" lanes="${3:-}"
     echo "affected-targets: SELECTIVE run — ${reason}"
     echo "affected-targets: selected corpus targets: ${selected:-<none>}"
+    echo "affected-targets: selected lanes: ${lanes:-<none>}"
     emit_output full "false"
     emit_output selected "$selected"
-    emit_manifest "select" "$reason" "$selected"
+    emit_output selected_lanes "$lanes"
+    emit_manifest "select" "$reason" "$selected" "$lanes"
     exit 0
 }
 
@@ -285,7 +370,18 @@ cmd_decide() {
         fi
     done
 
-    decide_select "$selected" "btd affected-target closure over the PR diff"
+    # RUE-1130: a lane runs when any target it executes is impacted.
+    local lanes="" lane
+    for lane in "${SELECTABLE_LANES[@]}"; do
+        for target in $(lane_targets "$lane"); do
+            if grep -Fxq "$target" <<<"$impacted"; then
+                lanes+="${lanes:+ }$lane"
+                break
+            fi
+        done
+    done
+
+    decide_select "$selected" "btd affected-target closure over the PR diff" "$lanes"
 }
 
 main() {
@@ -304,8 +400,14 @@ main() {
         is-selectable)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets is-selectable //:TARGET" >&2; exit 2; }
             is_selectable "$2" ;;
+        is-selectable-lane)
+            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets is-selectable-lane LANE" >&2; exit 2; }
+            is_selectable_lane "$2" ;;
+        lane-targets)
+            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
+            lane_targets "$2" ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets]" >&2
             exit 2 ;;
     esac
 }

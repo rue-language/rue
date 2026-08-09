@@ -293,17 +293,33 @@ jobs:
             name: macos-arm64
     runs-on: ${{ matrix.os }}
     name: native (${{ matrix.name }})
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1130: consult the determinator before any heavy setup. On a
+      # selective pull_request run where nothing this lane executes is affected,
+      # the heavy steps are skipped and the check still reports success, so no
+      # branch-protection change is required. Fail-open: unless the determinator
+      # explicitly says full=false and omits this lane, the lane runs.
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+        run: scripts/ci-corpus-decision "native-${{ matrix.name }}"
+
       - name: Select Xcode 16.2
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
 
       - name: Install dotslash
+        if: steps.sel.outputs.run == 'true'
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       - name: Cache dotslash artifacts
+        if: steps.sel.outputs.run == 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -314,6 +330,7 @@ jobs:
             dotslash-${{ matrix.name }}-
 
       - name: Provision remote build cache
+        if: steps.sel.outputs.run == 'true'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -325,9 +342,11 @@ jobs:
           scripts/provision-build-cache apply
 
       - name: Build native compiler and linker
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.name }} native build" -- ./buck2 build //crates/rue:rue
 
       - name: Run native backend, linker, runtime, ABI, allocator, and target tests
+        if: steps.sel.outputs.run == 'true'
         run: >-
           scripts/ci-timed "${{ matrix.name }} native units" --
           ./buck2 test
@@ -341,18 +360,22 @@ jobs:
           //crates/rue-target:rue-target-test
 
       - name: Run every declaratively platform-scoped spec and CLI case
+        if: steps.sel.outputs.run == 'true'
         # The shared manifest selector registers all `only_on` cases for this
         # host, including cases added later, without repeating either complete
         # target-independent corpus.
         run: scripts/ci-timed "${{ matrix.name }} platform corpus" -- scripts/run-native-platform-corpus.sh
 
       - name: Run native ABI programs
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.name }} ABI" -- scripts/rue cli abi
 
       - name: Run native linker programs
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.name }} linker" -- scripts/rue cli cli.linker
 
       - name: Run native filesystem and platform programs
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.name }} platform" -- scripts/rue cli cli.fs_file_io
 
       # See the premerge lane's rationale (RUE-1268).
@@ -371,13 +394,29 @@ jobs:
   compiler-reproducibility:
     runs-on: ubuntu-latest
     name: compiler reproducibility (linux-x64)
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1130: consult the determinator before any heavy setup. On a
+      # selective pull_request run where nothing this lane executes is affected,
+      # the heavy steps are skipped and the check still reports success, so no
+      # branch-protection change is required. Fail-open: unless the determinator
+      # explicitly says full=false and omits this lane, the lane runs.
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+        run: scripts/ci-corpus-decision "compiler-reproducibility"
+
       - name: Install dotslash
+        if: steps.sel.outputs.run == 'true'
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       - name: Cache dotslash artifacts
+        if: steps.sel.outputs.run == 'true'
         uses: actions/cache@v5
         with:
           path: ~/.cache/dotslash
@@ -386,6 +425,7 @@ jobs:
             dotslash-linux-x64-
 
       - name: Verify compiler build reproducibility
+        if: steps.sel.outputs.run == 'true'
         id: compiler_repro
         run: scripts/ci-timed "compiler reproducibility" -- ./scripts/check-reproducible-compiler.sh
 
@@ -600,15 +640,31 @@ jobs:
   release:
     runs-on: ubuntu-latest
     name: release (linux-x64)
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1130: consult the determinator before any heavy setup. On a
+      # selective pull_request run where nothing this lane executes is affected,
+      # the heavy steps are skipped and the check still reports success, so no
+      # branch-protection change is required. Fail-open: unless the determinator
+      # explicitly says full=false and omits this lane, the lane runs.
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+        run: scripts/ci-corpus-decision "release"
+
       - name: Install dotslash
+        if: steps.sel.outputs.run == 'true'
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       # Same dotslash cache as the other jobs (buck2 binary only; see the `test`
       # job for why buck-out isn't worth caching).
       - name: Cache dotslash artifacts
+        if: steps.sel.outputs.run == 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -621,6 +677,7 @@ jobs:
       # BuildBuddy remote action cache (RUE-316/RUE-1006); see the clippy job
       # for the secret-availability contract.
       - name: Provision remote build cache
+        if: steps.sel.outputs.run == 'true'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -635,12 +692,14 @@ jobs:
       # of inferring optimization from complete binary bytes. This performs no
       # compilation and also pins the release callers to the target platform.
       - name: Validate release configuration
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "release configuration" -- scripts/validate-release-configuration.py
 
       # Builds only the Rue driver and CLI harness under the release platform,
       # then runs the 24 representative differential-opt cases (96 produced
       # programs across -O0/-O1/-O2/-O3) through the release-built compiler.
       - name: Run focused release smoke
+        if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "release smoke" -- ./buck2 test //:release-smoke --target-platforms //platforms:release
 
   # Generated-code memory safety under Valgrind. Required PR and merge-group
@@ -649,13 +708,29 @@ jobs:
   valgrind:
     runs-on: ubuntu-latest
     name: valgrind (linux-x64)
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1130: consult the determinator before any heavy setup. On a
+      # selective pull_request run where nothing this lane executes is affected,
+      # the heavy steps are skipped and the check still reports success, so no
+      # branch-protection change is required. Fail-open: unless the determinator
+      # explicitly says full=false and omits this lane, the lane runs.
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+        run: scripts/ci-corpus-decision "valgrind"
+
       - name: Install dotslash
+        if: steps.sel.outputs.run == 'true'
         uses: facebook/install-dotslash@v2  # pinned: the moving `latest` branch broke macOS runners (sha256sum flags) on 2026-06-18
 
       - name: Cache dotslash artifacts
+        if: steps.sel.outputs.run == 'true'
         uses: actions/cache@v5
         with:
           path: ~/.cache/dotslash
@@ -664,6 +739,7 @@ jobs:
             dotslash-linux-x64-
 
       - name: Provision remote build cache
+        if: steps.sel.outputs.run == 'true'
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
         run: |
@@ -675,14 +751,17 @@ jobs:
           scripts/provision-build-cache apply
 
       - name: Install valgrind
+        if: steps.sel.outputs.run == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y valgrind
 
       - name: Build Rue compiler
+        if: steps.sel.outputs.run == 'true'
         run: ./buck2 build //crates/rue:rue
 
       - name: Run programs under Valgrind memcheck
+        if: steps.sel.outputs.run == 'true'
         env:
           RUE_SANITIZER_LARGE_PROGRAMS: ${{ github.event_name == 'workflow_dispatch' && inputs.large_program || 'none' }}
         run: scripts/run-sanitizer.sh
@@ -694,15 +773,31 @@ jobs:
     name: asan (linux-x64)
     env:
       NIGHTLY: nightly-2026-04-13
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
 
+      # RUE-1130: consult the determinator before any heavy setup. On a
+      # selective pull_request run where nothing this lane executes is affected,
+      # the heavy steps are skipped and the check still reports success, so no
+      # branch-protection change is required. Fail-open: unless the determinator
+      # explicitly says full=false and omits this lane, the lane runs.
+      - name: Lane selection
+        id: sel
+        env:
+          RUE_AFFECTED_FULL: ${{ needs.affected-targets.outputs.full }}
+          RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
+        run: scripts/ci-corpus-decision "asan"
+
       - name: Install pinned nightly Rust
+        if: steps.sel.outputs.run == 'true'
         run: >
           rustup toolchain install "$NIGHTLY" --profile minimal
           --component clippy,rust-src
 
       - name: Clippy the ASan harness
+        if: steps.sel.outputs.run == 'true'
         env:
           RUSTFLAGS: "-Zsanitizer=address"
         run: >
@@ -712,6 +807,7 @@ jobs:
           -- -D warnings
 
       - name: Exercise the arena allocator under AddressSanitizer
+        if: steps.sel.outputs.run == 'true'
         env:
           RUSTFLAGS: "-Zsanitizer=address"
           ASAN_OPTIONS: "detect_leaks=0"
