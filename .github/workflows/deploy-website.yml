@@ -13,6 +13,11 @@ on:
       # sampling, or baseline declaration changes the published page even
       # though no file under website/ moved.
       - 'performance/**'
+      # The homepage Field Report counts traced spec rules and executable
+      # cases, so a case or a rule marker changes the published board even
+      # though no file under website/ moved.
+      - 'crates/rue-spec/**'
+      - 'scripts/generate-site-status.py'
       - '.github/workflows/deploy-website.yml'
   # PRs still build (no deploy — that's trunk-only) on spec changes too, so a
   # spec edit that breaks the website build is caught before merge.
@@ -22,6 +27,11 @@ on:
       - 'website/**'
       - 'docs/spec/**'
       - 'performance/**'
+      # The homepage Field Report counts traced spec rules and executable
+      # cases, so a case or a rule marker changes the published board even
+      # though no file under website/ moved.
+      - 'crates/rue-spec/**'
+      - 'scripts/generate-site-status.py'
       - '.github/workflows/deploy-website.yml'
   # The dashboard's other input is the `performance-data-v1` branch, which is
   # not part of this repository's source tree: no push to trunk can describe a

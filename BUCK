@@ -726,6 +726,22 @@ rue_sh_test(
     },
 )
 
+# RUE-1261: the homepage Field Report asserts that this project can be checked
+# rather than trusted, so a fabricated figure on it is a counterexample, not a
+# placeholder. These tests pin the two properties that failed before: a ratio
+# carries both of its sides, and a figure that cannot be computed is absent
+# rather than defaulted.
+rue_sh_test(
+    name = "site-status-tool-tests",
+    test = "scripts/test-generate-site-status.py",
+    resources = [
+        "scripts/generate-site-status.py",
+    ],
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+    },
+)
+
 # RUE-1194: the §11 tooltip needs a commit's subject and its distance from the
 # previous measurement, neither of which a run object carries. The ordinal
 # follows trunk's first parents, so these tests pin the one property that makes

@@ -159,6 +159,52 @@ pub struct TraceabilityReport {
     pub platform_unreachable_cases: Vec<(String, Vec<String>)>,
 }
 
+/// The headline figures of a [`TraceabilityReport`], for machine consumers.
+///
+/// Deliberately carries the two sides of every ratio rather than a percentage:
+/// a consumer that receives only "how many normative rules exist" can do
+/// nothing but assert they are all covered, which is what the homepage did
+/// before RUE-1261 and why it reported 100% while three rules were uncovered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceabilitySummary {
+    /// Paragraphs in a normative category — those that require coverage.
+    pub normative_total: usize,
+    /// Normative paragraphs with at least one test.
+    pub normative_covered: usize,
+    /// Normative paragraphs with no test.
+    pub normative_uncovered: usize,
+    /// Of the uncovered, how many are allowlisted with a written reason.
+    pub known_uncovered: usize,
+    /// Every paragraph, normative and informative.
+    pub paragraphs_total: usize,
+    /// Every covered paragraph, normative and informative. Against
+    /// `paragraphs_total` this is diluted by informative prose that is not
+    /// meant to be traced, so it is not a quality measure — publish the
+    /// normative ratio instead.
+    pub paragraphs_covered: usize,
+    /// Executable cases after parameter expansion.
+    pub cases: usize,
+    /// Target-independent cases, owned by the Linux-complete lane.
+    pub cases_semantic: usize,
+    /// Cases that build and run for the executing host's target.
+    pub cases_native: usize,
+    /// Cases pinning architecture-specific output for a declared target.
+    pub cases_backend: usize,
+    /// Cases no required CI lane can execute, excluded from coverage.
+    pub platform_unreachable_cases: usize,
+    /// Per-category totals, keyed by category name.
+    pub categories: BTreeMap<String, CategoryCoverage>,
+}
+
+/// One category's share of [`TraceabilitySummary`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CategoryCoverage {
+    pub total: usize,
+    pub covered: usize,
+    /// Whether this category requires coverage.
+    pub normative: bool,
+}
+
 /// How the corpus divides across the lanes that execute it.
 ///
 /// Reported so the platform split is a visible fact of every traceability run
@@ -415,6 +461,99 @@ impl TraceabilityReport {
     /// - Coverage breakdown by paragraph category
     /// - List of uncovered normative paragraphs (if any)
     /// - List of orphan references (if any)
+    /// The report's headline figures, for machine consumers.
+    ///
+    /// Exists so the website's status board reads the same computation the
+    /// traceability gate does. The homepage previously carried a hand-written
+    /// count of `rule(cat=…)` markers, which was a second implementation of
+    /// this and drifted from it (RUE-1261).
+    pub fn summary(&self) -> TraceabilitySummary {
+        let mut categories: BTreeMap<String, CategoryCoverage> = BTreeMap::new();
+        for para in self.paragraphs.values() {
+            let entry = categories
+                .entry(para.category.clone())
+                .or_insert(CategoryCoverage {
+                    total: 0,
+                    covered: 0,
+                    normative: Self::is_normative(para),
+                });
+            entry.total += 1;
+            if self
+                .coverage
+                .get(&para.id)
+                .map(|tests| !tests.is_empty())
+                .unwrap_or(false)
+            {
+                entry.covered += 1;
+            }
+        }
+
+        TraceabilitySummary {
+            normative_total: self.normative_count(),
+            normative_covered: self.normative_covered_count(),
+            normative_uncovered: self.normative_uncovered_count(),
+            // Uncovered normative paragraphs that are allowlisted with a
+            // written reason, as distinct from ones nobody has looked at.
+            known_uncovered: self
+                .uncovered_normative_paragraphs()
+                .iter()
+                .filter(|id| Self::is_known_uncovered(id))
+                .count(),
+            paragraphs_total: self.paragraphs.len(),
+            paragraphs_covered: self.covered_count(),
+            // Executable cases, after the runner's parameter expansion — the
+            // number of cases that actually run, not the number authored.
+            cases: self.responsibility_census.semantic
+                + self.responsibility_census.native
+                + self.responsibility_census.backend,
+            cases_semantic: self.responsibility_census.semantic,
+            cases_native: self.responsibility_census.native,
+            cases_backend: self.responsibility_census.backend,
+            platform_unreachable_cases: self.platform_unreachable_cases.len(),
+            categories,
+        }
+    }
+
+    /// Print [`Self::summary`] as JSON on one line.
+    ///
+    /// Hand-emitted rather than serde-derived so the spec crate keeps its
+    /// three dependencies. Every value is an integer or a bool, and every key
+    /// is either a fixed literal or a category name — an identifier from a
+    /// closed set — so there is nothing here that needs escaping.
+    pub fn print_summary_json(&self) {
+        let summary = self.summary();
+        let categories: Vec<String> = summary
+            .categories
+            .iter()
+            .map(|(name, coverage)| {
+                format!(
+                    "\"{}\":{{\"total\":{},\"covered\":{},\"normative\":{}}}",
+                    name, coverage.total, coverage.covered, coverage.normative
+                )
+            })
+            .collect();
+        println!(
+            concat!(
+                "{{\"normative_total\":{},\"normative_covered\":{},\"normative_uncovered\":{},",
+                "\"known_uncovered\":{},\"paragraphs_total\":{},\"paragraphs_covered\":{},",
+                "\"cases\":{},\"cases_semantic\":{},\"cases_native\":{},\"cases_backend\":{},",
+                "\"platform_unreachable_cases\":{},\"categories\":{{{}}}}}"
+            ),
+            summary.normative_total,
+            summary.normative_covered,
+            summary.normative_uncovered,
+            summary.known_uncovered,
+            summary.paragraphs_total,
+            summary.paragraphs_covered,
+            summary.cases,
+            summary.cases_semantic,
+            summary.cases_native,
+            summary.cases_backend,
+            summary.platform_unreachable_cases,
+            categories.join(",")
+        );
+    }
+
     pub fn print_summary(&self) {
         println!("=== Rue Specification Traceability Report ===\n");
 
