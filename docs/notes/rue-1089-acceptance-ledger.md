@@ -19,7 +19,7 @@ The corpus is valuable in two states:
   `FLIPS-POST-ANCHOR-FIX` in the source with the exact mechanical edit.
 
 Background: `docs/notes/rue-1089-current-anonymous-type-behavior.md`,
-`SITE_INVENTORY_SCRATCH.md`.
+`docs/notes/rue-1089-site-inventory.md`.
 
 ## Test homes
 

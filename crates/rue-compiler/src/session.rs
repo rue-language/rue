@@ -792,20 +792,6 @@ pub struct CompilerSession {
     object_projection_executions: Vec<(crate::FunctionInstanceKey, rue_query::RequestExecution)>,
     #[cfg(test)]
     object_projection_collections: usize,
-    /// One-shot cancellation injections, each consumed with `mem::take` at a
-    /// fixed point inside an attempt.
-    ///
-    /// Test-only because production cancellation arrives asynchronously through
-    /// a `CancellationToken`, and a test cannot deterministically land it
-    /// between two chosen steps. They gate no selection logic: the branch each
-    /// one triggers is the same cancellation path a real token drives, so both
-    /// configurations still compile one implementation of that path (RUE-1143).
-    #[cfg(test)]
-    cancel_merge_before_commit: bool,
-    #[cfg(test)]
-    cancel_semantic_after_dependency: bool,
-    #[cfg(test)]
-    cancel_semantic_before_publication: bool,
     published: Option<Arc<ParsedProgram>>,
     published_snapshot: Option<SourceSnapshot>,
     batch_diagnostic_order: Option<crate::shared_segments::SharedList<crate::ModuleId>>,
@@ -1153,6 +1139,39 @@ impl ParseQueryKey {
         match self {
             Self::Ordinary(key) => Some(&key.source),
             Self::Successor { .. } => None,
+        }
+    }
+
+    /// Compact display identity for engine diagnostics (RUE-1142): cycle,
+    /// wait-graph, and contention reports name the query through this string.
+    /// Display only — exact key equality owns memo identity, so a collision
+    /// here is harmless — and deliberately bounded: it must not render source
+    /// content, which the ordinary key embeds in full.
+    pub(crate) fn compatibility_identity(&self) -> String {
+        match self {
+            Self::Ordinary(key) => {
+                let provenance = match &key.presentation {
+                    DiagnosticAttemptProvenance::Canonical => "canonical".to_owned(),
+                    DiagnosticAttemptProvenance::Presentation(order) => {
+                        format!("presentation[{}]", order.iter().count())
+                    }
+                };
+                format!(
+                    "parse:ordinary:{}[{} modules]:{provenance}",
+                    key.source.revision.root(),
+                    key.source.revision.modules().len(),
+                )
+            }
+            Self::Successor {
+                revision,
+                segment,
+                predecessor,
+            } => format!(
+                "parse:successor:r{}+{}<-{:?}",
+                revision.revision_id,
+                segment.len(),
+                predecessor,
+            ),
         }
     }
 }
@@ -1625,13 +1644,6 @@ impl CompilerSession {
         }
         self.metrics.synchronize();
         std::panic::resume_unwind(payload)
-    }
-
-    fn cancel_merge_at_commit_boundary(&mut self) -> bool {
-        #[cfg(test)]
-        return std::mem::take(&mut self.cancel_merge_before_commit);
-        #[cfg(not(test))]
-        false
     }
 
     /// Select the accepted import topology for semantic construction.
@@ -2729,10 +2741,8 @@ impl CompilerSession {
             return Err(diagnostics);
         }
 
-        let adoption = self.adopt_discovery_program_for_presentation(
+        let adoption = self.select_parse_for_presentation(
             &open.snapshot,
-            program.clone(),
-            open.parse_work,
             successor.is_some(),
             open.successor_parse.clone(),
         );
@@ -3307,11 +3317,16 @@ impl CompilerSession {
         self.run_parse_update(snapshot, provenance)
     }
 
-    fn adopt_discovery_program_for_presentation(
+    /// Select the parse this presentation shows after an import-discovery
+    /// close. A trusted successor re-selects its retained successor parse
+    /// terminal; an ordinary close selects the presentation order and runs the
+    /// parse update, whose per-module requests reuse the retained module
+    /// terminals. The discovery parse itself is deliberately NOT handed over:
+    /// adopting it wholesale would bypass parse-terminal publication
+    /// (RUE-1144).
+    fn select_parse_for_presentation(
         &mut self,
         snapshot: &SourceSnapshot,
-        _program: Arc<ParsedProgram>,
-        _work: ParsedModulesWork,
         successor: bool,
         retained_successor_parse: Option<ParseQueryRecord>,
     ) -> CompilerSessionUpdate {
@@ -4225,12 +4240,6 @@ impl CompilerSession {
                 })
                 .map(Arc::new)
         };
-        if self.cancel_merge_at_commit_boundary() {
-            guard.request_cancel();
-            return Err(CompileErrors::from(CompileError::without_span(
-                ErrorKind::InvalidCompilerInput("merge query canceled before commit".into()),
-            )));
-        }
         if let Ok(merged) = &merged {
             debug_assert_eq!(merged.ast().source_revision(), parsed.source_revision());
             *attempt_work = Some(merged.work());
@@ -5910,10 +5919,6 @@ impl CompilerSession {
             }
         };
         let merged = self.merge().map_err(SemanticRequestControl::Compile)?;
-        #[cfg(test)]
-        if std::mem::take(&mut self.cancel_semantic_after_dependency) {
-            cancellation.cancel();
-        }
         if cancellation.is_canceled() {
             return Err(SemanticRequestControl::Abort(
                 rue_query::QueryAbort::Canceled,
@@ -6528,10 +6533,6 @@ impl CompilerSession {
             output.accrue_body_query_work(queried_body_work);
             Ok(output)
         });
-        #[cfg(test)]
-        if std::mem::take(&mut self.cancel_semantic_before_publication) {
-            cancellation.cancel();
-        }
         if cancellation.is_canceled() {
             return Err(SemanticRequestControl::Abort(
                 rue_query::QueryAbort::Canceled,
