@@ -25,9 +25,20 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
+
+# Both accept an optional `user@` or `user:token@` prefix and drop it. A
+# checkout can carry a credential in its remote URL — GitHub Actions writes one
+# during checkout — and this value is published to a world-readable file.
+SSH_REMOTE = re.compile(
+    r"^(?:ssh://)?(?:[^@/]+@)?github\.com[:/]([^/]+)/([^/]+?)(?:\.git)?/?$"
+)
+HTTPS_REMOTE = re.compile(
+    r"^https?://(?:[^@/]+@)?github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$"
+)
 
 # Probed in order. The website builds from a full checkout whose HEAD may sit on
 # a feature branch, so the remote-tracking ref is preferred over whatever
@@ -74,6 +85,26 @@ def first_parent_ordinals(repo: Path, refs: Iterable[str] = TRUNK_REFS) -> dict[
     return {}
 
 
+def commit_url_prefix(url: str | None) -> str | None:
+    """The `.../commit/` prefix for a GitHub remote URL, or None.
+
+    Rebuilt from the owner and repository name rather than edited in place, so
+    nothing from the original URL — credentials above all — can survive into
+    the published prefix. A remote this does not recognize yields no prefix,
+    and the page renders the hash as plain text.
+    """
+    for pattern in (HTTPS_REMOTE, SSH_REMOTE):
+        found = pattern.match((url or "").strip())
+        if found:
+            return f"https://github.com/{found.group(1)}/{found.group(2)}/commit/"
+    return None
+
+
+def remote_url(repo: Path, remote: str = "origin") -> str | None:
+    output = git(repo, "remote", "get-url", remote)
+    return output.strip() if output else None
+
+
 def measured_commits(data: dict) -> set[str]:
     return {
         point["commit"]
@@ -87,10 +118,11 @@ def annotate(
     data: dict,
     subject_of_commit: Callable[[str], str | None],
     ordinal_of_commit: Callable[[str], int | None],
+    url_prefix: str | None = None,
 ) -> tuple[int, int, int]:
-    """Attach subjects and trunk ordinals for every measured commit.
+    """Attach subjects, trunk ordinals, and the commit-link prefix.
 
-    Pure with respect to git: both lookups are injected. Returns the resolved
+    Pure with respect to git: the lookups are injected. Returns the resolved
     subject count, the resolved ordinal count, and the number of measured
     commits, for the build log.
     """
@@ -108,6 +140,7 @@ def annotate(
 
     data["commit_subjects"] = subjects
     data["commit_ordinals"] = ordinals
+    data["commit_url_prefix"] = url_prefix
     return len(subjects), len(ordinals), len(commits)
 
 
@@ -120,15 +153,18 @@ def main() -> int:
     data = json.loads(args.data.read_text())
 
     ordinals = first_parent_ordinals(args.repo)
+    prefix = commit_url_prefix(remote_url(args.repo))
     subjects_found, ordinals_found, total = annotate(
         data,
         lambda commit: subject_of(args.repo, commit),
         ordinals.get,
+        prefix,
     )
 
     args.data.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
     print(f"  resolved {subjects_found}/{total} commit subject(s)")
     print(f"  placed {ordinals_found}/{total} commit(s) on trunk's first-parent line")
+    print(f"  commit links: {prefix or 'unavailable, hashes render as plain text'}")
     return 0
 
 

@@ -111,9 +111,28 @@
     });
   }
 
+  // §11's "links to the commit". Both halves are interpolated into an href and
+  // `escapeHtml` does not escape quotes, so each is checked against a shape
+  // that cannot carry one rather than trusted for coming from the build: a
+  // hex hash, and an https prefix of the form the annotation script emits.
+  // Anything else renders as plain text, which is the same fallback the page
+  // already uses for a commit whose subject could not be resolved.
+  var COMMIT = /^[0-9a-f]{7,64}$/;
+  var URL_PREFIX = /^https:\/\/[\w.-]+\/[\w./-]*$/;
+
+  function commitLink(data, commit) {
+    var label = escapeHtml(shortHash(commit));
+    var prefix = data.commit_url_prefix;
+    if (typeof prefix !== "string" || !URL_PREFIX.test(prefix) || !COMMIT.test(commit)) {
+      return label;
+    }
+    return '<a href="' + escapeHtml(prefix + commit) +
+      '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
+  }
+
   function commitHeading(data, commit) {
     var subject = (data.commit_subjects || {})[commit];
-    return "<strong>" + escapeHtml(shortHash(commit)) + "</strong>" +
+    return "<strong>" + commitLink(data, commit) + "</strong>" +
       (subject ? " — " + escapeHtml(subject) : " (subject unavailable)");
   }
 
@@ -210,7 +229,10 @@
       select.appendChild(option);
     });
 
-    var state = { platform: 0, workload: null, cursor: null, band: null, indexCursor: null };
+    var state = {
+      platform: 0, workload: null, cursor: null, band: null, indexCursor: null,
+      pinned: { index: false, phases: false }
+    };
 
     select.addEventListener("change", function () {
       state.platform = Number(select.value);
@@ -218,8 +240,18 @@
       state.cursor = null;
       state.band = null;
       state.indexCursor = null;
+      state.pinned.index = false;
+      state.pinned.phases = false;
       draw();
     });
+
+    // §11: clicking pins the tooltip. Without it the tooltip cannot be read at
+    // leisure or its commit link followed — with a mouse, travelling to either
+    // one drags the cursor back across the chart and rewrites the tooltip on
+    // the way. Clicking the pinned point again, or Escape, releases it.
+    function pin(key, unchanged) {
+      state.pinned[key] = !(state.pinned[key] && unchanged);
+    }
 
     // Chart interaction is bound once, here, and each redraw swaps in a handler
     // closed over the series it just drew. Attaching listeners inside the draw
@@ -232,8 +264,13 @@
     var interaction = { index: null, phases: null };
 
     function bindChart(svg, key) {
+      // Whether a button or finger is currently down. A pinned chart ignores
+      // hover but must still follow a deliberate drag, or pinning would break
+      // scrubbing on a touchscreen — where every tap pins, because there is no
+      // hover for a pin to suppress.
+      var dragging = false;
       function dispatch(event) {
-        if (interaction[key]) { interaction[key](event); }
+        if (interaction[key]) { interaction[key](event, dragging); }
       }
       svg.addEventListener("pointerdown", function (event) {
         // Capture so a drag that wanders off the chart keeps scrubbing, which
@@ -242,10 +279,14 @@
         // Focus is deliberately left to the browser. Calling focus() here would
         // work, but it makes a tap indistinguishable from keyboard focus and
         // draws the focus ring around the chart on every touch.
+        dragging = true;
         if (svg.setPointerCapture) { svg.setPointerCapture(event.pointerId); }
         dispatch(event);
       });
       svg.addEventListener("pointermove", dispatch);
+      ["pointerup", "pointercancel"].forEach(function (name) {
+        svg.addEventListener(name, function () { dragging = false; });
+      });
       svg.addEventListener("keydown", dispatch);
     }
 
@@ -443,15 +484,23 @@
         var mark = marks[state.indexCursor];
         highlight.setAttribute("cx", x(mark.at));
         highlight.setAttribute("cy", y(mark.entry.point.index.latency));
+        // A filled ring reads as held; the hollow one follows the pointer.
+        highlight.setAttribute("fill", state.pinned.index ? "#111" : "none");
         drawIndexTooltip(data, marks, state.indexCursor);
       }
 
-      interaction.index = function (event) {
+      interaction.index = function (event, dragging) {
         if (event.type === "keydown") {
+          if (event.key === "Escape" && state.pinned.index) {
+            state.pinned.index = false;
+            selectMark(state.indexCursor);
+            event.preventDefault();
+          }
           if (event.key === "ArrowRight") { selectMark(state.indexCursor + 1); event.preventDefault(); }
           if (event.key === "ArrowLeft") { selectMark(state.indexCursor - 1); event.preventDefault(); }
           return;
         }
+        if (event.type === "pointermove" && state.pinned.index && !dragging) { return; }
         var at = svgLocation(svg, event);
         if (!at) { return; }
         var nearest = 0;
@@ -460,6 +509,7 @@
             nearest = position;
           }
         });
+        if (event.type === "pointerdown") { pin("index", nearest === state.indexCursor); }
         selectMark(nearest);
       };
 
@@ -526,6 +576,7 @@
           escapeHtml(drift[0].changed.join("; ")));
       }
 
+      lines.push(pinnedNote(state.pinned.index));
       setTooltip(tooltip, lines);
     }
 
@@ -669,6 +720,8 @@
       function moveCursor() {
         cursorLine.setAttribute("x1", x(state.cursor));
         cursorLine.setAttribute("x2", x(state.cursor));
+        // A solid rule reads as held; the dashed one follows the pointer.
+        cursorLine.setAttribute("stroke-dasharray", state.pinned.phases ? "none" : "3 2");
         var hovered = null;
         occupied(state.cursor).forEach(function (slice) {
           if (slice.band === state.band) { hovered = slice; }
@@ -693,8 +746,13 @@
       // Arrow keys do exactly what the cursor does — left and right across
       // commits, up and down through the stack — so both halves of the tooltip
       // are reachable without a pointer.
-      interaction.phases = function (event) {
+      interaction.phases = function (event, dragging) {
         if (event.type === "keydown") {
+          if (event.key === "Escape" && state.pinned.phases) {
+            state.pinned.phases = false;
+            selectIndex(state.cursor);
+            event.preventDefault();
+          }
           if (event.key === "ArrowRight") { selectIndex(state.cursor + 1); event.preventDefault(); }
           if (event.key === "ArrowLeft") { selectIndex(state.cursor - 1); event.preventDefault(); }
           if (event.key === "ArrowUp" || event.key === "ArrowDown") {
@@ -714,11 +772,16 @@
           }
           return;
         }
+        if (event.type === "pointermove" && state.pinned.phases && !dragging) { return; }
         var at = svgLocation(svg, event);
         if (!at) { return; }
         var i = Math.round(((at.x - 40) / 840) * (series.length - 1));
         i = Math.max(0, Math.min(series.length - 1, i));
-        selectIndex(i, bandAt(i, at.y));
+        var band = bandAt(i, at.y);
+        if (event.type === "pointerdown") {
+          pin("phases", i === state.cursor && band === state.band);
+        }
+        selectIndex(i, band);
       };
 
       svg.setAttribute("aria-label", "Phase composition for " + state.workload +
@@ -837,7 +900,14 @@
           escapeHtml(drift[0].changed.join("; ")));
       }
 
+      lines.push(pinnedNote(state.pinned.phases));
       setTooltip(tooltip, lines);
+    }
+
+    function pinnedNote(pinned) {
+      return pinned
+        ? "<em>Pinned. Click this commit again, or press Escape, to release.</em>"
+        : '<em style="color:var(--color-muted);">Click to pin, then follow the hash to the commit.</em>';
     }
 
     // 6. Field notes.
