@@ -207,14 +207,13 @@ impl<K: std::hash::Hash> std::hash::Hash for CompatibilityKey<K> {
     }
 }
 
-impl<K> QueryKey for CompatibilityKey<K>
-where
-    K: Clone + Eq + std::hash::Hash + Send + Sync + 'static,
-{
+impl QueryKey for CompatibilityKey<super::session::ParseQueryKey> {
     fn stable_identity(&self) -> String {
         // Display only. Exact K equality chooses the memo node and the runtime
-        // incarnation makes cycle/wait identity collision-safe.
-        "selected-key".to_owned()
+        // incarnation makes cycle/wait identity collision-safe — but the
+        // string is what cycle and wait-graph reports print, so it must name
+        // the query rather than a constant (RUE-1142).
+        self.key.compatibility_identity()
     }
 }
 
