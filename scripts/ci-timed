@@ -17,6 +17,18 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# On CI failure, preserve the complete command output where an upload step can
+# collect it. The Actions job-log API serves a truncated tail, so a failing
+# target whose output scrolled past the cap is otherwise undiagnosable after
+# the fact (RUE-1268). Local runs keep the delete-on-exit temp file only.
+preserve_failure_log() {
+    [[ -n "${GITHUB_ACTIONS:-}" && -n "${RUNNER_TEMP:-}" ]] || return 0
+    local dir="$RUNNER_TEMP/rue-ci-failed-logs" slug
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9._-' '-')"
+    mkdir -p "$dir"
+    cp "$log" "$dir/${slug}.log"
+}
+
 started="$(date +%s)"
 "$@" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
@@ -76,6 +88,7 @@ fi
 result="passed"
 if [[ "$status" -ne 0 ]]; then
     result="failed ($status)"
+    preserve_failure_log
 fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then

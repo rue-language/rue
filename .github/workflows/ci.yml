@@ -268,6 +268,18 @@ jobs:
             --repo . \
             --ref origin/trunk
 
+      # The Actions job-log API serves a truncated tail, so a failing target
+      # whose output scrolled past the cap is undiagnosable after the fact
+      # (RUE-1268). ci-timed preserves each failed command's complete output;
+      # keep it as an artifact.
+      - name: Upload failing-suite output
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: premerge-linux-x64-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
+
   # Native ARM64 lanes own only behavior that requires their host ABI, linker,
   # runtime, or backend. Target-independent unit/spec coverage remains on
   # Linux, avoiding three copies of the same broad suite.
@@ -342,6 +354,15 @@ jobs:
 
       - name: Run native filesystem and platform programs
         run: scripts/ci-timed "${{ matrix.name }} platform" -- scripts/rue cli cli.fs_file_io
+
+      # See the premerge lane's rationale (RUE-1268).
+      - name: Upload failing-suite output
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: native-${{ matrix.name }}-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
 
   # RUE-617/RUE-1019: keep the byte-reproducibility proof independent of the
   # cache-enabled Linux test lane. Both reference and relocated candidate are
@@ -559,6 +580,15 @@ jobs:
           path: ${{ runner.temp }}/rue-cli-case-timings.jsonl
           if-no-files-found: ignore
           overwrite: true
+
+      # See the premerge lane's rationale (RUE-1268).
+      - name: Upload failing-suite output
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ matrix.check_name }}-failure-logs
+          path: ${{ runner.temp }}/rue-ci-failed-logs
+          if-no-files-found: ignore
 
   # Focused release-mode coverage (RUE-1129). Correctness-critical compiler
   # invariants are enforced independently by validate-debug-assert-policy.py;
