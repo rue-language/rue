@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Report every non-passing test result from the last buck2 invocation.
+
+A merge-group failure is only actionable if the run recorded what the test
+actually did. `buck2 test` prints a per-target tally and a `✗ <target>` line,
+but a target whose process dies without emitting a result line leaves nothing
+in the console log to debug from — which is how RUE-1260 spent three
+occurrences unattributable.
+
+The event log already holds it. Each test carries a `TestResult` instant with
+its status, wall duration, and the captured `details` blob containing the
+child's complete stdout and stderr, including the panic message or the
+harness's report of a terminating signal. This prints those records for every
+result that is not a pass, so a failing job's log and its uploaded artifact
+name the case, the assertion, and how the process ended.
+
+Usage:
+    scripts/ci-test-failure-report [--log <path>] [--all]
+
+With no `--log`, the most recent invocation in this isolation directory is
+read. `--all` reports passing results too, which is only useful when writing
+the artifact rather than the console.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+
+# buck2's TestStatus enum. Everything outside this set is a failure of some
+# kind, so an unrecognized future status reports rather than being dropped.
+NOT_A_FAILURE = {
+    1,  # PASS
+    3,  # SKIP
+    4,  # OMITTED
+    9,  # LISTING_SUCCESS
+}
+
+STATUS_NAMES = {
+    0: "NOT_SET",
+    1: "PASS",
+    2: "FAIL",
+    3: "SKIP",
+    4: "OMITTED",
+    5: "FATAL",
+    6: "TIMEOUT",
+    7: "UNKNOWN",
+    8: "RERUN",
+    9: "LISTING_SUCCESS",
+    10: "LISTING_FAILED",
+}
+
+
+def test_results(log: str | None) -> list[dict]:
+    command = ["./buck2", "log", "show"]
+    if log is not None:
+        command.append(log)
+    shown = subprocess.run(command, capture_output=True, text=True, check=False)
+    if shown.returncode != 0:
+        print(shown.stderr, file=sys.stderr, end="")
+        raise SystemExit(f"error: `buck2 log show` failed ({shown.returncode})")
+    results = []
+    for line in shown.stdout.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        instant = event.get("Event", {}).get("data", {}).get("Instant", {})
+        result = instant.get("data", {}).get("TestResult")
+        if result is not None:
+            results.append(result)
+    return results
+
+
+def report(result: dict) -> str:
+    status = result.get("status")
+    duration_us = result.get("duration_us")
+    duration = "unknown" if duration_us is None else f"{duration_us / 1e6:.3f}s"
+    lines = [
+        "=" * 78,
+        f"test result: {result.get('name')}",
+        f"  status:   {STATUS_NAMES.get(status, status)} ({status})",
+        f"  duration: {duration}",
+    ]
+    message = result.get("msg")
+    if message:
+        lines.append(f"  message:  {message}")
+    details = result.get("details") or ""
+    lines.append("-" * 78)
+    lines.append(details if details.strip() else "(the test recorded no output at all)")
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--log", help="event log path (default: the last invocation)")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="report passing results too, for a complete uploaded artifact",
+    )
+    arguments = parser.parse_args()
+
+    results = test_results(arguments.log)
+    selected = [
+        result
+        for result in results
+        if arguments.all or result.get("status") not in NOT_A_FAILURE
+    ]
+    if not results:
+        print("no test results in the selected invocation")
+        return 0
+    if not selected:
+        print(f"all {len(results)} test result(s) passed")
+        return 0
+    scope = "recorded" if arguments.all else "did not pass"
+    print(f"{len(selected)} of {len(results)} test result(s) {scope}:\n")
+    for result in selected:
+        print(report(result))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

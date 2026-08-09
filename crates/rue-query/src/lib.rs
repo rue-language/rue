@@ -494,6 +494,128 @@ mod registered_batch_tests {
         }
     }
 
+    /// A retained dependency observation names one exact node incarnation, but
+    /// re-demand resolves the family memo by key. Retention retires a node from
+    /// that memo as soon as it holds no terminals and no live users, and the
+    /// next request for the key builds a fresh incarnation whose stamps restart
+    /// at one. Meanwhile the validation walk holds the retired incarnation alive
+    /// through the incarnation registry, so both nodes exist and the fresh
+    /// node's first stamp is numerically equal to the retained observation's.
+    ///
+    /// Comparing stamps alone therefore certifies a dependent against a
+    /// different node's computation, which reuses a stale value outright. The
+    /// interposition retires the child's incarnation at exactly the instant the
+    /// walk is about to re-demand it, which is the window that concurrent
+    /// retention hits on its own under load.
+    fn run_superseded_dependency_incarnation(worker_count: usize) {
+        let runtime = QueryRuntime::new(worker_count);
+        let input = InputIdentity::new("source", "superseded-incarnation");
+        let first = Revision::new(1, 7);
+        let second = Revision::new(2, 7);
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 2)])
+            .unwrap();
+
+        // One retained terminal: publishing any second key in this family
+        // retires the first key's node from the family memo.
+        let input_for_child = input.clone();
+        let children = runtime
+            .family_with_evaluator::<Key, u64, _>("superseded-child", 1, move |context, _, _| {
+                Ok(QueryOutput::success(
+                    context.input(input_for_child.clone())?,
+                ))
+            })
+            .unwrap();
+        let children_for_parent = children.clone();
+        let parents = runtime
+            .family_with_evaluator::<Key, u64, _>("superseded-parent", 8, move |context, _, _| {
+                let child = context.query_registered(&children_for_parent, Key("child"))?;
+                let QueryOutcome::Success(child) = child.outcome() else {
+                    unreachable!()
+                };
+                Ok(QueryOutput::success(*child))
+            })
+            .unwrap();
+
+        let observe = |revision| {
+            let attempt = runtime.request_registered(
+                &parents,
+                revision,
+                Key("root"),
+                CancellationToken::new(),
+            );
+            assert_eq!(attempt.abort(), None);
+            let QueryOutcome::Success(value) = *attempt.terminal().unwrap().outcome() else {
+                unreachable!()
+            };
+            value
+        };
+
+        assert_eq!(observe(first), 1);
+
+        let retire = Arc::new(AtomicBool::new(false));
+        let retire_for_hook = retire.clone();
+        let runtime_for_hook = runtime.clone();
+        let children_for_hook = children.clone();
+        runtime.set_interpose(Arc::new(move |site| {
+            if site != InterposeSite::RetainedDependencyDemand
+                || retire_for_hook.swap(true, Ordering::SeqCst)
+            {
+                return;
+            }
+            // Publishing a second key evicts the child's only retained terminal,
+            // which retires its node from the family memo while this walk still
+            // holds that exact incarnation alive.
+            runtime_for_hook
+                .request_registered(
+                    &children_for_hook,
+                    second,
+                    Key("filler"),
+                    CancellationToken::new(),
+                )
+                .into_result()
+                .unwrap();
+            // Rebuild the key as a fresh incarnation whose first stamp reads the
+            // same as the retained observation's. Re-demand then finds a
+            // publishable terminal and reuses it, which is what lets a bare
+            // stamp comparison certify the dependent against the wrong node.
+            runtime_for_hook
+                .request_registered(
+                    &children_for_hook,
+                    second,
+                    Key("child"),
+                    CancellationToken::new(),
+                )
+                .into_result()
+                .unwrap();
+        }));
+
+        let observed = observe(second);
+        runtime.clear_interpose();
+        assert!(
+            retire.load(Ordering::SeqCst),
+            "the retained dependency was re-demanded, so the window was exercised"
+        );
+        assert_eq!(
+            observed, 2,
+            "a superseded incarnation cannot certify a dependent, whatever its stamp reads"
+        );
+        assert!(
+            runtime.metrics().superseded_validations >= 1,
+            "the retired incarnation is reported rather than silently accepted"
+        );
+    }
+
+    #[test]
+    fn superseded_dependency_incarnation_recomputes_with_one_and_many_workers() {
+        for worker_count in [2, 4] {
+            run_superseded_dependency_incarnation(worker_count);
+        }
+    }
+
     #[test]
     fn registered_batch_transfers_exact_leases_and_handoffs_before_child_teardown() {
         let runtime = QueryRuntime::new(1);
@@ -2126,7 +2248,8 @@ impl CancellationToken {
 pub struct RuntimeMetrics {
     /// New computations claimed.
     pub claims: u64,
-    /// Compatible in-flight requests joined.
+    /// Compatible in-flight requests a task elected to share. A join declined
+    /// as unwaitable is counted here too and again under `declined_joins`.
     pub joins: u64,
     /// Compatible retained terminals reused.
     pub reuses: u64,
@@ -2134,6 +2257,9 @@ pub struct RuntimeMetrics {
     pub validation_memo_hits: u64,
     /// Dependency validations which had to inspect or re-demand the node.
     pub validation_memo_misses: u64,
+    /// Retained dependency observations whose node incarnation was retired from
+    /// its family's key memo, so the dependent recomputed instead of reusing.
+    pub superseded_validations: u64,
     /// Query bodies which completed before publication checks.
     pub body_completions: u64,
     /// Recomputations whose observable stamp stayed red.
@@ -2144,6 +2270,9 @@ pub struct RuntimeMetrics {
     pub cancellations: u64,
     /// True dependency cycles reported.
     pub cycles: u64,
+    /// Joins declined because waiting would have closed a wait-graph loop, each
+    /// resolved by computing a private attempt.
+    pub declined_joins: u64,
     /// Retained terminal attempts evicted.
     pub evictions: u64,
     /// Current retained terminal attempts.
@@ -2247,11 +2376,13 @@ struct Metrics {
     reuses: AtomicU64,
     validation_memo_hits: AtomicU64,
     validation_memo_misses: AtomicU64,
+    superseded_validations: AtomicU64,
     body_completions: AtomicU64,
     red_publications: AtomicU64,
     green_publications: AtomicU64,
     cancellations: AtomicU64,
     cycles: AtomicU64,
+    declined_joins: AtomicU64,
     evictions: AtomicU64,
     retained_terminals: AtomicU64,
     peak_retained_bytes: AtomicU64,
@@ -2289,11 +2420,13 @@ impl Metrics {
             reuses: self.reuses.load(Ordering::Relaxed),
             validation_memo_hits: self.validation_memo_hits.load(Ordering::Relaxed),
             validation_memo_misses: self.validation_memo_misses.load(Ordering::Relaxed),
+            superseded_validations: self.superseded_validations.load(Ordering::Relaxed),
             body_completions: self.body_completions.load(Ordering::Relaxed),
             red_publications: self.red_publications.load(Ordering::Relaxed),
             green_publications: self.green_publications.load(Ordering::Relaxed),
             cancellations: self.cancellations.load(Ordering::Relaxed),
             cycles: self.cycles.load(Ordering::Relaxed),
+            declined_joins: self.declined_joins.load(Ordering::Relaxed),
             evictions: self.evictions.load(Ordering::Relaxed),
             retained_terminals: self.retained_terminals.load(Ordering::Relaxed),
             retained_bytes: retention.retained_bytes,
@@ -2617,6 +2750,10 @@ enum InterposeSite {
     /// Aggregate retention has finished a pass and is about to hand sweep
     /// ownership to any publisher which arrived concurrently.
     RetentionSweepRelease,
+    /// A retained dependency's exact node has been upgraded from the
+    /// incarnation registry and missed its validation memo, immediately before
+    /// re-demanding the key from family-owned authority.
+    RetainedDependencyDemand,
 }
 
 const REVISION_RETENTION_LIMIT: usize = 64;
@@ -3387,6 +3524,7 @@ impl QueryRuntime {
             cancellation,
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
+            ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
@@ -3783,8 +3921,29 @@ struct Node<K, V> {
     registry_self: Weak<dyn ErasedNode>,
     users: AtomicUsize,
     wait: Arc<WaitCell>,
-    demand: Option<Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>>,
+    demand: Option<Arc<dyn Fn(Arc<Task>, u64) -> ValidationDemand<V> + Send + Sync>>,
     state: Mutex<NodeState<V>>,
+}
+
+/// Outcome of re-demanding a retained dependency from family-owned authority.
+///
+/// Re-demand resolves the family's memo by KEY, while a retained dependency
+/// observation names one exact node INCARNATION. Retention removes a node from
+/// its family's key memo once the node holds no terminals and no live users
+/// (`NodeLease::drop` and terminal eviction), after which the next request for
+/// that key builds a fresh incarnation whose stamps restart at one. A recursive
+/// validation walk holds the old incarnation alive through the incarnation
+/// registry, so both nodes can be live at once — and the fresh incarnation's
+/// first stamp collides numerically with the retained observation's stamp
+/// without describing the same computation.
+enum ValidationDemand<V> {
+    /// The family still memoizes this key at the demanded incarnation, so the
+    /// result proves whether the retained observation is still current.
+    Current(TaskQueryResult<V>),
+    /// The family's memo for this key is a different incarnation. Nothing the
+    /// fresh node publishes can witness the retained observation, so the
+    /// dependent is dirty and recomputes against the current graph.
+    Superseded,
 }
 
 impl<K, V> fmt::Debug for Node<K, V> {
@@ -3869,8 +4028,20 @@ where
             .validation_memo_misses
             .fetch_add(1, Ordering::Relaxed);
         if let Some(demand) = &self.demand {
+            #[cfg(test)]
+            core.interpose(InterposeSite::RetainedDependencyDemand);
             let request_id = task.next_nested_request();
-            let result = demand(task.clone(), request_id);
+            let ValidationDemand::Current(result) = demand(task.clone(), request_id) else {
+                // Retention retired this incarnation from its family's key memo.
+                // The key is still computable, but only as a fresh incarnation
+                // whose stamps are unrelated to the retained observation, so the
+                // dependent is dirty rather than provably green.
+                core.metrics
+                    .superseded_validations
+                    .fetch_add(1, Ordering::Relaxed);
+                active.remove(&self.incarnation);
+                return Ok(None);
+            };
             task.record_nested(request_id, || self.identity.clone(), &result);
             active.remove(&self.incarnation);
             return match result {
@@ -3879,6 +4050,17 @@ where
                     execution,
                     ..
                 } => {
+                    // Retention can retire this incarnation between the memo
+                    // check above and the request itself. The answering
+                    // incarnation is authoritative: a stamp published by any
+                    // other node is a different counter and never witnesses this
+                    // observation, however numerically equal it looks.
+                    if terminal.node_incarnation != self.incarnation {
+                        core.metrics
+                            .superseded_validations
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Ok(None);
+                    }
                     // A validation-only computation or join returns an exact
                     // stamp but does not transfer its candidate pin into the
                     // task's proof cone. Mark every enclosing certificate for
@@ -4196,6 +4378,17 @@ where
     }
 }
 
+/// Result of attempting to share another task's in-flight attempt.
+enum JoinOutcome<K: QueryKey, V: Clone + Send + Sync + 'static> {
+    /// The attempt reached a terminal and its protection was handed to this pin.
+    Joined(u64, Arc<AttemptHandoffLifecycle>, TerminalPin<K, V>),
+    /// The attempt disappeared (detached or evicted); rediscover from scratch.
+    Retry,
+    /// Waiting for this attempt's owner would close a wait-graph loop. The
+    /// caller claims a private attempt rather than failing the request.
+    Contended,
+}
+
 enum TaskQueryResult<V> {
     Terminal {
         terminal: Arc<QueryTerminal<V>>,
@@ -4347,25 +4540,43 @@ where
                 let key = key.clone();
                 Arc::new(move |task: Arc<Task>, origin_request: u64| {
                     let Some(inner) = family.upgrade() else {
-                        return TaskQueryResult::Aborted {
+                        return ValidationDemand::Current(TaskQueryResult::Aborted {
                             abort: QueryAbort::ForeignRuntime,
                             dependencies: Vec::new(),
                             inputs: Vec::new(),
                             work: Vec::new(),
-                        };
+                        });
                     };
-                    QueryFamily {
-                        core: core.clone(),
-                        inner,
-                        retention_driver: retention_driver.clone(),
+                    // Re-demand answers by key, so it can only witness this
+                    // observation while the family's memo for the key is still
+                    // this incarnation. Checking first keeps a superseded node
+                    // from resurrecting its key speculatively — which would both
+                    // charge retention for work the dependent must redo anyway
+                    // and park this task behind whichever request is already
+                    // computing the fresh incarnation.
+                    let superseded = {
+                        let nodes = inner.nodes.shard(&key);
+                        nodes
+                            .get(&key)
+                            .is_none_or(|current| current.incarnation != incarnation)
+                    };
+                    if superseded {
+                        return ValidationDemand::Superseded;
                     }
-                    .query_task_registered_for_validation(
-                        task,
-                        key.clone(),
-                        origin_request,
+                    ValidationDemand::Current(
+                        QueryFamily {
+                            core: core.clone(),
+                            inner,
+                            retention_driver: retention_driver.clone(),
+                        }
+                        .query_task_registered_for_validation(
+                            task,
+                            key.clone(),
+                            origin_request,
+                        ),
                     )
                 })
-                    as Arc<dyn Fn(Arc<Task>, u64) -> TaskQueryResult<V> + Send + Sync>
+                    as Arc<dyn Fn(Arc<Task>, u64) -> ValidationDemand<V> + Send + Sync>
             });
             let registry_core = Arc::downgrade(&self.core);
             let node: Arc<Node<K, V>> = Arc::new_cyclic(|registry_self: &Weak<Node<K, V>>| {
@@ -4495,6 +4706,8 @@ where
                 work: Vec::new(),
             };
         }
+        // Attempts whose owner this task cannot wait for without deadlocking.
+        let mut contended = BTreeSet::new();
         loop {
             if task.cancellation.is_canceled() {
                 self.core
@@ -4632,7 +4845,12 @@ where
                         AttemptState::Computing { owner, waiters } => {
                             // A body has not yet frozen its observed leaves, so
                             // only the identical pinned revision may join it.
-                            if attempt.revision == task.revision {
+                            // An attempt this task already proved it cannot wait
+                            // for is skipped, so the fallback below claims a
+                            // private attempt instead of reselecting the same
+                            // unwaitable one forever.
+                            if attempt.revision == task.revision && !contended.contains(&attempt.id)
+                            {
                                 *waiters += 1;
                                 action = Some(Action::Join {
                                     attempt: attempt.id,
@@ -4665,7 +4883,7 @@ where
                     self.core.metrics.joins.fetch_add(1, Ordering::Relaxed);
                     #[cfg(test)]
                     self.core.test_changed();
-                    match self.join(&task, node, attempt, owner, observe_result) {
+                    match self.join(&task, node, attempt, owner) {
                         Err(abort) => {
                             return TaskQueryResult::Aborted {
                                 abort,
@@ -4674,7 +4892,11 @@ where
                                 work: Vec::new(),
                             };
                         }
-                        Ok(Some((joined_attempt, handoffs, pin))) => {
+                        Ok(JoinOutcome::Contended) => {
+                            contended.insert(attempt);
+                            continue;
+                        }
+                        Ok(JoinOutcome::Joined(joined_attempt, handoffs, pin)) => {
                             // `join` transferred the waiter's protection into this
                             // pin before decrementing the waiter count, so the
                             // joined terminal has been continuously protected. Move
@@ -4695,7 +4917,7 @@ where
                                 work: Vec::new(),
                             };
                         }
-                        Ok(None) => continue,
+                        Ok(JoinOutcome::Retry) => continue,
                     }
                 }
                 Action::Compute { attempt } => {
@@ -4811,8 +5033,7 @@ where
         node: &Arc<Node<K, V>>,
         attempt_id: u64,
         owner: TaskId,
-        record_cycle: bool,
-    ) -> Result<Option<(u64, Arc<AttemptHandoffLifecycle>, TerminalPin<K, V>)>, QueryAbort> {
+    ) -> Result<JoinOutcome<K, V>, QueryAbort> {
         let mut state = lock(&node.state);
         if task.cancellation.is_canceled() {
             let enforce = decrement_waiter(&mut state, attempt_id);
@@ -4828,7 +5049,7 @@ where
             return Err(QueryAbort::Canceled);
         }
         let Some(attempt) = state.attempts.iter_mut().find(|item| item.id == attempt_id) else {
-            return Ok(None);
+            return Ok(JoinOutcome::Retry);
         };
         match &mut attempt.state {
             AttemptState::Terminal {
@@ -4849,19 +5070,37 @@ where
                 drop(state);
                 #[cfg(test)]
                 self.core.interpose(InterposeSite::JoinHandoff);
-                return Ok(Some((attempt_id, handoffs, pin)));
+                return Ok(JoinOutcome::Joined(attempt_id, handoffs, pin));
             }
             AttemptState::Computing {
                 owner: actual_owner,
                 ..
             } => assert_eq!(*actual_owner, owner),
         }
-        if let Err(cycle) = self.core.begin_wait(task.id, owner, node.identity.clone()) {
+        if self
+            .core
+            .begin_wait(task.id, owner, node.identity.clone())
+            .is_err()
+        {
+            // Waiting here would close a wait-graph loop. That loop says two
+            // tasks reached an overlapping set of nodes in opposite orders — a
+            // scheduling conflict, not a statement about the query graph. A real
+            // dependency cycle is a property of the request's structure and is
+            // reported exactly by `Task::stack_cycle`, which sees through batch
+            // boundaries via the task's ancestry.
+            //
+            // Failing the request here would make an ordinary interleaving
+            // surface as a user-visible cycle, and which task loses the race is
+            // nondeterministic. Decline the join instead and let the caller
+            // claim a private attempt: query evaluation is deterministic, so a
+            // duplicated computation costs work and never an answer, and
+            // `publish` folds an equal result back onto the existing stamp.
             decrement_waiter(&mut state, attempt_id);
-            if record_cycle {
-                self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
-            }
-            return Err(QueryAbort::Cycle(cycle));
+            self.core
+                .metrics
+                .declined_joins
+                .fetch_add(1, Ordering::Relaxed);
+            return Ok(JoinOutcome::Contended);
         }
         let cancellation_watch = task.cancellation.watch(&node.wait);
         let donated = task.release_permit(&self.core);
@@ -4881,7 +5120,7 @@ where
                 break Err(QueryAbort::Canceled);
             }
             let Some(attempt) = state.attempts.iter_mut().find(|item| item.id == attempt_id) else {
-                break Ok(None);
+                break Ok(JoinOutcome::Retry);
             };
             match &mut attempt.state {
                 AttemptState::Computing { .. } => {
@@ -4912,7 +5151,7 @@ where
                         .pin_terminal(terminal)
                         .expect("a family pins its own retained terminal");
                     *waiters -= 1;
-                    break Ok(Some((attempt_id, handoffs.clone(), pin)));
+                    break Ok(JoinOutcome::Joined(attempt_id, handoffs.clone(), pin));
                 }
             }
         };
@@ -4932,7 +5171,7 @@ where
                 .fetch_add(1, Ordering::Relaxed);
         }
         #[cfg(test)]
-        if matches!(result, Ok(Some(_))) {
+        if matches!(result, Ok(JoinOutcome::Joined(..))) {
             self.core.interpose(InterposeSite::JoinHandoff);
         }
         result
@@ -6146,6 +6385,14 @@ struct Task {
     cancellation: CancellationToken,
     owns_permit: AtomicBool,
     stack: Mutex<Vec<TaskFrame>>,
+    /// Nodes whose evaluation structurally encloses this task but whose frames
+    /// live on an ancestor task's stack. A registered batch runs its children on
+    /// their own tasks, so without this the child's stack starts empty and a
+    /// dependency cycle crossing a batch boundary is invisible to
+    /// [`Task::stack_cycle`]. Carrying the enclosing chain keeps cycle detection
+    /// structural and exact — a property of the request's shape, not of which
+    /// task happened to reach a node first.
+    ancestry: Arc<[ExactNodeIdentity]>,
     nested_attempts: Mutex<Vec<NestedQueryAttempt>>,
     /// Active operational-ledger selections. The top entry is already
     /// intersected with every parent scope, so one binary search decides
@@ -6978,6 +7225,14 @@ impl Task {
         // evaluator in any structured descendant taints every enclosing
         // registered-only validation walk.
         let inherited_validation_proofs = lock(&self.validation_proofs).clone();
+        // The child evaluates underneath every node this task is currently
+        // inside, so those frames enclose it exactly as if they were its own.
+        let inherited_ancestry: Arc<[ExactNodeIdentity]> = self
+            .ancestry
+            .iter()
+            .cloned()
+            .chain(lock(&self.stack).iter().map(|frame| frame.node.clone()))
+            .collect();
         Arc::new(Self {
             id: TaskId(id),
             core: self.core.clone(),
@@ -6985,6 +7240,7 @@ impl Task {
             cancellation: self.cancellation.clone(),
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
+            ancestry: inherited_ancestry,
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(inherited_filter.into_iter().collect()),
             // A batch child is a structured descendant of the lexical proof
@@ -7522,11 +7778,15 @@ impl Task {
 
     fn stack_cycle(&self, node: &ExactNodeIdentity) -> Option<Arc<[NodeIdentity]>> {
         let stack = lock(&self.stack);
-        let start = stack.iter().position(|frame| &frame.node == node)?;
+        let enclosing = self
+            .ancestry
+            .iter()
+            .chain(stack.iter().map(|frame| &frame.node));
+        let start = enclosing.clone().position(|frame| frame == node)?;
         Some(canonical_cycle(
-            stack[start..]
-                .iter()
-                .map(|frame| frame.node.display.clone())
+            enclosing
+                .skip(start)
+                .map(|frame| frame.display.clone())
                 .chain(std::iter::once(node.display.clone())),
         ))
     }
@@ -10099,6 +10359,7 @@ mod tests {
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
+            ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
@@ -10150,6 +10411,7 @@ mod tests {
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
+            ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
@@ -10423,6 +10685,7 @@ mod tests {
             cancellation: CancellationToken::new(),
             owns_permit: AtomicBool::new(false),
             stack: Mutex::new(Vec::new()),
+            ancestry: Arc::from([]),
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
@@ -10794,8 +11057,11 @@ mod tests {
         assert_eq!(runtime.metrics().donated_permits, 1);
     }
 
+    /// The single-permit shape of the contention above: the queued root must
+    /// neither starve behind the permit holder nor be failed for a loop that
+    /// only exists between two independent roots.
     #[test]
-    fn one_permit_cross_task_cycle_is_distinct_from_queued_owner_starvation() {
+    fn one_permit_cross_task_contention_neither_starves_nor_fails() {
         let runtime = QueryRuntime::new(1);
         publish_empty(&runtime, [revision(1)]);
         let left = runtime.family::<Key, u64>("one-cycle-left", 4).unwrap();
@@ -10833,7 +11099,9 @@ mod tests {
                 CancellationToken::new(),
                 |context| {
                     context.query(&right_dependency, Key("a"), |_| {
-                        panic!("the left root is already owned")
+                        // Reached only when the left root's attempt is still
+                        // in flight and waiting for it would deadlock.
+                        Ok(QueryOutput::success(1))
                     })?;
                     Ok(QueryOutput::success(2))
                 },
@@ -10846,11 +11114,12 @@ mod tests {
             left_task.join().unwrap().unwrap().outcome(),
             &QueryOutcome::Success(1)
         );
-        let QueryAbort::Cycle(nodes) = right_task.join().unwrap().unwrap_err() else {
-            panic!("the queued owner must observe the true cross-task cycle");
-        };
-        assert_eq!(nodes.len(), 2);
-        assert_eq!(runtime.metrics().cycles, 1);
+        assert_eq!(
+            right_task.join().unwrap().unwrap().outcome(),
+            &QueryOutcome::Success(2)
+        );
+        assert_eq!(runtime.metrics().cycles, 0);
+        assert_eq!(runtime.metrics().declined_joins, 1);
         assert_eq!(runtime.metrics().donated_permits, 1);
     }
 
@@ -10877,8 +11146,15 @@ mod tests {
         assert_eq!(nodes[0].key(), "a");
     }
 
+    /// Two independent roots can reach an overlapping set of nodes in opposite
+    /// orders. Each root's own graph is acyclic — neither body asks for anything
+    /// that asks back — so the loop exists only in the wait graph, which records
+    /// who happened to claim which attempt first. Failing a request on that is
+    /// reporting a scheduling artifact as a program property, and which root
+    /// loses is decided by thread interleaving. Both must complete instead, with
+    /// the contended attempt duplicated rather than waited on.
     #[test]
-    fn cross_task_wait_cycle_is_detected_without_deadlock() {
+    fn cross_task_attempt_contention_duplicates_rather_than_failing() {
         let runtime = QueryRuntime::new(2);
         publish_empty(&runtime, [revision(1)]);
         let left = runtime.family::<Key, u64>("cycle-left", 4).unwrap();
@@ -10920,13 +11196,51 @@ mod tests {
                 },
             )
         });
-        let results = [a.join().unwrap(), b.join().unwrap()];
-        assert!(
-            results
-                .iter()
-                .any(|result| matches!(result, Err(QueryAbort::Cycle(_))))
+        assert_eq!(
+            a.join().unwrap().unwrap().outcome(),
+            &QueryOutcome::Success(1)
         );
-        assert!(runtime.metrics().cycles >= 1);
+        assert_eq!(
+            b.join().unwrap().unwrap().outcome(),
+            &QueryOutcome::Success(2)
+        );
+        assert_eq!(
+            runtime.metrics().cycles,
+            0,
+            "no body asked for a node that asks back, so no cycle exists to report"
+        );
+    }
+
+    /// A dependency cycle is a property of the request's structure, so it must
+    /// still be reported exactly — including through a registered batch, whose
+    /// children evaluate on their own tasks with their own stacks. Declining a
+    /// deadlocking join only moves the work; the enclosing chain is what makes
+    /// the recursion terminate on the node that actually repeats.
+    #[test]
+    fn registered_batch_dependency_cycle_is_reported_exactly() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let ring_slot = Arc::new(std::sync::OnceLock::<QueryFamily<Key, u64>>::new());
+        let ring_slot_for_evaluator = ring_slot.clone();
+        let ring = runtime
+            .family_with_evaluator::<Key, u64, _>("ring", 8, move |context, _, key: &Key| {
+                let next = if key.0 == "a" { Key("b") } else { Key("a") };
+                context.query_registered_batch(
+                    ring_slot_for_evaluator.get().expect("ring is installed"),
+                    [next],
+                )?;
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        ring_slot.set(ring.clone()).unwrap();
+
+        let attempt =
+            runtime.request_registered(&ring, revision(1), Key("a"), CancellationToken::new());
+        let Some(QueryAbort::Cycle(nodes)) = attempt.abort() else {
+            panic!("a body which transitively asks for itself is a true cycle");
+        };
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(runtime.metrics().cycles, 1);
     }
 
     #[test]

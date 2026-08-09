@@ -253,10 +253,40 @@ jobs:
         # `rue_ci_dedicated_lane` label in BUCK, and test.sh subtracts that label
         # when CI=true. This step no longer names them: the CI-contract job
         # fails if the labeled set and the platform-corpus matrix disagree.
+        #
+        # RUE-1260: `buck2 test` prints a per-target tally and a `✗ <target>`
+        # line, so a target whose process dies without emitting a result line
+        # leaves nothing here to debug from — three merge-group ejections were
+        # unattributable for exactly that reason. The event log recorded the
+        # child's stdout, stderr, and exit status the whole time, so report it
+        # on the failure path and keep the complete record as an artifact.
         env:
           RUE_TEST_TIER: premerge
           RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.file }}
-        run: scripts/ci-timed "linux-x64 premerge" -- ./test.sh
+          RUE_PREMERGE_TEST_RESULTS: ${{ runner.temp }}/premerge-test-results.txt
+        run: |
+          # The default step shell runs with `-e`; the suite's status has to
+          # survive long enough to report on it, so exit on it explicitly.
+          set +e
+          scripts/ci-timed "linux-x64 premerge" -- ./test.sh
+          status=$?
+          if [ "$status" -ne 0 ]; then
+            scripts/ci-test-failure-report || true
+            scripts/ci-test-failure-report --all >"$RUE_PREMERGE_TEST_RESULTS" 2>&1 || true
+          fi
+          exit "$status"
+
+      # RUE-1260's per-target report and RUE-1268's preserved command log answer
+      # different questions on a failure — which target died and what it printed,
+      # versus the full output of the command that ran it — so both upload, under
+      # distinct artifact names.
+      - name: Upload premerge test results
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: premerge-test-results-linux-x64
+          path: ${{ runner.temp }}/premerge-test-results.txt
+          if-no-files-found: ignore
 
       - name: Run explicit cross-backend compilation and encoding coverage
         # Both the x86-64 and AArch64 encoders are host-independent Rust tests.
