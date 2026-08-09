@@ -162,6 +162,8 @@ jobs:
   linux-premerge:
     runs-on: ubuntu-latest
     name: premerge (linux-x64)
+    if: ${{ always() }}
+    needs: affected-targets
     steps:
       - uses: actions/checkout@v6
         with:
@@ -205,10 +207,43 @@ jobs:
           scripts/provision-build-cache install
           scripts/provision-build-cache apply
 
+      # RUE-1130: materialize the determinator's impacted-target closure so the
+      # heavy steps below can run exactly it. `narrowed` is the determinator's
+      # own flag: it declines to narrow when nothing is impacted or when so much
+      # is that the `//...` pattern is the better expression of it, so an empty
+      # file here always means "run everything", never "run nothing".
+      - name: Impacted target list
+        id: narrow
+        env:
+          RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}
+          RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}
+        run: |
+          set -euo pipefail
+          file="${RUNNER_TEMP}/impacted-targets.txt"
+          : >"$file"
+          if [ "${RUE_AFFECTED_NARROWED:-}" = "true" ]; then
+            printf '%s\n' "$RUE_AFFECTED_IMPACTED" | sed '/^$/d' >"$file"
+          fi
+          count="$(wc -l <"$file" | tr -d ' ')"
+          echo "file=$file" >>"$GITHUB_OUTPUT"
+          echo "count=$count" >>"$GITHUB_OUTPUT"
+          echo "impacted targets for this lane: $count"
+
       # Uses hermetic Rust toolchain downloaded by Buck2
-      # First verify everything builds (catches issues tests might miss)
+      # First verify everything builds (catches issues tests might miss).
+      # RUE-1130: on a narrowed run this builds the impacted closure instead of
+      # every crate. An unimpacted crate cannot have been broken by this diff,
+      # and building its test binaries is the cost this narrowing exists to
+      # avoid — measured at 286-317s whenever a compiler crate changes.
       - name: Build all targets
-        run: scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.narrow.outputs.count }}" -gt 0 ]; then
+            mapfile -t targets <"${{ steps.narrow.outputs.file }}"
+            scripts/ci-timed "linux-x64 build (narrowed)" -- ./buck2 build "${targets[@]}"
+          else
+            scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+          fi
 
       - name: Run complete target-independent premerge suite
         # RUE-1163: the corpora with their own platform-corpus job carry the
@@ -217,6 +252,7 @@ jobs:
         # fails if the labeled set and the platform-corpus matrix disagree.
         env:
           RUE_TEST_TIER: premerge
+          RUE_TEST_TARGETS_FILE: ${{ steps.narrow.outputs.file }}
         run: scripts/ci-timed "linux-x64 premerge" -- ./test.sh
 
       - name: Run explicit cross-backend compilation and encoding coverage
@@ -310,6 +346,28 @@ jobs:
           RUE_AFFECTED_LANES: ${{ needs.affected-targets.outputs.selected_lanes }}
         run: scripts/ci-corpus-decision "native-${{ matrix.name }}"
 
+      # RUE-1130: materialize the determinator's impacted-target closure so the
+      # heavy steps below can run exactly it. `narrowed` is the determinator's
+      # own flag: it declines to narrow when nothing is impacted or when so much
+      # is that the `//...` pattern is the better expression of it, so an empty
+      # file here always means "run everything", never "run nothing".
+      - name: Impacted target list
+        id: narrow
+        env:
+          RUE_AFFECTED_NARROWED: ${{ needs.affected-targets.outputs.narrowed }}
+          RUE_AFFECTED_IMPACTED: ${{ needs.affected-targets.outputs.impacted }}
+        run: |
+          set -euo pipefail
+          file="${RUNNER_TEMP}/impacted-targets.txt"
+          : >"$file"
+          if [ "${RUE_AFFECTED_NARROWED:-}" = "true" ]; then
+            printf '%s\n' "$RUE_AFFECTED_IMPACTED" | sed '/^$/d' >"$file"
+          fi
+          count="$(wc -l <"$file" | tr -d ' ')"
+          echo "file=$file" >>"$GITHUB_OUTPUT"
+          echo "count=$count" >>"$GITHUB_OUTPUT"
+          echo "impacted targets for this lane: $count"
+
       - name: Select Xcode 16.2
         if: runner.os == 'macOS' && steps.sel.outputs.run == 'true'
         run: sudo xcode-select -s /Applications/Xcode_16.2.app
@@ -345,19 +403,31 @@ jobs:
         if: steps.sel.outputs.run == 'true'
         run: scripts/ci-timed "${{ matrix.name }} native build" -- ./buck2 build //crates/rue:rue
 
+      # RUE-1130: the same eight targets, narrowed to the impacted ones. These
+      # are unit tests, never the critical path, but their binaries are the
+      # expensive part and an unimpacted one has nothing to prove.
       - name: Run native backend, linker, runtime, ABI, allocator, and target tests
         if: steps.sel.outputs.run == 'true'
-        run: >-
-          scripts/ci-timed "${{ matrix.name }} native units" --
-          ./buck2 test
-          //crates/rue-compiler:rue-compiler-test
-          //crates/rue-codegen:rue-codegen-test
-          //crates/rue-linker:rue-linker-test
-          //crates/rue-runtime:rue-runtime-test
-          //crates/rue-runtime:runtime-archives-test
-          //crates/rue-runtime-abi:rue-runtime-abi-test
-          //crates/rue-allocator:rue-allocator-test
-          //crates/rue-target:rue-target-test
+        run: |
+          set -euo pipefail
+          targets=(
+            //crates/rue-compiler:rue-compiler-test
+            //crates/rue-codegen:rue-codegen-test
+            //crates/rue-linker:rue-linker-test
+            //crates/rue-runtime:rue-runtime-test
+            //crates/rue-runtime:runtime-archives-test
+            //crates/rue-runtime-abi:rue-runtime-abi-test
+            //crates/rue-allocator:rue-allocator-test
+            //crates/rue-target:rue-target-test
+          )
+          if [ "${{ steps.narrow.outputs.count }}" -gt 0 ]; then
+            mapfile -t targets < <(scripts/affected-targets intersect "${{ steps.narrow.outputs.file }}" "${targets[@]}")
+          fi
+          if [ "${#targets[@]}" -eq 0 ]; then
+            echo "native units: no impacted unit targets on this diff; the merge-queue run covers them."
+            exit 0
+          fi
+          scripts/ci-timed "${{ matrix.name }} native units" -- ./buck2 test "${targets[@]}"
 
       - name: Run every declaratively platform-scoped spec and CLI case
         if: steps.sel.outputs.run == 'true'
@@ -461,6 +531,12 @@ jobs:
       # now fails closed on that, because the failure only appears on the
       # peripheral PRs the gating exists for, and never on a CI-touching one.
       selected_lanes: ${{ steps.decide.outputs.selected_lanes }}
+      # The impacted-target closure, and the determinator's own flag for whether
+      # narrowing to it is worthwhile. Consumers key on `narrowed`; an absent or
+      # empty `impacted` therefore reads as "run everything", never "run
+      # nothing".
+      narrowed: ${{ steps.decide.outputs.narrowed }}
+      impacted: ${{ steps.decide.outputs.impacted }}
     steps:
       - uses: actions/checkout@v6
         # BTD compares the graph at the merge-base and at the head, so the base

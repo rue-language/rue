@@ -18,6 +18,7 @@ fi
 # Buck resource materialization.
 AFFECTED=(bash "$SCRIPTS_DIR/affected-targets")
 GATE=(bash "$SCRIPTS_DIR/ci-corpus-selected")
+REPO_ROOT="$(cd "$SCRIPTS_DIR/.." && pwd)"
 DECISION=(bash "$SCRIPTS_DIR/ci-corpus-decision")
 PARSER=(python3 "$SCRIPTS_DIR/parse-btd-impacted.py")
 
@@ -194,6 +195,85 @@ fi
 # must force a full run rather than relying on a representative target.
 expect_full "crates/rue-runtime-asan/src/main.rs"
 expect_full "crates/rue-runtime-asan/Cargo.toml"
+
+# --- RUE-1130: narrowing a lane to the impacted closure ---------------------
+
+# `intersect` is what turns a lane's fixed target list into the impacted subset.
+# Order follows the lane's own list so the runner's output stays stable.
+narrow_root="$(mktemp -d)"
+printf '//crates/rue-codegen:rue-codegen-test\n//crates/rue-target:rue-target-test\n' >"$narrow_root/impacted"
+TESTS=$((TESTS + 1))
+if [ "$("${AFFECTED[@]}" intersect "$narrow_root/impacted" \
+        //crates/rue-compiler:rue-compiler-test \
+        //crates/rue-target:rue-target-test \
+        //crates/rue-codegen:rue-codegen-test | tr '\n' ' ')" \
+     = "//crates/rue-target:rue-target-test //crates/rue-codegen:rue-codegen-test " ]; then
+  pass "narrow: intersect keeps the lane's order and drops unimpacted targets"
+else
+  fail "narrow: intersect produced the wrong subset"
+fi
+
+# An empty impacted file must yield an empty intersection rather than the whole
+# list; the caller distinguishes the two by the determinator's `narrowed` flag,
+# never by this output.
+: >"$narrow_root/none"
+TESTS=$((TESTS + 1))
+if [ -z "$("${AFFECTED[@]}" intersect "$narrow_root/none" //crates/rue-target:rue-target-test)" ]; then
+  pass "narrow: empty impacted list intersects to nothing"
+else
+  fail "narrow: empty impacted list did not intersect to nothing"
+fi
+
+# A missing file must not abort the caller mid-pipeline.
+TESTS=$((TESTS + 1))
+if "${AFFECTED[@]}" intersect "$narrow_root/absent" //crates/rue-target:rue-target-test >/dev/null 2>&1; then
+  pass "narrow: missing impacted file exits cleanly"
+else
+  fail "narrow: missing impacted file did not exit cleanly"
+fi
+
+# test.sh must fall back to the full pattern for every input that is not a
+# readable, non-empty list, and must never turn a bad list into "run nothing".
+run_test_sh_args() { # run_test_sh_args [VAR=VALUE ...] -> prints the buck2 test args
+  local shim="$narrow_root/bin"
+  mkdir -p "$shim"
+  printf '#!/usr/bin/env bash\nshift\n[ "${1:-}" = test ] && { shift; printf "ARGS: %%s\\n" "$*"; exit 0; }\nexit 0\n' >"$shim/dotslash"
+  chmod +x "$shim/dotslash"
+  ( cd "$REPO_ROOT" && PATH="$shim:$PATH" CI=true RUE_TEST_TIER=premerge env "$@" ./test.sh 2>&1 ) | grep '^ARGS: ' || true
+}
+
+check_narrow() { # check_narrow <desc> <expect-substring> [VAR=VALUE ...]
+  local desc="$1" expect="$2"; shift 2
+  TESTS=$((TESTS + 1))
+  # Capture first: `grep -q` exits on its first match, and behind a pipe under
+  # `set -o pipefail` that kills the producer with EPIPE and fails the pipeline
+  # (RUE-1011/RUE-1155). `--` so an expectation starting with a flag is not
+  # parsed as one.
+  local actual
+  actual="$(run_test_sh_args "$@")"
+  if grep -Fq -- "$expect" <<<"$actual"; then
+    pass "narrow: $desc"
+  else
+    fail "narrow: $desc (expected args containing '$expect')"
+  fi
+}
+
+printf '//crates/rue-span:rue-span-test\n' >"$narrow_root/one"
+check_narrow "a readable list narrows the suite" \
+  "ARGS: //crates/rue-span:rue-span-test --always-exclude" \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/one"
+check_narrow "an empty list runs the full pattern" \
+  "ARGS: //... toolchains//..." \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/none"
+check_narrow "an unreadable list runs the full pattern" \
+  "ARGS: //... toolchains//..." \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/absent"
+check_narrow "an unset list runs the full pattern" \
+  "ARGS: //... toolchains//..."
+# Narrowing must not weaken the tier or deferral filters it runs under.
+check_narrow "a narrowed suite keeps its tier and deferral filters" \
+  "--include rue_test_tier_premerge --exclude rue_ci_dedicated_lane" \
+  "RUE_TEST_TARGETS_FILE=$narrow_root/one"
 
 # The workflow-facing adapter must reserve `run=false` for the gate's explicit
 # deselection status. A gate crash or missing executable runs the corpus.

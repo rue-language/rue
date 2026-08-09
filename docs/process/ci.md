@@ -306,13 +306,31 @@ compiler change, because the lanes that dominate a run were not consulting the
 determinator. On four measured peripheral runs the extension frees 905–1034s of
 runner time each.
 
-It does **not** shorten the critical path on its own — `premerge (linux-x64)`
-still dominates in three of those four runs — because `linux-premerge` is
-deliberately ungated. It is the broad-discovery lane and the RUE-924 backstop:
-it runs whatever the tier selection contains, including targets added since any
-list was written, so gating it on a representative subset is the one place where
-under-selection could silently drop a suite nobody enumerated. Narrowing what it
-runs, rather than whether it runs, is ADR-0069 phase 4.
+`linux-premerge` is handled differently, because skipping it wholesale on a
+representative subset is exactly the RUE-924 failure mode. It is **narrowed**
+instead of gated: the determinator publishes the impacted closure as the
+`impacted` output, and the lane runs `impacted ∩ tier` in place of
+`//... ∩ tier`, for both its build step and `test.sh`. Membership still comes
+from the live graph, so a target added since any list was written is still
+discovered — it is simply not built or run when the diff cannot reach it. That
+is where the build cost goes: the lane spends 286–317s building every crate
+whenever a compiler crate changes, and an unimpacted crate's test binary has
+nothing to prove.
+
+Narrowing is declined, and the ordinary pattern used, whenever nothing is
+impacted or so much is that the pattern is the better expression of it
+(`RUE_AFFECTED_NARROW_LIMIT`, default 600 targets — a compiler change reaches
+most of the graph, so narrowing it saves nothing). Consumers key on the
+determinator's `narrowed` flag rather than on the list being non-empty, so an
+absent, empty, or oversized list always reads as "run everything". `test.sh`
+applies the same rule: an unset, unreadable, or empty `RUE_TEST_TARGETS_FILE`
+runs the full pattern, and only a readable non-empty list narrows.
+
+One consequence is worth stating plainly: an explicit target list that filters
+down to no tests is a legitimate outcome, and buck2 exits 0 reporting
+`NO TESTS RAN`. That is indistinguishable by exit status from a narrowing bug,
+so the selected count is echoed in the log and the job summary rather than left
+to be inferred from a silent green.
 
 The ASan harness is a standalone Cargo project outside the Buck graph, so BTD
 cannot see it; `crates/rue-runtime-asan/` therefore forces a full run rather

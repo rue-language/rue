@@ -38,6 +38,7 @@
 #                      deliberately added here.
 #   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
 #   lane-targets       Print the Buck targets a gated lane executes.
+#   intersect          Print a lane's targets that appear in an impacted list.
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -87,12 +88,13 @@ SELECTABLE_CORPUS=(
 # closure — the same rule the corpus targets already use, applied to a job whose
 # work is a set of targets rather than one.
 #
-# `linux-premerge` is deliberately absent. It is the broad-discovery lane and
-# the RUE-924 backstop: it runs whatever the tier selection contains, including
-# targets added since this list was written, so gating it on a representative
-# subset would be the one place where under-selection could silently drop a
-# suite nobody remembered to enumerate. Narrowing what it runs (rather than
-# whether it runs) needs the uniform-unit work in ADR-0069 phase 4.
+# `linux-premerge` is absent from this list for a different reason than the
+# others are present. It is the broad-discovery lane and the RUE-924 backstop,
+# so it must never be skipped wholesale on a representative subset. Instead it
+# is NARROWED: the determinator publishes the impacted closure, and the lane
+# runs `impacted ∩ tier` rather than `//... ∩ tier`. Membership still comes from
+# the live graph, so a target added since this file was written is still
+# discovered — it simply is not built or run when the diff cannot reach it.
 SELECTABLE_LANES=(
     native-linux-arm64
     native-macos-arm64
@@ -202,6 +204,36 @@ emit_output() {
     printf '%s=%s\n' "$1" "$2" >>"$GITHUB_OUTPUT"
 }
 
+# Emit a multi-line value using the heredoc form GitHub requires.
+emit_output_multiline() {
+    [[ -n "${GITHUB_OUTPUT:-}" ]] || return 0
+    local key="$1" file="$2" delim="RUE_EOF_$$"
+    {
+        printf '%s<<%s\n' "$key" "$delim"
+        [[ -n "$file" && -s "$file" ]] && cat "$file"
+        printf '%s\n' "$delim"
+    } >>"$GITHUB_OUTPUT"
+}
+
+# RUE-1130. Beyond this many impacted targets, narrowing a lane to an explicit
+# list saves nothing — a compiler change reaches most of the graph, so the list
+# is the graph — and the `//...` pattern is cheaper to express and to read.
+# Emitting nothing means "do not narrow", which every consumer treats as full.
+NARROW_LIMIT="${RUE_AFFECTED_NARROW_LIMIT:-600}"
+
+# Intersect a newline-separated impacted list (file) with the targets given as
+# arguments, preserving argument order. Used by lanes whose contents are a fixed
+# list in the workflow rather than a pattern.
+intersect_impacted() {
+    local file="$1"; shift
+    [[ -r "$file" ]] || return 0
+    local target
+    for target in "$@"; do
+        grep -Fxq "$target" "$file" && printf '%s\n' "$target"
+    done
+    return 0
+}
+
 # Write the RUE-924 selection manifest: every selectable corpus is accounted for
 # as either RUN or DESELECTED, so an intentional deselection is never confused
 # with a silent drop.
@@ -249,18 +281,36 @@ decide_full() {
     emit_output full "true"
     emit_output selected ""
     emit_output selected_lanes ""
+    emit_output_multiline impacted ""
+    emit_output narrowed "false"
     emit_manifest "full" "$reason" "" ""
     exit 0
 }
 
 decide_select() {
-    local selected="$1" reason="$2" lanes="${3:-}"
+    local selected="$1" reason="$2" lanes="${3:-}" impacted_file="${4:-}"
     echo "affected-targets: SELECTIVE run — ${reason}"
     echo "affected-targets: selected corpus targets: ${selected:-<none>}"
     echo "affected-targets: selected lanes: ${lanes:-<none>}"
     emit_output full "false"
     emit_output selected "$selected"
     emit_output selected_lanes "$lanes"
+    # Narrowing is an optimization layered on the selective decision, and it is
+    # declined independently: too many impacted targets, or none at all, both
+    # mean the lane keeps its ordinary pattern. `narrowed` is the single flag
+    # consumers check, so an absent or oversized list can never be mistaken for
+    # "narrow to nothing".
+    local impacted_count=0
+    [[ -n "$impacted_file" && -s "$impacted_file" ]] && impacted_count="$(grep -c . "$impacted_file" || echo 0)"
+    if [[ "$impacted_count" -gt 0 && "$impacted_count" -le "$NARROW_LIMIT" ]]; then
+        echo "affected-targets: narrowing lanes to ${impacted_count} impacted targets"
+        emit_output_multiline impacted "$impacted_file"
+        emit_output narrowed "true"
+    else
+        echo "affected-targets: not narrowing (${impacted_count} impacted targets; limit ${NARROW_LIMIT})"
+        emit_output_multiline impacted ""
+        emit_output narrowed "false"
+    fi
     emit_manifest "select" "$reason" "$selected" "$lanes"
     exit 0
 }
@@ -381,7 +431,10 @@ cmd_decide() {
         done
     done
 
-    decide_select "$selected" "btd affected-target closure over the PR diff" "$lanes"
+    local impacted_file="$work/impacted-targets.txt"
+    printf '%s\n' "$impacted" | grep . >"$impacted_file" || true
+
+    decide_select "$selected" "btd affected-target closure over the PR diff" "$lanes" "$impacted_file"
 }
 
 main() {
@@ -403,11 +456,14 @@ main() {
         is-selectable-lane)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets is-selectable-lane LANE" >&2; exit 2; }
             is_selectable_lane "$2" ;;
+        intersect)
+            [[ $# -ge 2 ]] || { echo "usage: scripts/affected-targets intersect FILE //:TARGET..." >&2; exit 2; }
+            shift; intersect_impacted "$@" ;;
         lane-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
             lane_targets "$2" ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|intersect]" >&2
             exit 2 ;;
     esac
 }

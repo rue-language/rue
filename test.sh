@@ -107,7 +107,36 @@ if [[ $# -eq 0 ]]; then
     # The CLI shards are excluded because they are scheduling alternatives for
     # the monolithic //:cli-tests, not additional coverage: running both would
     # execute the same cases five times.
-    test_args=(//... toolchains//... --always-exclude --ignore-tests-attribute --exclude rue_cli_shard)
+    # RUE-1130. On a selective CI run the determinator supplies the impacted
+    # target closure, and this lane runs that instead of the `//...` pattern.
+    # The label filters below are unchanged and still applied, so the result is
+    # exactly `impacted ∩ tier ∩ not-deferred` — narrowing what runs without
+    # changing what membership means.
+    #
+    # FAIL-OPEN, in the same direction as the determinator: an unset variable,
+    # an unreadable file, or a file the determinator declined to narrow (empty)
+    # all fall back to the full pattern. Only a readable, non-empty list
+    # narrows, and merge_group never narrows because it never runs selectively.
+    #
+    # An explicit list that filters down to no tests is a legitimate outcome
+    # (impacted libraries with no premerge tests of their own) and buck2 exits 0
+    # reporting NO TESTS RAN. That is indistinguishable from a narrowing bug by
+    # exit status alone, so the selection is echoed and counted here rather than
+    # left to be inferred from a silent green.
+    local_targets=(//... toolchains//...)
+    narrow_file="${RUE_TEST_TARGETS_FILE:-}"
+    if [[ -n "$narrow_file" ]]; then
+        if [[ ! -r "$narrow_file" ]]; then
+            echo "test.sh: RUE_TEST_TARGETS_FILE='$narrow_file' is unreadable; running the full pattern" >&2
+        elif [[ ! -s "$narrow_file" ]]; then
+            echo "test.sh: no narrowed target list supplied; running the full pattern"
+        else
+            mapfile -t local_targets <"$narrow_file"
+            echo "test.sh: narrowed to ${#local_targets[@]} impacted target(s) by the affected-targets determinator"
+        fi
+    fi
+
+    test_args=("${local_targets[@]}" --always-exclude --ignore-tests-attribute --exclude rue_cli_shard)
     if [[ "$test_tier" == standard ]]; then
         test_args+=(--exclude rue_test_tier_stress)
     elif [[ "$test_tier" != all ]]; then

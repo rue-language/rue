@@ -16,8 +16,8 @@ relates: ["RUE-1250", "RUE-1262", "RUE-1164", "RUE-1130", "RUE-1131", "RUE-1222"
 
 ## Status
 
-Accepted. Phase 2 (lane-wide determination, RUE-1130) is implemented in the
-same change that accepted this ADR; the remaining phases are unstarted.
+Accepted. Phase 2 (determination on every lane, RUE-1130) is implemented in
+the same change that accepted this ADR; the remaining phases are unstarted.
 
 ## Summary
 
@@ -236,8 +236,25 @@ emit the lane plan the matrix consumes
 authoritative full run. The existing fail-open contract and
 `scripts/test-affected-targets.sh` pinning are retained unchanged.
 
-This is the decision RUE-1130 asks for, and the answer is *keep and extend*, not
-*remove*. The measured saving on a peripheral run is ~80% of its wall time, and
+This is the decision RUE-1130 asks for, and the answer is *keep and extend to
+everything*, not *remove*.
+
+Gating decides **whether** a lane runs; narrowing decides **what** it runs. Both
+are the same determinator output applied at different granularity, and a lane
+takes whichever fits it. A lane with a fixed target list is gated, then narrowed
+to the impacted subset of that list. `linux-premerge` is never gated — skipping
+the broad-discovery lane on a representative subset is the RUE-924 failure mode
+— but it *is* narrowed, running `impacted ∩ tier` in place of `//... ∩ tier`.
+Membership still comes from the live graph, so a target added since any list was
+written is still discovered; it simply is not built or run when the diff cannot
+reach it.
+
+Narrowing matters even where a lane is not the critical path. Building a test
+binary is most of what a unit target costs, and the premerge lane spends
+286–317s building every crate whenever a compiler crate changes. An unimpacted
+crate cannot have been broken by the diff, so that build is waste — and waste
+that grows with the repository rather than with the change, which is the whole
+reason to fix it structurally now rather than when it hurts. The measured saving on a peripheral run is ~80% of its wall time, and
 none of it is currently reachable, because the determinator gates 7 of ~14 jobs
 and `premerge` — the critical path in 86% of runs — is not one of them. Extending
 the gate is a smaller change than the rest of this ADR and does not depend on it:
@@ -337,15 +354,15 @@ completely.
 
 - [ ] **Phase 1: Eliminate the duplicated critical path** — RUE-1262.
       56–59% of the critical path, no new machinery, needs one coverage ruling.
-- [x] **Phase 2: Extend determination to every gateable lane** — RUE-1130,
-      whose "make it discriminate or remove it" question this ADR answers with
-      "keep it and extend it." Six lanes now consult the determinator
+- [x] **Phase 2: Determination on every lane, by gating or by narrowing** —
+      RUE-1130, whose "make it discriminate or remove it" question this ADR
+      answers with "keep it and extend it to everything." Six lanes are gated
       (`native` ×2, `release`, `valgrind`, `asan`, `compiler-reproducibility`),
       freeing **905–1034s of runner time** on each of four measured peripheral
-      runs. It moves the critical path in only one of those four: `premerge`
-      still dominates the rest, which is the measured argument for doing Phase 1
-      next rather than more gating. `linux-premerge` stays ungated on purpose —
-      see "Decision §3". Reporting the saved share per run is still to do.
+      runs. `linux-premerge` and the native unit targets are narrowed to the
+      impacted closure instead, so an unimpacted test binary is neither built
+      nor run. Reporting the saved share per run is still to do, and is what
+      turns the change-mix question from an argument into a measurement.
 - [ ] **Phase 3: Duplication gate** — new. Cheap, and it is what stops the class
       from recurring; lands while the evidence is fresh.
 - [ ] **Phase 4: Platform scope as a target attribute** — new (RUE-1262 scope C).
