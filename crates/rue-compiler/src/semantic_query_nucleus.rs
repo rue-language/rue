@@ -51,6 +51,11 @@ pub(crate) enum ParsedSemanticSignature {
         /// [`AccessorBodyVerdict::MissingTrailingYield`] for the empty
         /// stand-in.
         accessor_body: AccessorBodyVerdict,
+        /// `Some(name)` when this accessor participates in a 6.6:14 expansion
+        /// cycle over its owner's `self`-receiver accessor calls (RUE-1282),
+        /// decided from the retained owner-method facts. Always `None` for an
+        /// ordinary callable.
+        accessor_cycle: Option<Arc<str>>,
     },
     Struct {
         fields: Arc<[(Arc<str>, Arc<str>)]>,
@@ -165,7 +170,7 @@ fn trailing_yield(body: &rue_parser::ast::Expr) -> Option<&rue_parser::ast::Yiel
     }
 }
 
-/// Normalize one owner's `(method name, is accessor)` pairs into the form
+/// Normalize one owner's method facts into the form
 /// [`crate::declaration_candidate::RawAccessorSignatureSyntax`] retains:
 /// sorted by name, with every ambiguously duplicated name dropped.
 ///
@@ -173,19 +178,47 @@ fn trailing_yield(body: &rue_parser::ast::Expr) -> Option<&rue_parser::ast::Yiel
 /// wherever it cannot *prove* a callee is a plain method, so a name that two
 /// declarations claim is simply not decided here.
 pub(crate) fn owner_method_accessor_facts(
-    methods: impl IntoIterator<Item = (Arc<str>, bool)>,
-) -> Arc<[(Arc<str>, bool)]> {
-    let mut facts: Vec<(Arc<str>, bool)> = methods.into_iter().collect();
+    methods: impl IntoIterator<Item = rue_air::declaration_validation::AccessorOwnerMethod>,
+) -> Arc<[rue_air::declaration_validation::AccessorOwnerMethod]> {
+    let mut facts: Vec<rue_air::declaration_validation::AccessorOwnerMethod> =
+        methods.into_iter().collect();
     facts.sort();
     let mut duplicated: BTreeSet<Arc<str>> = BTreeSet::new();
     for window in facts.windows(2) {
-        if window[0].0 == window[1].0 {
-            duplicated.insert(window[0].0.clone());
+        if window[0].name == window[1].name {
+            duplicated.insert(window[0].name.clone());
         }
     }
-    facts.dedup_by(|left, right| left.0 == right.0);
-    facts.retain(|(name, _)| !duplicated.contains(name));
+    facts.dedup_by(|left, right| left.name == right.name);
+    facts.retain(|fact| !duplicated.contains(&fact.name));
     Arc::from(facts)
+}
+
+/// The method names one body calls on its own `self` receiver, normalized
+/// (sorted, deduplicated) — the 6.6:14 cycle-edge fact (RUE-1282), for a
+/// producer holding the parsed AST and its interner.
+pub(crate) fn ast_self_call_targets(
+    body: &rue_parser::ast::Expr,
+    interner: &crate::ThreadedRodeo,
+) -> Arc<[Arc<str>]> {
+    use rue_parser::ast::Expr;
+    let mut walk = vec![body];
+    let mut targets: Vec<Arc<str>> = Vec::new();
+    while let Some(expr) = walk.pop() {
+        if let Expr::MethodCall(call) = expr {
+            let mut receiver = &*call.receiver;
+            while let Expr::Paren(paren) = receiver {
+                receiver = &paren.inner;
+            }
+            if matches!(receiver, Expr::SelfExpr(_)) {
+                targets.push(Arc::from(interner.resolve(&call.method.name)));
+            }
+        }
+        expr.child_exprs(&mut walk);
+    }
+    targets.sort();
+    targets.dedup();
+    Arc::from(targets)
 }
 
 /// What one method-call link in a yielded projection chain is, as far as the
@@ -198,7 +231,7 @@ pub(crate) fn owner_method_accessor_facts(
 fn accessor_method_link(
     call: &rue_parser::ast::MethodCallExpr,
     interner: &crate::ThreadedRodeo,
-    owner_methods: &[(Arc<str>, bool)],
+    owner_methods: &[rue_air::declaration_validation::AccessorOwnerMethod],
 ) -> rue_air::declaration_validation::AccessorMethodLink {
     use rue_air::declaration_validation::AccessorMethodLink as Link;
     use rue_parser::ast::Expr;
@@ -212,10 +245,10 @@ fn accessor_method_link(
     let name = interner.resolve(&call.method.name);
     match owner_methods
         .iter()
-        .find(|(method, _)| method.as_ref() == name)
+        .find(|method| method.name.as_ref() == name)
     {
-        Some((_, true)) => Link::Accessor,
-        Some((_, false)) => Link::PlainMethod,
+        Some(method) if method.is_accessor => Link::Accessor,
+        Some(_) => Link::PlainMethod,
         // A name the owner does not declare is not this rule's error to
         // report; call resolution names it.
         None => Link::Unresolved,
@@ -249,7 +282,7 @@ fn accessor_method_link(
 fn accessor_body_shape(
     body: &rue_parser::ast::Expr,
     interner: &crate::ThreadedRodeo,
-    owner_methods: &[(Arc<str>, bool)],
+    owner_methods: &[rue_air::declaration_validation::AccessorOwnerMethod],
 ) -> AccessorBodyVerdict {
     use rue_parser::ast::Expr;
     let Some(trailing) = trailing_yield(body) else {
@@ -339,12 +372,21 @@ pub(crate) fn parse_semantic_signature(
         .first()
         .ok_or_else(|| Arc::from("semantic signature parsed no declaration"))?;
     let unit: Arc<str> = Arc::from("()");
-    let owner_methods = syntax
-        .accessor
-        .as_ref()
-        .map_or::<&[(Arc<str>, bool)], _>(&[], |accessor| &accessor.owner_methods);
+    let owner_methods = syntax.accessor.as_ref().map_or::<&[rue_air::declaration_validation::AccessorOwnerMethod], _>(
+        &[],
+        |accessor| &accessor.owner_methods,
+    );
     let body_shape =
         |body: &rue_parser::ast::Expr| accessor_body_shape(body, &interner, owner_methods);
+    // 6.6:14 over the retained owner-method facts (RUE-1282): whether this
+    // declaration reaches itself through its siblings' `self`-receiver
+    // accessor calls. Decided here so the accessor's own signature query
+    // rejects the cycle with no call site anywhere in the program.
+    let accessor_cycle = rue_air::declaration_validation::accessor_self_call_cycle(
+        &key.name,
+        owner_methods,
+    )
+    .then(|| key.name.clone());
     let callable = |parameters: &[rue_parser::ast::Param],
                     result: Option<&rue_parser::ast::TypeExpr>,
                     has_self,
@@ -368,6 +410,7 @@ pub(crate) fn parse_semantic_signature(
             is_c_export,
             is_accessor,
             accessor_body,
+            accessor_cycle: accessor_cycle.clone(),
         })
     };
     match (key.category, item) {

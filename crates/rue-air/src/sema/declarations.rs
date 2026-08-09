@@ -3299,6 +3299,120 @@ pub(super) fn check_accessor_declaration_shape(
     Ok(())
 }
 
+/// 6.6:14 at the declaration seam (RUE-1282): reject an accessor cycle for
+/// every accessor the program declares, whether or not anything calls one.
+///
+/// A cycle has no finite expansion — a property of the declarations alone —
+/// so this runs beside the other accessor shape rules rather than waiting for
+/// a call site to demand a body. The edge set is the `self`-receiver accessor
+/// calls in each body: a call `self.m()` where `m` is an accessor of the same
+/// owner resolves to exactly that accessor, so the edge is certain without
+/// resolving a single type. A re-entrant call through any other receiver (a
+/// `borrow`-mode guard parameter of the owner's own type) is not decidable
+/// here and stays with the demanded-path checks: the analysis-time identity
+/// check for a direct cycle and the CFG dependency graph for a mutual one.
+pub(super) fn check_accessor_acyclicity(
+    rir: &rue_rir::Rir,
+    interner: &lasso::ThreadedRodeo,
+    pending: &[super::binding_manifest::PendingDeclarationPayload],
+) -> CompileResult<()> {
+    struct DeclaredAccessor {
+        name: Arc<str>,
+        body: InstRef,
+        span: Span,
+        source_order: u32,
+    }
+    // Group declared accessors by owning nominal. `module_path` joins the key
+    // so same-named owners from different modules never share a graph.
+    let mut groups: std::collections::BTreeMap<(Arc<str>, Arc<str>), Vec<DeclaredAccessor>> =
+        std::collections::BTreeMap::new();
+    for payload in pending {
+        let super::binding_manifest::DeclarationPayloadSource::Callable { body } = payload.source
+        else {
+            continue;
+        };
+        let Some(owner) = payload.shell.identity.owner.clone() else {
+            continue;
+        };
+        let InstData::FnDecl {
+            returns_borrow: true,
+            has_self: true,
+            ..
+        } = rir.get(payload.declaration).data
+        else {
+            continue;
+        };
+        groups
+            .entry((payload.shell.identity.module_path.clone(), owner))
+            .or_default()
+            .push(DeclaredAccessor {
+                name: payload.shell.identity.name.clone(),
+                body,
+                span: payload.shell.declaration_span,
+                source_order: payload.shell.source_order,
+            });
+    }
+
+    let Some(self_sym) = interner.get("self") else {
+        return Ok(());
+    };
+    for accessors in groups.values_mut() {
+        // Source order makes the reported accessor the first of the cycle's
+        // members the program declares.
+        accessors.sort_by_key(|accessor| accessor.source_order);
+        let methods: Vec<crate::declaration_validation::AccessorOwnerMethod> = accessors
+            .iter()
+            .map(|accessor| crate::declaration_validation::AccessorOwnerMethod {
+                name: accessor.name.clone(),
+                is_accessor: true,
+                self_call_targets: rir_self_call_targets(rir, interner, self_sym, accessor.body),
+            })
+            .collect();
+        for accessor in accessors.iter() {
+            if crate::declaration_validation::accessor_self_call_cycle(&accessor.name, &methods) {
+                return Err(CompileError::new(
+                    crate::declaration_validation::accessor_recursion_error(&accessor.name),
+                    accessor.span,
+                )
+                .with_note(crate::declaration_validation::ACCESSOR_RECURSION_NOTE));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The method names one accessor body calls on its own `self` receiver, in the
+/// normalized (sorted, deduplicated) form [`accessor_self_call_cycle`]'s edges
+/// use.
+///
+/// [`accessor_self_call_cycle`]: crate::declaration_validation::accessor_self_call_cycle
+fn rir_self_call_targets(
+    rir: &rue_rir::Rir,
+    interner: &lasso::ThreadedRodeo,
+    self_sym: Spur,
+    body: InstRef,
+) -> Arc<[Arc<str>]> {
+    let mut targets: Vec<Arc<str>> = body_instructions(rir, body)
+        .into_iter()
+        .filter_map(|inst_ref| {
+            let InstData::MethodCall {
+                receiver, method, ..
+            } = &rir.get(inst_ref).data
+            else {
+                return None;
+            };
+            let receiver_is_self = matches!(
+                &rir.get(*receiver).data,
+                InstData::VarRef { name, .. } if *name == self_sym
+            );
+            receiver_is_self.then(|| Arc::from(interner.resolve(method)))
+        })
+        .collect();
+    targets.sort();
+    targets.dedup();
+    Arc::from(targets)
+}
+
 /// The 6.6:5 form of one RIR parameter.
 pub(super) fn accessor_parameter_form(
     mode: RirParamMode,

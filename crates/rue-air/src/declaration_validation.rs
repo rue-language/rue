@@ -352,3 +352,70 @@ pub fn accessor_yield_root_error(root: &AccessorYieldRootForm) -> ErrorKind {
     };
     ErrorKind::AccessorYieldNotReceiverRooted { found }
 }
+
+/// One method of an accessor's owner, as the 6.6:14 declaration-seam cycle
+/// rule reads it (RUE-1282).
+///
+/// `self_call_targets` are the method names the method's own body calls on its
+/// `self` receiver — a *parsed* fact of that sibling declaration, position-free
+/// and normalized (sorted, deduplicated), so a body edit that does not change
+/// the set leaves the value equal. A call through any other receiver is not
+/// recorded: per the well-founded component order, a cycle of accessor
+/// expansions on one owner can otherwise only pass through a guard parameter
+/// of the owner's own type, and those exotic edges stay with the demanded-path
+/// checks (the analysis-time identity check and the CFG dependency graph).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AccessorOwnerMethod {
+    pub name: std::sync::Arc<str>,
+    pub is_accessor: bool,
+    pub self_call_targets: std::sync::Arc<[std::sync::Arc<str>]>,
+}
+
+/// The note every producer attaches to the 6.6:14 recursion diagnostic.
+pub const ACCESSOR_RECURSION_NOTE: &str =
+    "an accessor call is expanded by mandatory CFG splicing, so a cycle of accessor calls has no finite expansion";
+
+/// 6.6:14: the diagnostic for an accessor that participates in an expansion
+/// cycle.
+pub fn accessor_recursion_error(method: &str) -> ErrorKind {
+    ErrorKind::AccessorRecursion {
+        method: method.to_owned(),
+    }
+}
+
+/// 6.6:14 at the declaration seam: whether the accessor named `start` reaches
+/// itself over the owner's `self`-receiver accessor-call edges.
+///
+/// An edge exists from one accessor to another exactly when the first's body
+/// calls the second on `self` — `self.m()` where `m` is an accessor of the
+/// same owner resolves to exactly that accessor, so the edge is certain with
+/// no type resolved. Plain-method targets are not edges: an ordinary call is
+/// not spliced, so it cannot extend an expansion.
+pub fn accessor_self_call_cycle(start: &str, methods: &[AccessorOwnerMethod]) -> bool {
+    let accessor = |name: &str| {
+        methods
+            .iter()
+            .find(|method| method.is_accessor && method.name.as_ref() == name)
+    };
+    let Some(origin) = accessor(start) else {
+        return false;
+    };
+    let mut pending: Vec<&str> = origin
+        .self_call_targets
+        .iter()
+        .map(AsRef::as_ref)
+        .collect();
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    while let Some(name) = pending.pop() {
+        let Some(method) = accessor(name) else {
+            continue;
+        };
+        if method.name.as_ref() == start {
+            return true;
+        }
+        if seen.insert(name) {
+            pending.extend(method.self_call_targets.iter().map(AsRef::as_ref));
+        }
+    }
+    false
+}

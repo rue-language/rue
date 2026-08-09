@@ -122,4 +122,10 @@ Accessor expansion **MUST** be acyclic: an accessor body **MUST NOT** call an
 accessor whose expansion encloses it, whether directly (`fn xr(borrow self) ->
 borrow i64 { yield self.xr(); }`) or through a chain of other accessors
 (E0261). Because the call is the inlined body (6.6:12), a cycle has no finite
-expansion. The rejection names the recursive call.
+expansion — a property of the declarations alone, so a cycle whose every link
+is a call on the accessor's own `self` receiver is rejected at the
+declaration, whether or not anything calls an accessor in it, like the other
+legality rules of this chapter. A re-entrant call reached through any other
+receiver (a by-value guard of the owner's own type) is rejected when a call
+site demands the body's analysis and expansion. The rejection names the
+recursive accessor either way.

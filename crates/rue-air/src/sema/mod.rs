@@ -1464,6 +1464,11 @@ impl<'a> Sema<'a, MutableDeclarations> {
             self.check_foreign_entry_point_declaration(pending.declaration)
                 .map_err(CompileErrors::from)?;
         }
+        // Accessor acyclicity (6.6:14, RUE-1282) is likewise a property of the
+        // declarations alone, but it needs every accessor of an owner in hand,
+        // so it runs after the per-declaration rules above.
+        declarations::check_accessor_acyclicity(self.rir, self.interner, pending_payloads)
+            .map_err(CompileErrors::from)?;
         Ok(())
     }
 

@@ -1025,6 +1025,15 @@ impl RetainedCharge for crate::declaration_candidate::RawAccessorSignatureSyntax
     }
 }
 
+impl RetainedCharge for rue_air::declaration_validation::AccessorOwnerMethod {
+    fn retained_charge(&self) -> u64 {
+        self.name
+            .retained_charge()
+            .saturating_add(self.is_accessor.retained_charge())
+            .saturating_add(self.self_call_targets.retained_charge())
+    }
+}
+
 impl RetainedCharge for crate::declaration_candidate::RawDeclarationBodySyntax {
     fn retained_charge(&self) -> u64 {
         self.body

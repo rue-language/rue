@@ -1170,9 +1170,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 },
                 span,
             )
-            .with_note(
-                "an accessor call is expanded by mandatory CFG splicing, so a cycle of accessor calls has no finite expansion",
-            ));
+            .with_note(crate::declaration_validation::ACCESSOR_RECURSION_NOTE));
         }
 
         // RUE-1208: semantic analysis establishes the accessor's place/loan
