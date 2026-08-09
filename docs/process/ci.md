@@ -290,10 +290,33 @@ reverse-dependency closure to the whole corpus exactly as before. The
 deterministic force-full and gate logic is pinned by
 `scripts/test-affected-targets.sh`.
 
-Selection is applied **within** each `platform-corpus` job, not by skipping the
-job: `scripts/ci-corpus-selected` decides at job start, and a deselected corpus
-skips the heavy steps (paying only the runner spin-up) while the check still
-reports success, so no branch-protection change is required. The
+Selection is applied **within** each gated job, not by skipping the job:
+`scripts/ci-corpus-selected` decides at job start, and a deselected unit skips
+the heavy steps (paying only the runner spin-up) while the check still reports
+success, so no branch-protection change is required.
+
+RUE-1130 extended that gate from the `platform-corpus` corpora to six further
+lanes — `native (linux-arm64)`, `native (macos-arm64)`, `release (linux-x64)`,
+`valgrind (linux-x64)`, `asan (linux-x64)`, and
+`compiler reproducibility (linux-x64)`. Each is named in `SELECTABLE_LANES` and
+maps to the Buck targets it actually executes (`lane_targets`); a lane runs when
+any of those targets is in BTD's impacted closure. Gating the corpora alone had
+saved nothing measurable: a documentation change cost 444s against 465s for a
+compiler change, because the lanes that dominate a run were not consulting the
+determinator. On four measured peripheral runs the extension frees 905–1034s of
+runner time each.
+
+It does **not** shorten the critical path on its own — `premerge (linux-x64)`
+still dominates in three of those four runs — because `linux-premerge` is
+deliberately ungated. It is the broad-discovery lane and the RUE-924 backstop:
+it runs whatever the tier selection contains, including targets added since any
+list was written, so gating it on a representative subset is the one place where
+under-selection could silently drop a suite nobody enumerated. Narrowing what it
+runs, rather than whether it runs, is ADR-0069 phase 4.
+
+The ASan harness is a standalone Cargo project outside the Buck graph, so BTD
+cannot see it; `crates/rue-runtime-asan/` therefore forces a full run rather
+than being represented by a proxy target. The
 `affected-targets` job writes a selection manifest to the job summary accounting
 for every corpus as `RUN` or `DESELECTED (intentional)`, and each deselected job
 logs its own intentional-deselection line — so a legitimate selective skip is

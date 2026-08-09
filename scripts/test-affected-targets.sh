@@ -133,6 +133,68 @@ check_gate "unknown matrix target runs" 0 "false" "" "//:future-corpus"
 # malformed selected output must not look like an intentional deselection
 check_gate "unknown selected output is an error" 2 "false" "//:future-corpus" "//:spec-tests"
 
+# --- RUE-1130: named lanes use the same gate and the same safety model -------
+
+lane_gate() { # lane_gate <full> <selected-lanes> <lane>; echoes exit status
+  RUE_AFFECTED_FULL="$1" RUE_AFFECTED_LANES="$2" "${GATE[@]}" "$3" >/dev/null 2>&1
+  echo $?
+}
+
+check_lane() { # check_lane <desc> <expected-status> <full> <lanes> <lane>
+  local desc="$1" expected="$2" got
+  TESTS=$((TESTS + 1))
+  got="$(lane_gate "$3" "$4" "$5")"
+  if [ "$got" = "$expected" ]; then
+    pass "lane: $desc"
+  else
+    fail "lane: $desc (expected exit $expected, got $got)"
+  fi
+}
+
+# Every gated lane must be recognized; an unrecognized name would silently fall
+# through to the corpus path and be treated as an unknown target (fail-open),
+# which is safe but would make the lane permanently ungated.
+for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility; do
+  TESTS=$((TESTS + 1))
+  if "${AFFECTED[@]}" is-selectable-lane "$lane"; then
+    pass "lane: $lane is selectable"
+  else
+    fail "lane: $lane is not selectable (would never be gated)"
+  fi
+done
+
+# Each lane must name at least one representative Buck target, or it could never
+# be selected and would be deselected on every selective run.
+for lane in native-linux-arm64 native-macos-arm64 release valgrind asan compiler-reproducibility; do
+  TESTS=$((TESTS + 1))
+  if [ -n "$("${AFFECTED[@]}" lane-targets "$lane")" ]; then
+    pass "lane: $lane declares representative targets"
+  else
+    fail "lane: $lane declares no targets (would always deselect)"
+  fi
+done
+
+check_lane "full=true runs lane" 0 "true" "" "valgrind"
+check_lane "selected lane runs" 0 "false" "valgrind asan" "valgrind"
+check_lane "unselected lane deselected" 1 "false" "asan" "valgrind"
+check_lane "empty lane selection deselects" 1 "false" "" "valgrind"
+check_lane "unset full runs lane (fail-open)" 0 "" "" "valgrind"
+check_lane "malformed lane selection is an error" 2 "false" "not-a-lane" "valgrind"
+# A lane name must not be satisfied by a corpus target list, and vice versa:
+# the two selections are read from different environment variables.
+check_lane "corpus selection does not select a lane" 1 "false" "" "release"
+TESTS=$((TESTS + 1))
+if [ "$(RUE_AFFECTED_FULL=false RUE_AFFECTED_TARGETS="//:spec-tests" RUE_AFFECTED_LANES="" "${GATE[@]}" "//:spec-tests" >/dev/null 2>&1; echo $?)" = "0" ]; then
+  pass "lane: corpus targets still gate on RUE_AFFECTED_TARGETS"
+else
+  fail "lane: corpus gating regressed"
+fi
+
+# The asan harness is outside the Buck graph, so BTD cannot see it; its sources
+# must force a full run rather than relying on a representative target.
+expect_full "crates/rue-runtime-asan/src/main.rs"
+expect_full "crates/rue-runtime-asan/Cargo.toml"
+
 # The workflow-facing adapter must reserve `run=false` for the gate's explicit
 # deselection status. A gate crash or missing executable runs the corpus.
 decision_root="$(mktemp -d)"

@@ -38,16 +38,30 @@ if [[ "$full" != "false" ]]; then
     exit 0
 fi
 
+# RUE-1130: the same gate now answers for a named workflow lane as well as a
+# corpus target. Lanes consult `selected_lanes`; corpus targets consult
+# `selected`. Both fail open on anything unrecognized.
+kind="corpus"
+if "${affected[@]}" is-selectable-lane "$target"; then
+    kind="lane"
+    selected="${RUE_AFFECTED_LANES:-}"
+fi
+
 # The target list belongs to affected-targets, not this gate. A matrix entry
 # that was added without becoming selectable must run, never be silently
 # deselected. Corrupt selection output is similarly an unexpected failure.
-if ! "${affected[@]}" is-selectable "$target"; then
+if [[ "$kind" == "corpus" ]] && ! "${affected[@]}" is-selectable "$target"; then
     echo "ci-corpus-selected: unknown corpus target '${target}'; running it" >&2
     exit 0
 fi
 
 for selected_target in $selected; do
-    if ! "${affected[@]}" is-selectable "$selected_target"; then
+    if [[ "$kind" == "lane" ]]; then
+        if ! "${affected[@]}" is-selectable-lane "$selected_target"; then
+            echo "ci-corpus-selected: invalid selected lane '${selected_target}'" >&2
+            exit 2
+        fi
+    elif ! "${affected[@]}" is-selectable "$selected_target"; then
         echo "ci-corpus-selected: invalid selected target '${selected_target}'" >&2
         exit 2
     fi
@@ -60,7 +74,7 @@ fi
 
 # Intentional deselection — record it so it is never mistaken for a silent
 # corpus drop (RUE-924).
-note="corpus ${target} intentionally deselected by the affected-targets determinator (RUE-1119); it is not affected by this PR's diff and runs in the merge-queue full suite."
+note="${kind} ${target} intentionally deselected by the affected-targets determinator (RUE-1119/RUE-1130); it is not affected by this PR's diff and runs in the merge-queue full suite."
 echo "$note"
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     printf '%s\n' "$note" >>"$GITHUB_STEP_SUMMARY"

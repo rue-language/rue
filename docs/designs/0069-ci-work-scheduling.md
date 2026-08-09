@@ -1,11 +1,11 @@
 ---
 id: 0069
 title: "CI work scheduling for a compiler monorepo"
-status: proposal
+status: accepted
 tags: [process, ci, testing, build, performance]
 feature-flag: null
 created: 2026-08-09
-accepted:
+accepted: 2026-08-09
 implemented:
 spec-sections: []
 superseded-by:
@@ -16,7 +16,8 @@ relates: ["RUE-1250", "RUE-1262", "RUE-1164", "RUE-1130", "RUE-1131", "RUE-1222"
 
 ## Status
 
-Proposal
+Accepted. Phase 2 (lane-wide determination, RUE-1130) is implemented in the
+same change that accepted this ADR; the remaining phases are unstarted.
 
 ## Summary
 
@@ -336,12 +337,15 @@ completely.
 
 - [ ] **Phase 1: Eliminate the duplicated critical path** — RUE-1262.
       56–59% of the critical path, no new machinery, needs one coverage ruling.
-- [ ] **Phase 2: Extend determination to every lane and report its regime** —
-      RUE-1130, whose "make it discriminate or remove it" question this ADR
-      answers with "keep it, extend it, and make it report what it saved."
-      Promoted ahead of the gates below by measurement: ~80% of a peripheral run
-      is currently unnecessary and none of it is reachable, and the change is
-      independent of the rest of this ADR.
+- [x] **Phase 2: Extend determination to every gateable lane** — RUE-1130,
+      whose "make it discriminate or remove it" question this ADR answers with
+      "keep it and extend it." Six lanes now consult the determinator
+      (`native` ×2, `release`, `valgrind`, `asan`, `compiler-reproducibility`),
+      freeing **905–1034s of runner time** on each of four measured peripheral
+      runs. It moves the critical path in only one of those four: `premerge`
+      still dominates the rest, which is the measured argument for doing Phase 1
+      next rather than more gating. `linux-premerge` stays ungated on purpose —
+      see "Decision §3". Reporting the saved share per run is still to do.
 - [ ] **Phase 3: Duplication gate** — new. Cheap, and it is what stops the class
       from recurring; lands while the evidence is fresh.
 - [ ] **Phase 4: Platform scope as a target attribute** — new (RUE-1262 scope C).
