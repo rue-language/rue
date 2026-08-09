@@ -85,27 +85,36 @@
          style="margin-top: 0.5rem; padding: 0.75rem 1rem; border: 1px solid #ccc; font-size: 0.9rem; line-height: 1.5;"></div>
 
     <h2 style="margin-top: 2.5rem;">Workloads</h2>
-    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
-      A workload is marked <strong>moved</strong> when its median differs from
-      the median of the trailing window of runs by more than <em>k</em> times
-      the two dispersions combined — the rule in ADR-0067 §5, with <em>k</em>
-      and the window length pinned by the epoch. Three things that follow, and
-      that the older wording <em>flagged</em> obscured:
-    </p>
-    <ul style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem; line-height: 1.7;">
-      <li>It is measured against noise, not against a percentage. A 1% move on a
-        quiet workload can qualify where 5% on a noisy one does not.</li>
-      <li>It has no direction. The rule takes an absolute difference, so a large
-        speedup qualifies exactly as a regression does.</li>
-      <li>It compares against the trailing window, not the previous commit, so
-        it can disagree with the commit-to-commit delta beside it.</li>
-    </ul>
-    <p style="color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
-      <em>Not enough history</em> means the trailing window is not full yet.
-      That is not the same as stable, and is deliberately not rendered as though
-      it were. Hover a workload, or the phase chart, for the figures behind the
-      verdict.
-    </p>
+    {#
+      Collapsed by default. This explains a word most readers already skim past
+      correctly, and only matters at the moment someone stops to ask what a flag
+      actually asserts — so it belongs a click away, not in front of the panels
+      it describes. The per-point tooltips carry the figures regardless.
+    #}
+    <details style="margin-top: 0.5rem; color: var(--color-muted); font-size: 0.9rem; max-width: 42rem;">
+      <summary style="cursor: pointer;">What “flagged” means</summary>
+      <p>
+        A workload is <strong>flagged</strong> when its median differs from the
+        median of the trailing window of runs by more than <em>k</em> times the
+        two dispersions combined — the rule in ADR-0067 §5, with <em>k</em> and
+        the window length pinned by the epoch. Three things follow that the word
+        alone does not say:
+      </p>
+      <ul style="line-height: 1.7;">
+        <li>It is measured against noise, not against a percentage. A 1% move on
+          a quiet workload can qualify where 5% on a noisy one does not.</li>
+        <li>It has no direction. The rule takes an absolute difference, so a
+          large speedup is flagged exactly as a regression is.</li>
+        <li>It compares against the trailing window, not the previous commit, so
+          it can disagree with the commit-to-commit delta beside it.</li>
+      </ul>
+      <p>
+        <em>Not enough history</em> means the trailing window is not full yet.
+        That is not the same as stable, and is deliberately not rendered as
+        though it were. Hover a workload, or the phase chart, for the figures
+        behind the verdict.
+      </p>
+    </details>
     <div id="perf-multiples" role="list"
          style="display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); gap: 1rem; margin-top: 0.75rem;"></div>
 
