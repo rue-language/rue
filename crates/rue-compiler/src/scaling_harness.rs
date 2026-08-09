@@ -600,15 +600,13 @@ fn assert_warm_fresh_parity(
 // ---------------------------------------------------------------------------
 
 /// The larger 10k-per-axis corpus runs only when `RUE_SCALING_LARGE=1`. The
-/// dedicated matrix target runs the bounded 100/1k subset; the huge sizes stay
-/// behind this explicit flag.
-#[cfg(scaling_matrix)]
+/// premerge canary runs the bounded 100/1k subset; the huge sizes stay behind
+/// this explicit flag, which `scaling-matrix-stress-test` sets.
 fn large_sizes_enabled() -> bool {
     std::env::var_os("RUE_SCALING_LARGE").is_some_and(|v| v == "1")
 }
 
-/// The reached-body / declaration size ladder for the matrix target.
-#[cfg(scaling_matrix)]
+/// The reached-body / declaration size ladder for the matrix rows.
 fn matrix_size_ladder() -> Vec<usize> {
     if large_sizes_enabled() {
         vec![100, 1_000, 10_000]
@@ -903,23 +901,37 @@ fn identity_per_body_lookup_invariant_to_unrelated_declarations() {
 }
 
 // ---------------------------------------------------------------------------
-// Heavy structural matrix (dedicated `scaling-matrix-test` target only)
+// Heavy structural matrix (`scaling-matrix-test` premerge canary)
 // ---------------------------------------------------------------------------
+//
+// These rows are minutes of work at 100/1k, so they stay out of the default
+// `rue-compiler-test` run. They are excluded with libtest's own mechanism —
+// `#[ignore]`, selected back by `--ignored` — rather than by compiling the
+// whole crate a second time under `--cfg=scaling_matrix`. That second compile
+// made `scaling-matrix-test` a strict superset of `rue-compiler-test`: 816
+// tests against 813, re-running the shared 813 in the same lane to gain three
+// (RUE-1262).
+//
+// Selection is by name: `//crates/rue-compiler:scaling-matrix-test` and its
+// stress sibling wrap this binary and pass `--ignored scaling_matrix`. The
+// `scaling_matrix_` prefix is therefore load-bearing — an ignored test named
+// into that prefix joins the premerge canary, and one named out of it is not
+// run by any target.
 
-#[cfg(scaling_matrix)]
 #[test]
+#[ignore = "heavy 100/1k structural matrix; run by the scaling-matrix-test target"]
 fn scaling_matrix_fixed_bodies_growing_declarations() {
     run_fixed_bodies_growing_declarations(100, &matrix_size_ladder());
 }
 
-#[cfg(scaling_matrix)]
 #[test]
+#[ignore = "heavy 100/1k structural matrix; run by the scaling-matrix-test target"]
 fn scaling_matrix_fixed_declarations_growing_bodies() {
     run_fixed_declarations_growing_bodies(100, &matrix_size_ladder());
 }
 
-#[cfg(scaling_matrix)]
 #[test]
+#[ignore = "heavy 100/1k structural matrix; run by the scaling-matrix-test target"]
 fn scaling_matrix_identity_invariant() {
     run_identity_invariant(50, &[50, 200, 400]);
 }

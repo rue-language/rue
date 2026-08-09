@@ -51,40 +51,35 @@ _DEPS = [
     "//third-party:tracing",
 ]
 
-# The default library and `rue-compiler-test` target declare `scaling_matrix` as
-# a known cfg name (so the RUE-1086 scaling harness's matrix-only tests do not
-# trip `unexpected_cfgs` under `-Dwarnings`) but never SET it, so the heavy
-# 100/1k structural matrix is excluded from the fast unit suite.
 rue_crate(
     name = "rue-compiler",
     mapped_srcs = _RUNTIME_MAPPED_SRCS,
     deps = _DEPS,
     rustc_flags = [
-        "--check-cfg=cfg(scaling_matrix)",
         "--check-cfg=cfg(test)",
     ],
 )
 
-# Dedicated heavy-matrix test targets (Finding 6, RUE-1086). Compiling with
-# `--cfg=scaling_matrix` turns on the `#[cfg(scaling_matrix)]` structural
-# scaling tests that the default unit target excludes.
-_SCALING_MATRIX_SRCS = glob(["src/**/*.rs"])
-_SCALING_MATRIX_RUSTC_FLAGS = [
-    "--cfg=scaling_matrix",
-    "--check-cfg=cfg(scaling_matrix)",
-    "--check-cfg=cfg(test)",
-]
+# Heavy-matrix scaling targets (Finding 6, RUE-1086). Both wrap the ordinary
+# `rue-compiler-test` binary and select the `#[ignore]`d `scaling_matrix_*`
+# rows out of it by name.
+#
+# RUE-1262: this used to be a second `rust_test` compiling the whole crate
+# under `--cfg=scaling_matrix`. That made it a strict superset of
+# `rue-compiler-test` — 816 tests against 813 — so the premerge lane ran the
+# shared 813 twice to gain three, and paid a third full compile of the crate
+# to do it. Wrapping one binary is the pattern the stress tier already used,
+# and it keeps the matrix rows selectable without a distinct configuration.
 
-# The bounded 100/1k matrix is a required premerge canary. It remains a
-# separate target so `scaling_matrix` coverage is isolated from the default
-# unit target while still running in the Linux premerge graph.
-rue_rust_test(
+# The bounded 100/1k matrix is a required premerge canary.
+rue_sh_test(
     name = "scaling-matrix-test",
+    args = [
+        "--ignored",
+        "scaling_matrix",
+    ],
     labels = ["rue_dedicated_suite"],
-    srcs = _SCALING_MATRIX_SRCS,
-    mapped_srcs = _RUNTIME_MAPPED_SRCS,
-    deps = _DEPS,
-    rustc_flags = _SCALING_MATRIX_RUSTC_FLAGS,
+    test = ":rue-compiler-test",
 )
 
 # The opt-in 10k-per-axis ladder is intentionally absent from premerge. This
@@ -93,12 +88,16 @@ rue_rust_test(
 rue_sh_test(
     name = "scaling-matrix-stress-test",
     tier = "stress",
-    args = ["scaling_matrix", "--nocapture"],
+    args = [
+        "--ignored",
+        "scaling_matrix",
+        "--nocapture",
+    ],
     env = {
         "RUE_SCALING_LARGE": "1",
     },
     labels = ["rue_dedicated_suite"],
-    test = ":scaling-matrix-test",
+    test = ":rue-compiler-test",
 )
 
 # Compiles against rue-compiler as an external crate so curated reexports and
