@@ -157,5 +157,43 @@ class GateValidatorTests(unittest.TestCase):
         )
 
 
+    def test_undeclared_need_output_fails_closed(self):
+        # RUE-1130 regression. GitHub resolves an undeclared job output to the
+        # empty string instead of failing, so a lane gate reading it would see
+        # "nothing selected" and deselect every lane. That is invisible on any
+        # PR touching CI, because those force a full run — i.e. invisible on
+        # exactly the PRs that would be used to test the feature.
+        changed = SOURCE.read_text().replace(
+            "      selected_lanes: ${{ steps.decide.outputs.selected_lanes }}\n", "", 1
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("needs.affected-targets.outputs.selected_lanes is referenced", errors)
+        self.assertIn("silently resolve to the empty string", errors)
+
+    def test_declared_need_outputs_pass(self):
+        self.assertEqual(self.validate_text(SOURCE.read_text()), [])
+
+    def test_need_output_from_unknown_job_fails(self):
+        self.assertIn(
+            "references unknown job",
+            "\n".join(
+                MODULE.undeclared_need_outputs(
+                    "${{ needs.ghost.outputs.thing }}", {"real": "    outputs:\n      thing: x\n"}
+                )
+            ),
+        )
+
+    def test_declared_outputs_parses_past_comments(self):
+        # The declaration this guard protects carries an explanatory comment;
+        # the parser must not stop at it and report the output as undeclared.
+        block = (
+            "    outputs:\n"
+            "      full: ${{ steps.decide.outputs.full }}\n"
+            "      # why this exists\n"
+            "      selected_lanes: ${{ steps.decide.outputs.selected_lanes }}\n"
+        )
+        self.assertEqual(MODULE.declared_outputs(block), {"full", "selected_lanes"})
+
+
 if __name__ == "__main__":
     unittest.main()

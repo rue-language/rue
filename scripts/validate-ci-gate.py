@@ -105,6 +105,38 @@ def list_needs(block: str) -> set[str]:
     return set(re.findall(rf"^      - ({ACTION_ID})$", match.group(1), re.MULTILINE))
 
 
+
+def declared_outputs(block: str) -> set[str]:
+    """Output names a job block declares under `outputs:`."""
+    match = re.search(r"^    outputs:\n((?:      \S.*\n|      #.*\n)+)", block, re.MULTILINE)
+    if not match:
+        return set()
+    return set(re.findall(r"^      ([A-Za-z_][A-Za-z0-9_-]*):", match.group(1), re.MULTILINE))
+
+
+def undeclared_need_outputs(workflow: str, jobs: dict[str, str]) -> list[str]:
+    """`needs.<job>.outputs.<name>` references with no matching declaration.
+
+    GitHub resolves an undeclared job output to the empty string rather than
+    failing, so a typo or a forgotten declaration becomes a silent behaviour
+    change in whatever consumes it. For the RUE-1130 lane gates that means
+    every lane deselecting on a selective run, which is invisible on any pull
+    request that touches CI (those force a full run) and therefore exactly the
+    kind of drop RUE-924 exists to prevent.
+    """
+    problems: list[str] = []
+    for job, name in set(re.findall(r"needs\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)", workflow)):
+        block = jobs.get(job)
+        if block is None:
+            problems.append(f"needs.{job}.outputs.{name} references unknown job {job!r}")
+        elif name not in declared_outputs(block):
+            problems.append(
+                f"needs.{job}.outputs.{name} is referenced but {job!r} does not declare it; "
+                "it would silently resolve to the empty string"
+            )
+    return sorted(problems)
+
+
 def validate(
     ci_path: Path,
     native_runner_path: Path = NATIVE_RUNNER_SCRIPT,
@@ -295,6 +327,8 @@ def validate(
             errors.append(f"{sanitizer} is no longer consolidated into CI")
     if "inputs.large_program" not in jobs.get("valgrind", ""):
         errors.append("manual Valgrind large_program selection was not preserved")
+
+    errors.extend(undeclared_need_outputs(workflow, jobs))
 
     if "  pull_request:\n" not in workflow or "  merge_group:\n" not in workflow:
         errors.append("CI must run on both pull_request and merge_group")
