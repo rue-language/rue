@@ -2605,8 +2605,8 @@ enum InterposeSite {
     /// A joiner has transferred waiter protection into a pin and decremented the
     /// waiter count.
     JoinHandoff,
-    /// Reuse candidates have been discovered and pinned under the node lock,
-    /// before recursive validation releases the lock.
+    /// The first reuse candidate has been discovered and pinned under the node
+    /// lock, before recursive validation releases the lock.
     ReuseDiscovered,
     /// A node joiner observed a still-computing attempt and live cancellation
     /// token while holding the predicate lock, immediately before parking.
@@ -4514,36 +4514,57 @@ where
                 Compute { attempt: u64 },
             }
 
-            // Acquire a protective pin on every reuse candidate while it is still
-            // retained under the node lock, before releasing the lock to validate.
-            // A candidate discovered here therefore cannot be evicted in the
-            // window between discovery and either lease transfer (on a validated
-            // reuse) or release (on a stale candidate): its pin holds it retained
-            // through the recursive validation that follows.
-            let candidates = {
-                let state = lock(&node.state);
-                state
-                    .attempts
-                    .iter()
-                    .rev()
-                    .filter_map(|attempt| match &attempt.state {
-                        AttemptState::Terminal {
-                            terminal, handoffs, ..
-                        } => Some((
-                            attempt.id,
-                            handoffs.clone(),
-                            self.pin_terminal(terminal)
-                                .expect("a family pins its own retained terminal"),
-                        )),
-                        AttemptState::Computing { .. } => None,
-                    })
-                    .collect::<Vec<_>>()
-            };
+            // Acquire a protective pin on the reuse candidate about to be
+            // validated while it is still retained under the node lock, before
+            // releasing the lock to validate. A candidate discovered here
+            // therefore cannot be evicted in the window between discovery and
+            // either lease transfer (on a validated reuse) or release (on a
+            // stale candidate): its pin holds it retained through the recursive
+            // validation that follows.
+            //
+            // Discovery is one candidate at a time, newest first, because the
+            // walk below returns on the first validated candidate. Pinning the
+            // node's whole retained set up front instead costs one pin per
+            // attempt the node has ever accumulated and releases all but one
+            // immediately, and every surplus release runs a family and runtime
+            // retention enforcement pass. That makes a single request O(retained
+            // attempts) and a session which republishes the same keys across
+            // revisions quadratic in its revision count (RUE-1262).
+            //
+            // `cursor` is the id of the last candidate examined; attempt ids
+            // ascend with publication, so selecting the greatest terminal id
+            // below it walks the same newest-first order the snapshot did. A
+            // candidate evicted before the cursor reaches it was unprotected by
+            // definition, and missing it costs an ordinary recompute rather
+            // than a wrong answer.
+            let mut cursor = u64::MAX;
             #[cfg(test)]
-            if !candidates.is_empty() {
-                self.core.interpose(InterposeSite::ReuseDiscovered);
-            }
-            for (attempt_id, handoffs, pin) in candidates {
+            let mut discovered = false;
+            loop {
+                let candidate = {
+                    let state = lock(&node.state);
+                    state.attempts.iter().rev().find_map(|attempt| {
+                        match (attempt.id < cursor).then_some(&attempt.state) {
+                            Some(AttemptState::Terminal {
+                                terminal, handoffs, ..
+                            }) => Some((
+                                attempt.id,
+                                handoffs.clone(),
+                                self.pin_terminal(terminal)
+                                    .expect("a family pins its own retained terminal"),
+                            )),
+                            Some(AttemptState::Computing { .. }) | None => None,
+                        }
+                    })
+                };
+                let Some((attempt_id, handoffs, pin)) = candidate else {
+                    break;
+                };
+                cursor = attempt_id;
+                #[cfg(test)]
+                if !std::mem::replace(&mut discovered, true) {
+                    self.core.interpose(InterposeSite::ReuseDiscovered);
+                }
                 let terminal = pin.terminal().clone();
                 let endorsement_enabled =
                     self.inner.evaluator.is_some() && task.validation_endorsements_active();
@@ -4581,8 +4602,9 @@ where
                         if observe_result || endorse {
                             self.lease_observed_pin(&task, pin);
                         }
-                        // A stale candidate's pin (or an unobserved validation
-                        // reuse) drops with `pin`/`candidates`, releasing it.
+                        // An unobserved validation reuse drops `pin` here,
+                        // releasing it, as a stale candidate does at the end of
+                        // its own iteration.
                         return TaskQueryResult::Terminal {
                             terminal,
                             execution: RequestExecution::Reused,
@@ -14166,6 +14188,77 @@ mod tests {
             computes.load(Ordering::SeqCst),
             1,
             "the candidate was reused throughout, never detached and recomputed"
+        );
+    }
+
+    // 3b. Reuse discovery cost: the window pin above protects the candidate
+    //     being validated, and the walk returns on the first candidate that
+    //     validates. Taking that pin on every retained attempt instead makes one
+    //     request O(retained attempts) — and because each surplus release is the
+    //     last pin on its terminal, each one also runs a retention enforcement
+    //     pass. A session which republishes the same key across revisions then
+    //     pays quadratically in its revision count (RUE-1262). The enforcement
+    //     counter observes exactly that, so measuring one reuse at two retained
+    //     depths separates per-request cost from history size.
+    #[test]
+    fn reuse_discovery_cost_is_independent_of_retained_attempt_depth() {
+        fn enforcements_for_one_reuse(depth: u64) -> u64 {
+            let runtime = QueryRuntime::new(1);
+            let input = InputIdentity::new("source", "reuse-depth");
+            // A bound far above `depth`: the node is meant to legitimately keep
+            // every attempt, so nothing here is reclaimed before the reuse.
+            let family = runtime.family::<Key, u64>("reuse-depth", 4096).unwrap();
+            for stamp in 1..=depth {
+                let revision = Revision::new(stamp, 1);
+                runtime
+                    .publish_revision(revision, [(input.clone(), stamp)])
+                    .unwrap();
+                let observed = input.clone();
+                runtime
+                    .query(
+                        &family,
+                        revision,
+                        Key("same"),
+                        CancellationToken::new(),
+                        move |context| {
+                            context.input(observed)?;
+                            Ok(QueryOutput::success(stamp))
+                        },
+                    )
+                    .unwrap();
+            }
+
+            // A successor revision which changes nothing: the newest attempt is
+            // the first candidate examined, and it validates.
+            let reuse = Revision::new(depth + 1, 1);
+            runtime
+                .publish_revision(reuse, [(input.clone(), depth)])
+                .unwrap();
+            let before = runtime.metrics();
+            let observed = input.clone();
+            runtime
+                .query(
+                    &family,
+                    reuse,
+                    Key("same"),
+                    CancellationToken::new(),
+                    move |context| {
+                        context.input(observed)?;
+                        unreachable!("the newest retained attempt is still valid")
+                    },
+                )
+                .unwrap();
+            let after = runtime.metrics();
+            assert_eq!(after.reuses - before.reuses, 1);
+            assert_eq!(after.claims - before.claims, 0);
+            after.retention_enforcements - before.retention_enforcements
+        }
+
+        let shallow = enforcements_for_one_reuse(4);
+        let deep = enforcements_for_one_reuse(32);
+        assert_eq!(
+            deep, shallow,
+            "one reuse costs the same whether the node retains 4 attempts or 32"
         );
     }
 
