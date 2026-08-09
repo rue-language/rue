@@ -22,6 +22,12 @@ actually moves required-CI latency, and it costs no extra runners.
 
 ## Method and sample
 
+> Superseded in breadth by ADR-0069, which collects 120 runs, classifies 55 by
+> change class, and times 21. Nothing measured here changed under the wider
+> sample — `premerge` remained the critical path in 18 of 21 timed runs — but the
+> determination conclusions belong to the ADR, which has the change-mix data this
+> note lacks.
+
 Nine `CI` runs from 2026-08-07/08 (four `pull_request`, five `merge_group`),
 read from the Actions jobs API: per-job `created_at` / `started_at` /
 `completed_at` and per-step durations. Shard-balance arithmetic is computed
