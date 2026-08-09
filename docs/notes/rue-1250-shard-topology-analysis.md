@@ -17,6 +17,9 @@ weights file that drifts undetected, and a count replicated by hand across 23
 files — so the right answer has to be re-derived from scratch every time the
 system moves, as this issue did.
 
+The premerge defect is tracked separately as **RUE-1262**; it is the change that
+actually moves required-CI latency, and it costs no extra runners.
+
 ## Method and sample
 
 Nine `CI` runs from 2026-08-07/08 (four `pull_request`, five `merge_group`),

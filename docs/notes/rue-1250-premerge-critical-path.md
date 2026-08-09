@@ -1,5 +1,8 @@
 # RUE-1250: the premerge critical path is one test function
 
+Tracked as **RUE-1262**, split out of RUE-1250 because it is not a topology
+change. This note is that issue's evidence.
+
 Follow-up to `rue-1250-shard-topology-analysis.md`, which established that
 `premerge (linux-x64)` — not the CLI shards — is the required-CI critical path
 in 9 of 9 sampled runs, and left the lane's internal composition unmeasured.
