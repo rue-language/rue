@@ -65,6 +65,52 @@
     return point.matrixTransform(matrix.inverse());
   }
 
+  // "2026-08-01T12:34:56Z" as "2026-08-01 12:34 UTC". ISO order, because these
+  // are read next to commit hashes and sorted by eye; the zone is spelled out
+  // because every timestamp on this page is UTC and a bare time invites the
+  // reader to assume otherwise.
+  function fmtWhen(value) {
+    var parts = /^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/.exec(value || "");
+    return parts ? parts[1] + " " + parts[2] + " UTC" : (value || "unknown time");
+  }
+
+  function fmtDay(value) {
+    var parts = /^(\d{4}-\d{2}-\d{2})/.exec(value || "");
+    return parts ? parts[1] : "";
+  }
+
+  // Date ticks under a chart's plotted range. Without them neither chart says
+  // *when* anything happened, and a run of points is unreadable as a timeline.
+  //
+  // Ticks are chosen by position rather than by date so they always land on
+  // real measurements: the series is irregular, and a tick at an evenly spaced
+  // date would point at a gap.
+  function drawDateAxis(svg, x, baseline, entries) {
+    if (!entries.length) { return; }
+    var wanted = Math.min(entries.length, 5);
+    var chosen = [];
+    for (var slot = 0; slot < wanted; slot++) {
+      var pick = wanted === 1
+        ? entries.length - 1
+        : Math.round((slot / (wanted - 1)) * (entries.length - 1));
+      if (chosen.indexOf(pick) === -1) { chosen.push(pick); }
+    }
+    chosen.forEach(function (pick, slot) {
+      var entry = entries[pick];
+      svg.appendChild(element("line", {
+        x1: x(entry.at), y1: baseline, x2: x(entry.at), y2: baseline + 4,
+        stroke: "#999"
+      }));
+      var label = element("text", {
+        x: x(entry.at), y: baseline + 16, fill: "#666", "font-size": 11,
+        // The end labels would otherwise overhang the viewBox and clip.
+        "text-anchor": slot === 0 ? "start" : (slot === chosen.length - 1 ? "end" : "middle")
+      });
+      label.textContent = fmtDay(entry.finished_at);
+      svg.appendChild(label);
+    });
+  }
+
   function commitHeading(data, commit) {
     var subject = (data.commit_subjects || {})[commit];
     return "<strong>" + escapeHtml(shortHash(commit)) + "</strong>" +
@@ -90,6 +136,43 @@
     var skipped = distance - 1;
     return distance + " commits landed since the previous measurement; " +
       skipped + (skipped === 1 ? " was" : " were") + " not measured.";
+  }
+
+  // What "flagged" means, stated rather than asserted.
+  //
+  // The rule (ADR-0067 §5) compares this run's median against the median of the
+  // trailing window's medians, and flags when they differ by more than `k`
+  // times the two dispersions combined in quadrature. Three consequences the
+  // bare word "flagged" hides, and which this line therefore spells out:
+  //
+  //   It is a noise-relative bound, not a percentage threshold. A 1% move on a
+  //   quiet workload can flag where 5% on a noisy one does not.
+  //
+  //   It is direction-agnostic. A large speedup flags exactly as a regression
+  //   does, because the rule takes the absolute difference.
+  //
+  //   The comparison is against a trailing window, not the previous commit, so
+  //   it can disagree with the delta shown directly above it.
+  function flaggingLine(epoch, point) {
+    var rule = epoch.flagging || {};
+    if (point.flagged === null || point.flagged === undefined) {
+      return "Movement unknown: the rule needs a full trailing window of " +
+        rule.window + " prior runs and does not have one yet.";
+    }
+    if (typeof point.window_median_ns !== "number") {
+      return point.flagged
+        ? "Flagged: this exceeds the epoch's flagging rule."
+        : "Not flagged: this is within the epoch's flagging rule.";
+    }
+    var delta = (point.median_ns / point.window_median_ns - 1) * 100;
+    var comparison = fmtMs(point.median_ns) + " against a trailing " + rule.window +
+      "-run median of " + fmtMs(point.window_median_ns) + ", " +
+      Math.abs(delta).toFixed(2) + "% " + (delta >= 0 ? "slower" : "faster");
+    return point.flagged
+      ? "Flagged — moved: " + comparison + ". That gap is wider than " + rule.k +
+        "× the combined noise of the two, in either direction."
+      : "Not flagged: " + comparison + ", within " + rule.k +
+        "× the combined noise of the two.";
   }
 
   // Only touch the DOM when the text actually changes. Tooltips are aria-live
@@ -229,7 +312,11 @@
       var flagged = Object.keys(latest.point.workloads).filter(function (name) {
         return latest.point.workloads[name].flagged === true;
       });
-      parts.push(flagged.length ? "Flagged: " + flagged.join(", ") + "." : "Nothing flagged.");
+      // "Moved" is the honest verb: the rule takes an absolute difference, so
+      // this set includes workloads that got faster.
+      parts.push(flagged.length
+        ? "Moved beyond the noise bound: " + flagged.join(", ") + "."
+        : "Nothing moved beyond the noise bound.");
       // When the newest point is stated, a page that stopped advancing reads as
       // stopped. Without it a ten-day-old chart is indistinguishable from a
       // current one, which is exactly how a frozen series went unnoticed.
@@ -342,6 +429,10 @@
         }));
       });
 
+      drawDateAxis(svg, x, 190, marks.map(function (mark) {
+        return { at: mark.at, finished_at: mark.entry.point.finished_at };
+      }));
+
       var highlight = element("circle", {
         r: 5, fill: "none", stroke: "#111", "stroke-width": 2, "pointer-events": "none"
       });
@@ -392,6 +483,7 @@
 
       var lines = [
         commitHeading(data, entry.point.commit),
+        "Measured " + fmtWhen(entry.point.finished_at) + ".",
         "Index " + value.toFixed(3) + " against the epoch " + entry.epoch.epoch +
           " baseline. Dimensionless: 1.000 is the baseline, lower is faster."
       ];
@@ -423,8 +515,8 @@
         return entry.point.workloads[name].flagged === true;
       });
       lines.push(flagged.length
-        ? "Flagged here: " + escapeHtml(flagged.join(", ")) + "."
-        : "Nothing flagged here.");
+        ? "Moved beyond the noise bound here: " + escapeHtml(flagged.join(", ")) + "."
+        : "Nothing moved beyond the noise bound here.");
 
       var drift = entry.epoch.environment_annotations.filter(function (note) {
         return note.commit === entry.point.commit;
@@ -469,16 +561,24 @@
           : "no prior point";
         // `null` means the trailing window is not full. Rendering that as
         // "stable" would be the comfortable wrong answer.
+        //
+        // "moved" rather than "flagged": the rule takes an absolute difference,
+        // so this fires on a large speedup too, and the word most readers hear
+        // as "regression" is the wrong one for what was measured.
         var flag = currentPoint.flagged === true
-          ? " · flagged"
+          ? " · moved"
           : (currentPoint.flagged === null ? " · not enough history" : "");
+        // The full sentence on hover and for assistive technology, so the badge
+        // can stay a badge without being a riddle.
+        card.title = flaggingLine(points[points.length - 1].epoch, currentPoint);
 
         card.innerHTML =
           '<div style="font-weight:600;">' + escapeHtml(workload.id) + flag + "</div>" +
           '<div style="color:var(--color-muted);font-size:0.85rem;">' + escapeHtml(workload.question) + "</div>" +
           '<div style="margin-top:0.4rem;">' + fmtMs(currentPoint.median_ns) +
           ' <span style="color:var(--color-muted);">± ' + fmtMs(currentPoint.mad_ns) + " MAD</span></div>" +
-          '<div style="color:var(--color-muted);font-size:0.85rem;">Δ ' + delta + "</div>";
+          '<div style="color:var(--color-muted);font-size:0.85rem;">Δ ' + delta +
+          " versus the previous measured commit</div>";
         container.appendChild(card);
       });
     }
@@ -532,6 +632,10 @@
       var scale = element("text", { x: 4, y: 16, fill: "#666", "font-size": 11 });
       scale.textContent = ms(hi).toFixed(1) + " ms";
       svg.appendChild(scale);
+
+      drawDateAxis(svg, x, 230, series.map(function (entry, i) {
+        return { at: i, finished_at: entry.point.finished_at };
+      }));
 
       // Drawn once and moved, rather than redrawn. Without them a tap on a
       // touchscreen changes the tooltip with nothing on the chart to say which
@@ -691,7 +795,10 @@
       var entry = series[index];
       var point = entry.point.workloads[state.workload];
 
-      var lines = [commitHeading(data, entry.point.commit)];
+      var lines = [
+        commitHeading(data, entry.point.commit),
+        "Measured " + fmtWhen(entry.point.finished_at) + "."
+      ];
 
       // The composition bar carries every band for the whole commit. This is
       // the one the cursor is actually on, which is what §11 asks the tooltip
@@ -720,11 +827,7 @@
         lines.push("First measured commit in this view.");
       }
 
-      if (point.flagged === null) {
-        lines.push("Movement unknown: the trailing window is not full yet.");
-      } else if (point.flagged) {
-        lines.push("Flagged: this exceeds the epoch's flagging rule.");
-      }
+      lines.push(flaggingLine(entry.epoch, point));
 
       var drift = entry.epoch.environment_annotations.filter(function (note) {
         return note.commit === entry.point.commit;

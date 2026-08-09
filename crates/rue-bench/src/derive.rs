@@ -81,6 +81,9 @@ pub struct EpochData {
     /// The epoch pins an environment *policy*, not a machine, so hosted runners
     /// change underneath it. Comparisons crossing one of these are advisory.
     pub environment_annotations: Vec<EnvironmentAnnotation>,
+    /// The flagging rule this epoch pins, so the page can state the bound it
+    /// is reporting against rather than describing it vaguely.
+    pub flagging: FlaggingRule,
     /// Standard-library changes within this epoch.
     ///
     /// Deliberately *not* advisory, unlike an environment annotation. `std` is
@@ -88,6 +91,15 @@ pub struct EpochData {
     /// in what the series tracks — the same status as a compiler change, which
     /// gets no annotation only because every point already is one.
     pub stdlib_annotations: Vec<StdlibAnnotation>,
+}
+
+/// The epoch's pinned flagging rule, as published to the dashboard.
+#[derive(Debug, Serialize)]
+pub struct FlaggingRule {
+    /// The multiplier applied to the pooled uncertainty of the two summaries.
+    pub k: f64,
+    /// How many prior runs form the trailing window.
+    pub window: u32,
 }
 
 /// A point at which the standard library changed underneath a series.
@@ -148,6 +160,13 @@ pub struct WorkloadPoint {
     /// `None` when the trailing window is not yet full: too little history is
     /// not the same as no movement, and rendering it as "fine" would be a lie.
     pub flagged: Option<bool>,
+    /// The trailing window's median, which `flagged` is the comparison against.
+    ///
+    /// Published so the page can say what a flag actually means — how far this
+    /// point sits from the window, and in which direction — rather than
+    /// asserting "flagged" and leaving the reader to guess. `None` exactly when
+    /// `flagged` is.
+    pub window_median_ns: Option<u64>,
     /// The additive stack, in absolute nanoseconds, summing to compiler root.
     pub bands_ns: BTreeMap<String, u64>,
     pub compiler_root_ns: u64,
@@ -370,16 +389,17 @@ fn derive_epoch(
             let past = history.entry(workload.id.clone()).or_default();
             // `None` rather than `false` when the window is not yet full:
             // insufficient history is not evidence of stability.
-            let flagged = if past.len() >= window_length && window_length > 0 {
+            let trailing = if past.len() >= window_length && window_length > 0 {
                 let window_medians: Vec<u64> = past[past.len() - window_length..]
                     .iter()
                     .map(|summary| summary.median)
                     .collect();
                 Summary::of(&window_medians)
-                    .map(|window| flags_movement(summary, window, epoch.flagging.k))
             } else {
                 None
             };
+            let flagged = trailing.map(|window| flags_movement(summary, window, epoch.flagging.k));
+            let window_median_ns = trailing.map(|window| window.median);
             past.push(summary);
 
             // Everything here is per compilation, matching `sample_value`'s
@@ -416,6 +436,7 @@ fn derive_epoch(
                     output_binary_bytes: median_of(&valid, Metric::BinarySize),
                     ratio: workload_ratio,
                     flagged,
+                    window_median_ns,
                     bands_ns,
                     compiler_root_ns,
                     process_elapsed_ns,
@@ -457,6 +478,10 @@ fn derive_epoch(
         baseline_commit: epoch.baseline.as_ref().map(|b| b.commit.clone()),
         points,
         environment_annotations,
+        flagging: FlaggingRule {
+            k: epoch.flagging.k,
+            window: epoch.flagging.window,
+        },
         stdlib_annotations,
     }
 }
@@ -807,6 +832,32 @@ window = 3
         assert_eq!(points[1].workloads["startup"].flagged, None);
         assert_eq!(points[2].workloads["startup"].flagged, None);
         assert!(points[3].workloads["startup"].flagged.is_some());
+
+        // The window median travels with the flag, because the page reports
+        // what a flag means by naming the value it was compared against. It is
+        // present exactly when the flag is, or the page would have to render a
+        // comparison with one side missing.
+        for point in &points[..3] {
+            assert_eq!(point.workloads["startup"].window_median_ns, None);
+        }
+        assert_eq!(
+            points[3].workloads["startup"].window_median_ns,
+            Some(100),
+            "the median of the three preceding medians"
+        );
+    }
+
+    #[test]
+    fn the_epoch_publishes_the_flagging_rule_it_pins() {
+        // The page states the bound it is reporting against. Leaving `k` and
+        // the window length out would reduce "flagged" to an assertion the
+        // reader has no way to check.
+        let base = run_at("a", "2026-07-28T00:00:00Z", [100, 100, 100]);
+        let manifest = manifest_with_baseline(std::slice::from_ref(&base));
+        let data = derive(&manifest, &[base]);
+        let flagging = &data.platforms[0].epochs[0].flagging;
+        assert_eq!(flagging.window, 3);
+        assert!((flagging.k - 2.0).abs() < f64::EPSILON);
     }
 
     #[test]
