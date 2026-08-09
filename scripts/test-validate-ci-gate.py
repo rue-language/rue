@@ -195,5 +195,32 @@ class GateValidatorTests(unittest.TestCase):
         self.assertEqual(MODULE.declared_outputs(block), {"full", "selected_lanes"})
 
 
+    def test_lane_target_drift_fails_closed(self):
+        # RUE-1130. A target the native job runs but the determinator does not
+        # list is invisible to selection: the lane can be deselected, or
+        # narrowed away, by a diff that actually reaches it.
+        changed = SOURCE.read_text().replace(
+            "            //crates/rue-target:rue-target-test\n          )",
+            "            //crates/rue-target:rue-target-test\n"
+            "            //crates/rue-query:rue-query-test\n          )",
+            1,
+        )
+        errors = "\n".join(self.validate_text(changed))
+        self.assertIn("//crates/rue-query:rue-query-test", errors)
+        self.assertIn("selection cannot see it", errors)
+
+    def test_lane_targets_and_job_agree_today(self):
+        self.assertEqual(MODULE.lane_target_drift(SOURCE.read_text()), [])
+
+    def test_unreadable_lane_script_fails_closed(self):
+        # The gate must not pass silently when it cannot read the lane list.
+        self.assertIn(
+            "produced nothing",
+            "\n".join(
+                MODULE.lane_target_drift(SOURCE.read_text(), script=Path("/nonexistent/affected-targets"))
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
