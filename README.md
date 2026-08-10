@@ -10,7 +10,7 @@ fn fib(n: i32) -> i32 {
 }
 
 fn main() -> i32 {
-    @dbg(fib(10));
+    println("fib(10) = " + @to_string(fib(10)));
     0
 }
 ```
