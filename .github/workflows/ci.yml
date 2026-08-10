@@ -235,17 +235,32 @@ jobs:
       # every crate. An unimpacted crate cannot have been broken by this diff,
       # and building its test binaries is the cost this narrowing exists to
       # avoid — measured at 286-317s whenever a compiler crate changes.
+      #
+      # The narrowed list is filtered back to this step's own `//crates/...`
+      # scope by `build-scope`. Handing `buck2 build` the determinator's raw
+      # closure also built the root-level `cached_corpus_suite` actions, and
+      # building one of those RUNS its corpus — so this step re-ran the CLI,
+      # spec, and oracle corpora that the platform-corpus lanes already own,
+      # serially, and premerge went from ~12m to 32-42m. See build_scope().
       - name: Build all targets
         env:
           NARROW_COUNT: ${{ steps.narrow.outputs.count }}
           NARROW_FILE: ${{ steps.narrow.outputs.file }}
         run: |
           set -euo pipefail
-          if [ "$NARROW_COUNT" -gt 0 ]; then
-            mapfile -t targets <"$NARROW_FILE"
+          if [ "$NARROW_COUNT" -le 0 ]; then
+            scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+          elif ! scope="$(scripts/affected-targets build-scope "$NARROW_FILE")"; then
+            # Fail open: an unreadable list costs wall time, never coverage.
+            echo "narrowed build scope unavailable; building the full crate pattern" >&2
+            scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+          elif [ -n "$scope" ]; then
+            mapfile -t targets <<<"$scope"
             scripts/ci-timed "linux-x64 build (narrowed)" -- ./buck2 build "${targets[@]}"
           else
-            scripts/ci-timed "linux-x64 build" -- ./buck2 build //crates/...
+            # Legitimate: a diff can impact corpus data without impacting any
+            # crate. Say so rather than leaving a silent no-op to be inferred.
+            echo "no impacted //crates/... targets; this step has nothing to build"
           fi
 
       - name: Run complete target-independent premerge suite

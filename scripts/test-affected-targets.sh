@@ -232,6 +232,56 @@ else
   fail "narrow: missing impacted file did not exit cleanly"
 fi
 
+# `build-scope` is what keeps a pattern lane's narrowing a SUBSET of what the
+# lane built before: exactly `//crates/...`, the scope linux-premerge built
+# before RUE-1130 narrowed it. The root-level entries here are
+# `cached_corpus_suite` actions that `//crates/...` never matched, and letting
+# one through re-runs a whole corpus inside linux-premerge — `buck2 build` runs
+# the action, and `rue_ci_dedicated_lane` is a `buck2 test` label filter that
+# cannot reach it.
+#
+# `//crates/rue-oracle-diff:oracle-diff-test-action` is deliberately KEPT: it is
+# a corpus action, but a crate-scoped one that `//crates/...` always matched, so
+# dropping it here would make this a behavior change rather than a restoration.
+# Taking corpus actions out of this lane wholesale needs the labels to live on
+# the action (RUE-1163's contract), which is tracked separately.
+printf '%s\n' \
+  //crates/rue-compiler:rue-compiler \
+  //:cli-tests \
+  //:cli-tests-action \
+  //crates/rue-codegen:rue-codegen-test \
+  //:spec-tests-action \
+  //:cli-tests-shard-2-action \
+  //crates/rue-oracle-diff:oracle-diff-test-action \
+  >"$narrow_root/mixed"
+TESTS=$((TESTS + 1))
+if [ "$("${AFFECTED[@]}" build-scope "$narrow_root/mixed" | tr '\n' ' ')" \
+     = "//crates/rue-compiler:rue-compiler //crates/rue-codegen:rue-codegen-test //crates/rue-oracle-diff:oracle-diff-test-action " ]; then
+  pass "narrow: build-scope keeps the crate scope and drops root-level corpus actions"
+else
+  fail "narrow: build-scope did not restore the //crates/... scope"
+fi
+
+# An impacted closure naming only corpora is legitimate — corpus data can change
+# without reaching a crate — and must read as "nothing to build", never as the
+# whole pattern. The workflow prints that case rather than silently skipping.
+printf '%s\n' //:cli-tests-action //:spec-tests-action >"$narrow_root/corpora-only"
+TESTS=$((TESTS + 1))
+if [ -z "$("${AFFECTED[@]}" build-scope "$narrow_root/corpora-only")" ]; then
+  pass "narrow: build-scope on a corpus-only closure yields nothing to build"
+else
+  fail "narrow: build-scope invented crate targets from a corpus-only closure"
+fi
+
+# An unreadable list must fail loudly so the caller can fall open to the full
+# pattern; silently yielding nothing would turn it into "build nothing".
+TESTS=$((TESTS + 1))
+if "${AFFECTED[@]}" build-scope "$narrow_root/absent" >/dev/null 2>&1; then
+  fail "narrow: build-scope accepted a missing impacted file"
+else
+  pass "narrow: build-scope rejects a missing impacted file"
+fi
+
 # test.sh must fall back to the full pattern for every input that is not a
 # readable, non-empty list, and must never turn a bad list into "run nothing".
 run_test_sh_args() { # run_test_sh_args [VAR=VALUE ...] -> prints the buck2 test args
