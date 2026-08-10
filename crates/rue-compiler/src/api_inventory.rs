@@ -2458,11 +2458,12 @@ fn declaration_shell_queries_are_the_only_compiler_semantic_discovery_authority(
         );
     }
     let resolve_import_evaluator = runtime
-        .split("let parse_for_import")
+        .split("let index_for_import_resolution")
         .nth(1)
         .and_then(|tail| tail.split("let occurrences_for_declaration_import").next())
         .unwrap();
     for required in [
+        "index.import_occurrence(&key.occurrence)",
         "exact_import_winner(",
         "resolve_exact_import_winner(",
         "accepted_import_provenance_input(",
