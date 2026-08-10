@@ -2203,15 +2203,16 @@ impl<'a> BoundSema<'a> {
                 .map(&map_definition)
                 .collect::<Result<Vec<_>, _>>();
             if let (Ok(identity), Ok(body), Ok(dependencies)) = (identity, body, dependencies) {
-                self.sema.reusable_specialized_bodies.push(
-                    crate::SemanticSpecializedBodyCandidate {
+                self.sema
+                    .reusable_specialized_bodies
+                    .entry(identity.clone())
+                    .or_insert_with(|| crate::SemanticSpecializedBodyCandidate {
                         identity,
                         body_span: candidate.body_span,
                         body,
                         dependencies: dependencies.into(),
                         dependency_boundary_complete: candidate.dependency_boundary_complete,
-                    },
-                );
+                    });
                 work.successes += 1;
             } else {
                 work.mapping_failures += 1;

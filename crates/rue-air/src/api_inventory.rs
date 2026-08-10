@@ -14,6 +14,18 @@ fn peer_one_body_authority_cannot_return() {
 }
 
 #[test]
+fn reusable_specialization_candidates_have_one_indexed_first_wins_authority() {
+    let sema = include_str!("sema/mod.rs");
+    let installer = include_str!("sema/binding_manifest.rs");
+    let consumer = include_str!("specialize.rs");
+
+    assert!(sema.contains("reusable_specialized_bodies: HashMap<"));
+    assert!(installer.contains(".entry(identity.clone())\n                    .or_insert_with("));
+    assert!(consumer.contains("reusable_specialized_bodies.remove(&identity)"));
+    assert!(!consumer.contains(".position(|candidate| candidate.identity == identity)"));
+}
+
+#[test]
 fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
     let analysis = include_str!("sema/analysis.rs");
     let manifest = include_str!("sema/binding_manifest.rs");

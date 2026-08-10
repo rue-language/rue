@@ -185,11 +185,7 @@ impl Specializer {
         >,
     > {
         let identity = Self::stable_identity(key, sema).ok()?;
-        let index = sema
-            .reusable_specialized_bodies
-            .iter()
-            .position(|candidate| candidate.identity == identity)?;
-        Some(sema.reusable_specialized_bodies.remove(index))
+        sema.reusable_specialized_bodies.remove(&identity)
     }
 
     /// Analyze and rewrite every specialization reachable from newly appended
