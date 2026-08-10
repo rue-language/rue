@@ -753,7 +753,7 @@ pub struct ValidationWork {
     pub proof_reacquisition_misses: u64,
     /// Registered-cone endorsement lookups.
     pub endorsement_probes: u64,
-    /// Endorsement lookups satisfied by the rooted request.
+    /// Endorsement lookups which actually bypassed recursive or root validation.
     pub endorsement_hits: u64,
     /// Exact query-result terminal lease observations attempted by requests.
     pub terminal_lease_observations: u64,

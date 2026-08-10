@@ -1254,6 +1254,10 @@ mod registered_batch_tests {
                 "fallback-authority-check",
                 1,
                 move |context, _, _| {
+                    assert!(matches!(
+                        context.endorse_registered_validations_from(std::slice::from_ref(&foreign)),
+                        Err(RetainTerminalConeError::ForeignRuntime)
+                    ));
                     let _proof = context.endorse_registered_validations();
                     assert!(matches!(
                         context.retain_observed_terminal_cone_from(
@@ -1536,6 +1540,117 @@ mod registered_batch_tests {
                 .terminal()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn registered_batch_absorbs_fallbacks_backing_child_endorsements() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1), revision(2)]);
+
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("registered-batch-fallback-leaf", 8, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let leaf_for_middle = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "registered-batch-fallback-middle",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_middle, Key("leaf"))?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(
+                &middle,
+                revision(1),
+                Key("middle"),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .unwrap();
+        let middle_terminal = runtime
+            .request_registered(
+                &middle,
+                revision(2),
+                Key("middle"),
+                CancellationToken::new(),
+            )
+            .into_result()
+            .unwrap();
+        let leaf_terminal = runtime
+            .request_registered(&leaf, revision(2), Key("leaf"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let mut child_fallback = RetainedPinSet::new();
+        child_fallback.lease(leaf.pin_terminal(&leaf_terminal).unwrap());
+        let child_fallback = Arc::new(child_fallback);
+
+        let middle_for_child = middle.clone();
+        let child_fallback_for_child = child_fallback.clone();
+        let child = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "registered-batch-fallback-child",
+                8,
+                move |context, _, key| {
+                    let _nested = context
+                        .endorse_registered_validations_from(std::slice::from_ref(
+                            &child_fallback_for_child,
+                        ))
+                        .unwrap();
+                    context.query_registered(&middle_for_child, Key("middle"))?;
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+
+        let outer_fallback = Arc::new(RetainedPinSet::new());
+        let child_for_root = child.clone();
+        let outer_fallback_for_root = outer_fallback.clone();
+        let child_fallback_for_root = child_fallback.clone();
+        let middle_terminal_for_root = middle_terminal.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "registered-batch-fallback-root",
+                8,
+                move |context, _, _| {
+                    let baseline_refs = Arc::strong_count(&child_fallback_for_root);
+                    {
+                        let _outer = context
+                            .endorse_registered_validations_from(std::slice::from_ref(
+                                &outer_fallback_for_root,
+                            ))
+                            .unwrap();
+                        context.query_registered_batch(&child_for_root, [Slot(0)])?;
+                        assert_eq!(
+                            context.task.validation_endorsement_authority_for_terminal(
+                                &middle_terminal_for_root,
+                            ),
+                            ValidationEndorsementAuthority::TaskLocal,
+                        );
+                        assert!(
+                            lock(&context.task.validation_endorsements)[0]
+                                .fallbacks
+                                .iter()
+                                .any(|fallback| Arc::ptr_eq(fallback, &child_fallback_for_root,))
+                        );
+                        assert_eq!(
+                            Arc::strong_count(&child_fallback_for_root),
+                            baseline_refs + 1,
+                        );
+                    }
+                    assert_eq!(Arc::strong_count(&child_fallback_for_root), baseline_refs,);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(&root, revision(2), Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
     }
 
     #[test]
@@ -2324,7 +2439,7 @@ pub struct ValidationWork {
     pub proof_reacquisition_misses: u64,
     /// Exact registered-cone endorsement lookups.
     pub endorsement_probes: u64,
-    /// Endorsement lookups satisfied by this rooted request's retained cone.
+    /// Endorsement lookups which actually bypassed recursive or root validation.
     pub endorsement_hits: u64,
     /// Exact query-result terminal lease observations attempted by requests.
     pub terminal_lease_observations: u64,
@@ -4271,6 +4386,14 @@ impl<K, V> Drop for Node<K, V> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ValidationCertificate {
+    revision: Revision,
+    stamp: u64,
+    terminal_revision: Revision,
+    registered_only: bool,
+}
+
 trait ErasedNode: fmt::Debug + Send + Sync {
     fn validated_stamp(
         &self,
@@ -4280,7 +4403,7 @@ trait ErasedNode: fmt::Debug + Send + Sync {
     ) -> Result<Option<u64>, QueryAbort>;
 
     /// Records one exact validation certificate and reports whether it was new.
-    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool) -> bool;
+    fn mark_validated(&self, certificate: ValidationCertificate) -> bool;
 
     /// The typed node behind this erased handle, for the family-owned
     /// exact-terminal adoption path ([`QueryFamily::observe_adopted_terminal`])
@@ -4312,31 +4435,44 @@ where
         let mut proof_reacquisition_miss = false;
         {
             let state = lock(&self.state);
-            if let Some((revision, stamp, registered_only)) = state.validated_at
-                && revision == task.revision
+            if let Some(certificate) = &state.validated_at
+                && certificate.revision == task.revision
                 && state.attempts.iter().any(|attempt| {
                     matches!(
                         &attempt.state,
                         AttemptState::Terminal { terminal, .. }
-                            if terminal.stamp == stamp
+                            if terminal.stamp == certificate.stamp
+                                && terminal.revision == certificate.terminal_revision
                     )
                 })
             {
                 // A registered-cone endorsement is also a retention proof. A
-                // memo may skip validation in that scope only after this task
-                // has already leased the exact node/stamp; otherwise the
-                // ordinary demand reconstructs and pins its transitive cone.
-                if !task.validation_endorsements_active()
-                    || task.validation_endorsed_identity(self.incarnation, stamp)
-                {
-                    if !registered_only {
+                // memo may skip validation in that scope only when this task
+                // has already leased the exact terminal or a live fallback owns
+                // an equal node/stamp representative. Final promotion walks the
+                // selected representative's own transitive cone.
+                let endorsement_authority = task.validation_endorsement_authority_at(
+                    self.incarnation,
+                    certificate.stamp,
+                    certificate.terminal_revision,
+                );
+                if matches!(
+                    endorsement_authority,
+                    ValidationEndorsementAuthority::Inactive
+                        | ValidationEndorsementAuthority::TaskLocal
+                        | ValidationEndorsementAuthority::Borrowed
+                ) {
+                    if endorsement_authority != ValidationEndorsementAuthority::Inactive {
+                        task.record_validation_endorsement_hit();
+                    }
+                    if !certificate.registered_only {
                         task.taint_validation_proofs();
                     }
                     task.validation_work
                         .memo_hits
                         .fetch_add(1, Ordering::Relaxed);
                     active.remove(&self.incarnation);
-                    return Ok(Some(stamp));
+                    return Ok(Some(certificate.stamp));
                 }
                 proof_reacquisition_miss = true;
             }
@@ -4470,18 +4606,20 @@ where
         self
     }
 
-    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool) -> bool {
+    fn mark_validated(&self, certificate: ValidationCertificate) -> bool {
         let mut state = lock(&self.state);
         if state.attempts.iter().any(|attempt| {
             matches!(
                 &attempt.state,
-                AttemptState::Terminal { terminal, .. } if terminal.stamp == stamp
+                AttemptState::Terminal { terminal, .. }
+                    if terminal.stamp == certificate.stamp
+                        && terminal.revision == certificate.terminal_revision
             )
         }) {
-            if state.validated_at == Some((revision, stamp, registered_only)) {
+            if state.validated_at.as_ref() == Some(&certificate) {
                 return false;
             }
-            state.validated_at = Some((revision, stamp, registered_only));
+            state.validated_at = Some(certificate);
             return true;
         }
         false
@@ -4519,12 +4657,13 @@ struct NodeState<V> {
     next_attempt: u64,
     next_stamp: u64,
     attempts: VecDeque<Attempt<V>>,
-    /// The stamp already proven against this exact immutable revision.
+    /// The exact terminal revision and stamp already proven against this
+    /// immutable request revision.
     ///
     /// This is a verification skip only. The matching terminal must still be
     /// retained, and the first visit in every revision continues to validate
     /// direct inputs and the complete dependency cone authoritatively.
-    validated_at: Option<(Revision, u64, bool)>,
+    validated_at: Option<ValidationCertificate>,
 }
 
 #[derive(Debug)]
@@ -5128,9 +5267,23 @@ where
                     self.core.interpose(InterposeSite::ReuseDiscovered);
                 }
                 let terminal = pin.terminal().clone();
+                let endorsement_authority = if self.inner.evaluator.is_some() {
+                    task.validation_endorsement_authority_for_terminal(&terminal)
+                } else {
+                    ValidationEndorsementAuthority::Inactive
+                };
                 let endorsement_enabled =
-                    self.inner.evaluator.is_some() && task.validation_endorsements_active();
-                let endorsement_hit = endorsement_enabled && task.validation_endorsed(&terminal);
+                    endorsement_authority != ValidationEndorsementAuthority::Inactive;
+                // Only a task-local endorsement proves this candidate's own
+                // inputs and dependency edges current. Published fallbacks
+                // supply retention authority for current dependency
+                // certificates while the ordinary root validation still
+                // checks those direct observations.
+                let endorsement_hit =
+                    endorsement_authority == ValidationEndorsementAuthority::TaskLocal;
+                if endorsement_hit {
+                    task.record_validation_endorsement_hit();
+                }
                 let mut validation = if endorsement_hit {
                     Ok((true, true, false))
                 } else {
@@ -5162,7 +5315,14 @@ where
                             // from discovery through the lifetime of the request.
                             task.observe(&terminal);
                         }
-                        if observe_result || endorse {
+                        // Even a valid traversal conservatively tainted by an
+                        // unregistered descendant can be a dependency of a
+                        // promotable registered root. Keep this exact candidate
+                        // available to the final cone walk while the scope is
+                        // active, without endorsing it or disabling ordinary
+                        // green reuse for mixed cones. Promotion still fails
+                        // closed if the unregistered edge itself is absent.
+                        if observe_result || endorsement_enabled {
                             self.lease_observed_pin(&task, pin);
                         } else {
                             task.defer_pin_release(pin);
@@ -5253,11 +5413,45 @@ where
                             // that protection into the request lease (or drop it,
                             // leaving an unobserved validation join speculative).
                             let terminal = pin.terminal().clone();
+                            let mut endorse_join = false;
+                            if observe_result && !lock(&task.validation_endorsements).is_empty() {
+                                // The owner's dependency leases remain in the
+                                // owner's task. A waiter that will promote this
+                                // joined root must therefore validate it in its
+                                // own registered scope, reacquiring the exact
+                                // descendant cone before the root becomes
+                                // observable here.
+                                let mut validation = self.core.valid_for_revision(&terminal, &task);
+                                if matches!(validation, Ok((true, false, true))) {
+                                    validation = self.core.valid_for_revision(&terminal, &task);
+                                }
+                                match validation {
+                                    Ok((true, registered_only, _)) => {
+                                        endorse_join = registered_only;
+                                    }
+                                    Ok((false, _, _)) => {
+                                        task.defer_pin_release(pin);
+                                        continue;
+                                    }
+                                    Err(abort) => {
+                                        task.defer_pin_release(pin);
+                                        return TaskQueryResult::Aborted {
+                                            abort,
+                                            dependencies: Vec::new(),
+                                            inputs: Vec::new(),
+                                            work: Vec::new(),
+                                        };
+                                    }
+                                }
+                            }
                             if observe_result && !task.observe_handoff(handoffs) {
                                 self.detach_terminal_attempt(node, joined_attempt);
                                 continue;
                             }
                             if observe_result {
+                                if endorse_join {
+                                    task.endorse_validation(&terminal);
+                                }
                                 task.observe(&terminal);
                                 self.lease_observed_pin(&task, pin);
                             }
@@ -5659,7 +5853,12 @@ where
         // dependency cone was reached exclusively through registered family
         // evaluators. A later authoritative validation may strengthen this
         // conservative bit for the separate retained-cone endorsement API.
-        state.validated_at = Some((revision, stamp, false));
+        state.validated_at = Some(ValidationCertificate {
+            revision,
+            stamp,
+            terminal_revision: revision,
+            registered_only: false,
+        });
         // Acquire the request lease *under the node lock*, before the terminal is
         // enqueued for retention or made reachable to a concurrent enforcer. The
         // pin's `pins > 0` is thus established atomically with publication: there
@@ -5975,7 +6174,12 @@ where
                     handoffs: AttemptHandoffLifecycle::shared_committed(),
                 },
             });
-            state.validated_at = Some((revision, held.stamp, true));
+            state.validated_at = Some(ValidationCertificate {
+                revision,
+                stamp: held.stamp,
+                terminal_revision: revision,
+                registered_only: true,
+            });
             // Pin UNDER the node lock, before the endorsement is enqueued or
             // reachable to a concurrent enforcer: `pins > 0` is established
             // atomically with insertion, so retention pressure (including the
@@ -6023,11 +6227,13 @@ where
     /// automatically. The lease releases — leaving no permanent retention — when
     /// the task drops.
     ///
-    /// If the task has already leased this exact terminal (same node incarnation
-    /// and stamp), the redundant `pin` is dropped here rather than double-held.
-    /// Only terminals observed on behalf of the rooted request are leased;
-    /// terminals computed purely to validate a dependency (`observe_result ==
-    /// false`) are speculative and their pins are dropped by the caller.
+    /// If the task has already leased this exact terminal (same node
+    /// incarnation, stamp, and terminal revision), the redundant `pin` is
+    /// dropped here rather than double-held. Ordinary validation-only terminals
+    /// remain speculative and are dropped by the caller. A live registered
+    /// endorsement scope also leases a valid validation-only candidate so final
+    /// cone promotion can select the exact proof path; unrelated pins remain
+    /// task-scoped and are excluded from the promoted graph walk.
     fn lease_observed_pin(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) {
         task.validation_work
             .terminal_lease_observations
@@ -6393,7 +6599,31 @@ impl QueryContext {
     /// direct dependency observation, handoffs, work, and request-ledger
     /// classification; only repeated recursive validation is skipped.
     pub fn endorse_registered_validations(&self) -> ValidationEndorsementGuard {
-        self.task.push_validation_endorsement_scope()
+        self.task
+            .push_validation_endorsement_scope(&[])
+            .expect("an empty validation authority cannot name a foreign runtime")
+    }
+
+    /// Enables registered-proof reuse backed by live published pin sets.
+    ///
+    /// A current revision certificate may skip recursive validation when this
+    /// task has already endorsed its exact terminal identity or one of
+    /// `fallbacks` retains the same node incarnation and semantic stamp. Query
+    /// dependency edges use that same identity: final promotion selects the
+    /// retained representative and walks its own complete cone, failing closed
+    /// if any edge is absent. Borrowed authority never bypasses validation of a
+    /// requested root itself. The returned guard owns the fallback Arcs for the
+    /// complete lexical scope, so borrowed authority cannot outlive its pins.
+    /// Empty sets are accepted; a set containing any foreign-runtime pin fails
+    /// closed before the scope becomes active. Nested scopes form one safe
+    /// authority union: a fallback first introduced by an inner scope remains
+    /// pinned and usable until the oldest enclosing endorsement guard drops,
+    /// because endorsements proven inside that scope are promoted outward too.
+    pub fn endorse_registered_validations_from(
+        &self,
+        fallbacks: &[Arc<RetainedPinSet>],
+    ) -> Result<ValidationEndorsementGuard, RetainTerminalConeError> {
+        self.task.push_validation_endorsement_scope(fallbacks)
     }
 
     /// Requests a dependency in the same task and pinned revision.
@@ -6674,9 +6904,12 @@ impl QueryContext {
     /// Retain the union of exact current-task terminal cones, filling
     /// validation leaves omitted by green reuse from prioritized published
     /// snapshots. Every root must be observed by this task; fallback snapshots
-    /// may satisfy only dependency edges. Current observations always override
-    /// fallbacks, and within one source an edge selects the greatest terminal
-    /// revision with the requested incarnation and stamp.
+    /// may satisfy only dependency edges. Promotion uses both the explicitly
+    /// supplied snapshots and every fallback promoted into the active lexical
+    /// validation scope, so a descendant skipped under borrowed authority keeps
+    /// the same backing pins available here. Current observations always
+    /// override fallbacks, and within one source an edge selects the greatest
+    /// terminal revision with the requested incarnation and stamp.
     ///
     /// The hash-indexed lease universe is built once and exact identities are
     /// hash-deduplicated while the union is walked once. Promotion is therefore
@@ -6690,15 +6923,25 @@ impl QueryContext {
     where
         V: Clone + Send + Sync + 'static,
     {
-        if lock(&self.task.validation_endorsements).is_empty() {
-            return Err(RetainTerminalConeError::NoRegisteredValidationScope);
-        }
-        if fallbacks.iter().any(|fallback| {
-            fallback
-                .held
+        let mut promotion_fallbacks = {
+            let scopes = lock(&self.task.validation_endorsements);
+            let Some(scope) = scopes.first() else {
+                return Err(RetainTerminalConeError::NoRegisteredValidationScope);
+            };
+            scope.fallbacks.clone()
+        };
+        for fallback in fallbacks {
+            if !promotion_fallbacks
                 .iter()
-                .any(|lease| lease.runtime_identity() != self.task.core.identity)
-        }) {
+                .any(|retained| Arc::ptr_eq(retained, fallback))
+            {
+                promotion_fallbacks.push(fallback.clone());
+            }
+        }
+        if promotion_fallbacks
+            .iter()
+            .any(|fallback| !fallback.belongs_to_runtime(self.task.core.identity))
+        {
             return Err(RetainTerminalConeError::ForeignRuntime);
         }
         let leases = lock(&self.task.leases);
@@ -6714,7 +6957,7 @@ impl QueryContext {
                 *selected_for_stamp = lease.as_ref();
             }
         }
-        for fallback in fallbacks {
+        for fallback in &promotion_fallbacks {
             let mut fallback_selected = HashMap::with_capacity(fallback.held.len());
             for lease in &fallback.held {
                 let identity = lease.identity();
@@ -6775,6 +7018,23 @@ fn retain_task_observations(task: &Task) -> RetainedPinSet {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct TaskId(u64);
 
+#[derive(Debug, Default)]
+struct ValidationEndorsementScope {
+    identities: BTreeSet<(u64, u64, Revision)>,
+    /// Published pin sets borrowed as retention authority for this lexical
+    /// scope. Holding the Arcs here keeps every indexed identity pinned until
+    /// the enclosing guard drops.
+    fallbacks: Vec<Arc<RetainedPinSet>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidationEndorsementAuthority {
+    Inactive,
+    Missing,
+    TaskLocal,
+    Borrowed,
+}
+
 #[derive(Debug)]
 struct Task {
     id: TaskId,
@@ -6798,10 +7058,11 @@ struct Task {
     nested_attempt_filters: Mutex<Vec<Arc<[Arc<str>]>>>,
     /// Lexical task-local registered-validation endorsements. An exact
     /// terminal identity is inserted into every active scope only after a
-    /// complete registered-only validation traversal. Consequently the oldest
-    /// active scope is the canonical union of all live endorsements: later
-    /// scopes may start empty, but every subsequent insertion reaches it.
-    validation_endorsements: Mutex<Vec<BTreeSet<(u64, u64, Revision)>>>,
+    /// complete registered-only validation traversal. Published fallback pin
+    /// sets may also supply borrowed authority; every scope retains their Arcs
+    /// so an indexed identity can never outlive its pin. Consequently the
+    /// oldest active scope is the canonical union of all live authority.
+    validation_endorsements: Mutex<Vec<ValidationEndorsementScope>>,
     /// Active recursive validation certificates. Encountering an unregistered
     /// node taints every enclosing traversal.
     validation_proofs: Mutex<Vec<Arc<AtomicU8>>>,
@@ -6928,7 +7189,7 @@ pub struct NestedAttemptFilterGuard {
 }
 
 /// Unwind-safe lexical scope for task-local registered validation proofs.
-#[must_use = "dropping the guard immediately clears this scope's validation endorsements"]
+#[must_use = "dropping the guard restores the preceding validation-authority scope"]
 pub struct ValidationEndorsementGuard {
     task: Arc<Task>,
     scope: usize,
@@ -7098,6 +7359,14 @@ pub struct RetainedPinSet {
     /// leased here, mirroring [`TaskLeases::observed`] so a redundant re-lease is
     /// dropped rather than double-held.
     observed: HashSet<(u64, u64, Revision)>,
+    /// Node-incarnation/stamp identities retained by at least one exact
+    /// terminal revision in this set. Query dependency edges use this same
+    /// semantic identity, so any complete retained cone carrying the stamp can
+    /// supply its representative terminal during final promotion.
+    stamp_identities: HashSet<(u64, u64)>,
+    /// Runtime identities represented by held pins. This makes same-runtime
+    /// authority checks proportional to the number of fallback sets, not pins.
+    runtime_identities: HashSet<u64>,
     /// Live pins, type-erased across families. Dropping the set drops these
     /// through the batched two-phase release.
     held: Vec<Box<dyn ObservedLease>>,
@@ -7108,6 +7377,8 @@ impl fmt::Debug for RetainedPinSet {
         formatter
             .debug_struct("RetainedPinSet")
             .field("observed", &self.observed.len())
+            .field("stamp_identities", &self.stamp_identities.len())
+            .field("runtime_identities", &self.runtime_identities)
             .field("held", &self.held.len())
             .finish()
     }
@@ -7148,6 +7419,8 @@ impl RetainedPinSet {
             pin.terminal.revision,
         );
         if self.observed.insert(identity) {
+            self.stamp_identities.insert((identity.0, identity.1));
+            self.runtime_identities.insert(pin.family.core.identity);
             pin.family.core.metrics.retained_pin_acquired();
             self.held.push(Box::new(pin));
             true
@@ -7157,13 +7430,26 @@ impl RetainedPinSet {
     }
 
     fn lease_erased(&mut self, lease: Box<dyn ObservedLease>) -> bool {
-        if self.observed.insert(lease.identity()) {
+        let identity = lease.identity();
+        if self.observed.insert(identity) {
+            self.stamp_identities.insert((identity.0, identity.1));
+            self.runtime_identities.insert(lease.runtime_identity());
             lease.metrics().retained_pin_acquired();
             self.held.push(lease);
             true
         } else {
             false
         }
+    }
+
+    fn retains_stamp(&self, incarnation: u64, stamp: u64) -> bool {
+        self.stamp_identities.contains(&(incarnation, stamp))
+    }
+
+    fn belongs_to_runtime(&self, runtime_identity: u64) -> bool {
+        self.runtime_identities.is_empty()
+            || (self.runtime_identities.len() == 1
+                && self.runtime_identities.contains(&runtime_identity))
     }
 }
 
@@ -7653,7 +7939,9 @@ impl Task {
 
     fn batch_child(self: &Arc<Self>, id: u64) -> Arc<Self> {
         let inherited_filter = lock(&self.nested_attempt_filters).last().cloned();
-        let inherits_registered_validation = !lock(&self.validation_endorsements).is_empty();
+        let inherited_validation_fallbacks = lock(&self.validation_endorsements)
+            .first()
+            .map(|scope| scope.fallbacks.clone());
         // These flags are intentionally shared: crossing an unregistered
         // evaluator in any structured descendant taints every enclosing
         // registered-only validation walk.
@@ -7677,11 +7965,15 @@ impl Task {
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(inherited_filter.into_iter().collect()),
             // A batch child is a structured descendant of the lexical proof
-            // scope, but starts with no endorsements: it must validate and pin
-            // its own complete cone before the parent can absorb either.
+            // scope. It starts with no task-local endorsements, but keeps the
+            // same borrowed published authority live while it validates its
+            // own selected cone.
             validation_endorsements: Mutex::new(
-                inherits_registered_validation
-                    .then(BTreeSet::new)
+                inherited_validation_fallbacks
+                    .map(|fallbacks| ValidationEndorsementScope {
+                        identities: BTreeSet::new(),
+                        fallbacks,
+                    })
                     .into_iter()
                     .collect(),
             ),
@@ -7717,7 +8009,18 @@ impl Task {
         let child_endorsements = std::mem::take(&mut *lock(&child.validation_endorsements));
         if let Some(child_endorsements) = child_endorsements.last() {
             for scope in lock(&self.validation_endorsements).iter_mut() {
-                scope.extend(child_endorsements.iter().copied());
+                scope
+                    .identities
+                    .extend(child_endorsements.identities.iter().copied());
+                for fallback in &child_endorsements.fallbacks {
+                    if !scope
+                        .fallbacks
+                        .iter()
+                        .any(|retained| Arc::ptr_eq(retained, fallback))
+                    {
+                        scope.fallbacks.push(fallback.clone());
+                    }
+                }
             }
         }
 
@@ -7776,21 +8079,107 @@ impl Task {
             })
     }
 
-    fn push_validation_endorsement_scope(self: &Arc<Self>) -> ValidationEndorsementGuard {
+    fn push_validation_endorsement_scope(
+        self: &Arc<Self>,
+        fallbacks: &[Arc<RetainedPinSet>],
+    ) -> Result<ValidationEndorsementGuard, RetainTerminalConeError> {
+        if fallbacks
+            .iter()
+            .any(|fallback| !fallback.belongs_to_runtime(self.core.identity))
+        {
+            return Err(RetainTerminalConeError::ForeignRuntime);
+        }
         let mut scopes = lock(&self.validation_endorsements);
         let scope = scopes.len();
-        scopes.push(BTreeSet::new());
-        ValidationEndorsementGuard {
+        let mut retained_fallbacks = scopes
+            .first()
+            .map(|scope| scope.fallbacks.clone())
+            .unwrap_or_default();
+        for fallback in fallbacks {
+            if !retained_fallbacks
+                .iter()
+                .any(|retained| Arc::ptr_eq(retained, fallback))
+            {
+                retained_fallbacks.push(fallback.clone());
+            }
+        }
+        // A fallback introduced by a nested scope remains live until the
+        // oldest enclosing scope drops. Endorsements proven while nested are
+        // inserted into every scope, so their borrowed authority must have the
+        // same enclosing lifetime.
+        for active in &mut *scopes {
+            for fallback in &retained_fallbacks {
+                if !active
+                    .fallbacks
+                    .iter()
+                    .any(|retained| Arc::ptr_eq(retained, fallback))
+                {
+                    active.fallbacks.push(fallback.clone());
+                }
+            }
+        }
+        scopes.push(ValidationEndorsementScope {
+            identities: BTreeSet::new(),
+            fallbacks: retained_fallbacks,
+        });
+        Ok(ValidationEndorsementGuard {
             task: self.clone(),
             scope,
             not_send_or_sync: PhantomData,
-        }
+        })
     }
 
-    fn validation_endorsements_active(&self) -> bool {
-        !lock(&self.validation_endorsements).is_empty()
+    fn validation_endorsement_authority_for_terminal<V>(
+        &self,
+        terminal: &QueryTerminal<V>,
+    ) -> ValidationEndorsementAuthority {
+        self.validation_endorsement_authority_at(
+            terminal.node_incarnation,
+            terminal.stamp,
+            terminal.revision,
+        )
     }
 
+    fn validation_endorsement_authority_at(
+        &self,
+        incarnation: u64,
+        stamp: u64,
+        exact_revision: Revision,
+    ) -> ValidationEndorsementAuthority {
+        let scopes = lock(&self.validation_endorsements);
+        let Some(scope) = scopes.first() else {
+            return ValidationEndorsementAuthority::Inactive;
+        };
+        self.validation_work
+            .endorsement_probes
+            .fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        self.validation_endorsement_index_probes
+            .fetch_add(1, Ordering::Relaxed);
+        let task_local = scope
+            .identities
+            .contains(&(incarnation, stamp, exact_revision));
+        let authority = if task_local {
+            ValidationEndorsementAuthority::TaskLocal
+        } else if scope
+            .fallbacks
+            .iter()
+            .any(|fallback| fallback.retains_stamp(incarnation, stamp))
+        {
+            ValidationEndorsementAuthority::Borrowed
+        } else {
+            ValidationEndorsementAuthority::Missing
+        };
+        authority
+    }
+
+    fn record_validation_endorsement_hit(&self) {
+        self.validation_work
+            .endorsement_hits
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
     fn validation_endorsed_identity(&self, incarnation: u64, stamp: u64) -> bool {
         let scopes = lock(&self.validation_endorsements);
         let Some(scope) = scopes.first() else {
@@ -7799,49 +8188,28 @@ impl Task {
         self.validation_work
             .endorsement_probes
             .fetch_add(1, Ordering::Relaxed);
-        #[cfg(test)]
         self.validation_endorsement_index_probes
             .fetch_add(1, Ordering::Relaxed);
-        let hit = scope
+        scope
+            .identities
             .range(
                 (incarnation, stamp, Revision::new(0, 0))
                     ..=(incarnation, stamp, Revision::new(u64::MAX, u64::MAX)),
             )
             .next()
-            .is_some();
-        if hit {
-            self.validation_work
-                .endorsement_hits
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        hit
+            .is_some()
     }
 
+    #[cfg(test)]
     fn validation_endorsed<V>(&self, terminal: &QueryTerminal<V>) -> bool {
-        let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
-        let scopes = lock(&self.validation_endorsements);
-        let Some(scope) = scopes.first() else {
-            return false;
-        };
-        self.validation_work
-            .endorsement_probes
-            .fetch_add(1, Ordering::Relaxed);
-        #[cfg(test)]
-        self.validation_endorsement_index_probes
-            .fetch_add(1, Ordering::Relaxed);
-        let hit = scope.contains(&identity);
-        if hit {
-            self.validation_work
-                .endorsement_hits
-                .fetch_add(1, Ordering::Relaxed);
-        }
-        hit
+        self.validation_endorsement_authority_for_terminal(terminal)
+            == ValidationEndorsementAuthority::TaskLocal
     }
 
     fn endorse_validation<V>(&self, terminal: &QueryTerminal<V>) {
         let identity = (terminal.node_incarnation, terminal.stamp, terminal.revision);
         for scope in lock(&self.validation_endorsements).iter_mut() {
-            scope.insert(identity);
+            scope.identities.insert(identity);
         }
     }
 
@@ -8542,7 +8910,12 @@ impl RuntimeCore {
             .registry_probes
             .fetch_add(1, Ordering::Relaxed);
         if let Some(node) = self.registered_node(terminal.node_incarnation) {
-            if node.mark_validated(revision, terminal.stamp, registered_only) {
+            if node.mark_validated(ValidationCertificate {
+                revision,
+                stamp: terminal.stamp,
+                terminal_revision: terminal.revision,
+                registered_only,
+            }) {
                 task.validation_work
                     .certificates_published
                     .fetch_add(1, Ordering::Relaxed);
@@ -12799,6 +13172,411 @@ mod tests {
         assert_eq!(validation.proof_reacquisition_misses, 2);
         assert_eq!(validation.memo_misses, 2);
         assert_eq!(validation.demand_reuses, 2);
+
+        let top_terminal = runtime
+            .request_registered(&top, second, Key("top"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let middle_terminal = runtime
+            .request_registered(&middle, second, Key("middle"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let leaf_terminal = runtime
+            .request_registered(&leaf, second, Key("leaf"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let mut retained = RetainedPinSet::new();
+        retained.lease(top.pin_terminal(&top_terminal).unwrap());
+        retained.lease(middle.pin_terminal(&middle_terminal).unwrap());
+        retained.lease(leaf.pin_terminal(&leaf_terminal).unwrap());
+        let retained = Arc::new(retained);
+
+        let before = runtime.metrics().validation;
+        let borrowed_root = runtime
+            .family::<Key, u64>("proof-reacquisition-borrowed-root", 1)
+            .unwrap();
+        let top_for_borrowed_root = top.clone();
+        let retained_for_root = retained.clone();
+        runtime
+            .request(
+                &borrowed_root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let baseline_refs = Arc::strong_count(&retained_for_root);
+                    {
+                        let _proof = context
+                            .endorse_registered_validations_from(std::slice::from_ref(
+                                &retained_for_root,
+                            ))
+                            .unwrap();
+                        assert_eq!(Arc::strong_count(&retained_for_root), baseline_refs + 1);
+                        context.query_registered_batch(&top_for_borrowed_root, [Key("top")])?;
+                    }
+                    assert_eq!(Arc::strong_count(&retained_for_root), baseline_refs);
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .into_result()
+            .unwrap();
+
+        let borrowed = runtime.metrics().validation.saturating_sub(before);
+        assert_validation_work_consistent(borrowed);
+        assert_eq!(borrowed.certificate_misses, 0);
+        assert_eq!(borrowed.proof_reacquisition_misses, 0);
+        assert_eq!(borrowed.memo_misses, 0);
+        assert_eq!(borrowed.demands, 0);
+        assert_eq!(borrowed.node_visits, 1);
+        assert_eq!(borrowed.memo_hits, 1);
+        assert_eq!(borrowed.endorsement_probes, 2);
+        assert_eq!(borrowed.endorsement_hits, 1);
+    }
+
+    #[test]
+    fn borrowed_validation_authority_does_not_endorse_a_stale_root() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 1);
+        let second = Revision::new(2, 1);
+        let input = InputIdentity::new("source", "borrowed-stale-root");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 2)])
+            .unwrap();
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs_for_evaluator = runs.clone();
+        let input_for_evaluator = input.clone();
+        let value = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "borrowed-stale-root-value",
+                8,
+                move |context, _, _| {
+                    runs_for_evaluator.fetch_add(1, Ordering::Relaxed);
+                    Ok(QueryOutput::success(
+                        context.input(input_for_evaluator.clone())?,
+                    ))
+                },
+            )
+            .unwrap();
+        let first_terminal = runtime
+            .request_registered(&value, first, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let mut retained = RetainedPinSet::new();
+        retained.lease(value.pin_terminal(&first_terminal).unwrap());
+        let retained = Arc::new(retained);
+
+        let root = runtime
+            .family::<Key, u64>("borrowed-stale-root-request", 1)
+            .unwrap();
+        let value_for_root = value.clone();
+        let retained_for_root = retained.clone();
+        let result = runtime
+            .request(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context
+                        .endorse_registered_validations_from(std::slice::from_ref(
+                            &retained_for_root,
+                        ))
+                        .unwrap();
+                    let terminal = context.query_registered(&value_for_root, Key("value"))?;
+                    let QueryOutcome::Success(value) = terminal.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value))
+                },
+            )
+            .into_result()
+            .unwrap();
+
+        assert_eq!(result.outcome(), &QueryOutcome::Success(2));
+        assert_eq!(runs.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn task_local_root_authority_requires_the_exact_terminal_revision() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 1);
+        let second = Revision::new(2, 2);
+        publish_empty(&runtime, [first, second]);
+
+        let runs = Arc::new(AtomicUsize::new(0));
+        let runs_for_evaluator = runs.clone();
+        let value = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "task-local-exact-revision-value",
+                8,
+                move |_, _, _| {
+                    runs_for_evaluator.fetch_add(1, Ordering::Relaxed);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let first_terminal = runtime
+            .request_registered(&value, first, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let second_terminal = runtime
+            .request_registered(&value, second, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(first_terminal.stamp, second_terminal.stamp);
+        assert_ne!(first_terminal.revision, second_terminal.revision);
+
+        let root = runtime
+            .family::<Key, u64>("task-local-exact-revision-root", 1)
+            .unwrap();
+        let value_for_root = value.clone();
+        let first_terminal_for_root = first_terminal.clone();
+        let second_terminal_for_root = second_terminal.clone();
+        runtime
+            .request(
+                &root,
+                first,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context.endorse_registered_validations();
+                    context.task.endorse_validation(&first_terminal_for_root);
+                    assert_eq!(
+                        context.task.validation_endorsement_authority_for_terminal(
+                            &first_terminal_for_root,
+                        ),
+                        ValidationEndorsementAuthority::TaskLocal,
+                    );
+                    assert_eq!(
+                        context.task.validation_endorsement_authority_for_terminal(
+                            &second_terminal_for_root,
+                        ),
+                        ValidationEndorsementAuthority::Missing,
+                    );
+                    assert!(context.task.validation_endorsed_identity(
+                        first_terminal_for_root.node_incarnation,
+                        first_terminal_for_root.stamp,
+                    ));
+                    let selected = context.query_registered(&value_for_root, Key("value"))?;
+                    assert!(Arc::ptr_eq(&selected, &first_terminal_for_root));
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .into_result()
+            .unwrap();
+        assert_eq!(runs.load(Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn borrowed_validation_authority_accepts_an_equal_cone_across_revisions() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 1);
+        let second = Revision::new(2, 2);
+        publish_empty(&runtime, [first, second]);
+
+        let value = runtime
+            .family_with_evaluator::<Key, u64, _>("borrowed-equal-cone-value", 8, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let first_terminal = runtime
+            .request_registered(&value, first, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let second_terminal = runtime
+            .request_registered(&value, second, Key("value"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(first_terminal.stamp, second_terminal.stamp);
+        assert_ne!(first_terminal.revision, second_terminal.revision);
+
+        let mut retained = RetainedPinSet::new();
+        retained.lease(value.pin_terminal(&second_terminal).unwrap());
+        let retained = Arc::new(retained);
+        let root = runtime
+            .family::<Key, u64>("borrowed-equal-cone-root", 1)
+            .unwrap();
+        let retained_for_root = retained.clone();
+        let first_terminal_for_root = first_terminal.clone();
+        let second_terminal_for_root = second_terminal.clone();
+        runtime
+            .request(
+                &root,
+                first,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context
+                        .endorse_registered_validations_from(std::slice::from_ref(
+                            &retained_for_root,
+                        ))
+                        .unwrap();
+                    assert_eq!(
+                        context.task.validation_endorsement_authority_for_terminal(
+                            &first_terminal_for_root,
+                        ),
+                        ValidationEndorsementAuthority::Borrowed,
+                    );
+                    assert_eq!(
+                        context.task.validation_endorsement_authority_for_terminal(
+                            &second_terminal_for_root,
+                        ),
+                        ValidationEndorsementAuthority::Borrowed,
+                    );
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .into_result()
+            .unwrap();
+    }
+
+    #[test]
+    fn same_stamp_fallback_supplies_its_complete_alternate_cone() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 1);
+        let second = Revision::new(2, 1);
+        let selector = InputIdentity::new("source", "exact-fallback-cone");
+        runtime
+            .publish_revision(first, [(selector.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(selector.clone(), 2)])
+            .unwrap();
+
+        let left = runtime
+            .family_with_evaluator::<Key, u64, _>("exact-fallback-left", 4, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let right = runtime
+            .family_with_evaluator::<Key, u64, _>("exact-fallback-right", 4, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let selector_for_leaf = selector.clone();
+        let left_for_leaf = left.clone();
+        let right_for_leaf = right.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("exact-fallback-leaf", 4, move |context, _, _| {
+                if context.input(selector_for_leaf.clone())? == 1 {
+                    context.query_registered(&left_for_leaf, Key("left"))?;
+                } else {
+                    context.query_registered(&right_for_leaf, Key("right"))?;
+                }
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let leaf_for_parent = leaf.clone();
+        let parent = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "exact-fallback-parent",
+                4,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_parent, Key("leaf"))?;
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let parent_first = runtime
+            .request_registered(&parent, first, Key("parent"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let leaf_first = runtime
+            .request_registered(&leaf, first, Key("leaf"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let left_first = runtime
+            .request_registered(&left, first, Key("left"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let leaf_second = runtime
+            .request_registered(&leaf, second, Key("leaf"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let right_second = runtime
+            .request_registered(&right, second, Key("right"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        assert_eq!(leaf_first.stamp, leaf_second.stamp);
+        assert_ne!(leaf_first.revision, leaf_second.revision);
+        assert_ne!(leaf_first.dependencies(), leaf_second.dependencies());
+
+        let mut fallback = RetainedPinSet::new();
+        fallback.lease(leaf.pin_terminal(&leaf_second).unwrap());
+        fallback.lease(right.pin_terminal(&right_second).unwrap());
+        let fallback = Arc::new(fallback);
+
+        // The current certificate deliberately names the first terminal. The
+        // fallback holds an equal-stamp terminal for the same node, but with a
+        // different complete dependency cone at the second revision. Query
+        // edges name the shared node/stamp, so promotion may safely retain the
+        // fallback representative and must walk that representative's edges.
+        let leaf_node = leaf.node(Key("leaf")).unwrap();
+        assert!(leaf_node.node.mark_validated(ValidationCertificate {
+            revision: first,
+            stamp: leaf_first.stamp,
+            terminal_revision: leaf_first.revision,
+            registered_only: true,
+        }));
+        drop(leaf_node);
+
+        let root = runtime
+            .family::<Key, u64>("exact-fallback-cone-root", 1)
+            .unwrap();
+        let parent_for_root = parent.clone();
+        let fallback_for_root = fallback.clone();
+        let parent_first_for_root = parent_first.clone();
+        let leaf_first_for_root = leaf_first.clone();
+        let leaf_second_for_root = leaf_second.clone();
+        let left_first_for_root = left_first.clone();
+        let right_second_for_root = right_second.clone();
+        runtime
+            .request(
+                &root,
+                first,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context
+                        .endorse_registered_validations_from(std::slice::from_ref(
+                            &fallback_for_root,
+                        ))
+                        .unwrap();
+                    let selected = context.query_registered(&parent_for_root, Key("parent"))?;
+                    assert!(Arc::ptr_eq(&selected, &parent_first_for_root));
+                    let retained = context
+                        .retain_observed_terminal_cone(&selected)
+                        .expect("the complete equal-stamp fallback cone is retained");
+                    assert!(!retained.observed.contains(&(
+                        leaf_first_for_root.node_incarnation,
+                        leaf_first_for_root.stamp,
+                        leaf_first_for_root.revision,
+                    )));
+                    assert!(!retained.observed.contains(&(
+                        left_first_for_root.node_incarnation,
+                        left_first_for_root.stamp,
+                        left_first_for_root.revision,
+                    )));
+                    assert!(retained.observed.contains(&(
+                        leaf_second_for_root.node_incarnation,
+                        leaf_second_for_root.stamp,
+                        leaf_second_for_root.revision,
+                    )));
+                    assert!(retained.observed.contains(&(
+                        right_second_for_root.node_incarnation,
+                        right_second_for_root.stamp,
+                        right_second_for_root.revision,
+                    )));
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .into_result()
+            .unwrap();
     }
 
     #[test]
@@ -13500,15 +14278,15 @@ mod tests {
             CancellationToken::new(),
             move |context| {
                 let outer = context.endorse_registered_validations();
-                lock(&context.task.validation_endorsements)[0].extend((0..ENDORSEMENTS).map(
-                    |identity| {
+                lock(&context.task.validation_endorsements)[0]
+                    .identities
+                    .extend((0..ENDORSEMENTS).map(|identity| {
                         (
                             identity,
                             identity.wrapping_mul(17),
                             Revision::new(identity, identity.rotate_left(7)),
                         )
-                    },
-                ));
+                    }));
                 let inner = context.endorse_registered_validations();
 
                 assert!(context.task.validation_endorsed_identity(
@@ -13894,6 +14672,79 @@ mod tests {
         });
         runtime.wait_for_metrics(|metrics| metrics.joins >= 1);
         barrier.wait();
+        assert_eq!(
+            owner.join().unwrap().execution(),
+            RequestExecution::Computed
+        );
+        assert_eq!(
+            waiter.join().unwrap().execution(),
+            RequestExecution::Computed
+        );
+    }
+
+    #[test]
+    fn observed_join_reacquires_registered_cone_before_promotion() {
+        let runtime = QueryRuntime::new(2);
+        let current = revision(1);
+        publish_empty(&runtime, [current]);
+
+        let child = runtime
+            .family_with_evaluator::<Key, u64, _>("observed-join-cone-child", 2, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let barrier_for_parent = barrier.clone();
+        let child_for_parent = child.clone();
+        let parent = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "observed-join-cone-parent",
+                2,
+                move |context, _, _| {
+                    context.query_registered(&child_for_parent, Key("child"))?;
+                    barrier_for_parent.wait();
+                    barrier_for_parent.wait();
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+
+        let owner_runtime = runtime.clone();
+        let owner_parent = parent.clone();
+        let owner = thread::spawn(move || {
+            owner_runtime.request_registered(
+                &owner_parent,
+                current,
+                Key("parent"),
+                CancellationToken::new(),
+            )
+        });
+        barrier.wait();
+
+        let root = runtime
+            .family::<Key, u64>("observed-join-cone-root", 2)
+            .unwrap();
+        let waiter_runtime = runtime.clone();
+        let waiter_parent = parent.clone();
+        let waiter = thread::spawn(move || {
+            waiter_runtime.request(
+                &root,
+                current,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _endorsements = context.endorse_registered_validations();
+                    let parent = context.query_registered(&waiter_parent, Key("parent"))?;
+                    context
+                        .retain_observed_terminal_cone(&parent)
+                        .expect("an observed join reacquires its owner's descendant cone");
+                    Ok(QueryOutput::success(0))
+                },
+            )
+        });
+        runtime.wait_for_metrics(|metrics| metrics.joins >= 1);
+        barrier.wait();
+
         assert_eq!(
             owner.join().unwrap().execution(),
             RequestExecution::Computed

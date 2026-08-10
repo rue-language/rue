@@ -333,7 +333,7 @@ fn elapsed_ms(duration: Duration) -> u128 {
 
 fn validation_summary(work: QueryValidationMetrics) -> String {
     format!(
-        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle (misses {}/{} certificate/proof-reacquisition), registry {}/{}, demands {}/{}/{}/{}/{}, endorsements {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
+        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle (misses {}/{} certificate/proof-reacquisition), registry {}/{}, demands {}/{}/{}/{}/{}, endorsement skips/probes {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
         work.traversals,
         work.successful_traversals,
         work.dirty_traversals,
