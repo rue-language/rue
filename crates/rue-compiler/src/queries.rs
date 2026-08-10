@@ -263,9 +263,27 @@ pub(crate) fn collect_function_cfg_queries(
     // over aggregate fields, so join completed pool entries back to their
     // durable nominal identities before projecting a current body.
     let mut stable_aggregate_types = stable_aggregate_types;
+    // RUE-1114: this loop holds the COMPLETE reached anonymous set, the only
+    // boundary in the compiler that can rank a verified digest collision under a
+    // total order instead of by arrival. The plan is empty — and every spelling
+    // byte-identical to the bare digest — unless two DISTINCT producer-nominal
+    // identities share one digest. Both semantic engines still fail closed on
+    // such a collision before CFG construction runs (their
+    // `guard_anonymous_digest_collision`, and
+    // `BodyClosureFatal::AnonymousDigestCollision` at the reached-artifact
+    // boundary), so this ranks nothing today: it is the naming half of
+    // continuation, waiting on mints that defer their spelling to a complete set.
+    let anonymous_symbol_plan = crate::semantic_identity::AnonymousSymbolPlan::for_reached_set(
+        durable_anonymous_nominals
+            .iter()
+            .map(|nominal| &nominal.identity),
+    );
     let mut stable_types_by_symbol = std::collections::BTreeMap::new();
     for nominal in durable_anonymous_nominals {
-        let symbol = crate::semantic_identity::anonymous_nominal_source_symbol(&nominal.identity);
+        let symbol = crate::semantic_identity::anonymous_nominal_source_symbol_in(
+            &anonymous_symbol_plan,
+            &nominal.identity,
+        );
         let stable = crate::TypeInstanceKey::Nominal(crate::NominalInstanceKey::Anonymous(
             nominal.identity.clone(),
         ));

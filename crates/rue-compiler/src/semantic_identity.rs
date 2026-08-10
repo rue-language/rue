@@ -55,9 +55,17 @@ impl StableSymbolEncoder {
     }
 }
 
-pub(crate) fn anonymous_nominal_digest(identity: &AnonymousNominalKey) -> u128 {
-    let identity = identity.with_canonical_producer();
-    let relocated: rue_air::AnonymousNominalKey<String, String> = identity
+/// Relocate a compiler anonymous key to the request-independent stable content
+/// both the digest and the RUE-1114 collision total order are computed over.
+///
+/// This is the ONE relocation: a caller that ordered compiler keys directly
+/// would be ordering `StableDefinitionKey`s, which is not the same total order
+/// the semantic engines can reproduce from durable state alone.
+fn relocate_anonymous_identity(
+    identity: &AnonymousNominalKey,
+) -> rue_air::AnonymousNominalKey<String, String> {
+    identity
+        .with_canonical_producer()
         .as_ref()
         .try_map_identities::<String, String, std::convert::Infallible>(
             &|definition| {
@@ -74,23 +82,151 @@ pub(crate) fn anonymous_nominal_digest(identity: &AnonymousNominalKey) -> u128 {
                 ))
             },
         )
-        .expect("compiler anonymous identity relocation to stable content is infallible");
-    rue_air::stable_digest::stable_anonymous_identity_digest(&relocated)
+        .expect("compiler anonymous identity relocation to stable content is infallible")
+}
+
+pub(crate) fn anonymous_nominal_digest(identity: &AnonymousNominalKey) -> u128 {
+    rue_air::stable_digest::stable_anonymous_identity_digest(&relocate_anonymous_identity(identity))
+}
+
+/// The deterministic spelling decision for one COMPLETE reached set of
+/// anonymous nominals (RUE-1114).
+///
+/// A digest owned by a single producer-nominal identity is absent from the plan
+/// and keeps its bare spelling, so a collision-free program — every program
+/// today — produces byte-identical symbols to the pre-plan compiler. A digest
+/// verified to be shared by distinct identities ranks each member under the
+/// stable-content total order, and every member is spelled with its explicit
+/// ordinal.
+///
+/// The plan is a pure function of the reached SET: it is built by folding into
+/// ordered maps before any ordinal exists, so discovery order, scheduling, and
+/// cold/warm reuse cannot move a member. Two consumers that hold the same
+/// reached set therefore agree without threading the plan between them.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct AnonymousSymbolPlan {
+    ordinals: std::collections::BTreeMap<AnonymousNominalKey, u32>,
+}
+
+impl AnonymousSymbolPlan {
+    /// The plan of a reached set with no verified digest collision. Every
+    /// spelling through it is the bare digest.
+    pub(crate) const EMPTY: Self = Self {
+        ordinals: std::collections::BTreeMap::new(),
+    };
+
+    pub(crate) fn for_reached_set<'a>(
+        identities: impl IntoIterator<Item = &'a AnonymousNominalKey>,
+    ) -> Self {
+        Self::from_digested(identities.into_iter().map(|identity| {
+            let stable = relocate_anonymous_identity(identity);
+            let digest = rue_air::stable_digest::stable_anonymous_identity_digest(&stable);
+            (
+                digest,
+                identity.with_canonical_producer().into_owned(),
+                stable,
+            )
+        }))
+    }
+
+    /// The same rule over narrowed digests, so a forced-collision test exercises
+    /// the production ranking rather than a test-only copy of it. The mirror of
+    /// the body-closure `force_body_closure_anonymous_digest_for_test` hook:
+    /// real digests never collide, so the rule is otherwise unreachable.
+    #[cfg(test)]
+    pub(crate) fn with_forced_digests<'a>(
+        entries: impl IntoIterator<Item = (u128, &'a AnonymousNominalKey)>,
+    ) -> Self {
+        Self::from_digested(entries.into_iter().map(|(digest, identity)| {
+            (
+                digest,
+                identity.with_canonical_producer().into_owned(),
+                relocate_anonymous_identity(identity),
+            )
+        }))
+    }
+
+    fn from_digested(
+        entries: impl IntoIterator<
+            Item = (
+                u128,
+                AnonymousNominalKey,
+                rue_air::AnonymousNominalKey<String, String>,
+            ),
+        >,
+    ) -> Self {
+        let entries = entries.into_iter().collect::<Vec<_>>();
+        let by_stable_content = rue_air::stable_digest::anonymous_symbol_ordinals(
+            entries
+                .iter()
+                .map(|(digest, _, stable)| (*digest, stable.clone())),
+        );
+        Self {
+            ordinals: entries
+                .into_iter()
+                .filter_map(|(_, key, stable)| {
+                    by_stable_content
+                        .get(&stable)
+                        .map(|&ordinal| (key, ordinal))
+                })
+                .collect(),
+        }
+    }
+
+    /// The disambiguating ordinal of one identity, or `None` when its digest
+    /// has a single owner. Consulted in canonical-producer form, the form the
+    /// plan is keyed by.
+    pub(crate) fn ordinal(&self, identity: &AnonymousNominalKey) -> Option<u32> {
+        self.ordinals
+            .get(identity.with_canonical_producer().as_ref())
+            .copied()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.ordinals.is_empty()
+    }
+
+    /// The number of reached identities whose spelling this plan disambiguates.
+    pub(crate) fn disambiguated_len(&self) -> usize {
+        self.ordinals.len()
+    }
 }
 
 /// Spell an anonymous nominal through the same stable-content digest used by
 /// both semantic engines. The digest is presentation only; the full key remains
 /// the identity used by queries and relocation.
+///
+/// This is the spelling of an identity whose digest has one owner. A caller
+/// holding the complete reached set spells through
+/// [`anonymous_nominal_source_symbol_in`] instead, so a verified collision is
+/// disambiguated rather than conflated.
 pub(crate) fn anonymous_nominal_source_symbol(identity: &AnonymousNominalKey) -> String {
-    let digest = anonymous_nominal_digest(identity);
+    anonymous_nominal_source_symbol_in(&AnonymousSymbolPlan::EMPTY, identity)
+}
+
+pub(crate) fn anonymous_nominal_source_symbol_in(
+    plan: &AnonymousSymbolPlan,
+    identity: &AnonymousNominalKey,
+) -> String {
     let kind = match identity.kind {
         AnonymousNominalKind::Struct => "struct",
         AnonymousNominalKind::Enum => "enum",
     };
-    format!("__anon_{kind}_{digest:032x}")
+    let component = rue_air::stable_digest::stable_anonymous_symbol_component(
+        anonymous_nominal_digest(identity),
+        plan.ordinal(identity),
+    );
+    format!("__anon_{kind}_{component}")
 }
 
 pub(crate) fn anonymous_member_source_symbol(identity: &FunctionInstanceKey) -> Option<String> {
+    anonymous_member_source_symbol_in(&AnonymousSymbolPlan::EMPTY, identity)
+}
+
+pub(crate) fn anonymous_member_source_symbol_in(
+    plan: &AnonymousSymbolPlan,
+    identity: &FunctionInstanceKey,
+) -> Option<String> {
     let FunctionInstanceKey::AnonymousMember { owner, member } = identity else {
         return None;
     };
@@ -99,7 +235,7 @@ pub(crate) fn anonymous_member_source_symbol(identity: &FunctionInstanceKey) -> 
     };
     Some(format!(
         "{}.{}",
-        anonymous_nominal_source_symbol(owner),
+        anonymous_nominal_source_symbol_in(plan, owner),
         member.name
     ))
 }
@@ -550,7 +686,7 @@ fn encode_symbol(value: &StableSymbolId, output: &mut String) {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use super::*;
@@ -620,6 +756,167 @@ mod tests {
             baseline,
             make(AnonymousNominalKind::Struct, 0, TypeInstanceKey::Bool)
         );
+    }
+
+    /// Three distinct anonymous sites: two kinds under one producer plus a
+    /// second producer, so struct/enum parity and producer separation are both
+    /// covered by one forced collision class.
+    fn anonymous_sites() -> Vec<AnonymousNominalKey> {
+        let site = |producer: &str, kind, ordinal| AnonymousNominalKey {
+            kind,
+            producer: StableProducerId::Definition(definition("m", producer)),
+            anchor: StructuralAnchor::new(vec![
+                StructuralPathSegment::Body,
+                StructuralPathSegment::AnonymousType(ordinal),
+            ]),
+            arguments: CanonicalArguments::default(),
+        };
+        vec![
+            site("First", AnonymousNominalKind::Struct, 0),
+            site("First", AnonymousNominalKind::Enum, 1),
+            site("Second", AnonymousNominalKind::Struct, 0),
+        ]
+    }
+
+    fn forced_symbols(digest: u128, sites: &[AnonymousNominalKey]) -> Vec<String> {
+        let plan = AnonymousSymbolPlan::with_forced_digests(
+            sites.iter().map(|identity| (digest, identity)),
+        );
+        sites
+            .iter()
+            .map(|identity| anonymous_nominal_source_symbol_in(&plan, identity))
+            .collect()
+    }
+
+    /// Real digests do not collide, so the plan of a reached set is empty and
+    /// every spelling is byte-identical to the bare-digest spelling that
+    /// predates the disambiguation rule. This is the no-regression guard for
+    /// every existing symbol table.
+    #[test]
+    fn a_collision_free_reached_set_leaves_every_spelling_unchanged() {
+        let sites = anonymous_sites();
+        let plan = AnonymousSymbolPlan::for_reached_set(sites.iter());
+        assert!(plan.is_empty());
+        assert_eq!(plan.disambiguated_len(), 0);
+        for identity in &sites {
+            assert_eq!(plan.ordinal(identity), None);
+            let symbol = anonymous_nominal_source_symbol_in(&plan, identity);
+            assert_eq!(symbol, anonymous_nominal_source_symbol(identity));
+            let kind = match identity.kind {
+                AnonymousNominalKind::Struct => "struct",
+                AnonymousNominalKind::Enum => "enum",
+            };
+            assert_eq!(
+                symbol,
+                format!("__anon_{kind}_{:032x}", anonymous_nominal_digest(identity))
+            );
+        }
+    }
+
+    /// A verified collision spells every member distinctly, and no member keeps
+    /// the unqualified spelling: the rule has no first-registrant winner. The
+    /// owner's member symbols follow the owner's ordinal, so a destructor never
+    /// relocates onto the other producer's glue.
+    #[test]
+    fn a_forced_collision_disambiguates_every_member_including_its_methods() {
+        let digest = 0x1114;
+        let sites = anonymous_sites();
+        let plan =
+            AnonymousSymbolPlan::with_forced_digests(sites.iter().map(|site| (digest, site)));
+        assert_eq!(plan.disambiguated_len(), sites.len());
+
+        let symbols = forced_symbols(digest, &sites);
+        assert_eq!(symbols.iter().collect::<BTreeSet<_>>().len(), sites.len());
+        for (identity, symbol) in sites.iter().zip(symbols.iter()) {
+            let bare = anonymous_nominal_source_symbol(identity);
+            assert_ne!(*symbol, bare, "a collision member kept the bare spelling");
+            assert!(symbol.starts_with(&bare));
+            assert!(symbol.len() <= bare.len() + "$c".len() + 10);
+        }
+
+        let owner = &sites[0];
+        let member = FunctionInstanceKey::AnonymousMember {
+            owner: Box::new(TypeInstanceKey::Nominal(NominalInstanceKey::Anonymous(
+                owner.clone(),
+            ))),
+            member: AnonymousMemberKey {
+                kind: AnonymousMemberKind::Destructor,
+                name: Arc::from("__drop"),
+            },
+        };
+        assert_eq!(
+            anonymous_member_source_symbol_in(&plan, &member).as_deref(),
+            Some(format!("{}.__drop", symbols[0]).as_str())
+        );
+        assert_ne!(
+            anonymous_member_source_symbol_in(&plan, &member),
+            anonymous_member_source_symbol(&member),
+        );
+    }
+
+    /// Order independence at the compiler's naming boundary: the symbol table
+    /// of a forced collision is identical under every discovery order of the
+    /// reached set, which is what makes a rebuild reproducible when producers
+    /// are analyzed in different body transactions or scheduling orders.
+    #[test]
+    fn forced_collision_spelling_is_independent_of_reached_set_order() {
+        let digest = 0x1114;
+        let sites = anonymous_sites();
+        let expected = sites
+            .iter()
+            .cloned()
+            .zip(forced_symbols(digest, &sites))
+            .collect::<BTreeMap<_, _>>();
+        let mut orders = 0;
+        for a in 0..3 {
+            for b in 0..2 {
+                let mut remaining = sites.clone();
+                let first = remaining.remove(a);
+                let second = remaining.remove(b);
+                let third = remaining.remove(0);
+                let permuted = vec![first, second, third];
+                let observed = permuted
+                    .iter()
+                    .cloned()
+                    .zip(forced_symbols(digest, &permuted))
+                    .collect::<BTreeMap<_, _>>();
+                assert_eq!(observed, expected, "discovery order changed a symbol");
+                orders += 1;
+            }
+        }
+        assert_eq!(orders, 6);
+    }
+
+    /// Stability across recompiles: the plan is derived from the reached set,
+    /// so re-deriving it — the warm and successor-revision case, where no
+    /// producer changed — reproduces the same symbols, and an unrelated
+    /// anonymous site joining the set under its own digest renames nobody.
+    #[test]
+    fn forced_collision_spelling_is_stable_across_recomputation() {
+        let digest = 0x1114;
+        let sites = anonymous_sites();
+        let first = forced_symbols(digest, &sites);
+        assert_eq!(forced_symbols(digest, &sites), first);
+
+        let unrelated = AnonymousNominalKey {
+            kind: AnonymousNominalKind::Struct,
+            producer: StableProducerId::Definition(definition("m", "Unrelated")),
+            anchor: StructuralAnchor::new(vec![StructuralPathSegment::AnonymousType(9)]),
+            arguments: CanonicalArguments::default(),
+        };
+        let widened = AnonymousSymbolPlan::with_forced_digests(
+            sites
+                .iter()
+                .map(|site| (digest, site))
+                .chain(std::iter::once((digest ^ 0xff, &unrelated))),
+        );
+        assert_eq!(widened.ordinal(&unrelated), None);
+        for (identity, symbol) in sites.iter().zip(first.iter()) {
+            assert_eq!(
+                anonymous_nominal_source_symbol_in(&widened, identity),
+                *symbol
+            );
+        }
     }
 
     #[test]
