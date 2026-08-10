@@ -361,22 +361,6 @@ pub(crate) struct BodyClosurePublicationKey {
     pub(crate) epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) struct BodyClosureMembershipKey {
-    pub(crate) closure: BodyClosureQueryKey,
-    pub(crate) instance: crate::FunctionInstanceKey,
-}
-
-impl rue_query::QueryKey for BodyClosureMembershipKey {
-    fn stable_identity(&self) -> String {
-        format!(
-            "{};member={:?}",
-            self.closure.stable_identity(),
-            self.instance
-        )
-    }
-}
-
 impl rue_query::QueryKey for BodyClosurePublicationKey {
     fn stable_identity(&self) -> String {
         format!("{};epoch={}", self.closure.stable_identity(), self.epoch)
