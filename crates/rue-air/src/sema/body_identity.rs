@@ -344,10 +344,19 @@ pub(in crate::sema) struct BodyIdentityPool<K, M, S> {
     source: S,
     struct_ids: HashMap<K, StructId>,
     enum_ids: HashMap<K, EnumId>,
+    /// Reverse joins used while exporting provider-local types back to their
+    /// durable named identities. Kept beside the forward registries so export
+    /// never scans every nominal minted for the body.
+    struct_identities: HashMap<StructId, K>,
+    enum_identities: HashMap<EnumId, K>,
     /// Keys whose mint failed after shell registration; repeat consults
     /// re-error rather than exposing the incomplete shell (see `mint_named`).
     poisoned: HashMap<K, IdentityMintError>,
     anon_nominals: HashMap<AnonymousNominalKey<K, M>, Type>,
+    /// Reverse join for provider-local anonymous types. Multiple durable keys
+    /// may deliberately name one issued type; the first registration remains
+    /// the deterministic export identity, matching the append-only mint order.
+    anonymous_identities: HashMap<Type, AnonymousNominalKey<K, M>>,
     /// Anonymous keys whose mint failed after their recursive shell was
     /// published internally. The incomplete shell remains unreachable.
     anonymous_poisoned: HashMap<AnonymousNominalKey<K, M>, IdentityMintError>,
@@ -889,8 +898,11 @@ where
             source,
             struct_ids: HashMap::new(),
             enum_ids: HashMap::new(),
+            struct_identities: HashMap::new(),
+            enum_identities: HashMap::new(),
             poisoned: HashMap::new(),
             anon_nominals: HashMap::new(),
+            anonymous_identities: HashMap::new(),
             anonymous_poisoned: HashMap::new(),
             anonymous_digest_owners: HashMap::new(),
             builtins,
@@ -974,8 +986,54 @@ where
         &mut self,
         key: AnonymousNominalKey<K, M>,
         ty: Type,
-    ) {
-        self.anon_nominals.insert(key, ty);
+    ) where
+        M: Clone,
+    {
+        self.record_anonymous_identity(key, ty);
+    }
+
+    fn record_struct_identity(&mut self, key: K, id: StructId) {
+        if let Some(previous) = self.struct_ids.insert(key.clone(), id) {
+            assert!(
+                previous == id,
+                "a durable struct identity changed local ids"
+            );
+        }
+        self.struct_identities.entry(id).or_insert(key);
+    }
+
+    fn record_enum_identity(&mut self, key: K, id: EnumId) {
+        if let Some(previous) = self.enum_ids.insert(key.clone(), id) {
+            assert!(previous == id, "a durable enum identity changed local ids");
+        }
+        self.enum_identities.entry(id).or_insert(key);
+    }
+
+    fn record_anonymous_identity(&mut self, key: AnonymousNominalKey<K, M>, ty: Type)
+    where
+        M: Clone,
+    {
+        if let Some(previous) = self.anon_nominals.insert(key.clone(), ty) {
+            assert!(
+                previous == ty,
+                "a durable anonymous identity changed local types"
+            );
+        }
+        self.anonymous_identities.entry(ty).or_insert(key);
+    }
+
+    fn rollback_anonymous_identity(&mut self, key: &AnonymousNominalKey<K, M>)
+    where
+        M: Clone,
+    {
+        let Some(ty) = self.anon_nominals.remove(key) else {
+            return;
+        };
+        assert!(
+            self.anonymous_identities.get(&ty) == Some(key),
+            "a failed anonymous shell must own its reverse identity"
+        );
+        self.anonymous_identities.remove(&ty);
     }
 
     /// Mint (on first consult) or dedup the generated fixed-capacity string
@@ -1238,7 +1296,7 @@ where
                         file_id,
                     },
                 );
-                self.struct_ids.insert(key.clone(), id);
+                self.record_struct_identity(key.clone(), id);
                 if let Some(lang_item) = lang_item {
                     self.type_pool.set_struct_lang_item(id, lang_item);
                 }
@@ -1293,7 +1351,7 @@ where
                         file_id,
                     },
                 );
-                self.enum_ids.insert(key.clone(), id);
+                self.record_enum_identity(key.clone(), id);
                 let mut variant_payloads = Vec::with_capacity(variants.len());
                 for (_, payload) in &variants {
                     let mut resolved = Vec::with_capacity(payload.len());
@@ -1382,7 +1440,7 @@ where
                         file_id,
                     },
                 );
-                self.struct_ids.insert(key.clone(), id);
+                self.record_struct_identity(key.clone(), id);
                 if let Some(lang_item) = lang_item {
                     self.type_pool.set_struct_lang_item(id, lang_item);
                 }
@@ -1438,7 +1496,7 @@ where
                         file_id,
                     },
                 );
-                self.enum_ids.insert(key.clone(), id);
+                self.record_enum_identity(key.clone(), id);
 
                 let mut variant_payloads = Vec::with_capacity(variants.len());
                 for (_, payload) in &variants {
@@ -1569,11 +1627,11 @@ where
         };
         match minted {
             Ok(ty) => {
-                self.anon_nominals.insert(key.clone(), ty);
+                self.record_anonymous_identity(key.clone(), ty);
                 Ok(ty)
             }
             Err(error) => {
-                self.anon_nominals.remove(key);
+                self.rollback_anonymous_identity(key);
                 self.anonymous_poisoned.insert(key.clone(), error.clone());
                 Err(error)
             }
@@ -1793,24 +1851,19 @@ where
     pub(in crate::sema) fn durable_anonymous_identity(
         &self,
         ty: Type,
-    ) -> Option<AnonymousNominalKey<K, M>> {
-        self.anon_nominals
-            .iter()
-            .find_map(|(identity, minted)| (*minted == ty).then(|| identity.clone()))
+    ) -> Option<AnonymousNominalKey<K, M>>
+    where
+        M: Clone,
+    {
+        self.anonymous_identities.get(&ty).cloned()
     }
 
     pub(in crate::sema) fn durable_named_identity(&self, ty: Type) -> Option<K> {
         if let Some(id) = ty.as_struct() {
-            return self
-                .struct_ids
-                .iter()
-                .find_map(|(identity, minted)| (*minted == id).then(|| identity.clone()));
+            return self.struct_identities.get(&id).cloned();
         }
         if let Some(id) = ty.as_enum() {
-            return self
-                .enum_ids
-                .iter()
-                .find_map(|(identity, minted)| (*minted == id).then(|| identity.clone()));
+            return self.enum_identities.get(&id).cloned();
         }
         None
     }
@@ -1893,7 +1946,7 @@ where
         // producer-nominal re-mint or those consumers see a generated
         // anonymous type as an ordinary user nominal (RUE-1050, RUE-1193).
         self.type_pool.mark_anonymous_struct(id);
-        self.anon_nominals.insert(key.clone(), ty);
+        self.record_anonymous_identity(key.clone(), ty);
 
         let mut resolved = Vec::with_capacity(fields.len());
         for (field_name, field_ty) in fields {
@@ -4210,6 +4263,72 @@ mod tests {
             pool.resolve(&DType::AnonymousNominal(anon_key)).unwrap(),
             cell
         );
+    }
+
+    #[test]
+    fn reverse_identity_indexes_cover_large_named_and_anonymous_pool() {
+        const COUNT: u32 = 32;
+        let nominals = (0..COUNT).map(|key| {
+            let name = format!("Named{key}");
+            let body = if key % 2 == 0 {
+                struct_body(vec![("value", DType::I32)], true, false)
+            } else {
+                enum_body(vec![("Value", vec![DType::I32])])
+            };
+            (key, named(&name, "pkg/identities.rue", true, body))
+        });
+        let anonymous_keys = (0..COUNT)
+            .map(|key| anon_key(AnonymousNominalKind::Struct, key + COUNT, key))
+            .collect::<Vec<_>>();
+        let anonymous_shapes = anonymous_keys.iter().cloned().map(|key| {
+            (
+                key,
+                DurableAnonymousShape::Struct {
+                    fields: vec![(Arc::from("value"), DType::I32)],
+                    struct_method_names: Vec::new(),
+                },
+            )
+        });
+        let mut pool = anon_pool(nominals, anonymous_shapes, []);
+
+        for key in 0..COUNT {
+            let ty = pool.resolve(&DType::Nominal(key)).unwrap();
+            assert_eq!(pool.durable_named_identity(ty), Some(key));
+        }
+        for key in &anonymous_keys {
+            let ty = pool.find_or_create_anon(key).unwrap();
+            assert_eq!(pool.durable_anonymous_identity(ty).as_ref(), Some(key));
+        }
+
+        assert_eq!(
+            pool.struct_identities.len() + pool.enum_identities.len(),
+            COUNT as usize
+        );
+        assert_eq!(pool.anonymous_identities.len(), COUNT as usize);
+    }
+
+    #[test]
+    fn failed_anonymous_shell_rolls_back_both_identity_directions() {
+        let outer = anon_key(AnonymousNominalKind::Struct, 80, 0);
+        let missing = anon_key(AnonymousNominalKind::Struct, 81, 0);
+        let mut pool = anon_pool(
+            [],
+            [(
+                outer.clone(),
+                DurableAnonymousShape::Struct {
+                    fields: vec![(Arc::from("missing"), DType::AnonymousNominal(missing))],
+                    struct_method_names: Vec::new(),
+                },
+            )],
+            [],
+        );
+
+        assert_eq!(
+            pool.find_or_create_anon(&outer),
+            Err(IdentityMintError::MissingAnonymousShape)
+        );
+        assert!(!pool.anon_nominals.contains_key(&outer));
+        assert!(pool.anonymous_identities.is_empty());
     }
 
     /// The pool spells the anonymous name from the ONE shared digest computation
