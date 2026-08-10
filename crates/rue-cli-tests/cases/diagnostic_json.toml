@@ -4,6 +4,14 @@ name = "JSON diagnostic output"
 description = """
 Regression coverage for RUE-365: --error-format json routes compiler
 diagnostics through the JSON formatter instead of the human-rendered formatter.
+
+RUE-436 extends this from substring matching to schema validation. Cases marked
+`json_diagnostics` parse EVERY stderr line as a JSON array of diagnostic
+objects and reject any object whose key set, field types, or span invariants
+drift from `docs/process/diagnostics.md`; `json_diagnostic_order` then pins the
+exact emission ORDER, so a reordering (or a parallelism-dependent shuffle) is a
+failure and not a silent behavior change. Substring assertions cannot see any
+of that — they pass on malformed JSON as long as the bytes appear somewhere.
 """
 
 [[case]]
@@ -13,6 +21,8 @@ fn main() -> i32 { true }
 """ }]
 args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0206 main.rue:1:20"]
 error_contains = [
   '"severity":"error"',
   '"code":"E0206"',
@@ -21,7 +31,11 @@ error_contains = [
   '"primary":true',
 ]
 compile_stderr_not_contains = [
-  "error[E0206]",
+  # The exact banner and snippet gutter the TEXT renderer would have produced
+  # for this same program (`error: [E0206]: ...` / ` --> main.rue:1:20`), so
+  # this asserts the human renderer is genuinely bypassed rather than merely
+  # that some other spelling is absent.
+  "error: [E0206]",
   "-->",
 ]
 
@@ -35,6 +49,11 @@ fn main() -> i32 {
 """ }]
 args = ["--error-format", "json", "main.rue", "-o", "prog"]
 compile_only = true
+json_diagnostics = true
+# A warning carries no code today; the digest renders the empty code as `-`.
+# When warnings gain codes this line must change, which is the point: the
+# schema doc and this pin move together.
+json_diagnostic_order = ["warning - main.rue:2:5"]
 compile_stderr_contains = [
   '"severity":"warning"',
   "\"message\":\"unused variable 'unused'\"",
@@ -46,4 +65,174 @@ compile_stderr_not_contains = [
   "warning[",
   "-->",
   "  |",
+]
+
+[[case]]
+name = "error_batch_order_follows_source_order"
+description = """
+RUE-436: four errors in one file must be published in a single JSON array in
+source order. The digest is exact, so a batch that reorders — or drops — a
+diagnostic fails even though every individual substring would still match.
+"""
+files = [{ path = "main.rue", source = """
+fn a() -> i32 { true }
+fn b() -> i32 { false }
+fn c() -> bool { 1 }
+fn main() -> i32 {
+    let x: i32 = a();
+    let y: i32 = b();
+    let z: bool = c();
+    let w: i32 = true;
+    0
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = [
+  "error E0206 main.rue:1:17",
+  "error E0206 main.rue:2:17",
+  "error E0206 main.rue:3:18",
+  "error E0206 main.rue:8:5",
+]
+error_contains = ['"code":"E0206"']
+
+[[case]]
+name = "error_batch_order_is_job_count_independent"
+description = """
+RUE-436: the SAME program as `error_batch_order_follows_source_order`, compiled
+single-threaded. Identical pinned order proves diagnostic ordering does not
+depend on `-j`/`--jobs` — a machine consumer diffing two CI runs configured
+with different parallelism must not see a spurious change.
+"""
+files = [{ path = "main.rue", source = """
+fn a() -> i32 { true }
+fn b() -> i32 { false }
+fn c() -> bool { 1 }
+fn main() -> i32 {
+    let x: i32 = a();
+    let y: i32 = b();
+    let z: bool = c();
+    let w: i32 = true;
+    0
+}
+""" }]
+args = ["-j1", "--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = [
+  "error E0206 main.rue:1:17",
+  "error E0206 main.rue:2:17",
+  "error E0206 main.rue:3:18",
+  "error E0206 main.rue:8:5",
+]
+error_contains = ['"code":"E0206"']
+
+[[case]]
+name = "multi_file_errors_are_ordered_and_attributed"
+description = """
+RUE-436: errors from two files in one import graph land in one JSON array, each
+span attributed to the file it actually came from, in a fixed cross-file order.
+Guards both the ordering contract and the multi-file span attribution the
+JSON formatter shares with the text formatter (RUE-175).
+"""
+files = [
+  { path = "main.rue", source = """
+const helper = @import("helper");
+
+fn main() -> i32 {
+    let bad: i32 = true;
+    helper.from_helper()
+}
+""" },
+  { path = "helper.rue", source = """
+pub fn from_helper() -> i32 {
+    let wrong: bool = 1;
+    0
+}
+""" },
+]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = [
+  "error E0206 helper.rue:2:5",
+  "error E0206 main.rue:4:5",
+]
+error_contains = ['"file":"helper.rue"', '"file":"main.rue"']
+
+[[case]]
+name = "secondary_span_carries_a_label_after_the_primary"
+description = """
+RUE-436: a diagnostic with a secondary span must place the primary span FIRST
+with a null label, and the secondary after it with its label text and
+`primary: false`. The schema check enforces the ordering invariant; the
+substring assertions pin the label text itself.
+"""
+files = [{ path = "main.rue", source = """
+struct Point { x: i32, y: i32 }
+
+fn take(p: Point) -> i32 { p.x }
+
+fn main() -> i32 {
+    let p = Point { x: 1, y: 2 };
+    let a = take(p);
+    let b = take(p);
+    a + b
+}
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E0205 main.rue:8:18"]
+error_contains = [
+  '"code":"E0205"',
+  '"label":"value moved here"',
+  '"primary":false',
+  '"helps":["to use `p` after the move, pass it by borrow instead: `borrow p`"]',
+]
+
+[[case]]
+name = "publication_error_is_a_single_element_array"
+description = """
+RUE-436: the single-error driver paths (output publication here, watch-cycle
+publication in --watch) used to emit a BARE JSON object while every batch path
+emitted an array, so a consumer had to switch on object-vs-array per line. They
+now emit a one-element array like everything else. The schema validator rejects
+a bare object outright, so this case fails if the framing regresses.
+
+The diagnostic also has no spans — a publication failure has no location in the
+user's program — which pins that `spans: []` is legal and digests as `-`.
+"""
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { 0 }
+""" }]
+args = ["--error-format", "json", "main.rue", "-o", "missing_dir/prog"]
+compile_fail = true
+json_diagnostics = true
+json_diagnostic_order = ["error E1403 -"]
+error_contains = [
+  '"code":"E1403"',
+  '"spans":[]',
+  "output publication failed",
+]
+
+[[case]]
+name = "text_format_is_unchanged_by_default"
+description = """
+RUE-436 control case: without --error-format the human renderer still owns
+stderr, so nothing in the JSON work silently promoted JSON to the default.
+"""
+files = [{ path = "main.rue", source = """
+fn main() -> i32 { true }
+""" }]
+args = ["main.rue", "-o", "prog"]
+compile_fail = true
+error_contains = [
+  "error: [E0206]: type mismatch: expected i32, found bool",
+  " --> main.rue:1:20",
+]
+compile_stderr_not_contains = [
+  '"severity":"error"',
+  '"primary":true',
 ]

@@ -370,3 +370,8 @@ PR into `trunk`.
 - Rue uses `tracing` with wide events: one pass span, one structured completion
   event, key-value fields, and negligible cost without a subscriber. See
   `docs/process/logging.md`.
+- Program diagnostics are a separate, versioned surface from logging.
+  `--error-format json` publishes them as structured JSON on stderr; the schema
+  and its ICE/ordering guarantees are in `docs/process/diagnostics.md`. Changing
+  a JSON field there is a consumer-visible break — update the doc and the
+  `json_diagnostics` CLI cases in the same change.

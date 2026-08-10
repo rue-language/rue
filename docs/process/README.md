@@ -29,6 +29,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | Review | [code-review.md](code-review.md) | `/code-review` | Check quality before committing |
 | Commit | [committing.md](committing.md) | `/commit` | Create well-formed commits |
 | - | [ci.md](ci.md) | - | Maintain required CI and its pinned tools |
+| - | [diagnostics.md](diagnostics.md) | - | Consume `--error-format json` structured diagnostics |
 | - | [profiling.md](profiling.md) | - | Build symbolized executables for native profiling |
 | - | [compiler-scaling.md](compiler-scaling.md) | - | Measure maintained-program compiler scaling |
 | - | [compiler-facade.md](compiler-facade.md) | - | Review compiler API and tooling-view changes |
