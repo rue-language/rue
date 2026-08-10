@@ -66,9 +66,12 @@ of, not only `if` and `match`. A block expression has type `!` when control
 cannot reach its end: either its tail expression has type `!`, or a statement
 within it diverges — for example an expression statement whose expression has
 type `!` — which makes the remainder of the block, and thus the block's end,
-unreachable. A `loop` expression with no reachable `break` likewise has type
-`!` (3.4:2). By the coercion of 3.4:3, such an expression may appear wherever a
-value of any type is expected.
+unreachable. A `loop` expression containing no `break` targeting it likewise
+has type `!` (3.4:2) — the same purely syntactic classification as 4.8:21,
+which is not a reachability question: a `loop` containing a `break` has type
+`()` even when that `break` can never execute (formal core §5.7, (Loop-Div) /
+(Loop-Break)). By the coercion of 3.4:3, such an expression may appear
+wherever a value of any type is expected.
 
 {{ rule(id="3.4:6b") }}
 

@@ -59,7 +59,7 @@ Expressions
       | g ( a1, ..., am )      -- call of function g with argument forms a_i (see below)
       | if e0 { e1 } else { e2 }
       | match e0 { pat1 => e1, ..., patk => ek }
-      | let x = e1 ; e2        -- binding; scope of x is e2
+      | let μ x = e1 ; e2      -- binding; scope of x is e2; μ ∈ {∅, mut} is the binding's mutability mark (§5)
       | e1 ; e2                -- sequence; e1's value is DISCARDED (well-formed unless it carries a linear value — §5.3, 3.8:64)
       | loop { e }             -- infinite loop; exited only by break
       | break                  -- exit the nearest enclosing loop, value unit
@@ -76,7 +76,9 @@ Argument forms (how an argument is passed — the call-site mode)
       | borrow p               -- by shared reference: a shared loan of place p
 
 Function definitions
-  F ::= fn g ( m1 x1: T1, ..., mk xk: Tk ) -> T { e }     -- m_i ∈ {∅, inout, borrow}
+  F ::= fn g ( m1 x1: T1, ..., mk xk: Tk ) -> T { e }     -- m_i ∈ {∅, inout, borrow}; a by-value (m_i = ∅)
+                                                          --   parameter may additionally carry the μ = mut mark,
+                                                          --   binding exactly as a `let mut` local does
 
 Programs
   P ::= D* F*                  -- with exactly one  fn main() -> (int(32,signed) | unit)
@@ -87,7 +89,35 @@ Notes on what is **absent by design** (lives in elaboration, `02-elaboration.md`
 `&&`/`||` (→ `if`), `else if` (→ nested `if`), `while c { b }` (→
 `loop { if c { b } else { break } }`), block syntax (→ `let`/`;` sequences),
 `@import`/modules (→ a flat set of `F` after resolution), integer-literal *base*
-(→ the value). **[open]** Raw pointers and `unchecked` code (chapter 9) are
+(→ the value); and, closing the inventory gaps of RUE-1279:
+
+- **surface shadowing** (`3.8:12/13`) → elaboration **α-renames** binders so
+  every binding in a function body has a distinct name (the Barendregt
+  convention); the core never sees a shadowed name, which is what licenses §6.7's
+  never-restored environment entries;
+- **const items** → comptime evaluation inlines each use as the resolved value;
+  no core form remains;
+- **repeat arrays** `[v; n]` → the surface restricts the element to a `Copy`
+  type (E0905, verified against the compiler), so the form elaborates to
+  `let t = v; [t, …, t]` — one evaluation of the operand, then `n`
+  value-context *copies* (§4.2); no non-`Copy` instance exists to need an
+  evaluate-once move semantics;
+- **postfix `?`** → the enclosing-function early-return desugaring over the
+  scrutinized enum (a `match` whose failure arm rebuilds the failure value and
+  `return`s it, and whose success arm yields the payload binding). The
+  desugaring is ownership-relevant — the scrutinee is *used* (§4.2) and the
+  failure arm's `return` is a §5.7 divergence point — which is why it must be
+  specified in `02-elaboration.md` rather than treated as transparent sugar;
+- **`_` in payload-binding position** → a fresh, unnameable binding, governed
+  by §5.6 exactly like its named siblings (an `Affine` payload it covers drops
+  at the arm's end; a `Linear` one makes the arm ill-formed). RUE-1270 records
+  a compiler divergence in this area (sibling drops skipped by a partial
+  payload binding); the core states the fresh-binding rule;
+- **no-argument `@panic()`** → the message form (§6.12, D-Panic) with the
+  fixed message `panic` (verified: the compiler emits the bare word and exits
+  101).
+
+**[open]** Raw pointers and `unchecked` code (chapter 9) are
 initially *out* of the core and added as a distinguished, clearly-marked
 extension; their whole point is to step outside the guarantees the core proves,
 so they are modeled separately rather than threaded through every rule.
@@ -288,7 +318,8 @@ Ownership is flow-sensitive, so the type judgment threads an **ownership state**
     Path ::= x | Path.f | Path[c]         -- static access paths; array index tracked only for constants c
 
   Type context
-    Γ : x ⇀ T          -- the declared type of each in-scope binding (immutable within a scope)
+    Γ : x ⇀ (T, μ)     -- the declared type and mutability mark of each in-scope binding (both fixed at the binder;
+                       --   Γ ⊢ x : T abbreviates the type component, and μ(x) reads the mark)
 
   Loan state (for exclusivity)
     Λ : set of currently-outstanding loans, each  ( root(p), {shared | exclusive} )
@@ -298,9 +329,15 @@ Ownership is flow-sensitive, so the type judgment threads an **ownership state**
 while one of its descendants is `MovedOut` after a partial move; rules that hand
 an aggregate to another context therefore use the stronger predicate
 `fully-owned(Σ,p)`, meaning `Σ(p)=Owned` and no path strictly under `p` is
-`MovedOut`. A place `p` is **mutable** when its root is a `mut` local, an `inout`
-parameter, or a mutable projection through either; immutable parameters and
-`borrow` parameters are not mutable roots.
+`MovedOut`. A place `p` is **mutable** when its root is a `μ = mut` binding (a
+`let mut` local or a `mut`-marked by-value parameter — the grammar's binding
+mark, §2, which elaboration carries over from the surface `mut`), an `inout`
+parameter, or a projection through either; unmarked bindings, unmarked
+parameters, and `borrow` parameters are not mutable roots. The mark is
+static-only: no §6 rule consults it, and it has no dynamic image — mutability
+is a well-formedness discipline, not a runtime property. (RUE-1279: an earlier
+draft's binding form had no mark, leaving this paragraph and (Assign)'s
+mutability premise undefined for every elaborated program.)
 
 The main judgment:
 
@@ -696,9 +733,52 @@ a never form — it returns on the success path and is typed `unit`.)
 unit" of the grammar (§2) is what it hands to the enclosing loop, not the type of
 the `break` expression. The outgoing state `⊥` ("diverged") is exactly the `⊥`
 that §5.5's join excludes: a branch ending in one of these forms contributes no
-ownership state to the merge. (A `loop` that *is* exited by a `break` yields
-`unit` at the break's state; formalizing multi-`break` loop ownership is
-orthogonal to coercion and left to a future loop section.)
+ownership state to the merge.
+
+A `loop` that *is* exited by a `break` — the complement of (Loop-Div)'s
+syntactic premise, and the target of every elaborated `while` — is `unit`-typed
+(`4.8:21`: type `()` even when every `break` is unreachable; the classification
+is the same purely syntactic one as (Loop-Div)'s). Its ownership story has two
+halves: the **back edge**, which re-enters the body, and the **break edges**,
+which exit it.
+
+```
+  Γ;Σ;Λ ⊢ e ⇒ unit ⊣ Σ_back        e contains a break targeting this loop (syntactic — 4.8:21)
+  Σ_back = Σ  on every path rooted outside the loop            -- back-edge invariance
+  Σ_exit = join( Σ_b1, ..., Σ_bk )                             -- the k at-break states (below), §5.5's join
+  ─────────────────────────────────────────────────────── (Loop-Break)
+  Γ;Σ;Λ ⊢ loop { e } ⇒ unit ⊣ Σ_exit
+```
+
+- **Back-edge invariance.** The body is typed once, under the entry state `Σ`,
+  and its fall-through state `Σ_back` must equal `Σ` on every path rooted
+  outside the loop. That makes `Σ` a fixpoint of the body by *requirement*
+  rather than by iteration — one typing pass covers every iteration, with no
+  dataflow limit construction. The premise is what rejects a move of an outer
+  binding that the body does not restore before the back edge (use-after-move
+  on the second iteration; the compiler agrees — E0205) while admitting the
+  move-then-reassign idiom, since (Assign) restores `Owned` (§5.2). Paths
+  rooted *inside* the loop are exempt: a loop-local binding's scope ends
+  within the iteration, so it does not survive to be compared.
+- **The at-break states.** Each of the `k` occurrences of `break` targeting
+  this loop contributes the ownership state `Σ_bi` in force where it fires,
+  restricted to paths rooted outside the loop — read (Break) as *delivering*
+  `unit` at `Σ_bi` to its innermost enclosing loop while its own context sees
+  `never ⊣ ⊥`. The loop's outgoing state is §5.5's `join` over exactly these
+  delivered states: a linear-carrying path must agree across every break
+  (`3.8:50` — consumed on only some exits is ill-formed), and a merely
+  Affine/Copy path moved on some break but not another joins to `MovedOut`
+  conservatively, with the dynamic per-path drop flag of `3.8:73` dropping it
+  on exactly the exits that did not move it. Loop-local bindings live at a
+  break are not part of any `Σ_bi`; their §5.6 obligations are discharged at
+  the break itself, where their scopes end (dynamically, §6.10's unwind).
+- **Compiler divergence (RUE-1293).** The compiler enforces the back-edge
+  premise but currently computes the loop-exit state from the entry state
+  instead of joining the break-edge states, so it accepts a post-loop use of
+  a value moved on a break path — an accepted use-after-move, and an
+  observable double-drop when the type has drop glue. The core states the
+  rule the prose join discipline (`3.8:50/51`) requires; the compiler is the
+  artifact in the wrong (RUE-305).
 
 A `never`-typed expression is accepted wherever a value of any type is expected —
 this is the coercion, stated as **subsumption on the bottom type** (`3.4:3/4`):
@@ -726,17 +806,26 @@ and since the `else` arm's outgoing state is `⊥` the branch join is just the
 (Sub-Never) then coerces to whatever the surrounding context needs (there, the
 function's `i32` return type). This is the only coercion **on values**: every
 other value-typing rule demands exact type identity. Mode-position compatibility
-for by-reference arguments is a separate relation on places and views (for
-example `[T;N] ⊳ [T]`, `Str(N) ⊳ str`, and static string storage `⊳ str`) and
-does not create a stored value of another type.
+for by-reference arguments is a separate relation on places and views and does
+not create a stored value of another type. Its symbol, used in §2's note and
+§6.13.2, is defined to exactly its current extent (RUE-1279 — previously used
+but never introduced): **`⊳` relates the type of a place passed by reference to
+the parameter type it may satisfy**. Over the core grammar of §2 — which has no
+slice types — `⊳` is the identity relation, `T ⊳ T`, and every (Call)/(Fn) rule
+already assumes exactly that. The non-identity instances are the slice-statics
+work's to define, enumerated so the deferral is not silent: `[T; N] ⊳ [T]`,
+`Str(N) ⊳ str`, `StrBuf ⊳ str`, and static string storage `⊳ str` — each minting
+a `view⟨A | o, k⟩` (§6.13.2) at the by-ref argument position rather than
+converting any stored value.
 
 ### 5.8 Leaf, operator, aggregate, and call forms
 
 §5.5 gave the rules for the branching and enum forms (`if`/`match`, enum
-intro/elim) and §5.7 the diverging forms (`return`/`break`/`loop`). This
-subsection completes the statics with the remaining **non-diverging** expression
-forms of §2 — literals, primitive arithmetic/bitwise, equality compare, struct
-and array construction, and calls — closing the "thin statics" gap (RUE-308).
+intro/elim) and §5.7 the diverging forms (`return`/`break`, (Loop-Div)) together
+with the break-exited loop ((Loop-Break), RUE-1278). This subsection completes
+the statics with the remaining **non-diverging** expression forms of §2 —
+literals, primitive arithmetic/bitwise, equality compare, struct and array
+construction, and calls — closing the "thin statics" gap (RUE-308).
 None of these adds ownership machinery beyond the *use* discipline of §4.2 and
 the loan discipline of §5.4; they are collected here so §5 covers every §2
 expression form, not because they introduce anything new. Each threads the
@@ -919,6 +1008,19 @@ produces a **borrowed place**, not a value:
   Γ;Σ;Λ ⊢ p.f(e1, ..., ek) ⇒ borrowed-place T ⊣ Σk
 ```
 
+The **full expression** of an occurrence (RUE-1279 — the loan extent above,
+previously undefined) is the largest enclosing §2 expression that is not itself
+a proper subexpression of another: walk outward from the occurrence and stop at
+the first *sequencing position* — the bound expression `e1` of
+`let μ x = e1; e2`, the discarded `e1` of `e1; e2`, the right-hand side of
+`assign`, the operand of `return`, the scrutinee of an `if`/`match`, or an
+entire arm body, loop body, or function body. The expression occupying that
+position is the full expression; an accessor loan taken anywhere inside it
+lives until precisely that expression has reduced to a value (or been
+discarded by an unwinding form, §6.9/§6.10). This is the same granularity at
+which §6.7's temporaries die, so the loan cannot outlive any storage it
+depends on.
+
 The result is usable in **place contexts only**: it may be read (a `Copy`-shaped
 read; reading out an owning value would mint a second owner and is rejected —
 the same argument as the RUE-651 `get` gate), projected further, passed as a
@@ -984,7 +1086,11 @@ them is a bug (RUE-305) — that is the point of pinning both.
                      | Kj⟨ v1, …, va ⟩         -- an enum value: variant tag Kj (0-based index j) + payload v1..va (a = 0 ⇒ just the tag)
                      | buf⟨A⟩                  -- an owned buffer handle: the opaque identity of a buffer allocation (§6.13)
                      | view⟨A | o, k⟩          -- a second-class view of k cells of allocation A starting at cell o (§6.13)
-  Environment    ρ : Var ⇀ Loc               -- per frame: each in-scope binding → its cell
+  Environment    ρ : Var ⇀ Loc × Path        -- per frame: each in-scope binding → its root cell and a projection path
+                                             --   (RUE-1279: declared here once, not silently widened at §6.9. Every
+                                             --   by-value binding has path ε, and ρ(x) = ℓ abbreviates ρ(x) = (ℓ, ε)
+                                             --   throughout §6.3–§6.8; only §6.9's by-ref parameter bindings carry a
+                                             --   non-ε path, composed under any further projection)
   Scope record   s = [ℓ1, …, ℓq]             -- cells owed a drop at this scope's exit, in creation order (dropped newest-first)
   Frame          φ = ⟨ ρ ; σ ⟩ ,  σ = [s1, …, sr]   -- a stack of r ≥ 1 open scopes; σ's top is the innermost scope
   Control stack  K ::= halt                    -- bottom: nothing pending; a returned value is the program result
@@ -1065,6 +1171,8 @@ same order §5 threads Σ through). This is fixed by a grammar of single-hole
       | E ; e2                                           -- discarded expression
       | assign p = E                                     -- right-hand side (p's index subexpressions reduce first, below)
       | return E
+      | endscope(ℓ̄) in E                                 -- the administrative scope-close form of §6.7 (RUE-1277: without
+                                                         --   this context, a let's body could never take a step)
 ```
 
 A place `p` used in value context (the `e ::= p` production) is a redex once its
@@ -1086,6 +1194,16 @@ rules that drive every reduction:
 appear below with the frame explicit. (Panic-Lift) is why a trap anywhere
 abandons the whole configuration: a panic is not a value and no context can
 consume it, so it propagates to the top and halts (`Interp::run`).
+
+`return v` and `break` have the same *shape* of behavior — no context can
+consume them, so they discard the context around them — but unlike a panic
+they unwind **with drops**: `(D-Return)`/`(D-Return-Value)` (§6.9) and
+`(D-Break)` (§6.10) fire on `E[return v]` / `E[break]` for any context `E`,
+discarding `E` (including any pending `endscope` markers inside it) and
+running the discarded scopes' drops from the frame's scope records σ instead.
+That is why §6.7 registers every binding's cell in σ *as well as* in its
+`endscope` marker: the marker is the normal-path close, and σ is what survives
+when an unwinding form throws the marker away (RUE-1277).
 
 ### 6.3 Literals and the use of a place (copy / move)
 
@@ -1263,18 +1381,25 @@ those cells; the other arms never come into being (`Terminator::Switch` +
 
 ```
   arm j is  Kj(x1, …, xa) => ej        ℓ1..ℓa fresh        ρ' = ρ[ x1↦ℓ1, …, xa↦ℓa ]
-  H' = H[ ℓ1↦v1, …, ℓa↦va ]           φ' = push-scope(φ with ρ', owing [ℓ1,…,ℓa])
+  H' = H[ ℓ1↦v1, …, ℓa↦va ]           φ = ⟨ρ; s::σ⟩        φ' = ⟨ρ'; (s ++ [ℓ1,…,ℓa])::σ⟩
   ────────────────────────────────────────────────────────────────────────────────── (D-Match)
-  ⟨ H ; φ ; K ; match Kj⟨v1,…,va⟩ { …, Kj(x1..xa) => ej, … } ⟩  →  ⟨ H' ; φ' ; K ; ej ⟩
+  ⟨ H ; φ ; K ; match Kj⟨v1,…,va⟩ { …, Kj(x1..xa) => ej, … } ⟩  →  ⟨ H' ; φ' ; K ; endscope([ℓ1,…,ℓa]) in ej ⟩
 ```
 
-The scrutinee value is **consumed** by the match: its payload now lives in the
+The payload cells are bound exactly as a `let` binds one (§6.7): appended to the
+innermost scope record *and* owed to the arm's `endscope` marker, so their drops
+run **when the arm's body becomes a value** — the arm's end, `6.3:17`'s timing —
+rather than at some later frame pop, and an unwinding `return`/`break` inside
+the arm still finds them in σ after discarding the marker (RUE-1277; an earlier
+draft pushed a whole scope here and never closed it on the value path). The
+scrutinee value is **consumed** by the match: its payload now lives in the
 `ℓi`, so it is not dropped again, and each `xi` is an ordinary `Owned` binding
 governed by §6.11 at the arm's end (a `Linear` payload the arm neither moves nor
 consumes is the leak the statics already rejected; an `Affine` one is dropped
-once). This is the operational content of "binding a variant's payload moves it
-out; a moved-out payload runs its destructor exactly once when its binding leaves
-scope" (`6.3:17`, `6.3:20`). `if` is the two-armed boolean special case:
+once, newest-first with its sibling bindings by `(D-EndScope)`). This is the
+operational content of "binding a variant's payload moves it out; a moved-out
+payload runs its destructor exactly once when its binding leaves scope"
+(`6.3:17`, `6.3:20`). `if` is the two-armed boolean special case:
 
 ```
   ─────────────────────────────────────── (D-If-T)          ─────────────────────────────────────── (D-If-F)
@@ -1287,22 +1412,44 @@ scope" (`6.3:17`, `6.3:20`). `if` is the two-armed boolean special case:
 ### 6.7 `let`, sequencing, and scope-exit drop
 
 `let x = v ; e2` allocates a fresh cell for `x`, binds it, and reduces the body in
-a scope that **owes `x` a drop**. To make scope exit a reduction step, the machine
-uses one administrative runtime form, `endscope(ℓ̄) in e` (not a §2 surface form),
-which runs the drops of cells `ℓ̄` when `e` has become a value:
+a scope that **owes `x` a drop**. That debt is recorded in **two places at
+once**, and the redundancy is load-bearing (RUE-1277): the cell is appended to
+the frame's innermost open scope record `s` — so the frame-level unwinding of
+`return` (§6.9) and `break` (§6.10) can find and drop it — *and* the body is
+wrapped in the administrative runtime form `endscope(ℓ̄) in e` (not a §2 surface
+form), which is the normal-path close: it runs the drops of exactly the cells
+`ℓ̄` when `e` has become a value, and removes them from the scope record so no
+later exit drops them again.
 
 ```
-  ℓ fresh
+  ℓ fresh        φ = ⟨ρ; s::σ⟩
   ─────────────────────────────────────────────────────────────────── (D-Let)
-  ⟨ H ; ⟨ρ;σ⟩ ; K ; let x = v ; e2 ⟩ → ⟨ H[ℓ↦v] ; ⟨ρ[x↦ℓ];σ⟩ ; K ; endscope([ℓ]) in e2 ⟩
+  ⟨ H ; φ ; K ; let x = v ; e2 ⟩ → ⟨ H[ℓ↦v] ; ⟨ρ[x↦ℓ]; (s ++ [ℓ])::σ⟩ ; K ; endscope([ℓ]) in e2 ⟩
 
+  φ = ⟨ρ; s::σ⟩        ℓ1,…,ℓq is a suffix of s (see below)
   ─────────────────────────────────────────────────────────────────── (D-EndScope)     -- ℓ̄ dropped-and-retired newest-first (§6.1)
-  ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop-retire(H, ℓq) ; …; drop-retire(H, ℓ1) ; φ ; K ; v ⟩
+  ⟨ H ; φ ; K ; endscope([ℓ1,…,ℓq]) in v ⟩ → ⟨ drop-retire(H, ℓq) ; …; drop-retire(H, ℓ1) ; ⟨ρ; (s minus ℓ1..ℓq)::σ⟩ ; K ; v ⟩
 ```
 
 where `drop(H, ℓ)` is the drop relation of §6.11 (a no-op on a `⊘` or `Copy`
-cell). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
-declaration order** (RAII) — the innermost/newest binding first. A bare sequence
+cell). The suffix side condition is an invariant, not a check the machine
+performs: cells are appended to the innermost record in creation order, an
+`endscope` closes the most recently created ones, and nothing between a
+binding's creation and its `endscope` can leave a *younger* cell in the same
+record (a nested `let`'s or `match`'s marker closes before the enclosing one by
+expression nesting; a nested `loop` pushes and — by `(D-Loop-Iter)`/
+`(D-Break)` — fully pops its *own* scope records; a call runs in its own
+frame). Nested `let`s nest their `endscope`s, so cells are dropped in **reverse
+declaration order** (RAII) — the innermost/newest binding first.
+
+The environment `ρ[x↦ℓ]` is never restored when the binding dies, and no rule
+needs it to be: elaboration **α-renames** binders so every binding in a
+function body has a distinct name (the Barendregt convention — surface
+shadowing, `3.8:12/13`, is resolved *by renaming* before the core, like every
+other surface-to-core translation in §2's absent-by-design list). A dead
+binder's name is therefore never looked up again — Γ-scoping (§5) already
+rejects any occurrence outside the binder's `e2` — so the stale `ρ` entry is
+unobservable. A bare sequence
 `e1 ; e2` evaluates `e1` to a value and **discards** it; because §5.3 guarantees
 `e1` carries no linear value, the discarded temporary is simply dropped (a no-op
 for a `Copy` value) and control passes to `e2`:
@@ -1375,16 +1522,35 @@ context:
   ────────────────────────────────────────────────────────────────────────── (D-Return-Value)
   ⟨ H ; φ_g ; ret(E, φ)·K ; v ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
 
+  K_g = loopβ(_,_)·…·loopβ(_,_)·ret(E, φ)·K        -- zero or more loop boundaries, discarded with the frame
   ────────────────────────────────────────────────────────────────────────── (D-Return)
-  ⟨ H ; φ_g ; ret(E, φ)·K ; return v ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
+  ⟨ H ; φ_g ; K_g ; E'[return v] ⟩ → ⟨ run-all-scope-drops(H, φ_g) ; φ ; K ; E[v] ⟩
+
+  K_main = loopβ(_,_)·…·loopβ(_,_)·halt
+  ────────────────────────────────────────────────────────────────────────── (D-Return-Main)
+  ⟨ H ; φ_main ; K_main ; E'[return v] ⟩ → ⟨ run-all-scope-drops(H, φ_main) ; φ_main ; halt ; v ⟩
 ```
 
 `(D-Return-Value)` is the "a function evaluates to the value its body evaluates
 to" rule of §4.3 — there is no implicit action, the body simply *is* an
-expression that reduced to `v`. `(D-Return)` is the explicit form: `return v`
-discards the intervening scopes up to the function boundary, running their drops,
-and yields `v` (the oracle's `Terminator::Return`, with the
-compiler having placed the pre-return `Drop`s). The oracle models `inout` by
+expression that reduced to `v`. `(D-Return)` is the explicit form, and it fires
+with `return v` **in any evaluation context `E'`** (RUE-1277 — the unwinding
+analogue of (Panic-Lift), §6.2): `let y = (return 100); …` and
+`1 + (if c { return 0 } else { 2 })` — the `3.4:5`/`3.4:6b` shapes — reduce by
+discarding `E'`, every pending `endscope` marker inside it included, along with
+any loop boundaries the frame pushed onto `K`. The drops those markers would
+have run are not lost: every bound cell is also registered in the frame's scope
+records (§6.7), and `run-all-scope-drops` walks exactly those records, so an
+early return runs every live binding's drop, newest-first per scope
+(`3.9:18` — verified against the compiler: an early return with two live
+destructor-bearing locals runs both destructors, then the caller's). The frame
+is then discarded and `v` handed to the suspended caller context (the oracle's
+`Terminator::Return`, with the compiler having placed the pre-return `Drop`s).
+`(D-Return-Main)` is the same firing at the bottom of the stack, where there is
+no suspended caller: the result configuration is the value configuration that
+§6.12's (Result-Ok) consumes. (Without these context forms, a nested `return`
+was a *stuck* configuration — D-Return required the frame's whole expression to
+be `return v`, which after one reduction under a `let` it never again was.) The oracle models `inout` by
 **copy-in / copy-out** rather than true sharing — it copies the argument in, runs
 the callee, then copies each `inout` parameter's final value back into the caller
 place (the copy-in/copy-out note on `call`). Under the law of exclusivity (§5.4) an `inout`
@@ -1418,15 +1584,23 @@ discards, and the whole `loop` yields `⟨⟩`:
   ⟨ H ; φ' ; loopβ(e, φ)·K ; v ⟩ → ⟨ run-scope-drops(H, φ') ; push-scope(φ) ; loopβ(e, φ)·K ; e ⟩
 
   ─────────────────────────────────────────────────────────────────── (D-Break)      -- unwinds scopes down to the loop boundary
-  ⟨ H ; φ' ; loopβ(e, φ)·K ; break ⟩ → ⟨ unwind-drops(H, φ', φ) ; φ ; K ; ⟨⟩ ⟩
+  ⟨ H ; φ' ; loopβ(e, φ)·K ; E'[break] ⟩ → ⟨ unwind-drops(H, φ', φ) ; φ ; K ; ⟨⟩ ⟩
 ```
+
+Like `(D-Return)`, `(D-Break)` fires with `break` **in any evaluation context
+`E'`** (RUE-1277): `1 + (if c { break } else { 2 })` reduces by discarding
+`E'` — pending `endscope` markers included — and running the discarded
+bindings' drops from the scope records that §6.7 registered them in, via
+`unwind-drops`. The innermost loop boundary is necessarily the top of `K`
+(a `break` in a callee would be ill-formed, §5.7, and any inner loop the body
+entered pushed — and by exiting, popped — its own boundary above this one).
 
 `unwind-drops(H, φ', φ)` runs the scope-exit drops of every scope open in `φ'`
 that is not already open in the enclosing `φ`. A `loop` containing no `break`
 never fires `(D-Break)` and so runs forever — its static type is `never` (§5.7,
-`Loop-Div`), consistent with its never yielding a value to its context.
-(A loop with several `break`s is elaborated to this shape; formalizing its
-ownership join is the deferred loop-section work noted in §5.7. There is no
+`Loop-Div`), consistent with its never yielding a value to its context. A loop
+with one or more `break`s is (Loop-Break)'s `unit`-typed form (§5.7), and every
+`break` fires the same `(D-Break)` regardless of which one it is. (There is no
 value-carrying `break` anywhere: `break expr` is a compile-time error at the
 surface, `4.8:22`.)
 
@@ -1441,14 +1615,36 @@ drop in `3.9` order (`run_drop`):
 ```
   drop(H, ⊘)                       = H                                   -- moved-out / uninitialised: skip
   drop(H, n_T) = drop(H, b) = drop(H, ⟨⟩) = H                            -- scalars are Copy: nothing to drop
-  drop(H, { v1,…,vk }_S)           = drop*( dtor_S(H, {v̄}_S) , [v1,…,vk] )   -- run S's destructor (if any), then fields in DECLARATION order
+  drop(H, { v1,…,vk }_S)           = drop*( H , [v1,…,vk] )              -- S declares NO destructor: fields in DECLARATION order
+  drop(H, { v1,…,vk }_S)           = drop*( H1[ℓ↦†] , [c1,…,ck] )        -- S declares a destructor: see the construction below
   drop(H, [ v1,…,vn ])             = drop*( H , [v1,…,vn] )              -- elements in ASCENDING index order
   drop(H, Kj⟨ v1,…,va ⟩)           = drop*( H , [v1,…,va] )              -- ONLY the ACTIVE variant Kj's payload (6.3:20)
 ```
 
-where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right, and
-`dtor_S` runs `S`'s destructor as an ordinary call (§6.9) if `S` declares one
-(a destructor may have no observable effect in this model). For a **library
+where `drop*(H, [c1,…,cm])` folds `drop` over the list left-to-right. The
+destructor case is a **nested machine run** — the formal shape of "the
+destructor runs as an ordinary call" (RUE-1279; earlier drafts typed `dtor_S`
+as a store function `H → H` while *saying* it could step and trap, with no
+definition connecting the two):
+
+```
+  S declares  drop fn S(self) { e_dtor }        ℓ fresh
+  ⟨ H[ℓ ↦ {v1,…,vk}_S] ; ⟨ [self↦(ℓ,ε)] ; [[]] ⟩ ; halt ; e_dtor ⟩  →*  ⟨ H1 ; _ ; halt ; ⟨⟩ ⟩
+  H1(ℓ) = { c1, …, ck }_S               -- the RESIDUAL fields: ⊘ wherever the destructor moved one out
+```
+
+The destructor body runs in its own frame whose single scope record is
+**empty**: `self` is exempt from the drop obligation (§5.6 — otherwise
+dropping `self` would re-run the destructor, an infinite regress), so the
+nested run's frame pop drops only the destructor's own locals. Afterward the
+*residual* cell contents `c1,…,ck` — not the original `v1,…,vk` — drop in
+declaration order, so a field the destructor consumed is `⊘` and skipped,
+never dropped twice; the scratch cell `ℓ` is then retired. `drop` and `→` are
+thus defined by **mutual recursion**, as the least pair of relations closed
+under all the rules of §6; a `drop` whose nested run diverges makes the
+enclosing configuration diverge, and one whose nested run traps `↯κ` makes the
+enclosing configuration `↯κ` ((Panic-Lift) extends through the nesting). A
+destructor is permitted to have no observable effect, but need not. For a **library
 container** `S` — `StrBuf`, an `ArrayBuf(T)` instance — the destructor is a
 source-defined `drop fn` whose body contains unchecked code, so in the model
 it steps by the type's defining drop equation instead (§6.13.3: drop the live
@@ -1499,7 +1695,17 @@ exits 101, indistinguishable from the four machine traps at the process
 boundary. (The RUE-512 typing question is settled at §5.7 in favour of `!`; this
 dynamic equation is unchanged — `!`-typing only sharpens the static side,
 letting `@panic` inhabit any value context via never-coercion.) The top-level
-result is fixed by running `main`:
+result is fixed by running `main` from the **initial configuration**, whose
+three components are constructed from the elaborated program `P` (RUE-1279 —
+previously named by the rules below but never built):
+
+```
+  H0     = one live allocation per distinct string literal occurring in P,
+           minted before main and never retired (§6.13.2), and nothing else
+  e_main = the body of P's unique  fn main
+  φ_main = ⟨ ∅ ; [[]] ⟩            -- main takes no parameters: an empty environment
+                                   --   and one open, empty scope record
+```
 
 ```
   ⟨ H0 ; φ_main ; halt ; e_main ⟩ →* ⟨ H ; φ_main ; halt ; v ⟩
@@ -1913,8 +2119,12 @@ rather than hopes. Stated now; proved in `03-metatheory.md`.
 
 - **No use-after-drop / no leak of drops.** Every `Owned`, droppable,
   non-moved place is dropped exactly once, at the end of its scope, and never read
-  afterward. *Because:* §5.6 schedules the drop and §6 executes it at frame pop,
-  and Σ shows no path live past that point. Scope exit now also *retires* the
+  afterward. *Because:* §5.6 schedules the drop, §6 executes it at the scope's
+  close — the binding's `endscope` on the normal path, or the σ-walk of a
+  `return`/`break` unwind or frame pop on the early-exit paths (§6.7, §6.9,
+  §6.10; each cell is dropped by exactly one of these, since `endscope`
+  un-registers what it drops and an unwind discards the markers whose cells it
+  drops) — and Σ shows no path live past that point. Scope exit now also *retires* the
   binding's allocation (§6.1, `drop-retire`), so a read past the drop is
   **stuck** rather than silently possible — this bullet, too, is now
   falsifiable rather than structural. For buffers: every minted allocation is
@@ -2019,14 +2229,14 @@ witness of the dynamic semantics (RUE-50), cited inline in each §6 rule group.
 | §5.4 borrows / exclusivity | 6.1:14–35, 6.1:20, 6.1:30 |
 | §5.5 branch join | 3.8:50/51, 3.8:73 |
 | §5.6 scope exit: residual leak check + drop | 3.8:32/62/66, 3.8:74, 3.9 (drop order) |
-| §5.7 divergence + never-coercion | 3.4:1/2/3/4/6/8, 3.4:9 |
+| §5.7 divergence + never-coercion; (Loop-Div)/(Loop-Break) loop typing and the break-edge join | 3.4:1/2/3/4/6/6a/8, 3.4:9, 4.8:21, 3.8:50/51/73 |
 | §6.2 evaluation order (contexts, left-to-right) | 4.0:3–9 |
 | §6.3 dynamic use: copy vs. move; equality borrows | 3.8:5/7/22, 4.3:3f |
 | §6.4 operator dynamics: arith/div/mod, compare, bitwise/shift | 4.2:1, 4.3:1/2, 4.3a:10, 3.1:6/13 |
 | §6.5 aggregate intro + projection (bounds) | 3.5:2, 3.6:16, 4.11:14, 4.12:9, 8.2 |
 | §6.6 enum intro + match dynamics | 6.3:17, 4.7:16 |
-| §6.7/§6.8 let/seq/scope-drop, assignment overwrite-drop | 4.5:3, 3.8:55/64, 3.9 |
-| §6.9 call / return / inout copy-out | 6.1:4/5/18, 4.9:1/7 |
+| §6.7/§6.8 let/seq/scope-drop (σ registration + `endscope`), assignment overwrite-drop; α-renamed shadowing | 4.5:3, 3.8:12/13, 3.8:55/64, 3.9 |
+| §6.9 call / return / inout copy-out; nested-`return` unwind with scope drops | 6.1:4/5/18, 4.9:1/7, 3.4:5/6b, 3.9:18 |
 | §6.10 loop / break dynamics | 4.8:18/21/22, 3.4:2 |
 | §6.11 drop relation (active enum payload; skip moved; explicit `@drop`) | 3.9, 6.3:20 |
 | §6.12 overflow/bounds/div-zero/`@panic` traps + exit code | 3.1:6/13, 4.13:5b, 8.1, 8.2, 8.3, Appendix B |
