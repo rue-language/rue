@@ -1,15 +1,26 @@
 [section]
 id = "diagnostics.type_too_large"
 name = "Oversized type layouts (E0906)"
-description = "Types exceeding the maximum object size (spec C.4:3, RUE-561) are rejected with E0906 instead of ICEing (debug multiply overflow) or silently truncating the slot count to zero, as spec C.1:2 requires."
+description = "Types exceeding the maximum object size (spec C.4:3, RUE-561) are rejected with E0906 instead of ICEing (debug multiply overflow) or silently truncating the slot count to zero, as spec C.1:2 requires. The enforced ceiling is 268,435,455 ABI slots — one slot per scalar, struct field, and array element — and the diagnostic names that slot ceiling rather than a byte total it does not check (RUE-1272)."
 
 [[case]]
-name = "size_of_2gib_array_rejected"
+name = "size_of_oversized_array_rejected"
 source = """
 fn main() -> i32 { @size_of([i32; 536870912]) }
 """
 compile_fail = true
-error_contains = ["[E0906]", "[i32; 536870912]", "2147483647"]
+error_contains = ["[E0906]", "[i32; 536870912]", "268435455", "ABI slots"]
+
+# The ceiling counts slots, not bytes: a one-byte element type reaches it at the
+# same element count as an eight-byte one, so this 256 MiB array is rejected
+# even though its byte size is a fraction of the disp32 frame range (RUE-1272).
+[[case]]
+name = "narrow_element_array_past_slot_ceiling_rejected"
+source = """
+fn main() -> i32 { @size_of([i8; 268435456]) }
+"""
+compile_fail = true
+error_contains = ["[E0906]", "[i8; 268435456]", "268435455", "ABI slots"]
 
 [[case]]
 name = "size_of_32gib_array_rejected_not_zero"

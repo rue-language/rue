@@ -18,12 +18,19 @@ use rue_span::{FileId, Span};
 use super::context::AnalysisContext;
 use super::{DeclarationPhase, Sema};
 
-/// Maximum size of a single object in bytes: `i32::MAX`, matching the
-/// codegen frame-offset (disp32) addressing range (spec C.4:3, RUE-561).
-/// Types larger than this are rejected with E0906 rather than wrapping the
-/// slot arithmetic, per the graceful-failure policy in spec C.1:2.
+/// Frame-displacement budget a single object's slots must address: `i32::MAX`
+/// bytes, matching the codegen frame-offset (disp32) addressing range (spec
+/// C.4:3, RUE-561). This is the derivation basis for [`MAX_TYPE_SLOTS`], not a
+/// limit that is checked on its own: nothing compares a byte total against it.
 pub(crate) const MAX_TYPE_SIZE_BYTES: u64 = i32::MAX as u64;
-/// [`MAX_TYPE_SIZE_BYTES`] expressed in 8-byte ABI slots.
+/// Maximum ABI slot count for a single object: [`MAX_TYPE_SIZE_BYTES`] divided
+/// by the 8-byte slot width, i.e. 268,435,455 slots. This — not a byte total —
+/// is the limit E0906 enforces and names, because a layout spends one slot per
+/// scalar, struct field, and array element whatever the element's own width
+/// (spec C.4:2, RUE-1272). A `[i8; N]` therefore stops at this many *elements*,
+/// well under `MAX_TYPE_SIZE_BYTES` bytes. Types past it are rejected with
+/// E0906 rather than wrapping the slot arithmetic, per the graceful-failure
+/// policy in spec C.1:2.
 pub(crate) const MAX_TYPE_SLOTS: u64 = MAX_TYPE_SIZE_BYTES / 8;
 use super::info::FunctionInfo;
 use crate::inference::InferType;
@@ -3470,18 +3477,18 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
 
 impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Reject a type whose layout exceeds the implementation's maximum object
-    /// size (Appendix C practical limit, RUE-561), returning the slot count on
-    /// success. Call this wherever a value of `ty` is MATERIALIZED — a local
-    /// or temporary slot allocation, a by-value parameter, `@size_of` /
-    /// `@align_of` — so the saturating fallback in [`Self::abi_slot_count`]
-    /// is never observable.
+    /// size — [`MAX_TYPE_SLOTS`] ABI slots (Appendix C practical limit,
+    /// RUE-561) — returning the slot count on success. Call this wherever a
+    /// value of `ty` is MATERIALIZED — a local or temporary slot allocation, a
+    /// by-value parameter, `@size_of` / `@align_of` — so the saturating
+    /// fallback in [`Self::abi_slot_count`] is never observable.
     pub(crate) fn require_layout_slots(&self, ty: Type, span: Span) -> CompileResult<u32> {
         match self.checked_abi_slot_count(ty) {
             Some(slots) => Ok(slots as u32),
             None => Err(CompileError::new(
                 ErrorKind::TypeTooLarge {
                     type_name: ty.safe_name_with_pool(Some(self.body_type_pool())),
-                    max_bytes: MAX_TYPE_SIZE_BYTES,
+                    max_slots: MAX_TYPE_SLOTS,
                 },
                 span,
             )),
