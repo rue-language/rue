@@ -197,6 +197,20 @@ enum AccessorDagFailure<K> {
     Cycle(K),
 }
 
+/// Edge counters that make the linearity of accessor materialization
+/// assertable rather than merely intended (RUE-1284).
+///
+/// Validation and closure construction each visit every edge at most once, and
+/// the two walks are counted separately because they fail differently: a
+/// regression in validation shows up as repeated whole-graph walks, one per
+/// intermediate accessor, while a regression in closure construction shows up
+/// per root. A single total would average the two and hide either.
+///
+/// Both fields are `#[cfg(test)]`, so the struct is zero-sized in a release
+/// compiler and the `*_edge` calls compile away entirely. Keeping the calls
+/// unconditional at the call sites — rather than wrapping each in `cfg!` — is
+/// what stops the instrumentation from drifting out of step with the walks it
+/// measures.
 #[derive(Debug, Default)]
 struct AccessorGraphWork {
     #[cfg(test)]
