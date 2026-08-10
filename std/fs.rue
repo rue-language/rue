@@ -15,7 +15,10 @@
 // (lseek with a `Whence` enum) and `File.tell`; `File.metadata`/`fs.metadata`
 // (fstat/newfstatat -> `Metadata` with size + is_file/is_dir); `fs.rename`,
 // `fs.remove` (unlinkat); and directory create/remove (`fs.create_dir`,
-// `fs.remove_dir` via mkdirat/unlinkat+AT_REMOVEDIR). Reading directory
+// `fs.create_dir_all`, `fs.remove_dir` via mkdirat/unlinkat+AT_REMOVEDIR).
+// `create_dir_all` (RUE-995) is pure composition over `create_dir`: it scans the
+// path for `/` bytes and creates each prefix, because Rue has no path type yet.
+// Reading directory
 // entries (getdents64) remains DEFERRED — the largest remaining chunk — as
 // does buffering and stdin/stdout unification (still out of ADR-0057 scope).
 //
@@ -863,21 +866,139 @@ pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     }
 }
 
-// Create a directory with mode 0o755: mkdirat(AT_FDCWD, path, 0o755). Only the
-// final component is created; a missing parent is `Err(FileError.NotFound)`, an
-// existing path is `Err(FileError.AlreadyExists)`.
-pub fn create_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
-    let R = result.Result((), FileError);
+// mkdirat(AT_FDCWD, path, 0o755), returning the RAW syscall result: `>= 0` on
+// success, `-errno` on failure. `create_dir` and `create_dir_all` share this so
+// there is one marshalling path; only their errno HANDLING differs (the
+// recursive form has to inspect EEXIST before deciding it is an error).
+fn _mkdirat_raw(borrow path: strbuf.StrBuf) -> i64 {
     let cbuf = _path_to_cbuf(borrow path);
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
     let ret: i64 = checked { @syscall(_sys_mkdirat(), _at_fdcwd(), addr, _dir_mode()) };
     checked { @free(cbuf, free_len, 1); };
+    ret
+}
+
+// EEXIST as a raw errno. Unlike EAGAIN this one AGREES across Linux and macOS
+// (both 17), so it needs no per-OS table — see `_normalize_linux`/`_normalize_macos`,
+// which both map 17 to `FileError.AlreadyExists`.
+fn _errno_eexist() -> i64 {
+    17
+}
+
+// The path separator byte, `/` (ASCII 47). POSIX on every supported target.
+fn _path_separator() -> u8 {
+    47
+}
+
+// Create a directory with mode 0o755: mkdirat(AT_FDCWD, path, 0o755). Only the
+// final component is created; a missing parent is `Err(FileError.NotFound)`, an
+// existing path is `Err(FileError.AlreadyExists)`.
+pub fn create_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let ret = _mkdirat_raw(borrow path);
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
     } else {
         R.Ok(())
     }
+}
+
+// `create_dir` that treats an already-existing DIRECTORY as success. EEXIST on
+// its own is not enough to report success: the existing entry may be a regular
+// file, in which case the requested directory does not exist and creating it
+// never will succeed, so `AlreadyExists` stands. Telling the two apart costs one
+// `stat`, and only on the already-exists path.
+fn _create_dir_idempotent(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let ret = _mkdirat_raw(borrow path);
+    if ret >= 0 {
+        return R.Ok(());
+    }
+    let errno = 0 - ret;
+    if errno != _errno_eexist() {
+        return R.Err(_normalize_errno(errno));
+    }
+    let MR = result.Result(Metadata, FileError);
+    match metadata(borrow path) {
+        MR.Ok(md) => {
+            if md.is_dir() {
+                R.Ok(())
+            } else {
+                R.Err(FileError.AlreadyExists)
+            }
+        },
+        MR.Err(me) => R.Err(me),
+    }
+}
+
+// Create `path` and every missing parent directory, like `mkdir -p`. Each
+// prefix that ends at a `/` is created in turn, then the full path; every one of
+// them uses mode 0o755, exactly as `create_dir` does.
+//
+// IDEMPOTENT, unlike `create_dir`: a component that already exists AS A
+// DIRECTORY is not an error, so calling this twice on the same path returns
+// `Ok(())` both times. A component that already exists as something that is not
+// a directory is `Err(FileError.AlreadyExists)` — that is the one case where an
+// existing path still blocks the request.
+//
+// Path shapes, all resolved by scanning bytes (no path type exists yet):
+//   - repeated separators (`a//b`) and a trailing separator (`a/b/`) name the
+//     same components as `a/b`, so they create the same directories;
+//   - a LEADING separator is the root, which always exists, so an absolute path
+//     creates only its named components;
+//   - the EMPTY path names nothing and is `Err(FileError.NotFound)`, which is
+//     what `create_dir("")` reports for the same input.
+//
+// NOT ATOMIC: a failure partway through leaves the parents it already created
+// in place, matching `mkdir -p` and Rust's `fs::create_dir_all`.
+pub fn create_dir_all(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
+    let R = result.Result((), FileError);
+    let n = path.len();
+    if n == 0 {
+        return R.Err(FileError.NotFound);
+    }
+    let O = option.Option(u8);
+    let sep = _path_separator();
+
+    // Every proper prefix that ends just before a separator, in order from the
+    // shortest, so a parent is always created before its child. `i > 0` skips
+    // the empty prefix of an absolute path; the `prev != sep` guard skips the
+    // duplicate prefix a repeated separator would otherwise produce.
+    let mut i: u64 = 0;
+    while i < n {
+        let b = match path.byte_at(i) {
+            O.Some(x) => x,
+            O.None => 0,
+        };
+        if b == sep && i > 0 {
+            let prev = match path.byte_at(i - 1) {
+                O.Some(x) => x,
+                O.None => 0,
+            };
+            if prev != sep {
+                let prefix = path.byte_range(0, i);
+                match _create_dir_idempotent(borrow prefix) {
+                    R.Ok(_u) => {},
+                    R.Err(e) => {
+                        return R.Err(e);
+                    },
+                }
+            }
+        }
+        i += 1;
+    }
+
+    // Finally the path itself — unless it ends in a separator, in which case the
+    // loop above already created that last component.
+    let last = match path.byte_at(n - 1) {
+        O.Some(x) => x,
+        O.None => 0,
+    };
+    if last == sep {
+        return R.Ok(());
+    }
+    _create_dir_idempotent(borrow path)
 }
 
 // Remove an empty directory: unlinkat(AT_FDCWD, path, AT_REMOVEDIR). A

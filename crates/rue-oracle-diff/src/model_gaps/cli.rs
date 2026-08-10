@@ -210,6 +210,64 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ByteCopy),
         &["aarch64-linux", "x86-64-linux"],
     ),
+    // RUE-995: the `create_dir_all` cases reach the same `@byte_copy` gap as the
+    // rest of the std.fs group — every one of them marshals a path through
+    // StrBuf, which copies bytes in bulk. The directory behavior they assert is
+    // covered by their exact-stdout CLI assertions, not by the oracle model.
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_mkdir_then_file_roundtrip_inside",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_mkdir_all_nested_levels_usable",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_mkdir_double_create_flat_errs_recursive_ok",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_mkdir_all_separator_shapes",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    Entry::new(
+        "cli.fs_file_io",
+        "fs_mkdir_all_file_in_the_way_errs",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &["aarch64-linux", "x86-64-linux"],
+    ),
+    // RUE-682: only the std.hash cases that route bytes through StrBuf or
+    // ArrayBuf(u8) hit the `@byte_copy` gap. The three that hash `str` views
+    // directly — including `hash_known_answer_vectors`, which carries the
+    // published FNV-1a/64 vectors — ARE modeled, so the oracle differentially
+    // checks the hash arithmetic itself. That is the coverage worth having here;
+    // the container spellings are asserted to agree with `str` inside the cases.
+    Entry::new(
+        "cli.std_hash",
+        "hash_chunking_does_not_change_result",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_hash",
+        "hash_str_strbuf_arraybuf_agree",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
+    Entry::new(
+        "cli.std_hash",
+        "hash_order_and_byte_sensitive",
+        intrinsic(UnsupportedIntrinsicKind::ByteCopy),
+        &[],
+    ),
     // ADR-0052 phase 3 (RUE-974): the compact-layout CLI cases reach a field
     // through `@field_ptr`, which the oracle model does not model (same gap as
     // the `offset_of_field_ptr` cases above).

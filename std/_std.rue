@@ -12,6 +12,7 @@
 // - std.option.Option: Optional values
 // - std.result.Result: Fallible values (Ok/Err), propagated with `?`
 // - std.intmap.IntMap / std.strmap.StrMap: open-addressing hash maps
+// - std.hash: FNV-1a/64 and djb2 byte hashing (Hasher + one-shot helpers)
 // - std.strbuf.StrBuf: Growable strings, with copying bridges to str and
 //   ArrayBuf(u8) (`from_str`, `from_bytes`, `to_bytes`, and append variants)
 // - std.arraybuf.ArrayBuf: Growable heap-backed collections; `get` and
@@ -19,7 +20,8 @@
 //   fallback value. ArrayBuf(u8) can copy from str with `from_str` /
 //   `extend_str`.
 // - std.fs.File: File IO (open/create/append/read/write/seek/tell/metadata/close
-//   over @syscall) plus fs.rename/remove/create_dir/remove_dir/metadata
+//   over @syscall) plus fs.rename/remove/create_dir/create_dir_all/
+//   remove_dir/metadata
 // - std.binary: endianness-explicit integer<->byte conversions
 // - std.net: network IO v1 address model + Linux sockaddr marshalling
 // - std.c: transparent C scalar-type aliases for the FFI boundary
@@ -66,6 +68,12 @@ pub const strings = @import("strings.rue");
 pub const json = @import("json.rue");
 pub const sort = @import("sort.rue");
 pub const rand = @import("rand.rue");
+
+// Byte hashing (RUE-682): FNV-1a/64 and djb2, incrementally through
+// `hash.Hasher` or one-shot over str/StrBuf/ArrayBuf(u8). Non-cryptographic.
+// There is no `Hash` trait — Rue has no traits yet (RUE-246) — so the byte
+// entry points are the whole surface.
+pub const hash = @import("hash.rue");
 
 // Process environment: command-line arguments and environment variables
 // (RUE-935). Backed by runtime-captured argc/argv/envp exposed through the

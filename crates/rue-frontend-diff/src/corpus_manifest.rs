@@ -1429,6 +1429,7 @@ pub(crate) const ROOTS: &[(&str, &[&str])] = &[
             "fmt.rue",
             "fs.rue",
             "grid.rue",
+            "hash.rue",
             "intmap.rue",
             "json.rue",
             "math.rue",
