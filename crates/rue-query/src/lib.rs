@@ -3,6 +3,7 @@
 //! This crate owns execution mechanics only. Compiler query families keep
 //! their typed keys, results, equality, and algorithms outside the runtime.
 
+use std::any::Any;
 use std::cell::Cell;
 use std::collections::hash_map::RandomState;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -245,7 +246,7 @@ mod registered_batch_tests {
     }
 
     #[test]
-    fn registered_batch_aggregates_exact_terminal_reobservations_from_children() {
+    fn registered_batch_children_cache_exact_terminal_reobservations() {
         let runtime = QueryRuntime::new(2);
         publish_empty(&runtime, [revision(1)]);
         let leaf = runtime
@@ -279,11 +280,21 @@ mod registered_batch_tests {
         assert_eq!(attempt.execution(), RequestExecution::Computed);
         let work = runtime.metrics().validation.saturating_sub(before);
 
-        assert_eq!(work.terminal_lease_observations, 7);
-        assert_eq!(
-            work.duplicate_terminal_lease_observations, 2,
-            "each structured child must contribute its repeated shared-leaf observation"
-        );
+        assert_eq!(work.terminal_lease_observations, 5);
+        assert_eq!(work.duplicate_terminal_lease_observations, 0);
+        let leaf_executions = attempt
+            .nested_attempts()
+            .iter()
+            .filter(|nested| nested.node().family() == "lease-metrics-leaf")
+            .map(NestedQueryAttempt::execution)
+            .collect::<Vec<_>>();
+        assert_eq!(leaf_executions.len(), 4, "{leaf_executions:?}");
+        assert_eq!(leaf_executions[1], RequestExecution::Reused);
+        assert_eq!(leaf_executions[3], RequestExecution::Reused);
+        assert!(leaf_executions.iter().all(|execution| matches!(
+            execution,
+            RequestExecution::Computed | RequestExecution::Joined | RequestExecution::Reused
+        )));
     }
 
     #[derive(Debug, PartialEq, Eq)]
@@ -421,29 +432,36 @@ mod registered_batch_tests {
         let one = run_parallel_shared_dependency_validation(1);
         let many = run_parallel_shared_dependency_validation(4);
 
-        assert_eq!(one, many);
-        assert_eq!(one.execution, RequestExecution::Computed);
-        assert_eq!(one.outcome, 21);
-        assert_eq!(one.leaf_runs, 1, "the shared leaf remains green");
-        assert_eq!(
-            one.branch_runs, 2,
-            "both branches validate without recomputing"
-        );
-        assert_eq!(
-            one.root_runs, 2,
-            "the changed root input forces one recomputation"
-        );
-        assert_eq!(
-            one.nested
-                .iter()
-                .filter(|(node, execution, abort)| {
-                    node.starts_with("parallel-validation-branch:")
-                        && *execution == RequestExecution::Reused
-                        && abort.is_none()
-                })
-                .count(),
-            2
-        );
+        // A parallel sibling may publish the shared leaf's current certificate
+        // before the other sibling reaches it, so the operational ledger can
+        // contain one or two leaf validation demands. The semantic result and
+        // the two branch reuses are schedule-independent.
+        for snapshot in [&one, &many] {
+            assert_eq!(snapshot.execution, RequestExecution::Computed);
+            assert_eq!(snapshot.outcome, 21);
+            assert_eq!(snapshot.leaf_runs, 1, "the shared leaf remains green");
+            assert_eq!(
+                snapshot.branch_runs, 2,
+                "both branches validate without recomputing"
+            );
+            assert_eq!(
+                snapshot.root_runs, 2,
+                "the changed root input forces one recomputation"
+            );
+            assert_eq!(
+                snapshot
+                    .nested
+                    .iter()
+                    .filter(|(node, execution, abort)| {
+                        node.starts_with("parallel-validation-branch:")
+                            && *execution == RequestExecution::Reused
+                            && abort.is_none()
+                    })
+                    .count(),
+                2
+            );
+            assert!(snapshot.nested.iter().all(|(_, _, abort)| abort.is_none()));
+        }
     }
 
     fn run_stale_reverse_dependency_validation(worker_count: usize) {
@@ -3951,6 +3969,7 @@ impl QueryRuntime {
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
+            query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -5167,6 +5186,42 @@ where
     where
         F: FnOnce(&QueryContext) -> Result<QueryOutput<V>, QueryAbort>,
     {
+        if observe_result {
+            if let Some(terminal) = task.cached_query(self.inner.token, &key) {
+                let exact_node = ExactNodeIdentity {
+                    display: terminal.node.clone(),
+                    incarnation: terminal.node_incarnation,
+                };
+                if let Some(cycle) = task.stack_cycle(&exact_node) {
+                    self.core.metrics.cycles.fetch_add(1, Ordering::Relaxed);
+                    return TaskQueryResult::Aborted {
+                        abort: QueryAbort::Cycle(cycle),
+                        dependencies: Vec::new(),
+                        inputs: Vec::new(),
+                        work: Vec::new(),
+                    };
+                }
+                if task.cancellation.is_canceled() {
+                    self.core
+                        .metrics
+                        .cancellations
+                        .fetch_add(1, Ordering::Relaxed);
+                    return TaskQueryResult::Aborted {
+                        abort: QueryAbort::Canceled,
+                        dependencies: Vec::new(),
+                        inputs: Vec::new(),
+                        work: Vec::new(),
+                    };
+                }
+                self.core.metrics.reuses.fetch_add(1, Ordering::Relaxed);
+                task.observe(&terminal);
+                return TaskQueryResult::Terminal {
+                    terminal,
+                    execution: RequestExecution::Reused,
+                    work: Vec::new(),
+                };
+            }
+        }
         let lease = match self.node(key) {
             Ok(lease) => lease,
             Err(abort) => {
@@ -5327,6 +5382,9 @@ where
                         } else {
                             task.defer_pin_release(pin);
                         }
+                        if observe_result {
+                            task.cache_query(self.inner.token, &lease.key, &terminal);
+                        }
                         return TaskQueryResult::Terminal {
                             terminal,
                             execution: RequestExecution::Reused,
@@ -5454,6 +5512,7 @@ where
                                 }
                                 task.observe(&terminal);
                                 self.lease_observed_pin(&task, pin);
+                                task.cache_query(self.inner.token, &lease.key, &terminal);
                             }
                             return TaskQueryResult::Terminal {
                                 terminal,
@@ -5531,6 +5590,7 @@ where
                             let work = canonical_reduced_work(work);
                             if observe_result {
                                 task.observe(&terminal);
+                                task.cache_query(self.inner.token, &lease.key, &terminal);
                             }
                             task.observe_work(&work);
                             return TaskQueryResult::Terminal {
@@ -6841,6 +6901,7 @@ impl QueryContext {
                 TaskQueryResult::Terminal { terminal, work, .. } => {
                     self.task.observe(terminal);
                     self.task.observe_work(work);
+                    self.task.cache_query(family.inner.token, &key, terminal);
                 }
                 TaskQueryResult::Aborted {
                     dependencies,
@@ -7035,6 +7096,24 @@ enum ValidationEndorsementAuthority {
     Borrowed,
 }
 
+#[derive(Default)]
+struct TaskQueryCache {
+    /// One type-erased typed-key map per unforgeable family token. The token is
+    /// runtime-unique, so the concrete `K` and `V` behind an entry cannot vary.
+    /// A task belongs to exactly one runtime, so its monotonic family id is a
+    /// complete local key and can use the runtime-owned integer hasher.
+    families: HashMap<u64, Box<dyn Any + Send + Sync>, BuildHasherDefault<IncarnationHasher>>,
+}
+
+impl fmt::Debug for TaskQueryCache {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TaskQueryCache")
+            .field("families", &self.families.len())
+            .finish_non_exhaustive()
+    }
+}
+
 #[derive(Debug)]
 struct Task {
     id: TaskId,
@@ -7077,6 +7156,11 @@ struct Task {
     /// automatically while the request lives, and gains no permanent retention
     /// after it ends.
     leases: Mutex<TaskLeases>,
+    /// Exact successful results already resolved by this rooted task, indexed
+    /// by their typed family key. A repeat can reuse the task-owned terminal
+    /// before touching the shared family memo index; `leases` keeps every
+    /// cached terminal pinned for precisely the same task lifetime.
+    query_cache: Mutex<TaskQueryCache>,
     /// Pending terminal handoffs observed anywhere in this rooted task,
     /// including nested queries. Only successful top-level completion claims
     /// and commits this aggregate; abort and unwind leave it `Pending`.
@@ -7925,6 +8009,46 @@ impl Drop for AttemptHandoffLifecycle {
 }
 
 impl Task {
+    fn cached_query<K, V>(&self, family: FamilyToken, key: &K) -> Option<Arc<QueryTerminal<V>>>
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        let cache = lock(&self.query_cache);
+        let family_cache = cache.families.get(&family.family)?;
+        family_cache
+            .downcast_ref::<HashMap<K, Arc<QueryTerminal<V>>>>()
+            .expect("a family token has one typed task-cache representation")
+            .get(key)
+            .cloned()
+    }
+
+    fn cache_query<K, V>(&self, family: FamilyToken, key: &K, terminal: &Arc<QueryTerminal<V>>)
+    where
+        K: QueryKey,
+        V: Clone + Send + Sync + 'static,
+    {
+        let mut cache = lock(&self.query_cache);
+        let family_cache = cache
+            .families
+            .entry(family.family)
+            .or_insert_with(|| Box::new(HashMap::<K, Arc<QueryTerminal<V>>>::new()));
+        let family_cache = family_cache
+            .downcast_mut::<HashMap<K, Arc<QueryTerminal<V>>>>()
+            .expect("a family token has one typed task-cache representation");
+        match family_cache.entry(key.clone()) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(terminal.clone());
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                let previous = entry.get();
+                assert_eq!(previous.node_incarnation, terminal.node_incarnation);
+                assert_eq!(previous.stamp, terminal.stamp);
+                assert_eq!(previous.revision, terminal.revision);
+            }
+        }
+    }
+
     fn defer_pin_release<K, V>(&self, pin: TerminalPin<K, V>)
     where
         K: QueryKey,
@@ -7980,6 +8104,7 @@ impl Task {
             validation_proofs: Mutex::new(inherited_validation_proofs),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
+            query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             #[cfg(test)]
@@ -9348,7 +9473,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_terminal_lease_observations_distinguish_first_and_duplicate() {
+    fn exact_terminal_task_cache_avoids_a_duplicate_lease_observation() {
         let runtime = QueryRuntime::new(1);
         publish_empty(&runtime, [revision(1)]);
         let leaf = runtime.family::<Key, u64>("lease-metrics-leaf", 8).unwrap();
@@ -9374,9 +9499,53 @@ mod tests {
         assert_eq!(attempt.execution(), RequestExecution::Computed);
         let work = runtime.metrics().validation.saturating_sub(before);
 
-        assert_eq!(work.terminal_lease_observations, 3);
-        assert_eq!(work.duplicate_terminal_lease_observations, 1);
+        assert_eq!(work.terminal_lease_observations, 2);
+        assert_eq!(work.duplicate_terminal_lease_observations, 0);
+        assert_eq!(attempt.nested_attempts().len(), 2);
+        assert_eq!(
+            attempt.nested_attempts()[1].execution(),
+            RequestExecution::Reused,
+            "the task-local fast path preserves request-ledger classification"
+        );
         assert_validation_work_consistent(work);
+    }
+
+    #[test]
+    fn exact_terminal_task_cache_cannot_bypass_cancellation() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Key, u64>("cache-cancel-leaf", 8).unwrap();
+        let root = runtime.family::<Key, u64>("cache-cancel-root", 8).unwrap();
+        let leaf_for_root = leaf.clone();
+        let cancellation = CancellationToken::new();
+        let cancellation_for_root = cancellation.clone();
+
+        let attempt = runtime.request(
+            &root,
+            revision(1),
+            Key("root"),
+            cancellation,
+            move |context| {
+                context.query(&leaf_for_root, Key("shared"), |_| {
+                    Ok(QueryOutput::success(1))
+                })?;
+                cancellation_for_root.cancel();
+                assert!(matches!(
+                    context.query(&leaf_for_root, Key("shared"), |_| {
+                        panic!("a canceled cache hit must not invoke its evaluator")
+                    }),
+                    Err(QueryAbort::Canceled)
+                ));
+                Ok(QueryOutput::success(0))
+            },
+        );
+
+        assert_eq!(attempt.abort(), Some(&QueryAbort::Canceled));
+        assert_eq!(attempt.nested_attempts().len(), 2);
+        assert_eq!(
+            attempt.nested_attempts()[1].abort(),
+            Some(&QueryAbort::Canceled)
+        );
     }
 
     // A numeric key for tests that need an unbounded supply of distinct keys
@@ -11304,6 +11473,7 @@ mod tests {
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
+            query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
@@ -11357,6 +11527,7 @@ mod tests {
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
+            query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
@@ -11632,6 +11803,7 @@ mod tests {
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
+            query_cache: Mutex::new(TaskQueryCache::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
             handoff_validation_visits: AtomicUsize::new(0),
