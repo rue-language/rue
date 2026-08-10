@@ -1253,6 +1253,7 @@ pub(crate) fn evaluate_optimized_cfg(
     let interner = record.interner.clone();
     let mut strings = record.strings.to_vec();
     let mut local_atoms = record.local_atoms.to_vec();
+    let mut local_atom_identities = None;
     let mut symbol_mappings = record.codegen.symbol_mappings.as_ref().clone();
     let mut foreign_symbols = record.codegen.foreign_symbols.as_ref().clone();
     let mut materialization_warnings = record.materialization_warnings.to_vec();
@@ -1341,10 +1342,13 @@ pub(crate) fn evaluate_optimized_cfg(
                 .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
             };
             atom.dense_id = dense_id;
-            if !local_atoms
-                .iter()
-                .any(|current| current.identity == atom.identity)
-            {
+            let local_atom_identities = local_atom_identities.get_or_insert_with(|| {
+                local_atoms
+                    .iter()
+                    .map(|atom| atom.identity.clone())
+                    .collect::<std::collections::HashSet<_>>()
+            });
+            if local_atom_identities.insert(atom.identity.clone()) {
                 local_atoms.push(atom);
             }
         }
@@ -1570,6 +1574,10 @@ mod accessor_graph_tests {
         assert!(evaluator.contains("inline_call_in_block("));
         assert!(!evaluator.contains("rue_cfg::inline_call(&current"));
         assert!(!evaluator.contains("loop {\n        let call = current.blocks()"));
+        assert!(evaluator.contains("let mut local_atom_identities = None"));
+        assert!(evaluator.contains("local_atom_identities.get_or_insert_with("));
+        assert!(evaluator.contains("local_atom_identities.insert("));
+        assert!(!evaluator.contains("local_atoms.iter().any("));
 
         let domains = include_str!("durable_cfg.rs");
         let lookup = domains
