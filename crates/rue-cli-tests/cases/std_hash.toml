@@ -1,0 +1,278 @@
+# std.hash (RUE-682) — FNV-1a/64 and djb2 byte hashing.
+#
+# Every assertion is exact-stdout through @dbg. A hash case CANNOT assert
+# through the exit code: the value is 64 bits and an exit status is taken mod
+# 256, so 255 wrong hashes out of every 256 would still "pass". The cases below
+# compare the full 64-bit value against a literal known answer and @dbg a 1/0.
+#
+# KNOWN ANSWERS. The FNV-1a/64 values are the PUBLISHED vectors (offset basis
+# 0xcbf29ce484222325, prime 0x100000001b3), so they check this implementation
+# against the outside world, not merely against itself:
+#   ""       0xcbf29ce484222325 = 14695981039346656037
+#   "a"      0xaf63dc4c8601ec8c = 12638187200555641996
+#   "foobar" 0x85944171f73967e8 = 9625390261332436968
+# djb2 has no comparable published vector set and is most often quoted at 32
+# bits; std.hash defines it with a 64-BIT state (h = h*33 + c, seed 5381), and
+# these are that definition's values:
+#   ""       0x1505        = 5381
+#   "a"      0x2b606       = 177670
+#   "foobar" 0x652fde460be = 6953516687550
+# "foobar" is the load-bearing djb2 vector: its intermediate products exceed
+# 2^32, so a 32-bit-truncating state would fail it while still passing "a".
+#
+# These cases run on EVERY target. std.hash is pure integer arithmetic over
+# @wrapping_mul/@wrapping_add with no syscall or per-OS data, so a divergence
+# between targets would be a codegen bug, which is exactly what running them
+# everywhere would catch.
+
+[section]
+id = "cli.std_hash"
+name = "Standard library — std.hash (RUE-682)"
+description = "FNV-1a/64 and djb2 byte hashing: published known answers, chunking independence, and agreement across str/StrBuf/ArrayBuf."
+
+# The known-answer test. Six literal vectors, three per algorithm, including the
+# empty input (which must be the seed, not zero) and a multi-byte input whose
+# djb2 intermediates exceed 32 bits.
+[[case]]
+name = "hash_known_answer_vectors"
+description = "FNV-1a/64 matches the published vectors; djb2 matches its 64-bit definition."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    // FNV-1a/64, published vectors.
+    if std.hash.fnv1a_str(borrow "") == 14695981039346656037 { @dbg(1); } else { @dbg(0); }
+    if std.hash.fnv1a_str(borrow "a") == 12638187200555641996 { @dbg(2); } else { @dbg(0); }
+    if std.hash.fnv1a_str(borrow "foobar") == 9625390261332436968 { @dbg(3); } else { @dbg(0); }
+
+    // djb2, 64-bit state.
+    if std.hash.djb2_str(borrow "") == 5381 { @dbg(4); } else { @dbg(0); }
+    if std.hash.djb2_str(borrow "a") == 177670 { @dbg(5); } else { @dbg(0); }
+    if std.hash.djb2_str(borrow "foobar") == 6953516687550 { @dbg(6); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n"
+exit_code = 0
+
+# The two algorithms must be genuinely different functions, and the choice must
+# stick to the hasher that was constructed. A Hasher built for one algorithm
+# stepping the other's rule is the failure this catches — it would show up as
+# equal hashes here, or as a hasher disagreeing with its own one-shot helper.
+[[case]]
+name = "hash_algorithms_are_distinct_and_selected"
+description = "Fnv1a and Djb2 differ on the same input, and each Hasher matches its own one-shot helper."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let f = std.hash.fnv1a_str(borrow "foobar");
+    let d = std.hash.djb2_str(borrow "foobar");
+    if f != d { @dbg(1); } else { @dbg(0); }
+
+    // Constructed by algorithm, both spellings.
+    let mut a = std.hash.Hasher.fnv1a();
+    a.write_str(borrow "foobar");
+    if a.finish() == f { @dbg(2); } else { @dbg(0); }
+
+    let mut b = std.hash.Hasher.new(std.hash.Algorithm.Fnv1a);
+    b.write_str(borrow "foobar");
+    if b.finish() == f { @dbg(3); } else { @dbg(0); }
+
+    let mut c = std.hash.Hasher.djb2();
+    c.write_str(borrow "foobar");
+    if c.finish() == d { @dbg(4); } else { @dbg(0); }
+
+    let mut e = std.hash.Hasher.new(std.hash.Algorithm.Djb2);
+    e.write_str(borrow "foobar");
+    if e.finish() == d { @dbg(5); } else { @dbg(0); }
+
+    // A fresh hasher starts at its algorithm's seed, so finish() before any
+    // write is the empty-input hash.
+    let g = std.hash.Hasher.fnv1a();
+    if g.finish() == 14695981039346656037 { @dbg(6); } else { @dbg(0); }
+    let h = std.hash.Hasher.djb2();
+    if h.finish() == 5381 { @dbg(7); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n7\n"
+exit_code = 0
+
+# The incremental contract: the result depends only on the concatenated bytes,
+# never on how they were split across write_* calls. Split "foobar" three
+# different ways — including one byte at a time and across two different write_*
+# spellings — and every result must equal the one-shot hash.
+[[case]]
+name = "hash_chunking_does_not_change_result"
+description = "Any split of the same byte sequence hashes identically, for both algorithms."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let want = std.hash.fnv1a_str(borrow "foobar");
+
+    let mut a = std.hash.Hasher.fnv1a();
+    a.write_str(borrow "foo");
+    a.write_str(borrow "bar");
+    if a.finish() == want { @dbg(1); } else { @dbg(0); }
+
+    // One byte at a time: f o o b a r
+    let mut b = std.hash.Hasher.fnv1a();
+    b.write_byte(102); b.write_byte(111); b.write_byte(111);
+    b.write_byte(98); b.write_byte(97); b.write_byte(114);
+    if b.finish() == want { @dbg(2); } else { @dbg(0); }
+
+    // Mixed spellings across the same boundary.
+    let mut sb = std.strbuf.StrBuf.new();
+    sb.push_str("bar");
+    let mut c = std.hash.Hasher.fnv1a();
+    c.write_byte(102);
+    c.write_str(borrow "oo");
+    c.write_strbuf(borrow sb);
+    if c.finish() == want { @dbg(3); } else { @dbg(0); }
+
+    // Same three splits for djb2.
+    let dwant = std.hash.djb2_str(borrow "foobar");
+    let mut d = std.hash.Hasher.djb2();
+    d.write_str(borrow "foo");
+    d.write_str(borrow "bar");
+    if d.finish() == dwant { @dbg(4); } else { @dbg(0); }
+
+    let mut e = std.hash.Hasher.djb2();
+    e.write_byte(102); e.write_byte(111); e.write_byte(111);
+    e.write_byte(98); e.write_byte(97); e.write_byte(114);
+    if e.finish() == dwant { @dbg(5); } else { @dbg(0); }
+
+    // Writing NOTHING is a no-op, not a state change.
+    let mut g = std.hash.Hasher.fnv1a();
+    g.write_str(borrow "foobar");
+    g.write_str(borrow "");
+    if g.finish() == want { @dbg(6); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n"
+exit_code = 0
+
+# The three byte-shaped inputs are three spellings of one byte sequence, so all
+# three must agree. A StrBuf or ArrayBuf path that dropped, duplicated, or
+# reordered a byte would diverge from the `str` path here.
+[[case]]
+name = "hash_str_strbuf_arraybuf_agree"
+description = "str, StrBuf, and ArrayBuf(u8) holding the same bytes hash identically."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let Bytes = std.arraybuf.ArrayBuf(u8);
+    let msg = "the quick brown fox";
+
+    let mut sb = std.strbuf.StrBuf.new();
+    sb.push_str("the quick brown fox");
+
+    let mut ab = Bytes.new();
+    let mut i: u64 = 0;
+    while i < msg.len() { ab.push(msg[i]); i = i + 1; }
+
+    let f = std.hash.fnv1a_str(borrow msg);
+    if std.hash.fnv1a_strbuf(borrow sb) == f { @dbg(1); } else { @dbg(0); }
+    if std.hash.fnv1a_bytes(borrow ab) == f { @dbg(2); } else { @dbg(0); }
+
+    let d = std.hash.djb2_str(borrow msg);
+    if std.hash.djb2_strbuf(borrow sb) == d { @dbg(3); } else { @dbg(0); }
+    if std.hash.djb2_bytes(borrow ab) == d { @dbg(4); } else { @dbg(0); }
+
+    // Empty containers hash as the empty input, i.e. the bare seed.
+    let esb = std.strbuf.StrBuf.new();
+    let eab = Bytes.new();
+    if std.hash.fnv1a_strbuf(borrow esb) == 14695981039346656037 { @dbg(5); } else { @dbg(0); }
+    if std.hash.djb2_bytes(borrow eab) == 5381 { @dbg(6); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n"
+exit_code = 0
+
+# Byte SENSITIVITY and order sensitivity. Two inputs differing in one bit of one
+# byte, and two that are permutations of each other, must not collide — this is
+# what catches a step function that ignores its byte argument or accumulates
+# order-independently (e.g. XOR-only, or a dropped multiply).
+[[case]]
+name = "hash_order_and_byte_sensitive"
+description = "Single-byte differences and reorderings change both hashes."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    // One byte apart: "a" vs "b".
+    if std.hash.fnv1a_str(borrow "a") != std.hash.fnv1a_str(borrow "b") { @dbg(1); } else { @dbg(0); }
+    if std.hash.djb2_str(borrow "a") != std.hash.djb2_str(borrow "b") { @dbg(2); } else { @dbg(0); }
+
+    // Permutations: "ab" vs "ba".
+    if std.hash.fnv1a_str(borrow "ab") != std.hash.fnv1a_str(borrow "ba") { @dbg(3); } else { @dbg(0); }
+    if std.hash.djb2_str(borrow "ab") != std.hash.djb2_str(borrow "ba") { @dbg(4); } else { @dbg(0); }
+
+    // A NUL byte is data, not a terminator: "a\\0b" differs from "a".
+    let mut with_nul = std.strbuf.StrBuf.new();
+    with_nul.push(97); with_nul.push(0); with_nul.push(98);
+    if std.hash.fnv1a_strbuf(borrow with_nul) != std.hash.fnv1a_str(borrow "a") { @dbg(5); } else { @dbg(0); }
+
+    // High bytes (>= 0x80) are hashed as unsigned, so 0xff is not -1: hashing
+    // it must equal stepping the seed with 255, not with a sign-extended value.
+    let mut high = std.strbuf.StrBuf.new();
+    high.push(255);
+    let mut hh = std.hash.Hasher.djb2();
+    hh.write_byte(255);
+    if std.hash.djb2_strbuf(borrow high) == hh.finish() { @dbg(6); } else { @dbg(0); }
+    // 5381 * 33 + 255 = 177828
+    if std.hash.djb2_strbuf(borrow high) == 177828 { @dbg(7); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n7\n"
+exit_code = 0
+
+# `reset` returns a hasher to its own algorithm's seed, so one hasher can hash a
+# sequence of independent values. Asserted against a freshly constructed hasher
+# for both algorithms, and after a partial write rather than only from clean.
+[[case]]
+name = "hash_reset_restores_seed"
+description = "reset() makes a used hasher behave exactly like a fresh one."
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let mut a = std.hash.Hasher.fnv1a();
+    a.write_str(borrow "garbage");
+    a.reset();
+    if a.finish() == 14695981039346656037 { @dbg(1); } else { @dbg(0); }
+    a.write_str(borrow "foobar");
+    if a.finish() == std.hash.fnv1a_str(borrow "foobar") { @dbg(2); } else { @dbg(0); }
+
+    let mut b = std.hash.Hasher.djb2();
+    b.write_byte(7);
+    b.reset();
+    if b.finish() == 5381 { @dbg(3); } else { @dbg(0); }
+    b.write_str(borrow "foobar");
+    if b.finish() == 6953516687550 { @dbg(4); } else { @dbg(0); }
+
+    // finish() itself does NOT reset: reading twice gives the same value, and
+    // writing after a finish continues from where it left off.
+    let mut c = std.hash.Hasher.fnv1a();
+    c.write_str(borrow "foo");
+    let first = c.finish();
+    if c.finish() == first { @dbg(5); } else { @dbg(0); }
+    c.write_str(borrow "bar");
+    if c.finish() == std.hash.fnv1a_str(borrow "foobar") { @dbg(6); } else { @dbg(0); }
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n6\n"
+exit_code = 0

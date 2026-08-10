@@ -1,0 +1,242 @@
+// std.hash — byte hashing (RUE-682).
+//
+// Two classic non-cryptographic hashes over BYTES, exposed both incrementally
+// (`Hasher`) and as one-shot helpers over the byte-shaped types std already has
+// (`str`, `StrBuf`, `ArrayBuf(u8)`). NOT cryptographic: both are trivially
+// invertible and easy to collide on purpose. Use them for hash tables, dedup
+// keys, and checksums of untrusted-but-not-adversarial data.
+//
+//     const std = @import("std");
+//     std.hash.fnv1a_str(borrow "foobar") == 0x85944171f73967e8;  // true
+//     let mut h = std.hash.Hasher.djb2();
+//     h.write_str(borrow "foo");
+//     h.write_str(borrow "bar");
+//     h.finish() == std.hash.djb2_str(borrow "foobar");           // true
+//
+// CALLER NOTE: the `str` entry points take their view by `borrow`, matching
+// `StrBuf.from_str` and `ArrayBuf(u8).extend_str`, so the call site names it —
+// `fnv1a_str(borrow "abc")`, not `fnv1a_str("abc")`. A bare argument is E0432.
+//
+// THERE IS NO `Hash` TRAIT and no generic `hash(value)`. Rue has no traits yet
+// (RUE-246), so hashing a user type means feeding its bytes to a `Hasher` by
+// hand. The byte entry points below are deliberately the whole surface.
+//
+// STATE WIDTH IS 64 BITS for both algorithms. That matters for djb2, which is
+// most often quoted with a 32-bit state: the values here are the 64-bit
+// wrapping variant and will NOT match a 32-bit djb2 implementation once any
+// intermediate product exceeds 2^32. FNV-1a is specified at a chosen width, and
+// this is FNV-1a/64 exactly as published, so its values match the standard
+// vectors.
+//
+// Both algorithms accumulate with `@wrapping_mul`/`@wrapping_add` (RUE-647):
+// hashing is defined MODULO 2^64, so the overflow that a checked multiply would
+// trap on is the intended arithmetic, not an error.
+
+const strbuf = @import("strbuf.rue");
+const arraybuf = @import("arraybuf.rue");
+const option = @import("option.rue");
+
+// ---------------------------------------------------------------------------
+// Algorithm constants.
+// ---------------------------------------------------------------------------
+
+// FNV-1a/64 offset basis: 0xcbf29ce484222325. Also the hash of the EMPTY input,
+// since FNV-1a's finish is the identity on its state.
+fn _fnv_offset_basis() -> u64 {
+    14695981039346656037
+}
+
+// FNV-1a/64 prime: 0x100000001b3.
+fn _fnv_prime() -> u64 {
+    1099511628211
+}
+
+// djb2 initial state, Bernstein's 5381.
+fn _djb2_seed() -> u64 {
+    5381
+}
+
+// djb2 multiplier, Bernstein's 33.
+fn _djb2_multiplier() -> u64 {
+    33
+}
+
+// ---------------------------------------------------------------------------
+// The step functions. Each folds ONE byte into a running state; everything else
+// in this module is a way of driving one of them over a sequence of bytes.
+// ---------------------------------------------------------------------------
+
+// FNV-1a: XOR the byte in FIRST, then multiply. (FNV-1 multiplies first and
+// XORs second; the two produce different values, and this is the -1a order.)
+fn _fnv1a_step(state: u64, byte: u8) -> u64 {
+    let b: u64 = @intCast(byte);
+    let mixed = state ^ b;
+    @wrapping_mul(mixed, _fnv_prime())
+}
+
+// djb2: state * 33 + byte. (The `state * 33 ^ byte` spelling is djb2a, a
+// different hash; this module implements the additive original.)
+fn _djb2_step(state: u64, byte: u8) -> u64 {
+    let b: u64 = @intCast(byte);
+    let scaled = @wrapping_mul(state, _djb2_multiplier());
+    @wrapping_add(scaled, b)
+}
+
+// ---------------------------------------------------------------------------
+// Hasher
+// ---------------------------------------------------------------------------
+
+// Which hash a `Hasher` computes. Chosen once at construction and fixed for the
+// life of the hasher, so a value's hash cannot change algorithm mid-stream.
+pub enum Algorithm {
+    Fnv1a,
+    Djb2,
+}
+
+// An incremental hasher over bytes. Feed it any number of chunks in any mix of
+// the `write_*` spellings and read the result with `finish`; the result depends
+// only on the CONCATENATED byte sequence, never on how it was split across
+// calls, so `write_str("foo"); write_str("bar")` equals `write_str("foobar")`.
+//
+// `finish` does not consume or reset the hasher: it reports the hash of the
+// bytes written so far, and writing more afterwards continues from there. Use
+// `reset` to hash a second, independent value with the same hasher.
+pub struct Hasher {
+    algorithm: Algorithm,
+    state: u64,
+
+    // A hasher for `algorithm`, seeded with that algorithm's initial state.
+    fn new(algorithm: Algorithm) -> Self {
+        let seed = match algorithm {
+            Algorithm.Fnv1a => _fnv_offset_basis(),
+            Algorithm.Djb2 => _djb2_seed(),
+        };
+        Self { algorithm: algorithm, state: seed }
+    }
+
+    // A FNV-1a/64 hasher.
+    fn fnv1a() -> Self {
+        Self.new(Algorithm.Fnv1a)
+    }
+
+    // A djb2 hasher (64-bit state; see the module note).
+    fn djb2() -> Self {
+        Self.new(Algorithm.Djb2)
+    }
+
+    // Fold one byte into the state.
+    fn write_byte(inout self, byte: u8) {
+        self.state = match self.algorithm {
+            Algorithm.Fnv1a => _fnv1a_step(self.state, byte),
+            Algorithm.Djb2 => _djb2_step(self.state, byte),
+        };
+    }
+
+    // Fold every byte of a borrowed core string view. The view may come from a
+    // literal, a fixed string, or a `StrBuf`; it is only read.
+    fn write_str(inout self, borrow bytes: str) {
+        let n = bytes.len();
+        let mut i: u64 = 0;
+        while i < n {
+            self.write_byte(bytes[i]);
+            i += 1;
+        }
+    }
+
+    // Fold every byte of a `StrBuf`, read through its public `byte_at`
+    // accessor so this module never touches StrBuf's private buffer.
+    fn write_strbuf(inout self, borrow bytes: strbuf.StrBuf) {
+        let O = option.Option(u8);
+        let n = bytes.len();
+        let mut i: u64 = 0;
+        while i < n {
+            let b = match bytes.byte_at(i) {
+                O.Some(x) => x,
+                O.None => 0,
+            };
+            self.write_byte(b);
+            i += 1;
+        }
+    }
+
+    // Fold every byte of a byte buffer.
+    fn write_bytes(inout self, borrow bytes: arraybuf.ArrayBuf(u8)) {
+        let n = bytes.len();
+        let mut i: u64 = 0;
+        while i < n {
+            self.write_byte(bytes.get_or(i, 0));
+            i += 1;
+        }
+    }
+
+    // The hash of everything written so far. Neither consumes nor resets.
+    fn finish(borrow self) -> u64 {
+        self.state
+    }
+
+    // Return to the initial state for this hasher's algorithm, so the same
+    // hasher can hash an independent second value.
+    fn reset(inout self) {
+        self.state = match self.algorithm {
+            Algorithm.Fnv1a => _fnv_offset_basis(),
+            Algorithm.Djb2 => _djb2_seed(),
+        };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// One-shot helpers. Each is exactly `Hasher.<alg>()` + one `write_*` +
+// `finish`, spelled out for the common single-chunk call.
+//
+// KNOWN ANSWERS (the published FNV-1a/64 vectors):
+//   fnv1a("")       == 0xcbf29ce484222325
+//   fnv1a("a")      == 0xaf63dc4c8601ec8c
+//   fnv1a("foobar") == 0x85944171f73967e8
+// and, for the 64-bit djb2 defined above:
+//   djb2("")        == 0x1505           (the 5381 seed)
+//   djb2("a")       == 0x2b606
+//   djb2("foobar")  == 0x652fde460be
+// All six are asserted in crates/rue-cli-tests/cases/std_hash.toml.
+// ---------------------------------------------------------------------------
+
+// FNV-1a/64 of a borrowed core string view.
+pub fn fnv1a_str(borrow bytes: str) -> u64 {
+    let mut h = Hasher.fnv1a();
+    h.write_str(borrow bytes);
+    h.finish()
+}
+
+// FNV-1a/64 of a `StrBuf`'s bytes.
+pub fn fnv1a_strbuf(borrow bytes: strbuf.StrBuf) -> u64 {
+    let mut h = Hasher.fnv1a();
+    h.write_strbuf(borrow bytes);
+    h.finish()
+}
+
+// FNV-1a/64 of a byte buffer.
+pub fn fnv1a_bytes(borrow bytes: arraybuf.ArrayBuf(u8)) -> u64 {
+    let mut h = Hasher.fnv1a();
+    h.write_bytes(borrow bytes);
+    h.finish()
+}
+
+// djb2 (64-bit state) of a borrowed core string view.
+pub fn djb2_str(borrow bytes: str) -> u64 {
+    let mut h = Hasher.djb2();
+    h.write_str(borrow bytes);
+    h.finish()
+}
+
+// djb2 (64-bit state) of a `StrBuf`'s bytes.
+pub fn djb2_strbuf(borrow bytes: strbuf.StrBuf) -> u64 {
+    let mut h = Hasher.djb2();
+    h.write_strbuf(borrow bytes);
+    h.finish()
+}
+
+// djb2 (64-bit state) of a byte buffer.
+pub fn djb2_bytes(borrow bytes: arraybuf.ArrayBuf(u8)) -> u64 {
+    let mut h = Hasher.djb2();
+    h.write_bytes(borrow bytes);
+    h.finish()
+}

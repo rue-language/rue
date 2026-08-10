@@ -1,7 +1,10 @@
 # V1 FOLLOW-UPS (ADR-0057 "Future Work"): the cases whose names begin `fs_seek_`,
 # `fs_stat_`/`fs_metadata_`, `fs_rename_`, `fs_remove_`, and `fs_mkdir_` exercise
 # seek/tell, fstat/newfstatat metadata, rename, unlink, and directory
-# create/remove. They are `only_on` the two Linux targets: this repo's CI host is
+# create/remove. The `fs_mkdir_` group also covers `create_dir_all` (RUE-995):
+# nested creation, idempotent re-creation, the separator shapes its byte scan has
+# to collapse, and the EEXIST-but-not-a-directory case.
+# They are `only_on` the two Linux targets: this repo's CI host is
 # Linux, and the macOS `struct stat` layout plus the Darwin *at/stat syscall
 # numbers are the DOCUMENTED, not-yet-device-verified follow-up (see std/fs.rue).
 # Seek offsets are bound to an `i64` value before the call to dodge a caller-side
@@ -721,4 +724,243 @@ fn main() -> i32 {
     }
 }
 """ }]
+exit_code = 0
+
+# RUE-995: a created directory must be USABLE, not merely present. `create_dir`,
+# then create/write/close a file INSIDE it, then reopen that file through the
+# same nested path and compare every byte. `stat` reporting `is_dir()` (the case
+# above) does not prove the directory is a working parent for `openat`; this
+# does. Exit code is the read count so a short read cannot pass as success.
+[[case]]
+name = "fs_mkdir_then_file_roundtrip_inside"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut dir = std.strbuf.StrBuf.new();
+    dir.push_str("outdir");
+    match std.fs.create_dir(borrow dir) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("outdir/inner.dat");
+
+    let msg = "inside-the-dir";
+    let mut out = Buf.new();
+    let mut i: u64 = 0;
+    while i < msg.len() { out.push(msg[i]); i = i + 1; }
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 62; } };
+    let nw = match f.write(borrow out) { WR.Ok(n) => n, WR.Err(_e) => { return 63; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 64; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 65; } };
+    let mut inb = Buf.with_capacity(64);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 66; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 67; } };
+
+    if nr != nw { return 68; }
+    let mut j: u64 = 0;
+    while j < nr {
+        if inb.get_or(j, 0) != msg[j] { return 69; }
+        j = j + 1;
+    }
+    @dbg(nr);
+    @intCast(nr)
+}
+""" }]
+stdout = "14\n"
+exit_code = 14
+
+# RUE-995: `create_dir_all` builds a chain of MISSING parents that the flat
+# `create_dir` cannot. Assert each of the three levels independently stats as a
+# directory — not just the leaf, since a bug that created only the leaf's name
+# would still fail `openat` later — and that a file writes and reads back
+# through the full nested path. The trailing byte check is 'd' (100) of "deep".
+[[case]]
+name = "fs_mkdir_all_nested_levels_usable"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let WR = std.result.Result(u64, FE);
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+    let Buf = std.arraybuf.ArrayBuf(u8);
+
+    let mut deep = std.strbuf.StrBuf.new();
+    deep.push_str("lvl1/lvl2/lvl3");
+    match std.fs.create_dir_all(borrow deep) { CR.Ok(_u) => {}, CR.Err(_e) => { return 61; } };
+
+    // Every level, outermost first, must be a real directory.
+    let mut one = std.strbuf.StrBuf.new();
+    one.push_str("lvl1");
+    let m1 = match std.fs.metadata(borrow one) { MR.Ok(m) => m, MR.Err(_e) => { return 62; } };
+    if m1.is_dir() { @dbg(1); } else { @dbg(0); }
+
+    let mut two = std.strbuf.StrBuf.new();
+    two.push_str("lvl1/lvl2");
+    let m2 = match std.fs.metadata(borrow two) { MR.Ok(m) => m, MR.Err(_e) => { return 63; } };
+    if m2.is_dir() { @dbg(2); } else { @dbg(0); }
+
+    let m3 = match std.fs.metadata(borrow deep) { MR.Ok(m) => m, MR.Err(_e) => { return 64; } };
+    if m3.is_dir() { @dbg(3); } else { @dbg(0); }
+
+    // The deepest level is a usable parent for a file.
+    let mut path = std.strbuf.StrBuf.new();
+    path.push_str("lvl1/lvl2/lvl3/leaf.txt");
+    let msg = "deep";
+    let mut out = Buf.new();
+    let mut i: u64 = 0;
+    while i < msg.len() { out.push(msg[i]); i = i + 1; }
+
+    let mut f = match F.create(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 65; } };
+    match f.write(borrow out) { WR.Ok(_n) => {}, WR.Err(_e) => { return 66; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 67; } };
+
+    let mut g = match F.open(borrow path) { R.Ok(x) => x, R.Err(_e) => { return 68; } };
+    let mut inb = Buf.with_capacity(16);
+    let nr = match g.read(inout inb) { WR.Ok(n) => n, WR.Err(_e) => { return 69; } };
+    match g.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 70; } };
+    @dbg(nr);
+    @dbg(inb.get_or(0, 0));
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n100\n"
+exit_code = 0
+
+# RUE-995 double-create: the two spellings differ deliberately, so assert BOTH
+# behaviors in one program. `create_dir` twice reports `AlreadyExists` (it is a
+# request to create, and the second one did not); `create_dir_all` twice reports
+# `Ok` (it is a request to ensure existence, which holds). A regression that
+# unified them would flip exactly one of these @dbg lines.
+[[case]]
+name = "fs_mkdir_double_create_flat_errs_recursive_ok"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+
+    let mut flat = std.strbuf.StrBuf.new();
+    flat.push_str("twice");
+    match std.fs.create_dir(borrow flat) { CR.Ok(_u) => { @dbg(1); }, CR.Err(_e) => { return 61; } };
+    match std.fs.create_dir(borrow flat) {
+        CR.Ok(_u) => { return 62; },
+        CR.Err(e) => match e { FE.AlreadyExists => { @dbg(2); }, _ => { return 63; } },
+    };
+
+    let mut rec = std.strbuf.StrBuf.new();
+    rec.push_str("ensure/me");
+    match std.fs.create_dir_all(borrow rec) { CR.Ok(_u) => { @dbg(3); }, CR.Err(_e) => { return 64; } };
+    match std.fs.create_dir_all(borrow rec) { CR.Ok(_u) => { @dbg(4); }, CR.Err(_e) => { return 65; } };
+
+    // Ensuring a path whose components all exist already is also Ok.
+    match std.fs.create_dir_all(borrow flat) { CR.Ok(_u) => { @dbg(5); }, CR.Err(_e) => { return 66; } };
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n5\n"
+exit_code = 0
+
+# RUE-995 path shapes: `create_dir_all` scans bytes because Rue has no path type,
+# so the separator edge cases are the risky part. A repeated separator must not
+# try to create an empty prefix (which would be ENOENT), a trailing separator
+# must not create an empty final component, "/" must succeed without creating
+# anything, and the empty path must be NotFound rather than a silent success.
+[[case]]
+name = "fs_mkdir_all_separator_shapes"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let FE = std.fs.FileError;
+    let CR = std.result.Result((), FE);
+    let MR = std.result.Result(std.fs.Metadata, FE);
+
+    // Repeated and trailing separators collapse: this names p/q, nothing else.
+    let mut messy = std.strbuf.StrBuf.new();
+    messy.push_str("p//q/");
+    match std.fs.create_dir_all(borrow messy) { CR.Ok(_u) => { @dbg(1); }, CR.Err(_e) => { return 61; } };
+
+    let mut pq = std.strbuf.StrBuf.new();
+    pq.push_str("p/q");
+    let m = match std.fs.metadata(borrow pq) { MR.Ok(x) => x, MR.Err(_e) => { return 62; } };
+    if m.is_dir() { @dbg(2); } else { @dbg(0); }
+
+    // The root always exists, so ensuring it creates nothing and succeeds.
+    let mut root = std.strbuf.StrBuf.new();
+    root.push_str("/");
+    match std.fs.create_dir_all(borrow root) { CR.Ok(_u) => { @dbg(3); }, CR.Err(_e) => { return 63; } };
+
+    // The empty path names nothing: NotFound, never Ok.
+    let empty = std.strbuf.StrBuf.new();
+    match std.fs.create_dir_all(borrow empty) {
+        CR.Ok(_u) => { return 64; },
+        CR.Err(e) => match e { FE.NotFound => { @dbg(4); }, _ => { return 65; } },
+    };
+    0
+}
+""" }]
+stdout = "1\n2\n3\n4\n"
+exit_code = 0
+
+# RUE-995: EEXIST alone must not be read as success. A REGULAR FILE occupying a
+# component's name means the directory does not exist and never will, so both
+# the through-path form and the exact-path form stay errors. Without the `stat`
+# behind the EEXIST check, the second match here would wrongly report Ok.
+[[case]]
+name = "fs_mkdir_all_file_in_the_way_errs"
+only_on = ["x86-64-linux", "aarch64-linux"]
+env = { RUE_STD_PATH = "${REAL_STD}" }
+files = [{ path = "main.rue", source = """
+const std = @import("std");
+
+fn main() -> i32 {
+    let F = std.fs.File;
+    let FE = std.fs.FileError;
+    let R = std.result.Result(F, FE);
+    let CR = std.result.Result((), FE);
+
+    let mut fp = std.strbuf.StrBuf.new();
+    fp.push_str("blocker");
+    let f = match F.create(borrow fp) { R.Ok(x) => x, R.Err(_e) => { return 61; } };
+    match f.close() { CR.Ok(_u) => {}, CR.Err(_e) => { return 62; } };
+
+    // Descending THROUGH the file: the kernel rejects the child mkdir.
+    let mut through = std.strbuf.StrBuf.new();
+    through.push_str("blocker/sub");
+    match std.fs.create_dir_all(borrow through) {
+        CR.Ok(_u) => { return 63; },
+        CR.Err(_e) => { @dbg(1); },
+    };
+
+    // Ensuring the file's own path: EEXIST, but the entry is not a directory.
+    match std.fs.create_dir_all(borrow fp) {
+        CR.Ok(_u) => { return 64; },
+        CR.Err(e) => match e { FE.AlreadyExists => { @dbg(2); }, _ => { return 65; } },
+    };
+    0
+}
+""" }]
+stdout = "1\n2\n"
 exit_code = 0

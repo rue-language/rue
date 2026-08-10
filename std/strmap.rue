@@ -33,6 +33,7 @@
 const arraybuf = @import("arraybuf.rue");
 const option = @import("option.rue");
 const strbuf = @import("strbuf.rue");
+const hash = @import("hash.rue");
 const StrBuf = strbuf.StrBuf;
 
 // Slot states.
@@ -56,19 +57,13 @@ fn _byte_of(borrow value: StrBuf, index: u64) -> u8 {
     }
 }
 
-// FNV-1a 64-bit hash of `key`'s bytes. `@wrapping_mul` (RUE-647) never traps, so
-// the real prime multiply is used directly rather than a mod-by-prime stand-in.
+// FNV-1a 64-bit hash of `key`'s bytes, from `std.hash` (RUE-682) — which is now
+// the one place the offset basis, prime, and XOR-then-multiply order are
+// written down. This module kept its own copy until std.hash existed; the two
+// computed the same value, so the cached hashes in an existing table are
+// unchanged by the switch.
 fn _fnv1a(borrow key: StrBuf) -> u64 {
-    let mut h: u64 = 14695981039346656037;
-    let n = key.len();
-    let mut i: u64 = 0;
-    while i < n {
-        let b: u64 = @intCast(_byte_of(borrow key, i));
-        h ^= b;
-        h = @wrapping_mul(h, 1099511628211);
-        i += 1;
-    }
-    h
+    hash.fnv1a_strbuf(borrow key)
 }
 
 pub fn StrMap(comptime V: type) -> type {
