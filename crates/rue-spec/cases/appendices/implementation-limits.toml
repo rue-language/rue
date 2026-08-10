@@ -331,19 +331,19 @@ exit_code = 2
 # Exceeding an implementation limit is a diagnosable compile-time failure, not
 # a wrapped index or a crash. The two limits whose boundary is reachable
 # without an impractical fixture are the object-size ceiling (E0906, a type
-# whose layout exceeds i32::MAX bytes) and the nesting depth (E0482, below).
-# The source-length ceiling (E1401) needs a >4 GiB input, so its boundary is
-# pinned by unit tests in rue-lexer and rue-compiler instead.
+# whose layout needs more than 268,435,455 ABI slots) and the nesting depth
+# (E0482, below). The source-length ceiling (E1401) needs a >4 GiB input, so its
+# boundary is pinned by unit tests in rue-lexer and rue-compiler instead.
 
 [[case]]
 name = "oversized_object_diagnosed"
 spec = ["C.1:2", "C.4:3"]
-description = "A type whose layout exceeds the published object-size ceiling is diagnosed, not silently truncated"
+description = "A type whose layout exceeds the published object-size ceiling is diagnosed, not silently truncated, and the diagnostic names the slot ceiling it actually checks (C.1:2)"
 source = """
 fn main() -> i32 { @size_of([i32; 4294967296]) }
 """
 compile_fail = true
-error_contains = ["[E0906]", "exceeds the maximum supported object size", "2147483647"]
+error_contains = ["[E0906]", "exceeds the maximum supported object size", "268435455", "ABI slots"]
 
 [[case]]
 name = "object_within_limit_compiles"
@@ -352,6 +352,38 @@ source = """
 fn main() -> i32 { if @size_of([i32; 1000]) == 4000 { 0 } else { 1 } }
 """
 exit_code = 0
+
+# The ceiling is a slot count, so it lands at the same element count whatever
+# the element width: one element under it compiles for a one-byte element type
+# (a 256 MiB object) and for an eight-byte one (a 2 GiB object) alike, and one
+# element over it is rejected even though the object is only 256 MiB (RUE-1272).
+[[case]]
+name = "narrow_element_array_at_slot_ceiling_compiles"
+spec = ["C.4:2", "C.4:3"]
+description = "An [i8; N] at exactly the slot ceiling is accepted; its byte size is far below the disp32 frame range"
+source = """
+fn main() -> i32 { if @size_of([i8; 268435455]) == 268435455 { 0 } else { 1 } }
+"""
+exit_code = 0
+
+[[case]]
+name = "wide_element_array_at_slot_ceiling_compiles"
+spec = ["C.4:2"]
+description = "An [i64; N] at the same N is also accepted, so a narrow element type buys no extra headroom"
+source = """
+fn main() -> i32 { if @size_of([i64; 268435455]) == 2147483640 { 0 } else { 1 } }
+"""
+exit_code = 0
+
+[[case]]
+name = "narrow_element_array_past_slot_ceiling_diagnosed"
+spec = ["C.1:2", "C.4:2"]
+description = "One element past the slot ceiling is rejected even though the layout is only about 256 MiB"
+source = """
+fn main() -> i32 { @size_of([i8; 268435456]) }
+"""
+compile_fail = true
+error_contains = ["[E0906]", "268435455", "ABI slots"]
 
 # =============================================================================
 # Syntactic Nesting Depth (C.6:3) -- RUE-42

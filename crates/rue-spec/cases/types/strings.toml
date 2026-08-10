@@ -134,6 +134,29 @@ fn main() -> i32 {
 exit_code = 0
 expected_stdout = "foobar\n"
 
+# 3.7:41 — capacity is implementation-defined but OBSERVABLE: capacity() hands
+# back the chosen value, so a program CAN branch on it (and thereby stop being
+# portable). The pre-RUE-1274 text claimed a conforming program never observes
+# it, which this case would have contradicted.
+[[case]]
+name = "string_capacity_is_observable"
+spec = ["3.7:41"]
+description = "capacity() returns the implementation's chosen capacity: 0 for a literal, a nonzero value after a clone allocates."
+real_std = true
+source = """
+const std = @import("std");
+const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    let lit: StrBuf = "hello";
+    @dbg(lit.capacity());
+    let owned = lit.clone();
+    let zero: u64 = 0;
+    if owned.capacity() > zero { 0 } else { 1 }
+}
+"""
+exit_code = 0
+expected_stdout = "0\n"
+
 # =============================================================================
 # StrBuf Escape Sequences
 # =============================================================================
@@ -899,6 +922,39 @@ real_std = true
 source = """
 const std = @import("std");
 const StrBuf = std.strbuf.StrBuf;
+fn main() -> i32 {
+    @dbg(@to_string(42));
+    0
+}
+"""
+exit_code = 0
+expected_stdout = "42\n"
+
+# 3.7:22 — @to_string names StrBuf in its result type without rooting the
+# trusted module itself, so the file must import std lexically. The import need
+# not be used and StrBuf need not be bound to a name (RUE-1276); contrast
+# @read_line (4.13:35) and @parse_* (4.13:44), which do self-root.
+[[case]]
+name = "to_string_requires_lexical_std_import"
+spec = ["3.7:22"]
+description = "Without a lexical @import(\"std\"), @to_string is rejected with E0204 for the unknown type StrBuf."
+real_std = true
+source = """
+fn main() -> i32 {
+    @dbg(@to_string(42));
+    0
+}
+"""
+compile_fail = true
+error_contains = ["[E0204]", "StrBuf"]
+
+[[case]]
+name = "to_string_import_alone_suffices"
+spec = ["3.7:22"]
+description = "A bare std import is enough: @to_string works without binding the name StrBuf."
+real_std = true
+source = """
+const std = @import("std");
 fn main() -> i32 {
     @dbg(@to_string(42));
     0

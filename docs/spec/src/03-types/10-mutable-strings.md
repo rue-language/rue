@@ -8,7 +8,10 @@ template = "spec/page.html"
 
 This section describes the mutable string capabilities, building on the core `StrBuf` type from section 3.7.
 
-{{ preview_feature(feature="mutable_strings", adr="ADR-0014") }}
+These capabilities are not gated behind a preview feature: ADR-0014 was
+implemented on 2025-12-27, and everything specified here compiles with no
+`--preview` flag. As §3.7:2 states, the only thing a program needs in order to
+name `StrBuf` is an explicit import of the trusted standard-library module.
 
 ## StrBuf Representation
 
@@ -175,11 +178,27 @@ fn main() -> i32 {
 
 {{ rule(id="3.10:24", cat="dynamic-semantics") }}
 
-When appending would exceed the current capacity, a new buffer is allocated with double the current capacity (minimum 16 bytes). The existing content is copied and the old buffer is freed.
+When appending would exceed the current capacity, a new buffer is allocated
+whose capacity is at least the required capacity (the current length plus the
+appended bytes), the existing content is copied into it, and the old buffer is
+freed. The capacity actually chosen is implementation-defined (§3.7:41): the
+only guarantees are that it is sufficient for the append and that growth is
+amortized, so that a sequence of appends costs O(1) amortized time per appended
+byte. A program **MUST NOT** assume any particular resulting value from
+`capacity()`.
 
 {{ rule(id="3.10:25", cat="informative") }}
 
-The doubling growth strategy amortizes allocation cost over many appends, providing O(1) amortized time per append.
+This implementation chooses that capacity by starting from the larger of the
+current capacity and 16 bytes and doubling until it reaches the required
+capacity. Two consequences are worth naming, because the earlier "double the
+current capacity" wording implied otherwise. Growth from a literal or an empty
+buffer lands on 16 however few bytes were appended; and a single append can
+*more than* double the capacity, because the doubling is a loop rather than one
+step. Appending 5 bytes to an empty `StrBuf` gives capacity 16, and appending 30
+more (35 required) then runs 16 → 32 → 64, giving capacity 64 rather than 32.
+The loop is what provides the amortized bound of 3.10:24; it is not itself a
+requirement, and a later release may choose differently.
 
 ## Clone
 

@@ -66,10 +66,16 @@ moved-from binding.
 {{ rule(id="3.7:41", cat="informative") }}
 
 The capacity of a heap-allocated `StrBuf`, and the growth strategy that chooses
-it, are implementation-defined (1.3:6): a conforming program observes only the
-length and byte content of a `StrBuf`, never its exact capacity. The
-mutable-string extension ([Mutable Strings](@/03-types/10-mutable-strings.md),
-section 3.10) builds on this same three-word representation.
+it, are implementation-defined (1.3:6). Capacity is nonetheless *observable*:
+`capacity()` (§3.10:11) returns the exact allocated capacity, and the value it
+returns is the implementation-defined quantity itself, not a normalized one. A
+program that only reads the length and byte content of a `StrBuf` is portable
+across conforming implementations; one whose result depends on `capacity()` — or
+on how much a single append grows it — depends on an implementation-defined
+choice this implementation documents in §3.10:24 and may change in a later
+release. The mutable-string extension
+([Mutable Strings](@/03-types/10-mutable-strings.md), section 3.10) builds on
+this same three-word representation.
 
 {{ rule(id="3.7:42") }}
 
@@ -230,7 +236,16 @@ The intrinsic `@to_string(n)` takes an argument of any integer type (`i8`,
 `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, or `u64`) and returns a new,
 heap-allocated `StrBuf` containing the base-10 decimal representation of `n`
 (see ADR-0035). The argument keeps its own type; a bare integer literal argument
-is inferred to be `i32` (the default integer type).
+is inferred to be `i32` (the default integer type). Using `@to_string` requires
+the enclosing file to import the standard library lexically
+(`const std = @import("std");`), because the intrinsic names `StrBuf` in its
+result type without rooting the trusted-module demand itself. In a file with no
+such import, a use of `@to_string` is rejected with E0204 (unknown type
+`StrBuf`) — the import must be present, but it need not be otherwise used, and
+the name `StrBuf` need not be brought into scope. This distinguishes
+`@to_string` from `@read_line` (§4.13:35) and the `@parse_*` intrinsics
+(§4.13:44), which do root the trusted module themselves and so have their
+`Option` result type even without a lexical `std` import.
 
 {{ rule(id="3.7:23", cat="dynamic-semantics") }}
 

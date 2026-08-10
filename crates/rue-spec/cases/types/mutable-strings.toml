@@ -412,10 +412,17 @@ exit_code = 0
 # Growth Strategy (3.10:24 - 3.10:25)
 # =============================================================================
 
+# The capacities are pinned, not merely compared, because 3.10:25 now documents
+# THIS implementation's choice and the pre-RUE-1274 text got it wrong. Growth
+# starts from max(current, 16) and doubles in a loop until the required capacity
+# is reached: the first append of 5 bytes lands on the 16-byte minimum rather
+# than on double of zero, and the second append (30 more bytes, 35 required)
+# runs 16 -> 32 -> 64, so one append MORE than doubles the capacity. A std
+# growth-policy change now fails here instead of silently invalidating 3.10:25.
 [[case]]
 name = "string_growth_on_append"
 spec = ["3.10:24", "3.10:25"]
-description = "StrBuf grows capacity when needed"
+description = "StrBuf grows to at least the required capacity; the concrete values pin the implementation-defined policy documented in 3.10:25"
 real_std = true
 source = """
 const std = @import("std");
@@ -424,13 +431,17 @@ fn main() -> i32 {
     let mut s = StrBuf.new();
     s.push_str("hello");
     let cap1 = s.capacity();
+    @dbg(cap1);
     // Append enough to exceed initial capacity
     s.push_str(" world hello world hello world");
     let cap2 = s.capacity();
-    if cap2 > cap1 { 0 } else { 1 }
+    @dbg(s.len());
+    @dbg(cap2);
+    if cap2 > cap1 && cap2 >= s.len() { 0 } else { 1 }
 }
 """
 exit_code = 0
+expected_stdout = "16\n35\n64\n"
 
 # =============================================================================
 # Clone (3.10:26 - 3.10:28)

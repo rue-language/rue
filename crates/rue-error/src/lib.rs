@@ -1761,8 +1761,18 @@ pub enum ErrorKind {
     /// (Appendix C practical limit; RUE-561 — unchecked u32 slot arithmetic
     /// previously ICEd on 2 GiB arrays and silently truncated 32 GiB ones to
     /// zero-sized).
-    #[error("type '{type_name}' exceeds the maximum supported object size ({max_bytes} bytes)")]
-    TypeTooLarge { type_name: String, max_bytes: u64 },
+    ///
+    /// The limit that is actually enforced is a count of 8-byte ABI slots, not
+    /// a byte total: a layout spends one slot per scalar, per struct field, and
+    /// per array element, whatever the element's own width. The message names
+    /// the slot ceiling so it reports the limit the compiler checks, as spec
+    /// C.1:2 requires (RUE-1272).
+    #[error(
+        "type '{type_name}' exceeds the maximum supported object size \
+         ({max_slots} ABI slots; a layout spends one 8-byte slot per scalar, \
+         struct field, and array element)"
+    )]
+    TypeTooLarge { type_name: String, max_slots: u64 },
     /// A function's cumulative locals, parameter homes, sret cell, spills, or
     /// transient outgoing call area exceeds the backend displacement budget.
     #[error(

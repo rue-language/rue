@@ -36,7 +36,7 @@ implementation:
 |----------|----------------------------------|
 | **Undefined** | None. A program that exhibits undefined behavior is invalid and the implementation may do anything. In Rue this arises **only within `unchecked` code** (see B.3). |
 | **Unspecified** | Choose from a permitted set of behaviors; no particular choice is required and none need be documented. Rue specifies most such choices (e.g. evaluation order §4.0, drop order §3.9), so this category has few instances today. |
-| **Implementation-defined** | Choose from a permitted set **and document** the choice. Examples: `StrBuf` growth/capacity (§3.7), struct and array layout (§3.6), the width of `usize`/`isize` (§3.1), and the limits of Appendix C. |
+| **Implementation-defined** | Choose from a permitted set **and document** the choice. Examples: `StrBuf` growth/capacity (§3.7:41, documented in §3.10:25 — and *observable*, since `capacity()` (§3.10:11) returns the chosen value, so a program that branches on it is not portable), struct and array layout (§3.6), the width of `usize`/`isize` (§3.1), and the limits of Appendix C. |
 | **Erroneous** | Well-defined behavior that is nonetheless a program error a conforming implementation is encouraged to diagnose. Rue currently has **no** erroneous behavior — conditions other languages leave erroneous (e.g. integer overflow) Rue instead *traps* as a defined panic (see B.2). |
 
 {{ rule(id="B.1:3", cat="informative") }}
