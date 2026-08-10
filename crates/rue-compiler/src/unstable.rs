@@ -1613,13 +1613,103 @@ pub struct QueryMetrics {
     pub reuses: usize,
 }
 
+/// Deterministic retained-terminal validation work contained in [`MetricsSnapshot`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QueryValidationMetrics {
+    pub traversals: u64,
+    pub successful_traversals: u64,
+    pub dirty_traversals: u64,
+    pub aborted_traversals: u64,
+    pub input_observations: u64,
+    pub dependency_observations: u64,
+    pub registry_probes: u64,
+    pub registry_misses: u64,
+    pub node_visits: u64,
+    pub active_cycle_prunes: u64,
+    pub memo_hits: u64,
+    pub memo_misses: u64,
+    pub endorsement_probes: u64,
+    pub endorsement_hits: u64,
+    pub demands: u64,
+    pub demand_reuses: u64,
+    pub demand_computes: u64,
+    pub demand_joins: u64,
+    pub demand_aborts: u64,
+    pub superseded: u64,
+    pub certificates_published: u64,
+}
+
+impl QueryValidationMetrics {
+    #[must_use]
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        Self::from(self.into_runtime().saturating_sub(earlier.into_runtime()))
+    }
+
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        let mut aggregate = self.into_runtime();
+        aggregate.saturating_add_assign(other.into_runtime());
+        *self = Self::from(aggregate);
+    }
+
+    fn into_runtime(self) -> rue_query::ValidationWork {
+        rue_query::ValidationWork {
+            traversals: self.traversals,
+            successful_traversals: self.successful_traversals,
+            dirty_traversals: self.dirty_traversals,
+            aborted_traversals: self.aborted_traversals,
+            input_observations: self.input_observations,
+            dependency_observations: self.dependency_observations,
+            registry_probes: self.registry_probes,
+            registry_misses: self.registry_misses,
+            node_visits: self.node_visits,
+            active_cycle_prunes: self.active_cycle_prunes,
+            memo_hits: self.memo_hits,
+            memo_misses: self.memo_misses,
+            endorsement_probes: self.endorsement_probes,
+            endorsement_hits: self.endorsement_hits,
+            demands: self.demands,
+            demand_reuses: self.demand_reuses,
+            demand_computes: self.demand_computes,
+            demand_joins: self.demand_joins,
+            demand_aborts: self.demand_aborts,
+            superseded: self.superseded,
+            certificates_published: self.certificates_published,
+        }
+    }
+}
+
+impl From<rue_query::ValidationWork> for QueryValidationMetrics {
+    fn from(work: rue_query::ValidationWork) -> Self {
+        Self {
+            traversals: work.traversals,
+            successful_traversals: work.successful_traversals,
+            dirty_traversals: work.dirty_traversals,
+            aborted_traversals: work.aborted_traversals,
+            input_observations: work.input_observations,
+            dependency_observations: work.dependency_observations,
+            registry_probes: work.registry_probes,
+            registry_misses: work.registry_misses,
+            node_visits: work.node_visits,
+            active_cycle_prunes: work.active_cycle_prunes,
+            memo_hits: work.memo_hits,
+            memo_misses: work.memo_misses,
+            endorsement_probes: work.endorsement_probes,
+            endorsement_hits: work.endorsement_hits,
+            demands: work.demands,
+            demand_reuses: work.demand_reuses,
+            demand_computes: work.demand_computes,
+            demand_joins: work.demand_joins,
+            demand_aborts: work.demand_aborts,
+            superseded: work.superseded,
+            certificates_published: work.certificates_published,
+        }
+    }
+}
+
 /// Query-runtime validation and retention work contained in [`MetricsSnapshot`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueryRuntimeMetrics {
-    /// Dependency validations satisfied by a revision-scoped memo.
-    pub validation_memo_hits: u64,
-    /// Dependency validations that inspected or re-demanded the node.
-    pub validation_memo_misses: u64,
+    pub validation: QueryValidationMetrics,
     /// Family-local retention passes run.
     pub retention_enforcements: u64,
     /// Retention-queue entries examined by those passes.
@@ -1959,8 +2049,7 @@ impl MetricsSnapshot {
     }
     pub fn query_runtime(&self) -> QueryRuntimeMetrics {
         QueryRuntimeMetrics {
-            validation_memo_hits: self.inner.runtime.validation_memo_hits,
-            validation_memo_misses: self.inner.runtime.validation_memo_misses,
+            validation: self.inner.runtime.validation.into(),
             retention_enforcements: self.inner.runtime.retention_enforcements,
             retention_scan_entries: self.inner.runtime.retention_scan_entries,
         }

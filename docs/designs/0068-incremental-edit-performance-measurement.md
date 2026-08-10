@@ -176,6 +176,9 @@ Every raw observation records at least:
   runnable-ready durations, present only for their declared outcome;
 - exact computed, reused, joined, invalidated, canceled, and evicted work by
   available compiler phase;
+- exact retained-terminal validation traversals and outcomes, input/dependency
+  observations, registry and memo results, registered-cone endorsements,
+  re-demand outcomes, superseded incarnations, and published certificates;
 - current and peak retained artifact charge, dependency/input observations, and
   configured budgets;
 - diagnostics/warning identity and executable fingerprint;
@@ -186,6 +189,9 @@ Every raw observation records at least:
 The compiler's deterministic counters are authoritative for locality. Process
 RSS may be recorded as an advisory host observation, but it cannot replace the
 session's retained-charge gauges or serve as an exact eviction assertion.
+High-frequency validation counters accumulate on each rooted request and merge
+once at task completion; the measurement contract does not permit a shared
+atomic or lock acquisition for every validation event.
 
 Unknown fields are rejected. Schema changes and fixture changes advance separate
 explicit revisions so a workload edit cannot silently reset its own history.

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 2;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -719,6 +719,54 @@ pub enum OracleComparison {
     },
 }
 
+/// Deterministic work performed while validating retained query results.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ValidationWork {
+    /// Retained-terminal validation traversals started.
+    pub traversals: u64,
+    /// Traversals which proved a retained terminal current.
+    pub successful_traversals: u64,
+    /// Traversals which proved a retained terminal dirty.
+    pub dirty_traversals: u64,
+    /// Traversals aborted by cancellation or an engine error.
+    pub aborted_traversals: u64,
+    /// Direct input observations inspected.
+    pub input_observations: u64,
+    /// Retained dependency observations inspected.
+    pub dependency_observations: u64,
+    /// Exact node-incarnation registry probes.
+    pub registry_probes: u64,
+    /// Registry probes with no live exact incarnation.
+    pub registry_misses: u64,
+    /// Erased-node validation visits.
+    pub node_visits: u64,
+    /// Recursive visits pruned at an active incarnation.
+    pub active_cycle_prunes: u64,
+    /// Node visits satisfied by a revision-scoped certificate.
+    pub memo_hits: u64,
+    /// Node visits which inspected or re-demanded the node.
+    pub memo_misses: u64,
+    /// Registered-cone endorsement lookups.
+    pub endorsement_probes: u64,
+    /// Endorsement lookups satisfied by the rooted request.
+    pub endorsement_hits: u64,
+    /// Family-owned validation demands issued.
+    pub demands: u64,
+    /// Validation demands answered by retained terminals.
+    pub demand_reuses: u64,
+    /// Validation demands which computed terminals.
+    pub demand_computes: u64,
+    /// Validation demands which joined in-flight terminals.
+    pub demand_joins: u64,
+    /// Validation demands which aborted without terminals.
+    pub demand_aborts: u64,
+    /// Demands whose observed incarnation had been replaced.
+    pub superseded: u64,
+    /// New exact revision/stamp validation certificates published.
+    pub certificates_published: u64,
+}
+
 impl OracleComparison {
     fn warm(&self) -> &OutcomeIdentity {
         match self {
@@ -745,6 +793,8 @@ pub struct EditSample {
     pub outcome: EditOutcome,
     /// Exact structural work by compiler phase.
     pub work: StructuralWork,
+    /// Exact retained-terminal validation work.
+    pub validation: ValidationWork,
     /// Retained memory and observation gauges at the endpoint.
     pub retention: RetainedGauges,
     /// Fresh-session correctness comparison performed outside timing.
@@ -1034,6 +1084,70 @@ fn validate_gauges(path: &str, gauges: &RetainedGauges, errors: &mut Vec<Validat
     }
 }
 
+fn validate_validation_work(
+    path: &str,
+    work: &ValidationWork,
+    errors: &mut Vec<ValidationFinding>,
+) {
+    let traversal_outcomes = work
+        .successful_traversals
+        .checked_add(work.dirty_traversals)
+        .and_then(|total| total.checked_add(work.aborted_traversals));
+    if traversal_outcomes != Some(work.traversals) {
+        errors.push(finding(
+            path,
+            "validation traversals do not equal clean, dirty, and aborted outcomes",
+        ));
+    }
+
+    let visit_outcomes = work
+        .active_cycle_prunes
+        .checked_add(work.memo_hits)
+        .and_then(|total| total.checked_add(work.memo_misses));
+    if visit_outcomes != Some(work.node_visits) {
+        errors.push(finding(
+            path,
+            "validation node visits do not equal cycle prunes, memo hits, and memo misses",
+        ));
+    }
+
+    let expected_registry_probes = work
+        .dependency_observations
+        .checked_add(work.successful_traversals);
+    if expected_registry_probes != Some(work.registry_probes) {
+        errors.push(finding(
+            path,
+            "registry probes do not equal dependency observations plus published traversal probes",
+        ));
+    }
+    if work.registry_misses > work.registry_probes {
+        errors.push(finding(path, "registry misses exceed registry probes"));
+    }
+    if work.endorsement_hits > work.endorsement_probes {
+        errors.push(finding(
+            path,
+            "validation endorsement hits exceed endorsement probes",
+        ));
+    }
+    let completed_demands = work
+        .demand_reuses
+        .checked_add(work.demand_computes)
+        .and_then(|total| total.checked_add(work.demand_joins))
+        .and_then(|total| total.checked_add(work.demand_aborts));
+    if completed_demands.is_none_or(|completed| completed > work.demands) {
+        errors.push(finding(
+            path,
+            "validation demand outcomes exceed issued demands",
+        ));
+    }
+    if work.certificates_published > work.successful_traversals {
+        errors.push(finding(
+            path,
+            "published validation certificates exceed successful traversals",
+        ));
+    }
+}
+
 /// Strictly validate a raw report against its manifest.
 pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> EditValidation {
     let mut errors = Vec::new();
@@ -1310,6 +1424,11 @@ pub fn validate_edit_report(manifest: &EditManifest, report: &EditReport) -> Edi
             validate_gauges(
                 &format!("{sample_path}.retention"),
                 &sample.retention,
+                &mut errors,
+            );
+            validate_validation_work(
+                &format!("{sample_path}.validation"),
+                &sample.validation,
                 &mut errors,
             );
             if sample.work.totals().is_none() {
@@ -1755,7 +1874,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 2
+report_schema_version = 3
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -1929,6 +2048,7 @@ minimum_memory_bytes = 15000000000
                 }
             },
             work: StructuralWork::default(),
+            validation: ValidationWork::default(),
             retention: gauges(sample_index),
             oracle: OracleComparison::Matched {
                 warm: identity.clone(),
@@ -2083,6 +2203,47 @@ minimum_memory_bytes = 15000000000
     }
 
     #[test]
+    fn validation_work_conservation_is_strictly_validated() {
+        let manifest = EditManifest::parse(MANIFEST).unwrap();
+        let mut measured = report(&manifest);
+        measured.rows[0].samples[0].validation = ValidationWork {
+            traversals: 3,
+            successful_traversals: 1,
+            dirty_traversals: 1,
+            aborted_traversals: 1,
+            input_observations: 4,
+            dependency_observations: 5,
+            registry_probes: 6,
+            registry_misses: 1,
+            node_visits: 4,
+            active_cycle_prunes: 1,
+            memo_hits: 1,
+            memo_misses: 2,
+            endorsement_probes: 2,
+            endorsement_hits: 1,
+            demands: 2,
+            demand_reuses: 1,
+            demand_computes: 1,
+            demand_joins: 0,
+            demand_aborts: 0,
+            superseded: 0,
+            certificates_published: 1,
+        };
+        assert!(
+            validate_edit_report(&manifest, &measured).is_success(),
+            "a self-consistent nonzero validation ledger is valid"
+        );
+
+        measured.rows[0].samples[0].validation.node_visits += 1;
+        let validation = validate_edit_report(&manifest, &measured);
+        assert!(validation.errors.iter().any(|error| {
+            error
+                .detail
+                .contains("node visits do not equal cycle prunes")
+        }));
+    }
+
+    #[test]
     fn missing_rows_bad_endpoints_workers_and_unknown_fields_fail_loudly() {
         let manifest = EditManifest::parse(MANIFEST).unwrap();
         let mut missing = report(&manifest);
@@ -2149,8 +2310,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":2",
-            "\"schema_version\":2,\"surprise\":true",
+            "\"schema_version\":3",
+            "\"schema_version\":3,\"surprise\":true",
             1,
         );
         assert!(

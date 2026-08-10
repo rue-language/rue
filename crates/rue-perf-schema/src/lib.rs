@@ -49,7 +49,7 @@ pub use incremental::{
     OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork, ReferenceHost,
     RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, RotationRule,
     SourceShape, StructuralWork, StructuralWorkSummary, TransformationIdentity, ValidationFinding,
-    WorkerDeclaration, WorkerMode, derive_edit_report, render_edit_report_markdown,
+    ValidationWork, WorkerDeclaration, WorkerMode, derive_edit_report, render_edit_report_markdown,
     validate_edit_report,
 };
 pub use manifest::{

@@ -128,8 +128,7 @@ pub struct FrontendRetentionMetrics {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct FrontendRuntimeMetrics {
-    pub(crate) validation_memo_hits: u64,
-    pub(crate) validation_memo_misses: u64,
+    pub(crate) validation: rue_query::ValidationWork,
     pub(crate) retention_enforcements: u64,
     pub(crate) retention_scan_entries: u64,
 }
@@ -3292,8 +3291,7 @@ impl CompilerSession {
             diagnostic_source_bytes: diagnostics.source_bytes,
         });
         self.metrics.set_runtime(FrontendRuntimeMetrics {
-            validation_memo_hits: runtime.validation_memo_hits,
-            validation_memo_misses: runtime.validation_memo_misses,
+            validation: runtime.validation,
             retention_enforcements: runtime.retention_enforcements,
             retention_scan_entries: runtime.retention_scan_entries,
         });
