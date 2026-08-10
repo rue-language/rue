@@ -1772,6 +1772,26 @@ impl ModuleIndex {
             .map(|index| &self.imports[*index]);
         (normalized, directive)
     }
+
+    /// Recover one exact parser-owned import occurrence without revisiting
+    /// unrelated directives. Module parsing keeps this slice in the same
+    /// canonical field order used by `ImportDirective`'s derived ordering.
+    fn import_occurrence(
+        &self,
+        occurrence: &crate::ImportOccurrenceKey,
+    ) -> Option<&crate::ImportDirective> {
+        self.imports
+            .binary_search_by(|directive| {
+                directive
+                    .importer()
+                    .cmp(occurrence.importer())
+                    .then_with(|| directive.source_offset().cmp(&occurrence.source_offset()))
+                    .then_with(|| directive.source_end().cmp(&occurrence.source_end()))
+                    .then_with(|| directive.specifier().cmp(occurrence.specifier()))
+            })
+            .ok()
+            .map(|index| &self.imports[index])
+    }
 }
 
 /// Current-file-table projection assembled exclusively from ModuleIndex and
@@ -12117,7 +12137,7 @@ impl RevisionedQueryDatabase {
             .expect("the ModuleRir family has one canonical name");
         let import_store = Arc::new(Mutex::new(ImportInputStore::default()));
         let evaluator_store = import_store.clone();
-        let parse_for_import = parse_modules.clone();
+        let index_for_import_resolution = module_indexes.clone();
         let resolve_imports = runtime
             .family_with_evaluator(
                 "compiler.resolve-import",
@@ -12133,21 +12153,18 @@ impl RevisionedQueryDatabase {
                     }
                     .ok_or_else(|| QueryAbort::UnpublishedRevision(context.revision()))?;
                     context.input(import_context_input())?;
-                    let parsed = context.query_registered(
-                        &parse_for_import,
+                    let indexed = context.query_registered(
+                        &index_for_import_resolution,
                         ModuleQueryKey(key.occurrence.importer().clone()),
                     )?;
-                    let rue_query::QueryOutcome::Success(parsed) = parsed.outcome() else {
-                        unreachable!("ParseModule publishes typed values")
+                    let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
+                        unreachable!("ModuleIndex publishes typed values")
                     };
-                    let site = parsed.result.as_ref().ok().and_then(|module| {
-                        module.imports().iter().find(|site| {
-                            site.importer() == key.occurrence.importer()
-                                && site.source_offset() == key.occurrence.source_offset()
-                                && site.source_end() == key.occurrence.source_end()
-                                && site.specifier() == key.occurrence.specifier()
-                        })
-                    });
+                    let site = indexed
+                        .0
+                        .as_ref()
+                        .ok()
+                        .and_then(|index| index.import_occurrence(&key.occurrence));
                     let Some(site) = site else {
                         return Ok(QueryOutput::success(ResolveImportValue {
                             site_found: false,
@@ -29208,8 +29225,46 @@ fn main() -> i32 {
             directive.map(crate::ImportDirective::specifier),
             Some("./target.rue")
         );
+        let target = directive.expect("target import retains its exact source locator");
+        let occurrence = crate::ImportOccurrenceKey::from_directive(target);
+        assert_eq!(
+            index
+                .import_occurrence(&occurrence)
+                .map(crate::ImportDirective::specifier),
+            Some("./target.rue")
+        );
+        let stale = crate::ImportOccurrenceKey::from_directive(&crate::ImportDirective::new(
+            target.importer().clone(),
+            target.source_offset().saturating_add(1),
+            target.source_end(),
+            Arc::from(target.specifier()),
+        ));
+        assert!(index.import_occurrence(&stale).is_none());
         let (_, absent) = index.normalized_import("absent.rue");
         assert!(absent.is_none());
+
+        let compiler = include_str!("revisioned_query_database.rs");
+        let method_start = compiler
+            .find("    fn import_occurrence(")
+            .expect("exact occurrence lookup remains explicit");
+        let method_end = compiler[method_start..]
+            .find("\n    }\n}\n\n/// Current-file-table projection")
+            .map(|offset| method_start + offset)
+            .expect("exact occurrence lookup remains on ModuleIndex");
+        let method = &compiler[method_start..method_end];
+        assert!(method.contains(".binary_search_by("));
+        assert!(!method.contains(".iter().find("));
+
+        let evaluator_start = compiler
+            .find("\"compiler.resolve-import\"")
+            .expect("ResolveImport evaluator remains registered");
+        let evaluator_end = compiler[evaluator_start..]
+            .find(".expect(\"the ResolveImport family has one canonical name\")")
+            .map(|offset| evaluator_start + offset)
+            .expect("ResolveImport evaluator remains bounded");
+        let evaluator = &compiler[evaluator_start..evaluator_end];
+        assert!(evaluator.contains("index.import_occurrence(&key.occurrence)"));
+        assert!(!evaluator.contains("module.imports().iter().find("));
     }
 
     #[test]
