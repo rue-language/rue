@@ -333,7 +333,7 @@ fn elapsed_ms(duration: Duration) -> u128 {
 
 fn validation_summary(work: QueryValidationMetrics) -> String {
     format!(
-        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle, registry {}/{}, demands {}/{}/{}/{}/{}, endorsements {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
+        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle (misses {}/{} certificate/proof-reacquisition), registry {}/{}, demands {}/{}/{}/{}/{}, endorsements {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
         work.traversals,
         work.successful_traversals,
         work.dirty_traversals,
@@ -343,6 +343,8 @@ fn validation_summary(work: QueryValidationMetrics) -> String {
         work.memo_hits,
         work.memo_misses,
         work.active_cycle_prunes,
+        work.certificate_misses,
+        work.proof_reacquisition_misses,
         work.registry_misses,
         work.registry_probes,
         work.demand_reuses,
@@ -893,6 +895,8 @@ fn report_validation_work(work: QueryValidationMetrics) -> ReportValidationWork 
         active_cycle_prunes: work.active_cycle_prunes,
         memo_hits: work.memo_hits,
         memo_misses: work.memo_misses,
+        certificate_misses: work.certificate_misses,
+        proof_reacquisition_misses: work.proof_reacquisition_misses,
         endorsement_probes: work.endorsement_probes,
         endorsement_hits: work.endorsement_hits,
         terminal_lease_observations: work.terminal_lease_observations,
