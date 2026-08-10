@@ -1331,6 +1331,11 @@ impl CfgDomainProjection {
         // payloads, arrays, and destructor symbols. Close the live type domain
         // over those facts so every emitted CFG handle can be relocated.
         let mut types = deduplicate_type_mappings(types)?;
+        let mut type_positions = types
+            .iter()
+            .enumerate()
+            .map(|(position, (current, _))| (*current, position))
+            .collect::<HashMap<_, _>>();
         let mut pending = types
             .iter()
             .map(|(current, _)| *current)
@@ -1348,10 +1353,9 @@ impl CfgDomainProjection {
                         let symbol = interner.get_or_intern(name);
                         if let Some(callable) = stable_callable(symbol) {
                             symbols.push((symbol, StableCfgSymbol::Callable(callable)));
-                        } else if let Some(CanonicalType::AnonymousNominal(owner)) =
-                            types.iter().find_map(|(candidate, stable)| {
-                                (*candidate == current).then_some(stable)
-                            })
+                        } else if let Some(CanonicalType::AnonymousNominal(owner)) = type_positions
+                            .get(&current)
+                            .map(|position| &types[*position].1)
                         {
                             symbols.push((
                                 symbol,
@@ -1391,9 +1395,14 @@ impl CfgDomainProjection {
                 if visited.contains(&child) {
                     continue;
                 }
-                if !types.iter().any(|(current, _)| *current == child) {
+                if let std::collections::hash_map::Entry::Vacant(entry) =
+                    type_positions.entry(child)
+                {
                     match stable_type(child) {
-                        Ok(stable) => types.push((child, stable)),
+                        Ok(stable) => {
+                            entry.insert(types.len());
+                            types.push((child, stable));
+                        }
                         Err(CfgDomainFailure::Missing | CfgDomainFailure::Unsupported) => {
                             incomplete = true;
                             continue;
@@ -1719,6 +1728,20 @@ mod tests {
         assert!(
             queries.contains(".admit_stable_types(&record.domains, &mut type_admission_index)")
         );
+
+        let type_closure = source
+            .split_once("// CFG cleanup elaboration recursively reads aggregate fields")
+            .unwrap()
+            .1
+            .split_once("stable_strings.sort_by_key")
+            .unwrap()
+            .0
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(type_closure.contains("type_positions"));
+        assert!(!type_closure.contains("types.iter().any("));
+        assert!(!type_closure.contains("types.iter().find"));
     }
 
     #[test]
