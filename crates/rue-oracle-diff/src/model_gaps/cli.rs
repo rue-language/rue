@@ -280,7 +280,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.aggregate_layout",
         "compact_enum_padding_is_deterministically_zeroed",
-        intrinsic(UnsupportedIntrinsicKind::ByteWrite),
+        intrinsic(UnsupportedIntrinsicKind::PointerWrite),
         &[],
     ),
     // ADR-0052 phase 5.10 (RUE-987): the whole compact-struct-through-pointer
@@ -391,8 +391,10 @@ const ENTRIES: &[Entry] = &[
         "std_core_m1_smoke",
         // `std.mem.swap` now performs a bytewise exchange through `@raw_mut`
         // (RUE-943), so the oracle model's first unsupported intrinsic for this
-        // case is the address-of rather than the later `@int_to_ptr`.
-        intrinsic(UnsupportedIntrinsicKind::ByteRead),
+        // case is the address-of rather than the later `@int_to_ptr`. Since
+        // ADR-0059 Phase 4 (RUE-962) the per-byte step is `@ptr_read` over a
+        // `ptr u8` rather than the removed `@byte_read`.
+        intrinsic(UnsupportedIntrinsicKind::PointerRead),
         &[],
     ),
     // std.env (RUE-935): argv/envp are captured process state, so the oracle
@@ -443,7 +445,7 @@ const ENTRIES: &[Entry] = &[
     Entry::new(
         "cli.std_m3",
         "std_sort_m3",
-        intrinsic(UnsupportedIntrinsicKind::ByteRead),
+        intrinsic(UnsupportedIntrinsicKind::PointerRead),
         &[],
     ),
     Entry::new(

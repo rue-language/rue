@@ -307,7 +307,7 @@ fn _sockaddr_to_kernel_buf(b: [u8; 16]) -> ptr mut u8 {
     }
     let mut i: u64 = 0;
     while i < 16 {
-        checked { @byte_write(buf, i, b[i]); };
+        checked { @ptr_write(@ptr_offset(buf, i), b[i]); };
         i += 1;
     }
     buf
@@ -392,7 +392,7 @@ pub struct TcpStream {
         let n: u64 = @intCast(ret);
         let mut i: u64 = 0;
         while i < n {
-            let b = checked { @byte_read(tmp, i) };
+            let b = checked { @ptr_read(@ptr_offset(tmp, i)) };
             buf.push(b);
             i += 1;
         }
@@ -415,7 +415,7 @@ pub struct TcpStream {
         }
         let mut i: u64 = 0;
         while i < n {
-            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            checked { @ptr_write(@ptr_offset(tmp, i), buf.get_or(i, 0)); };
             i += 1;
         }
         let addr: u64 = checked { @ptr_to_int(tmp) };
@@ -442,7 +442,7 @@ pub struct TcpStream {
         }
         let mut i: u64 = 0;
         while i < n {
-            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            checked { @ptr_write(@ptr_offset(tmp, i), buf.get_or(i, 0)); };
             i += 1;
         }
         let base: u64 = checked { @ptr_to_int(tmp) };
@@ -572,10 +572,10 @@ pub struct TcpListener {
         if checked { @ptr_to_int(lbuf) } == 0 {
             @panic("out of memory");
         }
-        checked { @byte_write(lbuf, 0, 16); };
-        checked { @byte_write(lbuf, 1, 0); };
-        checked { @byte_write(lbuf, 2, 0); };
-        checked { @byte_write(lbuf, 3, 0); };
+        checked { @ptr_write(@ptr_offset(lbuf, 0), 16); };
+        checked { @ptr_write(@ptr_offset(lbuf, 1), 0); };
+        checked { @ptr_write(@ptr_offset(lbuf, 2), 0); };
+        checked { @ptr_write(@ptr_offset(lbuf, 3), 0); };
         let aaddr: u64 = checked { @ptr_to_int(abuf) };
         let laddr: u64 = checked { @ptr_to_int(lbuf) };
         let fd_u: u64 = @intCast(self.fd);
@@ -585,24 +585,24 @@ pub struct TcpListener {
             checked { @free(lbuf, 4, 1); };
             return R.Err(_normalize_net_errno(0 - ret));
         }
-        let l0 = checked { @byte_read(lbuf, 0) };
-        let l1 = checked { @byte_read(lbuf, 1) };
-        let l2 = checked { @byte_read(lbuf, 2) };
-        let l3 = checked { @byte_read(lbuf, 3) };
+        let l0 = checked { @ptr_read(@ptr_offset(lbuf, 0)) };
+        let l1 = checked { @ptr_read(@ptr_offset(lbuf, 1)) };
+        let l2 = checked { @ptr_read(@ptr_offset(lbuf, 2)) };
+        let l3 = checked { @ptr_read(@ptr_offset(lbuf, 3)) };
         checked { @free(lbuf, 4, 1); };
         let written_len = binary.u32_from_le_bytes([l0, l1, l2, l3]);
         if written_len != 16 {
             checked { @free(abuf, sockaddr_in_len(), 1); };
             return R.Err(NetworkError.InvalidInput);
         }
-        let b0 = checked { @byte_read(abuf, 0) };
-        let b1 = checked { @byte_read(abuf, 1) };
-        let b2 = checked { @byte_read(abuf, 2) };
-        let b3 = checked { @byte_read(abuf, 3) };
-        let b4 = checked { @byte_read(abuf, 4) };
-        let b5 = checked { @byte_read(abuf, 5) };
-        let b6 = checked { @byte_read(abuf, 6) };
-        let b7 = checked { @byte_read(abuf, 7) };
+        let b0 = checked { @ptr_read(@ptr_offset(abuf, 0)) };
+        let b1 = checked { @ptr_read(@ptr_offset(abuf, 1)) };
+        let b2 = checked { @ptr_read(@ptr_offset(abuf, 2)) };
+        let b3 = checked { @ptr_read(@ptr_offset(abuf, 3)) };
+        let b4 = checked { @ptr_read(@ptr_offset(abuf, 4)) };
+        let b5 = checked { @ptr_read(@ptr_offset(abuf, 5)) };
+        let b6 = checked { @ptr_read(@ptr_offset(abuf, 6)) };
+        let b7 = checked { @ptr_read(@ptr_offset(abuf, 7)) };
         checked { @free(abuf, sockaddr_in_len(), 1); };
         let bytes: [u8; 16] = [b0, b1, b2, b3, b4, b5, b6, b7, 0, 0, 0, 0, 0, 0, 0, 0];
         let O = option.Option(SockAddr);

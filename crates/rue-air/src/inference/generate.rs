@@ -1948,38 +1948,6 @@ impl<'a> ConstraintGenerator<'a> {
                         ));
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "byte_read" {
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
-                        if i == 1 {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(Type::U64),
-                                info.span,
-                            ));
-                        }
-                    }
-                    InferType::Concrete(Type::U8)
-                } else if intrinsic_name == "byte_write" {
-                    let ptr_ty =
-                        Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
-                        let expected = match i {
-                            0 => Some(ptr_ty),
-                            1 => Some(Type::U64),
-                            2 => Some(Type::U8),
-                            _ => None,
-                        };
-                        if let Some(expected) = expected {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(expected),
-                                info.span,
-                            ));
-                        }
-                    }
-                    InferType::Concrete(Type::UNIT)
                 } else if intrinsic_name == "byte_copy" || intrinsic_name == "byte_move" {
                     // @byte_copy/@byte_move(dst: ptr mut u8,
                     // src: ptr const u8 | ptr mut u8, size: u64) -> (). Constrain

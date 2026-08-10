@@ -474,40 +474,52 @@ fn main() -> i32 {
         let addr: u64 = @ptr_to_int(ep);
         let bp: ptr mut u8 = @int_to_ptr(addr);
         // Poison every byte so any un-zeroed padding would be observable.
-        @byte_write(bp, 0, 255);
-        @byte_write(bp, 1, 255);
-        @byte_write(bp, 2, 255);
-        @byte_write(bp, 3, 255);
-        @byte_write(bp, 4, 255);
-        @byte_write(bp, 5, 255);
-        @byte_write(bp, 6, 255);
-        @byte_write(bp, 7, 255);
+        @ptr_write(@ptr_offset(bp, 0), 255);
+        @ptr_write(@ptr_offset(bp, 1), 255);
+        @ptr_write(@ptr_offset(bp, 2), 255);
+        @ptr_write(@ptr_offset(bp, 3), 255);
+        @ptr_write(@ptr_offset(bp, 4), 255);
+        @ptr_write(@ptr_offset(bp, 5), 255);
+        @ptr_write(@ptr_offset(bp, 6), 255);
+        @ptr_write(@ptr_offset(bp, 7), 255);
         @ptr_write(ep, Wide.A(7, 16909060));
         // Padding bytes must be deterministically zero.
-        if @byte_read(bp, 1) != 0 { return 1; }
-        if @byte_read(bp, 2) != 0 { return 2; }
-        if @byte_read(bp, 3) != 0 { return 3; }
-        if @byte_read(bp, 5) != 0 { return 4; }
-        if @byte_read(bp, 6) != 0 { return 5; }
-        if @byte_read(bp, 7) != 0 { return 6; }
+        let probe1: u8 = @ptr_read(@ptr_offset(bp, 1));
+        if probe1 != 0 { return 1; }
+        let probe2: u8 = @ptr_read(@ptr_offset(bp, 2));
+        if probe2 != 0 { return 2; }
+        let probe3: u8 = @ptr_read(@ptr_offset(bp, 3));
+        if probe3 != 0 { return 3; }
+        let probe4: u8 = @ptr_read(@ptr_offset(bp, 5));
+        if probe4 != 0 { return 4; }
+        let probe5: u8 = @ptr_read(@ptr_offset(bp, 6));
+        if probe5 != 0 { return 5; }
+        let probe6: u8 = @ptr_read(@ptr_offset(bp, 7));
+        if probe6 != 0 { return 6; }
         // Fields survive the zeroing.
         let a = @ptr_read(ep);
         match a { Wide.A(b, w) => { if b != 7 { return 7; } if w != 16909060 { return 8; } }, Wide.B => { return 9; }, };
         // Overwrite: re-poison the padding, then write a different variant. No
         // residue of the poison (or of A) may remain in B's unused bytes.
-        @byte_write(bp, 1, 255);
-        @byte_write(bp, 2, 255);
-        @byte_write(bp, 3, 255);
-        @byte_write(bp, 5, 255);
-        @byte_write(bp, 6, 255);
-        @byte_write(bp, 7, 255);
+        @ptr_write(@ptr_offset(bp, 1), 255);
+        @ptr_write(@ptr_offset(bp, 2), 255);
+        @ptr_write(@ptr_offset(bp, 3), 255);
+        @ptr_write(@ptr_offset(bp, 5), 255);
+        @ptr_write(@ptr_offset(bp, 6), 255);
+        @ptr_write(@ptr_offset(bp, 7), 255);
         @ptr_write(ep, Wide.B);
-        if @byte_read(bp, 1) != 0 { return 10; }
-        if @byte_read(bp, 2) != 0 { return 11; }
-        if @byte_read(bp, 3) != 0 { return 12; }
-        if @byte_read(bp, 5) != 0 { return 13; }
-        if @byte_read(bp, 6) != 0 { return 14; }
-        if @byte_read(bp, 7) != 0 { return 15; }
+        let probe7: u8 = @ptr_read(@ptr_offset(bp, 1));
+        if probe7 != 0 { return 10; }
+        let probe8: u8 = @ptr_read(@ptr_offset(bp, 2));
+        if probe8 != 0 { return 11; }
+        let probe9: u8 = @ptr_read(@ptr_offset(bp, 3));
+        if probe9 != 0 { return 12; }
+        let probe10: u8 = @ptr_read(@ptr_offset(bp, 5));
+        if probe10 != 0 { return 13; }
+        let probe11: u8 = @ptr_read(@ptr_offset(bp, 6));
+        if probe11 != 0 { return 14; }
+        let probe12: u8 = @ptr_read(@ptr_offset(bp, 7));
+        if probe12 != 0 { return 15; }
         @free(@int_to_ptr(@ptr_to_int(ep)), 1 * @intCast(@size_of(Wide)), @intCast(@align_of(Wide)));
     };
     0

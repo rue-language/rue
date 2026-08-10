@@ -227,11 +227,13 @@ fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
         @byte_set(p, 0, 4);
-        @ptr_write(@ptr_offset(p, 1), 200);
-        let ok: bool = @byte_read(p, 0) == 0
-            && @byte_read(p, 1) == 200
-            && @byte_read(p, 2) == 0
-            && @byte_read(p, 3) == 0;
+        let zero: u8 = 0;
+        let want: u8 = 200;
+        @ptr_write(@ptr_offset(p, 1), want);
+        let ok: bool = @ptr_read(@ptr_offset(p, 0)) == zero
+            && @ptr_read(@ptr_offset(p, 1)) == want
+            && @ptr_read(@ptr_offset(p, 2)) == zero
+            && @ptr_read(@ptr_offset(p, 3)) == zero;
         @free(p, 4, 1);
         if ok { 41 } else { 0 }
     }
@@ -254,10 +256,11 @@ fn main() -> i32 {
         @byte_set(raw, 0, 2 * unit);
         let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
         @ptr_write(p, 123456789);
-        let untouched: bool = @byte_read(raw, 4) == 0
-            && @byte_read(raw, 5) == 0
-            && @byte_read(raw, 6) == 0
-            && @byte_read(raw, 7) == 0;
+        let zero: u8 = 0;
+        let untouched: bool = @ptr_read(@ptr_offset(raw, 4)) == zero
+            && @ptr_read(@ptr_offset(raw, 5)) == zero
+            && @ptr_read(@ptr_offset(raw, 6)) == zero
+            && @ptr_read(@ptr_offset(raw, 7)) == zero;
         let same: bool = @ptr_read(p) == 123456789;
         @free(raw, 2 * unit, align);
         if untouched && same { 42 } else { 0 }

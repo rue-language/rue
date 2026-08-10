@@ -104,7 +104,8 @@ within a `checked` block. Using one outside a `checked` block is a compile
 error. (Defining a `ptr const T` / `ptr mut T` value's *type* is always legal;
 only the pointer *operations* require a `checked` block.) The same requirement
 applies to the allocation family (9.2:13) and the raw-byte intrinsics
-(9.2:14e, 9.2:14h, 9.2:14l).
+(9.2:14h, 9.2:14l). Byte-granular access has no intrinsic of its own: it is
+`@ptr_read`/`@ptr_write` over a `ptr u8` (9.2:6d), already listed above.
 
 {{ rule(id="9.1:13", cat="example") }}
 

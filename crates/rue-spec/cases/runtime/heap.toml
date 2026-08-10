@@ -29,8 +29,8 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
-        @byte_write(p, 0, 42);
-        @intCast(@byte_read(p, 0))
+        @ptr_write(@ptr_offset(p, 0), 42);
+        @intCast(@ptr_read(@ptr_offset(p, 0)))
     }
 }
 """
@@ -81,11 +81,11 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc_zeroed(5, 1);
-        let sum: i32 = @intCast(@byte_read(p, 0))
-            + @intCast(@byte_read(p, 1))
-            + @intCast(@byte_read(p, 2))
-            + @intCast(@byte_read(p, 3))
-            + @intCast(@byte_read(p, 4));
+        let sum: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)))
+            + @intCast(@ptr_read(@ptr_offset(p, 1)))
+            + @intCast(@ptr_read(@ptr_offset(p, 2)))
+            + @intCast(@ptr_read(@ptr_offset(p, 3)))
+            + @intCast(@ptr_read(@ptr_offset(p, 4)));
         @free(p, 5, 1);
         sum
     }
@@ -104,8 +104,8 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(2, 1);
-        @byte_write(p, 0, 7);
-        let v: i32 = @intCast(@byte_read(p, 0));
+        @ptr_write(@ptr_offset(p, 0), 7);
+        let v: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, 2, 1);
         v
     }
@@ -140,10 +140,10 @@ source = """
 fn main() -> i32 {
     checked {
         let mut p: ptr mut u8 = @alloc(2, 1);
-        @byte_write(p, 0, 5);
-        @byte_write(p, 1, 7);
+        @ptr_write(@ptr_offset(p, 0), 5);
+        @ptr_write(@ptr_offset(p, 1), 7);
         p = @realloc(p, 2, 1, 8);
-        let sum: i32 = @intCast(@byte_read(p, 0)) + @intCast(@byte_read(p, 1));
+        let sum: i32 = @intCast(@ptr_read(@ptr_offset(p, 0))) + @intCast(@ptr_read(@ptr_offset(p, 1)));
         @free(p, 8, 1);
         sum
     }
@@ -160,16 +160,16 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
-        @byte_write(p, 0, 10);
-        @byte_write(p, 1, 20);
-        @byte_write(p, 2, 30);
-        @byte_write(p, 3, 40);
+        @ptr_write(@ptr_offset(p, 0), 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
+        @ptr_write(@ptr_offset(p, 3), 40);
         let q: ptr mut u8 = @realloc(p, 4, 1, 18446744073709551615);
         if @ptr_to_int(q) == 0 {
-            let sum: i32 = @intCast(@byte_read(p, 0))
-                + @intCast(@byte_read(p, 1))
-                + @intCast(@byte_read(p, 2))
-                + @intCast(@byte_read(p, 3));
+            let sum: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)))
+                + @intCast(@ptr_read(@ptr_offset(p, 1)))
+                + @intCast(@ptr_read(@ptr_offset(p, 2)))
+                + @intCast(@ptr_read(@ptr_offset(p, 3)));
             @free(p, 4, 1);
             sum
         } else {
@@ -191,8 +191,8 @@ fn main() -> i32 {
         let zero: u64 = 0;
         let start: ptr mut u8 = @int_to_ptr(zero);
         let p: ptr mut u8 = @realloc(start, 0, 1, 4);
-        @byte_write(p, 0, 99);
-        let v: i32 = @intCast(@byte_read(p, 0));
+        @ptr_write(@ptr_offset(p, 0), 99);
+        let v: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, 4, 1);
         v
     }
@@ -228,9 +228,9 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(65, 8);
-        @byte_write(p, 0, 21);
+        @ptr_write(@ptr_offset(p, 0), 21);
         let size: u64 = if @resize(p, 65, 8, 120) { 120 } else { 65 };
-        let v: i32 = @intCast(@byte_read(p, 0));
+        let v: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, size, 8);
         v
     }
@@ -249,9 +249,9 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(8, 8);
-        @byte_write(p, 0, 33);
+        @ptr_write(@ptr_offset(p, 0), 33);
         let refused: bool = !@resize(p, 8, 8, 18446744073709551615);
-        let v: i32 = @intCast(@byte_read(p, 0));
+        let v: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, 8, 8);
         if refused { v } else { 0 }
     }

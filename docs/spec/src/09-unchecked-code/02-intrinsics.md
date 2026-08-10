@@ -89,7 +89,14 @@ and at `T = i32` exactly four. A write therefore leaves every byte outside
 `[address_of(p), address_of(p) + @size_of(T))` unchanged. The
 address **MUST** satisfy `@align_of(T)`; using this pair on an underaligned
 address is undefined behavior (§9.1, ADR-0028), for which `@ptr_read_unaligned`
-and `@ptr_write_unaligned` (9.2:14k) are the well-defined form.
+and `@ptr_write_unaligned` (9.2:14k) are the well-defined form. At `T = u8`
+this pair is therefore also the byte-granular access: `@ptr_read(p)` returns
+the single physical byte at `address_of(p)` as a `u8`, `@ptr_write(p, value)`
+stores exactly the eight bits of its `u8` value there and disturbs no
+neighbouring byte, and `@align_of(u8)` is `1` so every address is aligned for
+it. Combined with the one-byte `@ptr_offset` stride of 9.2:7, that is how an
+arbitrary byte of an allocation is addressed; Rue has no separate byte-read or
+byte-write intrinsic (ADR-0059).
 
 {{ rule(id="9.2:6c", cat="dynamic-semantics") }}
 
@@ -108,11 +115,14 @@ null, and `@ptr_to_int(p) == 0` is the null test.
 
 `@ptr_read` accepts a `ptr const T` or a `ptr mut T` and evaluates to `T`;
 `@ptr_write` requires a `ptr mut T` and a value of exactly the pointee type
-`T`, and evaluates to `()`. `@ptr_to_int` accepts a pointer of any pointee
-type and mutability and evaluates to `u64`. `@int_to_ptr` requires an operand
-of exactly `u64` — an untyped integer literal is not accepted, so the null
-idiom is written over a `u64` binding — and evaluates to a `ptr mut T` whose
-pointee type is inferred from context.
+`T`, and evaluates to `()`. Both require an enclosing `checked` block. At
+`T = u8` this reads as: a byte read accepts `ptr const u8` or `ptr mut u8` and
+evaluates to `u8`, while a byte write requires a `ptr mut u8` and a value of
+exactly `u8`. `@ptr_to_int` accepts a pointer of any pointee type and
+mutability and evaluates to `u64`. `@int_to_ptr` requires an operand of exactly
+`u64` — an untyped integer literal is not accepted, so the null idiom is
+written over a `u64` binding — and evaluates to a `ptr mut T` whose pointee
+type is inferred from context.
 
 {{ rule(id="9.2:6e", cat="example") }}
 
@@ -276,52 +286,22 @@ fn main() -> i32 {
 
 {{ rule(id="9.2:14a", cat="normative") }}
 
-The `@byte_read`, `@byte_write`, `@byte_copy`, `@byte_move`, `@byte_set`,
-`@ptr_read_unaligned`, and `@ptr_write_unaligned` intrinsics provide raw access
-to packed physical bytes and to potentially unaligned typed scalars. They may
-only appear inside a `checked` block. In the five byte-granular intrinsics every
-pointer is a `u8` pointer and every count and offset is a number of physical
-bytes, scaled by nothing: no operand of this family is multiplied by a pointee
-width. The two `_unaligned` intrinsics are instead pointee-typed, like the
-aligned pair of 9.2:6b — they take no count or offset and move exactly
-`@size_of(T)` bytes — and differ from it only in dropping the alignment
-obligation (9.2:14k).
+The `@byte_copy`, `@byte_move`, `@byte_set`, `@ptr_read_unaligned`, and
+`@ptr_write_unaligned` intrinsics provide raw access to packed physical bytes
+and to potentially unaligned typed scalars. They may only appear inside a
+`checked` block. In the three bulk byte-granular intrinsics every pointer is a
+`u8` pointer and every count is a number of physical bytes, scaled by nothing:
+no operand of that family is multiplied by a pointee width. The two
+`_unaligned` intrinsics are instead pointee-typed, like the aligned pair of
+9.2:6b — they take no count or offset and move exactly `@size_of(T)` bytes —
+and differ from it only in dropping the alignment obligation (9.2:14k).
 
-{{ rule(id="9.2:14d", cat="dynamic-semantics") }}
-
-`@byte_read(p, offset)` reads and returns exactly one physical byte at address
-`address_of(p) + offset`; `p` may be `ptr const u8` or `ptr mut u8` and `offset`
-has type `u64`. `@byte_write(p, offset, value)` writes exactly the low eight
-bits represented by its `u8` value at that address; `p` must be `ptr mut u8`.
-The `offset` is a plain byte displacement, added to the address unscaled. Since
-`@size_of(u8)` is `1`, that is the same address `@ptr_offset(p, offset)` names
-(9.2:7), so `@byte_read(p, offset)` and `@ptr_read(@ptr_offset(p, offset))`
-access the same single byte, as do `@byte_write` and the corresponding
-`@ptr_write`.
-
-{{ rule(id="9.2:14e", cat="legality-rule") }}
-
-`@byte_read` and `@byte_write` each require an enclosing `checked` block.
-`@byte_write` requires a `ptr mut u8`; `@byte_read` accepts `ptr const u8` or
-`ptr mut u8`. Their offset operand is exactly `u64` and a byte-write value is
-exactly `u8`. `@byte_read` evaluates to `u8` and `@byte_write` to `()`. The
-legality of the bulk intrinsics is 9.2:14h and that of the `_unaligned` pair is
-9.2:14l.
-
-{{ rule(id="9.2:14f", cat="example") }}
-
-```rue
-fn main() -> i32 {
-    checked {
-        let p = @alloc(2, 1);
-        @byte_write(p, 0, 65);
-        @byte_write(p, 1, 66);
-        let result: i32 = @intCast(@byte_read(p, 1));
-        @free(p, 2, 1);
-        result // 66
-    }
-}
-```
+Rue has no single-byte access intrinsic. Reading and writing one physical byte
+is the ordinary typed access of 9.2:6b at `T = u8`, addressed by the ordinary
+pointer arithmetic of 9.2:7: because `@size_of(u8)` is `1`, `@ptr_offset` over
+a `u8` pointer strides exactly one byte, so `@ptr_read(@ptr_offset(p, i))`
+reads and `@ptr_write(@ptr_offset(p, i), v)` writes the single byte at
+`address_of(p) + i` (ADR-0059).
 
 {{ rule(id="9.2:14g", cat="dynamic-semantics") }}
 
@@ -357,9 +337,9 @@ fn main() -> i32 {
         @byte_set(src, 7, 3);
         let dst = @alloc(3, 1);
         @byte_copy(dst, src, 3);
-        let result: i32 = @intCast(@byte_read(dst, 0))
-            + @intCast(@byte_read(dst, 1))
-            + @intCast(@byte_read(dst, 2));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 1)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 2)));
         @free(src, 3, 1);
         @free(dst, 3, 1);
         result // 21

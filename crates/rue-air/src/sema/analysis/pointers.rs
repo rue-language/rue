@@ -585,67 +585,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(())
     }
 
-    pub(super) fn analyze_byte_read_intrinsic(
-        &mut self,
-        air: &mut Air,
-        name: Spur,
-        args: &[RirCallArg],
-        span: Span,
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<AnalysisResult> {
-        if args.len() != 2 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "byte_read".to_string(),
-                    expected: 2,
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
-        self.require_u8_pointer("byte_read", ptr.ty, span)?;
-        let offset = self.analyze_inst(air, args[1].value, ctx)?;
-        self.require_intrinsic_type("byte_read", offset.ty, Type::U64, span)?;
-        let air_ref =
-            air.add_intrinsic(None, name, &[ptr.air_ref, offset.air_ref], Type::U8, span)?;
-        Ok(AnalysisResult::new(air_ref, Type::U8))
-    }
-
-    pub(super) fn analyze_byte_write_intrinsic(
-        &mut self,
-        air: &mut Air,
-        name: Spur,
-        args: &[RirCallArg],
-        span: Span,
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<AnalysisResult> {
-        if args.len() != 3 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "byte_write".to_string(),
-                    expected: 3,
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
-        self.require_mut_u8_pointer("byte_write", ptr.ty, span)?;
-        let offset = self.analyze_inst(air, args[1].value, ctx)?;
-        let value = self.analyze_inst(air, args[2].value, ctx)?;
-        self.require_intrinsic_type("byte_write", offset.ty, Type::U64, span)?;
-        self.require_intrinsic_type("byte_write", value.ty, Type::U8, span)?;
-        let air_ref = air.add_intrinsic(
-            None,
-            name,
-            &[ptr.air_ref, offset.air_ref, value.air_ref],
-            Type::UNIT,
-            span,
-        )?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
-    }
-
     /// Analyze the bulk byte-move pair `@byte_copy(dst, src, size)` and
     /// `@byte_move(dst, src, size)` (ADR-0059 Phase 1, RUE-937 / RUE-964).
     /// Both take `dst: ptr mut u8`, `src: ptr const u8 | ptr mut u8`, and a

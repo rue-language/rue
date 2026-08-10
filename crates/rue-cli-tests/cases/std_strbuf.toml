@@ -59,11 +59,16 @@ fn main() -> i32 {
     bytes.reserve_source(20);
     if bytes.len() != 17 || bytes.capacity() < 37 { return 2; }
     checked {
-        if @byte_read(bytes.core.buf, 0) != 1 { return 3; }
-        if @byte_read(bytes.core.buf, 7) != 8 { return 4; }
-        if @byte_read(bytes.core.buf, 8) != 9 { return 5; }
-        if @byte_read(bytes.core.buf, 15) != 16 { return 6; }
-        if @byte_read(bytes.core.buf, 16) != 17 { return 7; }
+        let probe1: u8 = @ptr_read(@ptr_offset(bytes.core.buf, 0));
+        if probe1 != 1 { return 3; }
+        let probe2: u8 = @ptr_read(@ptr_offset(bytes.core.buf, 7));
+        if probe2 != 8 { return 4; }
+        let probe3: u8 = @ptr_read(@ptr_offset(bytes.core.buf, 8));
+        if probe3 != 9 { return 5; }
+        let probe4: u8 = @ptr_read(@ptr_offset(bytes.core.buf, 15));
+        if probe4 != 16 { return 6; }
+        let probe5: u8 = @ptr_read(@ptr_offset(bytes.core.buf, 16));
+        if probe5 != 17 { return 7; }
     };
 
     let value: S = "abcdefghijklmnopq";
@@ -105,11 +110,16 @@ fn main() -> i32 {
     if value != "abcdefghijkabcdefghijk" { return 1; }
     if value.capacity() < value.len() { return 2; }
     checked {
-        if @byte_read(value.core.buf, 7) != 104 { return 3; }
-        if @byte_read(value.core.buf, 8) != 105 { return 4; }
-        if @byte_read(value.core.buf, 10) != 107 { return 5; }
-        if @byte_read(value.core.buf, 11) != 97 { return 6; }
-        if @byte_read(value.core.buf, 21) != 107 { return 7; }
+        let probe6: u8 = @ptr_read(@ptr_offset(value.core.buf, 7));
+        if probe6 != 104 { return 3; }
+        let probe7: u8 = @ptr_read(@ptr_offset(value.core.buf, 8));
+        if probe7 != 105 { return 4; }
+        let probe8: u8 = @ptr_read(@ptr_offset(value.core.buf, 10));
+        if probe8 != 107 { return 5; }
+        let probe9: u8 = @ptr_read(@ptr_offset(value.core.buf, 11));
+        if probe9 != 97 { return 6; }
+        let probe10: u8 = @ptr_read(@ptr_offset(value.core.buf, 21));
+        if probe10 != 107 { return 7; }
     };
 
     let mut reserved: S = "stay";
@@ -328,7 +338,7 @@ const S = std.strbuf.StrBuf;
 
 fn owned(byte: u8) -> S {
     let p: ptr mut u8 = checked { @alloc(4, 1) };
-    checked { @byte_write(p, 0, byte); };
+    checked { @ptr_write(@ptr_offset(p, 0), byte); };
     // White-box: assemble an owned header (cap = 4 exactly, below the 16 floor)
     // over the RawBuf core (RUE-1066).
     let mut s = S.new();

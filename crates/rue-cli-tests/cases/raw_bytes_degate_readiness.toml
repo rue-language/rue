@@ -3,26 +3,29 @@
 # behavior-preservation check).
 #
 # The raw-byte access family is ungated (ADR-0059 Phase 6, RUE-937) and, under
-# the compact layout that is now the default (ADR-0052, RUE-987), folds into the
-# ordinary typed `ptr u8` path (phase 7): `@byte_read`/`@byte_write` lower
-# through the same one-byte narrow scalar access a typed `ptr u8` takes, and the
-# byte allocators share the general allocator helper. These cases pin that the
-# fold-in is behavior-preserving: the byte family is byte-granular (a
-# `@byte_read` reads one physical byte, `@alloc(n, a)` reserves n physical
-# bytes, offsets are never scaled by the slot size), so the result never moves.
+# the compact layout that is now the default (ADR-0052, RUE-987), single-byte
+# access IS the ordinary typed `ptr u8` path (phase 7): a `@ptr_read`/
+# `@ptr_write` of a `u8` pointee lowers through a one-byte narrow scalar
+# access, and the byte allocators share the general allocator helper. ADR-0059
+# Phase 4 (RUE-962) completed that fold by removing `@byte_read`/`@byte_write`
+# outright. These cases pin that the fold-in is behavior-preserving: access
+# stays byte-granular (a `u8` `@ptr_read` reads one physical byte, `@alloc(n,
+# a)` reserves n physical bytes, nothing is scaled by the slot size), so the
+# result never moves.
 #
-# Note: the byte surface deliberately avoids `@ptr_offset` for byte addressing
-# (it strides by the pointee width, so it is not byte-granular), addressing
-# sub-ranges through `@ptr_to_int`/`@int_to_ptr` exactly as `std/strbuf.rue`
-# does.
+# Note: `@ptr_offset` is the byte-granular walk here precisely because it is
+# element-scaled and `@size_of(u8)` is 1 — a `ptr u8` strides one byte per
+# step. Some cases below still address sub-ranges through
+# `@ptr_to_int`/`@int_to_ptr` instead, which remains a supported spelling and
+# keeps the address-arithmetic path covered.
 
 [section]
 id = "cli.raw_bytes_degate_readiness"
 name = "raw-byte surface behaves identically under the compact layout"
 description = "Byte-intrinsic programs compute the byte-granular result the byte surface guarantees, evidencing that the RUE-978 fold-in into the narrow typed path is behavior-preserving."
 
-# The whole byte family — @alloc/@byte_set/@byte_write/@realloc/
-# @byte_copy/@byte_read/@free — in one round-trip.
+# The whole byte family — @alloc/@byte_set/@realloc/@byte_copy/@free plus
+# per-byte @ptr_write/@ptr_read over a `ptr u8` — in one round-trip.
 [[case]]
 name = "byte_family_roundtrip_plain"
 description = "Full byte-family round-trip through the byte surface."
@@ -33,16 +36,16 @@ fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(6, 1);
         @byte_set(p, 0, 6);
-        @byte_write(p, 0, 10);
-        @byte_write(p, 1, 20);
-        @byte_write(p, 2, 30);
+        @ptr_write(@ptr_offset(p, 0), 10);
+        @ptr_write(@ptr_offset(p, 1), 20);
+        @ptr_write(@ptr_offset(p, 2), 30);
         let q: ptr mut u8 = @realloc(p, 6, 1, 8);
-        @byte_write(q, 3, 40);
+        @ptr_write(@ptr_offset(q, 3), 40);
         let dst: ptr mut u8 = @alloc(8, 1);
         @byte_copy(dst, q, 8);
-        let sum: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1))
-            + @intCast(@byte_read(dst, 2)) + @intCast(@byte_read(dst, 3))
-            + @intCast(@byte_read(dst, 4));
+        let sum: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0))) + @intCast(@ptr_read(@ptr_offset(dst, 1)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 2))) + @intCast(@ptr_read(@ptr_offset(dst, 3)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 4)));
         @dbg(sum);
         @free(q, 8, 1);
         @free(dst, 8, 1);
@@ -66,7 +69,8 @@ fn main() -> i32 {
         let src: ptr mut u8 = @alloc(5, 1);
         let mut i: u64 = 0;
         while i < 5 {
-            @byte_write(src, i, @intCast(i + 1));
+            let b: u8 = @intCast(i + 1);
+            @ptr_write(@ptr_offset(src, i), b);
             i = i + 1;
         }
         let dst: ptr mut u8 = @alloc(5, 1);
@@ -77,7 +81,7 @@ fn main() -> i32 {
         let mut sum: i32 = 0;
         let mut j: u64 = 0;
         while j < 5 {
-            sum = sum + @intCast(@byte_read(dst, j));
+            sum = sum + @intCast(@ptr_read(@ptr_offset(dst, j)));
             j = j + 1;
         }
         @dbg(sum);

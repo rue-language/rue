@@ -264,8 +264,6 @@ pub enum UnsupportedIntrinsicKind {
     Free,
     Reallocate,
     Resize,
-    ByteRead,
-    ByteWrite,
     ByteCopy,
     ByteMove,
     ByteSet,
@@ -857,8 +855,6 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
         "free" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Free)),
         "realloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Reallocate)),
         "resize" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Resize)),
-        "byte_read" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteRead)),
-        "byte_write" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteWrite)),
         "byte_copy" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteCopy)),
         "byte_move" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteMove)),
         "byte_set" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteSet)),
@@ -1051,7 +1047,7 @@ impl<'a> Interp<'a> {
     /// through the same `byte_at` path the runtime's byte helpers model, so a
     /// text read rides entirely on the modeled allocation store.
     fn text_bytes(&self, val: &Value) -> Step<Vec<u8>> {
-        let gap = unsupported_intrinsic_kind("byte_read");
+        let gap = unsupported_intrinsic_kind("ptr_read");
         let Some((target, len)) = Self::text_ptr_len(val) else {
             return Err(unsupported(gap, "text value is not a materialized header"));
         };
@@ -1440,13 +1436,10 @@ impl<'a> Interp<'a> {
             "read_line" | "random_u32" | "random_u64" | "arg_count" | "env_count" => {
                 args.is_empty()
             }
-            "ptr_write"
-            | "ptr_write_unaligned"
-            | "ptr_offset"
-            | "byte_read"
-            | "alloc"
-            | "alloc_zeroed" => args.len() == 2,
-            "byte_write" | "byte_copy" | "byte_move" | "byte_set" | "free" => args.len() == 3,
+            "ptr_write" | "ptr_write_unaligned" | "ptr_offset" | "alloc" | "alloc_zeroed" => {
+                args.len() == 2
+            }
+            "byte_copy" | "byte_move" | "byte_set" | "free" => args.len() == 3,
             "realloc" | "resize" => args.len() == 4,
             "syscall" => (1..=7).contains(&args.len()),
             _ => args.len() == 1,
@@ -1531,18 +1524,6 @@ impl<'a> Interp<'a> {
                     && ty(2) == Type::U64
                     && ty(3) == Type::U64
                     && result_ty == if name == "resize" { Type::BOOL } else { ty(0) }
-            }
-            "byte_read" => {
-                self.pointer_pointee(ty(0))
-                    .is_some_and(|(pointee, _)| pointee == Type::U8)
-                    && ty(1) == Type::U64
-                    && result_ty == Type::U8
-            }
-            "byte_write" => {
-                self.pointer_pointee(ty(0)) == Some((Type::U8, true))
-                    && ty(1) == Type::U64
-                    && ty(2) == Type::U8
-                    && result_ty == Type::UNIT
             }
             "byte_copy" | "byte_move" => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
@@ -2279,7 +2260,7 @@ impl<'a> Interp<'a> {
     /// Read `len` bytes starting at a raw text pointer (the projected-char
     /// path's `ptr`/`len` pair), through the modeled allocation store.
     fn bytes_from_ptr(&self, ptr: &Value, len: i128) -> Step<Vec<u8>> {
-        let gap = unsupported_intrinsic_kind("byte_read");
+        let gap = unsupported_intrinsic_kind("ptr_read");
         if len <= 0 {
             return Ok(Vec::new());
         }
@@ -3810,25 +3791,6 @@ impl<'a> Interp<'a> {
                     None => Ok(None),
                 }
             }
-            "byte_read" => {
-                let p = self.eval(cfg, frame, args[0])?;
-                let off = self.eval(cfg, frame, args[1])?.as_int();
-                let target = self.expect_ptr(p, gap)?;
-                Ok(Some(Value::Int(self.byte_at(&target, off, gap)? as i128)))
-            }
-            "byte_write" => {
-                let p = self.eval(cfg, frame, args[0])?;
-                let off = self.eval(cfg, frame, args[1])?.as_int();
-                let val = self.eval(cfg, frame, args[2])?.as_int();
-                let target = self.expect_ptr(p, gap)?;
-                let at = PtrTarget {
-                    alloc: target.alloc,
-                    path: target.path.clone(),
-                    index: target.index + off,
-                };
-                self.ptr_cell_write(&at, Value::Int(val & 0xFF), gap)?;
-                Ok(Some(Value::Unit))
-            }
             "byte_copy" | "byte_move" => {
                 let dst = self.eval(cfg, frame, args[0])?;
                 let src = self.eval(cfg, frame, args[1])?;
@@ -4058,8 +4020,6 @@ fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
             | I::Free
             | I::Reallocate
             | I::Resize
-            | I::ByteRead
-            | I::ByteWrite
             | I::ByteCopy
             | I::ByteMove
             | I::ByteSet

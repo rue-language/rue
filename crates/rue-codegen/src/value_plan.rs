@@ -292,8 +292,6 @@ pub enum IntrinsicOperation {
     Free,
     Realloc,
     Resize,
-    ByteRead,
-    ByteWrite,
     ByteCopy,
     ByteMove,
     ByteSet,
@@ -1716,8 +1714,6 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     "free" => IntrinsicOperation::Free,
                     "realloc" => IntrinsicOperation::Realloc,
                     "resize" => IntrinsicOperation::Resize,
-                    "byte_read" => IntrinsicOperation::ByteRead,
-                    "byte_write" => IntrinsicOperation::ByteWrite,
                     "byte_copy" => IntrinsicOperation::ByteCopy,
                     "byte_move" => IntrinsicOperation::ByteMove,
                     "byte_set" => IntrinsicOperation::ByteSet,
@@ -1757,15 +1753,6 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                         ctx.type_pool,
                         ctx.cfg.get_inst(args[1]).ty,
                     ),
-                    // Under the compact layout the raw-byte family folds into the
-                    // ordinary typed `ptr u8` path: a byte access is exactly the
-                    // one-byte narrow scalar access (RUE-989) that
-                    // `@ptr_read`/`@ptr_write` of a `u8` pointee take, so
-                    // `@byte_read`/`@byte_write` reuse that single emission path
-                    // (ADR-0052 phase 7, RUE-978).
-                    IntrinsicOperation::ByteRead | IntrinsicOperation::ByteWrite => {
-                        crate::types::narrow_scalar_access(ctx.type_pool, Type::U8)
-                    }
                     _ => None,
                 };
                 // A compact aggregate pointee marshals its whole value through the
@@ -2097,8 +2084,6 @@ fn intrinsic_runtime_call(
         | IntrinsicOperation::PtrRead
         | IntrinsicOperation::PtrWrite
         | IntrinsicOperation::PtrOffset
-        | IntrinsicOperation::ByteRead
-        | IntrinsicOperation::ByteWrite
         | IntrinsicOperation::PlaceAddress
         | IntrinsicOperation::BitCast(_)
         | IntrinsicOperation::Syscall => return None,

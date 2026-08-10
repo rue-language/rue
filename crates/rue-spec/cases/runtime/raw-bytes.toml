@@ -13,17 +13,17 @@ description = "Packed physical-byte allocation and access"
 
 [[case]]
 name = "packed_offsets_read_write_exactly_one_byte"
-spec = ["9.2:14a", "9.2:14d"]
+spec = ["9.2:6b", "9.2:7"]
 source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(3, 1);
-        @byte_write(p, 0, 11);
-        @byte_write(p, 1, 22);
-        @byte_write(p, 2, 33);
-        let result: i32 = @intCast(@byte_read(p, 0))
-            + @intCast(@byte_read(p, 1))
-            + @intCast(@byte_read(p, 2));
+        @ptr_write(@ptr_offset(p, 0), 11);
+        @ptr_write(@ptr_offset(p, 1), 22);
+        @ptr_write(@ptr_offset(p, 2), 33);
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)))
+            + @intCast(@ptr_read(@ptr_offset(p, 1)))
+            + @intCast(@ptr_read(@ptr_offset(p, 2)));
         @free(p, 3, 1);
         result
     }
@@ -33,18 +33,18 @@ exit_code = 66
 
 [[case]]
 name = "byte_write_preserves_adjacent_bytes"
-spec = ["9.2:14d"]
+spec = ["9.2:6b"]
 source = """
 fn main() -> i32 {
     checked {
         let p = @alloc(3, 1);
-        @byte_write(p, 0, 17);
-        @byte_write(p, 1, 34);
-        @byte_write(p, 2, 51);
-        @byte_write(p, 1, 68);
-        let result: i32 = @intCast(@byte_read(p, 0))
-            + @intCast(@byte_read(p, 1))
-            + @intCast(@byte_read(p, 2));
+        @ptr_write(@ptr_offset(p, 0), 17);
+        @ptr_write(@ptr_offset(p, 1), 34);
+        @ptr_write(@ptr_offset(p, 2), 51);
+        @ptr_write(@ptr_offset(p, 1), 68);
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)))
+            + @intCast(@ptr_read(@ptr_offset(p, 1)))
+            + @intCast(@ptr_read(@ptr_offset(p, 2)));
         @free(p, 3, 1);
         result
     }
@@ -52,23 +52,25 @@ fn main() -> i32 {
 """
 exit_code = 136
 
-# A byte offset is added unscaled, and `@size_of(u8)` is 1, so
-# `@byte_read(p, i)` names the same byte as `@ptr_read(@ptr_offset(p, i))` and
-# `@byte_write` the same byte as the corresponding `@ptr_write` (9.2:14d).
+# `@size_of(u8)` is 1, so a `@ptr_offset` of zero over a `ptr u8` names the
+# base byte itself: `@ptr_read(@ptr_offset(p, 0))` and `@ptr_read(p)` are the
+# same access (9.2:6b, 9.2:7). This is what makes the byte-granular walk a
+# plain use of the typed access pair, with no byte-specific intrinsic
+# (ADR-0059, RUE-962).
 [[case]]
-name = "byte_access_agrees_with_typed_access_on_a_u8_pointer"
-spec = ["9.2:14d"]
+name = "ptr_offset_zero_names_the_base_byte"
+spec = ["9.2:6b", "9.2:7"]
 source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(3, 1);
-        @byte_write(p, 0, 7);
-        @byte_write(p, 1, 8);
-        @byte_write(p, 2, 9);
-        let agree: bool = @byte_read(p, 2) == @ptr_read(@ptr_offset(p, 2))
-            && @byte_read(p, 0) == @ptr_read(p);
-        @ptr_write(@ptr_offset(p, 1), 30);
-        let written: bool = @byte_read(p, 1) == 30;
+        @ptr_write(@ptr_offset(p, 0), 7);
+        @ptr_write(@ptr_offset(p, 1), 8);
+        @ptr_write(@ptr_offset(p, 2), 9);
+        let agree: bool = @ptr_read(@ptr_offset(p, 0)) == @ptr_read(p);
+        let want: u8 = 30;
+        @ptr_write(@ptr_offset(p, 1), want);
+        let written: bool = @ptr_read(@ptr_offset(p, 1)) == want;
         @free(p, 3, 1);
         if agree && written { 44 } else { 0 }
     }
@@ -78,13 +80,13 @@ exit_code = 44
 
 [[case]]
 name = "byte_read_accepts_const_u8_pointer"
-spec = ["9.2:14d", "9.2:14e"]
+spec = ["9.2:6b", "9.2:6d"]
 source = """
 fn main() -> i32 {
     let value: u8 = 79;
     checked {
         let p: ptr const u8 = @raw(value);
-        @intCast(@byte_read(p, 0))
+        @intCast(@ptr_read(@ptr_offset(p, 0)))
     }
 }
 """
@@ -92,13 +94,13 @@ exit_code = 79
 
 [[case]]
 name = "alloc_result_type_is_inferred"
-spec = ["9.2:10", "9.2:14f"]
+spec = ["9.2:10", "9.2:6b"]
 source = """
 fn main() -> i32 {
     checked {
         let p = @alloc(1, 1);
-        @byte_write(p, 0, 71);
-        let result: i32 = @intCast(@byte_read(p, 0));
+        @ptr_write(@ptr_offset(p, 0), 71);
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, 1, 1);
         result
     }
@@ -108,18 +110,18 @@ exit_code = 71
 
 [[case]]
 name = "realloc_preserves_packed_prefix"
-spec = ["9.2:12", "9.2:14f"]
+spec = ["9.2:12", "9.2:6b"]
 source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(2, 1);
-        @byte_write(p, 0, 40);
-        @byte_write(p, 1, 2);
+        @ptr_write(@ptr_offset(p, 0), 40);
+        @ptr_write(@ptr_offset(p, 1), 2);
         let q = @realloc(p, 2, 1, 4);
-        @byte_write(q, 2, 3);
-        let result: i32 = @intCast(@byte_read(q, 0))
-            + @intCast(@byte_read(q, 1))
-            + @intCast(@byte_read(q, 2));
+        @ptr_write(@ptr_offset(q, 2), 3);
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(q, 0)))
+            + @intCast(@ptr_read(@ptr_offset(q, 1)))
+            + @intCast(@ptr_read(@ptr_offset(q, 2)));
         @free(q, 4, 1);
         result
     }
@@ -147,14 +149,14 @@ source = """
 fn main() -> i32 {
     checked {
         let p = @alloc(3, 1);
-        @byte_write(p, 0, 11);
-        @byte_write(p, 1, 22);
-        @byte_write(p, 2, 33);
+        @ptr_write(@ptr_offset(p, 0), 11);
+        @ptr_write(@ptr_offset(p, 1), 22);
+        @ptr_write(@ptr_offset(p, 2), 33);
         let q = @realloc(p, 3, 1, 18446744073709551615);
         if @ptr_to_int(q) == 0 {
-            let result: i32 = @intCast(@byte_read(p, 0))
-                + @intCast(@byte_read(p, 1))
-                + @intCast(@byte_read(p, 2));
+            let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)))
+                + @intCast(@ptr_read(@ptr_offset(p, 1)))
+                + @intCast(@ptr_read(@ptr_offset(p, 2)));
             @free(p, 3, 1);
             result
         } else {
@@ -200,7 +202,7 @@ source = """
 fn main() -> i32 {
     checked {
         let p = @alloc(1, 1);
-        @byte_write(p, 0, 42);
+        @ptr_write(@ptr_offset(p, 0), 42);
         let q = @realloc(p, 1, 1, 0);
         if @ptr_to_int(q) == 0 { 0 } else { 1 }
     }
@@ -222,15 +224,16 @@ fn main() -> i32 {
 compile_fail = true
 error_contains = "[E1300]"
 
-# @byte_read and @byte_write carry the checked gate themselves (9.2:14e), which
-# is separate from the allocation family's gate above.
+# Byte-granular access is `@ptr_read`/`@ptr_write` over a `ptr u8`, and that
+# pair carries the checked gate itself (9.2:6d), separately from the allocation
+# family's gate above.
 [[case]]
 name = "byte_read_requires_checked"
-spec = ["9.2:14e"]
+spec = ["9.2:6d"]
 source = """
 fn main() -> i32 {
     let p: ptr mut u8 = checked { @alloc(1, 1) };
-    let b: u8 = @byte_read(p, 0);
+    let b: u8 = @ptr_read(@ptr_offset(p, 0));
     @intCast(b)
 }
 """
@@ -239,11 +242,11 @@ error_contains = "[E1300]"
 
 [[case]]
 name = "byte_write_requires_checked"
-spec = ["9.2:14e"]
+spec = ["9.2:6d"]
 source = """
 fn main() -> i32 {
     let p: ptr mut u8 = checked { @alloc(1, 1) };
-    @byte_write(p, 0, 1);
+    @ptr_write(@ptr_offset(p, 0), 1);
     0
 }
 """
@@ -252,13 +255,13 @@ error_contains = "[E1300]"
 
 [[case]]
 name = "byte_write_requires_u8_value"
-spec = ["9.2:14e"]
+spec = ["9.2:6d"]
 source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(1, 1);
         let value: u64 = 1;
-        @byte_write(p, 0, value);
+        @ptr_write(@ptr_offset(p, 0), value);
     };
     0
 }
@@ -268,19 +271,19 @@ error_contains = "expected u8"
 
 [[case]]
 name = "byte_copy_round_trip"
-spec = ["9.2:14g", "9.2:14h"]
+spec = ["9.2:14a", "9.2:14g", "9.2:14h"]
 source = """
 fn main() -> i32 {
     checked {
         let src: ptr mut u8 = @alloc(3, 1);
-        @byte_write(src, 0, 10);
-        @byte_write(src, 1, 20);
-        @byte_write(src, 2, 30);
+        @ptr_write(@ptr_offset(src, 0), 10);
+        @ptr_write(@ptr_offset(src, 1), 20);
+        @ptr_write(@ptr_offset(src, 2), 30);
         let dst: ptr mut u8 = @alloc(3, 1);
         @byte_copy(dst, src, 3);
-        let result: i32 = @intCast(@byte_read(dst, 0))
-            + @intCast(@byte_read(dst, 1))
-            + @intCast(@byte_read(dst, 2));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 1)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 2)));
         @free(src, 3, 1);
         @free(dst, 3, 1);
         result
@@ -297,10 +300,10 @@ fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
         @byte_set(p, 9, 4);
-        let result: i32 = @intCast(@byte_read(p, 0))
-            + @intCast(@byte_read(p, 1))
-            + @intCast(@byte_read(p, 2))
-            + @intCast(@byte_read(p, 3));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)))
+            + @intCast(@ptr_read(@ptr_offset(p, 1)))
+            + @intCast(@ptr_read(@ptr_offset(p, 2)))
+            + @intCast(@ptr_read(@ptr_offset(p, 3)));
         @free(p, 4, 1);
         result
     }
@@ -315,12 +318,12 @@ source = """
 fn main() -> i32 {
     checked {
         let dst: ptr mut u8 = @alloc(2, 1);
-        @byte_write(dst, 0, 55);
-        @byte_write(dst, 1, 11);
+        @ptr_write(@ptr_offset(dst, 0), 55);
+        @ptr_write(@ptr_offset(dst, 1), 11);
         let src: ptr mut u8 = @alloc(2, 1);
         @byte_set(src, 99, 2);
         @byte_copy(dst, src, 0);
-        let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0))) + @intCast(@ptr_read(@ptr_offset(dst, 1)));
         @free(src, 2, 1);
         @free(dst, 2, 1);
         result
@@ -336,15 +339,15 @@ source = """
 fn main() -> i32 {
     checked {
         let src: ptr mut u8 = @alloc(4, 1);
-        @byte_write(src, 0, 1);
-        @byte_write(src, 1, 2);
-        @byte_write(src, 2, 3);
-        @byte_write(src, 3, 4);
+        @ptr_write(@ptr_offset(src, 0), 1);
+        @ptr_write(@ptr_offset(src, 1), 2);
+        @ptr_write(@ptr_offset(src, 2), 3);
+        @ptr_write(@ptr_offset(src, 3), 4);
         let dst: ptr mut u8 = @alloc(2, 1);
         @byte_set(dst, 0, 2);
         let src_mid: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
         @byte_copy(dst, src_mid, 2);
-        let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0))) + @intCast(@ptr_read(@ptr_offset(dst, 1)));
         @free(src, 4, 1);
         @free(dst, 2, 1);
         result
@@ -425,13 +428,13 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
-        @byte_write(p, 0, 20);
-        @byte_write(p, 1, 22);
+        @ptr_write(@ptr_offset(p, 0), 20);
+        @ptr_write(@ptr_offset(p, 1), 22);
         let q = @realloc(p, 4, 1, 8);
-        @byte_write(q, 2, 3);
-        let result: i32 = @intCast(@byte_read(q, 0))
-            + @intCast(@byte_read(q, 1))
-            + @intCast(@byte_read(q, 2));
+        @ptr_write(@ptr_offset(q, 2), 3);
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(q, 0)))
+            + @intCast(@ptr_read(@ptr_offset(q, 1)))
+            + @intCast(@ptr_read(@ptr_offset(q, 2)));
         @free(q, 8, 1);
         result
     }
@@ -446,13 +449,13 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(16, 8);
-        @byte_write(p, 0, 30);
-        @byte_write(p, 7, 12);
+        @ptr_write(@ptr_offset(p, 0), 30);
+        @ptr_write(@ptr_offset(p, 7), 12);
         let q = @realloc(p, 16, 8, 32);
-        @byte_write(q, 8, 6);
-        let result: i32 = @intCast(@byte_read(q, 0))
-            + @intCast(@byte_read(q, 7))
-            + @intCast(@byte_read(q, 8));
+        @ptr_write(@ptr_offset(q, 8), 6);
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(q, 0)))
+            + @intCast(@ptr_read(@ptr_offset(q, 7)))
+            + @intCast(@ptr_read(@ptr_offset(q, 8)));
         @free(q, 32, 8);
         result
     }
@@ -544,7 +547,9 @@ fn main() -> i32 {
         let misaligned: bool = @ptr_to_int(skewed) % align != 0;
         @ptr_write_unaligned(skewed, 1000000);
         let same: bool = @ptr_read_unaligned(skewed) == 1000000;
-        let outside: bool = @byte_read(raw, 0) == 0 && @byte_read(raw, 5) == 0;
+        let zero: u8 = 0;
+        let outside: bool = @ptr_read(@ptr_offset(raw, 0)) == zero
+            && @ptr_read(@ptr_offset(raw, 5)) == zero;
         @free(raw, 8, align);
         if misaligned && same && outside { 45 } else { 0 }
     }
@@ -591,14 +596,14 @@ source = """
 fn main() -> i32 {
     checked {
         let src: ptr mut u8 = @alloc(3, 1);
-        @byte_write(src, 0, 10);
-        @byte_write(src, 1, 20);
-        @byte_write(src, 2, 30);
+        @ptr_write(@ptr_offset(src, 0), 10);
+        @ptr_write(@ptr_offset(src, 1), 20);
+        @ptr_write(@ptr_offset(src, 2), 30);
         let dst: ptr mut u8 = @alloc(3, 1);
         @byte_move(dst, src, 3);
-        let result: i32 = @intCast(@byte_read(dst, 0))
-            + @intCast(@byte_read(dst, 1))
-            + @intCast(@byte_read(dst, 2));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 1)))
+            + @intCast(@ptr_read(@ptr_offset(dst, 2)));
         @free(src, 3, 1);
         @free(dst, 3, 1);
         result
@@ -619,16 +624,16 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
-        @byte_write(p, 0, 1);
-        @byte_write(p, 1, 2);
-        @byte_write(p, 2, 3);
-        @byte_write(p, 3, 0);
+        @ptr_write(@ptr_offset(p, 0), 1);
+        @ptr_write(@ptr_offset(p, 1), 2);
+        @ptr_write(@ptr_offset(p, 2), 3);
+        @ptr_write(@ptr_offset(p, 3), 0);
         let dst: ptr mut u8 = @int_to_ptr(@ptr_to_int(p) + 1);
         @byte_move(dst, p, 3);
-        let result: i32 = @intCast(@byte_read(p, 0)) * 64
-            + @intCast(@byte_read(p, 1)) * 16
-            + @intCast(@byte_read(p, 2)) * 4
-            + @intCast(@byte_read(p, 3));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0))) * 64
+            + @intCast(@ptr_read(@ptr_offset(p, 1))) * 16
+            + @intCast(@ptr_read(@ptr_offset(p, 2))) * 4
+            + @intCast(@ptr_read(@ptr_offset(p, 3)));
         @free(p, 4, 1);
         result
     }
@@ -646,16 +651,16 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
-        @byte_write(p, 0, 0);
-        @byte_write(p, 1, 1);
-        @byte_write(p, 2, 2);
-        @byte_write(p, 3, 3);
+        @ptr_write(@ptr_offset(p, 0), 0);
+        @ptr_write(@ptr_offset(p, 1), 1);
+        @ptr_write(@ptr_offset(p, 2), 2);
+        @ptr_write(@ptr_offset(p, 3), 3);
         let src: ptr mut u8 = @int_to_ptr(@ptr_to_int(p) + 1);
         @byte_move(p, src, 3);
-        let result: i32 = @intCast(@byte_read(p, 0)) * 64
-            + @intCast(@byte_read(p, 1)) * 16
-            + @intCast(@byte_read(p, 2)) * 4
-            + @intCast(@byte_read(p, 3));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0))) * 64
+            + @intCast(@ptr_read(@ptr_offset(p, 1))) * 16
+            + @intCast(@ptr_read(@ptr_offset(p, 2))) * 4
+            + @intCast(@ptr_read(@ptr_offset(p, 3)));
         @free(p, 4, 1);
         result
     }
@@ -671,10 +676,10 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(2, 1);
-        @byte_write(p, 0, 40);
-        @byte_write(p, 1, 5);
+        @ptr_write(@ptr_offset(p, 0), 40);
+        @ptr_write(@ptr_offset(p, 1), 5);
         @byte_move(p, p, 2);
-        let result: i32 = @intCast(@byte_read(p, 0)) + @intCast(@byte_read(p, 1));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0))) + @intCast(@ptr_read(@ptr_offset(p, 1)));
         @free(p, 2, 1);
         result
     }
@@ -691,9 +696,9 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(1, 1);
-        @byte_write(p, 0, 77);
+        @ptr_write(@ptr_offset(p, 0), 77);
         @byte_move(p, p, 0);
-        let result: i32 = @intCast(@byte_read(p, 0));
+        let result: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, 1, 1);
         result
     }
