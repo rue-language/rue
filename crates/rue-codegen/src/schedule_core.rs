@@ -165,6 +165,7 @@ where
         .iter()
         .map(|inst| SchedNode::new(adapter.latency(inst)))
         .collect();
+    let mut edges = HashSet::new();
 
     // Track last writer of each register.
     let mut last_writer: HashMap<A::Reg, usize> = HashMap::new();
@@ -184,14 +185,14 @@ where
         // RAW (Read After Write): this instruction reads what another wrote.
         for reg in &reads {
             if let Some(&writer) = last_writer.get(reg) {
-                add_edge(&mut nodes, writer, i);
+                add_edge(&mut nodes, &mut edges, writer, i);
             }
         }
 
         // WAW (Write After Write): this instruction writes what another wrote.
         for reg in &writes {
             if let Some(&prev_writer) = last_writer.get(reg) {
-                add_edge(&mut nodes, prev_writer, i);
+                add_edge(&mut nodes, &mut edges, prev_writer, i);
             }
         }
 
@@ -200,7 +201,7 @@ where
             if let Some(readers) = last_readers.get(reg) {
                 for &reader in readers {
                     if reader != i {
-                        add_edge(&mut nodes, reader, i);
+                        add_edge(&mut nodes, &mut edges, reader, i);
                     }
                 }
             }
@@ -210,19 +211,19 @@ where
         if adapter.reads_flags(inst)
             && let Some(writer) = last_flags_writer
         {
-            add_edge(&mut nodes, writer, i);
+            add_edge(&mut nodes, &mut edges, writer, i);
         }
 
         if adapter.writes_flags(inst)
             && let Some(prev_writer) = last_flags_writer
         {
-            add_edge(&mut nodes, prev_writer, i);
+            add_edge(&mut nodes, &mut edges, prev_writer, i);
         }
 
         if adapter.writes_flags(inst) {
             for &reader in &last_flags_readers {
                 if reader != i {
-                    add_edge(&mut nodes, reader, i);
+                    add_edge(&mut nodes, &mut edges, reader, i);
                 }
             }
         }
@@ -230,7 +231,7 @@ where
         // Memory dependencies (conservative: order all memory accesses).
         if adapter.accesses_memory(inst) {
             if let Some(prev) = last_memory_access {
-                add_edge(&mut nodes, prev, i);
+                add_edge(&mut nodes, &mut edges, prev, i);
             }
             last_memory_access = Some(i);
         }
@@ -243,13 +244,13 @@ where
             if let Some(readers) = last_readers.get(&clobbered) {
                 for &reader in readers {
                     if reader != i {
-                        add_edge(&mut nodes, reader, i);
+                        add_edge(&mut nodes, &mut edges, reader, i);
                     }
                 }
             }
             // And after the last writer.
             if let Some(&writer) = last_writer.get(&clobbered) {
-                add_edge(&mut nodes, writer, i);
+                add_edge(&mut nodes, &mut edges, writer, i);
             }
         }
 
@@ -280,8 +281,8 @@ where
     nodes
 }
 
-fn add_edge(nodes: &mut [SchedNode], from: usize, to: usize) {
-    if !nodes[to].deps.contains(&from) {
+fn add_edge(nodes: &mut [SchedNode], edges: &mut HashSet<(usize, usize)>, from: usize, to: usize) {
+    if edges.insert((from, to)) {
         nodes[to].deps.push(from);
         nodes[from].users.push(to);
     }
@@ -332,43 +333,115 @@ pub(crate) fn calculate_priorities(nodes: &mut [SchedNode]) {
 
 /// Schedule instructions within a basic block using list scheduling.
 pub(crate) fn schedule_block(nodes: &[SchedNode]) -> Vec<usize> {
+    schedule_block_with_work(nodes).0
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ScheduleWork {
+    #[cfg(test)]
+    nodes_enqueued: usize,
+    #[cfg(test)]
+    ready_heap_pops: usize,
+    #[cfg(test)]
+    dependency_edges_completed: usize,
+}
+
+impl ScheduleWork {
+    #[inline(always)]
+    fn node_enqueued(&mut self) {
+        #[cfg(test)]
+        {
+            self.nodes_enqueued += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn ready_heap_popped(&mut self) {
+        #[cfg(test)]
+        {
+            self.ready_heap_pops += 1;
+        }
+    }
+
+    #[inline(always)]
+    fn dependency_edge_completed(&mut self) {
+        #[cfg(test)]
+        {
+            self.dependency_edges_completed += 1;
+        }
+    }
+}
+
+fn schedule_block_with_work(nodes: &[SchedNode]) -> (Vec<usize>, ScheduleWork) {
     if nodes.is_empty() {
-        return Vec::new();
+        return (Vec::new(), ScheduleWork::default());
     }
 
     let mut scheduled = Vec::with_capacity(nodes.len());
-    let mut completed: HashSet<usize> = HashSet::new();
+    let mut remaining_deps = nodes.iter().map(|node| node.deps.len()).collect::<Vec<_>>();
     let mut ready: BinaryHeap<ReadyInst> = BinaryHeap::new();
+    let mut work = ScheduleWork::default();
 
     for (idx, node) in nodes.iter().enumerate() {
-        if node.deps.is_empty() {
+        if remaining_deps[idx] == 0 {
             ready.push(ReadyInst {
                 priority: node.priority,
                 idx,
             });
+            work.node_enqueued();
         }
     }
 
     while let Some(ReadyInst { idx, .. }) = ready.pop() {
-        if completed.contains(&idx) {
-            continue;
-        }
-
+        work.ready_heap_popped();
         scheduled.push(idx);
-        completed.insert(idx);
 
         for &user in &nodes[idx].users {
-            if !completed.contains(&user) {
-                let all_deps_complete = nodes[user].deps.iter().all(|d| completed.contains(d));
-                if all_deps_complete {
-                    ready.push(ReadyInst {
-                        priority: nodes[user].priority,
-                        idx: user,
-                    });
-                }
+            remaining_deps[user] -= 1;
+            work.dependency_edge_completed();
+            if remaining_deps[user] == 0 {
+                ready.push(ReadyInst {
+                    priority: nodes[user].priority,
+                    idx: user,
+                });
+                work.node_enqueued();
             }
         }
     }
 
-    scheduled
+    (scheduled, work)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn high_fan_in_readiness_work_is_edge_linear_and_ties_are_stable() {
+        const FAN_IN: usize = 4_096;
+        let sink = FAN_IN;
+        let mut nodes = (0..=sink).map(|_| SchedNode::new(1)).collect::<Vec<_>>();
+        let mut edges = HashSet::new();
+        for predecessor in 0..FAN_IN {
+            add_edge(&mut nodes, &mut edges, predecessor, sink);
+            add_edge(&mut nodes, &mut edges, predecessor, sink);
+        }
+        calculate_priorities(&mut nodes);
+
+        let (order, work) = schedule_block_with_work(&nodes);
+
+        assert_eq!(edges.len(), FAN_IN, "duplicate edges are discarded once");
+        assert_eq!(nodes[sink].deps.len(), FAN_IN);
+        assert_eq!(order.len(), FAN_IN + 1);
+        assert_eq!(order[..FAN_IN], (0..FAN_IN).collect::<Vec<_>>());
+        assert_eq!(order[FAN_IN], sink);
+        assert_eq!(work.nodes_enqueued, FAN_IN + 1);
+        assert_eq!(work.ready_heap_pops, FAN_IN + 1);
+        assert_eq!(work.dependency_edges_completed, FAN_IN);
+        assert_eq!(
+            work.nodes_enqueued + work.dependency_edges_completed,
+            nodes.len() + edges.len(),
+            "readiness work is one enqueue per vertex and one decrement per edge"
+        );
+    }
 }
