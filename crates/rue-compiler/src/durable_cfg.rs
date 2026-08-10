@@ -848,6 +848,7 @@ impl CfgDomainProjection {
         cfg: &rue_cfg::Cfg,
     ) -> Result<std::collections::BTreeSet<crate::FunctionInstanceKey>, CfgDomainFailure> {
         let mut callables = std::collections::BTreeSet::new();
+        let mut symbols_by_live = None;
         for block in cfg.blocks() {
             for value in &block.insts {
                 let rue_cfg::CfgInstData::Call {
@@ -858,10 +859,16 @@ impl CfgDomainProjection {
                 else {
                     continue;
                 };
-                let stable = self
-                    .symbols
-                    .iter()
-                    .find_map(|(live, stable)| (live == name).then_some(stable))
+                let symbols_by_live = symbols_by_live.get_or_insert_with(|| {
+                    let mut index = HashMap::with_capacity(self.symbols.len());
+                    for (live, stable) in &self.symbols {
+                        index.entry(*live).or_insert(stable);
+                    }
+                    index
+                });
+                let stable = symbols_by_live
+                    .get(name)
+                    .copied()
                     .ok_or(CfgDomainFailure::MissingSymbol)?;
                 let callable = match stable {
                     StableCfgSymbol::Callable(callable) => callable.clone(),
@@ -1742,6 +1749,19 @@ mod tests {
         assert!(type_closure.contains("type_positions"));
         assert!(!type_closure.contains("types.iter().any("));
         assert!(!type_closure.contains("types.iter().find"));
+
+        let runtime_callables = source
+            .split_once("pub(crate) fn runtime_callables(")
+            .unwrap()
+            .1
+            .split_once("/// Project the exact machine-symbol domain")
+            .unwrap()
+            .0
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(runtime_callables.contains("symbols_by_live"));
+        assert!(!runtime_callables.contains("self.symbols.iter().find"));
     }
 
     #[test]
