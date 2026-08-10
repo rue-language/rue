@@ -6,8 +6,11 @@
 # states its alignment, and every pointer is `ptr mut u8`. Like the raw-pointer
 # intrinsics they must appear inside a `checked` block. These are the primitives
 # a source-level `ArrayBuf` is built on, which is why several cases exercise the
-# typed-allocation idiom `@alloc(count * @size_of(T), @align_of(T))` followed by
-# a `@int_to_ptr(@ptr_to_int(..))` cast to `ptr mut T`.
+# typed-allocation idiom
+# `@alloc(count * @intCast(@size_of(T)), @intCast(@align_of(T)))` followed by a
+# `@int_to_ptr(@ptr_to_int(..))` cast to `ptr mut T`. The `@intCast` is load
+# bearing: `@size_of`/`@align_of` evaluate to `i32` (4.13:14, 4.13:20) while
+# every operand of this family is exactly `u64` (9.2:13).
 
 [section]
 id = "runtime.heap"

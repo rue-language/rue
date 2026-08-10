@@ -164,15 +164,19 @@ defines it.
 
 | Undefined operation | Normative rule |
 |---------------------|----------------|
-| Reading (`@ptr_read`) or writing (`@ptr_write`) through a pointer that does not address valid, live storage for the pointee type — including a null pointer, a misaligned address, or memory that was never allocated. | §9.1, ADR-0028 |
+| Reading (`@ptr_read`) or writing (`@ptr_write`) through a pointer that does not address valid, live storage for the pointee type — including a null pointer, a misaligned address, or memory that was never allocated. | §9.2 (9.2:6b), §9.1, ADR-0028 |
+| Reading (`@ptr_read_unaligned`) or writing (`@ptr_write_unaligned`) through a pointer that does not address valid, live storage for the pointee type. Only the alignment obligation is lifted for this pair; every other requirement of the aligned pair still applies. | §9.2 (9.2:14k) |
 | Offsetting a pointer (`@ptr_offset`) outside the bounds of the allocation it addresses (a one-past-the-end pointer may be formed but not dereferenced). | §9.2 (9.2:7) |
-| Using a pointer after the block it addressed has been released with `@free` (use-after-free), or freeing a block that was not returned by `@alloc`/`@realloc`, or freeing one twice. | §9.2 (9.2:11) |
-| Accessing storage through a pointer produced by `@int_to_ptr` from an address that does not name valid, correctly typed, correctly aligned storage. | §9.2, ADR-0028 |
-| Using a pointer obtained from `@raw`/`@raw_mut` after the value it borrowed has been moved, dropped, or otherwise gone out of scope (a dangling pointer). | ADR-0028 |
+| Using a pointer after the block it addressed has been released with `@free` (use-after-free), or freeing a block that was not returned by `@alloc`/`@alloc_zeroed`/`@realloc`, or freeing one twice. | §9.2 (9.2:11) |
+| Accessing storage through a pointer produced by `@int_to_ptr` from an address that does not name valid, correctly typed, correctly aligned storage. | §9.2 (9.2:6c), ADR-0028 |
+| Using a pointer obtained from `@raw`/`@raw_mut`/`@field_ptr` after the value it borrowed has been moved, dropped, or otherwise gone out of scope (a dangling pointer). | ADR-0028 |
 | Mutating storage through a `ptr mut T` while another live pointer aliases the same storage in a way the program's reasoning assumes cannot happen (aliasing violation). | ADR-0028 |
-| Accessing storage through a pointer that does not satisfy the pointee type's alignment requirement. | ADR-0028 |
+| Accessing storage through a pointer that does not satisfy the pointee type's alignment requirement, other than through `@ptr_read_unaligned`/`@ptr_write_unaligned`, for which an underaligned address is well defined. | §9.2 (9.2:6b, 9.2:14k), ADR-0028 |
 | Reading or writing with `@byte_read`/`@byte_write` when `address_of(p) + offset` is not a live byte within the referenced storage, including null, out-of-bounds, use-after-free, and overflowed-address access. | §9.2 (9.2:14d) |
+| Copying with `@byte_copy` between regions that overlap: `[dst, dst + size)` and `[src, src + size)` must be disjoint. `@byte_move` is the well-defined form for overlapping regions. | §9.2 (9.2:14g) |
+| Reading or writing outside live storage with `@byte_copy`, `@byte_move`, or `@byte_set` — that is, when `size` reaches past the end of the block either operand addresses. A `size` of zero accesses no memory and is always defined. | §9.2 (9.2:14g) |
 | Passing an incorrect size or alignment, a pointer not returned by the allocation family, or an already-freed pointer to `@free`/`@realloc`/`@resize`. | §9.2 (9.2:11–13) |
+| Passing an `align` that is zero or not a power of two to the allocation family when the value is not a compile-time constant (a constant one is rejected at compile time instead). | §9.2 (9.2:13a) |
 
 {{ rule(id="B.3:3", cat="informative") }}
 

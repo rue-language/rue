@@ -97,11 +97,14 @@ struct Node { next: ptr const Node, value: i32 }
 
 {{ rule(id="9.1:12", cat="legality-rule") }}
 
-A raw-pointer intrinsic — `@raw`, `@raw_mut`, `@ptr_read`, `@ptr_write`,
-`@ptr_offset`, `@ptr_to_int`, or `@int_to_ptr` — is an unchecked operation and
-**MUST** appear within a `checked` block. Using one outside a `checked` block is
-a compile error. (Defining a `ptr const T` / `ptr mut T` value's *type* is
-always legal; only the pointer *operations* require a `checked` block.)
+A raw-pointer intrinsic — `@raw`, `@raw_mut`, `@field_ptr`, `@ptr_read`,
+`@ptr_write`, `@ptr_read_unaligned`, `@ptr_write_unaligned`, `@ptr_offset`,
+`@ptr_to_int`, or `@int_to_ptr` — is an unchecked operation and **MUST** appear
+within a `checked` block. Using one outside a `checked` block is a compile
+error. (Defining a `ptr const T` / `ptr mut T` value's *type* is always legal;
+only the pointer *operations* require a `checked` block.) The same requirement
+applies to the allocation family (9.2:13) and the raw-byte intrinsics
+(9.2:14e, 9.2:14h, 9.2:14l).
 
 {{ rule(id="9.1:13", cat="example") }}
 
