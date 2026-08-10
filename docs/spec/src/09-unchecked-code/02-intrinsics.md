@@ -47,8 +47,9 @@ fn main() -> i32 {
     let code: u64 = 0;
     checked {
         // A syscall buffer must be a contiguous byte image; allocate it on the
-        // heap (@alloc storage is the compact image) rather than an @raw of a
-        // frame-resident byte array, whose storage is slot-shaped (§3.6, ADR-0040).
+        // heap (@alloc storage is the compact image, 9.2:10) rather than an @raw
+        // of a frame-resident byte array, whose storage is slot-shaped under the
+        // current implementation (ADR-0052).
         let msg: ptr mut u8 = @alloc(3, 1); // "HI\n"
         @ptr_write(msg, 72);
         @ptr_write(@ptr_offset(msg, 1), 73);
@@ -66,6 +67,69 @@ fn main() -> i32 {
 }
 ```
 
+## Pointer Access Intrinsics
+
+{{ rule(id="9.2:6a", cat="normative") }}
+
+The `@raw`, `@raw_mut`, `@ptr_read`, `@ptr_write`, `@ptr_to_int`, and
+`@int_to_ptr` intrinsics are the pointee-typed access surface over raw
+pointers. Like the other intrinsics of this section they may only appear
+inside a `checked` block (§9.1, 9.1:12). `@raw(place)` evaluates to a
+`ptr const T` and `@raw_mut(place)` to a `ptr mut T` addressing that place's
+storage, where `T` is the type of the place.
+
+{{ rule(id="9.2:6b", cat="dynamic-semantics") }}
+
+`@ptr_read(p)` reads the value stored at `address_of(p)` and
+`@ptr_write(p, value)` stores one there, where the value's type `T` is the
+pointee type of `p`. Each transfers exactly `@size_of(T)` **physical bytes** —
+the width the implementation has chosen for `T` (§3.6, 3.6:8), never a
+fixed-width machine slot — so at `T = u8` the access is exactly one byte wide
+and at `T = i32` exactly four. A write therefore leaves every byte outside
+`[address_of(p), address_of(p) + @size_of(T))` unchanged. The
+address **MUST** satisfy `@align_of(T)`; using this pair on an underaligned
+address is undefined behavior (§9.1, ADR-0028), for which `@ptr_read_unaligned`
+and `@ptr_write_unaligned` (9.2:14k) are the well-defined form.
+
+{{ rule(id="9.2:6c", cat="dynamic-semantics") }}
+
+`@ptr_to_int(p)` evaluates to the address `p` holds as a `u64`, and
+`@int_to_ptr(a)` evaluates to the pointer whose address is the `u64` `a`, its
+pointee type taken from the context the result is used in. The two round-trip:
+`@int_to_ptr(@ptr_to_int(p))` addresses the same storage as `p`, which is also
+how a `ptr mut u8` block from the allocation family (9.2:10) is viewed as a
+`ptr mut T`. They are the only conversions between an address and a pointer,
+and are kept apart from access and arithmetic so the common path never
+silently launders an address into a pointer (ADR-0059). A zero address is the
+null pointer: `@int_to_ptr` applied to a `u64` operand of value zero produces
+null, and `@ptr_to_int(p) == 0` is the null test.
+
+{{ rule(id="9.2:6d", cat="legality-rule") }}
+
+`@ptr_read` accepts a `ptr const T` or a `ptr mut T` and evaluates to `T`;
+`@ptr_write` requires a `ptr mut T` and a value of exactly the pointee type
+`T`, and evaluates to `()`. `@ptr_to_int` accepts a pointer of any pointee
+type and mutability and evaluates to `u64`. `@int_to_ptr` requires an operand
+of exactly `u64` — an untyped integer literal is not accepted, so the null
+idiom is written over a `u64` binding — and evaluates to a `ptr mut T` whose
+pointee type is inferred from context.
+
+{{ rule(id="9.2:6e", cat="example") }}
+
+```rue
+fn main() -> i32 {
+    let mut x: i32 = 10;
+    let zero: u64 = 0;
+    checked {
+        let p: ptr mut i32 = @raw_mut(x);
+        @ptr_write(p, 99);                        // writes @size_of(i32) == 4 bytes
+        let back: ptr mut i32 = @int_to_ptr(@ptr_to_int(p));
+        let null: ptr mut u8 = @int_to_ptr(zero); // the null-pointer idiom
+        if @ptr_to_int(null) == 0 { @ptr_read(back) } else { 0 }
+    }
+}
+```
+
 ## Pointer Arithmetic Intrinsic
 
 {{ rule(id="9.2:7", cat="dynamic-semantics") }}
@@ -78,8 +142,12 @@ offset and is **uniform for every pointer origin** — a pointer into a local
 array, a heap allocation, a memory-mapped region, or an address produced by
 `@int_to_ptr` all advance identically. Because array elements are laid out
 ascending (§3.5), advancing a pointer to element `i` by `1` yields a pointer to
-element `i+1`, so `@ptr_offset` and array indexing agree. Offsetting outside the
-bounds of the pointed-to allocation is undefined behavior (see ADR-0028).
+element `i+1`, so `@ptr_offset` and array indexing agree. The scale is the
+pointee's physical size, so at `T = u8` — where `@size_of(u8)` is `1` — the
+stride is exactly one byte and `@ptr_offset` is itself the byte-granular walk;
+Rue therefore has no separate byte-granular offset intrinsic (ADR-0059).
+Offsetting outside the bounds of the pointed-to allocation is undefined
+behavior (see ADR-0028).
 
 {{ rule(id="9.2:8", cat="example") }}
 
@@ -87,7 +155,8 @@ bounds of the pointed-to allocation is undefined behavior (see ADR-0028).
 fn main() -> i32 {
     // A slot-identical element type (i64: one eight-byte slot per element) so a
     // raw pointer into the frame-resident array is supported; a non-slot-identical
-    // frame array (e.g. [i32; 3]) is refused under the compact layout (§3.6, M2).
+    // frame array (e.g. [i32; 3], which packs to four-byte strides while the frame
+    // stores eight-byte slots) is refused by the current implementation (ADR-0052).
     let arr: [i64; 3] = [10, 20, 30];
     let v: i64 = checked {
         let base: ptr const i64 = @raw(arr[0]);
@@ -108,7 +177,9 @@ may only appear inside a `checked` block (§9.1). They form **one byte-oriented
 allocation family**: every size is a count of physical bytes, every allocation
 states an explicit alignment, and every pointer is `ptr mut u8`. Allocating
 storage for values of a type `T` is ordinary source arithmetic over the
-reflection intrinsics — `@alloc(count * @size_of(T), @align_of(T))` — so the
+reflection intrinsics — `@alloc(count * @intCast(@size_of(T)), @intCast(@align_of(T)))`,
+the `@intCast` being what carries `@size_of`/`@align_of`'s `i32` result
+(4.13:14, 4.13:20) to the `u64` operands this family requires — so the
 language has no separate element-counted allocator. They are the primitives on
 which safe, owned collections (for example a source-level `ArrayBuf`) are built:
 the unsafety is confined to the collection's internals behind a checked API.
@@ -121,8 +192,10 @@ block. `@alloc_zeroed(size, align)` is identical except that every byte of the
 returned block reads as zero. On allocation failure both return null; the caller
 is responsible for checking. `@alloc(0, align)` and `@alloc_zeroed(0, align)`
 return null. The returned pointer is suitable for the byte intrinsics and, once
-converted to a `ptr mut T` addressing a correctly aligned offset, for
-`@ptr_offset`/`@ptr_read`/`@ptr_write` over the `T` values the block can hold.
+converted to a `ptr mut T` (9.2:6c) addressing an offset that satisfies
+`@align_of(T)`, for `@ptr_offset`/`@ptr_read`/`@ptr_write` over the `T` values
+the block can hold; `@ptr_read_unaligned`/`@ptr_write_unaligned` (9.2:14k) reach
+a `T` at an offset that does not satisfy `@align_of(T)`.
 
 {{ rule(id="9.2:11", cat="dynamic-semantics") }}
 
@@ -206,8 +279,13 @@ fn main() -> i32 {
 The `@byte_read`, `@byte_write`, `@byte_copy`, `@byte_move`, `@byte_set`,
 `@ptr_read_unaligned`, and `@ptr_write_unaligned` intrinsics provide raw access
 to packed physical bytes and to potentially unaligned typed scalars. They may
-only appear inside a `checked` block. Every count and offset they take is a
-number of physical bytes; none is multiplied by a pointee width.
+only appear inside a `checked` block. In the five byte-granular intrinsics every
+pointer is a `u8` pointer and every count and offset is a number of physical
+bytes, scaled by nothing: no operand of this family is multiplied by a pointee
+width. The two `_unaligned` intrinsics are instead pointee-typed, like the
+aligned pair of 9.2:6b — they take no count or offset and move exactly
+`@size_of(T)` bytes — and differ from it only in dropping the alignment
+obligation (9.2:14k).
 
 {{ rule(id="9.2:14d", cat="dynamic-semantics") }}
 
@@ -215,13 +293,20 @@ number of physical bytes; none is multiplied by a pointee width.
 `address_of(p) + offset`; `p` may be `ptr const u8` or `ptr mut u8` and `offset`
 has type `u64`. `@byte_write(p, offset, value)` writes exactly the low eight
 bits represented by its `u8` value at that address; `p` must be `ptr mut u8`.
-Offsets are not multiplied by Rue's typed-pointer slot size.
+The `offset` is a plain byte displacement, added to the address unscaled. Since
+`@size_of(u8)` is `1`, that is the same address `@ptr_offset(p, offset)` names
+(9.2:7), so `@byte_read(p, offset)` and `@ptr_read(@ptr_offset(p, offset))`
+access the same single byte, as do `@byte_write` and the corresponding
+`@ptr_write`.
 
 {{ rule(id="9.2:14e", cat="legality-rule") }}
 
-Every raw-byte intrinsic requires an enclosing `checked` block. Write pointers
-must be `ptr mut u8`; a byte read also accepts `ptr const u8`. Size and offset
-operands are exactly `u64`, and a byte-write value is exactly `u8`.
+`@byte_read` and `@byte_write` each require an enclosing `checked` block.
+`@byte_write` requires a `ptr mut u8`; `@byte_read` accepts `ptr const u8` or
+`ptr mut u8`. Their offset operand is exactly `u64` and a byte-write value is
+exactly `u8`. `@byte_read` evaluates to `u8` and `@byte_write` to `()`. The
+legality of the bulk intrinsics is 9.2:14h and that of the `_unaligned` pair is
+9.2:14l.
 
 {{ rule(id="9.2:14f", cat="example") }}
 

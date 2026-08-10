@@ -1842,9 +1842,11 @@ obligation (O4) of §6.13.5. An `ArrayBuf(T)` instantiation's values are
   { h ; len ; cap }_ArrayBuf(T)        h ::= buf⟨A⟩ | null        len, cap : u64
 ```
 
-(`null` abstracts the no-allocation empty state — `@int_to_ptr(0)` in the
-source.) The **representation invariant** `Inv` holds at every method
-boundary — entry and exit of every defining equation, and at the destructor:
+(`null` abstracts the no-allocation empty state — `@int_to_ptr(zero)` over a
+`u64` binding `zero = 0` in the source; `@int_to_ptr` takes exactly a `u64`, so
+a bare `0` literal is not the spelling.) The **representation invariant** `Inv`
+holds at every method boundary — entry and exit of every defining equation, and
+at the destructor:
 
 ```
   Inv({ h ; len ; cap }):
@@ -1864,9 +1866,12 @@ destructor's skip below has a `⊘` to write for a buffer element exactly as
 
 The defining equations: `self` is an `inout` place for the mutators, so
 header updates write the caller's cell per §6.9's sharing rule. Each equation
-is the model of the corresponding `std/arraybuf.rue` body (its `checked {}`
-blocks over `@alloc`/`@realloc`/`@ptr_read`/`@ptr_write`/`@ptr_offset` and
-friends):
+is the model of the corresponding `std/arraybuf.rue` body, together with the
+`std/rawbuf.rue` layer it delegates its storage to — the one place that holds
+the `checked {}` blocks over `@alloc`/`@realloc`/`@free`/`@ptr_read`/
+`@ptr_write`/`@ptr_offset` and turns a cell count into the byte size
+`cap * @intCast(@size_of(T))` at alignment `@intCast(@align_of(T))` the
+byte-oriented allocation family takes (ADR-0059 Phase 3):
 
 ```
   new()                     →  { null ; 0 ; 0 }                                  -- no allocation until first push
@@ -1957,9 +1962,11 @@ citation:
 `StrBuf` is the `u8` refinement of the trio's growable rung plus the
 byte-string convention (ADR-0043; the RUE-386 two-types ruling), and like
 `ArrayBuf` it is **source-defined** (`std/strbuf.rue`) over the byte-oriented
-unchecked intrinsics (`@alloc`/`@realloc`/`@free`/
-`@byte_read`/`@byte_write`/`@byte_copy`, ADR-0059), so the same
-defining-equation device applies at its public boundary. Its value is
+unchecked intrinsics — `@byte_read`/`@byte_write`/`@byte_copy` and
+`@ptr_to_int`/`@int_to_ptr`/`@ptr_offset` directly, plus the `@alloc` of the
+literal-promotion arm below, with the growable `{buf, cap}` allocation itself
+delegated to the same `std/rawbuf.rue` core `ArrayBuf` uses (ADR-0059) — so the
+same defining-equation device applies at its public boundary. Its value is
 `{ h ; len ; cap }_StrBuf` over `u8` cells, with one representation twist the
 source pins in its header comment: **`cap = 0` is the non-owning state.**
 

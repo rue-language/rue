@@ -1,7 +1,10 @@
 # Pointer Intrinsic Tests
 #
-# Tests for pointer intrinsics that operate on raw pointers for low-level memory access.
-# These intrinsics must be used within `checked` blocks.
+# Tests for pointer intrinsics that operate on raw pointers for low-level memory
+# access. These intrinsics must be used within `checked` blocks (9.1:12). The
+# pointee-typed access surface is specified by 9.2:6a-9.2:6d: `@ptr_read` and
+# `@ptr_write` move exactly `@size_of(T)` physical bytes, and `@ptr_to_int` /
+# `@int_to_ptr` are the segregated address conversions (ADR-0059).
 
 [section]
 id = "runtime.pointers"
@@ -15,7 +18,7 @@ description = "Tests for pointer intrinsics (@raw, @ptr_read, @ptr_write, etc.)"
 
 [[case]]
 name = "raw_simple_local"
-spec = ["9.2:1"]
+spec = ["9.2:6a", "9.2:6b"]
 source = """
 fn main() -> i32 {
     let x: i32 = 42;
@@ -34,14 +37,14 @@ exit_code = 42
 # default compact layout a raw pointer into a frame-resident NON-slot-identical
 # array (e.g. `[i32; 3]`, which packs to 4-byte strides while the frame stores
 # 8-byte slots) is refused loudly rather than silently mixing representations
-# (RUE-987 / RUE-1035 M2); that refusal is pinned in the CLI corpora. The `@raw`
+# (RUE-987 / RUE-1035, ADR-0052); that refusal is pinned in the CLI corpora. The `@raw`
 # and `@ptr_offset` semantics themselves are width-independent, so a
 # slot-identical array demonstrates them faithfully on the frame.
 # =============================================================================
 
 [[case]]
 name = "raw_array_element"
-spec = ["9.2:1"]
+spec = ["9.2:6a", "9.2:6b"]
 source = """
 fn main() -> i32 {
     let arr: [i64; 3] = [10, 20, 30];
@@ -56,7 +59,7 @@ exit_code = 10
 
 [[case]]
 name = "raw_array_second_element"
-spec = ["9.2:1"]
+spec = ["9.2:6a"]
 source = """
 fn main() -> i32 {
     let arr: [i64; 3] = [10, 20, 30];
@@ -71,7 +74,7 @@ exit_code = 20
 
 [[case]]
 name = "raw_array_last_element"
-spec = ["9.2:1"]
+spec = ["9.2:6a"]
 source = """
 fn main() -> i32 {
     let arr: [i64; 3] = [10, 20, 30];
@@ -90,7 +93,7 @@ exit_code = 30
 
 [[case]]
 name = "ptr_to_int_basic"
-spec = ["9.2:1"]
+spec = ["9.2:6c"]
 source = """
 fn main() -> i32 {
     let x: i32 = 42;
@@ -109,7 +112,7 @@ exit_code = 42
 
 [[case]]
 name = "ptr_write_and_read"
-spec = ["9.2:1"]
+spec = ["9.2:6b", "9.2:6d"]
 source = """
 fn main() -> i32 {
     let mut x: i32 = 10;
@@ -124,7 +127,7 @@ exit_code = 99
 
 [[case]]
 name = "ptr_write_array_element"
-spec = ["9.2:1"]
+spec = ["9.2:6b"]
 source = """
 fn main() -> i32 {
     let mut arr: [i64; 3] = [10, 20, 30];
@@ -143,7 +146,7 @@ exit_code = 77
 
 [[case]]
 name = "int_to_ptr_with_type_annotation"
-spec = ["9.2:1"]
+spec = ["9.2:6c", "9.2:6d"]
 source = """
 fn main() -> i32 {
     let x: i32 = 42;
@@ -159,7 +162,7 @@ exit_code = 42
 
 [[case]]
 name = "int_to_ptr_mutable_pointer"
-spec = ["9.2:1"]
+spec = ["9.2:6c"]
 source = """
 fn main() -> i32 {
     let x: i32 = 99;
@@ -176,7 +179,7 @@ exit_code = 99
 
 [[case]]
 name = "int_to_ptr_u64_pointer"
-spec = ["9.2:1"]
+spec = ["9.2:6c", "9.2:6d"]
 source = """
 fn main() -> i32 {
     let x: u64 = 12345;
@@ -190,6 +193,78 @@ fn main() -> i32 {
 }
 """
 exit_code = 57  # 12345 % 256 = 57
+
+# The null-pointer idiom (9.2:6c): `@int_to_ptr` takes exactly a `u64`, so null
+# is written over a `u64` binding rather than a bare `0` literal, and
+# `@ptr_to_int(p) == 0` is the null test. Round-tripping an address through the
+# pair addresses the same storage.
+[[case]]
+name = "int_to_ptr_zero_is_the_null_pointer"
+spec = ["9.2:6c", "9.2:6e"]
+source = """
+fn main() -> i32 {
+    let mut x: i32 = 10;
+    let zero: u64 = 0;
+    checked {
+        let p: ptr mut i32 = @raw_mut(x);
+        @ptr_write(p, 99);
+        let back: ptr mut i32 = @int_to_ptr(@ptr_to_int(p));
+        let null: ptr mut u8 = @int_to_ptr(zero);
+        if @ptr_to_int(null) == 0 { @ptr_read(back) } else { 0 }
+    }
+}
+"""
+exit_code = 99
+
+# @ptr_read/@ptr_write move exactly @size_of(T) physical bytes, never a
+# fixed-width slot (9.2:6b). At T = u8 that is one byte: writing through a
+# `ptr mut u8` leaves both neighbours untouched.
+[[case]]
+name = "ptr_write_u8_touches_exactly_one_byte"
+spec = ["9.2:6b"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4, 1);
+        @byte_set(p, 0, 4);
+        @ptr_write(@ptr_offset(p, 1), 200);
+        let ok: bool = @byte_read(p, 0) == 0
+            && @byte_read(p, 1) == 200
+            && @byte_read(p, 2) == 0
+            && @byte_read(p, 3) == 0;
+        @free(p, 4, 1);
+        if ok { 41 } else { 0 }
+    }
+}
+"""
+exit_code = 41
+
+# At T = i32 the same rule gives a four-byte access: a write to element 0 of a
+# two-element block leaves element 1's bytes untouched (9.2:6b). Checked by
+# byte inspection rather than by a byte pattern, so the case is endianness-neutral.
+[[case]]
+name = "ptr_write_i32_touches_exactly_size_of_bytes"
+spec = ["9.2:6b"]
+source = """
+fn main() -> i32 {
+    checked {
+        let unit: u64 = @intCast(@size_of(i32));
+        let align: u64 = @intCast(@align_of(i32));
+        let raw: ptr mut u8 = @alloc(2 * unit, align);
+        @byte_set(raw, 0, 2 * unit);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
+        @ptr_write(p, 123456789);
+        let untouched: bool = @byte_read(raw, 4) == 0
+            && @byte_read(raw, 5) == 0
+            && @byte_read(raw, 6) == 0
+            && @byte_read(raw, 7) == 0;
+        let same: bool = @ptr_read(p) == 123456789;
+        @free(raw, 2 * unit, align);
+        if untouched && same { 42 } else { 0 }
+    }
+}
+"""
+exit_code = 42
 
 # @ptr_offset is standard pointer arithmetic: p + n*size_of(pointee), a plain
 # add, forward for positive n (ADR-0040 / RUE-243). arr[0]+1 lands on element
