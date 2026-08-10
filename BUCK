@@ -34,6 +34,22 @@
 load("//:test_defs.bzl", "rue_sh_test", "rue_test_suite")
 load(":corpus.bzl", "cached_corpus_suite")
 
+# Versioned configuration anchors for the repository's Rust quality gates.
+# Both files are intentionally policy-neutral today; exporting them makes
+# future configuration changes explicit Buck inputs rather than cwd-dependent
+# tool discovery.
+export_file(
+    name = "clippy-config",
+    src = "clippy.toml",
+    visibility = ["PUBLIC"],
+)
+
+filegroup(
+    name = "rustfmt-config",
+    srcs = [".rustfmt.toml"],
+    visibility = ["PUBLIC"],
+)
+
 # The two halves of a cached corpus suite: the action wrapper that runs a
 # harness and writes its stamp, and the thin check that asserts the stamp.
 sh_binary(
@@ -73,8 +89,14 @@ _ASAN_FMT_SRCS = glob(["crates/rue-runtime-asan/src/**/*.rs"])
 rue_sh_test(
     name = "rue-runtime-asan-fmt-check",
     test = "toolchains//rust:rustfmt",
-    args = ["--edition", "2024", "--check"] + _ASAN_FMT_SRCS,
-    resources = _ASAN_FMT_SRCS,
+    args = [
+        "--config-path",
+        "$(location :rustfmt-config)",
+        "--edition",
+        "2024",
+        "--check",
+    ] + _ASAN_FMT_SRCS,
+    resources = _ASAN_FMT_SRCS + [":rustfmt-config"],
     # Excluded from quick iteration like every per-crate gate, so
     # `scripts/rue quick` keeps meaning "unit tests only".
     labels = ["rue_not_quick"],

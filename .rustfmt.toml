@@ -1,0 +1,3 @@
+# Rue intentionally uses the defaults of its pinned stable rustfmt.
+# Keep this file free of unstable options: formatting must not require a
+# separate nightly toolchain.

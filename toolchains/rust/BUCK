@@ -181,6 +181,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
+    clippy_toml = "root//:clippy-config",
     rustc_flags = _OPT_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
@@ -196,6 +197,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
+    clippy_toml = "root//:clippy-config",
     rustc_flags = _OPT_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
@@ -211,6 +213,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
+    clippy_toml = "root//:clippy-config",
     rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
@@ -226,6 +229,7 @@ hermetic_rust_toolchain(
     default_edition = "2024",
     deny_lints = ["warnings"],
     allow_lints = _CLIPPY_ALLOW,
+    clippy_toml = "root//:clippy-config",
     rustc_flags = _OPT_FLAGS + _MACOS_LINKER_FLAGS + _CACHE_PROBE_FLAGS,
     visibility = ["PUBLIC"],
 )
