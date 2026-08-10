@@ -99,7 +99,9 @@ _CACHE_PROBE_FLAGS = ['--cfg=rue_cache_probe_nonce="{}"'.format(_CACHE_PROBE_NON
 # Using -ld_classic forces the older, more stable linker.
 _MACOS_LINKER_FLAGS = ["-Clink-arg=-ld_classic"]
 
-# Workspace clippy lint policy (the CI `clippy` gate; see clippy.sh).
+# Workspace clippy lint policy, applied to every crate. The gate that reads
+# it is the per-crate `<name>-clippy` test emitted by rue_crate/rue_binary
+# (RUE-1153); see crates/clippy-gate.sh.
 #
 # deny_lints = ["warnings"] below makes *every* rustc/clippy warning an error.
 # For rustc that is already satisfied (the tree builds -D warnings clean). For

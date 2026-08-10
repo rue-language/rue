@@ -1,0 +1,9 @@
+# The per-crate clippy gate invoked by the `<name>-clippy` tests that
+# rue_crate/rue_binary emit (RUE-1153). See crates/clippy-gate.sh for why the
+# decision cannot live in the Buck build itself.
+export_file(
+    name = "clippy-gate",
+    src = "clippy-gate.sh",
+    mode = "reference",
+    visibility = ["PUBLIC"],
+)

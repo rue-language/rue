@@ -11,7 +11,7 @@ The failure is inverted, which is what makes it durable: the broken pipe only
 happens when the consumer DID match, so a clean tree exercises the working path
 exclusively and cannot distinguish this construct from a correct one. It has
 reached trunk three times -- RUE-1011 (scripts/test-wrapper-scripts.sh),
-RUE-1155 (clippy.sh, the required lint gate, plus three more sites) -- so it is
+RUE-1155 (the then-required clippy.sh lint gate, plus three more sites) -- so it is
 checked mechanically rather than by review.
 
 The fix is to remove the pipe: `grep -q PATTERN <<<"$text"`, a `case`, or

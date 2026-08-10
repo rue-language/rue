@@ -50,17 +50,35 @@ sh_binary(
     visibility = ["PUBLIC"],
 )
 
-# The formatting gate lives in fmt.sh, not here. A `fmt-check` sh_test used to
-# sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`. A
-# Buck glob does not descend into subpackages, and all 30 crates that own a
-# BUCK file are subpackages -- so the list resolved to the single source under
+# The formatting and lint gates are per-crate, not here. A `fmt-check` sh_test
+# used to sit at this spot, taking its file list from `glob(["crates/**/*.rs"])`.
+# A Buck glob does not descend into subpackages, and every crate owning a BUCK
+# file is a subpackage -- so the list resolved to the single source under
 # crates/rue-runtime-asan/ (the one crate without a BUCK file). The gate ran
 # rustfmt over 1 file of 281 and reported a pass for the other 280 (RUE-1152).
 #
-# Restoring cache-aware checking here means enumerating sources per crate,
-# which is a real change rather than a glob tweak; until then CI calls
-# `./fmt.sh check`, whose `find`-based discovery covers every source and now
-# fails rather than exits 0 when it finds none.
+# The replacement does not glob across packages at all: rue_crate/rue_binary
+# emit a `<name>-fmt-check` and a `<name>-clippy` per crate from the same
+# package-local srcs the library compiles (RUE-1153). Coverage is structural --
+# a crate is checked because it declares the targets, not because discovery
+# reached it.
+#
+# crates/rue-runtime-asan/ is the one deliberate exception: the cargo-built
+# ASan harness (RUE-560) has no BUCK file, so no macro emits its gates. Its
+# clippy runs as a dedicated `cargo clippy -D warnings` step in the CI asan
+# job; its format check lives here, where the root package can still name its
+# sources, so the file the old gate DID cover keeps its coverage.
+_ASAN_FMT_SRCS = glob(["crates/rue-runtime-asan/src/**/*.rs"])
+
+rue_sh_test(
+    name = "rue-runtime-asan-fmt-check",
+    test = "toolchains//rust:rustfmt",
+    args = ["--edition", "2024", "--check"] + _ASAN_FMT_SRCS,
+    resources = _ASAN_FMT_SRCS,
+    # Excluded from quick iteration like every per-crate gate, so
+    # `scripts/rue quick` keeps meaning "unit tests only".
+    labels = ["rue_not_quick"],
+)
 
 # The std library sources are runtime inputs to CLI integration tests and spec
 # cases that opt into the real std (compiled programs `@import` them via
@@ -976,23 +994,26 @@ rue_sh_test(
 # sanitizer gives examples the bundled standard library. The filegroup
 # materializes these at package-relative paths, matching the layout expected
 # under RUE_WRAPPER_ROOT.
+# Dict form because crates/clippy-gate.sh lives across the crates/BUCK package
+# boundary: the root package cannot name it as a plain source, so its exported
+# target stands in, keyed by the package-relative path the tests expect.
 filegroup(
     name = "wrapper-script-inputs",
-    srcs = [
-        "clippy.sh",
-        "fmt.sh",
-        "scripts/ci-heavy-suite",
-        "scripts/cli-timeout-policy.py",
-        "scripts/ci-timed",
-        "scripts/check-cache-probe",
-        "scripts/rue",
-        "scripts/rue-bin",
-        "scripts/rue-storage",
-        "scripts/provision-build-cache",
-        "scripts/run-large-example.sh",
-        "scripts/run-sanitizer.sh",
-        "test.sh",
-    ],
+    srcs = {
+        "crates/clippy-gate.sh": "//crates:clippy-gate",
+        "fmt.sh": "fmt.sh",
+        "scripts/ci-heavy-suite": "scripts/ci-heavy-suite",
+        "scripts/cli-timeout-policy.py": "scripts/cli-timeout-policy.py",
+        "scripts/ci-timed": "scripts/ci-timed",
+        "scripts/check-cache-probe": "scripts/check-cache-probe",
+        "scripts/rue": "scripts/rue",
+        "scripts/rue-bin": "scripts/rue-bin",
+        "scripts/rue-storage": "scripts/rue-storage",
+        "scripts/provision-build-cache": "scripts/provision-build-cache",
+        "scripts/run-large-example.sh": "scripts/run-large-example.sh",
+        "scripts/run-sanitizer.sh": "scripts/run-sanitizer.sh",
+        "test.sh": "test.sh",
+    },
 )
 
 rue_sh_test(
