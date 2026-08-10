@@ -277,7 +277,7 @@ fn deduplicate_type_mappings(
     Ok(unique)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum StableCfgSymbol {
     Callable(rue_air::FunctionInstanceKey<crate::StableDefinitionKey, crate::ModuleId>),
     #[allow(dead_code)]
@@ -397,12 +397,13 @@ impl CfgDomainProjection {
         old_interner: &lasso::ThreadedRodeo,
         new_interner: &lasso::ThreadedRodeo,
     ) -> Result<(), CfgDomainFailure> {
+        let mut stable_symbols = self
+            .symbols
+            .iter()
+            .map(|(_, stable)| stable.clone())
+            .collect::<std::collections::HashSet<_>>();
         for (old_symbol, stable) in &old.symbols {
-            if self
-                .symbols
-                .iter()
-                .any(|(_, candidate)| candidate == stable)
-            {
+            if !stable_symbols.insert(stable.clone()) {
                 continue;
             }
             let symbol = new_interner.get_or_intern(old_interner.resolve(old_symbol));
@@ -488,15 +489,21 @@ impl CfgDomainProjection {
         for (_, stable) in &old.types {
             self.current_type(stable)?;
         }
+        let mut current_symbols = HashMap::with_capacity(self.symbols.len() + old.symbols.len());
+        for (live, stable) in &self.symbols {
+            current_symbols.entry(stable.clone()).or_insert(*live);
+        }
         for (live, stable) in &old.symbols {
-            if !self
-                .symbols
-                .iter()
-                .any(|(_, candidate)| candidate == stable)
-            {
-                let symbol = new_interner.get_or_intern(old_interner.resolve(live));
-                self.symbols.push((symbol, stable.clone()));
+            if current_symbols.contains_key(stable) {
+                continue;
             }
+            let symbol = new_interner.get_or_intern(old_interner.resolve(live));
+            current_symbols.insert(stable.clone(), symbol);
+            self.symbols.push((symbol, stable.clone()));
+        }
+        let mut old_symbols = HashMap::with_capacity(old.symbols.len());
+        for (live, stable) in &old.symbols {
+            old_symbols.entry(*live).or_insert(stable);
         }
         let mut indices = first_string_indices(strings)?;
         let mut domain_strings = self
@@ -550,16 +557,13 @@ impl CfgDomainProjection {
                     _ => Err(CfgDomainFailure::Shape),
                 },
                 |value: Spur| {
-                    let stable = old
-                        .symbols
-                        .iter()
-                        .find(|(symbol, _)| *symbol == value)
-                        .map(|(_, value)| value)
+                    let stable = old_symbols
+                        .get(&value)
+                        .copied()
                         .ok_or(CfgDomainFailure::MissingSymbol)?;
-                    self.symbols
-                        .iter()
-                        .find(|(_, identity)| identity == stable)
-                        .map(|(symbol, _)| *symbol)
+                    current_symbols
+                        .get(stable)
+                        .copied()
                         .ok_or(CfgDomainFailure::MissingSymbol)
                 },
                 |value| {
@@ -1558,6 +1562,30 @@ mod tests {
         assert!(
             matches!(cfg.get_inst(rue_cfg::CfgValue::from_raw(0)).data, CfgInstData::Call { name, .. } if name == old)
         );
+
+        let source = include_str!("durable_cfg.rs");
+        let admission = source
+            .split_once("pub(crate) fn admit_stable_symbols(")
+            .unwrap()
+            .1
+            .split_once("pub(crate) fn admit_stable_types(")
+            .unwrap()
+            .0;
+        let relocation = source
+            .split_once("pub(crate) fn import_accessor_cfg(")
+            .unwrap()
+            .1
+            .split_once("pub(crate) fn callable_for_symbol")
+            .unwrap()
+            .0;
+        for method in [admission, relocation] {
+            let compact = method
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            assert!(!compact.contains(".symbols.iter().any("));
+            assert!(!compact.contains(".symbols.iter().find("));
+        }
     }
 
     #[test]
