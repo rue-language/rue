@@ -33,10 +33,13 @@ done
 
 # Starting another disk-heavy command while the host is near ENOSPC is unsafe.
 # The guard is normally just one portable `df` read. When free space is both at
-# or below 10% of the device and below an absolute headroom floor, it asks
-# Buck to reclaim eligible outputs from every registered Rue worktree,
-# preserving materializer state and active artifacts. `clean` itself is not an
-# execution command, so the host-wide guard cannot recurse through this wrapper.
+# or below 10% of the device and below the cleanup floor, it asks Buck to
+# reclaim eligible outputs from every registered Rue worktree, preserving
+# materializer state and active artifacts; it refuses the build only below the
+# hard floor, and warns-but-proceeds in between (RUE-1331 — active sibling
+# worktrees legitimately pin the host between the floors). `clean` itself is
+# not an execution command, so the host-wide guard cannot recurse through this
+# wrapper.
 if [[ "$execution_command" -eq 1 ]] && [[ -x "$repo_root/scripts/rue-storage" ]]; then
     (cd "$repo_root" && scripts/rue-storage guard)
 fi

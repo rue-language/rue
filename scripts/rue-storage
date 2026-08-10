@@ -18,10 +18,15 @@ asks Buck what stale or untracked output it would remove. clean performs that
 coordinated stale cleanup (default age: 1w) and, below 20% host free space,
 adaptively removes the oldest eligible output while preserving a 12-hour
 minimum TTL. guard is the build preflight: when free space is at or below 10%
-of the device AND below the absolute floor (16 GiB), it runs that cleanup
-across every worktree before allowing more disk-heavy work. reset
-fully removes Buck outputs only from the exact registered roots named by the
-caller. Source worktrees are never removed.
+of the device AND below the cleanup floor (16 GiB), it runs that cleanup
+across every worktree before allowing more disk-heavy work; a build is
+refused only when free space also sits at or below the hard floor (4 GiB),
+where ENOSPC is a real risk — between the floors the guard warns and
+proceeds, because on a busy multi-worktree host the free space held by
+active sibling builds is not reclaimable and blocking every build there
+starves the host without protecting it (RUE-1331). reset fully removes Buck
+outputs only from the exact registered roots named by the caller. Source
+worktrees are never removed.
 EOF
 }
 
@@ -35,6 +40,14 @@ emergency_trigger_percent=10
 # emergency path therefore requires BOTH a low free fraction AND less absolute
 # headroom than a cold full build plus test outputs could consume.
 emergency_free_floor_gib=16
+# Below the cleanup floor the guard tries to reclaim space; it refuses to
+# build only below this hard floor. The gap exists because several active
+# worktrees legitimately hold the host between the two floors for hours (their
+# artifacts are live, so no cleanup can help), and a chronic refusal in that
+# band blocks all verification while inviting guard bypasses (RUE-1331). An
+# incremental build fits comfortably in 4 GiB; a cold full build may not, and
+# fails loudly with ENOSPC rather than silently corrupting anything.
+hard_floor_gib=4
 
 collect_roots() {
     local inventory
@@ -112,8 +125,8 @@ status_all() {
     done <<<"$roots"
     printf 'Total: %s in %d registered Rue worktree(s)\n' "$(human_kib "$total")" "$count"
     df -Pk "$repo_root" | awk 'NR == 2 { printf "Host filesystem: %s used, %.1f GiB available\n", $5, $4 / 1048576 }'
-    printf 'Policy: adaptive cleanup targets %d%% free (minimum TTL %s); emergency guard starts at %d%% only below %d GiB absolute free\n' \
-        "$adaptive_target_percent" "$adaptive_min_ttl" "$emergency_trigger_percent" "$emergency_free_floor_gib"
+    printf 'Policy: adaptive cleanup targets %d%% free (minimum TTL %s); emergency cleanup starts at %d%% only below %d GiB absolute free; builds are refused only below %d GiB\n' \
+        "$adaptive_target_percent" "$adaptive_min_ttl" "$emergency_trigger_percent" "$emergency_free_floor_gib" "$hard_floor_gib"
 }
 
 stale_all() {
@@ -176,6 +189,33 @@ emergency_pressure() {
     else
         printf 'ok\n'
     fi
+}
+
+# The refusal decision: "low" only when free space sits at or below the hard
+# floor (same fraction gate as the cleanup trigger). Fails closed like
+# emergency_pressure.
+hard_pressure() {
+    local basis_points kib
+    basis_points="$(free_basis_points)" || return 1
+    kib="$(free_kib)" || return 1
+    if (( basis_points <= emergency_trigger_percent * 100 )) &&
+        (( kib <= hard_floor_gib * 1048576 )); then
+        printf 'low\n'
+    else
+        printf 'ok\n'
+    fi
+}
+
+# One shared remediation notice so the refusal and the warn-and-proceed paths
+# name the same sanctioned moves. Editing or bypassing the guard is not one of
+# them.
+remediation_notice() {
+    cat >&2 <<EOF
+To reclaim space safely: remove worktrees whose work is finished
+('git worktree remove <path>' or 'scripts/worktree-gc'), or reset a specific
+registered root's Buck outputs with 'scripts/rue storage reset <root>'.
+Do not edit or bypass this guard; it protects every worktree on the host.
+EOF
 }
 
 # "X.YZ% (N.M GiB)" for guard messages: the fraction alone reads as nonsense on
@@ -251,11 +291,18 @@ guard_low_disk() {
     after="$(describe_free)" || return 1
     if [[ "$pressure" == low ]]; then
         echo "warning: host filesystem still has only ${after} free; trying largest legacy Buck roots while preserving active work" >&2
-        if ! reset_legacy_under_pressure; then
-            echo "error: host filesystem remains critically low after safe cleanup; inspect 'scripts/rue storage status' before building" >&2
+        # Escalation is best-effort; the hard floor below makes the decision.
+        reset_legacy_under_pressure || true
+        pressure="$(hard_pressure)" || return 1
+        after="$(describe_free)" || return 1
+        if [[ "$pressure" == low ]]; then
+            echo "error: host filesystem has ${after} free, at or below the ${hard_floor_gib} GiB hard floor; build stopped before risking ENOSPC" >&2
+            remediation_notice
             return 1
         fi
-        after="$(describe_free)" || return 1
+        echo "warning: host filesystem has ${after} free — below the ${emergency_free_floor_gib} GiB cleanup floor but above the ${hard_floor_gib} GiB hard floor; proceeding. Incremental builds fit here; a cold full build may fail with ENOSPC." >&2
+        remediation_notice
+        return 0
     fi
     after_basis_points="$(free_basis_points)" || return 1
     if (( after_basis_points < adaptive_target_percent * 100 )); then

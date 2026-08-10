@@ -318,6 +318,43 @@ EOF
   rm -rf "$sb"
 }
 
+test_storage_guard_proceeds_between_cleanup_and_hard_floors() {
+  # RUE-1331: several active worktrees legitimately pin a large host between
+  # the 16 GiB cleanup floor and the 4 GiB hard floor for hours. Cleanup finds
+  # nothing reclaimable there (the artifacts are live), and a refusal starves
+  # every build without protecting the host — the guard must warn and proceed.
+  local sb rc=0; sb="$(make_sandbox rue-storage)"
+  setup_storage_root "$sb/root-1"
+  cat >"$sb/fakebin/git" <<EOF
+#!/usr/bin/env bash
+if [[ "\$*" == *"worktree list --porcelain"* ]]; then
+  printf 'worktree %s/root-1\n' "$sb"
+  exit 0
+fi
+exit 1
+EOF
+  chmod +x "$sb/fakebin/git"
+  # 15 GiB free of 200 GiB: 7.5%, below the cleanup floor, above the hard
+  # floor. Constant across probes — cleanup reclaims nothing, as on a host
+  # whose space is held by active sibling builds.
+  cat >"$sb/fakebin/df" <<'EOF'
+#!/usr/bin/env bash
+printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+printf 'disk 209715200 193986560 15728640 93%% /\n'
+EOF
+  chmod +x "$sb/fakebin/df"
+  run_script "$sb" rue-storage guard || rc=$?
+  check "storage: guard proceeds between the cleanup and hard floors" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+  check "storage: between-floors guard still attempts cleanup first" \
+    "$(grep -q ':clean --stale 1w' "$sb/calls.log" && echo 0 || echo 1)"
+  grep -q 'above the 4 GiB hard floor; proceeding' "$sb/out.log" || \
+    fail "storage: expected the warn-and-proceed notice between floors"
+  grep -q 'Do not edit or bypass this guard' "$sb/out.log" || \
+    fail "storage: expected the sanctioned-remediation notice"
+  rm -rf "$sb"
+}
+
 test_storage_reset_validates_all_targets_first() {
   local sb rc=0; sb="$(make_sandbox rue-storage)"
   setup_storage_root "$sb/root-1"
@@ -350,6 +387,7 @@ test_storage_git_failure_is_fail_closed
 test_storage_plans_every_registered_root
 test_storage_guard_is_host_wide_only_under_pressure
 test_storage_guard_blocks_when_pressure_remains_critical
+test_storage_guard_proceeds_between_cleanup_and_hard_floors
 test_storage_reset_validates_all_targets_first
 
 echo "--------------------------------------------------"
