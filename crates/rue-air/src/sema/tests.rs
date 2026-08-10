@@ -2616,6 +2616,59 @@ mod tests {
     }
 
     #[test]
+    fn break_path_move_is_moved_after_loop() {
+        // RUE-1293: a loop's exit ownership state is the union of the
+        // at-break states (formal core §5.7, (Loop-Break)), so a value moved
+        // on a break path is moved after the loop. Before the fix the exit
+        // state was the fall-through state — which never reaches the exit —
+        // and this use-after-move was accepted (observable double-drop).
+        let result = compile_to_air(
+            "struct NonCopy { x: i32 }
+             fn consume(n: NonCopy) -> i32 { n.x }
+             fn main() -> i32 {
+                 let n = NonCopy { x: 1 };
+                 let mut i = 0;
+                 loop {
+                     i = i + 1;
+                     if i > 0 { let v = consume(n); break; }
+                 }
+                 consume(n)
+             }",
+        );
+
+        assert!(result.is_err());
+        let errors = result.unwrap_err();
+        assert!(
+            errors
+                .iter()
+                .any(|error| matches!(&error.kind, ErrorKind::UseAfterMove { .. }))
+        );
+    }
+
+    #[test]
+    fn break_path_move_of_shadow_leaves_outer_owned() {
+        // The exit join is per-binding, not per-name (RUE-522 × RUE-1293):
+        // the break snapshot names the loop-local shadow, and pop_scope's
+        // restoration replayed onto it must resume the outer binding's own
+        // state, not poison it with the shadow's move.
+        compile_to_air(
+            "struct NonCopy { x: i32 }
+             fn consume(n: NonCopy) -> i32 { n.x }
+             fn main() -> i32 {
+                 let n = NonCopy { x: 1 };
+                 let mut i = 0;
+                 loop {
+                     i = i + 1;
+                     let n = NonCopy { x: 2 };
+                     if i > 0 { let v = consume(n); break; }
+                 }
+                 consume(n)
+             }",
+        )
+        .expect("outer binding is untouched by the shadow's break-path move");
+    }
+
+    #[test]
     fn test_partial_move_sibling_still_valid() {
         // After moving one field, sibling fields should still be usable
         // Note: Inner is non-copy, Outer is also non-copy (can't be @copy with non-copy field)

@@ -262,6 +262,118 @@ impl PartialEq for VariableMoveState {
     }
 }
 
+/// Apply one scope's saved move-state frame to a move map, restoring each
+/// name declared in that scope to its pre-declaration state (or absence), in
+/// reverse declaration order — the RUE-522 restoration `pop_scope` performs
+/// on the live `moved_vars`, factored out so a loop can apply it to its
+/// break-site snapshots too (RUE-1293): a snapshot taken inside the loop's
+/// scope may carry loop-local names, and for a name that *shadows* an outer
+/// binding the snapshot's entry describes the dead inner binding, while the
+/// outer binding's state at the break is exactly the saved entry this
+/// restoration writes back.
+pub(crate) fn restore_scope_moves(
+    moves: &mut HashMap<Spur, VariableMoveState>,
+    frame: &[(Spur, Option<VariableMoveState>)],
+) {
+    for (symbol, old_moves) in frame.iter().rev() {
+        match old_moves {
+            Some(state) => {
+                moves.insert(*symbol, state.clone());
+            }
+            None => {
+                moves.remove(symbol);
+            }
+        }
+    }
+}
+
+/// The move states one enclosing loop's `break`s and `continue`s have
+/// established so far (RUE-1293).
+///
+/// Both are diverging edges, so the `if`/`match` joins correctly exclude
+/// their states from the fall-through — but each state still arrives
+/// somewhere: a `break`'s at the code AFTER the loop (the exit is the union
+/// of the break states; formal core §5.7, (Loop-Break)), and a `continue`'s
+/// at the next iteration's entry (the back edge is the union of the
+/// fall-through and continue states). Before this record collected them,
+/// both edges dropped their move states entirely, accepting use-after-move
+/// with an observable double-drop through either a post-loop use (break) or
+/// a next-iteration use (continue).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct LoopEdgeStates {
+    /// A `break` targeting this loop exists: the loop is `()`-typed.
+    pub broke: bool,
+    /// One `moved_vars` snapshot per `break` targeting this loop.
+    pub break_snaps: Vec<(HashMap<Spur, VariableMoveState>, usize)>,
+    /// One `moved_vars` snapshot per `continue` targeting this loop.
+    pub continue_snaps: Vec<(HashMap<Spur, VariableMoveState>, usize)>,
+}
+
+/// Record one snapshot in a per-loop edge list, merging with an existing
+/// same-depth snapshot (union — moved on either edge ⇒ moved at the join).
+///
+/// Each snapshot is tagged with the scope depth (`moved_scope_stack.len()`)
+/// at which it was taken: it names whatever bindings were visible at the
+/// edge, so as each intervening scope pops, `pop_scope` replays that scope's
+/// RUE-522 restoration onto every snapshot taken inside it (and lowers its
+/// tag) — a shadowed outer binding resumes its own state, and scope locals
+/// drop out. By the time the loop pops its record, every snapshot describes
+/// the post-loop scope view. Eager same-depth merging keeps each list as
+/// small as the loop's live scope nesting.
+fn record_edge_snapshot(
+    snaps: &mut Vec<(HashMap<Spur, VariableMoveState>, usize)>,
+    moves: &HashMap<Spur, VariableMoveState>,
+    depth: usize,
+) {
+    if let Some((existing, existing_depth)) = snaps.last_mut()
+        && *existing_depth == depth
+    {
+        *existing = union_move_maps(existing, moves);
+        return;
+    }
+    snaps.push((moves.clone(), depth));
+}
+
+/// Union-merge a drained edge list, or `None` when the edge never fired.
+fn merged_edge_moves(
+    snaps: Vec<(HashMap<Spur, VariableMoveState>, usize)>,
+) -> Option<HashMap<Spur, VariableMoveState>> {
+    let mut snaps = snaps.into_iter();
+    let (mut merged, _) = snaps.next()?;
+    for (snap, _) in snaps {
+        merged = union_move_maps(&merged, &snap);
+    }
+    Some(merged)
+}
+
+impl LoopEdgeStates {
+    /// Record one break's snapshot.
+    pub fn record_break(&mut self, moves: &HashMap<Spur, VariableMoveState>, depth: usize) {
+        self.broke = true;
+        record_edge_snapshot(&mut self.break_snaps, moves, depth);
+    }
+
+    /// Record one continue's snapshot.
+    pub fn record_continue(&mut self, moves: &HashMap<Spur, VariableMoveState>, depth: usize) {
+        record_edge_snapshot(&mut self.continue_snaps, moves, depth);
+    }
+
+    /// The union-merge of every break snapshot — the loop's exit ownership
+    /// state — or `None` when the loop has no break; and of every continue
+    /// snapshot — the back edge's addition to the fall-through state.
+    pub fn merged_moves(
+        self,
+    ) -> (
+        Option<HashMap<Spur, VariableMoveState>>,
+        Option<HashMap<Spur, VariableMoveState>>,
+    ) {
+        (
+            merged_edge_moves(self.break_snaps),
+            merged_edge_moves(self.continue_snaps),
+        )
+    }
+}
+
 /// Union-merge two branch move-state maps (see [`VariableMoveState::merge_union`]).
 ///
 /// A variable with state in only one map is merged against the default
@@ -392,10 +504,14 @@ pub(crate) struct AnalysisContext<'a> {
     /// chapter 9). An `unchecked fn` body does NOT implicitly count as a
     /// checked context; the modifier only gates *callers* (see spec 9.1:1).
     pub checked_depth: u32,
-    /// One entry per enclosing loop (innermost last); set to `true` when a
-    /// `break` targeting that loop is analyzed. An infinite loop containing a
-    /// break has type `()`; without one it has type `!` (see spec 4.8).
-    pub loop_break_stack: Vec<bool>,
+    /// One entry per enclosing loop (innermost last), recording what that
+    /// loop's diverging edges establish: whether a `break` exists at all (an
+    /// infinite loop containing one has type `()`; without one it has type
+    /// `!` — spec 4.8), and the move-state snapshots at the break and
+    /// continue sites. The break states are the loop's exit ownership state,
+    /// and the continue states join the fall-through as the back-edge state
+    /// (RUE-1293; formal core §5.7, (Loop-Break)) — see [`LoopEdgeStates`].
+    pub loop_break_stack: Vec<LoopEdgeStates>,
     /// Local variables that have been read (for unused variable detection)
     pub used_locals: HashSet<Spur>,
     /// Return type of the current function (for explicit return validation)
@@ -618,14 +734,25 @@ impl ScopedContext for AnalysisContext<'_> {
                 }
             }
         }
+        let depth_before_pop = self.moved_scope_stack.len();
         if let Some(move_frame) = self.moved_scope_stack.pop() {
-            for (symbol, old_moves) in move_frame.into_iter().rev() {
-                match old_moves {
-                    Some(state) => {
-                        self.moved_vars.insert(symbol, state);
-                    }
-                    None => {
-                        self.moved_vars.remove(&symbol);
+            restore_scope_moves(&mut self.moved_vars, &move_frame);
+            // RUE-1293: a break-site snapshot taken while this scope was open
+            // names this scope's bindings; replay the same restoration on it
+            // so a shadowed outer binding resumes its own state and this
+            // scope's locals drop out. Every record on the stack encloses the
+            // popping scope (an inner loop's record is pushed and popped
+            // strictly within one enclosing scope), so only the depth tag
+            // decides applicability.
+            for record in &mut self.loop_break_stack {
+                for (snap, depth) in record
+                    .break_snaps
+                    .iter_mut()
+                    .chain(record.continue_snaps.iter_mut())
+                {
+                    if *depth >= depth_before_pop {
+                        restore_scope_moves(snap, &move_frame);
+                        *depth = depth_before_pop - 1;
                     }
                 }
             }
