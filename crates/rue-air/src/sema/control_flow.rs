@@ -375,8 +375,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // break-site snapshots still on the stack, so the record popped
         // afterwards describes the post-loop scope view.
         ctx.pop_scope();
-        let (break_moves, continue_moves) =
-            ctx.loop_break_stack.pop().unwrap_or_default().merged_moves();
+        let (break_moves, continue_moves) = ctx
+            .loop_break_stack
+            .pop()
+            .unwrap_or_default()
+            .merged_moves();
         // The back edge carries the fall-through state joined with the
         // continue-site states — a continue re-enters the loop exactly like
         // falling off the body's end — while a break path never re-enters.
