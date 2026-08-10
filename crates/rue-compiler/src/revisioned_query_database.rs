@@ -20808,15 +20808,65 @@ pub(crate) struct CompilerBodyFactProvider<'a> {
     queries: CompilerBodyProviderQueries<'a>,
 }
 
+#[derive(Default)]
+struct CanonicalAnonymousNominalRegistry {
+    by_identity:
+        BTreeMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
+}
+
+impl CanonicalAnonymousNominalRegistry {
+    fn extend(
+        &mut self,
+        nominals: impl IntoIterator<Item = crate::durable_semantics::DurableAnonymousNominal>,
+    ) {
+        for nominal in nominals {
+            let identity = nominal.identity.with_canonical_producer().into_owned();
+            match self.by_identity.entry(identity) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(nominal);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    // A declaration projection may carry only the anonymous
+                    // shape while a later producer-body fact carries methods.
+                    // Never replace that richer authority with a thin repeat;
+                    // otherwise equal canonical producer forms could make a
+                    // later lookup repeat the producer query.
+                    let existing_has_methods = matches!(
+                        &entry.get().shape,
+                        crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                            methods,
+                            ..
+                        } if !methods.is_empty()
+                    );
+                    let incoming_has_methods = matches!(
+                        &nominal.shape,
+                        crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                            methods,
+                            ..
+                        } if !methods.is_empty()
+                    );
+                    if incoming_has_methods || !existing_has_methods {
+                        entry.insert(nominal);
+                    }
+                }
+            }
+        }
+    }
+
+    fn get(
+        &self,
+        identity: &crate::AnonymousNominalKey,
+    ) -> Option<crate::durable_semantics::DurableAnonymousNominal> {
+        self.by_identity
+            .get(identity.with_canonical_producer().as_ref())
+            .cloned()
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct CompilerBodyDurableSource<'a> {
     provider: &'a CompilerBodyFactProvider<'a>,
-    anonymous: Option<&'a [crate::durable_semantics::DurableAnonymousNominal]>,
-    dynamic_anonymous: Rc<
-        std::cell::RefCell<
-            BTreeMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
-        >,
-    >,
+    dynamic_anonymous: Rc<std::cell::RefCell<CanonicalAnonymousNominalRegistry>>,
     source_paths: Rc<std::cell::RefCell<HashMap<crate::FileId, Arc<str>>>>,
     source_locators: Rc<std::cell::RefCell<HashMap<ModuleId, rue_air::DurableBodySourceLocator>>>,
 }
@@ -20830,20 +20880,15 @@ impl<'a> CompilerBodyDurableSource<'a> {
     ) -> Self {
         let mut source_paths = HashMap::new();
         let mut source_locators = HashMap::new();
+        let mut dynamic_anonymous = CanonicalAnonymousNominalRegistry::default();
+        dynamic_anonymous.extend(anonymous.iter().cloned());
         if let Some((module, locator)) = owner_source {
             source_paths.insert(locator.file_id, locator.physical_path.clone());
             source_locators.insert(module, locator);
         }
         Self {
             provider,
-            anonymous: Some(anonymous),
-            dynamic_anonymous: Rc::new(std::cell::RefCell::new(
-                anonymous
-                    .iter()
-                    .cloned()
-                    .map(|nominal| (nominal.identity.clone(), nominal))
-                    .collect(),
-            )),
+            dynamic_anonymous: Rc::new(std::cell::RefCell::new(dynamic_anonymous)),
             source_paths: Rc::new(std::cell::RefCell::new(source_paths)),
             source_locators: Rc::new(std::cell::RefCell::new(source_locators)),
         }
@@ -20869,26 +20914,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
         key: &crate::AnonymousNominalKey,
     ) -> Option<crate::durable_semantics::DurableAnonymousNominal> {
         use rue_air::BodyFactProvider;
-        let canonical = key.with_canonical_producer();
-        let cached = self
-            .dynamic_anonymous
-            .borrow()
-            .values()
-            .find(|nominal| {
-                nominal.identity.with_canonical_producer().as_ref() == canonical.as_ref()
-            })
-            .cloned()
-            .or_else(|| {
-                self.anonymous.and_then(|facts| {
-                    facts
-                        .iter()
-                        .find(|nominal| {
-                            nominal.identity.with_canonical_producer().as_ref()
-                                == canonical.as_ref()
-                        })
-                        .cloned()
-                })
-            });
+        let cached = self.dynamic_anonymous.borrow().get(key);
         let cached_has_methods = cached.as_ref().is_some_and(|nominal| {
             matches!(
                 &nominal.shape,
@@ -20913,13 +20939,10 @@ impl<'a> CompilerBodyDurableSource<'a> {
         if let Some(function) = body_producer {
             match self.provider.producer_body_facts(&function) {
                 Some(crate::body_query::ProducedAnonymous::Produced(produced)) => {
-                    if let Some(nominal) = produced.0.iter().find(|nominal| {
-                        nominal.identity.with_canonical_producer().as_ref() == canonical.as_ref()
-                    }) {
-                        self.dynamic_anonymous
-                            .borrow_mut()
-                            .insert(nominal.identity.clone(), nominal.clone());
-                        return Some(nominal.clone());
+                    let mut dynamic = self.dynamic_anonymous.borrow_mut();
+                    dynamic.extend(produced.0.iter().cloned());
+                    if let Some(nominal) = dynamic.get(key) {
+                        return Some(nominal);
                     }
                 }
                 Some(crate::body_query::ProducedAnonymous::ProducerFailed(_)) | None => {}
@@ -20939,27 +20962,21 @@ impl<'a> CompilerBodyDurableSource<'a> {
                 crate::StableDefinitionKey,
                 ModuleId,
             >>::reduce_comptime_call(self, definition, &[], &[]);
-            if let Some(nominal) = self.dynamic_anonymous.borrow().values().find(|nominal| {
-                nominal.identity.with_canonical_producer().as_ref() == canonical.as_ref()
-            }) {
-                return Some(nominal.clone());
+            if let Some(nominal) = self.dynamic_anonymous.borrow().get(key) {
+                return Some(nominal);
             }
         }
         let producer = match &key.producer {
             crate::StableProducerId::Definition(definition) => definition,
             crate::StableProducerId::Function(function) => function_definition_key(function)?,
         };
-        self.candidate(producer)
+        let facts = self
+            .candidate(producer)
             .and_then(|candidate| self.provider.anonymous_facts(&candidate))
-            .and_then(|facts| {
-                facts
-                    .iter()
-                    .find(|nominal| {
-                        nominal.identity.with_canonical_producer().as_ref() == canonical.as_ref()
-                    })
-                    .cloned()
-            })
-            .or(cached)
+            .unwrap_or_default();
+        let mut dynamic = self.dynamic_anonymous.borrow_mut();
+        dynamic.extend(facts.iter().cloned());
+        dynamic.get(key).or(cached)
     }
 
     fn signature(
@@ -20968,13 +20985,9 @@ impl<'a> CompilerBodyDurableSource<'a> {
     ) -> Option<crate::semantic_query_nucleus::ResolvedDeclarationSignature> {
         use rue_air::BodyFactProvider;
         let signature = self.provider.signature(&self.candidate(key)?)?;
-        self.dynamic_anonymous.borrow_mut().extend(
-            signature
-                .anonymous_nominals
-                .iter()
-                .cloned()
-                .map(|nominal| (nominal.identity.clone(), nominal)),
-        );
+        self.dynamic_anonymous
+            .borrow_mut()
+            .extend(signature.anonymous_nominals.iter().cloned());
         Some(signature)
     }
 
@@ -21578,13 +21591,9 @@ impl rue_air::DurableBodyLookupSource<crate::StableDefinitionKey, ModuleId>
             };
             match produced_facts {
                 crate::body_query::ProducedAnonymous::Produced(produced) => {
-                    self.dynamic_anonymous.borrow_mut().extend(
-                        produced
-                            .0
-                            .iter()
-                            .cloned()
-                            .map(|nominal| (nominal.identity.clone(), nominal)),
-                    );
+                    self.dynamic_anonymous
+                        .borrow_mut()
+                        .extend(produced.0.iter().cloned());
                 }
                 crate::body_query::ProducedAnonymous::ProducerFailed(failure) => {
                     *self
@@ -21632,12 +21641,9 @@ impl rue_air::DurableConstSource<crate::StableDefinitionKey, ModuleId>
         else {
             return None;
         };
-        self.dynamic_anonymous.borrow_mut().extend(
-            anonymous_nominals
-                .iter()
-                .cloned()
-                .map(|nominal| (nominal.identity.clone(), nominal)),
-        );
+        self.dynamic_anonymous
+            .borrow_mut()
+            .extend(anonymous_nominals.iter().cloned());
         Some(rue_air::DurableConst {
             is_public: identity.is_public,
             ty,
@@ -29265,6 +29271,89 @@ fn main() -> i32 {
         let evaluator = &compiler[evaluator_start..evaluator_end];
         assert!(evaluator.contains("index.import_occurrence(&key.occurrence)"));
         assert!(!evaluator.contains("module.imports().iter().find("));
+    }
+
+    #[test]
+    fn compiler_body_anonymous_registry_is_canonical_and_indexed() {
+        let compiler = include_str!("revisioned_query_database.rs");
+        let registry_start = compiler
+            .find("struct CanonicalAnonymousNominalRegistry")
+            .expect("body provider retains one anonymous registry");
+        let registry_end = compiler[registry_start..]
+            .find("\n#[derive(Clone)]\npub(crate) struct CompilerBodyDurableSource")
+            .map(|offset| registry_start + offset)
+            .expect("anonymous registry remains separate from its consumer");
+        let registry = &compiler[registry_start..registry_end];
+        assert!(registry.contains("with_canonical_producer().into_owned()"));
+        assert!(registry.contains("self.by_identity\n            .get("));
+
+        let lookup_start = compiler
+            .find("    fn anonymous_nominal(")
+            .expect("body provider retains anonymous lookup");
+        let lookup_end = compiler[lookup_start..]
+            .find("\n    fn signature(")
+            .map(|offset| lookup_start + offset)
+            .expect("anonymous lookup stays bounded");
+        let lookup = &compiler[lookup_start..lookup_end];
+        assert!(lookup.contains("dynamic.get(key)"));
+        assert!(!lookup.contains(".values()"));
+        assert!(!lookup.contains(".iter().find("));
+    }
+
+    #[test]
+    fn compiler_body_anonymous_registry_unifies_producers_and_keeps_rich_facts() {
+        let canonical = anonymous_identity_for_digest_test(
+            "RegistryProducer",
+            rue_air::AnonymousNominalKind::Struct,
+        );
+        let crate::StableProducerId::Function(base) = canonical.producer.clone() else {
+            unreachable!("digest-test helper uses a function producer")
+        };
+        let mut wrapped = canonical.clone();
+        wrapped.producer = crate::StableProducerId::Function(Box::new(
+            crate::FunctionInstanceKey::Specialization {
+                base,
+                arguments: crate::CanonicalArguments::default(),
+            },
+        ));
+        let thin = crate::durable_semantics::DurableAnonymousNominal {
+            identity: wrapped.clone(),
+            shape: crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                fields: Arc::from([]),
+                methods: Arc::from([]),
+            },
+            type_captures: Arc::from([]),
+            value_captures: Arc::from([]),
+        };
+        let rich = crate::durable_semantics::DurableAnonymousNominal {
+            identity: canonical.clone(),
+            shape: crate::durable_semantics::DurableAnonymousNominalShape::Struct {
+                fields: Arc::from([]),
+                methods: Arc::from([crate::durable_semantics::DurableAnonymousMethodSignature {
+                    name: Arc::from("method"),
+                    has_self: false,
+                    self_mode: crate::durable_semantics::DurableParameterMode::Value,
+                    parameters: Arc::from([]),
+                    result: crate::durable_semantics::DurableAnonymousMethodType::Concrete(
+                        rue_air::SemanticImportType::I32,
+                    ),
+                    body: None,
+                }]),
+            },
+            type_captures: Arc::from([]),
+            value_captures: Arc::from([]),
+        };
+
+        let mut registry = CanonicalAnonymousNominalRegistry::default();
+        registry.extend([thin.clone()]);
+        assert_eq!(registry.get(&canonical), Some(thin.clone()));
+        assert_eq!(registry.get(&wrapped), Some(thin.clone()));
+        registry.extend([rich.clone()]);
+        registry.extend([thin]);
+
+        assert_eq!(registry.by_identity.len(), 1);
+        assert_eq!(registry.get(&canonical), Some(rich.clone()));
+        assert_eq!(registry.get(&wrapped), Some(rich));
     }
 
     #[test]
