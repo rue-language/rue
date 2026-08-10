@@ -35,6 +35,7 @@ Each step has a corresponding document in this directory and a Claude Code comma
 | - | [compiler-facade.md](compiler-facade.md) | - | Review compiler API and tooling-view changes |
 | - | [tutorial.md](tutorial.md) | - | Maintain tutorial outline, style, and snippet checks |
 | - | [issue-tracking.md](issue-tracking.md) | Linear MCP tools | Track work with Linear |
+| - | [fuzz-failure-reporting.md](fuzz-failure-reporting.md) | - | How nightly fuzz crashes reach Linear (and the `LINEAR_API_KEY` setup) |
 
 ## Feature Types
 
@@ -65,7 +66,7 @@ Design documents for large features. See [../designs/README.md](../designs/READM
 Gating mechanism for incomplete features. Allows merging partial work to main without breaking stable functionality. See [ADR-0005](../designs/0005-preview-features.md).
 
 ### Issue Tracking (Linear)
-We use [Linear](https://linear.app) (team "Rue") for all issue tracking. See [issue-tracking.md](issue-tracking.md).
+We use [Linear](https://linear.app) (team "Rue") for all issue tracking. See [issue-tracking.md](issue-tracking.md). Automated producers file there too: the nightly fuzz workflow opens one Linear issue per distinct crash fingerprint, described in [fuzz-failure-reporting.md](fuzz-failure-reporting.md).
 
 ### Specification
 Language semantics are formally documented in [../spec/](../spec/). Changes to language behavior require spec updates.
