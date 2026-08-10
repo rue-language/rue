@@ -625,9 +625,8 @@ impl BoundDefinitionSet {
         let slot = merged
             .ast()
             .modules()
-            .iter()
-            .position(|candidate| candidate.module_id() == module)
-            .ok_or(rue_air::SemanticStableResolutionFailure::Missing)?;
+            .binary_search_by(|candidate| candidate.module_id().cmp(module))
+            .map_err(|_| rue_air::SemanticStableResolutionFailure::Missing)?;
         Ok(rue_air::SemanticModuleToken::new(
             self.issuer.id,
             slot as u32,
@@ -1450,6 +1449,62 @@ mod tests {
             ErrorKind::InvalidCompilerInput(ref message)
                 if message == "validated canonical graph does not cover a parsed import directive"
         ));
+    }
+
+    #[test]
+    fn canonical_module_tokens_use_the_sorted_module_slot() {
+        let input = snapshot(
+            &[
+                (
+                    1,
+                    "/src/main.rue",
+                    "main.rue",
+                    "const a = @import(\"a.rue\"); const z = @import(\"z.rue\"); fn main() {}",
+                ),
+                (2, "/src/a.rue", "a.rue", ""),
+                (3, "/src/z.rue", "z.rue", ""),
+            ],
+            1,
+        );
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let graph = crate::test_support::test_import_graph(&input).unwrap();
+        let (definitions, _) = bind_canonical_definitions_with_work(
+            &stages.merged,
+            &stages.rir,
+            PreviewFeatures::new(),
+            Target::default(),
+            &graph,
+        )
+        .unwrap();
+
+        for (slot, module) in stages.merged.ast().modules().iter().enumerate() {
+            let token = definitions
+                .module_token_for(&stages.merged, module.module_id())
+                .unwrap();
+            assert_eq!(token.slot() as usize, slot);
+            assert_eq!(
+                definitions
+                    .module_for_semantic_token(&stages.merged, token)
+                    .unwrap(),
+                module.module_id()
+            );
+        }
+        let missing = ModuleId::from_logical_path("missing.rue").unwrap();
+        assert_eq!(
+            definitions.module_token_for(&stages.merged, &missing),
+            Err(rue_air::SemanticStableResolutionFailure::Missing)
+        );
+
+        let source = include_str!("bound_definitions.rs");
+        let method = source
+            .split_once("pub(crate) fn module_token_for(")
+            .unwrap()
+            .1
+            .split_once("pub(crate) fn module_for_semantic_token")
+            .unwrap()
+            .0;
+        assert!(method.contains(".binary_search_by("));
+        assert!(!method.contains(".position("));
     }
 
     #[test]
