@@ -753,16 +753,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             };
 
             let struct_def = self.body_type_pool().struct_def(struct_id);
-            let field_name_str = self.body_interner().resolve(&field).to_string();
-
-            let (field_index, struct_field) =
-                struct_def.find_field(&field_name_str).ok_or_compile_error(
+            let field_name = self.body_interner().resolve(&field);
+            let Some((field_index, struct_field)) = struct_def.find_field(field_name) else {
+                return Err(CompileError::new(
                     ErrorKind::UnknownField {
                         struct_name: struct_def.name.to_string(),
-                        field_name: field_name_str.clone(),
+                        field_name: field_name.to_string(),
                     },
                     field_span,
-                )?;
+                ));
+            };
 
             let field_type = struct_field.ty;
 
