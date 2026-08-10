@@ -64,6 +64,7 @@ struct BenchmarkJson {
 #[derive(serde::Deserialize)]
 struct BenchmarkMetadata {
     target: String,
+    compiler_build_profile: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -87,6 +88,7 @@ struct CompletedCompile {
     output_binary_bytes: u64,
     shape: WorkloadShape,
     target: String,
+    compiler_build_profile: String,
 }
 
 /// The raw result of one fresh compiler process for the scaling report.
@@ -94,6 +96,7 @@ pub struct FreshCompile {
     pub sample: Sample,
     pub shape: WorkloadShape,
     pub target: String,
+    pub compiler_build_profile: String,
 }
 
 /// Measure one sample.
@@ -170,6 +173,7 @@ pub fn measure_fresh_compile(request: &SampleRequest<'_>) -> Result<FreshCompile
         },
         shape: completed.shape,
         target: completed.target,
+        compiler_build_profile: completed.compiler_build_profile,
     })
 }
 
@@ -255,6 +259,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
             functions: parsed.source_metrics.functions,
         },
         target: parsed.metadata.target,
+        compiler_build_profile: parsed.metadata.compiler_build_profile,
     })
 }
 

@@ -99,6 +99,11 @@ use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::thread::ThreadId;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(rue_release_build)]
+const COMPILER_BUILD_PROFILE: &str = "release_thin_lto";
+#[cfg(not(rue_release_build))]
+const COMPILER_BUILD_PROFILE: &str = "debug";
+
 use rue_perf_schema::{Phase, PhaseAccounting};
 use serde::Serialize;
 
@@ -329,6 +334,8 @@ pub struct BenchmarkMetadata {
     pub version: String,
     /// Target platform (e.g., "x86_64-linux", "aarch64-macos").
     pub target: String,
+    /// Build profile of the Rust compiler binary being measured.
+    pub compiler_build_profile: &'static str,
 }
 
 /// Timing data for a single compiler pass.
@@ -694,10 +701,11 @@ impl TimingData {
             timestamp: iso8601_now(),
             version: version.to_string(),
             target: target.to_string(),
+            compiler_build_profile: COMPILER_BUILD_PROFILE,
         };
 
         BenchmarkTiming {
-            schema_version: 4,
+            schema_version: 5,
             timing_model: "inclusive_spans",
             phase_accounting,
             metadata,
@@ -2046,7 +2054,10 @@ mod tests {
         data.record("lexer", Duration::from_millis(100));
 
         let json = data.to_json_with_metrics("x86_64-linux", "0.1.0", None, None);
-        assert!(json.contains("\"schema_version\":4"));
+        assert!(json.contains("\"schema_version\":5"));
+        assert!(json.contains(&format!(
+            "\"compiler_build_profile\":\"{COMPILER_BUILD_PROFILE}\""
+        )));
         assert!(json.contains("\"timing_model\":\"inclusive_spans\""));
         assert!(json.contains("\"passes\""));
         assert!(json.contains("\"name\""));
@@ -2703,7 +2714,11 @@ mod phase_accounting_tests {
         });
 
         let timing = data.to_benchmark_timing_with_metrics("probe-target", "probe", None, None);
-        assert_eq!(timing.schema_version, 4);
+        assert_eq!(timing.schema_version, 5);
+        assert_eq!(
+            timing.metadata.compiler_build_profile,
+            COMPILER_BUILD_PROFILE
+        );
         assert_eq!(timing.timing_model, "inclusive_spans");
         assert_invariant(&timing.phase_accounting);
 

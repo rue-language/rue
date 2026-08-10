@@ -110,6 +110,12 @@ pub fn run() -> Result<(), String> {
                 }
                 Some(_) => {}
             }
+            if measured.compiler_build_profile != manifest.compiler_build_profile {
+                return Err(format!(
+                    "scaling workload {:?} requires compiler build profile {:?}, but the compiler reported {:?}",
+                    workload.id, manifest.compiler_build_profile, measured.compiler_build_profile,
+                ));
+            }
             samples.push(measured.sample);
         }
         observations.push(ScalingObservation {
@@ -137,6 +143,7 @@ pub fn run() -> Result<(), String> {
             program_runtime_executed: false,
             samples_per_workload: manifest.samples,
             compiler_args: manifest.args,
+            compiler_build_profile: manifest.compiler_build_profile,
         },
         workloads: observations,
     };
@@ -214,10 +221,11 @@ fn render(report: &ScalingReport) -> String {
     let mut out = String::new();
     out.push_str("# Rue compiler scaling report\n\n");
     out.push_str(&format!(
-        "- Commit: `{}`\n- Fixture revision: {}\n- Target: `{}`\n- Machine: {} ({} cores, {} bytes memory)\n- Runner: `{}` / `{}` ({})\n- Regime: {} sequential fresh compiler processes per workload; OS page-cache state is uncontrolled.\n- Runtime separation: compiled programs were not executed.\n\n",
+        "- Commit: `{}`\n- Fixture revision: {}\n- Target: `{}`\n- Compiler build profile: `{}`\n- Machine: {} ({} cores, {} bytes memory)\n- Runner: `{}` / `{}` ({})\n- Regime: {} sequential fresh compiler processes per workload; OS page-cache state is uncontrolled.\n- Runtime separation: compiled programs were not executed.\n\n",
         report.identity.commit,
         report.identity.manifest_revision,
         report.identity.target,
+        report.regime.compiler_build_profile,
         report.identity.environment.cpu_model,
         report.identity.environment.core_count,
         report.identity.environment.memory_bytes,
@@ -359,6 +367,7 @@ mod tests {
                 program_runtime_executed: false,
                 samples_per_workload: 2,
                 compiler_args: Vec::new(),
+                compiler_build_profile: "release_thin_lto".to_string(),
             },
             workloads: vec![ScalingObservation {
                 workload: "probe".to_string(),
@@ -381,6 +390,7 @@ mod tests {
     fn markdown_states_the_regime_and_runtime_separation() {
         let rendered = render(&report());
         assert!(rendered.contains("OS page-cache state is uncontrolled"));
+        assert!(rendered.contains("Compiler build profile: `release_thin_lto`"));
         assert!(rendered.contains("compiled programs were not executed"));
         assert!(rendered.contains("median absolute deviation"));
         assert!(rendered.contains("shape id"));

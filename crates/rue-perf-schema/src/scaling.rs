@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::{EnvironmentFingerprint, Sample};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 1;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 2;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +27,8 @@ pub struct ScalingManifest {
     /// Behaviour-affecting arguments passed to every compiler process.
     #[serde(default)]
     pub args: Vec<String>,
+    /// Required Rust build profile of the compiler binary under measurement.
+    pub compiler_build_profile: String,
     /// Maintained programs, in report order.
     pub workloads: Vec<ScalingWorkload>,
 }
@@ -36,7 +38,7 @@ impl ScalingManifest {
     pub fn parse(text: &str) -> Result<Self, String> {
         let manifest: ScalingManifest =
             toml::from_str(text).map_err(|error| format!("invalid scaling manifest: {error}"))?;
-        if manifest.schema_version != 1 {
+        if manifest.schema_version != 2 {
             return Err(format!(
                 "unsupported scaling manifest schema version {}",
                 manifest.schema_version
@@ -44,6 +46,9 @@ impl ScalingManifest {
         }
         if manifest.samples < 2 {
             return Err("scaling measurements require at least two samples".to_string());
+        }
+        if manifest.compiler_build_profile.is_empty() {
+            return Err("the scaling manifest declares no compiler build profile".to_string());
         }
         if manifest.workloads.is_empty() {
             return Err("the scaling manifest declares no workloads".to_string());
@@ -125,6 +130,8 @@ pub struct ScalingRegime {
     pub samples_per_workload: u32,
     /// Behaviour-affecting arguments passed to every compiler process.
     pub compiler_args: Vec<String>,
+    /// Rust build profile reported by the compiler binary.
+    pub compiler_build_profile: String,
 }
 
 /// Raw measurements for one maintained program.
@@ -167,9 +174,10 @@ mod tests {
     use super::*;
 
     const VALID: &str = r#"
-schema_version = 1
+schema_version = 2
 revision = 2
 samples = 3
+compiler_build_profile = "release_thin_lto"
 
 [[workloads]]
 id = "ruelex"
@@ -182,6 +190,7 @@ question = "small maintained compiler frontend"
         let manifest = ScalingManifest::parse(VALID).unwrap();
         assert_eq!(manifest.revision, 2);
         assert_eq!(manifest.samples, 3);
+        assert_eq!(manifest.compiler_build_profile, "release_thin_lto");
         assert_eq!(manifest.workloads[0].id, "ruelex");
     }
 

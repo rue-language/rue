@@ -30,6 +30,7 @@ rue_crate(
     deps = _DEPS,
     rustc_flags = [
         "--check-cfg=cfg(rue_benchmark_allocations)",
+        "--check-cfg=cfg(rue_release_build)",
         "--check-cfg=cfg(test)",
     ],
 )
@@ -45,6 +46,7 @@ rue_binary(
     ],
     rustc_flags = [
         "--check-cfg=cfg(rue_benchmark_allocations)",
+        "--check-cfg=cfg(rue_release_build)",
         "--check-cfg=cfg(test)",
     ],
 )
@@ -60,6 +62,7 @@ rue_binary(
     rustc_flags = [
         "--cfg=rue_benchmark_allocations",
         "--check-cfg=cfg(rue_benchmark_allocations)",
+        "--check-cfg=cfg(rue_release_build)",
         "--check-cfg=cfg(test)",
     ],
     tests = False,

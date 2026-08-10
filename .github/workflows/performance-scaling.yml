@@ -30,7 +30,7 @@ jobs:
         uses: facebook/install-dotslash@v2
 
       - name: Build the compiler and measurement runner
-        run: ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
+        run: ./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench --target-platforms //platforms:release
 
       - name: Measure maintained programs
         env:
@@ -39,8 +39,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p scaling-report
-          RUE="$(scripts/rue-bin)"
-          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+          RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+          BENCH="$(./buck2 build //crates/rue-bench:rue-bench --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
           "$BENCH" scaling \
             --manifest performance/scaling.toml \
             --compiler "$RUE" \
