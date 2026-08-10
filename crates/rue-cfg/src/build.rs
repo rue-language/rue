@@ -82,6 +82,13 @@ enum MovedSlot {
 /// element is determined by the type at that level.
 type FieldPath = Vec<u32>;
 type MovedPathKey = (MovedSlot, FieldPath);
+type MovedPathMap = std::collections::HashMap<MovedSlot, std::collections::HashSet<FieldPath>>;
+
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+struct MoveStateStats {
+    slot_path_visits: std::cell::Cell<usize>,
+}
 
 /// Move-out state for drop elaboration: whole slots and struct field paths
 /// whose contents were moved out.
@@ -98,28 +105,41 @@ struct MoveState {
     slots: std::collections::HashSet<MovedSlot>,
     /// `(slot, path)` pairs for field paths moved out (on EVERY tracked
     /// path) of a slot that is itself still live. Join: intersection.
-    fields: std::collections::HashSet<MovedPathKey>,
+    fields: MovedPathMap,
     /// `(slot, path)` pairs for field paths moved out on SOME tracked path.
     /// Always a superset of `fields`. Join: union. A path here but not in
     /// `fields` is path-dependent: its scope-exit drop is emitted behind
     /// that path's runtime drop flag.
-    maybe_fields: std::collections::HashSet<MovedPathKey>,
+    maybe_fields: MovedPathMap,
+    #[cfg(test)]
+    stats: MoveStateStats,
 }
 
 impl MoveState {
+    #[cfg(test)]
+    fn record_slot_path_visits(&self, count: usize) {
+        self.stats
+            .slot_path_visits
+            .set(self.stats.slot_path_visits.get() + count);
+    }
+
     /// Record that the slot's whole value moved out.
     fn mark_slot(&mut self, slot: MovedSlot) {
         self.slots.insert(slot);
         // Whole-value move subsumes any per-field moves (and the slot's
         // whole-value drop flag takes over at runtime).
-        self.fields.retain(|(s, _)| *s != slot);
-        self.maybe_fields.retain(|(s, _)| *s != slot);
+        #[cfg(test)]
+        self.record_slot_path_visits(self.fields.get(&slot).map_or(0, |paths| paths.len()));
+        self.fields.remove(&slot);
+        #[cfg(test)]
+        self.record_slot_path_visits(self.maybe_fields.get(&slot).map_or(0, |paths| paths.len()));
+        self.maybe_fields.remove(&slot);
     }
 
     /// Record that one struct field path of the slot moved out.
     fn mark_path(&mut self, slot: MovedSlot, path: FieldPath) {
-        self.fields.insert((slot, path.clone()));
-        self.maybe_fields.insert((slot, path));
+        self.fields.entry(slot).or_default().insert(path.clone());
+        self.maybe_fields.entry(slot).or_default().insert(path);
     }
 
     /// The slot was (re)initialized with a fresh value: clear all move-out
@@ -127,18 +147,37 @@ impl MoveState {
     /// dropped at scope exit.
     fn clear_slot(&mut self, slot: MovedSlot) {
         self.slots.remove(&slot);
-        self.fields.retain(|(s, _)| *s != slot);
-        self.maybe_fields.retain(|(s, _)| *s != slot);
+        #[cfg(test)]
+        self.record_slot_path_visits(self.fields.get(&slot).map_or(0, |paths| paths.len()));
+        self.fields.remove(&slot);
+        #[cfg(test)]
+        self.record_slot_path_visits(self.maybe_fields.get(&slot).map_or(0, |paths| paths.len()));
+        self.maybe_fields.remove(&slot);
     }
 
     /// One top-level field of the slot was reassigned: that field (and
     /// everything nested inside it) holds a fresh value again and must be
     /// dropped at scope exit.
     fn clear_field(&mut self, slot: MovedSlot, field: u32) {
-        self.fields
-            .retain(|(s, p)| *s != slot || p.first() != Some(&field));
-        self.maybe_fields
-            .retain(|(s, p)| *s != slot || p.first() != Some(&field));
+        #[cfg(test)]
+        self.record_slot_path_visits(
+            self.fields.get(&slot).map_or(0, |paths| paths.len())
+                + self.maybe_fields.get(&slot).map_or(0, |paths| paths.len()),
+        );
+        Self::clear_field_from(&mut self.fields, slot, field);
+        Self::clear_field_from(&mut self.maybe_fields, slot, field);
+    }
+
+    fn clear_field_from(paths_by_slot: &mut MovedPathMap, slot: MovedSlot, field: u32) {
+        let remove_partition = if let Some(paths) = paths_by_slot.get_mut(&slot) {
+            paths.retain(|path| path.first() != Some(&field));
+            paths.is_empty()
+        } else {
+            false
+        };
+        if remove_partition {
+            paths_by_slot.remove(&slot);
+        }
     }
 
     /// Was the slot's whole value moved out (on every tracked path)?
@@ -148,31 +187,30 @@ impl MoveState {
 
     /// Was this exact field path moved out on every tracked path?
     fn is_path_moved(&self, key: &MovedPathKey) -> bool {
-        self.fields.contains(key)
+        self.fields
+            .get(&key.0)
+            .is_some_and(|paths| paths.contains(&key.1))
     }
 
     /// Was this exact field path moved out on any tracked path?
     fn is_path_maybe_moved(&self, key: &MovedPathKey) -> bool {
-        self.maybe_fields.contains(key)
+        self.maybe_fields
+            .get(&key.0)
+            .is_some_and(|paths| paths.contains(&key.1))
     }
-
     /// Field paths moved out of `slot` on EVERY tracked path.
     fn moved_paths_of(&self, slot: MovedSlot) -> std::collections::HashSet<FieldPath> {
-        self.fields
-            .iter()
-            .filter(|(s, _)| *s == slot)
-            .map(|(_, p)| p.clone())
-            .collect()
+        #[cfg(test)]
+        self.record_slot_path_visits(self.fields.get(&slot).map_or(0, |paths| paths.len()));
+        self.fields.get(&slot).cloned().unwrap_or_default()
     }
 
     /// Field paths moved out of `slot` on SOME tracked path (superset of
     /// `moved_paths_of`).
     fn maybe_moved_paths_of(&self, slot: MovedSlot) -> std::collections::HashSet<FieldPath> {
-        self.maybe_fields
-            .iter()
-            .filter(|(s, _)| *s == slot)
-            .map(|(_, p)| p.clone())
-            .collect()
+        #[cfg(test)]
+        self.record_slot_path_visits(self.maybe_fields.get(&slot).map_or(0, |paths| paths.len()));
+        self.maybe_fields.get(&slot).cloned().unwrap_or_default()
     }
 
     /// Join two path states: definite state (`slots`, `fields`) is kept
@@ -180,14 +218,31 @@ impl MoveState {
     /// field docs); possible state (`maybe_fields`) is kept if present in
     /// EITHER ("moved on SOME path").
     fn intersect(&self, other: &MoveState) -> MoveState {
+        let fields = self
+            .fields
+            .iter()
+            .filter_map(|(slot, paths)| {
+                let other_paths = other.fields.get(slot)?;
+                let common = paths
+                    .intersection(other_paths)
+                    .cloned()
+                    .collect::<std::collections::HashSet<_>>();
+                (!common.is_empty()).then_some((*slot, common))
+            })
+            .collect();
+        let mut maybe_fields = self.maybe_fields.clone();
+        for (slot, paths) in &other.maybe_fields {
+            maybe_fields
+                .entry(*slot)
+                .or_default()
+                .extend(paths.iter().cloned());
+        }
         MoveState {
             slots: self.slots.intersection(&other.slots).copied().collect(),
-            fields: self.fields.intersection(&other.fields).cloned().collect(),
-            maybe_fields: self
-                .maybe_fields
-                .union(&other.maybe_fields)
-                .cloned()
-                .collect(),
+            fields,
+            maybe_fields,
+            #[cfg(test)]
+            stats: MoveStateStats::default(),
         }
     }
 }
@@ -3449,7 +3504,11 @@ mod tests {
         let absent = vec![5, 6];
         let mut state = MoveState::default();
         state.mark_path(slot, definite.clone());
-        state.maybe_fields.insert((slot, possible.clone()));
+        state
+            .maybe_fields
+            .entry(slot)
+            .or_default()
+            .insert(possible.clone());
 
         assert!(state.is_path_moved(&(slot, definite.clone())));
         assert!(state.is_path_maybe_moved(&(slot, definite)));
@@ -3463,6 +3522,61 @@ mod tests {
         let source = include_str!("build.rs");
         assert!(!source.contains(&materialized_probe));
         assert!(!source.contains(&materialized_maybe_probe));
+    }
+
+    #[test]
+    fn slot_local_move_operations_ignore_unrelated_slot_partitions() {
+        let mut state = MoveState::default();
+        for index in 0..1_024 {
+            state.mark_path(MovedSlot::Local(index), vec![index]);
+        }
+        let target = MovedSlot::Local(777);
+
+        state.stats.slot_path_visits.set(0);
+        assert_eq!(state.moved_paths_of(target), HashSet::from([vec![777]]));
+        assert_eq!(state.stats.slot_path_visits.get(), 1);
+
+        state.stats.slot_path_visits.set(0);
+        assert_eq!(
+            state.maybe_moved_paths_of(target),
+            HashSet::from([vec![777]])
+        );
+        assert_eq!(state.stats.slot_path_visits.get(), 1);
+
+        state.stats.slot_path_visits.set(0);
+        state.clear_field(target, 777);
+        assert_eq!(state.stats.slot_path_visits.get(), 2);
+        assert!(!state.fields.contains_key(&target));
+        assert!(!state.maybe_fields.contains_key(&target));
+        assert!(state.is_path_moved(&(MovedSlot::Local(778), vec![778])));
+
+        state.mark_path(target, vec![1]);
+        state.stats.slot_path_visits.set(0);
+        state.clear_slot(target);
+        assert_eq!(state.stats.slot_path_visits.get(), 2);
+        assert!(!state.fields.contains_key(&target));
+        assert!(!state.maybe_fields.contains_key(&target));
+    }
+
+    #[test]
+    fn partitioned_move_state_join_preserves_definite_and_possible_paths() {
+        let slot = MovedSlot::Param(3);
+        let shared = vec![1];
+        let left_only = vec![2];
+        let right_only = vec![3];
+        let mut left = MoveState::default();
+        left.mark_path(slot, shared.clone());
+        left.mark_path(slot, left_only.clone());
+        let mut right = MoveState::default();
+        right.mark_path(slot, shared.clone());
+        right.mark_path(slot, right_only.clone());
+
+        let joined = left.intersect(&right);
+        assert_eq!(joined.moved_paths_of(slot), HashSet::from([shared.clone()]));
+        assert_eq!(
+            joined.maybe_moved_paths_of(slot),
+            HashSet::from([shared, left_only, right_only])
+        );
     }
 
     fn build_cfg(source: &str) -> Cfg {
