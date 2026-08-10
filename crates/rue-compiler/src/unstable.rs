@@ -1628,6 +1628,8 @@ pub struct QueryValidationMetrics {
     pub active_cycle_prunes: u64,
     pub memo_hits: u64,
     pub memo_misses: u64,
+    pub certificate_misses: u64,
+    pub proof_reacquisition_misses: u64,
     pub endorsement_probes: u64,
     pub endorsement_hits: u64,
     pub terminal_lease_observations: u64,
@@ -1667,6 +1669,8 @@ impl QueryValidationMetrics {
             active_cycle_prunes: self.active_cycle_prunes,
             memo_hits: self.memo_hits,
             memo_misses: self.memo_misses,
+            certificate_misses: self.certificate_misses,
+            proof_reacquisition_misses: self.proof_reacquisition_misses,
             endorsement_probes: self.endorsement_probes,
             endorsement_hits: self.endorsement_hits,
             terminal_lease_observations: self.terminal_lease_observations,
@@ -1697,6 +1701,8 @@ impl From<rue_query::ValidationWork> for QueryValidationMetrics {
             active_cycle_prunes: work.active_cycle_prunes,
             memo_hits: work.memo_hits,
             memo_misses: work.memo_misses,
+            certificate_misses: work.certificate_misses,
+            proof_reacquisition_misses: work.proof_reacquisition_misses,
             endorsement_probes: work.endorsement_probes,
             endorsement_hits: work.endorsement_hits,
             terminal_lease_observations: work.terminal_lease_observations,
@@ -1717,13 +1723,19 @@ mod query_validation_metrics_tests {
     use super::QueryValidationMetrics;
 
     #[test]
-    fn exact_terminal_observations_survive_projection_and_deltas() {
+    fn validation_work_classification_survives_projection_and_deltas() {
         let before = rue_query::ValidationWork {
+            memo_misses: 3,
+            certificate_misses: 2,
+            proof_reacquisition_misses: 1,
             terminal_lease_observations: 7,
             duplicate_terminal_lease_observations: 2,
             ..Default::default()
         };
         let after = rue_query::ValidationWork {
+            memo_misses: 8,
+            certificate_misses: 5,
+            proof_reacquisition_misses: 3,
             terminal_lease_observations: 11,
             duplicate_terminal_lease_observations: 5,
             ..Default::default()
@@ -1732,6 +1744,9 @@ mod query_validation_metrics_tests {
         assert_eq!(QueryValidationMetrics::from(after).into_runtime(), after);
         let delta = QueryValidationMetrics::from(after)
             .saturating_sub(QueryValidationMetrics::from(before));
+        assert_eq!(delta.memo_misses, 5);
+        assert_eq!(delta.certificate_misses, 3);
+        assert_eq!(delta.proof_reacquisition_misses, 2);
         assert_eq!(delta.terminal_lease_observations, 4);
         assert_eq!(delta.duplicate_terminal_lease_observations, 3);
     }

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 4;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 5;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -747,6 +747,10 @@ pub struct ValidationWork {
     pub memo_hits: u64,
     /// Node visits which inspected or re-demanded the node.
     pub memo_misses: u64,
+    /// Memo misses with no usable exact certificate and live matching terminal.
+    pub certificate_misses: u64,
+    /// Memo misses caused only by a registered proof scope lacking the exact lease.
+    pub proof_reacquisition_misses: u64,
     /// Registered-cone endorsement lookups.
     pub endorsement_probes: u64,
     /// Endorsement lookups satisfied by the rooted request.
@@ -1112,6 +1116,15 @@ fn validate_validation_work(
         errors.push(finding(
             path,
             "validation node visits do not equal cycle prunes, memo hits, and memo misses",
+        ));
+    }
+    let memo_miss_outcomes = work
+        .certificate_misses
+        .checked_add(work.proof_reacquisition_misses);
+    if memo_miss_outcomes != Some(work.memo_misses) {
+        errors.push(finding(
+            path,
+            "validation memo misses do not equal certificate and proof-reacquisition misses",
         ));
     }
 
@@ -1884,7 +1897,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 4
+report_schema_version = 5
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -2229,6 +2242,8 @@ minimum_memory_bytes = 15000000000
             active_cycle_prunes: 1,
             memo_hits: 1,
             memo_misses: 2,
+            certificate_misses: 1,
+            proof_reacquisition_misses: 1,
             endorsement_probes: 2,
             endorsement_hits: 1,
             terminal_lease_observations: 3,
@@ -2255,6 +2270,15 @@ minimum_memory_bytes = 15000000000
         }));
 
         measured.rows[0].samples[0].validation.node_visits -= 1;
+        measured.rows[0].samples[0].validation.certificate_misses += 1;
+        let validation = validate_edit_report(&manifest, &measured);
+        assert!(validation.errors.iter().any(|error| {
+            error
+                .detail
+                .contains("memo misses do not equal certificate")
+        }));
+
+        measured.rows[0].samples[0].validation.certificate_misses -= 1;
         measured.rows[0].samples[0]
             .validation
             .duplicate_terminal_lease_observations = 4;
@@ -2333,8 +2357,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":4",
-            "\"schema_version\":4,\"surprise\":true",
+            "\"schema_version\":5",
+            "\"schema_version\":5,\"surprise\":true",
             1,
         );
         assert!(

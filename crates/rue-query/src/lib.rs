@@ -2318,6 +2318,10 @@ pub struct ValidationWork {
     pub memo_hits: u64,
     /// Node visits which had to inspect or re-demand the node.
     pub memo_misses: u64,
+    /// Memo misses with no usable exact certificate and live matching terminal.
+    pub certificate_misses: u64,
+    /// Memo misses caused only by a registered proof scope lacking the exact lease.
+    pub proof_reacquisition_misses: u64,
     /// Exact registered-cone endorsement lookups.
     pub endorsement_probes: u64,
     /// Endorsement lookups satisfied by this rooted request's retained cone.
@@ -2366,6 +2370,8 @@ impl ValidationWork {
             active_cycle_prunes,
             memo_hits,
             memo_misses,
+            certificate_misses,
+            proof_reacquisition_misses,
             endorsement_probes,
             endorsement_hits,
             terminal_lease_observations,
@@ -2400,6 +2406,8 @@ impl ValidationWork {
             active_cycle_prunes,
             memo_hits,
             memo_misses,
+            certificate_misses,
+            proof_reacquisition_misses,
             endorsement_probes,
             endorsement_hits,
             terminal_lease_observations,
@@ -2429,6 +2437,8 @@ struct AtomicValidationWork {
     active_cycle_prunes: AtomicU64,
     memo_hits: AtomicU64,
     memo_misses: AtomicU64,
+    certificate_misses: AtomicU64,
+    proof_reacquisition_misses: AtomicU64,
     endorsement_probes: AtomicU64,
     endorsement_hits: AtomicU64,
     terminal_lease_observations: AtomicU64,
@@ -2457,6 +2467,8 @@ impl AtomicValidationWork {
             active_cycle_prunes: self.active_cycle_prunes.load(Ordering::Relaxed),
             memo_hits: self.memo_hits.load(Ordering::Relaxed),
             memo_misses: self.memo_misses.load(Ordering::Relaxed),
+            certificate_misses: self.certificate_misses.load(Ordering::Relaxed),
+            proof_reacquisition_misses: self.proof_reacquisition_misses.load(Ordering::Relaxed),
             endorsement_probes: self.endorsement_probes.load(Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.load(Ordering::Relaxed),
             terminal_lease_observations: self.terminal_lease_observations.load(Ordering::Relaxed),
@@ -2487,6 +2499,8 @@ impl AtomicValidationWork {
             active_cycle_prunes: self.active_cycle_prunes.swap(0, Ordering::Relaxed),
             memo_hits: self.memo_hits.swap(0, Ordering::Relaxed),
             memo_misses: self.memo_misses.swap(0, Ordering::Relaxed),
+            certificate_misses: self.certificate_misses.swap(0, Ordering::Relaxed),
+            proof_reacquisition_misses: self.proof_reacquisition_misses.swap(0, Ordering::Relaxed),
             endorsement_probes: self.endorsement_probes.swap(0, Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.swap(0, Ordering::Relaxed),
             terminal_lease_observations: self
@@ -2526,6 +2540,8 @@ impl AtomicValidationWork {
             active_cycle_prunes,
             memo_hits,
             memo_misses,
+            certificate_misses,
+            proof_reacquisition_misses,
             endorsement_probes,
             endorsement_hits,
             terminal_lease_observations,
@@ -4293,6 +4309,7 @@ where
                 .fetch_add(1, Ordering::Relaxed);
             return Ok(None);
         }
+        let mut proof_reacquisition_miss = false;
         {
             let state = lock(&self.state);
             if let Some((revision, stamp, registered_only)) = state.validated_at
@@ -4304,26 +4321,38 @@ where
                             if terminal.stamp == stamp
                     )
                 })
+            {
                 // A registered-cone endorsement is also a retention proof. A
                 // memo may skip validation in that scope only after this task
                 // has already leased the exact node/stamp; otherwise the
                 // ordinary demand reconstructs and pins its transitive cone.
-                && (!task.validation_endorsements_active()
-                    || task.validation_endorsed_identity(self.incarnation, stamp))
-            {
-                if !registered_only {
-                    task.taint_validation_proofs();
+                if !task.validation_endorsements_active()
+                    || task.validation_endorsed_identity(self.incarnation, stamp)
+                {
+                    if !registered_only {
+                        task.taint_validation_proofs();
+                    }
+                    task.validation_work
+                        .memo_hits
+                        .fetch_add(1, Ordering::Relaxed);
+                    active.remove(&self.incarnation);
+                    return Ok(Some(stamp));
                 }
-                task.validation_work
-                    .memo_hits
-                    .fetch_add(1, Ordering::Relaxed);
-                active.remove(&self.incarnation);
-                return Ok(Some(stamp));
+                proof_reacquisition_miss = true;
             }
         }
         task.validation_work
             .memo_misses
             .fetch_add(1, Ordering::Relaxed);
+        if proof_reacquisition_miss {
+            task.validation_work
+                .proof_reacquisition_misses
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            task.validation_work
+                .certificate_misses
+                .fetch_add(1, Ordering::Relaxed);
+        }
         if let Some(demand) = &self.demand {
             task.validation_work.demands.fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
@@ -8926,6 +8955,11 @@ mod tests {
             "every erased-node visit has exactly one outcome"
         );
         assert_eq!(
+            work.memo_misses,
+            work.certificate_misses + work.proof_reacquisition_misses,
+            "every memo miss has exactly one cause"
+        );
+        assert_eq!(
             work.registry_probes,
             work.dependency_observations + work.successful_traversals,
             "validation probes once per dependency and successful root certificate"
@@ -12666,6 +12700,8 @@ mod tests {
         let validation = after.validation.saturating_sub(before.validation);
         assert_validation_work_consistent(validation);
         assert_eq!(validation.memo_misses, 3);
+        assert_eq!(validation.certificate_misses, 3);
+        assert_eq!(validation.proof_reacquisition_misses, 0);
         assert_eq!(
             validation.memo_hits, 1,
             "the second edge into the shared leaf uses its revision memo"
@@ -12679,6 +12715,90 @@ mod tests {
             1,
             "the shared leaf is re-demanded only on its first path"
         );
+    }
+
+    #[test]
+    fn registered_batch_counts_current_certificates_rejected_for_missing_proof_lease() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(30, 12);
+        let second = Revision::new(31, 12);
+        let input = InputIdentity::new("source", "proof-reacquisition");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 1)])
+            .unwrap();
+
+        let input_for_leaf = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "proof-reacquisition-leaf",
+                8,
+                move |context, _, _| {
+                    context.input(input_for_leaf.clone())?;
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+        let leaf_for_middle = leaf.clone();
+        let middle = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "proof-reacquisition-middle",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&leaf_for_middle, Key("leaf"))?;
+                    Ok(QueryOutput::success(2))
+                },
+            )
+            .unwrap();
+        let middle_for_top = middle.clone();
+        let top = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "proof-reacquisition-top",
+                8,
+                move |context, _, _| {
+                    context.query_registered(&middle_for_top, Key("middle"))?;
+                    Ok(QueryOutput::success(3))
+                },
+            )
+            .unwrap();
+
+        runtime
+            .request_registered(&top, first, Key("top"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        runtime
+            .request_registered(&top, second, Key("top"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let before = runtime.metrics().validation;
+        let root = runtime
+            .family::<Key, u64>("proof-reacquisition-root", 1)
+            .unwrap();
+        let top_for_root = top.clone();
+        runtime
+            .request(
+                &root,
+                second,
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    let _proof = context.endorse_registered_validations();
+                    context.query_registered_batch(&top_for_root, [Key("top")])?;
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .into_result()
+            .unwrap();
+
+        let validation = runtime.metrics().validation.saturating_sub(before);
+        assert_validation_work_consistent(validation);
+        assert_eq!(validation.certificate_misses, 0);
+        assert_eq!(validation.proof_reacquisition_misses, 2);
+        assert_eq!(validation.memo_misses, 2);
+        assert_eq!(validation.demand_reuses, 2);
     }
 
     #[test]
