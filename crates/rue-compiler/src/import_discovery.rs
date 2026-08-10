@@ -837,7 +837,8 @@ impl ImportDiscoveryPlan {
     ) -> CompileResult<(Self, u64)> {
         // Construct groups ONLY for the newly appended modules' occurrences; the
         // predecessor plan's groups are carried by reference through
-        // `SharedSegments::extend`, never copied or re-sorted.
+        // `SharedSegments::extend`; untouched tiers remain shared and tail-tier
+        // compaction preserves canonical order.
         let mut delta = Vec::new();
         let mut constructed = 0u64;
         for module_id in new_modules {
@@ -1443,8 +1444,8 @@ pub struct DiscoverySourceAssembler {
     canonical_identities: BTreeMap<Arc<str>, PhysicalFileIdentity>,
     accepted_reads: BTreeMap<ModuleId, AcceptedReadManifestEntry>,
     /// The last produced snapshot; the next [`Self::snapshot`] extends it with
-    /// only the modules added since, sharing every predecessor segment
-    /// (RUE-1112). Predecessor `FileId`s stay stable across extensions.
+    /// only the modules added since, using bounded shared size tiers (RUE-1112).
+    /// Predecessor `FileId`s stay stable across extensions.
     cached_snapshot: Option<SourceSnapshot>,
     /// Modules added since `cached_snapshot` was produced, in insertion order.
     appended_since_snapshot: Vec<ModuleId>,
@@ -1456,7 +1457,7 @@ pub struct DiscoverySourceAssembler {
     snapshot_sources_appended: u64,
     /// The last produced provenance manifest; the next
     /// [`Self::accepted_read_manifest`] extends it with only the entries added
-    /// since, sharing every predecessor segment (RUE-1112). Invalidated when a
+    /// since, using bounded shared size tiers (RUE-1112). Invalidated when a
     /// retained entry is rewritten (a canonical-path improvement), which falls
     /// back to a counted full rebuild.
     cached_manifest: Option<AcceptedReadManifest>,
@@ -1485,18 +1486,16 @@ struct AssembledSource {
 }
 
 /// The accepted-read provenance manifest as a persistent segmented sequence
-/// (RUE-1112): `Arc`-shared predecessor segments plus an appended delta, sorted
-/// by module identity within and across segments. A strictly-additive successor
-/// shares every predecessor segment by reference, so extending the manifest
-/// never copies or re-validates a predecessor entry; the merged contiguous
-/// slice materializes lazily, off the acquisition path. Equality and hashing
-/// are logical over the merged sequence.
+/// (RUE-1112): bounded size-tiered segments plus an exact appended delta, sorted
+/// by module identity. Untouched tiers and the lazily materialized contiguous
+/// slice are shared by clones. Equality and hashing are logical over the merged
+/// sequence.
 #[derive(Clone)]
 pub struct AcceptedReadManifest {
     entries: crate::shared_segments::SharedSegments<AcceptedReadManifestEntry>,
     /// Lazily materialized merged slice for consumers that need `Arc<[T]>`
     /// (the compiler-owned staging boundary and retained artifacts).
-    merged: std::sync::OnceLock<Arc<[AcceptedReadManifestEntry]>>,
+    merged: Arc<std::sync::OnceLock<Arc<[AcceptedReadManifestEntry]>>>,
 }
 
 fn accepted_read_order(
@@ -1541,7 +1540,7 @@ impl AcceptedReadManifest {
                 entries.into(),
                 accepted_read_order,
             ),
-            merged: std::sync::OnceLock::new(),
+            merged: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1554,7 +1553,7 @@ impl AcceptedReadManifest {
         let _ = merged.set(entries.clone());
         Self {
             entries: crate::shared_segments::SharedSegments::flat(entries, accepted_read_order),
-            merged,
+            merged: Arc::new(merged),
         }
     }
 
@@ -1567,7 +1566,7 @@ impl AcceptedReadManifest {
     ) -> Self {
         Self {
             entries: crate::shared_segments::SharedSegments::extend(&base.entries, appended),
-            merged: std::sync::OnceLock::new(),
+            merged: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
@@ -1878,9 +1877,9 @@ impl DiscoverySourceAssembler {
 
     pub fn snapshot(&mut self) -> CompileResult<SourceSnapshot> {
         // Extension route: once a lineage's first snapshot exists, each
-        // successor snapshot appends only the modules added since, sharing every
-        // predecessor segment by reference — no predecessor source is copied,
-        // re-hashed, or re-validated, and predecessor FileIds stay stable.
+        // successor snapshot appends only the modules added since. Untouched
+        // tiers remain shared; compaction copies metadata but never re-hashes or
+        // copies source bytes, and predecessor FileIds stay stable.
         if let Some(cached) = self.cached_snapshot.clone() {
             if self.appended_since_snapshot.is_empty() {
                 return Ok(cached);
@@ -1984,9 +1983,9 @@ impl DiscoverySourceAssembler {
     }
 
     /// The accepted-read provenance manifest. Once a lineage's first manifest
-    /// exists, each successor manifest appends only the entries added since,
-    /// sharing every predecessor segment by reference — no predecessor entry is
-    /// copied, re-validated, or re-compared (RUE-1112).
+    /// exists, each successor manifest appends only the entries added since.
+    /// Untouched tiers remain shared and equal-magnitude tails compact without
+    /// re-validating entries (RUE-1112).
     pub fn accepted_read_manifest(&mut self) -> AcceptedReadManifest {
         if let Some(cached) = self.cached_manifest.clone() {
             if self.appended_since_manifest.is_empty() {

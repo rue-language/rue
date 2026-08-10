@@ -2691,9 +2691,9 @@ impl CompilerSession {
         let (reduced, validation) = match &narrow {
             Some((set, predecessor)) => {
                 // The reduction produced only the delta records; build the
-                // successor graph by structurally sharing the predecessor's record
-                // segment (no predecessor record is copied or re-sorted) and
-                // validate only the delta against the carried predecessor result.
+                // successor graph from the exact delta. Untouched size tiers stay
+                // shared; any tail compaction preserves canonical order. Validate
+                // only the delta against the carried predecessor result.
                 let new_records = reduced.records().to_vec();
                 let merged = crate::CanonicalImportGraph::from_additive_successor(
                     program.root().clone(),
@@ -3577,9 +3577,9 @@ impl CompilerSession {
     /// the committed predecessor for the first stage and the prior successor
     /// stage after a frontier batch), its presentation order, and the appended
     /// (module, file) pairs. The retained artifact must PROVE it is the
-    /// successor snapshot's structural ancestor — every one of its source
-    /// segments carried by `Arc` identity, same root, and its exact
-    /// presentation order — so a parse record from any other snapshot (an
+    /// successor snapshot's direct structural ancestor — proven by lineage
+    /// pointer identity, same root, and its exact presentation order — so a
+    /// parse record from any other snapshot (an
     /// intervening source or presentation update) can never be extended; the
     /// capability is rejected instead. Everything here is O(appended); content
     /// identity is pinned by the published revision, never re-hashed or
@@ -3623,24 +3623,17 @@ impl CompilerSession {
         };
         let predecessor_order = predecessor_order.clone();
         let predecessor_revision = record.runtime_revision;
-        // STRUCTURAL ANCESTRY: the successor snapshot must carry every source
-        // segment of the retained artifact's snapshot by `Arc` identity, with
-        // the same root. An artifact retained by an intervening update over a
-        // different or reordered snapshot cannot share this lineage and is
-        // rejected here rather than silently extended.
+        // STRUCTURAL ANCESTRY: the successor source revision must name the
+        // retained revision as its direct lineage parent (or be the same
+        // revision for an empty source delta), with the same root. This remains
+        // a constant-time pointer proof when storage tiers compact.
         let predecessor_snapshot = record.snapshot.clone();
         {
-            let successor_segments = snapshot.source_revision().module_segments().segments();
-            let predecessor_segments = predecessor_snapshot
+            let structural_delta = snapshot
                 .source_revision()
                 .module_segments()
-                .segments();
-            let shared_prefix = successor_segments.len() >= predecessor_segments.len()
-                && successor_segments
-                    .iter()
-                    .zip(predecessor_segments.iter())
-                    .all(|(a, b)| Arc::ptr_eq(a, b));
-            if !shared_prefix
+                .direct_delta_from(predecessor_snapshot.source_revision().module_segments());
+            if structural_delta.is_none()
                 || snapshot.source_revision().root()
                     != predecessor_snapshot.source_revision().root()
             {

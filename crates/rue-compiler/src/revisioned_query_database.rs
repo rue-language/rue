@@ -19647,34 +19647,15 @@ impl RevisionedQueryDatabase {
         }
         .ok_or_else(|| import_input_error("import input revision is no longer retained"))?;
 
-        // Source additions come from STRUCTURAL AUTHORITY: when the successor
-        // snapshot's module segments share every parent segment by `Arc`
-        // identity, the shared segments ARE the parent view by construction —
-        // no predecessor comparison — and the appended segments are the exact
-        // source delta. A host handing a rebuilt (non-shared) snapshot instead
-        // falls back to the explicit byte-identical two-pointer diff, whose
-        // element comparisons are counted so the acquisition profile proves the
-        // structural path ran. The observation delta is likewise never
-        // re-derived: the persistent ledger's recorded head IS this step's
-        // delta.
+        // Source additions come from STRUCTURAL AUTHORITY: direct lineage
+        // pointer identity proves the parent and retains the exact newest delta
+        // even when the storage tiers compact. A rebuilt snapshot falls back to
+        // the explicit byte-identical two-pointer diff.
         let successor_segments = snapshot.source_revision().module_segments();
         let parent_segments = parent_view.sources.module_segments();
-        let structural_sources = {
-            let parent_count = parent_segments.segments().len();
-            let shared_prefix = successor_segments.segments().len() >= parent_count
-                && successor_segments
-                    .segments()
-                    .iter()
-                    .zip(parent_segments.segments().iter())
-                    .all(|(a, b)| Arc::ptr_eq(a, b));
-            shared_prefix.then(|| {
-                successor_segments.segments()[parent_count..]
-                    .iter()
-                    .flat_map(|segment| segment.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-        };
+        let structural_sources = successor_segments
+            .direct_delta_from(parent_segments)
+            .map(<[crate::ModuleRevision]>::to_vec);
         let new_sources = match structural_sources {
             Some(appended) => appended,
             None => {
@@ -19690,30 +19671,11 @@ impl RevisionedQueryDatabase {
                 )?
             }
         };
-        // Accepted-read provenance additions come from the SAME structural
-        // authority: a successor manifest sharing every parent segment by `Arc`
-        // identity IS the parent manifest plus its appended segments, so the
-        // appended segments are the exact provenance delta with no predecessor
-        // comparison. A rebuilt (non-shared) manifest falls back to the counted
-        // byte-identical two-pointer diff.
-        let structural_reads = {
-            let parent_segments = parent_view.accepted_reads.segments();
-            let successor_segments = accepted_reads.segments();
-            let parent_count = parent_segments.segments().len();
-            let shared_prefix = successor_segments.segments().len() >= parent_count
-                && successor_segments
-                    .segments()
-                    .iter()
-                    .zip(parent_segments.segments().iter())
-                    .all(|(a, b)| Arc::ptr_eq(a, b));
-            shared_prefix.then(|| {
-                successor_segments.segments()[parent_count..]
-                    .iter()
-                    .flat_map(|segment| segment.iter())
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-        };
+        // Accepted-read provenance uses the same direct-lineage proof.
+        let structural_reads = accepted_reads
+            .segments()
+            .direct_delta_from(parent_view.accepted_reads.segments())
+            .map(<[crate::AcceptedReadManifestEntry]>::to_vec);
         let new_reads = match structural_reads {
             Some(appended) => appended,
             None => {

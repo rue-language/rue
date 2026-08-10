@@ -19,19 +19,16 @@ use crate::SourceView;
 /// Immutable, validated identities for every source in a compilation.
 ///
 /// The descriptor is a persistent structure (RUE-1112): it holds one or more
-/// `Arc`-shared segments, each owning its path maps and ascending `FileId`
-/// index. A strictly-additive successor appends one validated segment and
-/// shares every predecessor segment by reference, so extending the descriptor
-/// never copies, re-normalizes, or re-validates a predecessor entry; the merged
-/// ascending id index is materialized lazily, off the extension path. Callers
-/// retain constant-time lookup while deterministic iterators never depend on
-/// `HashMap` iteration order.
+/// `Arc`-shared size tiers, each owning its path maps and ascending `FileId`
+/// index. Strictly-additive successors compact equal-magnitude tail tiers, so
+/// lookup depth is bounded while untouched tiers remain shared. The merged
+/// ascending id index is materialized lazily and shared by clones.
 #[derive(Debug)]
 pub struct SourceMetadata {
     root_file_id: FileId,
     segments: Vec<std::sync::Arc<MetadataSegment>>,
     len: usize,
-    merged_ids: std::sync::OnceLock<Vec<FileId>>,
+    merged_ids: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<[FileId]>>>,
 }
 
 /// One validated, immutable slice of the descriptor. Segment ids are ascending
@@ -55,7 +52,7 @@ impl Clone for SourceMetadata {
             root_file_id: self.root_file_id,
             segments: self.segments.clone(),
             len: self.len,
-            merged_ids: std::sync::OnceLock::new(),
+            merged_ids: std::sync::Arc::clone(&self.merged_ids),
         }
     }
 }
@@ -132,7 +129,7 @@ impl SourceMetadata {
             root_file_id,
             segments: vec![std::sync::Arc::new(segment)],
             len,
-            merged_ids: std::sync::OnceLock::new(),
+            merged_ids: std::sync::Arc::new(std::sync::OnceLock::new()),
         })
     }
 
@@ -162,16 +159,16 @@ impl SourceMetadata {
             root_file_id,
             segments: vec![std::sync::Arc::new(segment)],
             len,
-            merged_ids: std::sync::OnceLock::new(),
+            merged_ids: std::sync::Arc::new(std::sync::OnceLock::new()),
         })
     }
 
-    /// Build a strictly-additive successor descriptor that shares every segment
-    /// of `self` by reference and appends one validated segment (RUE-1112).
+    /// Build a strictly-additive successor descriptor with bounded size-tiered
+    /// segments.
     ///
     /// Only the appended entries are normalized and validated — nonempty
     /// identities, normalized-collision checks within the appended set and
-    /// against the shared base's retained normalized identities, id
+    /// against the base's retained normalized identities, id
     /// disjointness, and the trusted-namespace invariant — exactly the
     /// invariants full construction enforces, applied incrementally. Appended
     /// ids must be strictly greater than every existing id so chained segments
@@ -207,12 +204,17 @@ impl SourceMetadata {
         )?;
         let len = self.len + segment.sorted_ids.len();
         let mut segments = self.segments.clone();
-        segments.push(std::sync::Arc::new(segment));
+        crate::shared_segments::push_size_tiered_segment(
+            &mut segments,
+            std::sync::Arc::new(segment),
+            |segment| segment.sorted_ids.len(),
+            |left, right| std::sync::Arc::new(MetadataSegment::merge(left, right)),
+        );
         Ok(Self {
             root_file_id: self.root_file_id,
             segments,
             len,
-            merged_ids: std::sync::OnceLock::new(),
+            merged_ids: std::sync::Arc::new(std::sync::OnceLock::new()),
         })
     }
 
@@ -222,25 +224,40 @@ impl SourceMetadata {
         if self.segments.len() == 1 {
             return &self.segments[0].sorted_ids;
         }
-        self.merged_ids.get_or_init(|| {
-            self.segments
-                .iter()
-                .flat_map(|segment| segment.sorted_ids.iter().copied())
-                .collect()
-        })
+        self.merged_ids
+            .get_or_init(|| {
+                self.segments
+                    .iter()
+                    .flat_map(|segment| segment.sorted_ids.iter().copied())
+                    .collect::<Vec<_>>()
+                    .into()
+            })
+            .as_ref()
     }
 
     fn segment_for(&self, file_id: FileId) -> Option<&MetadataSegment> {
-        self.segments
-            .iter()
-            .map(std::sync::Arc::as_ref)
-            .find(|segment| segment.physical_paths.contains_key(&file_id))
+        let position = self.segments.partition_point(|segment| {
+            segment
+                .sorted_ids
+                .last()
+                .is_some_and(|last| last.index() < file_id.index())
+        });
+        let segment = self.segments.get(position)?;
+        segment
+            .sorted_ids
+            .binary_search_by_key(&file_id.index(), |candidate| candidate.index())
+            .is_ok()
+            .then_some(segment)
     }
 
     pub(crate) fn is_trusted_standard_library_file(&self, file_id: FileId) -> bool {
-        self.segments
-            .iter()
-            .any(|segment| segment.trusted_standard_library_files.contains(&file_id))
+        self.segment_for(file_id)
+            .is_some_and(|segment| segment.trusted_standard_library_files.contains(&file_id))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn segment_depth(&self) -> usize {
+        self.segments.len()
     }
 
     #[cfg(test)]
@@ -466,6 +483,39 @@ impl SourceMetadata {
 }
 
 impl MetadataSegment {
+    fn merge(left: &Self, right: &Self) -> Self {
+        assert!(
+            left.sorted_ids
+                .last()
+                .zip(right.sorted_ids.first())
+                .is_some_and(|(left, right)| left.index() < right.index()),
+            "metadata tiers retain ascending disjoint file-id ranges"
+        );
+        let mut sorted_ids = Vec::with_capacity(left.sorted_ids.len() + right.sorted_ids.len());
+        sorted_ids.extend_from_slice(&left.sorted_ids);
+        sorted_ids.extend_from_slice(&right.sorted_ids);
+
+        let mut physical_paths = left.physical_paths.clone();
+        physical_paths.extend(right.physical_paths.clone());
+        let mut logical_paths = left.logical_paths.clone();
+        logical_paths.extend(right.logical_paths.clone());
+        let mut trusted_standard_library_files = left.trusted_standard_library_files.clone();
+        trusted_standard_library_files.extend(right.trusted_standard_library_files.iter().copied());
+        let mut normalized_physical = left.normalized_physical.clone();
+        normalized_physical.extend(right.normalized_physical.iter().cloned());
+        let mut normalized_logical = left.normalized_logical.clone();
+        normalized_logical.extend(right.normalized_logical.iter().cloned());
+
+        Self {
+            sorted_ids,
+            physical_paths,
+            logical_paths,
+            trusted_standard_library_files,
+            normalized_physical,
+            normalized_logical,
+        }
+    }
+
     /// Validate one segment's complete path maps: exactly the invariants full
     /// construction has always enforced (key agreement, nonempty normalized
     /// identities, normalized-collision freedom, trusted-namespace membership),
