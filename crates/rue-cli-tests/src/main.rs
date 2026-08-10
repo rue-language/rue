@@ -1070,6 +1070,25 @@ struct Case {
     /// or leaked internal diagnostics (e.g. raw `DEBUG:` eprintln lines).
     #[serde(default)]
     compile_stderr_not_contains: Vec<String>,
+    /// Validate the compiler's stderr as the `--error-format json` surface
+    /// (RUE-436): EVERY non-empty stderr line must parse as a JSON array of
+    /// diagnostic objects, and every object must carry the full documented
+    /// schema (see `docs/process/diagnostics.md`). Substring assertions cannot
+    /// catch malformed JSON, a dropped field, or a renamed key — this can, and
+    /// it fails the case when they happen. Under `--error-format json` stderr
+    /// carries diagnostics only (the `Compiled ... -> ...` banner is stdout),
+    /// so the "every line" rule is exact rather than a filter.
+    #[serde(default)]
+    json_diagnostics: bool,
+    /// Exact, ordered digest of the diagnostics `json_diagnostics` parsed, as
+    /// `"<severity> <code> <file>:<line>:<column>"` per diagnostic, flattened
+    /// across every stderr line in emission order. An absent field renders as
+    /// `-`: warnings are uncoded (`"warning - main.rue:2:5"`) and a diagnostic
+    /// with no span has no locator (`"error E1403 -"`). This pins diagnostic
+    /// ORDER, not merely presence: a case that lists the same diagnostics in a
+    /// different order fails. Requires `json_diagnostics`.
+    #[serde(default)]
+    json_diagnostic_order: Vec<String>,
     /// Exact expected program stdout.
     #[serde(default)]
     stdout: Option<String>,
@@ -1995,6 +2014,23 @@ fn run_case(
         }
     }
 
+    // Structured `--error-format json` validation: parse every stderr line and
+    // check the documented schema, then pin the diagnostic ORDER (RUE-436).
+    if case.json_diagnostics {
+        let digests = validate_json_diagnostic_stream(&compile_stderr).map_err(|failure| {
+            TestFailure::assertion(format!(
+                "--error-format json schema violation: {failure}\n--- actual stderr ---\n{}",
+                compile_stderr
+            ))
+        })?;
+        if !case.json_diagnostic_order.is_empty() && digests != case.json_diagnostic_order {
+            return Err(TestFailure::assertion(format!(
+                "--error-format json diagnostic order mismatch:\n  expected: {:?}\n  actual:   {:?}\n--- actual stderr ---\n{}",
+                case.json_diagnostic_order, digests, compile_stderr
+            )));
+        }
+    }
+
     for expected in &case.compile_stdout_contains {
         if !compile_stdout.contains(expected) {
             return Err(TestFailure::assertion(format!(
@@ -2294,6 +2330,268 @@ fn run_case_wrapper(
     }
 }
 
+// ============================================================================
+// `--error-format json` schema validation (RUE-436)
+// ============================================================================
+
+/// Every key a JSON diagnostic object must carry, and nothing else. Declared
+/// as an exhaustive set so BOTH a dropped field and a silently added one fail
+/// the case: the flag's contract is a schema, not a set of substrings.
+const JSON_DIAGNOSTIC_KEYS: &[&str] = &[
+    "code",
+    "message",
+    "severity",
+    "spans",
+    "suggestions",
+    "notes",
+    "helps",
+];
+
+/// Every key a JSON span object must carry, and nothing else.
+const JSON_SPAN_KEYS: &[&str] = &["file", "start", "end", "line", "column", "label", "primary"];
+
+/// Every key a JSON suggestion object must carry, and nothing else.
+const JSON_SUGGESTION_KEYS: &[&str] = &[
+    "message",
+    "file",
+    "start",
+    "end",
+    "replacement",
+    "applicability",
+];
+
+/// Assert an object's key set is exactly `expected`.
+fn check_json_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+    what: &str,
+) -> Result<(), String> {
+    let mut actual: Vec<&str> = object.keys().map(String::as_str).collect();
+    actual.sort_unstable();
+    let mut wanted: Vec<&str> = expected.to_vec();
+    wanted.sort_unstable();
+    if actual == wanted {
+        return Ok(());
+    }
+    Err(format!(
+        "{what} has keys {actual:?}, expected exactly {wanted:?}"
+    ))
+}
+
+/// Read a required string field.
+fn json_string<'v>(
+    object: &'v serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    what: &str,
+) -> Result<&'v str, String> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{what}: `{key}` is not a string"))
+}
+
+/// Read a required non-negative integer field.
+fn json_u64(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    what: &str,
+) -> Result<u64, String> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| format!("{what}: `{key}` is not a non-negative integer"))
+}
+
+/// Validate one span object and return its `file:line:column` locator.
+fn validate_json_span(span: &serde_json::Value, what: &str) -> Result<String, String> {
+    let span = span
+        .as_object()
+        .ok_or_else(|| format!("{what}: span is not an object"))?;
+    check_json_keys(span, JSON_SPAN_KEYS, what)?;
+
+    let file = json_string(span, "file", what)?;
+    if file.is_empty() {
+        return Err(format!("{what}: span `file` is empty"));
+    }
+    let start = json_u64(span, "start", what)?;
+    let end = json_u64(span, "end", what)?;
+    if start > end {
+        return Err(format!("{what}: span start {start} exceeds end {end}"));
+    }
+    let line = json_u64(span, "line", what)?;
+    let column = json_u64(span, "column", what)?;
+    if line < 1 || column < 1 {
+        return Err(format!(
+            "{what}: span line/column are 1-indexed, got {line}:{column}"
+        ));
+    }
+    match span.get("label") {
+        Some(serde_json::Value::Null) | Some(serde_json::Value::String(_)) => {}
+        other => {
+            return Err(format!(
+                "{what}: span `label` must be a string or null, got {other:?}"
+            ));
+        }
+    }
+    if !matches!(span.get("primary"), Some(serde_json::Value::Bool(_))) {
+        return Err(format!("{what}: span `primary` is not a boolean"));
+    }
+    Ok(format!("{file}:{line}:{column}"))
+}
+
+/// Validate one diagnostic object and return its ordering digest.
+fn validate_json_diagnostic(value: &serde_json::Value, what: &str) -> Result<String, String> {
+    let diagnostic = value
+        .as_object()
+        .ok_or_else(|| format!("{what}: diagnostic is not an object"))?;
+    check_json_keys(diagnostic, JSON_DIAGNOSTIC_KEYS, what)?;
+
+    let severity = json_string(diagnostic, "severity", what)?;
+    if severity != "error" && severity != "warning" {
+        return Err(format!(
+            "{what}: `severity` must be \"error\" or \"warning\", got {severity:?}"
+        ));
+    }
+
+    // Errors always carry an `E####` code; warnings are not yet coded and
+    // carry the empty string. Both halves are pinned so the day warnings gain
+    // codes, this test — and the documented schema — must be updated together.
+    let code = json_string(diagnostic, "code", what)?;
+    if severity == "error" {
+        let coded = code
+            .strip_prefix('E')
+            .is_some_and(|digits| digits.len() >= 4 && digits.chars().all(|c| c.is_ascii_digit()));
+        if !coded {
+            return Err(format!(
+                "{what}: error `code` must look like \"E0206\", got {code:?}"
+            ));
+        }
+    } else if !code.is_empty() {
+        return Err(format!(
+            "{what}: warning `code` must be empty until warnings are coded, got {code:?}"
+        ));
+    }
+
+    let message = json_string(diagnostic, "message", what)?;
+    if message.is_empty() {
+        return Err(format!("{what}: `message` is empty"));
+    }
+
+    let spans = diagnostic
+        .get("spans")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("{what}: `spans` is not an array"))?;
+    let mut primary_locator: Option<String> = None;
+    for (index, span) in spans.iter().enumerate() {
+        let locator = validate_json_span(span, &format!("{what} span[{index}]"))?;
+        let primary = span["primary"].as_bool().unwrap_or(false);
+        if !primary {
+            continue;
+        }
+        if primary_locator.is_some() {
+            return Err(format!("{what}: more than one span is marked primary"));
+        }
+        if index != 0 {
+            return Err(format!(
+                "{what}: the primary span must come first, found it at index {index}"
+            ));
+        }
+        primary_locator = Some(locator);
+    }
+    if !spans.is_empty() && primary_locator.is_none() {
+        return Err(format!(
+            "{what}: has {} span(s) but none is marked primary",
+            spans.len()
+        ));
+    }
+
+    let suggestions = diagnostic
+        .get("suggestions")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("{what}: `suggestions` is not an array"))?;
+    for (index, suggestion) in suggestions.iter().enumerate() {
+        let what = format!("{what} suggestion[{index}]");
+        let suggestion = suggestion
+            .as_object()
+            .ok_or_else(|| format!("{what}: suggestion is not an object"))?;
+        check_json_keys(suggestion, JSON_SUGGESTION_KEYS, &what)?;
+        json_string(suggestion, "message", &what)?;
+        json_string(suggestion, "file", &what)?;
+        json_string(suggestion, "replacement", &what)?;
+        json_string(suggestion, "applicability", &what)?;
+        let start = json_u64(suggestion, "start", &what)?;
+        let end = json_u64(suggestion, "end", &what)?;
+        if start > end {
+            return Err(format!(
+                "{what}: suggestion start {start} exceeds end {end}"
+            ));
+        }
+    }
+
+    for key in ["notes", "helps"] {
+        let entries = diagnostic
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| format!("{what}: `{key}` is not an array"))?;
+        if entries.iter().any(|entry| !entry.is_string()) {
+            return Err(format!("{what}: `{key}` must be an array of strings"));
+        }
+    }
+
+    // A warning's code is empty today, and a diagnostic can have no span at
+    // all; both render as `-` so a digest is always three space-separated
+    // fields rather than a string with a hole in it.
+    Ok(format!(
+        "{severity} {} {}",
+        if code.is_empty() { "-" } else { code },
+        primary_locator.as_deref().unwrap_or("-")
+    ))
+}
+
+/// Parse and schema-check the whole `--error-format json` stderr stream,
+/// returning one ordering digest per diagnostic in emission order.
+fn validate_json_diagnostic_stream(stderr: &str) -> Result<Vec<String>, String> {
+    let mut digests = Vec::new();
+    for (index, line) in stderr.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = serde_json::from_str(line)
+            .map_err(|e| format!("stderr line {}: not valid JSON: {e}", index + 1))?;
+        let batch = value.as_array().ok_or_else(|| {
+            format!(
+                "stderr line {}: expected a JSON array of diagnostics, got {}",
+                index + 1,
+                match value {
+                    serde_json::Value::Object(_) => "an object",
+                    _ => "a scalar",
+                }
+            )
+        })?;
+        if batch.is_empty() {
+            return Err(format!(
+                "stderr line {}: emitted an empty diagnostic array; \
+                 a batch with nothing to report must print nothing",
+                index + 1
+            ));
+        }
+        for (position, diagnostic) in batch.iter().enumerate() {
+            digests.push(validate_json_diagnostic(
+                diagnostic,
+                &format!("stderr line {} diagnostic[{position}]", index + 1),
+            )?);
+        }
+    }
+    Ok(digests)
+}
+
+/// `json_diagnostic_order` pins the output of the `json_diagnostics` parse, so
+/// declaring it without the parse asserts nothing. Returns true when the case
+/// declares an order without enabling validation — a load-time error.
+fn json_order_without_validation(case: &Case) -> bool {
+    !case.json_diagnostic_order.is_empty() && !case.json_diagnostics
+}
+
 /// A `differential_opt` case's cross-level check is only meaningful if each opt
 /// level is also pinned to a known-good result, so it must declare both an
 /// explicit `stdout` and `exit_code`. Returns true when the case is
@@ -2441,6 +2739,16 @@ fn load_cases(cases_dir: &Path) -> LoadedCorpus {
                             "error: {}: differential_opt case '{}' must declare both an explicit \
                              `stdout` and `exit_code` (each opt level is checked against them, so \
                              the cross-level compare can't pass a consistently-wrong program)",
+                            path.display(),
+                            case.name
+                        );
+                        std::process::exit(1);
+                    }
+                    if json_order_without_validation(case) {
+                        eprintln!(
+                            "error: {}: case '{}' declares `json_diagnostic_order` without \
+                             `json_diagnostics`, so the order is never parsed or compared. \
+                             Set `json_diagnostics = true`.",
                             path.display(),
                             case.name
                         );
@@ -3374,6 +3682,173 @@ mod tests {
         case.error_contains = vec![];
         case.compile_stderr_contains = vec!["bad.rue:".to_string()];
         assert!(!compile_fail_missing_assertion(&case));
+    }
+
+    // ===== `--error-format json` schema validation (RUE-436) =====
+    //
+    // The validator is the net under the JSON diagnostic contract, so it needs
+    // its own net: each test below is a mutation of one well-formed stream
+    // that MUST be rejected. A validator that silently accepts everything
+    // would make every `json_diagnostics` case vacuous.
+
+    /// One well-formed batch: an error with a primary and a labelled secondary
+    /// span, a suggestion, a note and a help — every optional part populated.
+    fn well_formed_json_batch() -> String {
+        r#"[{"code":"E0205","message":"use of moved value 'p'","severity":"error","spans":[{"file":"main.rue","start":158,"end":159,"line":8,"column":18,"label":null,"primary":true},{"file":"main.rue","start":137,"end":138,"line":7,"column":18,"label":"value moved here","primary":false}],"suggestions":[{"message":"borrow instead","file":"main.rue","start":158,"end":159,"replacement":"borrow p","applicability":"machine-applicable"}],"notes":["a note"],"helps":["a help"]}]"#.to_string()
+    }
+
+    #[test]
+    fn well_formed_json_diagnostics_validate() {
+        let digests = validate_json_diagnostic_stream(&well_formed_json_batch()).unwrap();
+        assert_eq!(digests, vec!["error E0205 main.rue:8:18".to_string()]);
+    }
+
+    #[test]
+    fn json_digests_flatten_multiple_lines_in_emission_order() {
+        let stream = format!(
+            "{}\n{}\n",
+            r#"[{"code":"","message":"unused variable 'u'","severity":"warning","spans":[{"file":"main.rue","start":23,"end":39,"line":2,"column":5,"label":null,"primary":true}],"suggestions":[],"notes":[],"helps":[]}]"#,
+            r#"[{"code":"E1403","message":"output publication failed","severity":"error","spans":[],"suggestions":[],"notes":[],"helps":[]}]"#
+        );
+        let digests = validate_json_diagnostic_stream(&stream).unwrap();
+        assert_eq!(
+            digests,
+            vec![
+                "warning - main.rue:2:5".to_string(),
+                "error E1403 -".to_string(),
+            ]
+        );
+    }
+
+    /// Each entry is (mutation applied to the well-formed batch, substring the
+    /// rejection message must contain).
+    #[test]
+    fn malformed_json_diagnostics_are_rejected() {
+        let cases: &[(String, &str)] = &[
+            // Not JSON at all — the failure substring assertions in the old
+            // test style could not see this.
+            (
+                "error: [E0206]: type mismatch".to_string(),
+                "not valid JSON",
+            ),
+            // A bare object instead of a batch array.
+            (
+                well_formed_json_batch()
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .to_string(),
+                "expected a JSON array",
+            ),
+            // An empty batch: printing `[]` instead of printing nothing.
+            ("[]".to_string(), "empty diagnostic array"),
+            // A dropped field.
+            (
+                well_formed_json_batch().replace(r#""notes":["a note"],"#, ""),
+                "expected exactly",
+            ),
+            // A renamed field.
+            (
+                well_formed_json_batch().replace(r#""message":"use"#, r#""text":"use"#),
+                "expected exactly",
+            ),
+            // An added field.
+            (
+                well_formed_json_batch()
+                    .replace(r#""helps":["a help"]"#, r#""helps":["a help"],"extra":1"#),
+                "expected exactly",
+            ),
+            // An uncoded error.
+            (
+                well_formed_json_batch().replace(r#""code":"E0205""#, r#""code":"""#),
+                "must look like",
+            ),
+            // A coded warning (warnings are uncoded until the day they aren't,
+            // and that day must update the schema doc).
+            (
+                well_formed_json_batch()
+                    .replace(r#""severity":"error""#, r#""severity":"warning""#),
+                "must be empty",
+            ),
+            // An unknown severity.
+            (
+                well_formed_json_batch().replace(r#""severity":"error""#, r#""severity":"note""#),
+                "must be \"error\" or \"warning\"",
+            ),
+            // A 0-indexed column.
+            (
+                well_formed_json_batch()
+                    .replace(r#""column":18,"label":null"#, r#""column":0,"label":null"#),
+                "1-indexed",
+            ),
+            // An inverted byte range.
+            (
+                well_formed_json_batch().replace(
+                    r#""start":158,"end":159,"line":8"#,
+                    r#""start":159,"end":158,"line":8"#,
+                ),
+                "exceeds end",
+            ),
+            // A demoted primary: the only span is secondary.
+            (
+                well_formed_json_batch().replace(
+                    r#""label":null,"primary":true"#,
+                    r#""label":null,"primary":false"#,
+                ),
+                "none is marked primary",
+            ),
+            // A primary span that is not first.
+            (
+                well_formed_json_batch()
+                    .replace(
+                        r#""label":null,"primary":true"#,
+                        r#""label":null,"primary":false"#,
+                    )
+                    .replace(
+                        r#""label":"value moved here","primary":false"#,
+                        r#""label":"value moved here","primary":true"#,
+                    ),
+                "must come first",
+            ),
+            // A wrongly typed note.
+            (
+                well_formed_json_batch().replace(r#""notes":["a note"]"#, r#""notes":[7]"#),
+                "array of strings",
+            ),
+            // A malformed suggestion.
+            (
+                well_formed_json_batch().replace(
+                    r#""applicability":"machine-applicable""#,
+                    r#""applicability":3"#,
+                ),
+                "`applicability` is not a string",
+            ),
+        ];
+
+        for (stream, expected) in cases {
+            let failure = validate_json_diagnostic_stream(stream)
+                .expect_err(&format!("this stream must be rejected: {stream}"));
+            assert!(
+                failure.contains(expected),
+                "rejection message {failure:?} does not mention {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn json_diagnostic_order_requires_json_diagnostics() {
+        let mut case = Case {
+            name: "c".to_string(),
+            json_diagnostic_order: vec!["error E0206 main.rue:1:20".to_string()],
+            ..Default::default()
+        };
+        assert!(json_order_without_validation(&case));
+
+        case.json_diagnostics = true;
+        assert!(!json_order_without_validation(&case));
+
+        // Validation without a pinned order is fine: schema-only checking.
+        case.json_diagnostic_order = vec![];
+        assert!(!json_order_without_validation(&case));
     }
 
     #[test]

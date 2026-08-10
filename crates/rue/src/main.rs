@@ -1,5 +1,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
 use std::{fs, sync::Arc};
 
@@ -21,7 +22,9 @@ use emit::EmitStage;
 use emit::{EmitFrontendRoute, build_emit_frontend, emit_frontend_route, emit_requires_semantic};
 #[cfg(test)]
 use rue_compiler::unstable::update_for_presentation;
-use rue_compiler::unstable::{MultiFileFormatter, MultiFileJsonFormatter, SourceInfo};
+use rue_compiler::unstable::{
+    JsonDiagnostic, MultiFileFormatter, MultiFileJsonFormatter, SourceInfo,
+};
 use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
 
 use rue_compiler::{
@@ -30,7 +33,7 @@ use rue_compiler::{
 };
 #[cfg(test)]
 use rue_compiler::{CompilerSession, SourceMetadata, SourceSnapshot};
-use rue_error::CompileError;
+use rue_error::{CompileError, ErrorCode};
 use rue_target::Target;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum LogLevel {
@@ -263,6 +266,9 @@ Options:
                        Formats: {log_formats}
   --error-format <fmt> Set diagnostic format (default: text)
                        Formats: {error_formats}
+                       'json' writes one JSON array of diagnostic objects per
+                       stderr line, compiler panics (ICEs) included
+                       (schema: docs/process/diagnostics.md)
   --time-passes        Show timing for each compilation pass
   --benchmark-json     Output timing as JSON (for benchmarking)
   --watch              Recompile when the accepted source closure changes
@@ -278,6 +284,12 @@ Options:
     )
 }
 
+// CAUTION: `rue_test_runner::ice_message` treats the substring
+// "internal compiler error" anywhere on the compiler's stderr as proof the
+// compiler crashed, and usage text goes to stderr on an argument error. Never
+// spell that phrase out in this help text — an ordinary `rue --bogus-flag`
+// would then be reported as an ICE and fail every case that pins it.
+//
 /// Write usage to stderr, for the argument-error paths.
 fn print_usage() {
     eprintln!("{}", usage_text());
@@ -700,18 +712,39 @@ impl<'a> DiagnosticOutput<'a> {
         }
     }
 
-    fn print_error(&self, error: &CompileError) {
+    /// Render one error. Under `--error-format json` a lone error is still
+    /// wrapped in a one-element array: every JSON diagnostic line the CLI
+    /// writes is an array of diagnostic objects, so a consumer parses one
+    /// shape rather than switching on object-vs-array (RUE-436). The
+    /// single-error paths (output publication, watch-cycle publication) used
+    /// to emit a bare object here while every batch path emitted an array.
+    fn render_error(&self, error: &CompileError) -> String {
         match self.format {
-            ErrorFormat::Text => eprintln!("{}", self.text.format_error(error)),
-            ErrorFormat::Json => eprintln!("{}", self.json.format_error(error).to_json()),
+            ErrorFormat::Text => self.text.format_error(error).to_string(),
+            ErrorFormat::Json => format!("[{}]", self.json.format_error(error).to_json()),
         }
     }
 
-    fn print_errors(&self, errors: &CompileErrors) {
+    fn render_errors(&self, errors: &CompileErrors) -> String {
         match self.format {
-            ErrorFormat::Text => eprintln!("{}", self.text.format_errors(errors)),
-            ErrorFormat::Json => eprintln!("{}", self.json.format_errors(errors)),
+            ErrorFormat::Text => self.text.format_errors(errors),
+            ErrorFormat::Json => self.json.format_errors(errors),
         }
+    }
+
+    fn render_warnings(&self, warnings: &[CompileWarning]) -> String {
+        match self.format {
+            ErrorFormat::Text => self.text.format_warnings(warnings),
+            ErrorFormat::Json => self.json.format_warnings(warnings),
+        }
+    }
+
+    fn print_error(&self, error: &CompileError) {
+        eprintln!("{}", self.render_error(error));
+    }
+
+    fn print_errors(&self, errors: &CompileErrors) {
+        eprintln!("{}", self.render_errors(errors));
     }
 
     fn print_warnings(&self, warnings: &[CompileWarning]) {
@@ -719,10 +752,7 @@ impl<'a> DiagnosticOutput<'a> {
             return;
         }
 
-        match self.format {
-            ErrorFormat::Text => eprintln!("{}", self.text.format_warnings(warnings)),
-            ErrorFormat::Json => eprintln!("{}", self.json.format_warnings(warnings)),
-        }
+        eprintln!("{}", self.render_warnings(warnings));
     }
 }
 
@@ -991,6 +1021,91 @@ fn report_source_load_error(error: SourceLoadError, error_format: ErrorFormat) -
     std::process::exit(1);
 }
 
+/// Diagnostic format the ICE panic hook renders with.
+///
+/// The hook is installed before `--error-format` has been parsed (so a panic
+/// inside argument parsing is still an ICE report rather than a raw Rust
+/// backtrace), and a `&'static` panic hook cannot borrow the parsed options.
+/// The driver publishes the chosen format here exactly once, immediately after
+/// parsing; `false` — the initial value — means the `text` default.
+static ICE_FORMAT_IS_JSON: AtomicBool = AtomicBool::new(false);
+
+/// Publish the diagnostic format the ICE panic hook must render with.
+fn set_ice_error_format(format: ErrorFormat) {
+    ICE_FORMAT_IS_JSON.store(format == ErrorFormat::Json, Ordering::Relaxed);
+}
+
+/// The diagnostic format the ICE panic hook renders with. `Text` until the
+/// driver publishes a parsed `--error-format`.
+fn ice_error_format() -> ErrorFormat {
+    if ICE_FORMAT_IS_JSON.load(Ordering::Relaxed) {
+        ErrorFormat::Json
+    } else {
+        ErrorFormat::Text
+    }
+}
+
+/// Render a compiler panic as a structured diagnostic.
+///
+/// A thin adapter over [`ice_diagnostic`] and [`panic_payload_message`]: this
+/// crate is compiled with `panic = "abort"` (see `toolchains/rust/defs.bzl`),
+/// so no test can raise a catchable panic to obtain a real `PanicHookInfo`.
+/// Splitting the two testable halves out keeps everything but this three-line
+/// projection under unit test.
+fn ice_panic_diagnostic(info: &std::panic::PanicHookInfo<'_>) -> JsonDiagnostic {
+    ice_diagnostic(
+        &panic_payload_message(info.payload()),
+        info.location().map(|location| location.to_string()),
+    )
+}
+
+/// Build the structured diagnostic for a compiler panic.
+///
+/// The code is [`ErrorCode::INTERNAL_ERROR`] (`E9000`) — the same code a
+/// graceful `ice_error!` ICE carries — so a consumer filters both halves of
+/// the ICE surface on one code. The diagnostic has no spans: a panic has no
+/// source location in the *user's* program, and inventing one would be a lie.
+fn ice_diagnostic(payload: &str, panic_site: Option<String>) -> JsonDiagnostic {
+    let mut notes = vec![format!("rue version {VERSION}")];
+    if let Some(site) = panic_site {
+        notes.push(format!("panic at {site}"));
+    }
+    // `Backtrace::capture` is a no-op unless RUST_BACKTRACE is set, matching
+    // the text hook's behavior — the JSON report is not more verbose by
+    // default, it is only parseable.
+    let backtrace = std::backtrace::Backtrace::capture();
+    if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+        notes.push(format!("backtrace:\n{backtrace}"));
+    }
+
+    JsonDiagnostic {
+        code: ErrorCode::INTERNAL_ERROR.to_string(),
+        message: format!(
+            "internal compiler error: the compiler panicked; this is a bug in rue: {payload}"
+        ),
+        severity: "error",
+        spans: Vec::new(),
+        suggestions: Vec::new(),
+        notes,
+        helps: vec![
+            "please report this at https://github.com/rue-language/rue/issues".to_string(),
+            "re-run with RUST_BACKTRACE=1 for a backtrace".to_string(),
+        ],
+    }
+}
+
+/// Extract a panic's message payload. `panic!` produces either a `&'static str`
+/// (a literal) or a formatted `String`; anything else is an opaque payload.
+fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "panic with a non-string payload".to_string()
+    }
+}
+
 fn main() {
     // Rust's startup ignores SIGPIPE, so a write to a closed pipe
     // (`rue --emit tokens x.rue | head`) returns EPIPE and `println!` panics
@@ -1005,8 +1120,22 @@ fn main() {
     // Present compiler panics as internal compiler errors with a report
     // banner instead of a raw Rust backtrace pointer (RUE-130). The default
     // hook still runs first so RUST_BACKTRACE=1 output is preserved.
+    //
+    // Under `--error-format json` the same ICE is instead published as an
+    // ordinary structured diagnostic (RUE-436): a machine consumer that asked
+    // for JSON must be able to parse EVERY line the compiler writes to stderr,
+    // and the default hook's `thread 'main' panicked at ...` banner is not
+    // JSON. Nothing is lost — the panic payload, panic location, and (when
+    // `RUST_BACKTRACE` is set) the backtrace all move into the diagnostic's
+    // notes. Graceful ICEs (`ice_error!` -> `ErrorKind::InternalError`) are
+    // ordinary `CompileError`s and already travel the normal JSON path; this
+    // closes the panic half of the same surface.
     let default_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if ice_error_format() == ErrorFormat::Json {
+            eprintln!("[{}]", ice_panic_diagnostic(info).to_json());
+            return;
+        }
         default_panic_hook(info);
         eprintln!();
         eprintln!("error: internal compiler error: the compiler panicked; this is a bug in rue");
@@ -1019,6 +1148,11 @@ fn main() {
         Some(opts) => opts,
         None => std::process::exit(1),
     };
+
+    // The hook above is installed BEFORE argument parsing, so a panic inside
+    // the parser is still reported as an ICE. Publish the requested format now
+    // that it is known; until this point the hook uses the `text` default.
+    set_ice_error_format(options.error_format);
 
     // Reject incompatible output modes before any tracing, thread-pool, manifest,
     // or source I/O work. This is a pure options check, so surfacing it first
@@ -2133,6 +2267,176 @@ mod tests {
             "invalid",
             "source.rue"
         ])));
+    }
+
+    // ========== --error-format json surface tests (RUE-436) ==========
+
+    /// A diagnostic rendering fixture over one in-memory file.
+    fn json_output(source: &str) -> DiagnosticOutput<'_> {
+        DiagnosticOutput::new(
+            ErrorFormat::Json,
+            vec![(FileId::DEFAULT, SourceInfo::new(source, "main.rue"))],
+        )
+    }
+
+    /// Every JSON line the CLI writes is an ARRAY of diagnostics, including the
+    /// single-error driver paths (output publication, watch-cycle publication)
+    /// that used to emit a bare object. A consumer parses one shape.
+    #[test]
+    fn json_single_error_is_wrapped_in_an_array() {
+        let source = "fn main() -> i32 { 0 }\n";
+        let error = CompileError::without_span(rue_error::ErrorKind::InternalError(
+            "publication exploded".to_string(),
+        ));
+        let rendered = json_output(source).render_error(&error);
+
+        let batch: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        let batch = batch.as_array().expect("a JSON array, not a bare object");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0]["severity"], "error");
+    }
+
+    /// A graceful ICE (`ice_error!` -> `ErrorKind::InternalError`) is an
+    /// ordinary `CompileError`, so it travels the SAME structured path as any
+    /// user-facing diagnostic and carries the E9000 internal-error code.
+    #[test]
+    fn json_graceful_ice_routes_through_the_structured_surface() {
+        let source = "fn main() -> i32 { 0 }\n";
+        let errors = CompileErrors::from(vec![CompileError::without_span(
+            rue_error::ErrorKind::InternalError("did not resolve type".to_string()),
+        )]);
+        let rendered = json_output(source).render_errors(&errors);
+
+        let batch: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        let batch = batch.as_array().expect("a JSON array");
+        assert_eq!(batch.len(), 1);
+        assert_eq!(batch[0]["code"], ErrorCode::INTERNAL_ERROR.to_string());
+        assert_eq!(batch[0]["severity"], "error");
+    }
+
+    /// The ICE panic hook renders text until the driver publishes a parsed
+    /// `--error-format`, so a panic *inside* argument parsing still gets the
+    /// human banner rather than JSON nobody asked for.
+    #[test]
+    fn ice_error_format_defaults_to_text() {
+        // The published format is process-global; assert the default only
+        // through a fresh read of the initial value's meaning.
+        assert_eq!(
+            if ICE_FORMAT_IS_JSON.load(Ordering::Relaxed) {
+                ErrorFormat::Json
+            } else {
+                ErrorFormat::Text
+            },
+            ice_error_format()
+        );
+        assert_eq!(ErrorFormat::default(), ErrorFormat::Text);
+    }
+
+    /// A compiler panic under `--error-format json` becomes an ordinary
+    /// structured diagnostic: E9000, no spans (a panic has no location in the
+    /// *user's* program), the panic payload in the message, and the panic site
+    /// and compiler version preserved in notes.
+    ///
+    /// This surface has no end-to-end test on either side of the fence, which
+    /// is why the rendering is pinned this precisely. A CLI case cannot host
+    /// it — `rue_test_runner::ice_message` fails ANY case whose compiler
+    /// panicked, by design, so a crash never satisfies a `compile_fail`. Nor
+    /// can a unit test raise a real panic and read the hook's output: the
+    /// crate is built with `panic = "abort"` (`toolchains/rust/defs.bzl`), so
+    /// `catch_unwind` cannot catch and the panicking process dies. The hook
+    /// itself is therefore a three-line projection onto this function.
+    #[test]
+    fn ice_panic_is_published_as_a_json_diagnostic() {
+        let rendered = ice_diagnostic(
+            "cfg edge 7 exploded",
+            Some("crates/rue-cfg/src/build.rs:118:9".to_string()),
+        )
+        .to_json();
+        let diagnostic: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+
+        assert_eq!(diagnostic["severity"], "error");
+        assert_eq!(diagnostic["code"], ErrorCode::INTERNAL_ERROR.to_string());
+        assert_eq!(
+            diagnostic["spans"].as_array().expect("spans array").len(),
+            0
+        );
+        let message = diagnostic["message"].as_str().expect("message string");
+        assert!(
+            message.contains("internal compiler error"),
+            "the ICE marker the harness detector greps for is missing: {message}"
+        );
+        assert!(
+            message.contains("cfg edge 7 exploded"),
+            "the panic payload was dropped: {message}"
+        );
+
+        let notes: Vec<&str> = diagnostic["notes"]
+            .as_array()
+            .expect("notes array")
+            .iter()
+            .map(|note| note.as_str().expect("note string"))
+            .collect();
+        assert!(
+            notes.iter().any(|note| note.contains(VERSION)),
+            "the compiler version note was dropped: {notes:?}"
+        );
+        assert!(
+            notes
+                .iter()
+                .any(|note| *note == "panic at crates/rue-cfg/src/build.rs:118:9"),
+            "the panic site note was dropped: {notes:?}"
+        );
+
+        let helps: Vec<&str> = diagnostic["helps"]
+            .as_array()
+            .expect("helps array")
+            .iter()
+            .map(|help| help.as_str().expect("help string"))
+            .collect();
+        assert!(
+            helps.iter().any(|help| help.contains("issues")),
+            "the report-this-bug help was dropped: {helps:?}"
+        );
+    }
+
+    /// A panic with no recorded location (possible for a panic raised outside
+    /// Rust's `#[track_caller]` machinery) still renders a valid diagnostic —
+    /// it simply omits the site note rather than emitting a hole.
+    #[test]
+    fn ice_diagnostic_without_a_panic_site_is_still_valid() {
+        let rendered = ice_diagnostic("no location", None).to_json();
+        let diagnostic: serde_json::Value = serde_json::from_str(&rendered).expect("valid JSON");
+        let notes: Vec<&str> = diagnostic["notes"]
+            .as_array()
+            .expect("notes array")
+            .iter()
+            .map(|note| note.as_str().expect("note string"))
+            .collect();
+        assert!(
+            !notes.iter().any(|note| note.starts_with("panic at ")),
+            "an absent panic site must be omitted, not rendered empty: {notes:?}"
+        );
+    }
+
+    /// `panic!` hands the hook either a `&'static str` (a literal) or a
+    /// `String` (a formatted message); anything else is opaque. All three
+    /// produce a usable message rather than an empty one.
+    #[test]
+    fn panic_payloads_of_every_shape_produce_a_message() {
+        let literal: Box<dyn std::any::Any + Send> = Box::new("cfg edge exploded");
+        assert_eq!(panic_payload_message(literal.as_ref()), "cfg edge exploded");
+
+        let formatted: Box<dyn std::any::Any + Send> = Box::new("cfg edge 7 exploded".to_string());
+        assert_eq!(
+            panic_payload_message(formatted.as_ref()),
+            "cfg edge 7 exploded"
+        );
+
+        let opaque: Box<dyn std::any::Any + Send> = Box::new(42u32);
+        assert_eq!(
+            panic_payload_message(opaque.as_ref()),
+            "panic with a non-string payload"
+        );
     }
 
     // ========== --help and --version tests ==========
