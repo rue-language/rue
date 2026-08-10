@@ -334,6 +334,21 @@ const ENTRIES: &[Entry] = &[
         intrinsic(UnsupportedIntrinsicKind::ParseI64),
         &[],
     ),
+    // ADR-0059 phase 5 (RUE-963): the typed-access width and unaligned round
+    // trip cases anchor their pointers via @int_to_ptr, which the oracle does
+    // not model.
+    Entry::new(
+        "runtime.pointers",
+        "ptr_write_i32_touches_exactly_size_of_bytes",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
+    Entry::new(
+        "runtime.raw_bytes",
+        "ptr_unaligned_round_trip_at_an_odd_address",
+        intrinsic(UnsupportedIntrinsicKind::IntToPointer),
+        &[],
+    ),
     // ADR-0052 phase 7 (RUE-978): the unaligned-access round trip allocates
     // through @alloc, which the oracle model does not model.
     Entry::new(
