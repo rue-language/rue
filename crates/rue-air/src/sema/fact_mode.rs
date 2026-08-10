@@ -54,9 +54,7 @@ pub(crate) struct ArrayLengthRequest<'a> {
 /// Exact input for validating a deferred type-position parameter.
 pub(crate) struct DeferredTypeRequest<'a> {
     pub(crate) type_name: String,
-    pub(crate) type_params: &'a [Spur],
-    pub(crate) value_params: &'a [Spur],
-    pub(crate) value_param_type_syms: &'a [(Spur, Spur)],
+    pub(crate) parameters: &'a super::typeck::DeferredParameterFacts<'a>,
     pub(crate) span: Span,
 }
 
@@ -200,9 +198,7 @@ impl<'source, D: DeclarationPhase> BodyAnalysisHost for Sema<'source, D> {
     ) -> rue_error::CompileResult<Option<Type>> {
         self.validate_deferred_type_position_with_epoch_facts(
             request.type_name,
-            request.type_params,
-            request.value_params,
-            request.value_param_type_syms,
+            request.parameters,
             request.span,
         )
     }
