@@ -464,6 +464,191 @@ mod registered_batch_tests {
         }
     }
 
+    #[test]
+    fn later_batch_sibling_borrows_the_completed_siblings_registered_proof() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 9);
+        let second = Revision::new(2, 9);
+        let leaf_input = InputIdentity::new("source", "batch-authority-leaf");
+        let root_input = InputIdentity::new("source", "batch-authority-root");
+        runtime
+            .publish_revision(first, [(leaf_input.clone(), 1), (root_input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(leaf_input.clone(), 1), (root_input.clone(), 2)])
+            .unwrap();
+
+        let leaf_input_for_evaluator = leaf_input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "batch-authority-leaf",
+                8,
+                move |context, _, _| {
+                    Ok(QueryOutput::success(
+                        context.input(leaf_input_for_evaluator.clone())?,
+                    ))
+                },
+            )
+            .unwrap();
+        let leaf_for_branch = leaf.clone();
+        let branch = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "batch-authority-branch",
+                8,
+                move |context, _, key| {
+                    let leaf = context.query_registered(&leaf_for_branch, Key("shared"))?;
+                    let QueryOutcome::Success(value) = leaf.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value + key.0))
+                },
+            )
+            .unwrap();
+        let branch_for_root = branch.clone();
+        let root_input_for_evaluator = root_input.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "batch-authority-root",
+                8,
+                move |context, _, _| {
+                    let root_stamp = context.input(root_input_for_evaluator.clone())?;
+                    let _proof = context.endorse_registered_validations();
+                    let branches =
+                        context.query_registered_batch(&branch_for_root, [Slot(0), Slot(1)])?;
+                    let retained = context
+                        .retain_observed_terminal_cones_from(&branches, &[])
+                        .expect("the joined batch transfers its complete shared proof cone");
+                    let sum = branches
+                        .iter()
+                        .map(|terminal| match terminal.outcome() {
+                            QueryOutcome::Success(value) => *value,
+                            QueryOutcome::Failure(_) => unreachable!(),
+                        })
+                        .sum::<u64>();
+                    drop(retained);
+                    Ok(QueryOutput::success(sum + root_stamp))
+                },
+            )
+            .unwrap();
+
+        let initial =
+            runtime.request_registered(&root, first, Key("root"), CancellationToken::new());
+        assert_eq!(
+            initial.terminal().unwrap().outcome(),
+            &QueryOutcome::Success(4)
+        );
+        drop(initial);
+
+        let before = runtime.metrics().validation;
+        let current =
+            runtime.request_registered(&root, second, Key("root"), CancellationToken::new());
+        assert_eq!(
+            current.terminal().unwrap().outcome(),
+            &QueryOutcome::Success(5)
+        );
+        let work = runtime.metrics().validation.saturating_sub(before);
+        assert_eq!(work.proof_reacquisition_misses, 0);
+        assert_eq!(
+            work.demands, 1,
+            "the first sibling validates the shared leaf once; the later sibling borrows that proof"
+        );
+        assert!(work.endorsement_hits > 0);
+    }
+
+    #[test]
+    fn nested_batch_sibling_borrows_the_enclosing_batches_registered_proof() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 9);
+        let second = Revision::new(2, 9);
+        let leaf_input = InputIdentity::new("source", "nested-batch-authority-leaf");
+        let root_input = InputIdentity::new("source", "nested-batch-authority-root");
+        runtime
+            .publish_revision(first, [(leaf_input.clone(), 1), (root_input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(leaf_input.clone(), 1), (root_input.clone(), 2)])
+            .unwrap();
+
+        let leaf_input_for_evaluator = leaf_input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "nested-batch-authority-leaf",
+                8,
+                move |context, _, _| {
+                    Ok(QueryOutput::success(
+                        context.input(leaf_input_for_evaluator.clone())?,
+                    ))
+                },
+            )
+            .unwrap();
+        let leaf_for_inner = leaf.clone();
+        let inner = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "nested-batch-authority-inner",
+                8,
+                move |context, _, key| {
+                    let leaf = context.query_registered(&leaf_for_inner, Key("shared"))?;
+                    let QueryOutcome::Success(value) = leaf.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value + key.0))
+                },
+            )
+            .unwrap();
+        let inner_for_outer = inner.clone();
+        let outer = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "nested-batch-authority-outer",
+                8,
+                move |context, _, key| {
+                    let inner = context
+                        .query_registered_batch(&inner_for_outer, [key.clone()])?
+                        .pop()
+                        .unwrap();
+                    let QueryOutcome::Success(value) = inner.outcome() else {
+                        unreachable!()
+                    };
+                    Ok(QueryOutput::success(*value))
+                },
+            )
+            .unwrap();
+        let outer_for_root = outer.clone();
+        let root_input_for_evaluator = root_input.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "nested-batch-authority-root",
+                8,
+                move |context, _, _| {
+                    context.input(root_input_for_evaluator.clone())?;
+                    let _proof = context.endorse_registered_validations();
+                    let branches =
+                        context.query_registered_batch(&outer_for_root, [Slot(0), Slot(1)])?;
+                    let retained = context
+                        .retain_observed_terminal_cones_from(&branches, &[])
+                        .expect("nested batches transfer their complete shared proof cone");
+                    drop(retained);
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        runtime
+            .request_registered(&root, first, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let before = runtime.metrics().validation;
+        runtime
+            .request_registered(&root, second, Key("root"), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        let work = runtime.metrics().validation.saturating_sub(before);
+        assert_eq!(work.proof_reacquisition_misses, 0);
+        assert_eq!(
+            work.demands, 3,
+            "each retained outer/inner root validates, but the later nested batch borrows the shared leaf proof"
+        );
+    }
+
     fn run_stale_reverse_dependency_validation(worker_count: usize) {
         let runtime = QueryRuntime::new(worker_count);
         let first = Revision::new(3, 11);
@@ -1669,6 +1854,92 @@ mod registered_batch_tests {
             .request_registered(&root, revision(2), Key("root"), CancellationToken::new())
             .into_result()
             .unwrap();
+    }
+
+    #[test]
+    fn registered_batch_abort_releases_shared_validation_leases() {
+        let runtime = QueryRuntime::new(1);
+        let first = Revision::new(1, 9);
+        let second = Revision::new(2, 9);
+        let input = InputIdentity::new("source", "registered-batch-abort-proof");
+        runtime
+            .publish_revision(first, [(input.clone(), 1)])
+            .unwrap();
+        runtime
+            .publish_revision(second, [(input.clone(), 1)])
+            .unwrap();
+
+        let input_for_leaf = input.clone();
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "registered-batch-abort-proof-leaf",
+                8,
+                move |context, _, _| {
+                    Ok(QueryOutput::success(context.input(input_for_leaf.clone())?))
+                },
+            )
+            .unwrap();
+        let leaf_for_branch = leaf.clone();
+        let branch = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "registered-batch-abort-proof-branch",
+                8,
+                move |context, _, key| {
+                    if key.0 == 1 {
+                        return Err(QueryAbort::MissingInput(InputIdentity::new(
+                            "batch",
+                            "proof-abort",
+                        )));
+                    }
+                    context.query_registered(&leaf_for_branch, Key("leaf"))?;
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+        runtime
+            .request_registered(&branch, first, Slot(0), CancellationToken::new())
+            .into_result()
+            .unwrap();
+        runtime
+            .request_registered(&branch, first, Slot(2), CancellationToken::new())
+            .into_result()
+            .unwrap();
+
+        let branch_for_root = branch.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>(
+                "registered-batch-abort-proof-root",
+                8,
+                move |context, _, _| {
+                    let _proof = context.endorse_registered_validations();
+                    context
+                        .query_registered_batch(&branch_for_root, [Slot(0), Slot(2), Slot(1)])?;
+                    Ok(QueryOutput::success(1))
+                },
+            )
+            .unwrap();
+
+        let before = runtime.metrics().validation;
+        let attempt =
+            runtime.request_registered(&root, second, Key("root"), CancellationToken::new());
+        assert_eq!(
+            attempt.abort(),
+            Some(&QueryAbort::MissingInput(InputIdentity::new(
+                "batch",
+                "proof-abort"
+            )))
+        );
+        let work = runtime.metrics().validation.saturating_sub(before);
+        assert!(
+            work.endorsement_hits > 0,
+            "the second successful sibling borrowed the first sibling's published proof: {work:?}"
+        );
+        drop(attempt);
+        assert_eq!(
+            runtime.metrics().active_task_leases,
+            0,
+            "aborting the parent drops the completed sibling's shared proof pins"
+        );
     }
 
     #[test]
@@ -3966,6 +4237,7 @@ impl QueryRuntime {
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
+            batch_validation_authority: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -6545,6 +6817,7 @@ fn run_registered_batch_worker<K, V>(
     queue: Arc<Mutex<VecDeque<(usize, u64, K)>>>,
     family: QueryFamily<K, V>,
     parent: Arc<Task>,
+    authority: Arc<BatchValidationAuthority>,
     tracing_dispatch: tracing::Dispatch,
     tracing_parent: tracing::Span,
 ) -> std::thread::Result<Vec<BatchCompletion<K, V>>>
@@ -6560,8 +6833,11 @@ where
                 let Some((index, request_id, key)) = lock(&queue).pop_front() else {
                     break;
                 };
-                let child = parent.batch_child(request_id);
+                let child = parent.batch_child(request_id, authority.clone());
                 let result = family.query_task_registered(child.clone(), key.clone(), request_id);
+                if matches!(result, TaskQueryResult::Terminal { .. }) {
+                    authority.publish_child(&child);
+                }
                 completed.push((index, request_id, key, child, result));
             }
             completed
@@ -6780,6 +7056,13 @@ impl QueryContext {
     /// operational nested-attempt ledger are transferred into the parent before
     /// a child task can release them. Callers must therefore supply keys in
     /// their semantic stable order.
+    ///
+    /// When the parent has an active registered-validation scope, a child which
+    /// reaches a terminal atomically publishes its registered-only proof and
+    /// backing leases to this batch. Later siblings may borrow that authority
+    /// without repeating the same recursive validation. The authority is
+    /// lexical and moves into the parent before this method returns; unrelated
+    /// batches, requests, and revisions share no mutable proof state.
     pub fn query_registered_batch<K, V>(
         &self,
         family: &QueryFamily<K, V>,
@@ -6825,6 +7108,10 @@ impl QueryContext {
         let worker_claim =
             BatchWorkerClaim::new(self.task.core.clone(), items.len().saturating_sub(1));
         let queue = Arc::new(Mutex::new(VecDeque::from(items)));
+        let batch_authority = Arc::new(BatchValidationAuthority::new(
+            self.task.core.clone(),
+            self.task.batch_validation_authority.clone(),
+        ));
         // `tracing` dispatch is thread-local. Carry the caller's subscriber into
         // each child so scheduled evaluation keeps compiler timing/log events.
         let tracing_dispatch = tracing::dispatcher::get_default(Clone::clone);
@@ -6843,6 +7130,7 @@ impl QueryContext {
                 let queue = queue.clone();
                 let family = family.clone();
                 let parent = self.task.clone();
+                let authority = batch_authority.clone();
                 let tracing_dispatch = tracing_dispatch.clone();
                 let tracing_parent = tracing_parent.clone();
                 workers.push(
@@ -6854,6 +7142,7 @@ impl QueryContext {
                                 queue,
                                 family,
                                 parent,
+                                authority,
                                 tracing_dispatch,
                                 tracing_parent,
                             )
@@ -6865,6 +7154,7 @@ impl QueryContext {
                 queue.clone(),
                 family.clone(),
                 self.task.clone(),
+                batch_authority.clone(),
                 tracing_dispatch.clone(),
                 tracing_parent.clone(),
             );
@@ -6891,6 +7181,7 @@ impl QueryContext {
         if let Some(payload) = panic {
             resume_unwind(payload);
         }
+        batch_authority.absorb_into_task(&self.task);
 
         completed.sort_unstable_by_key(|(index, ..)| *index);
         let mut terminals = Vec::with_capacity(completed.len());
@@ -6984,6 +7275,16 @@ impl QueryContext {
     where
         V: Clone + Send + Sync + 'static,
     {
+        let mut batch_authorities = Vec::new();
+        let mut next_authority = self.task.batch_validation_authority.clone();
+        while let Some(authority) = next_authority {
+            next_authority = authority.parent.clone();
+            batch_authorities.push(authority);
+        }
+        let batch_authority_states = batch_authorities
+            .iter()
+            .map(|authority| read(&authority.state))
+            .collect::<Vec<_>>();
         let mut promotion_fallbacks = {
             let scopes = lock(&self.task.validation_endorsements);
             let Some(scope) = scopes.first() else {
@@ -6991,6 +7292,16 @@ impl QueryContext {
             };
             scope.fallbacks.clone()
         };
+        for authority in &batch_authority_states {
+            for fallback in &authority.fallbacks {
+                if !promotion_fallbacks
+                    .iter()
+                    .any(|retained| Arc::ptr_eq(retained, fallback))
+                {
+                    promotion_fallbacks.push(fallback.clone());
+                }
+            }
+        }
         for fallback in fallbacks {
             if !promotion_fallbacks
                 .iter()
@@ -7006,8 +7317,12 @@ impl QueryContext {
             return Err(RetainTerminalConeError::ForeignRuntime);
         }
         let leases = lock(&self.task.leases);
+        let batch_lease_count = batch_authority_states
+            .iter()
+            .map(|authority| authority.leases.held.len())
+            .sum::<usize>();
         let mut current_exact = HashMap::with_capacity(leases.held.len());
-        let mut selected = HashMap::with_capacity(leases.held.len());
+        let mut selected = HashMap::with_capacity(leases.held.len() + batch_lease_count);
         for lease in &leases.held {
             let identity = lease.identity();
             current_exact.insert(identity, lease.as_ref());
@@ -7016,6 +7331,17 @@ impl QueryContext {
                 .or_insert(lease.as_ref());
             if selected_for_stamp.identity().2 < identity.2 {
                 *selected_for_stamp = lease.as_ref();
+            }
+        }
+        for authority in &batch_authority_states {
+            for lease in &authority.leases.held {
+                let identity = lease.identity();
+                let selected_for_stamp = selected
+                    .entry((identity.0, identity.1))
+                    .or_insert(lease.as_ref());
+                if selected_for_stamp.identity().2 < identity.2 {
+                    *selected_for_stamp = lease.as_ref();
+                }
             }
         }
         for fallback in &promotion_fallbacks {
@@ -7096,6 +7422,52 @@ enum ValidationEndorsementAuthority {
     Borrowed,
 }
 
+/// Read-mostly retention authority shared by siblings in one structured batch.
+///
+/// A child publishes only after its registered request reaches a terminal. Its
+/// exact endorsements become visible in the same write transaction as the
+/// leases and fallback roots which back them. Later siblings may therefore
+/// reuse current validation certificates without rebuilding a cone that the
+/// batch already owns. The authority is lexical: the batch and its children
+/// hold the sole Arcs, and its pins move into the parent before the join returns.
+struct BatchValidationAuthority {
+    core: Arc<RuntimeCore>,
+    parent: Option<Arc<BatchValidationAuthority>>,
+    state: RwLock<BatchValidationAuthorityState>,
+}
+
+#[derive(Default)]
+struct BatchValidationAuthorityState {
+    endorsements: BTreeSet<(u64, u64, Revision)>,
+    fallbacks: Vec<Arc<RetainedPinSet>>,
+    leases: BatchValidationLeases,
+}
+
+#[derive(Default)]
+struct BatchValidationLeases {
+    observed: BTreeSet<(u64, u64, Revision)>,
+    held: Vec<Box<dyn ObservedLease>>,
+}
+
+impl Drop for BatchValidationLeases {
+    fn drop(&mut self) {
+        batched_release(&mut self.held);
+    }
+}
+
+impl fmt::Debug for BatchValidationAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state = read(&self.state);
+        formatter
+            .debug_struct("BatchValidationAuthority")
+            .field("endorsements", &state.endorsements.len())
+            .field("fallbacks", &state.fallbacks.len())
+            .field("leases", &state.leases.held.len())
+            .field("has_parent", &self.parent.is_some())
+            .finish()
+    }
+}
+
 #[derive(Default)]
 struct TaskQueryCache {
     /// One type-erased typed-key map per unforgeable family token. The token is
@@ -7142,6 +7514,10 @@ struct Task {
     /// so an indexed identity can never outlive its pin. Consequently the
     /// oldest active scope is the canonical union of all live authority.
     validation_endorsements: Mutex<Vec<ValidationEndorsementScope>>,
+    /// Completed siblings' registered proofs and backing leases for the
+    /// innermost structured batch containing this task. Nested batches link to
+    /// the enclosing authority rather than copying its cone.
+    batch_validation_authority: Option<Arc<BatchValidationAuthority>>,
     /// Active recursive validation certificates. Encountering an unregistered
     /// node taints every enclosing traversal.
     validation_proofs: Mutex<Vec<Arc<AtomicU8>>>,
@@ -7384,6 +7760,122 @@ impl Drop for TaskLeases {
     fn drop(&mut self) {
         batched_release_into(&mut self.held, &mut self.deferred);
         std::mem::take(&mut self.deferred).enforce();
+    }
+}
+
+impl BatchValidationAuthority {
+    fn new(core: Arc<RuntimeCore>, parent: Option<Arc<BatchValidationAuthority>>) -> Self {
+        Self {
+            core,
+            parent,
+            state: RwLock::new(BatchValidationAuthorityState::default()),
+        }
+    }
+
+    /// Atomically publishes one completed child's proof and its retention
+    /// backing. A child without a registered-validation scope keeps its state
+    /// for the ordinary ordered parent absorption path.
+    fn publish_child(&self, child: &Task) {
+        let child_endorsements = {
+            let mut scopes = lock(&child.validation_endorsements);
+            if scopes.is_empty() {
+                return;
+            }
+            std::mem::take(&mut *scopes)
+        };
+        let endorsement = child_endorsements
+            .last()
+            .expect("a nonempty endorsement scope has a canonical outer union");
+        let mut child_leases = lock(&child.leases);
+        let mut state = write(&self.state);
+        for lease in child_leases.held.drain(..) {
+            let identity = lease.identity();
+            if state.leases.observed.insert(identity) {
+                state.leases.held.push(lease);
+            } else {
+                self.core.metrics.task_leases_released(1);
+            }
+        }
+        child_leases.observed.clear();
+        for fallback in &endorsement.fallbacks {
+            if !state
+                .fallbacks
+                .iter()
+                .any(|retained| Arc::ptr_eq(retained, fallback))
+            {
+                state.fallbacks.push(fallback.clone());
+            }
+        }
+        // Publish identities last: every visible proof is now backed either by
+        // an exact batch lease or by a fallback Arc retained in this state.
+        state
+            .endorsements
+            .extend(endorsement.identities.iter().copied());
+    }
+
+    fn retains_endorsement(&self, incarnation: u64, stamp: u64, exact_revision: Revision) -> bool {
+        let mut authority = Some(self);
+        while let Some(current) = authority {
+            let state = read(&current.state);
+            if state
+                .endorsements
+                .contains(&(incarnation, stamp, exact_revision))
+                || state
+                    .fallbacks
+                    .iter()
+                    .any(|fallback| fallback.retains_stamp(incarnation, stamp))
+            {
+                return true;
+            }
+            authority = current.parent.as_deref();
+        }
+        false
+    }
+
+    /// Moves the joined batch's proof universe into its parent task before any
+    /// completed child can drop. Ordered work, attempt, and handoff absorption
+    /// remains separate and therefore preserves input-order reduction.
+    fn absorb_into_task(&self, task: &Task) {
+        let mut state = write(&self.state);
+        let mut task_leases = lock(&task.leases);
+        for lease in state.leases.held.drain(..) {
+            let identity = lease.identity();
+            if task_leases.observed.insert(identity) {
+                task_leases.held.push(lease);
+            } else {
+                self.core.metrics.task_leases_released(1);
+            }
+        }
+        state.leases.observed.clear();
+        drop(task_leases);
+
+        let fallbacks = std::mem::take(&mut state.fallbacks);
+        let endorsements = std::mem::take(&mut state.endorsements);
+        drop(state);
+        for scope in lock(&task.validation_endorsements).iter_mut() {
+            scope.identities.extend(endorsements.iter().copied());
+            for fallback in &fallbacks {
+                if !scope
+                    .fallbacks
+                    .iter()
+                    .any(|retained| Arc::ptr_eq(retained, fallback))
+                {
+                    scope.fallbacks.push(fallback.clone());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for BatchValidationAuthority {
+    fn drop(&mut self) {
+        let state = self
+            .state
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.core
+            .metrics
+            .task_leases_released(state.leases.held.len());
     }
 }
 
@@ -8061,7 +8553,11 @@ impl Task {
         lock(&self.leases).deferred.insert(enforcer);
     }
 
-    fn batch_child(self: &Arc<Self>, id: u64) -> Arc<Self> {
+    fn batch_child(
+        self: &Arc<Self>,
+        id: u64,
+        authority: Arc<BatchValidationAuthority>,
+    ) -> Arc<Self> {
         let inherited_filter = lock(&self.nested_attempt_filters).last().cloned();
         let inherited_validation_fallbacks = lock(&self.validation_endorsements)
             .first()
@@ -8101,6 +8597,7 @@ impl Task {
                     .into_iter()
                     .collect(),
             ),
+            batch_validation_authority: Some(authority),
             validation_proofs: Mutex::new(inherited_validation_proofs),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -8290,6 +8787,12 @@ impl Task {
             .fallbacks
             .iter()
             .any(|fallback| fallback.retains_stamp(incarnation, stamp))
+            || self
+                .batch_validation_authority
+                .as_ref()
+                .is_some_and(|authority| {
+                    authority.retains_endorsement(incarnation, stamp, exact_revision)
+                })
         {
             ValidationEndorsementAuthority::Borrowed
         } else {
@@ -11470,6 +11973,7 @@ mod tests {
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
+            batch_validation_authority: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -11524,6 +12028,7 @@ mod tests {
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
+            batch_validation_authority: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
@@ -11800,6 +12305,7 @@ mod tests {
             nested_attempts: Mutex::new(Vec::new()),
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
+            batch_validation_authority: None,
             validation_proofs: Mutex::new(Vec::new()),
             validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
