@@ -333,7 +333,7 @@ fn elapsed_ms(duration: Duration) -> u128 {
 
 fn validation_summary(work: QueryValidationMetrics) -> String {
     format!(
-        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle, registry {}/{}, demands {}/{}/{}/{}/{}, endorsements {}/{}, superseded {}, certificates {}",
+        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle, registry {}/{}, demands {}/{}/{}/{}/{}, endorsements {}/{}, query terminal leases {}/{} attempts/duplicates, superseded {}, certificates {}",
         work.traversals,
         work.successful_traversals,
         work.dirty_traversals,
@@ -352,6 +352,8 @@ fn validation_summary(work: QueryValidationMetrics) -> String {
         work.demands,
         work.endorsement_hits,
         work.endorsement_probes,
+        work.terminal_lease_observations,
+        work.duplicate_terminal_lease_observations,
         work.superseded,
         work.certificates_published,
     )
@@ -893,6 +895,8 @@ fn report_validation_work(work: QueryValidationMetrics) -> ReportValidationWork 
         memo_misses: work.memo_misses,
         endorsement_probes: work.endorsement_probes,
         endorsement_hits: work.endorsement_hits,
+        terminal_lease_observations: work.terminal_lease_observations,
+        duplicate_terminal_lease_observations: work.duplicate_terminal_lease_observations,
         demands: work.demands,
         demand_reuses: work.demand_reuses,
         demand_computes: work.demand_computes,

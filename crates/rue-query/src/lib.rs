@@ -244,6 +244,48 @@ mod registered_batch_tests {
         }
     }
 
+    #[test]
+    fn registered_batch_aggregates_exact_terminal_reobservations_from_children() {
+        let runtime = QueryRuntime::new(2);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime
+            .family_with_evaluator::<Key, u64, _>("lease-metrics-leaf", 8, |_, _, _| {
+                Ok(QueryOutput::success(1))
+            })
+            .unwrap();
+        let leaf_for_branch = leaf.clone();
+        let branch = runtime
+            .family_with_evaluator::<Slot, u64, _>(
+                "lease-metrics-branch",
+                8,
+                move |context, _, key| {
+                    context.query_registered(&leaf_for_branch, Key("shared"))?;
+                    context.query_registered(&leaf_for_branch, Key("shared"))?;
+                    Ok(QueryOutput::success(key.0))
+                },
+            )
+            .unwrap();
+        let branch_for_root = branch.clone();
+        let root = runtime
+            .family_with_evaluator::<Key, u64, _>("lease-metrics-root", 8, move |context, _, _| {
+                context.query_registered_batch(&branch_for_root, [Slot(0), Slot(1)])?;
+                Ok(QueryOutput::success(0))
+            })
+            .unwrap();
+
+        let before = runtime.metrics().validation;
+        let attempt =
+            runtime.request_registered(&root, revision(1), Key("root"), CancellationToken::new());
+        assert_eq!(attempt.execution(), RequestExecution::Computed);
+        let work = runtime.metrics().validation.saturating_sub(before);
+
+        assert_eq!(work.terminal_lease_observations, 7);
+        assert_eq!(
+            work.duplicate_terminal_lease_observations, 2,
+            "each structured child must contribute its repeated shared-leaf observation"
+        );
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct SharedValidationSnapshot {
         execution: RequestExecution,
@@ -2280,6 +2322,10 @@ pub struct ValidationWork {
     pub endorsement_probes: u64,
     /// Endorsement lookups satisfied by this rooted request's retained cone.
     pub endorsement_hits: u64,
+    /// Exact query-result terminal lease observations attempted by requests.
+    pub terminal_lease_observations: u64,
+    /// Query-result terminal observations already leased by the same task.
+    pub duplicate_terminal_lease_observations: u64,
     /// Family-owned validation demands issued after a memo miss.
     pub demands: u64,
     /// Validation demands answered by a retained terminal.
@@ -2322,6 +2368,8 @@ impl ValidationWork {
             memo_misses,
             endorsement_probes,
             endorsement_hits,
+            terminal_lease_observations,
+            duplicate_terminal_lease_observations,
             demands,
             demand_reuses,
             demand_computes,
@@ -2354,6 +2402,8 @@ impl ValidationWork {
             memo_misses,
             endorsement_probes,
             endorsement_hits,
+            terminal_lease_observations,
+            duplicate_terminal_lease_observations,
             demands,
             demand_reuses,
             demand_computes,
@@ -2381,6 +2431,8 @@ struct AtomicValidationWork {
     memo_misses: AtomicU64,
     endorsement_probes: AtomicU64,
     endorsement_hits: AtomicU64,
+    terminal_lease_observations: AtomicU64,
+    duplicate_terminal_lease_observations: AtomicU64,
     demands: AtomicU64,
     demand_reuses: AtomicU64,
     demand_computes: AtomicU64,
@@ -2407,6 +2459,10 @@ impl AtomicValidationWork {
             memo_misses: self.memo_misses.load(Ordering::Relaxed),
             endorsement_probes: self.endorsement_probes.load(Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.load(Ordering::Relaxed),
+            terminal_lease_observations: self.terminal_lease_observations.load(Ordering::Relaxed),
+            duplicate_terminal_lease_observations: self
+                .duplicate_terminal_lease_observations
+                .load(Ordering::Relaxed),
             demands: self.demands.load(Ordering::Relaxed),
             demand_reuses: self.demand_reuses.load(Ordering::Relaxed),
             demand_computes: self.demand_computes.load(Ordering::Relaxed),
@@ -2433,6 +2489,12 @@ impl AtomicValidationWork {
             memo_misses: self.memo_misses.swap(0, Ordering::Relaxed),
             endorsement_probes: self.endorsement_probes.swap(0, Ordering::Relaxed),
             endorsement_hits: self.endorsement_hits.swap(0, Ordering::Relaxed),
+            terminal_lease_observations: self
+                .terminal_lease_observations
+                .swap(0, Ordering::Relaxed),
+            duplicate_terminal_lease_observations: self
+                .duplicate_terminal_lease_observations
+                .swap(0, Ordering::Relaxed),
             demands: self.demands.swap(0, Ordering::Relaxed),
             demand_reuses: self.demand_reuses.swap(0, Ordering::Relaxed),
             demand_computes: self.demand_computes.swap(0, Ordering::Relaxed),
@@ -2466,6 +2528,8 @@ impl AtomicValidationWork {
             memo_misses,
             endorsement_probes,
             endorsement_hits,
+            terminal_lease_observations,
+            duplicate_terminal_lease_observations,
             demands,
             demand_reuses,
             demand_computes,
@@ -5802,8 +5866,8 @@ where
         // endorsement pin was acquired under the node lock, so there is no
         // instant in which it is both exposed and evictable.
         context.task.observe(terminal);
-        self.lease_observed_pin(&context.task, pin);
-        self.lease_observed_pin(&context.task, endorsed_pin);
+        self.lease_adopted_pin(&context.task, pin);
+        self.lease_adopted_pin(&context.task, endorsed_pin);
         Ok(())
     }
 
@@ -5936,16 +6000,39 @@ where
     /// terminals computed purely to validate a dependency (`observe_result ==
     /// false`) are speculative and their pins are dropped by the caller.
     fn lease_observed_pin(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) {
+        task.validation_work
+            .terminal_lease_observations
+            .fetch_add(1, Ordering::Relaxed);
+        if !self.insert_task_lease(task, pin) {
+            task.validation_work
+                .duplicate_terminal_lease_observations
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Transfers exact terminals already held by the adoption capability.
+    /// Adoption never resolves a family key or visits its memo index, so it is
+    /// deliberately outside the repeated-query opportunity measured by
+    /// [`ValidationWork::terminal_lease_observations`].
+    fn lease_adopted_pin(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) {
+        self.insert_task_lease(task, pin);
+    }
+
+    /// Inserts one exact terminal into the existing task lease set and reports
+    /// whether this task had not already leased it.
+    fn insert_task_lease(&self, task: &Arc<Task>, pin: TerminalPin<K, V>) -> bool {
         let mut leases = lock(&task.leases);
         let identity = (
             pin.terminal.node_incarnation,
             pin.terminal.stamp,
             pin.terminal.revision,
         );
-        if leases.observed.insert(identity) {
+        let inserted = leases.observed.insert(identity);
+        if inserted {
             leases.held.push(Box::new(pin));
             task.core.metrics.task_lease_acquired();
         }
+        inserted
     }
 
     /// Pins terminals computed under this exact retained revision.
@@ -8845,11 +8932,44 @@ mod tests {
         );
         assert!(work.registry_misses <= work.registry_probes);
         assert!(work.endorsement_hits <= work.endorsement_probes);
+        assert!(work.duplicate_terminal_lease_observations <= work.terminal_lease_observations);
         assert!(
             work.demand_reuses + work.demand_computes + work.demand_joins + work.demand_aborts
                 <= work.demands
         );
         assert!(work.certificates_published <= work.successful_traversals);
+    }
+
+    #[test]
+    fn exact_terminal_lease_observations_distinguish_first_and_duplicate() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let leaf = runtime.family::<Key, u64>("lease-metrics-leaf", 8).unwrap();
+        let root = runtime.family::<Key, u64>("lease-metrics-root", 8).unwrap();
+        let leaf_for_root = leaf.clone();
+        let before = runtime.metrics().validation;
+
+        let attempt = runtime.request(
+            &root,
+            revision(1),
+            Key("root"),
+            CancellationToken::new(),
+            move |context| {
+                context.query(&leaf_for_root, Key("shared"), |_| {
+                    Ok(QueryOutput::success(1))
+                })?;
+                context.query(&leaf_for_root, Key("shared"), |_| {
+                    panic!("the second exact request must reuse the retained terminal")
+                })?;
+                Ok(QueryOutput::success(0))
+            },
+        );
+        assert_eq!(attempt.execution(), RequestExecution::Computed);
+        let work = runtime.metrics().validation.saturating_sub(before);
+
+        assert_eq!(work.terminal_lease_observations, 3);
+        assert_eq!(work.duplicate_terminal_lease_observations, 1);
+        assert_validation_work_consistent(work);
     }
 
     // A numeric key for tests that need an unbounded supply of distinct keys
@@ -15674,6 +15794,7 @@ mod tests {
             })
             .unwrap();
 
+        let before_adoption = runtime.metrics().validation;
         let dependent = runtime
             .query(
                 &dependents,
@@ -15692,6 +15813,12 @@ mod tests {
                 },
             )
             .unwrap();
+        let adoption_work = runtime.metrics().validation.saturating_sub(before_adoption);
+        assert_eq!(
+            adoption_work.terminal_lease_observations, 1,
+            "the dependent query is metered, but exact-capability adoption does not visit a query memo"
+        );
+        assert_eq!(adoption_work.duplicate_terminal_lease_observations, 0);
         // The recorded observation is the held terminal's exact identity.
         assert_eq!(dependent.dependencies().len(), 1);
         let observation = &dependent.dependencies()[0];

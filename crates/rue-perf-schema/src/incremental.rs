@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 3;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 4;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -751,6 +751,10 @@ pub struct ValidationWork {
     pub endorsement_probes: u64,
     /// Endorsement lookups satisfied by the rooted request.
     pub endorsement_hits: u64,
+    /// Exact query-result terminal lease observations attempted by requests.
+    pub terminal_lease_observations: u64,
+    /// Query-result terminal observations already leased by the same task.
+    pub duplicate_terminal_lease_observations: u64,
     /// Family-owned validation demands issued.
     pub demands: u64,
     /// Validation demands answered by retained terminals.
@@ -1127,6 +1131,12 @@ fn validate_validation_work(
         errors.push(finding(
             path,
             "validation endorsement hits exceed endorsement probes",
+        ));
+    }
+    if work.duplicate_terminal_lease_observations > work.terminal_lease_observations {
+        errors.push(finding(
+            path,
+            "duplicate exact-terminal observations exceed lease observations",
         ));
     }
     let completed_demands = work
@@ -1874,7 +1884,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 3
+report_schema_version = 4
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -2221,6 +2231,8 @@ minimum_memory_bytes = 15000000000
             memo_misses: 2,
             endorsement_probes: 2,
             endorsement_hits: 1,
+            terminal_lease_observations: 3,
+            duplicate_terminal_lease_observations: 1,
             demands: 2,
             demand_reuses: 1,
             demand_computes: 1,
@@ -2240,6 +2252,17 @@ minimum_memory_bytes = 15000000000
             error
                 .detail
                 .contains("node visits do not equal cycle prunes")
+        }));
+
+        measured.rows[0].samples[0].validation.node_visits -= 1;
+        measured.rows[0].samples[0]
+            .validation
+            .duplicate_terminal_lease_observations = 4;
+        let validation = validate_edit_report(&manifest, &measured);
+        assert!(validation.errors.iter().any(|error| {
+            error
+                .detail
+                .contains("duplicate exact-terminal observations exceed")
         }));
     }
 
@@ -2310,8 +2333,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":3",
-            "\"schema_version\":3,\"surprise\":true",
+            "\"schema_version\":4",
+            "\"schema_version\":4,\"surprise\":true",
             1,
         );
         assert!(

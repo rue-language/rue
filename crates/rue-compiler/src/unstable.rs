@@ -1630,6 +1630,8 @@ pub struct QueryValidationMetrics {
     pub memo_misses: u64,
     pub endorsement_probes: u64,
     pub endorsement_hits: u64,
+    pub terminal_lease_observations: u64,
+    pub duplicate_terminal_lease_observations: u64,
     pub demands: u64,
     pub demand_reuses: u64,
     pub demand_computes: u64,
@@ -1667,6 +1669,8 @@ impl QueryValidationMetrics {
             memo_misses: self.memo_misses,
             endorsement_probes: self.endorsement_probes,
             endorsement_hits: self.endorsement_hits,
+            terminal_lease_observations: self.terminal_lease_observations,
+            duplicate_terminal_lease_observations: self.duplicate_terminal_lease_observations,
             demands: self.demands,
             demand_reuses: self.demand_reuses,
             demand_computes: self.demand_computes,
@@ -1695,6 +1699,8 @@ impl From<rue_query::ValidationWork> for QueryValidationMetrics {
             memo_misses: work.memo_misses,
             endorsement_probes: work.endorsement_probes,
             endorsement_hits: work.endorsement_hits,
+            terminal_lease_observations: work.terminal_lease_observations,
+            duplicate_terminal_lease_observations: work.duplicate_terminal_lease_observations,
             demands: work.demands,
             demand_reuses: work.demand_reuses,
             demand_computes: work.demand_computes,
@@ -1703,6 +1709,31 @@ impl From<rue_query::ValidationWork> for QueryValidationMetrics {
             superseded: work.superseded,
             certificates_published: work.certificates_published,
         }
+    }
+}
+
+#[cfg(test)]
+mod query_validation_metrics_tests {
+    use super::QueryValidationMetrics;
+
+    #[test]
+    fn exact_terminal_observations_survive_projection_and_deltas() {
+        let before = rue_query::ValidationWork {
+            terminal_lease_observations: 7,
+            duplicate_terminal_lease_observations: 2,
+            ..Default::default()
+        };
+        let after = rue_query::ValidationWork {
+            terminal_lease_observations: 11,
+            duplicate_terminal_lease_observations: 5,
+            ..Default::default()
+        };
+
+        assert_eq!(QueryValidationMetrics::from(after).into_runtime(), after);
+        let delta = QueryValidationMetrics::from(after)
+            .saturating_sub(QueryValidationMetrics::from(before));
+        assert_eq!(delta.terminal_lease_observations, 4);
+        assert_eq!(delta.duplicate_terminal_lease_observations, 3);
     }
 }
 
