@@ -198,6 +198,169 @@ pub(crate) enum BoundDefinitionInputPartition {
     ExactSignature(Arc<[Span]>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct SyntaxPartitionIdentity {
+    namespace: StableDefinitionNamespace,
+    declaration_span: Span,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SyntaxPartitionSource<'a> {
+    Body {
+        declaration: Span,
+        body: Span,
+    },
+    Initializer {
+        declaration: Span,
+        initializer: Span,
+    },
+    ExactSignature(Span),
+    Struct(&'a rue_parser::ast::StructDecl),
+}
+
+impl SyntaxPartitionSource<'_> {
+    fn partition(self) -> Result<BoundDefinitionInputPartition, CompileError> {
+        match self {
+            Self::Body { declaration, body } => partition_prefix(declaration, body)
+                .map(|signature| BoundDefinitionInputPartition::Body { signature, body }),
+            Self::Initializer {
+                declaration,
+                initializer,
+            } => partition_prefix(declaration, initializer).map(|signature| {
+                BoundDefinitionInputPartition::Initializer {
+                    signature,
+                    initializer,
+                }
+            }),
+            Self::ExactSignature(span) => Ok(BoundDefinitionInputPartition::ExactSignature(
+                vec![span].into(),
+            )),
+            Self::Struct(structure) => Ok(BoundDefinitionInputPartition::ExactSignature(
+                signature_fragments_excluding_method_bodies(structure)?.into(),
+            )),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct SyntaxPartitionIndex<'a> {
+    by_identity: HashMap<SyntaxPartitionIdentity, SyntaxPartitionSource<'a>>,
+    ast_nodes_visited: usize,
+}
+
+impl<'a> SyntaxPartitionIndex<'a> {
+    fn new(module: &'a crate::parsed_modules::ParsedModule) -> Self {
+        let mut index = Self {
+            by_identity: HashMap::new(),
+            ast_nodes_visited: 0,
+        };
+        for item in &module.ast().items {
+            index.ast_nodes_visited += 1;
+            match item {
+                Item::Function(value) => index.insert(
+                    StableDefinitionNamespace::Value,
+                    value.span,
+                    SyntaxPartitionSource::Body {
+                        declaration: value.span,
+                        body: value.body.span(),
+                    },
+                ),
+                Item::Struct(value) => {
+                    index.insert(
+                        StableDefinitionNamespace::Type,
+                        value.span,
+                        SyntaxPartitionSource::Struct(value),
+                    );
+                    for method in &value.methods {
+                        index.ast_nodes_visited += 1;
+                        index.insert(
+                            StableDefinitionNamespace::Method,
+                            method.span,
+                            SyntaxPartitionSource::Body {
+                                declaration: method.span,
+                                body: method.body.span(),
+                            },
+                        );
+                    }
+                }
+                Item::Enum(value) => index.insert(
+                    StableDefinitionNamespace::Type,
+                    value.span,
+                    SyntaxPartitionSource::ExactSignature(value.span),
+                ),
+                Item::DropFn(value) => index.insert(
+                    StableDefinitionNamespace::Destructor,
+                    value.span,
+                    SyntaxPartitionSource::Body {
+                        declaration: value.span,
+                        body: value.body.span(),
+                    },
+                ),
+                Item::Extern(block) => {
+                    for foreign in &block.fns {
+                        index.ast_nodes_visited += 1;
+                        index.insert(
+                            StableDefinitionNamespace::Value,
+                            foreign.span,
+                            SyntaxPartitionSource::ExactSignature(foreign.span),
+                        );
+                    }
+                }
+                Item::Const(value) => index.insert(
+                    StableDefinitionNamespace::Value,
+                    value.span,
+                    SyntaxPartitionSource::Initializer {
+                        declaration: value.span,
+                        initializer: value.init.span(),
+                    },
+                ),
+                Item::Error(_) => {}
+            }
+        }
+        index
+    }
+
+    fn insert(
+        &mut self,
+        namespace: StableDefinitionNamespace,
+        declaration_span: Span,
+        source: SyntaxPartitionSource<'a>,
+    ) {
+        // Preserve the source-ordered first-match behavior of the former AST
+        // scans if malformed canonical syntax repeats an exact identity.
+        self.by_identity
+            .entry(SyntaxPartitionIdentity {
+                namespace,
+                declaration_span,
+            })
+            .or_insert(source);
+    }
+
+    fn partition_for(
+        &self,
+        binding: &SemanticBinding,
+    ) -> Result<BoundDefinitionInputPartition, CompileError> {
+        if binding.namespace == StableDefinitionNamespace::Method && binding.owner.is_none() {
+            return Err(invalid("named method binding has no owner"));
+        }
+        let source = self
+            .by_identity
+            .get(&SyntaxPartitionIdentity {
+                namespace: binding.namespace,
+                declaration_span: binding.declaration_span,
+            })
+            .copied()
+            .ok_or_else(|| {
+                if binding.namespace == StableDefinitionNamespace::Method {
+                    invalid("named method binding does not join canonical syntax")
+                } else {
+                    invalid("semantic binding does not join an authoritative canonical syntax item")
+                }
+            })?;
+        source.partition()
+    }
+}
+
 impl BoundDefinitionRecord {
     #[cfg(test)]
     pub fn id(&self) -> &BoundDefinitionId {
@@ -229,6 +392,9 @@ impl BoundDefinitionRecord {
 pub struct BoundDefinitionWork {
     pub modules_validated: usize,
     pub manifest_bindings_visited: usize,
+    pub syntax_partition_ast_nodes_visited: usize,
+    pub syntax_partitions_indexed: usize,
+    pub syntax_partition_lookups: usize,
     pub top_level_occurrences_joined: usize,
     pub named_methods_issued: usize,
     pub anonymous_methods_deferred: usize,
@@ -863,6 +1029,15 @@ pub(crate) fn issue_bound_definitions(
         anonymous_methods_deferred: manifest_work.anonymous_methods_deferred,
         ..BoundDefinitionWork::default()
     };
+    let partition_by_file = modules
+        .iter()
+        .map(|module| {
+            let index = SyntaxPartitionIndex::new(module);
+            work.syntax_partition_ast_nodes_visited += index.ast_nodes_visited;
+            work.syntax_partitions_indexed += index.by_identity.len();
+            (module.file_id(), index)
+        })
+        .collect::<HashMap<_, _>>();
     for binding in bindings {
         validate_binding_shape(binding)?;
         let module = by_file.get(&binding.file_id).ok_or_else(|| {
@@ -924,7 +1099,11 @@ pub(crate) fn issue_bound_definitions(
             }
             (Some(winner.id()), winner.visibility())
         };
-        let input_partition = definition_input_partition(module, binding)?;
+        work.syntax_partition_lookups += 1;
+        let input_partition = partition_by_file
+            .get(&binding.file_id)
+            .expect("syntax partition index covers every canonical module")
+            .partition_for(binding)?;
         records.push(BoundDefinitionRecord {
             id: SnapshotBoundDefinitionId {
                 key,
@@ -999,83 +1178,6 @@ pub(crate) fn issue_shell_definitions(
         &bindings,
         SemanticBindingManifestWork::default(),
     )
-}
-
-fn definition_input_partition(
-    module: &crate::parsed_modules::ParsedModule,
-    binding: &SemanticBinding,
-) -> Result<BoundDefinitionInputPartition, CompileError> {
-    let ast = module.ast();
-    let signature_and_body = |declaration: Span, body: Span| {
-        partition_prefix(declaration, body)
-            .map(|signature| BoundDefinitionInputPartition::Body { signature, body })
-    };
-    let signature_and_initializer = |declaration: Span, initializer: Span| {
-        partition_prefix(declaration, initializer).map(|signature| {
-            BoundDefinitionInputPartition::Initializer {
-                signature,
-                initializer,
-            }
-        })
-    };
-
-    if binding.namespace == StableDefinitionNamespace::Method {
-        binding
-            .owner
-            .as_deref()
-            .ok_or_else(|| invalid("named method binding has no owner"))?;
-        let method = ast.items.iter().find_map(|item| match item {
-            Item::Struct(structure) => structure
-                .methods
-                .iter()
-                .find(|method| method.span == binding.declaration_span),
-            _ => None,
-        });
-        return method
-            .ok_or_else(|| invalid("named method binding does not join canonical syntax"))
-            .and_then(|method| signature_and_body(method.span, method.body.span()));
-    }
-
-    let item = ast.items.iter().find(|item| match item {
-        Item::Function(value) => value.span == binding.declaration_span,
-        Item::Struct(value) => value.span == binding.declaration_span,
-        Item::Enum(value) => value.span == binding.declaration_span,
-        Item::DropFn(value) => value.span == binding.declaration_span,
-        // A foreign declaration's binding span is the individual `fn`'s span,
-        // not the enclosing `extern` block's (ADR-0064 C FFI).
-        Item::Extern(block) => block
-            .fns
-            .iter()
-            .any(|foreign| foreign.span == binding.declaration_span),
-        Item::Const(value) => value.span == binding.declaration_span,
-        Item::Error(_) => false,
-    });
-    match item {
-        Some(Item::Function(value)) => signature_and_body(value.span, value.body.span()),
-        Some(Item::DropFn(value)) => signature_and_body(value.span, value.body.span()),
-        Some(Item::Const(value)) => signature_and_initializer(value.span, value.init.span()),
-        Some(Item::Struct(value)) => Ok(BoundDefinitionInputPartition::ExactSignature(
-            signature_fragments_excluding_method_bodies(value)?.into(),
-        )),
-        Some(Item::Enum(value)) => Ok(BoundDefinitionInputPartition::ExactSignature(
-            vec![value.span].into(),
-        )),
-        // A foreign `extern "C"` declaration is signature-only: the whole
-        // declaration is its exact-signature partition (there is no body).
-        Some(Item::Extern(block)) => {
-            let foreign = block
-                .fns
-                .iter()
-                .find(|foreign| foreign.span == binding.declaration_span)
-                .ok_or_else(|| invalid("extern binding does not join canonical syntax"))?;
-            Ok(BoundDefinitionInputPartition::ExactSignature(
-                vec![foreign.span].into(),
-            ))
-        }
-        Some(Item::Error(_)) | None => Err(invalid(
-            "semantic binding does not join an authoritative canonical syntax item",
-        )),
-    }
 }
 
 fn signature_fragments_excluding_method_bodies(
@@ -1162,6 +1264,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fmt::Write as _;
 
+    use rue_error::PreviewFeature;
     use rue_span::FileId;
 
     use super::*;
@@ -1347,6 +1450,49 @@ mod tests {
             ErrorKind::InvalidCompilerInput(ref message)
                 if message == "validated canonical graph does not cover a parsed import directive"
         ));
+    }
+
+    #[test]
+    fn syntax_partition_join_is_linear_for_functions_methods_and_externs() {
+        const EACH_KIND: usize = 512;
+        let mut source = String::new();
+        for index in 0..EACH_KIND {
+            writeln!(source, "fn ordinary_{index:04}() -> i32 {{ {index} }}").unwrap();
+        }
+        source.push_str("struct Methods {\n");
+        for index in 0..EACH_KIND {
+            writeln!(source, "fn method_{index:04}(self) -> i32 {{ {index} }}").unwrap();
+        }
+        source.push_str("}\nextern \"C\" {\n");
+        for index in 0..EACH_KIND {
+            writeln!(source, "fn foreign_{index:04}() -> i32;").unwrap();
+        }
+        source.push_str("}\nfn main() {}\n");
+
+        let input = snapshot(&[(1, "/main.rue", "main.rue", &source)], 1);
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let definitions = bind_canonical_definitions(
+            &stages.merged,
+            &stages.rir,
+            PreviewFeatures::from([PreviewFeature::CFfi]),
+            Target::default(),
+        )
+        .unwrap();
+        let work = definitions.work();
+        let expected_definitions = EACH_KIND * 3 + 2;
+
+        assert_eq!(definitions.definitions().len(), expected_definitions);
+        assert_eq!(work.syntax_partitions_indexed, expected_definitions);
+        assert_eq!(work.syntax_partition_lookups, expected_definitions);
+        assert_eq!(
+            work.syntax_partition_ast_nodes_visited,
+            expected_definitions + 1,
+            "the extern block is the only visited AST node without its own partition"
+        );
+        assert!(
+            work.syntax_partition_ast_nodes_visited + work.syntax_partition_lookups
+                <= expected_definitions * 2 + 1
+        );
     }
 
     #[test]
