@@ -1133,9 +1133,10 @@ mod tests {
             ),
             "entry must return the else-arm value directly"
         );
-        // The dead then-arm is a husk.
-        let dead = cfg.get_block(then_block);
-        assert!(dead.insts.is_empty());
-        assert!(matches!(dead.terminator, Terminator::Unreachable));
+        // The dead then-arm is gone entirely: DCE compacts unreachable blocks
+        // away rather than leaving an `Unreachable` husk behind (RUE-769), so
+        // the collapsed diamond is a single densely numbered block.
+        assert_eq!(cfg.block_count(), 1);
+        assert_eq!(cfg.get_block(cfg.entry).id, cfg.entry);
     }
 }

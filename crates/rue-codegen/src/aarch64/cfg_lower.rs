@@ -3541,6 +3541,13 @@ impl crate::place_lower::PlaceLowerBackend for CfgLower<'_> {
         });
     }
 
+    fn emit_zero_sized_place_addr(&mut self, dst: VReg) {
+        self.mir.push(Aarch64Inst::MovImm {
+            dst: Operand::Virtual(dst),
+            imm: crate::place_lower::ZERO_SIZED_PLACE_ADDR,
+        });
+    }
+
     fn emit_load_ptr_base(&mut self, dst: VReg, ptr: VReg) {
         self.mir.push(Aarch64Inst::LdrIndexed {
             dst: Operand::Virtual(dst),

@@ -2593,6 +2593,82 @@ impl Cfg {
         (0..self.blocks.len() as u32).map(BlockId)
     }
 
+    /// Drop every block `keep` rejects and renumber the survivors densely,
+    /// rewriting every block reference in the graph (RUE-769).
+    ///
+    /// `BlockId` is a dense index into `blocks`, so a block cannot be removed
+    /// without renumbering: `get_block` indexes the vector directly and each
+    /// block's own `id` must equal its position. This is the single place that
+    /// performs that renumbering, and it covers every block reference there is
+    /// — the entry id, each block's own id, `Goto`/`Branch` targets, and a
+    /// `Switch`'s default plus its case targets in the payload store. Block
+    /// *parameters* and instructions of dropped blocks are left in the value
+    /// arena as detached values, exactly as dead instruction elimination
+    /// leaves them.
+    ///
+    /// The entry block must survive; callers derive `keep` from reachability
+    /// from the entry, which always includes it. Returns `true` when at least
+    /// one block was dropped.
+    pub(crate) fn retain_blocks(&mut self, keep: impl Fn(BlockId) -> bool) -> bool {
+        let old_count = self.blocks.len();
+        let mut remap: Vec<Option<BlockId>> = Vec::with_capacity(old_count);
+        let mut kept = 0u32;
+        for index in 0..old_count as u32 {
+            if keep(BlockId(index)) {
+                remap.push(Some(BlockId(kept)));
+                kept += 1;
+            } else {
+                remap.push(None);
+            }
+        }
+        if kept as usize == old_count {
+            return false;
+        }
+        let entry = remap[self.entry.0 as usize]
+            .expect("block compaction must keep the entry block reachable");
+
+        let mut old_index = 0;
+        self.blocks.retain(|_| {
+            let survives = remap[old_index].is_some();
+            old_index += 1;
+            survives
+        });
+
+        // A surviving block's successors are reachable by construction, so
+        // every target below has a new identity. Renumber ids first, then
+        // targets, so the two passes read one consistent `remap`.
+        for (new_index, block) in self.blocks.iter_mut().enumerate() {
+            block.id = BlockId(new_index as u32);
+        }
+        let target_of = |old: BlockId| -> BlockId {
+            remap[old.0 as usize].expect("a reachable block cannot branch to a dropped block")
+        };
+        let mut switch_ranges = Vec::new();
+        for block in &mut self.blocks {
+            match &mut block.terminator {
+                Terminator::Goto { target, .. } => *target = target_of(*target),
+                Terminator::Branch {
+                    then_block,
+                    else_block,
+                    ..
+                } => {
+                    *then_block = target_of(*then_block);
+                    *else_block = target_of(*else_block);
+                }
+                Terminator::Switch { cases, default, .. } => {
+                    *default = target_of(*default);
+                    switch_ranges.push(cases.duplicate());
+                }
+                Terminator::Return { .. } | Terminator::Unreachable | Terminator::None => {}
+            }
+        }
+        for range in &switch_ranges {
+            payload::remap_switch_case_targets(&mut self.switch_cases, range, target_of);
+        }
+        self.entry = entry;
+        true
+    }
+
     /// Rewrite every value USE in the CFG through `map`, covering all the
     /// places a `CfgValue` can be referenced: instruction operands, the
     /// `extra` array (struct fields, array elements, intrinsic args, and

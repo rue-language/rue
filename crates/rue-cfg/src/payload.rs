@@ -244,13 +244,26 @@ impl<S, E> Store<S, E> {
         })
     }
 
-    fn view<F>(&self, range: &Range<F>, family: &'static str) -> Result<&[E], PayloadError>
+    /// Resolve `range` to element indices, or `None` for the canonical empty
+    /// range. Shared by the shared and exclusive views so both agree on what a
+    /// well-formed range is.
+    fn bounds<F>(
+        &self,
+        range: &Range<F>,
+        family: &'static str,
+    ) -> Result<Option<(usize, usize)>, PayloadError>
     where
         F: Family<Store = S>,
     {
+        let malformed = || PayloadError {
+            family,
+            start: range.start,
+            extent: range.extent,
+            store_len: self.elements.len(),
+        };
         if range.extent == 0 {
             return if range.start == 0 {
-                Ok(&[])
+                Ok(None)
             } else {
                 Err(PayloadError {
                     family,
@@ -260,30 +273,37 @@ impl<S, E> Store<S, E> {
                 })
             };
         }
-        let start = usize::try_from(range.start).map_err(|_| PayloadError {
-            family,
-            start: range.start,
-            extent: range.extent,
-            store_len: self.elements.len(),
-        })?;
-        let extent = usize::try_from(range.extent).map_err(|_| PayloadError {
-            family,
-            start: range.start,
-            extent: range.extent,
-            store_len: self.elements.len(),
-        })?;
-        let end = start.checked_add(extent).ok_or(PayloadError {
-            family,
-            start: range.start,
-            extent: range.extent,
-            store_len: self.elements.len(),
-        })?;
-        self.elements.get(start..end).ok_or(PayloadError {
-            family,
-            start: range.start,
-            extent: range.extent,
-            store_len: self.elements.len(),
-        })
+        let start = usize::try_from(range.start).map_err(|_| malformed())?;
+        let extent = usize::try_from(range.extent).map_err(|_| malformed())?;
+        let end = start.checked_add(extent).ok_or_else(malformed)?;
+        if end > self.elements.len() {
+            return Err(malformed());
+        }
+        Ok(Some((start, end)))
+    }
+
+    fn view<F>(&self, range: &Range<F>, family: &'static str) -> Result<&[E], PayloadError>
+    where
+        F: Family<Store = S>,
+    {
+        match self.bounds(range, family)? {
+            None => Ok(&[]),
+            Some((start, end)) => Ok(&self.elements[start..end]),
+        }
+    }
+
+    fn view_mut<F>(
+        &mut self,
+        range: &Range<F>,
+        family: &'static str,
+    ) -> Result<&mut [E], PayloadError>
+    where
+        F: Family<Store = S>,
+    {
+        match self.bounds(range, family)? {
+            None => Ok(&mut []),
+            Some((start, end)) => Ok(&mut self.elements[start..end]),
+        }
     }
 }
 
@@ -409,6 +429,27 @@ accessors!(
     Projections,
     Projection
 );
+
+/// Rewrite the target of every switch case in `range` through `remap`.
+///
+/// A `Switch`'s case targets are the only block references that live in a
+/// payload store rather than in the terminator struct itself, so block
+/// compaction (RUE-769) needs to renumber them in place. This stays a narrow
+/// per-range operation instead of a mutable slice accessor so the store's
+/// elements are never handed out for general mutation, and so the case values
+/// themselves cannot be edited through it.
+pub(crate) fn remap_switch_case_targets(
+    store: &mut SwitchCases,
+    range: &CfgSwitchCases,
+    mut remap: impl FnMut(BlockId) -> BlockId,
+) {
+    let cases = store
+        .view_mut(&range.0, CfgSwitchCases::FAMILY)
+        .expect("validated CFG payload");
+    for (_, target) in cases {
+        *target = remap(*target);
+    }
+}
 
 /// Safe fuzzing hook for the owner-local checked CFG range decoders.
 #[doc(hidden)]
