@@ -416,7 +416,11 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
         BodyOwnerToken,
         crate::SemanticBodyCandidate<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     >,
-    pub(crate) reusable_specialized_bodies: Vec<
+    pub(crate) reusable_specialized_bodies: HashMap<
+        crate::SemanticSpecializationIdentity<
+            crate::SemanticDefinitionToken,
+            crate::SemanticModuleToken,
+        >,
         crate::SemanticSpecializedBodyCandidate<
             crate::SemanticDefinitionToken,
             crate::SemanticModuleToken,
@@ -1216,7 +1220,7 @@ impl<'a> Sema<'a, MutableDeclarations> {
             ordinary_body_exports: Vec::new(),
             specialized_body_exports: Vec::new(),
             reusable_ordinary_bodies: HashMap::new(),
-            reusable_specialized_bodies: Vec::new(),
+            reusable_specialized_bodies: HashMap::new(),
             stable_definition_tokens: Arc::default(),
             stable_definition_endpoints: Arc::default(),
             const_candidate_tokens: Arc::default(),
