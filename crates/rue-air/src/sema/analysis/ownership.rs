@@ -391,7 +391,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // body reads in place.
             return self.place_root_with_accessors(value, ctx).is_some();
         };
-        ctx.locals.contains_key(&root) || ctx.params.iter().any(|param| param.name == root)
+        ctx.locals.contains_key(&root) || ctx.has_param(root)
     }
 
     /// Whether a `borrow` operand qualifies for **static promotion**
@@ -479,7 +479,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // constant or a `comptime` parameter has a static image.
             InstData::VarRef { name, .. } => {
                 !ctx.locals.contains_key(name)
-                    && !ctx.params.iter().any(|param| param.name == *name)
+                    && !ctx.has_param(*name)
                     && (self.borrow_operand_is_static_string(operand, ctx)
                         || ctx.comptime_value_vars.contains_key(name)
                         || self
@@ -498,7 +498,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             InstData::StringConst { .. } => true,
             InstData::VarRef { name, .. } => {
                 !ctx.locals.contains_key(name)
-                    && !ctx.params.iter().any(|param| param.name == *name)
+                    && !ctx.has_param(*name)
                     && self
                         .call_facts()
                         .value_const(self.body_rir_ref().get(operand).span.file_id, *name)
@@ -953,7 +953,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 }
 
                 // Otherwise it may be a parameter.
-                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
+                if let Some(param_info) = ctx.param(*name) {
                     return Ok(Some(PlaceTrace {
                         base: AirPlaceBase::Param(param_info.abi_slot),
                         base_type: param_info.ty,
@@ -1739,7 +1739,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // reads (spec 5.1:10, RUE-278). A same-named local can only exist by
         // shadowing, so its presence means "resolve as local" (handled below).
         if !ctx.locals.contains_key(&name) {
-            if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
+            if let Some(param_info) = ctx.param(name) {
                 let ty = param_info.ty;
                 let name_str = self.body_interner().resolve(&name);
 
@@ -2131,7 +2131,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Without this guard, `let mut x = x; x = x + 1;` wrongly reports E0203
         // against the immutable parameter with a bogus "make it inout" hint.
         if !ctx.locals.contains_key(&name) {
-            if let Some(param_info) = ctx.params.iter().find(|p| p.name == name) {
+            if let Some(param_info) = ctx.param(name) {
                 // Inout params and `mut self` (a mutable by-value receiver
                 // binding) can be assigned to.
                 match param_info.mode {
@@ -2336,7 +2336,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if ctx.locals.contains_key(&root_var) {
             return Ok(());
         }
-        if let Some(param_info) = ctx.params.iter().find(|p| p.name == root_var) {
+        if let Some(param_info) = ctx.param(root_var) {
             match param_info.mode {
                 RirParamMode::Inout => {
                     return Err(move_out_of_inout_error(
@@ -4530,7 +4530,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let Some(local) = ctx.locals.get(&root) {
             return local.is_mut;
         }
-        if let Some(param) = ctx.params.iter().find(|p| p.name == root) {
+        if let Some(param) = ctx.param(root) {
             return param.mode == RirParamMode::Inout || param.is_mut;
         }
         false

@@ -310,6 +310,17 @@ mod tests {
     }
 
     #[test]
+    fn large_signature_parameter_uses_resolve_through_body_analysis() {
+        compile_to_air(
+            "fn sum(a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32, i: i32) -> i32 {\n\
+                 a + b + c + d + e + f + g + h + i\n\
+             }\n\
+             fn main() -> i32 { sum(1, 2, 3, 4, 5, 6, 7, 8, 9) }",
+        )
+        .expect("indexed parameter lookup preserves ordinary body semantics");
+    }
+
+    #[test]
     fn reserved_looking_source_intrinsics_never_select_internal_operations() {
         for (name, args) in [
             ("__rue_iter_len", "0"),

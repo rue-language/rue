@@ -605,7 +605,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             // same-named local, which then wins for all later references
             // (spec 5.1:10, RUE-278); the local is resolved just below.
             if !ctx.locals.contains_key(name) {
-                if let Some(param_info) = ctx.params.iter().find(|p| p.name == *name) {
+                if let Some(param_info) = ctx.param(*name) {
                     let ty = param_info.ty;
 
                     // Check if this parameter has been fully moved

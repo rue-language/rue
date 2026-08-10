@@ -481,7 +481,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 if let Some(local) = ctx.locals.get(name) {
                     return Some(local.ty);
                 }
-                ctx.params.iter().find(|p| p.name == *name).map(|p| p.ty)
+                ctx.param(*name).map(|param| param.ty)
             }
             // A `-> borrow T` accessor call is a place of its element type
             // (ADR-0062); any other method call is not a place.

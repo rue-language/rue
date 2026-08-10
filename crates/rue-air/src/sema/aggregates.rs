@@ -851,7 +851,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// Comptime type variables are intentionally not runtime bindings:
     /// `let O = Option(i32); O.Some(1)` names the type, not a runtime value.
     pub(crate) fn is_runtime_value_binding(&self, name: Spur, ctx: &AnalysisContext) -> bool {
-        ctx.locals.contains_key(&name) || ctx.params.iter().any(|param| param.name == name)
+        ctx.locals.contains_key(&name) || ctx.has_param(name)
     }
 
     /// Resolve the module a reference denotes, if any, without emitting AIR.

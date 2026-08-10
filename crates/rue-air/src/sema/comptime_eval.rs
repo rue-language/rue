@@ -54,7 +54,7 @@ use rue_error::{CompileError, CompileResult, ErrorKind};
 use rue_rir::{InstData, InstRef, RepeatCount};
 use rue_span::{FileId, Span};
 
-use super::context::{AnalysisContext, ConstValue, LocalVar, ParamInfo};
+use super::context::{AnalysisContext, ConstValue, LocalVar, ParamIndex, ParamInfo};
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
 
 pub(super) fn validate_comptime_value_for_type_impl(
@@ -150,7 +150,7 @@ pub(crate) struct ComptimeEnv<'a> {
     /// Runtime parameters in scope. They shadow same-named type values and
     /// constants just like locals; comptime parameters resolve through the
     /// substitution maps before this guard is consulted.
-    runtime_params: Option<&'a [ParamInfo]>,
+    runtime_params: Option<(&'a [ParamInfo], &'a ParamIndex)>,
     /// Runtime bindings known only by name during the pre-inference local
     /// type-alias walk. This lightweight lexical view prevents ordinary
     /// parameters and earlier `let` bindings from falling through to global
@@ -252,7 +252,7 @@ impl<'a> ComptimeEnv<'a> {
             value_subst: &ctx.comptime_value_vars,
             resolved_types: Some(ctx.resolved_types),
             runtime_locals: Some(&ctx.locals),
-            runtime_params: Some(ctx.params),
+            runtime_params: Some((ctx.params, ctx.param_index)),
             runtime_binding_names: None,
             locals: HashMap::new(),
             const_module_members: &EMPTY_MODULE_MEMBERS,
@@ -483,7 +483,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if let InstData::VarRef { name, .. } = &self.body_rir_ref().get(inst_ref).data {
             // A runtime local of the same name shadows the parameter.
             !ctx.locals.contains_key(name)
-                && ctx.params.iter().any(|p| p.name == *name && p.is_comptime)
+                && ctx.param(*name).is_some_and(|param| param.is_comptime)
         } else {
             false
         }
@@ -1228,8 +1228,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // 5. Runtime parameters shadow file-level constants and type
                 //    names. A comptime parameter with a concrete value was
                 //    already handled by the substitution maps above.
-                if let Some(params) = env.runtime_params {
-                    if params.iter().any(|param| param.name == *name) {
+                if let Some((params, param_index)) = env.runtime_params {
+                    if param_index.get(params, *name).is_some() {
                         return Ok(None);
                     }
                 }
@@ -1585,8 +1585,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Ok(None);
         }
-        if let Some(params) = env.runtime_params
-            && params.iter().any(|param| param.name == root_name)
+        if let Some((params, param_index)) = env.runtime_params
+            && param_index.get(params, root_name).is_some()
         {
             return Ok(None);
         }
@@ -1665,9 +1665,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // A runtime local or parameter of the same name shadows the import, so
         // this is an ordinary field access on a value — the generic help is
         // correct there.
-        if ctx.locals.contains_key(&root_name)
-            || ctx.params.iter().any(|param| param.name == root_name)
-        {
+        if ctx.locals.contains_key(&root_name) || ctx.has_param(root_name) {
             return None;
         }
         // The root must name a module import of the current file for this to be

@@ -424,6 +424,43 @@ pub(crate) struct ParamInfo {
     pub is_mut: bool,
 }
 
+/// Resolves parameter names without making tiny signatures pay for an index.
+///
+/// Most Rue functions have only a handful of parameters, where a flat scan is
+/// cheaper than allocating a map. Larger signatures are the case where the
+/// repeated semantic lookups become quadratic in parameter uses, so they get
+/// one body-scoped index shared by every analysis pass.
+#[derive(Debug)]
+pub(crate) struct ParamIndex {
+    by_name: Option<HashMap<Spur, usize>>,
+}
+
+impl ParamIndex {
+    const LINEAR_LOOKUP_LIMIT: usize = 8;
+
+    pub(crate) fn new(params: &[ParamInfo]) -> Self {
+        let by_name = (params.len() > Self::LINEAR_LOOKUP_LIMIT).then(|| {
+            let mut by_name = HashMap::with_capacity(params.len());
+            for (index, param) in params.iter().enumerate() {
+                let previous = by_name.insert(param.name, index);
+                assert!(
+                    previous.is_none(),
+                    "parameter names are unique before body analysis"
+                );
+            }
+            by_name
+        });
+        Self { by_name }
+    }
+
+    pub(crate) fn get<'a>(&self, params: &'a [ParamInfo], name: Spur) -> Option<&'a ParamInfo> {
+        match &self.by_name {
+            Some(by_name) => by_name.get(&name).map(|index| &params[*index]),
+            None => params.iter().find(|param| param.name == name),
+        }
+    }
+}
+
 /// How a call argument (or method receiver) loans its root variable for the
 /// duration of the call — the two by-ref modes tracked in
 /// [`AnalysisContext::call_loaned_roots`]. Carried in the loan frame so the
@@ -494,6 +531,8 @@ pub(crate) struct AnalysisContext<'a> {
     pub locals: HashMap<Spur, LocalVar>,
     /// Function parameters (immutable reference, shared across the function)
     pub params: &'a [ParamInfo],
+    /// Body-scoped parameter-name index shared by every semantic consumer.
+    pub param_index: &'a ParamIndex,
     /// Next available slot for local variables
     pub next_slot: u32,
     /// How many loops we're nested inside (for break/continue validation)
@@ -773,6 +812,16 @@ impl ScopedContext for AnalysisContext<'_> {
 }
 
 impl<'a> AnalysisContext<'a> {
+    /// Resolve one function parameter through the body's canonical lookup.
+    pub(crate) fn param(&self, name: Spur) -> Option<&'a ParamInfo> {
+        self.param_index.get(self.params, name)
+    }
+
+    /// Whether this body has a function parameter with `name`.
+    pub(crate) fn has_param(&self, name: Spur) -> bool {
+        self.param(name).is_some()
+    }
+
     /// Run one nested analysis with an explicit expected-type context, then
     /// restore the caller's context before returning its result.
     ///
@@ -838,6 +887,7 @@ impl<'a> AnalysisContext<'a> {
             current_file_id: self.current_file_id,
             locals: self.locals.clone(),
             params: self.params,
+            param_index: self.param_index,
             next_slot: self.next_slot,
             loop_depth: self.loop_depth,
             checked_depth: self.checked_depth,
@@ -1162,6 +1212,54 @@ impl ConstValue {
 mod tests {
     use super::*;
     use lasso::ThreadedRodeo;
+
+    fn test_param(name: Spur, abi_slot: u32) -> ParamInfo {
+        ParamInfo {
+            name,
+            abi_slot,
+            ty: Type::I32,
+            mode: RirParamMode::Normal,
+            is_comptime: false,
+            is_mut: false,
+        }
+    }
+
+    #[test]
+    fn small_parameter_signatures_use_flat_lookup() {
+        let interner = ThreadedRodeo::new();
+        let first = interner.get_or_intern("first");
+        let second = interner.get_or_intern("second");
+        let missing = interner.get_or_intern("missing");
+        let params = [test_param(first, 0), test_param(second, 1)];
+        let index = ParamIndex::new(&params);
+
+        assert!(index.by_name.is_none());
+        assert_eq!(
+            index.get(&params, second).map(|param| param.abi_slot),
+            Some(1)
+        );
+        assert!(index.get(&params, missing).is_none());
+    }
+
+    #[test]
+    fn large_parameter_signatures_use_indexed_lookup() {
+        let interner = ThreadedRodeo::new();
+        let params = (0..=ParamIndex::LINEAR_LOOKUP_LIMIT)
+            .map(|slot| {
+                let name = interner.get_or_intern(format!("param_{slot}"));
+                test_param(name, slot as u32)
+            })
+            .collect::<Vec<_>>();
+        let index = ParamIndex::new(&params);
+
+        assert!(index.by_name.is_some());
+        for param in &params {
+            assert_eq!(
+                index.get(&params, param.name).map(|found| found.abi_slot),
+                Some(param.abi_slot)
+            );
+        }
+    }
 
     // =========================================================================
     // VariableMoveState tests
