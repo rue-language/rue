@@ -1673,10 +1673,86 @@ fn module_index_entry_language_item(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum ModuleDefinitionIndices {
+    One(usize),
+    Many(Vec<usize>),
+}
+
+impl ModuleDefinitionIndices {
+    fn push(&mut self, index: usize) {
+        match self {
+            Self::One(first) => *self = Self::Many(vec![*first, index]),
+            Self::Many(indices) => indices.push(index),
+        }
+    }
+
+    fn as_slice(&self) -> &[usize] {
+        match self {
+            Self::One(index) => std::slice::from_ref(index),
+            Self::Many(indices) => indices,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ModuleIndex {
     pub(crate) revision: ModuleRevision,
     pub(crate) definitions: Arc<[ModuleIndexEntry]>,
+    definition_partitions:
+        BTreeMap<DefinitionNamespace, BTreeMap<Arc<str>, ModuleDefinitionIndices>>,
     pub(crate) imports: Arc<[crate::ImportDirective]>,
+}
+
+impl ModuleIndex {
+    fn new(
+        revision: ModuleRevision,
+        definitions: Arc<[ModuleIndexEntry]>,
+        imports: Arc<[crate::ImportDirective]>,
+    ) -> Self {
+        let mut definition_partitions: BTreeMap<
+            DefinitionNamespace,
+            BTreeMap<Arc<str>, ModuleDefinitionIndices>,
+        > = BTreeMap::new();
+        for (index, definition) in definitions.iter().enumerate() {
+            definition_partitions
+                .entry(definition.namespace)
+                .or_default()
+                .entry(definition.name.clone())
+                .and_modify(|indices| indices.push(index))
+                .or_insert(ModuleDefinitionIndices::One(index));
+        }
+        Self {
+            revision,
+            definitions,
+            definition_partitions,
+            imports,
+        }
+    }
+
+    /// Source-ordered definitions for one exact semantic lookup key.
+    fn definitions_for(
+        &self,
+        namespace: DefinitionNamespace,
+        name: &str,
+    ) -> impl ExactSizeIterator<Item = &ModuleIndexEntry> {
+        self.definition_indices(namespace, name)
+            .iter()
+            .map(|index| &self.definitions[*index])
+    }
+
+    fn definition_indices(&self, namespace: DefinitionNamespace, name: &str) -> &[usize] {
+        self.definition_partitions
+            .get(&namespace)
+            .and_then(|names| names.get(name))
+            .map_or(&[], ModuleDefinitionIndices::as_slice)
+    }
+
+    /// Every exact definition key in deterministic namespace/name order.
+    fn definition_keys(&self) -> impl Iterator<Item = (DefinitionNamespace, &Arc<str>)> {
+        self.definition_partitions
+            .iter()
+            .flat_map(|(namespace, names)| names.keys().map(move |name| (*namespace, name)))
+    }
 }
 
 /// Current-file-table projection assembled exclusively from ModuleIndex and
@@ -2258,11 +2334,21 @@ impl RetainedCharge for ModuleIndexEntry {
     }
 }
 
+impl RetainedCharge for ModuleDefinitionIndices {
+    fn retained_charge(&self) -> u64 {
+        match self {
+            Self::One(_) => 0,
+            Self::Many(indices) => indices.retained_charge(),
+        }
+    }
+}
+
 impl RetainedCharge for ModuleIndex {
     fn retained_charge(&self) -> u64 {
         self.revision
             .retained_charge()
             .saturating_add(self.definitions.retained_charge())
+            .saturating_add(self.definition_partitions.retained_charge())
             .saturating_add(self.imports.retained_charge())
     }
 }
@@ -11116,9 +11202,9 @@ impl RevisionedQueryDatabase {
                         unreachable!("ParseModule publishes typed values")
                     };
                     let result = match &parsed.result {
-                        Ok(module) => Ok(Arc::new(ModuleIndex {
-                            revision: module.revision().clone(),
-                            definitions: module
+                        Ok(module) => Ok(Arc::new(ModuleIndex::new(
+                            module.revision().clone(),
+                            module
                                 .definitions()
                                 .candidates()
                                 .iter()
@@ -11137,8 +11223,8 @@ impl RevisionedQueryDatabase {
                                 })
                                 .collect::<Vec<_>>()
                                 .into(),
-                            imports: module.imports().to_vec().into(),
-                        })),
+                            module.imports().to_vec().into(),
+                        ))),
                         Err(errors) => Err(errors.clone()),
                     };
                     Ok(QueryOutput::success(ModuleIndexValue(result)))
@@ -11901,11 +11987,7 @@ impl RevisionedQueryDatabase {
                     };
                     let result = match &indexed.0 {
                         Ok(index) => Ok(index
-                            .definitions
-                            .iter()
-                            .filter(|entry| {
-                                entry.namespace == key.namespace && entry.name == key.name
-                            })
+                            .definitions_for(key.namespace, key.name.as_ref())
                             .map(ModuleIndexEntry::lookup_fact)
                             .collect::<Vec<_>>()
                             .into()),
@@ -20178,13 +20260,8 @@ impl RevisionedQueryDatabase {
                 )));
                 continue;
             }
-            let keys = index
-                .definitions
-                .iter()
-                .map(|entry| (entry.namespace, entry.name.clone()))
-                .collect::<BTreeSet<_>>();
             let mut definitions = Vec::with_capacity(index.definitions.len());
-            for (namespace, name) in keys {
+            for (namespace, name) in index.definition_keys() {
                 let lookup_attempt = self.runtime.request_registered(
                     &self.lookup_names,
                     revision,
@@ -20209,9 +20286,7 @@ impl RevisionedQueryDatabase {
                 match &found.0 {
                     Ok(found) => {
                         let current = index
-                            .definitions
-                            .iter()
-                            .filter(|entry| entry.namespace == namespace && entry.name == name)
+                            .definitions_for(namespace, name.as_ref())
                             .cloned()
                             .collect::<Vec<_>>();
                         let current_facts = current
@@ -29055,6 +29130,50 @@ fn main() -> i32 {
             .unwrap();
         assert_eq!(first[0].definitions, second[0].definitions);
         assert_eq!(database.runtime.metrics().claims, after_first_projection);
+    }
+
+    #[test]
+    fn module_index_exact_name_partition_ignores_irrelevant_definitions() {
+        let mut source = String::from("fn target() {}\n");
+        for index in 0..128 {
+            source.push_str(&format!("fn irrelevant_{index}() {{}}\n"));
+        }
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", source.as_str())], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let (_, index, _) = database.module_terminals(revision, module.clone());
+
+        assert_eq!(index.definitions.len(), 129);
+        assert_eq!(
+            index.definition_indices(DefinitionNamespace::ModuleItem, "target"),
+            &[0],
+            "the exact-key partition visits only the matching candidate"
+        );
+        assert_eq!(
+            index
+                .definitions_for(DefinitionNamespace::ModuleItem, "target")
+                .count(),
+            1
+        );
+        assert_eq!(
+            index
+                .definitions_for(DefinitionNamespace::ModuleItem, "absent")
+                .count(),
+            0
+        );
+
+        let lookup = request_lookup_name(
+            &database,
+            revision,
+            &module,
+            DefinitionNamespace::ModuleItem,
+            "target",
+        );
+        assert!(matches!(
+            canonical_of(&lookup),
+            CanonicalNameResolution::Unique(fact) if fact.name.as_ref() == "target"
+        ));
     }
 
     #[test]
