@@ -5,6 +5,7 @@
 //! module. Keeping the stable-content encoding here prevents the two paths
 //! from drifting while the provider replaces the epoch.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{Hash, Hasher};
 
 use crate::AnonymousNominalKey;
@@ -91,19 +92,303 @@ pub fn stable_anonymous_identity_digest(identity: &AnonymousNominalKey<String, S
     hasher.digest()
 }
 
+/// Infix that separates a base digest from its collision-disambiguating
+/// ordinal. Its `$` is not a hex digit and not a legal identifier character —
+/// the same generated-name punctuation `named_nominal_source_symbol` already
+/// qualifies with — so a disambiguated component can never be re-read as a bare
+/// 32-hex digest, and [`crate::mangle_symbol_component`] escapes it to a
+/// portable object-symbol byte like every other generated-name character.
+const ANONYMOUS_SYMBOL_DISAMBIGUATOR: &str = "$c";
+
+/// Spell the digest component of one anonymous symbol.
+///
+/// `ordinal` is `None` for the overwhelmingly common case — a digest owned by
+/// exactly one producer-nominal identity — and the component is then the bare
+/// 32-hex digest, byte-identical to the pre-RUE-1114 spelling. It is `Some(i)`
+/// for every member of a verified collision class, where `i` is the member's
+/// rank under [`anonymous_symbol_ordinals`].
+///
+/// EVERY member of a collision class carries an explicit ordinal: no member
+/// silently keeps the unqualified spelling, so the scheme has no
+/// first-registrant (nor minimum-registrant) winner. The component stays
+/// bounded — 32 hex digits plus a two-byte infix plus at most ten decimal
+/// digits — because an ordinal cannot exceed the size of the reached set.
+pub fn stable_anonymous_symbol_component(digest: u128, ordinal: Option<u32>) -> String {
+    match ordinal {
+        None => format!("{digest:032x}"),
+        Some(ordinal) => format!("{digest:032x}{ANONYMOUS_SYMBOL_DISAMBIGUATOR}{ordinal}"),
+    }
+}
+
+/// Deterministically disambiguate verified anonymous symbol digest collisions
+/// over one COMPLETE set of reached anonymous identities (RUE-1114).
+///
+/// Input is `(digest, identity)` for every anonymous nominal in the set, so a
+/// caller that narrows digests (the forced-collision test hooks) feeds the same
+/// rule as production. Identities are the request-independent stable-content
+/// form: their total order is a function of module paths, definition names,
+/// structural anchors, and canonical arguments only — never of a session-issued
+/// token, a traversal position, or an arrival order. That is what makes the
+/// result reproducible rather than merely deterministic within one process.
+///
+/// A digest owned by one identity is absent from the result (bare spelling
+/// retained). A digest owned by two or more DISTINCT identities yields an entry
+/// per member, ranked by that stable total order. Ranking is therefore
+/// order-independent by construction: the input is folded into ordered sets
+/// before any ordinal exists, so permuting the input — or discovering the same
+/// set across separate body transactions, or recompiling incrementally — cannot
+/// move a member.
+///
+/// The exact identity, not the digest, remains the sole semantic authority; this
+/// only decides how a collision class is SPELLED.
+pub fn anonymous_symbol_ordinals<I>(
+    entries: I,
+) -> BTreeMap<AnonymousNominalKey<String, String>, u32>
+where
+    I: IntoIterator<Item = (u128, AnonymousNominalKey<String, String>)>,
+{
+    let mut classes: BTreeMap<u128, BTreeSet<AnonymousNominalKey<String, String>>> =
+        BTreeMap::new();
+    for (digest, identity) in entries {
+        classes.entry(digest).or_default().insert(identity);
+    }
+    let mut ordinals = BTreeMap::new();
+    for members in classes.into_values() {
+        if members.len() < 2 {
+            continue;
+        }
+        for (ordinal, member) in members.into_iter().enumerate() {
+            let ordinal = u32::try_from(ordinal)
+                .expect("a reached anonymous collision class cannot exceed u32::MAX members");
+            ordinals.insert(member, ordinal);
+        }
+    }
+    ordinals
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::sync::Arc;
 
     use rue_rir::{RirStructuralAnchor, RirStructuralPathSegment};
 
     use super::{
-        stable_anonymous_identity_digest, stable_definition_component, stable_module_component,
+        anonymous_symbol_ordinals, stable_anonymous_identity_digest,
+        stable_anonymous_symbol_component, stable_definition_component, stable_module_component,
     };
     use crate::{
         AnonymousNominalKey, AnonymousNominalKind, CanonicalArgumentValue, CanonicalArguments,
         StableProducerId,
     };
+
+    /// A stable-content anonymous identity distinguished only by its producer
+    /// definition component and site anchor — the two coordinates the RUE-1114
+    /// total order is built on.
+    fn identity(
+        kind: AnonymousNominalKind,
+        producer: &str,
+        site: u32,
+    ) -> AnonymousNominalKey<String, String> {
+        AnonymousNominalKey {
+            kind,
+            producer: StableProducerId::Definition(stable_definition_component(
+                "pkg/m.rue",
+                producer,
+                None,
+                3,
+            )),
+            anchor: RirStructuralAnchor::new(vec![
+                RirStructuralPathSegment::Body,
+                RirStructuralPathSegment::AnonymousType(site),
+            ]),
+            arguments: CanonicalArguments {
+                types: Arc::new([]),
+                values: Arc::new([]),
+            },
+        }
+    }
+
+    /// The four distinct sites every disambiguation test forces onto one
+    /// digest: two kinds crossed with two producers, so struct/enum parity and
+    /// producer separation are both covered by one class.
+    fn colliding_sites() -> Vec<AnonymousNominalKey<String, String>> {
+        vec![
+            identity(AnonymousNominalKind::Struct, "First", 0),
+            identity(AnonymousNominalKind::Enum, "First", 0),
+            identity(AnonymousNominalKind::Struct, "Second", 1),
+            identity(AnonymousNominalKind::Enum, "Second", 1),
+        ]
+    }
+
+    /// Spell every member of a forced-collision set, so a test can compare
+    /// whole symbol tables rather than individual ordinals.
+    fn symbol_table(
+        forced: u128,
+        sites: &[AnonymousNominalKey<String, String>],
+    ) -> BTreeMap<AnonymousNominalKey<String, String>, String> {
+        let ordinals = anonymous_symbol_ordinals(sites.iter().map(|site| (forced, site.clone())));
+        sites
+            .iter()
+            .map(|site| {
+                (
+                    site.clone(),
+                    stable_anonymous_symbol_component(forced, ordinals.get(site).copied()),
+                )
+            })
+            .collect()
+    }
+
+    /// A digest owned by exactly one identity keeps the bare 32-hex spelling:
+    /// the disambiguation scheme is inert for every collision-free program, so
+    /// no existing symbol table moves.
+    #[test]
+    fn a_solitary_digest_owner_keeps_the_bare_spelling() {
+        let sites = colliding_sites();
+        let ordinals = anonymous_symbol_ordinals(
+            sites
+                .iter()
+                .enumerate()
+                .map(|(index, site)| (index as u128, site.clone())),
+        );
+        assert!(ordinals.is_empty(), "distinct digests need no ordinal");
+        assert_eq!(
+            stable_anonymous_symbol_component(0x2a, None),
+            "0000000000000000000000000000002a"
+        );
+    }
+
+    /// Every member of a verified collision class is spelled distinctly, and
+    /// NO member keeps the unqualified spelling — the property that rules out
+    /// first-registrant (and minimum-registrant) winners.
+    #[test]
+    fn a_collision_class_spells_every_member_distinctly_and_explicitly() {
+        let forced = 0x1114;
+        let sites = colliding_sites();
+        let table = symbol_table(forced, &sites);
+        let bare = stable_anonymous_symbol_component(forced, None);
+        assert_eq!(table.len(), sites.len());
+        assert_eq!(
+            table.values().collect::<BTreeSet<_>>().len(),
+            sites.len(),
+            "two colliding sites share a symbol"
+        );
+        for symbol in table.values() {
+            assert_ne!(*symbol, bare, "a collision member kept the bare spelling");
+            assert!(symbol.starts_with(&bare));
+            assert!(symbol.len() <= bare.len() + "$c".len() + 10, "unbounded");
+        }
+        assert_eq!(
+            table.values().cloned().collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                format!("{bare}$c0"),
+                format!("{bare}$c1"),
+                format!("{bare}$c2"),
+                format!("{bare}$c3"),
+            ])
+        );
+    }
+
+    /// Order independence, stated over the observable artifact: the symbol
+    /// table is identical under every permutation of discovery order. This is
+    /// the reproducible-build property — input order, scheduling, and
+    /// cold/warm reuse all reduce to a permutation of the same reached set.
+    #[test]
+    fn collision_spelling_is_independent_of_discovery_order() {
+        let forced = 0x1114;
+        let sites = colliding_sites();
+        let expected = symbol_table(forced, &sites);
+
+        let mut permutations = 0;
+        // All 24 orderings of the four-member class, enumerated through the
+        // factorial number system: pick the a-th remaining site, then the b-th,
+        // and so on. No permutation may change a single spelling.
+        for a in 0..4 {
+            for b in 0..3 {
+                for c in 0..2 {
+                    let mut permutation = sites.clone();
+                    let first = permutation.remove(a);
+                    let second = permutation.remove(b);
+                    let third = permutation.remove(c);
+                    let rest = permutation.remove(0);
+                    let permuted = vec![first, second, third, rest];
+                    assert_eq!(
+                        symbol_table(forced, &permuted),
+                        expected,
+                        "discovery order changed the symbol table"
+                    );
+                    permutations += 1;
+                }
+            }
+        }
+        assert_eq!(permutations, 24);
+    }
+
+    /// Stability across recompiles: recomputing the plan from the same reached
+    /// set — the incremental warm/successor-revision case — reproduces the same
+    /// table, and a member REMOVED from the set never renames a member that
+    /// stays, as long as its own class membership is unchanged.
+    #[test]
+    fn collision_spelling_is_stable_across_recomputation_and_unrelated_edits() {
+        let forced = 0x1114;
+        let sites = colliding_sites();
+        let first = symbol_table(forced, &sites);
+        assert_eq!(symbol_table(forced, &sites), first);
+
+        // An unrelated site joins the reached set under its OWN digest: it is
+        // not a class member, so no colliding member is renamed.
+        let mut widened: Vec<(u128, AnonymousNominalKey<String, String>)> =
+            sites.iter().map(|site| (forced, site.clone())).collect();
+        let unrelated = identity(AnonymousNominalKind::Struct, "Unrelated", 7);
+        widened.push((forced ^ 0xff, unrelated.clone()));
+        let widened = anonymous_symbol_ordinals(widened);
+        assert!(!widened.contains_key(&unrelated));
+        for site in &sites {
+            assert_eq!(
+                stable_anonymous_symbol_component(forced, widened.get(site).copied()),
+                first[site]
+            );
+        }
+    }
+
+    /// Presenting the same identity twice is legitimate reuse, not a
+    /// collision: the class is deduplicated by exact key before ranking.
+    #[test]
+    fn repeating_one_identity_is_not_a_collision() {
+        let site = identity(AnonymousNominalKind::Struct, "First", 0);
+        let ordinals = anonymous_symbol_ordinals([(7, site.clone()), (7, site.clone()), (7, site)]);
+        assert!(ordinals.is_empty());
+    }
+
+    /// Ordinals are class-local: two separate collision classes each rank from
+    /// zero, so a symbol is `(digest, ordinal)` and never a global counter that
+    /// a third class could shift.
+    #[test]
+    fn ordinals_are_local_to_their_collision_class() {
+        let left = colliding_sites();
+        let right = vec![
+            identity(AnonymousNominalKind::Struct, "Third", 2),
+            identity(AnonymousNominalKind::Struct, "Fourth", 3),
+        ];
+        let ordinals = anonymous_symbol_ordinals(
+            left.iter()
+                .map(|site| (0xaaaa, site.clone()))
+                .chain(right.iter().map(|site| (0xbbbb, site.clone()))),
+        );
+        assert_eq!(
+            left.iter()
+                .map(|site| ordinals[site])
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([0, 1, 2, 3])
+        );
+        assert_eq!(
+            right
+                .iter()
+                .map(|site| ordinals[site])
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([0, 1])
+        );
+    }
 
     #[test]
     fn anonymous_identity_digest_encoding_is_stable() {
