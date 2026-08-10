@@ -2150,17 +2150,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         callee_types: &HashMap<Spur, Type>,
         callee_values: &HashMap<Spur, ConstValue>,
     ) {
+        // Membership in the pool's anonymous registry is the classifier, never
+        // the name spelling (RUE-1050): a name-prefix test here silently broke
+        // for enums when the spelling changed to `__anon_enum_…`, and a source
+        // declaration is allowed to spell itself `__anon_struct_…` (RUE-125
+        // reserves only `__rue_*`), so the prefix can also false-positive.
         let is_anon = match ty.kind() {
-            TypeKind::Struct(id) => self
-                .body_type_pool()
-                .struct_def(id)
-                .name
-                .starts_with("__anon_struct_"),
-            TypeKind::Enum(id) => self
-                .body_type_pool()
-                .enum_def(id)
-                .name
-                .starts_with("enum {"),
+            TypeKind::Struct(id) => self.body_type_pool().is_anonymous_struct(id),
+            TypeKind::Enum(id) => self.body_type_pool().is_anonymous_enum(id),
             _ => false,
         };
         if !is_anon || self.has_ctor_type_display(ty) {
