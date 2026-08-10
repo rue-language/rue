@@ -39,6 +39,8 @@
 #   is-selectable-lane Exit 0 only for a gated workflow lane (RUE-1130).
 #   lane-targets       Print the Buck targets a gated lane executes.
 #   intersect          Print a lane's targets that appear in an impacted list.
+#   build-scope        Print the impacted targets a `//crates/...` lane may
+#                      build. Narrowing must stay inside the lane's own scope.
 #
 # Deliberately NOT `set -e`: a full run is the safe fallback, so failures are
 # handled explicitly and converted into "full", never into a hard error that
@@ -231,6 +233,33 @@ intersect_impacted() {
     for target in "$@"; do
         grep -Fxq "$target" "$file" && printf '%s\n' "$target"
     done
+    return 0
+}
+
+# The impacted subset a *pattern* lane may build, for lanes whose pre-narrowing
+# scope was `//crates/...` rather than a fixed list.
+#
+# RUE-1130 handed the raw impacted closure to `buck2 build` in linux-premerge.
+# That closure spans the whole graph, and the root-level targets in it are
+# `cached_corpus_suite` actions — building one RUNS the corpus (see corpus.bzl).
+# `--exclude rue_ci_dedicated_lane` cannot hold that back, because the label is
+# on the sh_test while `buck2 build` reaches the `-action` genrule, which
+# corpus.bzl documents as carrying no labels at all. So narrowing WIDENED the
+# step: it re-ran the CLI, spec, and oracle corpora inside the single job whose
+# dedicated lanes exist to keep them out, taking premerge from ~12m to 32-42m.
+#
+# Restoring the crate scope is what keeps narrowing a subset of what the lane
+# built before. A lane that builds a pattern must narrow within that pattern,
+# never to whatever the determinator happens to name.
+build_scope() {
+    local file="$1"
+    if [[ ! -r "$file" ]]; then
+        echo "affected-targets: impacted list '$file' is unreadable" >&2
+        return 1
+    fi
+    # Labels arrive normalized by parse-btd-impacted.py ("root//" stripped), so
+    # this prefix is exact rather than a heuristic over spellings.
+    grep '^//crates/' "$file" || true
     return 0
 }
 
@@ -459,11 +488,14 @@ main() {
         intersect)
             [[ $# -ge 2 ]] || { echo "usage: scripts/affected-targets intersect FILE //:TARGET..." >&2; exit 2; }
             shift; intersect_impacted "$@" ;;
+        build-scope)
+            [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets build-scope FILE" >&2; exit 2; }
+            build_scope "$2" ;;
         lane-targets)
             [[ $# -eq 2 ]] || { echo "usage: scripts/affected-targets lane-targets LANE" >&2; exit 2; }
             lane_targets "$2" ;;
         *)
-            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|intersect]" >&2
+            echo "usage: scripts/affected-targets [decide|force-full-match|status-paths|is-selectable|is-selectable-lane|lane-targets|intersect|build-scope]" >&2
             exit 2 ;;
     esac
 }
