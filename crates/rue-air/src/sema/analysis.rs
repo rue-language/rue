@@ -1628,6 +1628,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
     let baseline_specialized_body_exports = sema.specialized_body_exports.clone();
     let baseline_body_named_dependencies = sema.body_named_dependencies.clone();
     let baseline_declaration_type_dependencies = sema.declaration_type_dependencies.clone();
+    let baseline_declaration_type_dependency_index = sema.declaration_type_dependency_index.clone();
     let baseline_declaration_type_call_head_dependencies =
         sema.declaration_type_call_head_dependencies.clone();
     let baseline_declaration_builtin_type_call_head_dependencies =
@@ -1646,6 +1647,7 @@ fn analyze_function_bodies_lazy(sema: &mut BodySema<'_>) -> MultiErrorResult<Sem
         sema.specialized_body_exports = baseline_specialized_body_exports.clone();
         sema.body_named_dependencies = baseline_body_named_dependencies.clone();
         sema.declaration_type_dependencies = baseline_declaration_type_dependencies.clone();
+        sema.declaration_type_dependency_index = baseline_declaration_type_dependency_index.clone();
         sema.declaration_type_call_head_dependencies =
             baseline_declaration_type_call_head_dependencies.clone();
         sema.declaration_builtin_type_call_head_dependencies =

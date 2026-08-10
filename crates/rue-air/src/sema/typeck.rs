@@ -2791,11 +2791,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             target_name,
             target_kind,
         };
-        if self.declaration_type_dependencies.contains(&event) {
-            return;
+        if self.declaration_type_dependency_index.insert(event.clone()) {
+            self.declaration_type_dependencies.push(event);
+            self.body_analysis_work.declaration_type_dependency_events += 1;
         }
-        self.declaration_type_dependencies.push(event);
-        self.body_analysis_work.declaration_type_dependency_events += 1;
     }
 
     /// Resolve a type-annotation symbol to a `Type`, consulting the analysis

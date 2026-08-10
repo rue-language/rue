@@ -2117,9 +2117,15 @@ impl<'a> BoundSema<'a> {
         builtin_type_call_heads: &[crate::DeclarationBuiltinTypeCallHeadDependencyEvent],
         named_const_dependencies: &[crate::NamedConstDependencyEvent],
     ) -> Self {
-        self.sema
-            .declaration_type_dependencies
-            .extend_from_slice(type_dependencies);
+        for event in type_dependencies {
+            if self
+                .sema
+                .declaration_type_dependency_index
+                .insert(event.clone())
+            {
+                self.sema.declaration_type_dependencies.push(event.clone());
+            }
+        }
         self.sema
             .declaration_type_call_head_dependencies
             .extend_from_slice(type_call_heads);
