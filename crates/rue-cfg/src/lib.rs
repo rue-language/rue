@@ -29,7 +29,7 @@ mod verify;
 use rue_error::{CompileError, CompileWarning};
 
 pub use build::CfgBuilder;
-pub use inline::{CfgInlineError, inline_call};
+pub use inline::{CfgInlineError, inline_call, inline_call_in_block};
 pub use inst::{
     BasicBlock, BlockId, Cfg, CfgArgMode, CfgCallArg, CfgDisplay, CfgEditError,
     CfgEditTransactionError, CfgEditor, CfgInst, CfgInstData, CfgPayloadStorageStats,
