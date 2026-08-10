@@ -178,6 +178,7 @@ Every raw observation records at least:
   available compiler phase;
 - exact retained-terminal validation traversals and outcomes, input/dependency
   observations, registry and memo results, registered-cone endorsements,
+  exact query-result terminal lease observations and same-task duplicates,
   re-demand outcomes, superseded incarnations, and published certificates;
 - current and peak retained artifact charge, dependency/input observations, and
   configured budgets;
