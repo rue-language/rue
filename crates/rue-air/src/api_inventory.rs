@@ -58,6 +58,19 @@ fn deferred_generic_signature_lookup_has_one_first_wins_index() {
 }
 
 #[test]
+fn type_syntax_dependency_admission_indexes_only_the_large_case() {
+    let typeck = include_str!("sema/typeck.rs");
+
+    assert!(
+        typeck.contains("observed_type_dependency_index: Option<HashSet<ObservedTypeDependency>>")
+    );
+    assert!(typeck.contains("const LINEAR_ADMISSION_LIMIT: usize = 8"));
+    assert!(typeck.contains("if index.insert(dependency.clone())"));
+    assert!(typeck.contains("index.clear()"));
+    assert!(typeck.contains(".len() == LINEAR_ADMISSION_LIMIT"));
+}
+
+#[test]
 fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
     let analysis = include_str!("sema/analysis.rs");
     let manifest = include_str!("sema/binding_manifest.rs");

@@ -3587,6 +3587,46 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn large_type_syntax_dependency_batch_preserves_order_and_uniqueness() {
+        let output = compile_to_air(
+            "struct S0 { value: i32 }
+             struct S1 { value: i32 }
+             struct S2 { value: i32 }
+             struct S3 { value: i32 }
+             struct S4 { value: i32 }
+             struct S5 { value: i32 }
+             struct S6 { value: i32 }
+             struct S7 { value: i32 }
+             struct S8 { value: i32 }
+             fn Bundle(
+                 comptime T0: type, comptime T1: type, comptime T2: type,
+                 comptime T3: type, comptime T4: type, comptime T5: type,
+                 comptime T6: type, comptime T7: type, comptime T8: type,
+             ) -> type {
+                 struct {
+                     f0: T0, f1: T1, f2: T2, f3: T3, f4: T4,
+                     f5: T5, f6: T6, f7: T7, f8: T8,
+                 }
+             }
+             fn main() -> i32 {
+                 @intCast(@size_of(Bundle(S0, S1, S2, S3, S4, S5, S6, S7, S8)))
+             }",
+        )
+        .unwrap();
+        let dependencies = output
+            .declaration_type_dependencies
+            .iter()
+            .filter(|event| event.source_name == "main")
+            .map(|event| event.target_name.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            dependencies,
+            ["S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"]
+        );
+    }
+
+    #[test]
     fn selected_alias_observes_the_alias_and_its_nominal_result_once_each() {
         let output = compile_to_air(
             "struct Leaf { value: i32 }
