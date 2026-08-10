@@ -17,15 +17,27 @@ The compiler and measurement runner are built with the release target platform
 metadata, and the scaling runner rejects a binary that does not match the
 manifest's declared profile.
 
-The runner executes three samples sequentially for each workload. JSON keeps
-every raw observation in integer nanoseconds. The Markdown view reports the
-median and median absolute deviation (MAD), along with the machine and hosted
-runner fingerprint. It records:
+The runner executes three timing samples sequentially for each workload. JSON
+keeps every raw observation in integer nanoseconds. The Markdown view reports
+the median and median absolute deviation (MAD), along with the machine and
+hosted runner fingerprint. Two additional fresh-process probes run with one
+compiler worker; their timings are discarded, and their deterministic
+compiler-work counters must agree exactly. Fixing the structural probes to one
+worker prevents legitimate parallel scheduling order from perturbing exact
+counters while leaving the user-relevant timing samples parallel. A counter
+disagreement rejects the workload instead of averaging structurally different
+compilations. The report records:
 
 - files, modules, source bytes, lines, lexer tokens, and functions considered;
 - externally observed fresh-process wall time and peak resident memory;
 - the compiler's additive, mutually exclusive phase accounting;
+- query validation, endorsement, lease, demand, and retention-scan work;
 - output binary size.
+
+The Markdown work table includes validation nodes per token. That ratio is a
+clock-independent amplification signal: source growth should not silently turn
+into many repeated validation visits merely because elapsed time still looks
+plausible on one host.
 
 The compiled examples are never executed. Runtime tests and heavyweight
 example scenarios remain in their existing suites, so a slow example runtime

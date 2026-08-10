@@ -13,6 +13,8 @@ use rue_perf_schema::{
 
 use crate::measure::{SampleRequest, measure_fresh_compile};
 
+const COMPILER_WORK_SAMPLES_PER_WORKLOAD: u32 = 2;
+
 struct Options {
     manifest: PathBuf,
     compiler: PathBuf,
@@ -44,6 +46,8 @@ pub fn run() -> Result<(), String> {
     };
 
     let started_at = crate::utc_timestamp();
+    let mut compiler_work_args = manifest.args.clone();
+    compiler_work_args.extend(["--jobs".to_string(), "1".to_string()]);
     let mut target: Option<String> = None;
     let mut observations = Vec::with_capacity(manifest.workloads.len());
     for workload in &manifest.workloads {
@@ -57,6 +61,7 @@ pub fn run() -> Result<(), String> {
         }
         let output = workdir.join(format!("{}-out", workload.id));
         let mut shape: Option<WorkloadShape> = None;
+        let mut work = None;
         let mut samples = Vec::with_capacity(manifest.samples as usize);
         for sample_index in 0..manifest.samples {
             eprintln!(
@@ -118,11 +123,66 @@ pub fn run() -> Result<(), String> {
             }
             samples.push(measured.sample);
         }
+        // Keep the structural probes after the published timing samples so
+        // adding deterministic counters cannot warm workload files before the
+        // established timing regime observes them.
+        for probe_index in 0..COMPILER_WORK_SAMPLES_PER_WORKLOAD {
+            eprintln!(
+                "rue-bench: scaling {} deterministic-work probe {}/{}",
+                workload.id,
+                probe_index + 1,
+                COMPILER_WORK_SAMPLES_PER_WORKLOAD
+            );
+            let request = SampleRequest {
+                compiler: &options.compiler,
+                source: &source,
+                args: &compiler_work_args,
+                output: output.clone(),
+                std_root: options.std_root.as_deref(),
+                batch_size: 1,
+                workload: &workload.id,
+                sample_index: probe_index,
+            };
+            let measured = measure_fresh_compile(&request).map_err(|detail| {
+                format!(
+                    "scaling workload {:?} deterministic-work probe {} failed: {detail}",
+                    workload.id, probe_index
+                )
+            })?;
+            match &shape {
+                None => shape = Some(measured.shape.clone()),
+                Some(expected) if expected != &measured.shape => {
+                    return Err(format!(
+                        "scaling workload {:?} changed shape between deterministic-work probes: {expected:?} then {:?}",
+                        workload.id, measured.shape
+                    ));
+                }
+                Some(_) => {}
+            }
+            match &target {
+                None => target = Some(measured.target.clone()),
+                Some(expected) if expected != &measured.target => {
+                    return Err(format!(
+                        "compiler target changed between samples: {expected:?} then {:?}",
+                        measured.target
+                    ));
+                }
+                Some(_) => {}
+            }
+            if measured.compiler_build_profile != manifest.compiler_build_profile {
+                return Err(format!(
+                    "scaling workload {:?} requires compiler build profile {:?}, but the compiler reported {:?}",
+                    workload.id, manifest.compiler_build_profile, measured.compiler_build_profile,
+                ));
+            }
+            observe_compiler_work(&mut work, measured.compiler_work, &workload.id)?;
+        }
         observations.push(ScalingObservation {
             workload: workload.id.clone(),
             source: workload.source.clone(),
             question: workload.question.clone(),
             shape: shape.expect("the manifest requires at least two samples"),
+            work: work.expect("the manifest requires at least two samples"),
             samples,
         });
     }
@@ -144,10 +204,29 @@ pub fn run() -> Result<(), String> {
             samples_per_workload: manifest.samples,
             compiler_args: manifest.args,
             compiler_build_profile: manifest.compiler_build_profile,
+            compiler_work_samples_per_workload: COMPILER_WORK_SAMPLES_PER_WORKLOAD,
+            compiler_work_args,
         },
         workloads: observations,
     };
     write_report(&options.output, &report)?;
+    Ok(())
+}
+
+fn observe_compiler_work(
+    expected: &mut Option<rue_perf_schema::CompilerWork>,
+    observed: rue_perf_schema::CompilerWork,
+    workload: &str,
+) -> Result<(), String> {
+    match expected {
+        None => *expected = Some(observed),
+        Some(expected) if *expected != observed => {
+            return Err(format!(
+                "scaling workload {workload:?} changed deterministic compiler work between samples: {expected:?} then {observed:?}"
+            ));
+        }
+        Some(_) => {}
+    }
     Ok(())
 }
 
@@ -221,7 +300,7 @@ fn render(report: &ScalingReport) -> String {
     let mut out = String::new();
     out.push_str("# Rue compiler scaling report\n\n");
     out.push_str(&format!(
-        "- Commit: `{}`\n- Fixture revision: {}\n- Target: `{}`\n- Compiler build profile: `{}`\n- Machine: {} ({} cores, {} bytes memory)\n- Runner: `{}` / `{}` ({})\n- Regime: {} sequential fresh compiler processes per workload; OS page-cache state is uncontrolled.\n- Runtime separation: compiled programs were not executed.\n\n",
+        "- Commit: `{}`\n- Fixture revision: {}\n- Target: `{}`\n- Compiler build profile: `{}`\n- Machine: {} ({} cores, {} bytes memory)\n- Runner: `{}` / `{}` ({})\n- Regime: {} sequential fresh compiler processes per workload; OS page-cache state is uncontrolled.\n- Structural work: {} single-worker compiler-work probes per workload with arguments `{:?}`; probe timings are not published.\n- Runtime separation: compiled programs were not executed.\n\n",
         report.identity.commit,
         report.identity.manifest_revision,
         report.identity.target,
@@ -233,6 +312,8 @@ fn render(report: &ScalingReport) -> String {
         report.identity.environment.runner_image,
         report.identity.environment.runner_image_version,
         report.regime.samples_per_workload,
+        report.regime.compiler_work_samples_per_workload,
+        report.regime.compiler_work_args,
     ));
     out.push_str("Times and memory are median ± median absolute deviation (MAD). A changed shape id marks comparisons with earlier artifacts as advisory.\n\n");
     out.push_str("| workload | shape id | files/modules | functions | bytes/lines/tokens | process ms | compiler ms | peak MiB | output KiB |\n");
@@ -283,6 +364,39 @@ fn render(report: &ScalingReport) -> String {
             memory.mad as f64 / (1024.0 * 1024.0),
             output.median as f64 / 1024.0,
             output.mad as f64 / 1024.0,
+        ));
+    }
+
+    out.push_str("\n## Deterministic query work\n\n");
+    out.push_str("Counts are exact for one fresh compiler process and must agree across the fixed single-worker structural probes. `nodes/token` exposes validation amplification independently of clock noise.\n\n");
+    out.push_str("| workload | traversals | input/dependency observations | memo hit/miss | endorsements hit/probe | terminal leases duplicate/total | demands reuse/compute/join/total | retention scan entries | nodes/token |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for observation in &report.workloads {
+        let runtime = observation.work.query_runtime;
+        let validation = runtime.validation;
+        let nodes_per_token = if observation.shape.tokens == 0 {
+            0.0
+        } else {
+            validation.node_visits as f64 / observation.shape.tokens as f64
+        };
+        out.push_str(&format!(
+            "| {} | {} | {}/{} | {}/{} | {}/{} | {}/{} | {}/{}/{}/{} | {} | {:.2} |\n",
+            observation.workload,
+            validation.traversals,
+            validation.input_observations,
+            validation.dependency_observations,
+            validation.memo_hits,
+            validation.memo_misses,
+            validation.endorsement_hits,
+            validation.endorsement_probes,
+            validation.duplicate_terminal_lease_observations,
+            validation.terminal_lease_observations,
+            validation.demand_reuses,
+            validation.demand_computes,
+            validation.demand_joins,
+            validation.demands,
+            runtime.retention_scan_entries,
+            nodes_per_token,
         ));
     }
 
@@ -368,6 +482,8 @@ mod tests {
                 samples_per_workload: 2,
                 compiler_args: Vec::new(),
                 compiler_build_profile: "release_thin_lto".to_string(),
+                compiler_work_samples_per_workload: 2,
+                compiler_work_args: vec!["--jobs".to_string(), "1".to_string()],
             },
             workloads: vec![ScalingObservation {
                 workload: "probe".to_string(),
@@ -381,6 +497,19 @@ mod tests {
                     tokens: 5,
                     functions: 1,
                 },
+                work: rue_perf_schema::CompilerWork {
+                    query_runtime: rue_perf_schema::QueryRuntimeWork {
+                        validation: rue_perf_schema::ValidationWork {
+                            traversals: 3,
+                            node_visits: 7,
+                            memo_hits: 5,
+                            memo_misses: 2,
+                            ..Default::default()
+                        },
+                        retention_enforcements: 1,
+                        retention_scan_entries: 4,
+                    },
+                },
                 samples: vec![sample.clone(), sample],
             }],
         }
@@ -391,9 +520,12 @@ mod tests {
         let rendered = render(&report());
         assert!(rendered.contains("OS page-cache state is uncontrolled"));
         assert!(rendered.contains("Compiler build profile: `release_thin_lto`"));
+        assert!(rendered.contains("2 single-worker compiler-work probes"));
         assert!(rendered.contains("compiled programs were not executed"));
         assert!(rendered.contains("median absolute deviation"));
         assert!(rendered.contains("shape id"));
+        assert!(rendered.contains("Deterministic query work"));
+        assert!(rendered.contains("nodes/token"));
     }
 
     #[test]
@@ -410,5 +542,25 @@ mod tests {
         assert!(report.workloads[0].samples[0].phases.holds());
         let phase_map: BTreeMap<_, _> = report.workloads[0].samples[0].phases.phase_ns.clone();
         assert_eq!(phase_map.len(), Phase::ALL.len());
+    }
+
+    #[test]
+    fn changed_deterministic_work_rejects_a_scaling_workload() {
+        let mut expected = None;
+        let first = rue_perf_schema::CompilerWork::default();
+        observe_compiler_work(&mut expected, first, "probe").unwrap();
+        observe_compiler_work(&mut expected, first, "probe").unwrap();
+
+        let changed = rue_perf_schema::CompilerWork {
+            query_runtime: rue_perf_schema::QueryRuntimeWork {
+                retention_scan_entries: 1,
+                ..Default::default()
+            },
+        };
+        let error = observe_compiler_work(&mut expected, changed, "probe").unwrap_err();
+        assert!(
+            error.contains("changed deterministic compiler work"),
+            "{error}"
+        );
     }
 }

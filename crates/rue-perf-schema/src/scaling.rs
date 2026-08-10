@@ -9,10 +9,10 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{EnvironmentFingerprint, Sample};
+use crate::{EnvironmentFingerprint, Sample, ValidationWork};
 
 /// Version of the scaling-report wire format.
-pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 2;
+pub const SCALING_REPORT_SCHEMA_VERSION: u32 = 3;
 
 /// The lower-frequency scaling suite declaration.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +132,11 @@ pub struct ScalingRegime {
     pub compiler_args: Vec<String>,
     /// Rust build profile reported by the compiler binary.
     pub compiler_build_profile: String,
+    /// Independent structural-work probes per workload.
+    pub compiler_work_samples_per_workload: u32,
+    /// Arguments used by structural-work probes. These include a fixed
+    /// single-worker setting so scheduling cannot perturb exact counters.
+    pub compiler_work_args: Vec<String>,
 }
 
 /// Raw measurements for one maintained program.
@@ -147,8 +152,35 @@ pub struct ScalingObservation {
     /// Compiler-produced fixture shape. A change makes cross-report comparison
     /// advisory even when the manifest revision was not yet advanced.
     pub shape: WorkloadShape,
+    /// Deterministic compiler work, required to agree across the fixed
+    /// single-worker structural probes.
+    pub work: CompilerWork,
     /// Independent raw fresh-process measurements.
     pub samples: Vec<Sample>,
+}
+
+/// Deterministic work performed by one compiler process.
+///
+/// This is deliberately separate from elapsed time and fixture shape. It grows
+/// as the compiler performs internal work, so a report can identify
+/// amplification even when host timing is noisy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompilerWork {
+    /// Work performed by the revisioned query runtime.
+    pub query_runtime: QueryRuntimeWork,
+}
+
+/// Deterministic query-runtime work performed by one compiler process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryRuntimeWork {
+    /// Retained-terminal validation and proof work.
+    pub validation: ValidationWork,
+    /// Family-local retention passes run.
+    pub retention_enforcements: u64,
+    /// Retention-queue entries examined by those passes.
+    pub retention_scan_entries: u64,
 }
 
 /// Compiler-produced dimensions of one fixture.

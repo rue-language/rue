@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use rue_perf_schema::{FailureRecord, PhaseAccounting, Sample, WorkloadShape};
+use rue_perf_schema::{CompilerWork, FailureRecord, PhaseAccounting, Sample, WorkloadShape};
 
 /// Everything needed to measure one sample.
 pub struct SampleRequest<'a> {
@@ -58,6 +58,7 @@ struct BenchmarkJson {
     phase_accounting: PhaseAccounting,
     metadata: BenchmarkMetadata,
     source_metrics: SourceMetrics,
+    compiler_work: CompilerWork,
     emitted_output: EmittedOutput,
 }
 
@@ -89,6 +90,7 @@ struct CompletedCompile {
     shape: WorkloadShape,
     target: String,
     compiler_build_profile: String,
+    compiler_work: CompilerWork,
 }
 
 /// The raw result of one fresh compiler process for the scaling report.
@@ -97,6 +99,7 @@ pub struct FreshCompile {
     pub shape: WorkloadShape,
     pub target: String,
     pub compiler_build_profile: String,
+    pub compiler_work: CompilerWork,
 }
 
 /// Measure one sample.
@@ -174,6 +177,7 @@ pub fn measure_fresh_compile(request: &SampleRequest<'_>) -> Result<FreshCompile
         shape: completed.shape,
         target: completed.target,
         compiler_build_profile: completed.compiler_build_profile,
+        compiler_work: completed.compiler_work,
     })
 }
 
@@ -260,6 +264,7 @@ fn run_once(request: &SampleRequest<'_>) -> Result<CompletedCompile, String> {
         },
         target: parsed.metadata.target,
         compiler_build_profile: parsed.metadata.compiler_build_profile,
+        compiler_work: parsed.compiler_work,
     })
 }
 

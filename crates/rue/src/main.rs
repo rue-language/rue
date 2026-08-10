@@ -904,6 +904,7 @@ fn print_timing_output(
     benchmark_json: bool,
     target: &Target,
     source_metrics: Option<timing::SourceMetrics>,
+    compiler_work: Option<rue_perf_schema::CompilerWork>,
     emitted_output: Option<&[u8]>,
 ) {
     if let Some(timing) = timing_data {
@@ -915,6 +916,7 @@ fn print_timing_output(
                     &target.to_string(),
                     VERSION,
                     source_metrics,
+                    compiler_work,
                     get_peak_memory_bytes(),
                 ))
                 .unwrap();
@@ -939,6 +941,47 @@ fn print_timing_output(
             // Human-readable output goes to stderr
             eprintln!("{}", timing.report());
         }
+    }
+}
+
+fn benchmark_compiler_work(
+    metrics: rue_compiler::unstable::OneShotMetrics,
+) -> rue_perf_schema::CompilerWork {
+    let runtime = metrics.query_runtime;
+    let validation = runtime.validation;
+    rue_perf_schema::CompilerWork {
+        query_runtime: rue_perf_schema::QueryRuntimeWork {
+            validation: rue_perf_schema::ValidationWork {
+                traversals: validation.traversals,
+                successful_traversals: validation.successful_traversals,
+                dirty_traversals: validation.dirty_traversals,
+                aborted_traversals: validation.aborted_traversals,
+                input_observations: validation.input_observations,
+                dependency_observations: validation.dependency_observations,
+                registry_probes: validation.registry_probes,
+                registry_misses: validation.registry_misses,
+                node_visits: validation.node_visits,
+                active_cycle_prunes: validation.active_cycle_prunes,
+                memo_hits: validation.memo_hits,
+                memo_misses: validation.memo_misses,
+                certificate_misses: validation.certificate_misses,
+                proof_reacquisition_misses: validation.proof_reacquisition_misses,
+                endorsement_probes: validation.endorsement_probes,
+                endorsement_hits: validation.endorsement_hits,
+                terminal_lease_observations: validation.terminal_lease_observations,
+                duplicate_terminal_lease_observations: validation
+                    .duplicate_terminal_lease_observations,
+                demands: validation.demands,
+                demand_reuses: validation.demand_reuses,
+                demand_computes: validation.demand_computes,
+                demand_joins: validation.demand_joins,
+                demand_aborts: validation.demand_aborts,
+                superseded: validation.superseded,
+                certificates_published: validation.certificates_published,
+            },
+            retention_enforcements: runtime.retention_enforcements,
+            retention_scan_entries: runtime.retention_scan_entries,
+        },
     }
 }
 
@@ -1299,6 +1342,7 @@ fn main() {
             &options.target,
             None,
             None,
+            None,
         );
         return;
     }
@@ -1388,13 +1432,13 @@ fn main() {
                 );
             }
 
+            let benchmark_metrics = options.benchmark_json.then(|| output.unstable_metrics());
             print_timing_output(
                 &timing_data,
                 options.time_passes,
                 options.benchmark_json,
                 &options.target,
-                options.benchmark_json.then(|| {
-                    let source_stats = output.unstable_metrics();
+                benchmark_metrics.map(|source_stats| {
                     timing::SourceMetrics {
                         files: source_stats.files,
                         // Every accepted source file is one module in the
@@ -1408,6 +1452,7 @@ fn main() {
                         functions: source_stats.semantic.cfg.functions_considered,
                     }
                 }),
+                benchmark_metrics.map(benchmark_compiler_work),
                 options
                     .benchmark_json
                     .then_some(output.linked_bytes.as_slice()),
@@ -1423,6 +1468,36 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn benchmark_work_projection_preserves_query_runtime_counters() {
+        let metrics = rue_compiler::unstable::OneShotMetrics {
+            query_runtime: rue_compiler::unstable::QueryRuntimeMetrics {
+                validation: rue_compiler::unstable::QueryValidationMetrics {
+                    traversals: 3,
+                    dependency_observations: 11,
+                    memo_hits: 7,
+                    memo_misses: 2,
+                    duplicate_terminal_lease_observations: 5,
+                    ..Default::default()
+                },
+                retention_enforcements: 13,
+                retention_scan_entries: 17,
+            },
+            ..Default::default()
+        };
+        let projected = benchmark_compiler_work(metrics).query_runtime;
+        assert_eq!(projected.validation.traversals, 3);
+        assert_eq!(projected.validation.dependency_observations, 11);
+        assert_eq!(projected.validation.memo_hits, 7);
+        assert_eq!(projected.validation.memo_misses, 2);
+        assert_eq!(
+            projected.validation.duplicate_terminal_lease_observations,
+            5
+        );
+        assert_eq!(projected.retention_enforcements, 13);
+        assert_eq!(projected.retention_scan_entries, 17);
+    }
     use tracing_subscriber::layer::SubscriberExt as _;
 
     fn test_snapshot(root: FileId, sources: &[(FileId, &str, &str, &str)]) -> SourceSnapshot {
@@ -1530,7 +1605,7 @@ mod tests {
             edges.contains(&("compile".to_owned(), "compile_pipeline".to_owned())),
             "post-discovery pipeline escaped the compile root: {edges:?}"
         );
-        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None);
+        let timing = data.to_benchmark_timing_with_metrics("test", "test", None, None, None);
         for pass in &timing.passes {
             if pass.name == "compile" {
                 assert_eq!(pass.invocations, 1);

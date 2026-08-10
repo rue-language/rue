@@ -574,6 +574,7 @@ pub(crate) fn link_internal_with_warnings(
         warnings: warnings.to_vec(),
         source_stats: SourceStats::default(),
         work: PipelineWork::default(),
+        query_runtime: crate::unstable::QueryRuntimeMetrics::default(),
     })
 }
 
@@ -676,6 +677,7 @@ pub(crate) fn link_system_with_warnings(
         warnings: warnings.to_vec(),
         source_stats: SourceStats::default(),
         work: PipelineWork::default(),
+        query_runtime: crate::unstable::QueryRuntimeMetrics::default(),
     })
 }
 use std::io::{Read, Write};

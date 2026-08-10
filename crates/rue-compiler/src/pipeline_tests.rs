@@ -2226,6 +2226,17 @@ mod tests {
             &CompileOptions::default(),
         )
         .unwrap();
+        let one_shot_metrics = output.unstable_metrics();
+        let live_runtime = session.unstable_metrics().query_runtime();
+        assert_eq!(one_shot_metrics.query_runtime, live_runtime);
+        assert!(
+            one_shot_metrics
+                .query_runtime
+                .validation
+                .terminal_lease_observations
+                > 0,
+            "a rooted cold compile must publish its observed query terminals"
+        );
         let stats = output.source_stats;
         let work = output.work;
 
