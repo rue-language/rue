@@ -1,11 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-# Format or check Rust code formatting using the hermetic Rust toolchain
+# Format Rust code using the hermetic Rust toolchain.
 #
 # Usage:
 #   ./fmt.sh        # Format all Rust files
-#   ./fmt.sh check  # Check formatting (for CI)
+#
+# Write mode only, and it stays a script for one reason: build and test
+# actions must not mutate the source tree, so formatting-in-place cannot be a
+# Buck target. Checking has no such constraint and is not here — each crate
+# emits its own `<name>-fmt-check` test from the rue_crate/rue_binary macros,
+# so check coverage follows the build graph instead of this script's file
+# discovery (RUE-1152, RUE-1153).
 #
 # BUCK/.bzl files are NOT formatted: no Starlark formatter is vendored in
 # this repo (`buck2 starlark` offers only lint/typecheck, and buildifier is
@@ -13,7 +19,11 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-MODE="${1:-format}"
+if [ "$#" -gt 0 ]; then
+    echo "fmt.sh: check mode has moved to the per-crate <name>-fmt-check tests (RUE-1153)." >&2
+    echo "Run: ./buck2 test \$(./buck2 uquery \"kind('sh_test', 'root//...')\" | grep -- '-fmt-check\$')" >&2
+    exit 2
+fi
 
 # Keep file discovery here because format mode intentionally edits the source
 # tree. Toolchain selection and its runtime environment belong to Buck's
@@ -31,14 +41,7 @@ if [ "${#RUST_FILES[@]}" -eq 0 ]; then
     exit 1
 fi
 
-if [ "$MODE" = "check" ]; then
-    echo "Checking Rust formatting (${#RUST_FILES[@]} files)..."
-    ./buck2 run toolchains//rust:rustfmt -- \
-        --edition 2024 --check "${RUST_FILES[@]}"
-    echo "All ${#RUST_FILES[@]} files formatted correctly!"
-else
-    echo "Formatting Rust files..."
-    ./buck2 run toolchains//rust:rustfmt -- \
-        --edition 2024 "${RUST_FILES[@]}"
-    echo "Done!"
-fi
+echo "Formatting ${#RUST_FILES[@]} Rust files..."
+./buck2 run toolchains//rust:rustfmt -- \
+    --edition 2024 "${RUST_FILES[@]}"
+echo "Done!"

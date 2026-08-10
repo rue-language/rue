@@ -119,7 +119,10 @@ EOF
 }
 
 # fmt.sh must make one Buck RunInfo-based invocation and preserve every source
-# path as one argument, including paths containing spaces.
+# path as one argument, including paths containing spaces. It is write-mode
+# only: check mode lives in the per-crate <name>-fmt-check tests (RUE-1153),
+# so any argument is rejected rather than silently formatting in place when
+# the caller expected a check.
 test_fmt_uses_one_buck_run_and_preserves_paths() {
   local sb; sb="$(mktemp -d)"
   mkdir -p "$sb/crates/with space"
@@ -135,9 +138,9 @@ EOF
 
   local rc=0
   BUCK_CALLS="$sb/calls" BUCK_ARGS="$sb/args" \
-    bash "$sb/fmt.sh" check >/dev/null 2>&1 || rc=$?
+    bash "$sb/fmt.sh" >/dev/null 2>&1 || rc=$?
 
-  check "fmt.sh: check succeeds through fake Buck" \
+  check "fmt.sh: write mode succeeds through fake Buck" \
     "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
   check "fmt.sh: invokes Buck exactly once" \
     "$([ "$(wc -l <"$sb/calls" 2>/dev/null | tr -d ' ')" = 1 ] && echo 0 || echo 1)"
@@ -147,6 +150,20 @@ EOF
     "$(grep -Fxq "$sb/crates/a.rs" "$sb/args" && echo 0 || echo 1)"
   check "fmt.sh: preserves a source path containing spaces" \
     "$(grep -Fxq "$sb/crates/with space/b.rs" "$sb/args" && echo 0 || echo 1)"
+
+  # Any argument (including the retired `check`) must be refused with a
+  # pointer to the per-crate gates, without touching Buck.
+  rm -f "$sb/calls"
+  rc=0
+  local out
+  out="$(BUCK_CALLS="$sb/calls" BUCK_ARGS="$sb/args" \
+    bash "$sb/fmt.sh" check 2>&1)" || rc=$?
+  check "fmt.sh: an argument is rejected with exit 2" \
+    "$([ "$rc" -eq 2 ] && echo 0 || echo 1)"
+  check "fmt.sh: the rejection names the per-crate fmt-check tests" \
+    "$(grep -Fq -- '-fmt-check' <<<"$out" && echo 0 || echo 1)"
+  check "fmt.sh: the rejection never invokes Buck" \
+    "$([ ! -e "$sb/calls" ] && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
@@ -270,66 +287,61 @@ test_rue_cli_examples_survive_case_chdir() {
   rm -rf "$sb"
 }
 
-# clippy.sh is a developer entry point with a /bin/bash shebang. macOS still
-# ships Bash 3.2, so target enumeration cannot rely on Bash 4's mapfile. Disable
-# mapfile through BASH_ENV even on newer CI hosts to exercise that compatibility
-# path, while a fake Buck proves every discovered target remains a distinct
-# build argument and empty discovery still fails closed (RUE-1234).
-test_clippy_target_enumeration_supports_bash_3_2() {
+# crates/clippy-gate.sh is the decision step behind every per-crate
+# <name>-clippy test (RUE-1153): the [clippy.txt] subtarget only captures
+# diagnostics, so this script decides pass/fail. Clean and warning-only files
+# pass, an `error:` line fails, and — the RUE-1152 lesson — a missing file is
+# never certified as clean.
+test_clippy_gate_reads_diagnostics_and_fails_closed() {
   local sb; sb="$(mktemp -d)"
-  cp "$SRC_ROOT/clippy.sh" "$sb/clippy.sh"; chmod +x "$sb/clippy.sh"
-  cat >"$sb/bash3-env" <<'EOF'
-enable -n mapfile 2>/dev/null || true
-EOF
-  cat >"$sb/buck2" <<'EOF'
-#!/usr/bin/env bash
-case "$1" in
-  uquery)
-    if [ "${FAKE_EMPTY:-0}" != 1 ]; then
-      printf '%s\n' \
-        'root//crates/alpha:alpha' \
-        'root//crates/beta:beta-test'
-    fi
-    ;;
-  build)
-    printf '%s\n' "$@" >"$FAKE_BUCK_ARGS"
-    : >"$PWD/alpha-clippy.txt"
-    : >"$PWD/beta-clippy.txt"
-    printf '%s %s\n' \
-      'root//crates/alpha:alpha[clippy.txt]' "$PWD/alpha-clippy.txt" \
-      'root//crates/beta:beta-test[clippy.txt]' "$PWD/beta-clippy.txt"
-    ;;
-  *) exit 90 ;;
-esac
-EOF
-  chmod +x "$sb/buck2"
+  local gate="$SRC_ROOT/crates/clippy-gate.sh"
 
-  local rc=0 out
-  out="$(cd "$sb" && BASH_ENV="$sb/bash3-env" FAKE_BUCK_ARGS="$sb/build-args" \
-    /bin/bash ./clippy.sh 2>&1)" || rc=$?
-  check "clippy.sh: Bash 3.2-compatible enumeration succeeds" \
-    "$([ "$rc" -eq 0 ] && grep -Fq 'clippy gate passed' <<<"$out" && echo 0 || echo 1)"
-  check "clippy.sh: every discovered target reaches the build" \
-    "$([ "$(grep -c '\[clippy.txt\]$' "$sb/build-args")" -eq 2 ] && \
-       grep -Fxq 'root//crates/alpha:alpha[clippy.txt]' "$sb/build-args" && \
-       grep -Fxq 'root//crates/beta:beta-test[clippy.txt]' "$sb/build-args" && echo 0 || echo 1)"
+  local rc=0
+  : >"$sb/clean.txt"
+  bash "$gate" "$sb/clean.txt" >/dev/null 2>&1 || rc=$?
+  check "clippy-gate.sh: empty diagnostics pass" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
 
-  rm -f "$sb/build-args"
+  # rustc prints some warnings unconditionally (e.g. -Ctarget-feature notes);
+  # with deny_lints=["warnings"] every real finding is an error, so warnings
+  # must not gate.
   rc=0
-  out="$(cd "$sb" && BASH_ENV="$sb/bash3-env" FAKE_EMPTY=1 \
-    FAKE_BUCK_ARGS="$sb/build-args" /bin/bash ./clippy.sh 2>&1)" || rc=$?
-  check "clippy.sh: empty target discovery fails clearly" \
-    "$([ "$rc" -ne 0 ] && grep -Fq 'no Rust targets found' <<<"$out" && echo 0 || echo 1)"
-  check "clippy.sh: empty target discovery never starts a build" \
-    "$([ ! -e "$sb/build-args" ] && echo 0 || echo 1)"
+  printf 'warning: unstable feature note\n' >"$sb/warn.txt"
+  bash "$gate" "$sb/warn.txt" >/dev/null 2>&1 || rc=$?
+  check "clippy-gate.sh: warning-only diagnostics pass" \
+    "$([ "$rc" -eq 0 ] && echo 0 || echo 1)"
+
+  # A real finding fails, and the diagnostics are surfaced — including when
+  # clippy wrote them with ANSI colour codes.
+  rc=0
+  local out
+  printf '\x1b[31merror\x1b[0m: used `len` on a `str`\n' >"$sb/lint.txt"
+  out="$(bash "$gate" "$sb/lint.txt" 2>&1)" || rc=$?
+  check "clippy-gate.sh: an error line fails the gate" \
+    "$([ "$rc" -eq 1 ] && echo 0 || echo 1)"
+  check "clippy-gate.sh: the violation is surfaced in the output" \
+    "$(grep -Fq 'used `len` on a `str`' <<<"$out" && echo 0 || echo 1)"
+
+  # A missing diagnostics file is not an empty one; refusing to certify what
+  # cannot be read is the whole point of the gate (RUE-1152).
+  rc=0
+  out="$(bash "$gate" "$sb/nonexistent.txt" 2>&1)" || rc=$?
+  check "clippy-gate.sh: a missing diagnostics file fails closed" \
+    "$([ "$rc" -eq 1 ] && grep -Fq 'does not exist' <<<"$out" && echo 0 || echo 1)"
+
+  rc=0
+  bash "$gate" >/dev/null 2>&1 || rc=$?
+  check "clippy-gate.sh: missing argument is a usage error" \
+    "$([ "$rc" -eq 2 ] && echo 0 || echo 1)"
   rm -rf "$sb"
 }
 
 # Canonical tier commands are intentionally thin: scripts/rue names the
 # selection while test.sh owns execution and reads Buck's tier metadata. The
-# required tier additionally fronts the clippy gate (RUE-1205): required CI
-# runs ./clippy.sh as its own job next to the premerge Buck tier, so premerge
-# (and the union tier, all) must run both for local green to predict CI green.
+# fmt and clippy gates are per-crate premerge-tier tests emitted by the
+# rue_crate/rue_binary macros (RUE-1153), so the tier run itself covers them —
+# scripts/rue must not front any extra gate script of its own (the RUE-1205
+# local-green-predicts-CI-green property now falls out of tier membership).
 test_rue_named_test_tiers_delegate_to_testsh() {
   local sb; sb="$(make_rue_sandbox)"
   cat >"$sb/test.sh" <<'EOF'
@@ -337,12 +349,6 @@ test_rue_named_test_tiers_delegate_to_testsh() {
 printf '%s\n' "${RUE_TEST_TIER:-unset}" >>"$TIER_LOG"
 EOF
   chmod +x "$sb/test.sh"
-  cat >"$sb/clippy.sh" <<'EOF'
-#!/usr/bin/env bash
-printf 'clippy\n' >>"$TIER_LOG"
-exit "${FAKE_CLIPPY_EXIT:-0}"
-EOF
-  chmod +x "$sb/clippy.sh"
 
   local tier rc
   for tier in premerge slow stress all; do
@@ -352,27 +358,9 @@ EOF
       >/dev/null 2>&1 || rc=$?
     check "scripts/rue $tier: delegates the named tier to test.sh" \
       "$([ "$rc" -eq 0 ] && grep -Fxq "$tier" <<<"$(tail -1 "$sb/tiers.log")" && echo 0 || echo 1)"
-    case "$tier" in
-      premerge|all)
-        check "scripts/rue $tier: runs the clippy gate before the tier" \
-          "$([ "$(head -1 "$sb/tiers.log")" = clippy ] && echo 0 || echo 1)"
-        ;;
-      *)
-        check "scripts/rue $tier: does not run the clippy gate" \
-          "$(! grep -Fxq clippy "$sb/tiers.log" && echo 0 || echo 1)"
-        ;;
-    esac
+    check "scripts/rue $tier: the tier run is the only step" \
+      "$([ "$(wc -l <"$sb/tiers.log" | tr -d ' ')" = 1 ] && echo 0 || echo 1)"
   done
-
-  # A clippy failure must fail the command and stop before the test tier runs.
-  rc=0
-  : >"$sb/tiers.log"
-  (cd "$sb/work" && TIER_LOG="$sb/tiers.log" FAKE_CLIPPY_EXIT=13 \
-    "$sb/scripts/rue" premerge) >/dev/null 2>&1 || rc=$?
-  check "scripts/rue premerge: clippy failure is propagated" \
-    "$([ "$rc" -eq 13 ] && echo 0 || echo 1)"
-  check "scripts/rue premerge: clippy failure stops the tier run" \
-    "$(! grep -Fxq premerge "$sb/tiers.log" && echo 0 || echo 1)"
 
   rc=0
   (cd "$sb/work" && TIER_LOG="$sb/tiers.log" "$sb/scripts/rue" slow unexpected) \
@@ -1119,7 +1107,7 @@ test_fmt_uses_one_buck_run_and_preserves_paths
 test_rue_exec_resolves_from_caller_cwd
 test_rue_run_resolves_relative_output
 test_rue_cli_examples_survive_case_chdir
-test_clippy_target_enumeration_supports_bash_3_2
+test_clippy_gate_reads_diagnostics_and_fails_closed
 test_rue_named_test_tiers_delegate_to_testsh
 test_testsh_cli_examples_survive_case_chdir
 test_rue_unit_maps_crate_and_forwards_args

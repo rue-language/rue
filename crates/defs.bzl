@@ -23,6 +23,56 @@
 
 load("//:test_defs.bzl", "rue_test_labels")
 
+def _fmt_check(name, srcs):
+    """Emits `<name>-fmt-check`: rustfmt --check over this crate's own sources.
+
+    Coverage is structural (RUE-1153). The gate this replaces took its file
+    list from filesystem discovery — and before that from a root-package
+    `glob(["crates/**/*.rs"])`, which cannot descend into subpackages, so it
+    checked 1 file of 281 while passing for the rest (RUE-1152). Emitting the
+    target from the macro every crate already calls means a crate is checked
+    because it declares the target, not because discovery reached it.
+
+    `srcs` is the same package-relative glob the library target compiles.
+    sh_test runs from the project root, so each path is prefixed with the
+    package to address the file from there. Declaring `srcs` as resources is
+    what makes Buck re-run the check when a source changes rather than
+    serving a stale pass.
+    """
+    native.sh_test(
+        name = name + "-fmt-check",
+        test = "toolchains//rust:rustfmt",
+        args = ["--edition", "2024", "--check"] + [
+            package_name() + "/" + src
+            for src in srcs
+        ],
+        resources = srcs,
+        # Premerge tier; excluded from quick iteration so `scripts/rue quick`
+        # keeps meaning "unit tests only" (see quick-test.sh).
+        labels = rue_test_labels("premerge", ["rue_not_quick"]),
+    )
+
+def _clippy_check(name):
+    """Emits `<name>-clippy`: fails when this crate's clippy diagnostics contain an error.
+
+    Buck's Rust rules capture clippy output into an always-succeeding
+    `[clippy.txt]` subtarget, so a build can never fail on a lint and
+    something must read the file and decide. Expressing that as a test rather
+    than a top-level script means Buck must materialize the diagnostics
+    before the test can run — the property clippy.sh had to request
+    explicitly with --materializations=all, because a remote cache hit could
+    satisfy its build without ever writing the file, leaving the script to
+    score unread targets as clean (RUE-1152).
+    """
+    native.sh_test(
+        name = name + "-clippy",
+        test = "//crates:clippy-gate",
+        args = ["$(location :" + name + "[clippy.txt])"],
+        # Premerge tier; excluded from quick iteration so `scripts/rue quick`
+        # keeps meaning "unit tests only" (see quick-test.sh).
+        labels = rue_test_labels("premerge", ["rue_not_quick"]),
+    )
+
 def rue_crate(
         name,
         deps = [],
@@ -39,6 +89,8 @@ def rue_crate(
     different srcs), use `tests = False` and write the rust_test by hand.
     """
     srcs = glob(["src/**/*.rs"])
+    _fmt_check(name, srcs)
+    _clippy_check(name)
     native.rust_library(
         name = name,
         srcs = srcs,
@@ -70,6 +122,8 @@ def rue_binary(
     build time).
     """
     srcs = glob(["src/**/*.rs"])
+    _fmt_check(name, srcs)
+    _clippy_check(name)
     native.rust_binary(
         name = name,
         srcs = srcs,
