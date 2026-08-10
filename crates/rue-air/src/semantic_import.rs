@@ -1070,16 +1070,39 @@ where
                 Ok(projected)
             })
             .collect::<Result<Vec<_>, F>>()?;
+        // Most bodies carry only a handful of stable local atoms, so keep the
+        // allocation-free scan for that common case. Literal-heavy retained
+        // bodies amortize one index over every relocation instead of rescanning
+        // the full string table for each atom.
+        const LOCAL_ATOM_STRING_INDEX_MIN_COMPARISONS: usize = 256;
+        let estimated_scan_comparisons = body.local_atoms.len().saturating_mul(body.strings.len());
+        let string_positions = (body.local_atoms.len() > 1
+            && body.strings.len() > 1
+            && estimated_scan_comparisons >= LOCAL_ATOM_STRING_INDEX_MIN_COMPARISONS)
+            .then(|| {
+                let mut positions = std::collections::HashMap::with_capacity(body.strings.len());
+                for (index, content) in body.strings.iter().enumerate() {
+                    if let Ok(dense_id) = u32::try_from(index) {
+                        // Match `position`: malformed duplicate entries resolve
+                        // to the first occurrence.
+                        positions.entry(content.as_ref()).or_insert(dense_id);
+                    }
+                }
+                positions
+            });
         let local_atoms = body
             .local_atoms
             .iter()
             .map(|atom| {
-                let dense_id = body
-                    .strings
-                    .iter()
-                    .position(|content| content == &atom.content)
-                    .and_then(|index| u32::try_from(index).ok())
-                    .ok_or(F::InvalidStringReference)?;
+                let dense_id = match &string_positions {
+                    Some(positions) => positions.get(atom.content.as_ref()).copied(),
+                    None => body
+                        .strings
+                        .iter()
+                        .position(|content| content == &atom.content)
+                        .and_then(|index| u32::try_from(index).ok()),
+                }
+                .ok_or(F::InvalidStringReference)?;
                 Ok(crate::LocalAtomRecord {
                     identity: atom.identity.clone(),
                     content: atom.content.clone(),
@@ -2885,6 +2908,59 @@ mod tests {
         assert_eq!(output.local_atoms.len(), 1);
         assert_eq!(output.local_atoms[0].identity.producer, identity);
         assert_eq!(output.local_atoms[0].dense_id, 0);
+    }
+
+    #[test]
+    fn local_materialization_indexes_large_local_atom_payloads() {
+        use crate::SemanticBodyInstData as D;
+        let identity = FunctionInstanceKey::Definition("main");
+        let mut input = body(vec![D::Const(0), D::Ret(Some(0))]);
+        let mut strings = vec![Arc::<str>::from("duplicate"), Arc::from("duplicate")];
+        strings.extend((0..16).map(|index| Arc::from(format!("literal-{index}"))));
+        input.local_atoms = std::iter::once(Arc::from("duplicate"))
+            .chain(strings.iter().skip(2).cloned())
+            .enumerate()
+            .map(|(anchor, content)| crate::SemanticBodyLocalAtom {
+                identity: crate::LocalAtomId {
+                    producer: identity.clone(),
+                    kind: crate::LocalAtomKind::String,
+                    anchor: rue_rir::RirStructuralAnchor::new(vec![
+                        rue_rir::RirStructuralPathSegment::Body,
+                        rue_rir::RirStructuralPathSegment::StringLiteral(anchor as u32),
+                    ]),
+                },
+                content,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        input.strings = strings.into();
+
+        let output = materialize_local(
+            identity.clone(),
+            crate::AnalyzedCallableKind::Ordinary,
+            &input,
+            vec![],
+            vec![local_callable(identity.clone(), "main")],
+        )
+        .unwrap();
+
+        assert_eq!(output.local_atoms[0].dense_id, 0);
+        for (atom, expected) in output.local_atoms.iter().skip(1).zip(2..) {
+            assert_eq!(atom.dense_id, expected);
+        }
+
+        let mut missing = input.clone();
+        Arc::make_mut(&mut missing.local_atoms)[0].content = Arc::from("missing");
+        assert!(matches!(
+            materialize_local(
+                identity.clone(),
+                crate::AnalyzedCallableKind::Ordinary,
+                &missing,
+                vec![],
+                vec![local_callable(identity, "main")],
+            ),
+            Err(SemanticBodyImportFailure::InvalidStringReference)
+        ));
     }
 
     #[test]
