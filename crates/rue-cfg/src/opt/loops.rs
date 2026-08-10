@@ -118,10 +118,11 @@ impl LoopForest {
 
 /// Bounded-work counters for one [`loops`] analysis (RUE-794 discipline).
 ///
-/// Every field is structurally O(V + E): the reachability DFS visits each
-/// reachable block once and each edge once (`blocks_visited`, `edges_visited`),
-/// and each loop's body worklist inserts every body block at most once
-/// (`body_pushes` is bounded by the sum of body sizes, itself ≤ V per loop).
+/// Every field is proportional to either the input graph or the loop bodies the
+/// result actually represents. The reachability DFS visits each reachable
+/// block once and each edge once (`blocks_visited`, `edges_visited`); grouping
+/// performs one slot/dedup probe per back edge; and body/parent work visits each
+/// represented loop-body membership a bounded number of times.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct Stats {
     /// Blocks reached by the reachability/irreducibility DFS (one visit each).
@@ -130,10 +131,16 @@ pub(crate) struct Stats {
     pub edges_visited: u64,
     /// Back edges found (edges `u -> h` with `h` dominating `u`).
     pub back_edges: u64,
+    /// Block-indexed header-slot probes, one per back edge.
+    pub header_slot_probes: u64,
+    /// Last-latch deduplication probes, one per back edge.
+    pub latch_dedup_probes: u64,
     /// Distinct loop headers, i.e. natural loops in the forest.
     pub loops_found: u64,
     /// Total block insertions across every loop-body worklist.
     pub body_pushes: u64,
+    /// Existing loop-body memberships visited while assigning parents.
+    pub parent_body_visits: u64,
 }
 
 /// Compute the natural-loop forest of `cfg` using the dominator tree `dom`.
@@ -215,6 +222,7 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
     // Headers, in first-seen order, each with its deduplicated latch set.
     let mut headers: Vec<BlockId> = Vec::new();
     let mut latch_sets: Vec<Vec<BlockId>> = Vec::new();
+    let mut header_slots = vec![None; n];
     for u in 0..n {
         if !visited[u] {
             continue;
@@ -224,15 +232,22 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
             stats.edges_visited += 1;
             if dom.dominates(s, ub) {
                 stats.back_edges += 1;
-                let slot = match headers.iter().position(|&h| h == s) {
+                stats.header_slot_probes += 1;
+                let header_index = s.as_u32() as usize;
+                let slot = match header_slots[header_index] {
                     Some(i) => i,
                     None => {
+                        let slot = headers.len();
                         headers.push(s);
                         latch_sets.push(Vec::new());
-                        headers.len() - 1
+                        header_slots[header_index] = Some(slot);
+                        slot
                     }
                 };
-                if !latch_sets[slot].contains(&ub) {
+                stats.latch_dedup_probes += 1;
+                // Source blocks are visited in index order, so every repeated
+                // edge from one latch to this header is adjacent in this set.
+                if latch_sets[slot].last() != Some(&ub) {
                     latch_sets[slot].push(ub);
                 }
             }
@@ -301,23 +316,7 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
     // contains `i`'s header. Headers are unique (merged by header above), so
     // ties by size cannot arise between distinct loops.
     // ------------------------------------------------------------------
-    for i in 0..loops.len() {
-        let header = loops[i].header;
-        let my_size = loops[i].body.len();
-        let mut best: Option<(usize, usize)> = None;
-        for (j, other) in loops.iter().enumerate() {
-            if i == j || other.body.len() <= my_size {
-                continue;
-            }
-            if other.contains(header) {
-                let sz = other.body.len();
-                if best.is_none_or(|(_, bs)| sz < bs) {
-                    best = Some((j, sz));
-                }
-            }
-        }
-        loops[i].parent = best.map(|(j, _)| j);
-    }
+    assign_loop_parents(&mut loops, n, &mut stats);
 
     (
         LoopForest {
@@ -326,6 +325,38 @@ pub(crate) fn loops_with_stats(cfg: &Cfg, dom: &DominatorTree) -> (LoopForest, S
         },
         stats,
     )
+}
+
+/// Assign the smallest enclosing loop to every loop by visiting the body
+/// memberships already materialized in the result. Reducible natural loops are
+/// properly nested or disjoint, so the first enclosing loop encountered in
+/// ascending body-size order is the immediate parent.
+fn assign_loop_parents(loops: &mut [NaturalLoop], block_count: usize, stats: &mut Stats) {
+    let mut loop_by_header = vec![None; block_count];
+    for (id, lp) in loops.iter().enumerate() {
+        loop_by_header[lp.header.as_u32() as usize] = Some(id);
+    }
+
+    let mut by_body_size: Vec<LoopId> = (0..loops.len()).collect();
+    by_body_size.sort_by_key(|&id| (loops[id].body.len(), id));
+    let mut parents = vec![None; loops.len()];
+    for outer in by_body_size {
+        for &block in &loops[outer].body {
+            stats.parent_body_visits += 1;
+            let Some(inner) = loop_by_header[block.as_u32() as usize] else {
+                continue;
+            };
+            if inner != outer
+                && loops[outer].body.len() > loops[inner].body.len()
+                && parents[inner].is_none()
+            {
+                parents[inner] = Some(outer);
+            }
+        }
+    }
+    for (lp, parent) in loops.iter_mut().zip(parents) {
+        lp.parent = parent;
+    }
 }
 
 /// Materialize a dedicated preheader for `lp` and return its block id.
@@ -1330,15 +1361,15 @@ mod tests {
 
     #[test]
     fn analysis_work_is_bounded() {
-        // A chain of `k` nested/sequential loops must stay near-linear: the DFS
+        // A chain of `k` sequential loops must stay near-linear: the DFS
         // visits each reachable block once and each edge once, and body
-        // worklists insert each body block at most once per loop.
+        // worklists and parent assignment visit only represented memberships.
         let mut cfg = make_cfg();
         let entry = cfg.new_block();
         cfg.entry = entry;
 
         // Build k independent sequential loops off a spine.
-        let k = 8u32;
+        let k = 64u32;
         let mut prev = entry;
         let mut total_edges = 0u64;
         for _ in 0..k {
@@ -1370,6 +1401,8 @@ mod tests {
             2 * total_edges
         );
         assert_eq!(stats.back_edges, k as u64);
+        assert_eq!(stats.header_slot_probes, stats.back_edges);
+        assert_eq!(stats.latch_dedup_probes, stats.back_edges);
         // Body inserts are bounded by the total body size (2 blocks per loop:
         // header seeded separately, so 1 push per loop for the latch).
         assert!(
@@ -1378,5 +1411,69 @@ mod tests {
             stats.body_pushes,
             blocks
         );
+        let represented_body_memberships = forest
+            .loops()
+            .iter()
+            .map(|lp| lp.body.len() as u64)
+            .sum::<u64>();
+        assert_eq!(
+            stats.parent_body_visits, represented_body_memberships,
+            "parentage must visit represented bodies, not every loop pair"
+        );
+    }
+
+    #[test]
+    fn many_latches_use_one_grouping_probe_per_back_edge() {
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        cfg.set_terminator(entry, goto(header));
+
+        let latch_count = 64u32;
+        let latches = (0..latch_count)
+            .map(|_| cfg.new_block())
+            .collect::<Vec<_>>();
+        let selectors = (0..latch_count)
+            .map(|_| cfg.new_block())
+            .collect::<Vec<_>>();
+        let exit = cfg.new_block();
+        cfg.set_terminator(header, goto(selectors[0]));
+        for index in 0..latch_count as usize {
+            let selector = selectors[index];
+            let otherwise = selectors.get(index + 1).copied().unwrap_or(exit);
+            let cond = bool_const(&mut cfg, selector);
+            cfg.set_terminator(selector, branch(cond, latches[index], otherwise));
+            cfg.set_terminator(latches[index], goto(header));
+        }
+        cfg.set_terminator(exit, Terminator::Return { value: None });
+
+        let dom = DominatorTree::compute(&cfg);
+        let (forest, stats) = loops_with_stats(&cfg, &dom);
+        let lp = loop_of(&forest, header);
+        assert_eq!(lp.latches, latches);
+        assert_eq!(stats.back_edges, latch_count as u64);
+        assert_eq!(stats.header_slot_probes, latch_count as u64);
+        assert_eq!(stats.latch_dedup_probes, latch_count as u64);
+    }
+
+    #[test]
+    fn repeated_edges_from_one_latch_are_deduplicated() {
+        let mut cfg = make_cfg();
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let header = cfg.new_block();
+        let latch = cfg.new_block();
+        cfg.set_terminator(entry, goto(header));
+        cfg.set_terminator(header, goto(latch));
+        let cond = bool_const(&mut cfg, latch);
+        cfg.set_terminator(latch, branch(cond, header, header));
+
+        let dom = DominatorTree::compute(&cfg);
+        let (forest, stats) = loops_with_stats(&cfg, &dom);
+        assert_eq!(loop_of(&forest, header).latches, vec![latch]);
+        assert_eq!(stats.back_edges, 2);
+        assert_eq!(stats.header_slot_probes, 2);
+        assert_eq!(stats.latch_dedup_probes, 2);
     }
 }
