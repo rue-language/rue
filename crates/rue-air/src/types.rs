@@ -2110,4 +2110,220 @@ mod tests {
         assert_eq!(Type::UNIT.int_min(), None);
         assert_eq!(Type::UNIT.int_max(), None);
     }
+
+    /// The shape a declared type has once the intake helpers above have taken
+    /// it apart again, expressed independently of the text that carried it.
+    #[derive(Debug, PartialEq, Eq)]
+    enum Decomposed {
+        /// A leaf the intake helpers do not decompose: a primitive, a
+        /// user-defined name, a dotted path, `()`, `!`, or a slice.
+        Leaf(String),
+        Array(Box<Decomposed>, ArrayLen),
+        Ptr(Box<Decomposed>, PtrMutability),
+        Call(String, Vec<Decomposed>),
+    }
+
+    /// Take a declared type apart with the intake helpers, in the order
+    /// `resolve_semantic_type_syntax` applies them (array, pointer, type call).
+    fn decompose(syntax: &str) -> Decomposed {
+        if let Some((element, length)) = parse_array_type_syntax(syntax) {
+            return Decomposed::Array(Box::new(decompose(&element)), length);
+        }
+        if let Some((pointee, mutability)) = parse_pointer_type_syntax(syntax) {
+            return Decomposed::Ptr(Box::new(decompose(&pointee)), mutability);
+        }
+        if let Some((callee, arguments)) = parse_type_call_syntax(syntax) {
+            return Decomposed::Call(callee, arguments.iter().map(|a| decompose(a)).collect());
+        }
+        Decomposed::Leaf(syntax.to_owned())
+    }
+
+    fn leaf(name: &str) -> Decomposed {
+        Decomposed::Leaf(name.to_owned())
+    }
+
+    /// The type RIR carries for `f`'s single parameter, exactly as semantic
+    /// analysis receives it.
+    fn declared_parameter_type(annotation: &str) -> String {
+        let source = format!("fn f(p: {annotation}) -> i32 {{ 0 }}");
+        let (tokens, interner) = rue_lexer::Lexer::new(&source).tokenize().unwrap();
+        let (ast, interner) = rue_parser::Parser::new(tokens, interner).parse().unwrap();
+        let mut astgen = rue_rir::AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let params = rir
+            .iter()
+            .find_map(|(_, instruction)| match &instruction.data {
+                rue_rir::InstData::FnDecl { params, .. } => Some(params.clone()),
+                _ => None,
+            })
+            .expect("lowered function declaration");
+        let params = rir.params(&params);
+        assert_eq!(params.len(), 1, "one declared parameter for {annotation}");
+        interner.resolve(&params.get(0).unwrap().ty).to_owned()
+    }
+
+    /// RUE-791: parser `TypeExpr` -> RIR text -> semantic intake is a peer
+    /// grammar with two independent halves, so every declarable type shape is
+    /// pinned end to end here: the exact text `AstGen` renders, and the exact
+    /// structure this module's helpers recover from it. A renderer change that
+    /// the intake cannot take apart again (or that silently reassociates
+    /// nesting) fails here rather than in whichever later phase first misreads
+    /// the type. Anonymous `struct`/`enum` types are absent by construction:
+    /// they are rejected in type-annotation position and reach RIR as their own
+    /// instructions, never as declared type text.
+    #[test]
+    fn declared_type_syntax_round_trips_through_the_semantic_intake() {
+        let cases: Vec<(&str, &str, Decomposed)> = vec![
+            // TypeExpr::Named
+            ("i32", "i32", leaf("i32")),
+            ("MyType", "MyType", leaf("MyType")),
+            // TypeExpr::Qualified
+            ("shapes.Point", "shapes.Point", leaf("shapes.Point")),
+            // TypeExpr::Unit / TypeExpr::Never
+            ("()", "()", leaf("()")),
+            ("!", "!", leaf("!")),
+            // TypeExpr::Array, with each ArrayLength form
+            (
+                "[i32; 4]",
+                "[i32; 4]",
+                Decomposed::Array(Box::new(leaf("i32")), ArrayLen::Literal(4)),
+            ),
+            (
+                "[i32; N]",
+                "[i32; N]",
+                Decomposed::Array(Box::new(leaf("i32")), ArrayLen::Named("N".to_owned())),
+            ),
+            (
+                "[i32; fact(4)]",
+                "[i32; fact(4)]",
+                Decomposed::Array(Box::new(leaf("i32")), ArrayLen::Named("fact(4)".to_owned())),
+            ),
+            // Nested arrays keep their nesting: the outer length is the trailing
+            // one, and the inner array stays the element.
+            (
+                "[[u8; 2]; 3]",
+                "[[u8; 2]; 3]",
+                Decomposed::Array(
+                    Box::new(Decomposed::Array(
+                        Box::new(leaf("u8")),
+                        ArrayLen::Literal(2),
+                    )),
+                    ArrayLen::Literal(3),
+                ),
+            ),
+            // TypeExpr::Slice — a leaf for the helpers above; slice resolution
+            // has its own dispatch.
+            ("[i32]", "[i32]", leaf("[i32]")),
+            // TypeExpr::PointerConst / TypeExpr::PointerMut, including a
+            // pointer to a compound type and an array of pointers.
+            (
+                "ptr const i32",
+                "ptr const i32",
+                Decomposed::Ptr(Box::new(leaf("i32")), PtrMutability::Const),
+            ),
+            (
+                "ptr mut i32",
+                "ptr mut i32",
+                Decomposed::Ptr(Box::new(leaf("i32")), PtrMutability::Mut),
+            ),
+            (
+                "ptr const [i32; 4]",
+                "ptr const [i32; 4]",
+                Decomposed::Ptr(
+                    Box::new(Decomposed::Array(
+                        Box::new(leaf("i32")),
+                        ArrayLen::Literal(4),
+                    )),
+                    PtrMutability::Const,
+                ),
+            ),
+            (
+                "[ptr mut u8; 2]",
+                "[ptr mut u8; 2]",
+                Decomposed::Array(
+                    Box::new(Decomposed::Ptr(Box::new(leaf("u8")), PtrMutability::Mut)),
+                    ArrayLen::Literal(2),
+                ),
+            ),
+            // TypeExpr::TypeCall, nested, and with a TypeExpr::IntArg argument.
+            (
+                "Result(i32, bool)",
+                "Result(i32, bool)",
+                Decomposed::Call("Result".to_owned(), vec![leaf("i32"), leaf("bool")]),
+            ),
+            (
+                "Result(Option(i32), bool)",
+                "Result(Option(i32), bool)",
+                Decomposed::Call(
+                    "Result".to_owned(),
+                    vec![
+                        Decomposed::Call("Option".to_owned(), vec![leaf("i32")]),
+                        leaf("bool"),
+                    ],
+                ),
+            ),
+            (
+                "Vector(i32, 3)",
+                "Vector(i32, 3)",
+                Decomposed::Call("Vector".to_owned(), vec![leaf("i32"), leaf("3")]),
+            ),
+            // A comma inside an argument must not split the argument list.
+            (
+                "Holder(Result(i32, bool))",
+                "Holder(Result(i32, bool))",
+                Decomposed::Call(
+                    "Holder".to_owned(),
+                    vec![Decomposed::Call(
+                        "Result".to_owned(),
+                        vec![leaf("i32"), leaf("bool")],
+                    )],
+                ),
+            ),
+            // An array argument carries a `;` and brackets through the split.
+            (
+                "Holder([i32; 4])",
+                "Holder([i32; 4])",
+                Decomposed::Call(
+                    "Holder".to_owned(),
+                    vec![Decomposed::Array(
+                        Box::new(leaf("i32")),
+                        ArrayLen::Literal(4),
+                    )],
+                ),
+            ),
+            // TypeExpr::QualifiedTypeCall
+            (
+                "shapes.Pair(i32)",
+                "shapes.Pair(i32)",
+                Decomposed::Call("shapes.Pair".to_owned(), vec![leaf("i32")]),
+            ),
+            // TypeExpr::StrFixed renders as the same `Name(N)` text the
+            // const-capacity spelling produces, so both reduce identically.
+            (
+                "Str(8)",
+                "Str(8)",
+                Decomposed::Call("Str".to_owned(), vec![leaf("8")]),
+            ),
+            // A fixed-capacity string as an array element keeps both shapes.
+            (
+                "[Str(8); 2]",
+                "[Str(8); 2]",
+                Decomposed::Array(
+                    Box::new(Decomposed::Call("Str".to_owned(), vec![leaf("8")])),
+                    ArrayLen::Literal(2),
+                ),
+            ),
+        ];
+
+        for (annotation, rendered, expected) in cases {
+            let declared = declared_parameter_type(annotation);
+            assert_eq!(declared, rendered, "rendering of `{annotation}`");
+            assert_eq!(
+                decompose(&declared),
+                expected,
+                "semantic intake of `{annotation}`"
+            );
+        }
+    }
 }

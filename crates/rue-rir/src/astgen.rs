@@ -292,11 +292,22 @@ impl<'a> AstGen<'a> {
     }
 
     fn record_anonymous_anchor_failure(&mut self, reason: &'static str) {
+        self.record_lowering_failure("anonymous type anchor", reason);
+    }
+
+    /// Latch a typed producer-bug rejection for a lowering request the AST
+    /// cannot legally make, keeping the first failure so the reported cause is
+    /// the earliest one.
+    ///
+    /// `try_finish_editor` returns the latch before validation or publication,
+    /// and `rue_compiler::canonical_lower` renders a non-resource
+    /// `InvalidBuilderInput` as an internal error. Lowering therefore fails
+    /// closed on an impossible input instead of panicking (spec C.1:2) or
+    /// inventing a placeholder that later phases would have to interpret.
+    fn record_lowering_failure(&mut self, family: &'static str, reason: &'static str) {
         if self.payload_error.is_none() {
-            self.payload_error = Some(crate::RirPayloadBuildError::InvalidBuilderInput {
-                family: "anonymous type anchor",
-                reason,
-            });
+            self.payload_error =
+                Some(crate::RirPayloadBuildError::InvalidBuilderInput { family, reason });
         }
     }
 
@@ -1468,54 +1479,43 @@ impl<'a> AstGen<'a> {
                             )
                             .record_failure(&mut self.payload_error)
                     }
-                    _ => {
-                        // For named types, unit, never, arrays, and pointers, generate TypeConst
-                        let type_name = match &type_lit.type_expr {
-                            TypeExpr::Named(ident) => self.symbol(ident.name),
-                            TypeExpr::Qualified { .. } => self.intern_type(&type_lit.type_expr),
-                            TypeExpr::Unit(_) => self.interner.get_or_intern_static("()"),
-                            TypeExpr::Never(_) => self.interner.get_or_intern_static("!"),
-                            TypeExpr::Array { .. } => {
-                                // Array types as values are not yet supported
-                                // For now, use a placeholder
-                                self.interner.get_or_intern_static("array")
-                            }
-                            TypeExpr::Slice { .. } => {
-                                // Slice type `[T]` in value position (ADR-0043,
-                                // RUE-322). Intern its canonical string; sema
-                                // gates it behind `--preview slices` and reports
-                                // it not-yet-implemented.
-                                self.intern_type(&type_lit.type_expr)
-                            }
-                            TypeExpr::AnonymousStruct { .. } | TypeExpr::AnonymousEnum { .. } => {
-                                unreachable!("handled above")
-                            }
-                            TypeExpr::PointerConst { .. } | TypeExpr::PointerMut { .. } => {
-                                // Pointer types as values - use intern_type to get representation
-                                self.intern_type(&type_lit.type_expr)
-                            }
-                            TypeExpr::TypeCall { .. } | TypeExpr::QualifiedTypeCall { .. } => {
-                                // A type-function application in *value* position
-                                // (`let R = Result(i32, i32)`) is parsed as an
-                                // ordinary call expression, not a TypeLit, so it
-                                // does not normally reach here. Intern its
-                                // canonical string for completeness (RUE-241).
-                                self.intern_type(&type_lit.type_expr)
-                            }
-                            TypeExpr::StrFixed { .. } => {
-                                // Fixed-capacity string `Str(N)` in value position
-                                // (ADR-0043 Phase 5, RUE-326). Intern its canonical
-                                // `Str(N)` string for completeness; sema resolves it.
-                                self.intern_type(&type_lit.type_expr)
-                            }
-                            TypeExpr::IntArg { .. } => {
-                                // Only produced inside type-call argument lists
-                                // (RUE-552); a bare integer is never a TypeLit.
-                                unreachable!("IntArg outside a type-call argument list")
-                            }
-                        };
+                    // The only other shape the grammar admits here is a
+                    // primitive type keyword (`i32`, `bool`, ...): the
+                    // expression parser calls `Parser::ty` at that token, and
+                    // `ty` returns it as `TypeExpr::Named` without consuming
+                    // anything further. The named type keeps its own symbol, so
+                    // a type value is spelled exactly as the source spells it.
+                    TypeExpr::Named(ident) => {
+                        let type_name = self.symbol(ident.name);
                         self.rir.add_inst(Inst {
                             data: InstData::TypeConst { type_name },
+                            span: type_lit.span,
+                        })
+                    }
+                    // No other `TypeExpr` reaches value position (RUE-770).
+                    // `Expr::TypeLit` has exactly three producers — `struct
+                    // { ... }`, `enum { ... }`, and a primitive type keyword —
+                    // all in `rue_parser`'s primary-expression parser; the
+                    // compound shapes are reachable only from a type
+                    // *annotation*, which `intern_type` lowers instead.
+                    // `[i32; 4]` in value position, for example, is an array
+                    // repeat expression whose element is the type value `i32`,
+                    // and sema rejects it as `E1200` at its real span; it is
+                    // never a `TypeExpr::Array`. Lowering used to mint the
+                    // unspellable name `"array"` for that impossible case,
+                    // which would have named a distinct type no diagnostic
+                    // could explain. This boundary instead fails closed as a
+                    // typed producer-bug rejection (an ICE, never a panic and
+                    // never a silent placeholder), the same latch a
+                    // walk/lowering anchor disagreement uses.
+                    _ => {
+                        self.record_lowering_failure(
+                            "type literal",
+                            "type literal in value position carries a type shape \
+                             the expression grammar cannot produce",
+                        );
+                        self.rir.add_inst(Inst {
+                            data: InstData::UnitConst,
                             span: type_lit.span,
                         })
                     }
@@ -3672,5 +3672,98 @@ mod tests {
             }
             _ => panic!("Expected AnonStructType"),
         }
+    }
+
+    fn type_constant_names(rir: &Rir, interner: &ThreadedRodeo) -> Vec<String> {
+        rir.iter()
+            .filter_map(|(_, instruction)| match &instruction.data {
+                InstData::TypeConst { type_name } => Some(interner.resolve(type_name).to_owned()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// RUE-770: `[i32; 4]` in value position is an array repeat expression over
+    /// the type value `i32`, not an array *type* literal, so no lowering ever
+    /// needs a stand-in name for an array type value.
+    #[test]
+    fn array_in_value_position_lowers_as_an_array_expression() {
+        let (rir, interner) = gen_rir("fn main() -> i32 { let t = [i32; 4]; 0 }");
+        assert_eq!(type_constant_names(&rir, &interner), ["i32"]);
+        assert!(
+            rir.iter()
+                .any(|(_, instruction)| matches!(instruction.data, InstData::ArrayRepeat { .. })),
+            "the value-position `[i32; 4]` is an array repeat expression"
+        );
+        assert!(
+            interner.get("array").is_none(),
+            "no placeholder type name is interned for an array type value"
+        );
+    }
+
+    /// RUE-770: the compound spellings stay on the type-*annotation* path, which
+    /// preserves element and length identity structurally. `@size_of` proves a
+    /// `TypeConst`-adjacent type argument still carries the canonical string;
+    /// only the value-position type literal is restricted.
+    #[test]
+    fn array_type_annotations_keep_element_and_length_identity() {
+        let (rir, interner) = gen_rir(
+            "const N: i32 = 4;
+             fn f(a: [i32; 4], b: [[u8; 2]; N]) -> ptr const [i32; 4] { @size_of([i32; 4]) }",
+        );
+        let printed = RirPrinter::new(&rir, &interner).to_string();
+        assert!(printed.contains("[i32; 4]"), "{printed}");
+        assert!(printed.contains("[[u8; 2]; N]"), "{printed}");
+        assert!(printed.contains("ptr const [i32; 4]"), "{printed}");
+        assert!(!printed.contains("array"), "{printed}");
+    }
+
+    /// RUE-770: a type literal carrying a shape the expression grammar cannot
+    /// produce is a producer bug. Lowering latches a typed rejection instead of
+    /// interning an unspellable placeholder name, so the failure surfaces at the
+    /// construction boundary rather than as a type nothing can explain.
+    #[test]
+    fn impossible_type_literal_shape_fails_closed_without_a_placeholder() {
+        let interner = ThreadedRodeo::new();
+        let span = rue_span::Span::new(0, 1);
+        let ident = rue_parser::ast::Ident {
+            name: interner.get_or_intern("i32"),
+            span,
+        };
+        let array = TypeExpr::Array {
+            element: Box::new(TypeExpr::Named(ident)),
+            length: ArrayLength::Literal(4),
+            span,
+        };
+        let item = Item::Const(ConstDecl {
+            directives: rue_parser::ast::Directives::new(),
+            visibility: Visibility::Private,
+            name: ident,
+            ty: None,
+            init: Box::new(Expr::TypeLit(rue_parser::TypeLitExpr {
+                type_expr: array,
+                span,
+            })),
+            span,
+        });
+
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(std::iter::once(&item));
+        let error = astgen.try_finish().expect_err("impossible shape rejected");
+        assert!(
+            matches!(
+                error,
+                crate::RirPayloadBuildError::InvalidBuilderInput {
+                    family: "type literal",
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        assert!(!error.is_resource_limit() && !error.is_resource_exhaustion());
+        assert!(
+            interner.get("array").is_none(),
+            "the rejected shape interns no placeholder type name"
+        );
     }
 }
