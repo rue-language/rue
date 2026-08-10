@@ -531,7 +531,7 @@ fn substitute_accessor_places(
     yielded_value: CfgValue,
 ) -> Result<(), CfgInlineError> {
     let mut replacements = Vec::new();
-    let mut value_replacements = Vec::new();
+    let mut value_replacements = ValueReplacementIndex::new(cfg.value_count());
     for index in 0..cfg.value_count() {
         let value = CfgValue::from_raw(index as u32);
         let place = match &cfg.get_inst(value).data {
@@ -545,7 +545,7 @@ fn substitute_accessor_places(
         if matches!(cfg.get_inst(value).data, CfgInstData::PlaceRead { .. })
             && cfg.get_place_projections(place).is_empty()
         {
-            value_replacements.push(value);
+            value_replacements.insert(value);
             continue;
         }
         let mut projections = cfg.get_place_projections(yielded).to_vec();
@@ -562,7 +562,7 @@ fn substitute_accessor_places(
     }
     if !value_replacements.is_empty() {
         cfg.rewrite_value_uses(|value| {
-            if value_replacements.contains(&value) {
+            if value_replacements.contains(value) {
                 yielded_value
             } else {
                 value
@@ -572,10 +572,62 @@ fn substitute_accessor_places(
             let block = BlockId::from_raw(block_index as u32);
             cfg.get_block_mut(block)
                 .insts
-                .retain(|value| !value_replacements.contains(value));
+                .retain(|value| !value_replacements.contains(*value));
         }
     }
     Ok(())
+}
+
+/// Compact membership index for accessor reads replaced by one yielded value.
+/// `CfgValue` is an arena index, so no hashing or candidate scan is needed.
+struct ValueReplacementIndex {
+    members: Option<Vec<bool>>,
+    value_count: usize,
+    len: usize,
+    #[cfg(test)]
+    membership_probes: std::cell::Cell<u64>,
+}
+
+impl ValueReplacementIndex {
+    fn new(value_count: usize) -> Self {
+        Self {
+            members: None,
+            value_count,
+            len: 0,
+            #[cfg(test)]
+            membership_probes: std::cell::Cell::new(0),
+        }
+    }
+
+    fn insert(&mut self, value: CfgValue) {
+        let members = self
+            .members
+            .get_or_insert_with(|| vec![false; self.value_count]);
+        let member = &mut members[value.as_u32() as usize];
+        if !*member {
+            *member = true;
+            self.len += 1;
+        }
+    }
+
+    fn contains(&self, value: CfgValue) -> bool {
+        #[cfg(test)]
+        self.membership_probes.set(self.membership_probes.get() + 1);
+        self.members
+            .as_ref()
+            .and_then(|members| members.get(value.as_u32() as usize))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[cfg(test)]
+    fn membership_probes(&self) -> u64 {
+        self.membership_probes.get()
+    }
 }
 
 /// The callee's per-source-parameter grouping: the recorded ABI descriptors
@@ -1087,6 +1139,90 @@ mod tests {
         cfg.blocks()
             .iter()
             .flat_map(|block| block.insts.iter().copied())
+    }
+
+    #[test]
+    fn accessor_replacement_membership_is_one_probe_per_value() {
+        let value_count = 4_096usize;
+        let mut replacements = ValueReplacementIndex::new(value_count);
+        for index in (0..384u32).step_by(3) {
+            replacements.insert(CfgValue::from_raw(index));
+        }
+
+        for index in 0..value_count {
+            assert_eq!(
+                replacements.contains(CfgValue::from_raw(index as u32)),
+                index < 384 && index % 3 == 0
+            );
+        }
+        assert_eq!(replacements.membership_probes(), value_count as u64);
+    }
+
+    #[test]
+    fn many_accessor_reads_are_rewritten_and_detached_together() {
+        let mut cfg = Cfg::new(Type::I64, 1, 0, "caller".to_string(), Vec::<bool>::new());
+        let entry = cfg.new_block();
+        cfg.entry = entry;
+        let yielded_value = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(7),
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+        let call = cfg.append_inst(
+            entry,
+            CfgInst {
+                data: CfgInstData::Const(0),
+                ty: Type::I64,
+                span: Span::new(0, 0),
+            },
+        );
+
+        let mut reads = Vec::new();
+        let mut users = Vec::new();
+        for _ in 0..128 {
+            let read = cfg.append_inst(
+                entry,
+                CfgInst {
+                    data: CfgInstData::PlaceRead {
+                        place: Place::local(0, Type::I64).with_base(PlaceBase::Accessor(call)),
+                    },
+                    ty: Type::I64,
+                    span: Span::new(0, 0),
+                },
+            );
+            let user = cfg.append_inst(
+                entry,
+                CfgInst {
+                    data: CfgInstData::Add(read, read),
+                    ty: Type::I64,
+                    span: Span::new(0, 0),
+                },
+            );
+            reads.push(read);
+            users.push(user);
+        }
+        cfg.set_return(entry, users.last().copied());
+
+        let yielded = Place::local(0, Type::I64);
+        substitute_accessor_places(&mut cfg, call, &yielded, yielded_value).unwrap();
+
+        for user in users {
+            assert!(matches!(
+                cfg.get_inst(user).data,
+                CfgInstData::Add(left, right)
+                    if left == yielded_value && right == yielded_value
+            ));
+        }
+        let attached = cfg
+            .get_block(entry)
+            .insts
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        assert!(reads.iter().all(|read| !attached.contains(read)));
     }
 
     fn count_matching(cfg: &Cfg, predicate: impl Fn(&CfgInstData) -> bool) -> usize {
