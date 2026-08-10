@@ -33,6 +33,79 @@ use crate::types::{
     parse_type_call_syntax,
 };
 
+const COMPTIME_PARAMETER_INDEX_THRESHOLD: usize = 8;
+
+/// Membership and declared-type facts shared by deferred signature walkers.
+///
+/// Most Rue generics have only a handful of compile-time parameters, so the
+/// small path scans the parser-owned slices without allocating. Larger
+/// signatures pay once to build indexes that every recursive syntax walk and
+/// deferred type resolution can reuse.
+pub(crate) struct DeferredParameterFacts<'a> {
+    type_params: &'a [Spur],
+    value_params: &'a [Spur],
+    value_param_type_syms: &'a [(Spur, Spur)],
+    type_param_index: Option<HashSet<Spur>>,
+    value_param_index: Option<HashSet<Spur>>,
+    value_param_type_index: Option<HashMap<Spur, Spur>>,
+}
+
+impl<'a> DeferredParameterFacts<'a> {
+    pub(crate) fn new(
+        type_params: &'a [Spur],
+        value_params: &'a [Spur],
+        value_param_type_syms: &'a [(Spur, Spur)],
+    ) -> Self {
+        let type_param_index = (type_params.len() > COMPTIME_PARAMETER_INDEX_THRESHOLD)
+            .then(|| type_params.iter().copied().collect());
+        let value_param_index = (value_params.len() > COMPTIME_PARAMETER_INDEX_THRESHOLD)
+            .then(|| value_params.iter().copied().collect());
+        let value_param_type_index =
+            (value_param_type_syms.len() > COMPTIME_PARAMETER_INDEX_THRESHOLD).then(|| {
+                let mut index = HashMap::with_capacity(value_param_type_syms.len());
+                for &(name, type_name) in value_param_type_syms {
+                    // Preserve the slice path's first-match behavior if invalid
+                    // duplicate parameters reach deferred validation.
+                    index.entry(name).or_insert(type_name);
+                }
+                index
+            });
+        Self {
+            type_params,
+            value_params,
+            value_param_type_syms,
+            type_param_index,
+            value_param_index,
+            value_param_type_index,
+        }
+    }
+
+    fn contains_type(&self, name: Spur) -> bool {
+        self.type_param_index.as_ref().map_or_else(
+            || self.type_params.contains(&name),
+            |index| index.contains(&name),
+        )
+    }
+
+    fn contains_value(&self, name: Spur) -> bool {
+        self.value_param_index.as_ref().map_or_else(
+            || self.value_params.contains(&name),
+            |index| index.contains(&name),
+        )
+    }
+
+    fn value_type_symbol(&self, name: Spur) -> Option<Spur> {
+        self.value_param_type_index.as_ref().map_or_else(
+            || {
+                self.value_param_type_syms
+                    .iter()
+                    .find_map(|(candidate, type_name)| (*candidate == name).then_some(*type_name))
+            },
+            |index| index.get(&name).copied(),
+        )
+    }
+}
+
 /// The narrow semantic surface consumed by the canonical type-syntax
 /// evaluator.  This deliberately owns neither a declaration epoch nor a body
 /// analysis state: callers provide the host that owns the current facts.
@@ -142,12 +215,12 @@ pub(super) trait TypeSyntaxHost {
     fn type_syntax_type_name_mentions_type_param(
         &self,
         type_name: Spur,
-        type_params: &[Spur],
+        parameters: &DeferredParameterFacts<'_>,
     ) -> bool;
     fn type_syntax_type_name_mentions_value_param(
         &self,
         type_name: Spur,
-        value_params: &[Spur],
+        parameters: &DeferredParameterFacts<'_>,
     ) -> bool;
     fn type_syntax_resolve_type_symbol(
         &mut self,
@@ -836,20 +909,16 @@ pub(super) enum DeferredValueResolution {
     Pending,
 }
 
-pub(super) struct DeferredTypeSyntaxProvider<'s, 'c, H: TypeSyntaxHost> {
+pub(super) struct DeferredTypeSyntaxProvider<'s, 'c, 'p, H: TypeSyntaxHost> {
     inner: TypeSyntaxProvider<'s, 'c, H>,
-    type_params: &'c [Spur],
-    value_params: &'c [Spur],
-    value_param_type_syms: &'c [(Spur, Spur)],
+    parameters: &'p DeferredParameterFacts<'c>,
 }
 
-impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
+impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H> {
     pub(super) fn new(
         host: &'s mut H,
         span: Span,
-        type_params: &'c [Spur],
-        value_params: &'c [Spur],
-        value_param_type_syms: &'c [(Spur, Spur)],
+        parameters: &'p DeferredParameterFacts<'c>,
     ) -> Self {
         Self {
             inner: TypeSyntaxProvider::new(
@@ -860,9 +929,7 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
                 None,
                 None,
             ),
-            type_params,
-            value_params,
-            value_param_type_syms,
+            parameters,
         }
     }
 
@@ -948,7 +1015,7 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
     ) -> CompileResult<Option<ConstValue>> {
         let value_name = value_name.trim();
         if let Some(symbol) = self.inner.host.existing_type_syntax_symbol(value_name) {
-            if self.type_params.contains(&symbol) {
+            if self.parameters.contains_type(symbol) {
                 if expected != Some(Type::COMPTIME_TYPE) && (expected.is_some() || require_integer)
                 {
                     if let Some(expected) = expected {
@@ -975,18 +1042,17 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
                 }
                 return Ok(None);
             }
-            if self.value_params.contains(&symbol) {
+            if self.parameters.contains_value(symbol) {
                 let found =
-                    self.value_param_type_syms
-                        .iter()
-                        .find_map(|(name, type_name)| (*name == symbol).then_some(*type_name))
+                    self.parameters
+                        .value_type_symbol(symbol)
                         .filter(|type_name| {
                             !self.inner.host.type_syntax_type_name_mentions_type_param(
                                 *type_name,
-                                self.type_params,
+                                self.parameters,
                             ) && !self.inner.host.type_syntax_type_name_mentions_value_param(
                                 *type_name,
-                                self.value_params,
+                                self.parameters,
                             )
                         })
                         .map(|type_name| {
@@ -1014,9 +1080,7 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
                 let mut provider = DeferredTypeSyntaxProvider::new(
                     self.inner.host,
                     self.inner.span,
-                    self.type_params,
-                    self.value_params,
-                    self.value_param_type_syms,
+                    self.parameters,
                 );
                 let call = crate::resolve_semantic_comptime_call(
                     &mut provider,
@@ -1152,7 +1216,7 @@ impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H> {
 }
 
 impl<H: TypeSyntaxHost> crate::SemanticModulePathProvider<FileId, crate::types::ModuleId, FileId>
-    for DeferredTypeSyntaxProvider<'_, '_, H>
+    for DeferredTypeSyntaxProvider<'_, '_, '_, H>
 {
     type Abort = Infallible;
     type Failure = CompileError;
@@ -1193,7 +1257,7 @@ impl<H: TypeSyntaxHost>
         Spur,
         DeferredTypeResolution,
         DeferredValueResolution,
-    > for DeferredTypeSyntaxProvider<'_, '_, H>
+    > for DeferredTypeSyntaxProvider<'_, '_, '_, H>
 {
     fn substituted_type(
         &mut self,
@@ -1203,10 +1267,10 @@ impl<H: TypeSyntaxHost>
         let Some(symbol) = self.inner.host.existing_type_syntax_symbol(name) else {
             return Ok(None);
         };
-        if self.type_params.contains(&symbol) {
+        if self.parameters.contains_type(symbol) {
             return Ok(Some(DeferredTypeResolution::Pending));
         }
-        if self.value_params.contains(&symbol) {
+        if self.parameters.contains_value(symbol) {
             return provider_failure(Err(CompileError::new(
                 ErrorKind::UnknownType(name.to_string()),
                 self.inner.span,
@@ -2185,17 +2249,17 @@ impl<'source, D: DeclarationPhase> TypeSyntaxHost for Sema<'source, D> {
     fn type_syntax_type_name_mentions_type_param(
         &self,
         type_name: Spur,
-        type_params: &[Spur],
+        parameters: &DeferredParameterFacts<'_>,
     ) -> bool {
-        self.type_mentions_type_param(type_name, type_params)
+        self.type_mentions_type_param(type_name, parameters)
     }
 
     fn type_syntax_type_name_mentions_value_param(
         &self,
         type_name: Spur,
-        value_params: &[Spur],
+        parameters: &DeferredParameterFacts<'_>,
     ) -> bool {
-        self.type_name_mentions_value_param(self.interner.resolve(&type_name), value_params)
+        self.type_name_mentions_value_param(self.interner.resolve(&type_name), parameters)
     }
 
     fn type_syntax_resolve_type_symbol(
@@ -3049,27 +3113,35 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     /// Used when collecting a generic function's signature to decide whether a
     /// parameter/return type must be deferred (as `Type::COMPTIME_TYPE`) until
     /// specialization instead of resolved eagerly.
-    pub(crate) fn type_mentions_type_param(&self, type_sym: Spur, type_params: &[Spur]) -> bool {
-        if type_params.contains(&type_sym) {
+    pub(crate) fn type_mentions_type_param(
+        &self,
+        type_sym: Spur,
+        parameters: &DeferredParameterFacts<'_>,
+    ) -> bool {
+        if parameters.contains_type(type_sym) {
             return true;
         }
-        self.type_name_mentions_type_param(self.interner.resolve(&type_sym), type_params)
+        self.type_name_mentions_type_param(self.interner.resolve(&type_sym), parameters)
     }
 
-    fn type_name_mentions_type_param(&self, type_name: &str, type_params: &[Spur]) -> bool {
+    fn type_name_mentions_type_param(
+        &self,
+        type_name: &str,
+        parameters: &DeferredParameterFacts<'_>,
+    ) -> bool {
         if let Some((element_type, length)) = parse_array_type_syntax(type_name) {
             let length_mentions = match length {
                 ArrayLen::Literal(_) => false,
-                ArrayLen::Named(name) => self.type_name_mentions_type_param(&name, type_params),
+                ArrayLen::Named(name) => self.type_name_mentions_type_param(&name, parameters),
             };
             return length_mentions
-                || self.type_name_mentions_type_param(&element_type, type_params);
+                || self.type_name_mentions_type_param(&element_type, parameters);
         }
         if let Some(pointee) = type_name
             .strip_prefix("ptr const ")
             .or_else(|| type_name.strip_prefix("ptr mut "))
         {
-            return self.type_name_mentions_type_param(pointee, type_params);
+            return self.type_name_mentions_type_param(pointee, parameters);
         }
         // A type-function application `Name(arg, ...)` mentions a type parameter
         // if any argument does — `Option(T)` mentions `T`, so a signature/return
@@ -3080,12 +3152,12 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
             return arg_strs
                 .iter()
-                .any(|arg| self.type_name_mentions_type_param(arg, type_params));
+                .any(|arg| self.type_name_mentions_type_param(arg, parameters));
         }
         // Leaf name: only a match against an already-interned symbol counts
         // (type parameter names are interned by the parser).
         match self.interner.get(type_name) {
-            Some(sym) => type_params.contains(&sym),
+            Some(sym) => parameters.contains_type(sym),
             None => false,
         }
     }
@@ -3105,38 +3177,42 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn type_mentions_comptime_value_param(
         &self,
         type_sym: Spur,
-        value_params: &[Spur],
+        parameters: &DeferredParameterFacts<'_>,
     ) -> bool {
-        if value_params.is_empty() {
+        if parameters.value_params.is_empty() {
             return false;
         }
-        self.type_name_mentions_value_param(self.interner.resolve(&type_sym), value_params)
+        self.type_name_mentions_value_param(self.interner.resolve(&type_sym), parameters)
     }
 
-    fn type_name_mentions_value_param(&self, type_name: &str, value_params: &[Spur]) -> bool {
+    fn type_name_mentions_value_param(
+        &self,
+        type_name: &str,
+        parameters: &DeferredParameterFacts<'_>,
+    ) -> bool {
         if let Some((element_type, len)) = parse_array_type_syntax(type_name) {
             let length_mentions = match len {
                 ArrayLen::Literal(_) => false,
-                ArrayLen::Named(name) => self.type_name_mentions_value_param(&name, value_params),
+                ArrayLen::Named(name) => self.type_name_mentions_value_param(&name, parameters),
             };
             // Recurse into the element type (nested arrays / pointers).
             return length_mentions
-                || self.type_name_mentions_value_param(&element_type, value_params);
+                || self.type_name_mentions_value_param(&element_type, parameters);
         }
         if let Some(pointee) = type_name
             .strip_prefix("ptr const ")
             .or_else(|| type_name.strip_prefix("ptr mut "))
         {
-            return self.type_name_mentions_value_param(pointee, value_params);
+            return self.type_name_mentions_value_param(pointee, parameters);
         }
         if let Some((_call_name, arg_strs)) = parse_type_call_syntax(type_name) {
             return arg_strs
                 .iter()
-                .any(|arg| self.type_name_mentions_value_param(arg, value_params));
+                .any(|arg| self.type_name_mentions_value_param(arg, parameters));
         }
         self.interner
             .get(type_name)
-            .is_some_and(|sym| value_params.contains(&sym))
+            .is_some_and(|sym| parameters.contains_value(sym))
     }
 
     /// Validate the non-deferred parts of a signature type that will otherwise
@@ -3157,16 +3233,12 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn validate_deferred_signature_type_lengths(
         &mut self,
         type_sym: Spur,
-        type_params: &[Spur],
-        value_params: &[Spur],
-        value_param_type_syms: &[(Spur, Spur)],
+        parameters: &DeferredParameterFacts<'_>,
         span: Span,
     ) -> CompileResult<()> {
         self.validate_deferred_signature_type_name_lengths(
             self.interner.resolve(&type_sym).to_string(),
-            type_params,
-            value_params,
-            value_param_type_syms,
+            parameters,
             span,
         )
     }
@@ -3212,19 +3284,11 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     fn validate_deferred_signature_type_name_lengths(
         &mut self,
         type_name: String,
-        type_params: &[Spur],
-        value_params: &[Spur],
-        value_param_type_syms: &[(Spur, Spur)],
+        parameters: &DeferredParameterFacts<'_>,
         span: Span,
     ) -> CompileResult<()> {
-        self.validate_deferred_type_position(
-            type_name,
-            type_params,
-            value_params,
-            value_param_type_syms,
-            span,
-        )
-        .map(|_| ())
+        self.validate_deferred_type_position(type_name, parameters, span)
+            .map(|_| ())
     }
 
     /// Validate a source fragment used in type position. The optional result
@@ -3233,18 +3297,14 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     fn validate_deferred_type_position(
         &mut self,
         type_name: String,
-        type_params: &[Spur],
-        value_params: &[Spur],
-        value_param_type_syms: &[(Spur, Spur)],
+        parameters: &DeferredParameterFacts<'_>,
         span: Span,
     ) -> CompileResult<Option<Type>> {
         super::BodyAnalysisHost::validate_deferred_type(
             self,
             super::fact_mode::DeferredTypeRequest {
                 type_name,
-                type_params,
-                value_params,
-                value_param_type_syms,
+                parameters,
                 span,
             },
         )
@@ -3253,18 +3313,10 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
     pub(crate) fn validate_deferred_type_position_with_epoch_facts(
         &mut self,
         type_name: String,
-        type_params: &[Spur],
-        value_params: &[Spur],
-        value_param_type_syms: &[(Spur, Spur)],
+        parameters: &DeferredParameterFacts<'_>,
         span: Span,
     ) -> CompileResult<Option<Type>> {
-        let mut provider = DeferredTypeSyntaxProvider::new(
-            self,
-            span,
-            type_params,
-            value_params,
-            value_param_type_syms,
-        );
+        let mut provider = DeferredTypeSyntaxProvider::new(self, span, parameters);
         let result = crate::resolve_semantic_type_syntax(&mut provider, &span.file_id, &type_name);
         provider.flush_observed_type_dependencies();
         match result {
@@ -3281,7 +3333,8 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         type_params: &[Spur],
         span: Span,
     ) -> CompileResult<Option<Type>> {
-        self.validate_deferred_type_position(type_name.to_string(), type_params, &[], &[], span)
+        let parameters = DeferredParameterFacts::new(type_params, &[], &[]);
+        self.validate_deferred_type_position(type_name.to_string(), &parameters, span)
     }
 
     fn deferred_signature_substitutions_are_ready(
@@ -3292,13 +3345,37 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
         type_subst: &HashMap<Spur, Type>,
         value_subst: &HashMap<Spur, ConstValue>,
     ) -> bool {
-        type_params.iter().all(|name| {
-            type_subst.contains_key(name)
-                || !self.type_name_mentions_type_param(type_name, &[*name])
-        }) && value_params.iter().all(|name| {
-            value_subst.contains_key(name)
-                || !self.type_name_mentions_value_param(type_name, &[*name])
-        })
+        if type_params.len() <= COMPTIME_PARAMETER_INDEX_THRESHOLD
+            && value_params.len() <= COMPTIME_PARAMETER_INDEX_THRESHOLD
+        {
+            return type_params.iter().all(|name| {
+                type_subst.contains_key(name) || {
+                    let names = [*name];
+                    let parameters = DeferredParameterFacts::new(&names, &[], &[]);
+                    !self.type_name_mentions_type_param(type_name, &parameters)
+                }
+            }) && value_params.iter().all(|name| {
+                value_subst.contains_key(name) || {
+                    let names = [*name];
+                    let parameters = DeferredParameterFacts::new(&[], &names, &[]);
+                    !self.type_name_mentions_value_param(type_name, &parameters)
+                }
+            });
+        }
+        let missing_type_params = type_params
+            .iter()
+            .copied()
+            .filter(|name| !type_subst.contains_key(name))
+            .collect::<Vec<_>>();
+        let missing_value_params = value_params
+            .iter()
+            .copied()
+            .filter(|name| !value_subst.contains_key(name))
+            .collect::<Vec<_>>();
+        let parameters =
+            DeferredParameterFacts::new(&missing_type_params, &missing_value_params, &[]);
+        !self.type_name_mentions_type_param(type_name, &parameters)
+            && !self.type_name_mentions_value_param(type_name, &parameters)
     }
 
     fn validate_deferred_value_result(
@@ -3482,5 +3559,47 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
     /// saturated value is never used for real allocation.
     pub(crate) fn abi_slot_count(&self, ty: Type) -> u32 {
         self.body_type_pool().provisional_abi_slot_count(ty)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use lasso::ThreadedRodeo;
+
+    use super::*;
+
+    #[test]
+    fn deferred_parameter_facts_index_only_the_large_case_and_keep_first_value_type() {
+        let interner = ThreadedRodeo::new();
+        let names = (0..9)
+            .map(|index| interner.get_or_intern(format!("P{index}")))
+            .collect::<Vec<_>>();
+        let type_names = (0..9)
+            .map(|index| interner.get_or_intern(format!("Ty{index}")))
+            .collect::<Vec<_>>();
+        let small_pairs = names[..8]
+            .iter()
+            .copied()
+            .zip(type_names[..8].iter().copied())
+            .collect::<Vec<_>>();
+        let small = DeferredParameterFacts::new(&names[..8], &names[..8], &small_pairs);
+        assert!(small.type_param_index.is_none());
+        assert!(small.value_param_index.is_none());
+        assert!(small.value_param_type_index.is_none());
+        assert!(small.contains_type(names[7]));
+        assert_eq!(small.value_type_symbol(names[7]), Some(type_names[7]));
+
+        let mut large_pairs = names
+            .iter()
+            .copied()
+            .zip(type_names.iter().copied())
+            .collect::<Vec<_>>();
+        large_pairs.insert(1, (names[0], type_names[8]));
+        let large = DeferredParameterFacts::new(&names, &names, &large_pairs);
+        assert!(large.type_param_index.is_some());
+        assert!(large.value_param_index.is_some());
+        assert!(large.value_param_type_index.is_some());
+        assert!(large.contains_value(names[8]));
+        assert_eq!(large.value_type_symbol(names[0]), Some(type_names[0]));
     }
 }

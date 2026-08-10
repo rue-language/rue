@@ -19,6 +19,7 @@ use rue_rir::InstData;
 use rue_rir::{InstRef, RirParamMode};
 use rue_span::{FileId, Span};
 
+use super::typeck::DeferredParameterFacts;
 use super::{ConstInfo, ConstValue, DeclarationPhase, InferenceContext, Sema};
 use super::{FunctionInfo, MethodInfo};
 use crate::declaration_validation::{
@@ -1518,6 +1519,11 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             .filter(|p| p.is_comptime && p.ty != type_sym)
             .map(|p| (p.name, p.ty))
             .collect();
+        let deferred_parameter_facts = DeferredParameterFacts::new(
+            &type_param_names,
+            &value_param_names,
+            &value_param_type_syms,
+        );
 
         // For generic functions, we defer type resolution of type parameters until specialization.
         // We use Type::COMPTIME_TYPE as a placeholder for comptime T: type parameters.
@@ -1527,8 +1533,8 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                 if p.is_comptime && p.ty == type_sym {
                     // For comptime TYPE parameters (comptime T: type), the type is `type`
                     Ok(Type::COMPTIME_TYPE)
-                } else if self.type_mentions_type_param(p.ty, &type_param_names)
-                    || self.type_mentions_comptime_value_param(p.ty, &value_param_names)
+                } else if self.type_mentions_type_param(p.ty, &deferred_parameter_facts)
+                    || self.type_mentions_comptime_value_param(p.ty, &deferred_parameter_facts)
                 {
                     // This parameter's type is a type parameter (`x: T`) or a
                     // composite mentioning one (`a: [T; 3]`, `p: ptr const T`;
@@ -1543,9 +1549,7 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
                     // an ICE when the function is later instantiated (RUE-381).
                     self.validate_deferred_signature_type_lengths(
                         p.ty,
-                        &type_param_names,
-                        &value_param_names,
-                        &value_param_type_syms,
+                        &deferred_parameter_facts,
                         span,
                     )?;
                     Ok(Type::COMPTIME_TYPE)
@@ -1560,17 +1564,15 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
         // For generic functions, we can't resolve the return type yet if it references
         // a type parameter - either directly (`-> T`) or inside a composite
         // (`-> [T; 3]`, RUE-172).
-        let ret_type = if self.type_mentions_type_param(return_type_sym, &type_param_names)
-            || self.type_mentions_comptime_value_param(return_type_sym, &value_param_names)
+        let ret_type = if self.type_mentions_type_param(return_type_sym, &deferred_parameter_facts)
+            || self.type_mentions_comptime_value_param(return_type_sym, &deferred_parameter_facts)
         {
             // Return type references a type parameter (`-> T`, `-> [T; 3]`) or
             // an array length naming a comptime value parameter (`-> [i32; N]`,
             // RUE-16) - use placeholder, resolved at specialization.
             self.validate_deferred_signature_type_lengths(
                 return_type_sym,
-                &type_param_names,
-                &value_param_names,
-                &value_param_type_syms,
+                &deferred_parameter_facts,
                 span,
             )?;
             Type::COMPTIME_TYPE

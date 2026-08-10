@@ -3627,6 +3627,24 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn large_deferred_signature_resolves_indexed_comptime_parameters() {
+        compile_to_air(
+            "fn Box(comptime T: type) -> type { struct { value: T } }
+             fn projected(
+                 comptime T0: type, comptime T1: type, comptime T2: type,
+                 comptime T3: type, comptime T4: type, comptime T5: type,
+                 comptime T6: type, comptime T7: type, comptime T8: type,
+                 comptime N0: i32, comptime N1: i32, comptime N2: i32,
+                 comptime N3: i32, comptime N4: i32, comptime N5: i32,
+                 comptime N6: i32, comptime N7: i32, comptime N8: i32,
+                 value: ptr const [Box(T8); N8],
+             ) -> ptr const [Box(T0); N0] { loop {} }
+             fn main() -> i32 { 0 }",
+        )
+        .unwrap();
+    }
+
+    #[test]
     fn selected_alias_observes_the_alias_and_its_nominal_result_once_each() {
         let output = compile_to_air(
             "struct Leaf { value: i32 }

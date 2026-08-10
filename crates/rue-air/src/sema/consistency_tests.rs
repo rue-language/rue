@@ -1082,7 +1082,7 @@ mod tests {
             ),
             item(
                 TYPECK_SOURCE,
-                "impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H>",
+                "impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
             ),
         ] {
             for forbidden in [
@@ -1105,7 +1105,7 @@ mod tests {
 
         let deferred = item(
             TYPECK_SOURCE,
-            "impl<'s, 'c, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, H>",
+            "impl<'s, 'c, 'p, H: TypeSyntaxHost> DeferredTypeSyntaxProvider<'s, 'c, 'p, H>",
         );
         for required in [
             "fn deferred_argument_expected(",
