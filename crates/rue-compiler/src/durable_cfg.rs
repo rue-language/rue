@@ -341,6 +341,48 @@ pub(crate) struct CfgDomainProjection {
     incomplete_epoch: Option<Arc<()>>,
 }
 
+struct CfgTypeDomainIndex<'a> {
+    stable_by_live: HashMap<Type, &'a CanonicalType>,
+    live_by_stable: HashMap<&'a CanonicalType, Type>,
+}
+
+impl<'a> CfgTypeDomainIndex<'a> {
+    fn new(old: &'a [(Type, CanonicalType)], current: &'a [(Type, CanonicalType)]) -> Self {
+        let mut stable_by_live = HashMap::with_capacity(old.len());
+        let mut live_by_stable = HashMap::with_capacity(current.len());
+        for (live, stable) in old {
+            stable_by_live.entry(*live).or_insert(stable);
+        }
+        for (live, stable) in current {
+            live_by_stable.entry(stable).or_insert(*live);
+        }
+        Self {
+            stable_by_live,
+            live_by_stable,
+        }
+    }
+
+    fn stable(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
+        canonical_primitive(value)
+            .or_else(|| {
+                self.stable_by_live
+                    .get(&value)
+                    .map(|stable| (*stable).clone())
+            })
+            .ok_or(CfgDomainFailure::MissingLiveType(value))
+    }
+
+    fn current(&self, stable: &CanonicalType) -> Result<Type, CfgDomainFailure> {
+        live_primitive(stable)
+            .or_else(|| self.live_by_stable.get(stable).copied())
+            .ok_or_else(|| CfgDomainFailure::MissingStableType(stable.clone()))
+    }
+
+    fn remap(&self, value: Type) -> Result<Type, CfgDomainFailure> {
+        self.current(&self.stable(value)?)
+    }
+}
+
 impl RetainedCharge for CfgDomainProjection {
     fn retained_charge(&self) -> u64 {
         let types = (self.types.len() * std::mem::size_of::<(Type, CanonicalType)>()) as u64;
@@ -426,8 +468,13 @@ impl CfgDomainProjection {
         type_pool: &rue_air::FrozenTypeInternPool,
         aggregates: &HashMap<Type, crate::TypeInstanceKey>,
     ) -> Result<(), CfgDomainFailure> {
+        let mut stable_types = self
+            .types
+            .iter()
+            .map(|(_, stable)| stable.clone())
+            .collect::<std::collections::HashSet<_>>();
         for (_, stable) in &old.types {
-            if self.current_type(stable).is_ok() {
+            if live_primitive(stable).is_some() || !stable_types.insert(stable.clone()) {
                 continue;
             }
             let current = type_pool
@@ -486,8 +533,10 @@ impl CfgDomainProjection {
         if old.incomplete_epoch.is_some() || self.incomplete_epoch.is_some() {
             return Err(CfgDomainFailure::Missing);
         }
+        self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
+        let type_index = CfgTypeDomainIndex::new(&old.types, &self.types);
         for (_, stable) in &old.types {
-            self.current_type(stable)?;
+            type_index.current(stable)?;
         }
         let mut current_symbols = HashMap::with_capacity(self.symbols.len() + old.symbols.len());
         for (live, stable) in &self.symbols {
@@ -533,7 +582,6 @@ impl CfgDomainProjection {
         }
         drop(indices);
         strings.extend(additions);
-        self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
         self.symbols.sort_by(|left, right| {
             (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
         });
@@ -541,18 +589,12 @@ impl CfgDomainProjection {
 
         let imported = cfg
             .try_remap_domains(
-                |value| self.current_type(&old.stable_type(value)?),
-                |value| match self
-                    .current_nominal(&old.stable_nominal(Type::new_struct(value))?)?
-                    .kind()
-                {
+                |value| type_index.remap(value),
+                |value| match type_index.remap(Type::new_struct(value))?.kind() {
                     TypeKind::Struct(id) => Ok(id),
                     _ => Err(CfgDomainFailure::Shape),
                 },
-                |value| match self
-                    .current_nominal(&old.stable_nominal(Type::new_enum(value))?)?
-                    .kind()
-                {
+                |value| match type_index.remap(Type::new_enum(value))?.kind() {
                     TypeKind::Enum(id) => Ok(id),
                     _ => Err(CfgDomainFailure::Shape),
                 },
@@ -1333,33 +1375,6 @@ impl CfgDomainProjection {
         })
     }
 
-    fn stable_type(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
-        if let Some(stable) = canonical_primitive(value) {
-            return Ok(stable);
-        }
-        self.types
-            .iter()
-            .find(|(current, _)| *current == value)
-            .map(|(_, stable)| stable.clone())
-            .ok_or(CfgDomainFailure::MissingLiveType(value))
-    }
-    fn current_type(&self, value: &CanonicalType) -> Result<Type, CfgDomainFailure> {
-        if let Some(current) = live_primitive(value) {
-            return Ok(current);
-        }
-        self.types
-            .iter()
-            .find(|(_, stable)| stable == value)
-            .map(|(current, _)| *current)
-            .ok_or_else(|| CfgDomainFailure::MissingStableType(value.clone()))
-    }
-    fn stable_nominal(&self, value: Type) -> Result<CanonicalType, CfgDomainFailure> {
-        self.stable_type(value)
-    }
-    fn current_nominal(&self, value: &CanonicalType) -> Result<Type, CfgDomainFailure> {
-        self.current_type(value)
-    }
-
     pub fn import_cfg(
         old: &Self,
         new: &Self,
@@ -1372,54 +1387,61 @@ impl CfgDomainProjection {
         if old.atoms != new.atoms {
             return Err(CfgDomainFailure::Shape);
         }
+        let type_index = CfgTypeDomainIndex::new(&old.types, &new.types);
+        let mut old_symbols = HashMap::with_capacity(old.symbols.len());
+        let mut new_symbols = HashMap::with_capacity(new.symbols.len());
+        for (live, stable) in &old.symbols {
+            old_symbols.entry(*live).or_insert(stable);
+        }
+        for (live, stable) in &new.symbols {
+            new_symbols.entry(stable).or_insert(*live);
+        }
+        let mut old_strings = HashMap::with_capacity(old.strings.len());
+        let mut new_strings = HashMap::with_capacity(new.strings.len());
+        for (index, stable) in &old.strings {
+            old_strings.entry(*index).or_insert(stable.as_ref());
+        }
+        for (index, stable) in &new.strings {
+            new_strings.entry(stable.as_ref()).or_insert(*index);
+        }
+        let mut old_spans = HashMap::with_capacity(old.spans.len());
+        for (span, stable) in &old.spans {
+            old_spans.entry(*span).or_insert(*stable);
+        }
         cfg.try_remap_domains(
-            |value| new.current_type(&old.stable_type(value)?),
-            |value| match new
-                .current_nominal(&old.stable_nominal(Type::new_struct(value))?)?
-                .kind()
-            {
+            |value| type_index.remap(value),
+            |value| match type_index.remap(Type::new_struct(value))?.kind() {
                 TypeKind::Struct(id) => Ok(id),
                 _ => Err(CfgDomainFailure::Shape),
             },
-            |value| match new
-                .current_nominal(&old.stable_nominal(Type::new_enum(value))?)?
-                .kind()
-            {
+            |value| match type_index.remap(Type::new_enum(value))?.kind() {
                 TypeKind::Enum(id) => Ok(id),
                 _ => Err(CfgDomainFailure::Shape),
             },
             |value: Spur| {
-                let stable = old
-                    .symbols
-                    .iter()
-                    .find(|(symbol, _)| *symbol == value)
-                    .map(|(_, value)| value)
+                let stable = old_symbols
+                    .get(&value)
+                    .copied()
                     .ok_or(CfgDomainFailure::MissingSymbol)?;
-                new.symbols
-                    .iter()
-                    .find(|(_, identity)| identity == stable)
-                    .map(|(symbol, _)| *symbol)
+                new_symbols
+                    .get(stable)
+                    .copied()
                     .ok_or(CfgDomainFailure::MissingSymbol)
             },
             |value| {
-                let stable = old
-                    .strings
-                    .iter()
-                    .find(|(index, _)| *index == value)
-                    .map(|(_, value)| value)
+                let stable = old_strings
+                    .get(&value)
+                    .copied()
                     .ok_or(CfgDomainFailure::MissingString)?;
-                new.strings
-                    .iter()
-                    .find(|(_, value)| value == stable)
-                    .map(|(index, _)| *index)
+                new_strings
+                    .get(stable)
+                    .copied()
                     .ok_or(CfgDomainFailure::MissingString)
             },
             |value| {
-                let anchor = old
-                    .spans
-                    .iter()
-                    .find(|(span, _)| *span == value)
-                    .map(|(_, anchor)| *anchor)
+                let anchor = old_spans
+                    .get(&value)
+                    .copied()
                     .unwrap_or_else(|| StableCfgSpan::new(value, old.body_span));
                 anchor.relocate(new_span)
             },
@@ -1586,6 +1608,39 @@ mod tests {
             assert!(!compact.contains(".symbols.iter().any("));
             assert!(!compact.contains(".symbols.iter().find("));
         }
+
+        let general_import = source
+            .split_once("pub fn import_cfg(")
+            .unwrap()
+            .1
+            .split_once("#[cfg(test)]")
+            .unwrap()
+            .0;
+        let compact = general_import
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        for domain in ["types", "symbols", "strings", "spans"] {
+            assert!(!compact.contains(&format!(".{domain}.iter().find(")));
+        }
+        let compact_accessor = relocation
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(!compact_accessor.contains("self.current_type("));
+        assert!(!compact_accessor.contains("old.stable_type("));
+        let type_admission = source
+            .split_once("pub(crate) fn admit_stable_types(")
+            .unwrap()
+            .1
+            .split_once("pub(crate) fn admit_stable_strings(")
+            .unwrap()
+            .0
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+        assert!(!type_admission.contains("self.current_type("));
+        assert!(!type_admission.contains(".types.iter().find("));
     }
 
     #[test]
