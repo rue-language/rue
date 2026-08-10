@@ -11,6 +11,15 @@ use crate::retained_charge::RetainedCharge;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 
+fn first_string_indices(strings: &[String]) -> Result<HashMap<&str, u32>, CfgDomainFailure> {
+    let mut indices = HashMap::with_capacity(strings.len());
+    for (index, value) in strings.iter().enumerate() {
+        let index = u32::try_from(index).map_err(|_| CfgDomainFailure::Shape)?;
+        indices.entry(value.as_str()).or_insert(index);
+    }
+    Ok(indices)
+}
+
 fn canonical_nominal(value: &crate::NominalInstanceKey) -> CanonicalType {
     match value {
         crate::NominalInstanceKey::Builtin { kind, name } => CanonicalType::BuiltinNominal {
@@ -444,19 +453,13 @@ impl CfgDomainProjection {
         old: &Self,
         strings: &[String],
     ) -> Result<(), CfgDomainFailure> {
+        let indices = first_string_indices(strings)?;
         for (_, stable) in &old.strings {
-            let index = strings
-                .iter()
-                .position(|value| value == stable.as_ref())
-                .ok_or(CfgDomainFailure::MissingString)
-                .and_then(|index| u32::try_from(index).map_err(|_| CfgDomainFailure::Shape))?;
-            if !self
-                .strings
-                .iter()
-                .any(|(candidate, value)| *candidate == index && value == stable)
-            {
-                self.strings.push((index, stable.clone()));
-            }
+            let index = indices
+                .get(stable.as_ref())
+                .copied()
+                .ok_or(CfgDomainFailure::MissingString)?;
+            self.strings.push((index, stable.clone()));
         }
         self.strings.sort_by_key(|(index, _)| *index);
         self.strings.dedup();
@@ -495,26 +498,34 @@ impl CfgDomainProjection {
                 self.symbols.push((symbol, stable.clone()));
             }
         }
+        let mut indices = first_string_indices(strings)?;
+        let mut domain_strings = self
+            .strings
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        let mut additions = Vec::new();
         let mut string_map = std::collections::BTreeMap::new();
         for (old_index, stable) in &old.strings {
-            let new_index = if let Some(index) =
-                strings.iter().position(|value| value == stable.as_ref())
-            {
-                u32::try_from(index).map_err(|_| CfgDomainFailure::Shape)?
+            let new_index = if let Some(index) = indices.get(stable.as_ref()).copied() {
+                index
             } else {
-                let index = u32::try_from(strings.len()).map_err(|_| CfgDomainFailure::Shape)?;
-                strings.push(stable.to_string());
+                let index = strings
+                    .len()
+                    .checked_add(additions.len())
+                    .and_then(|index| u32::try_from(index).ok())
+                    .ok_or(CfgDomainFailure::Shape)?;
+                indices.insert(stable.as_ref(), index);
+                additions.push(stable.to_string());
                 index
             };
             string_map.insert(*old_index, new_index);
-            if !self
-                .strings
-                .iter()
-                .any(|(index, value)| *index == new_index && value == stable)
-            {
+            if domain_strings.insert((new_index, stable.clone())) {
                 self.strings.push((new_index, stable.clone()));
             }
         }
+        drop(indices);
+        strings.extend(additions);
         self.types = deduplicate_type_mappings(std::mem::take(&mut self.types))?;
         self.symbols.sort_by(|left, right| {
             (left.0.into_usize(), &left.1).cmp(&(right.0.into_usize(), &right.1))
@@ -1439,6 +1450,59 @@ mod tests {
 
     fn projection(symbol: Spur) -> CfgDomainProjection {
         projection_with(symbol, StableCfgSymbol::Intrinsic(Arc::from("stable")))
+    }
+
+    #[test]
+    fn accessor_string_relocation_indexes_first_occurrences_and_new_content_once() {
+        let old_interner = lasso::ThreadedRodeo::new();
+        let new_interner = lasso::ThreadedRodeo::new();
+        let old_symbol = old_interner.get_or_intern("callee");
+        let new_symbol = new_interner.get_or_intern("callee");
+        let stable_symbol = StableCfgSymbol::Intrinsic(Arc::from("callee"));
+        let mut old = projection_with(old_symbol, stable_symbol.clone());
+        old.strings = vec![
+            (10, Arc::from("same")),
+            (11, Arc::from("same")),
+            (12, Arc::from("added")),
+        ];
+        let mut current = projection_with(new_symbol, stable_symbol);
+        current.strings = vec![(0, Arc::from("same"))];
+        let mut strings = vec!["same".to_string(), "other".to_string(), "same".to_string()];
+        let mut cfg = Cfg::new(Type::I32, 0, 0, "f".into(), Vec::<bool>::new());
+        let block = cfg.new_block();
+        cfg.append_call(block, None, old_symbol, [], Type::I32, Span::new(4, 5))
+            .unwrap();
+
+        let (_, string_map) = current
+            .import_accessor_cfg(
+                &old,
+                &cfg,
+                &old_interner,
+                &new_interner,
+                &mut strings,
+                Span::new(40, 50),
+            )
+            .unwrap();
+
+        assert_eq!(string_map, [(10, 0), (11, 0), (12, 3)].into());
+        assert_eq!(strings, ["same", "other", "same", "added"]);
+        assert_eq!(
+            current
+                .strings
+                .iter()
+                .filter(|(index, stable)| *index == 0 && stable.as_ref() == "same")
+                .count(),
+            1
+        );
+        let source = include_str!("durable_cfg.rs");
+        let relocation = source
+            .split_once("pub(crate) fn admit_stable_strings(")
+            .unwrap()
+            .1
+            .split_once("pub(crate) fn callable_for_symbol")
+            .unwrap()
+            .0;
+        assert!(!relocation.contains(".position("));
     }
 
     #[test]
