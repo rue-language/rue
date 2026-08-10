@@ -81,6 +81,7 @@ enum MovedSlot {
 /// index as the segment: `xs[2]` → `[2]`. Whether a segment is a field or an
 /// element is determined by the type at that level.
 type FieldPath = Vec<u32>;
+type MovedPathKey = (MovedSlot, FieldPath);
 
 /// Move-out state for drop elaboration: whole slots and struct field paths
 /// whose contents were moved out.
@@ -97,12 +98,12 @@ struct MoveState {
     slots: std::collections::HashSet<MovedSlot>,
     /// `(slot, path)` pairs for field paths moved out (on EVERY tracked
     /// path) of a slot that is itself still live. Join: intersection.
-    fields: std::collections::HashSet<(MovedSlot, FieldPath)>,
+    fields: std::collections::HashSet<MovedPathKey>,
     /// `(slot, path)` pairs for field paths moved out on SOME tracked path.
     /// Always a superset of `fields`. Join: union. A path here but not in
     /// `fields` is path-dependent: its scope-exit drop is emitted behind
     /// that path's runtime drop flag.
-    maybe_fields: std::collections::HashSet<(MovedSlot, FieldPath)>,
+    maybe_fields: std::collections::HashSet<MovedPathKey>,
 }
 
 impl MoveState {
@@ -143,6 +144,16 @@ impl MoveState {
     /// Was the slot's whole value moved out (on every tracked path)?
     fn is_slot_moved(&self, slot: MovedSlot) -> bool {
         self.slots.contains(&slot)
+    }
+
+    /// Was this exact field path moved out on every tracked path?
+    fn is_path_moved(&self, key: &MovedPathKey) -> bool {
+        self.fields.contains(key)
+    }
+
+    /// Was this exact field path moved out on any tracked path?
+    fn is_path_maybe_moved(&self, key: &MovedPathKey) -> bool {
+        self.maybe_fields.contains(key)
     }
 
     /// Field paths moved out of `slot` on EVERY tracked path.
@@ -225,14 +236,14 @@ pub struct CfgBuilder<'a> {
     /// anywhere in the function. Armed when the slot is (re)initialized,
     /// cleared at the path's move site; `emit_partial_struct_drop` guards
     /// each possibly-moved field's drop with its flag.
-    field_drop_flags: std::collections::HashMap<(MovedSlot, FieldPath), u32>,
+    field_drop_flags: std::collections::HashMap<MovedPathKey, u32>,
     /// Slots with a whole-value MarkMoved anywhere in the AIR (pre-scanned),
     /// i.e. candidates for a drop flag.
     ever_moved: std::collections::HashSet<MovedSlot>,
     /// `(slot, field path)` pairs with a field-level MarkMoved anywhere in
     /// the AIR whose moved type needs drop (pre-scanned), i.e. candidates
     /// for a per-field drop flag.
-    ever_field_moved: std::collections::HashSet<(MovedSlot, FieldPath)>,
+    ever_field_moved: std::collections::HashSet<MovedPathKey>,
     /// Slots (and struct field paths of any depth, RUE-62/RUE-157) whose
     /// contents have definitely been moved out on every path reaching the
     /// current lowering position. Drop elaboration skips these (the new
@@ -2154,12 +2165,12 @@ impl<'a> CfgBuilder<'a> {
                         };
                     let field_moved = match single_path {
                         Some(path) => {
-                            if self.moved.moved_paths_of(base_key).contains(&path) {
+                            let path_key = (base_key, path);
+                            if self.moved.is_path_moved(&path_key) {
                                 true
                             } else {
-                                if self.moved.maybe_moved_paths_of(base_key).contains(&path) {
-                                    field_flag =
-                                        self.field_drop_flags.get(&(base_key, path)).copied();
+                                if self.moved.is_path_maybe_moved(&path_key) {
+                                    field_flag = self.field_drop_flags.get(&path_key).copied();
                                 }
                                 false
                             }
@@ -3429,6 +3440,30 @@ mod tests {
     use rue_rir::AstGen;
     use rue_span::FileId;
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn exact_moved_path_queries_do_not_materialize_per_slot_sets() {
+        let slot = MovedSlot::Local(7);
+        let definite = vec![1, 2];
+        let possible = vec![3, 4];
+        let absent = vec![5, 6];
+        let mut state = MoveState::default();
+        state.mark_path(slot, definite.clone());
+        state.maybe_fields.insert((slot, possible.clone()));
+
+        assert!(state.is_path_moved(&(slot, definite.clone())));
+        assert!(state.is_path_maybe_moved(&(slot, definite)));
+        assert!(!state.is_path_moved(&(slot, possible.clone())));
+        assert!(state.is_path_maybe_moved(&(slot, possible)));
+        assert!(!state.is_path_moved(&(slot, absent.clone())));
+        assert!(!state.is_path_maybe_moved(&(slot, absent)));
+
+        let materialized_probe = ["moved_paths_of(base_key)", ".contains"].concat();
+        let materialized_maybe_probe = ["maybe_moved_paths_of(base_key)", ".contains"].concat();
+        let source = include_str!("build.rs");
+        assert!(!source.contains(&materialized_probe));
+        assert!(!source.contains(&materialized_maybe_probe));
+    }
 
     fn build_cfg(source: &str) -> Cfg {
         build_cfg_for(source, 0)
