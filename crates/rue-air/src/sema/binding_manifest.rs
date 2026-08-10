@@ -3329,16 +3329,27 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     ) -> Result<(Arc<[SemanticExportParameter]>, SemanticExportType), SemanticExportFailure> {
         let rir_params = self.rir.params(rir_params);
         let type_name = self.interner.get("type");
-        let generic_names = rir_params
+        // Deferred signature syntax can mention the same generic parameter in
+        // many nested positions. Index the filtered parameter ordinals once so
+        // each syntax leaf does one interner lookup and one map lookup instead
+        // of rescanning and resolving every preceding generic name. `entry`
+        // preserves the old `position` behavior if malformed input somehow
+        // presents duplicate names: the first filtered ordinal wins.
+        let mut generic_name_indices = HashMap::new();
+        for (index, param) in rir_params
             .iter()
             .filter(|param| param.is_comptime && Some(param.ty) == type_name)
-            .map(|param| param.name)
-            .collect::<Vec<_>>();
+            .enumerate()
+        {
+            generic_name_indices
+                .entry(param.name)
+                .or_insert(index as u32);
+        }
         let convert = |ty: Type, symbol: Spur| {
             if ty == Type::COMPTIME_TYPE {
                 let syntax = self.interner.resolve(&symbol);
                 if syntax != "type" {
-                    return self.export_deferred_signature_type(syntax, &generic_names);
+                    return self.export_deferred_signature_type(syntax, &generic_name_indices);
                 }
             }
             self.export_type(ty, &mut Vec::new())
@@ -3372,25 +3383,29 @@ impl<'a, D: super::DeclarationPhase> Sema<'a, D> {
     fn export_deferred_signature_type(
         &self,
         syntax: &str,
-        generic_names: &[Spur],
+        generic_name_indices: &HashMap<Spur, u32>,
     ) -> Result<SemanticExportType, SemanticExportFailure> {
-        if let Some(index) = generic_names
-            .iter()
-            .position(|name| self.interner.resolve(name) == syntax)
+        if let Some(index) = self
+            .interner
+            .get(syntax)
+            .and_then(|name| generic_name_indices.get(&name))
         {
-            return Ok(SemanticExportType::GenericParameter(index as u32));
+            return Ok(SemanticExportType::GenericParameter(*index));
         }
         if let Some((element, len)) = parse_array_type_syntax(syntax) {
             let ArrayLen::Literal(len) = len else {
                 return Err(SemanticExportFailure::UnsupportedGenericSignature);
             };
             return Ok(SemanticExportType::Array {
-                element: Box::new(self.export_deferred_signature_type(&element, generic_names)?),
+                element: Box::new(
+                    self.export_deferred_signature_type(&element, generic_name_indices)?,
+                ),
                 len,
             });
         }
         if let Some((pointee, mutability)) = parse_pointer_type_syntax(syntax) {
-            let pointee = Box::new(self.export_deferred_signature_type(&pointee, generic_names)?);
+            let pointee =
+                Box::new(self.export_deferred_signature_type(&pointee, generic_name_indices)?);
             return Ok(match mutability {
                 PtrMutability::Const => SemanticExportType::PtrConst(pointee),
                 PtrMutability::Mut => SemanticExportType::PtrMut(pointee),
