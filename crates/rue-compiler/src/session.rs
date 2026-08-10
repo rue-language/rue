@@ -3096,7 +3096,17 @@ impl CompilerSession {
     /// The snapshot cannot be installed back into this or another session and
     /// therefore grants no access to query ownership or invalidation state.
     pub fn unstable_metrics(&self) -> crate::unstable::MetricsSnapshot {
-        crate::unstable::MetricsSnapshot::new(self.metrics.work().clone())
+        let mut work = self.metrics.work().clone();
+        // Query tasks publish counters independently of the session's phase
+        // projections. Read the runtime at this observation boundary so a
+        // baseline-to-successor delta cannot inherit late predecessor work.
+        let runtime = self.queries.revisioned.runtime_retention_metrics();
+        work.runtime = FrontendRuntimeMetrics {
+            validation: runtime.validation,
+            retention_enforcements: runtime.retention_enforcements,
+            retention_scan_entries: runtime.retention_scan_entries,
+        };
+        crate::unstable::MetricsSnapshot::new(work)
     }
     #[cfg(test)]
     pub(crate) fn set_module_input_retention_for_test(&self, retention_limit: usize) {
@@ -7887,6 +7897,39 @@ mod tests {
         assert_eq!(warm.dependency_pins, cold.dependency_pins);
         assert!(warm.peak_retained_bytes >= warm.retained_bytes);
         assert!(warm.peak_dependency_pins >= warm.dependency_pins);
+    }
+
+    #[test]
+    fn unstable_metrics_observe_live_query_runtime_work() {
+        let source = base();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+        session.update(&source).into_result().unwrap();
+        session.canonical_semantic(&options).unwrap();
+        let merged = session.merge().unwrap();
+        let revision = session
+            .queries
+            .revisioned
+            .current_semantic_revision()
+            .unwrap();
+        let before = session.queries.revisioned.runtime_metrics_for_test();
+
+        session
+            .queries
+            .revisioned
+            .projected_declaration_shells(
+                revision,
+                merged.ast(),
+                rue_query::CancellationToken::new(),
+            )
+            .unwrap();
+
+        let live = session.queries.revisioned.runtime_metrics_for_test();
+        assert!(live.validation.traversals > before.validation.traversals);
+        let observed = session.unstable_metrics().query_runtime();
+        assert_eq!(observed.validation, live.validation.into());
+        assert_eq!(observed.retention_enforcements, live.retention_enforcements);
+        assert_eq!(observed.retention_scan_entries, live.retention_scan_entries);
     }
 
     #[test]

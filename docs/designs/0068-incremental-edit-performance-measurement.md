@@ -192,6 +192,8 @@ session's retained-charge gauges or serve as an exact eviction assertion.
 High-frequency validation counters accumulate on each rooted request and merge
 once at task completion; the measurement contract does not permit a shared
 atomic or lock acquisition for every validation event.
+Baseline and successor observations snapshot those live runtime aggregates at
+the observation boundary rather than reusing a session phase's cached metrics.
 
 Unknown fields are rejected. Schema changes and fixture changes advance separate
 explicit revisions so a workload edit cannot silently reset its own history.
