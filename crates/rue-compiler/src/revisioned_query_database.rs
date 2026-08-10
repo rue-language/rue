@@ -14760,7 +14760,9 @@ impl RevisionedQueryDatabase {
                         &body_closure_root_for_optimized_cfg_batch,
                         &body_reachability_root_for_optimized_cfg_batch,
                     );
-                    let _validated_registered = context.endorse_registered_validations();
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&fallbacks)
+                        .expect("backend retention roots belong to this query runtime");
                     let _attempts = context.retain_nested_attempts_for(&["compiler.optimized-cfg"]);
                     let terminals = context.query_registered_batch(
                         &optimized_cfgs_for_batch,
@@ -14864,7 +14866,9 @@ impl RevisionedQueryDatabase {
                         &body_closure_root_for_codegen_batch,
                         &body_reachability_root_for_codegen_batch,
                     );
-                    let _validated_registered = context.endorse_registered_validations();
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&fallbacks)
+                        .expect("backend retention roots belong to this query runtime");
                     let _attempts = context.retain_nested_attempts_for(&["compiler.codegen-unit"]);
                     let terminals = context.query_registered_batch(
                         &codegen_units_for_batch,
@@ -14940,7 +14944,9 @@ impl RevisionedQueryDatabase {
                         &body_closure_root_for_object_projection_batch,
                         &body_reachability_root_for_object_projection_batch,
                     );
-                    let _validated_registered = context.endorse_registered_validations();
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&fallbacks)
+                        .expect("backend retention roots belong to this query runtime");
                     let _attempts =
                         context.retain_nested_attempts_for(&["compiler.object-projection"]);
                     let terminals = context.query_registered_batch(
@@ -14992,12 +14998,14 @@ impl RevisionedQueryDatabase {
                 1,
                 |left: &bool, right: &bool| left == right,
                 move |context, _, key: &BackendRootPublicationKey| {
-                    let _validated_registered = context.endorse_registered_validations();
                     let fallbacks = backend_retention_fallbacks(
                         &backend_root_for_publication,
                         &body_closure_root_for_backend_publication,
                         &body_reachability_root_for_backend_publication,
                     );
+                    let _validated_registered = context
+                        .endorse_registered_validations_from(&fallbacks)
+                        .expect("backend retention roots belong to this query runtime");
                     let terminals = context.query_registered_batch(
                         &object_projections_for_backend_publication,
                         key.objects.keys.iter().cloned(),
@@ -15977,7 +15985,21 @@ impl RevisionedQueryDatabase {
                         // ledger while preserving query semantics.
                         let _nested_attempts =
                             context.retain_nested_attempts_for(&["compiler.body-transaction"]);
-                        let _validated_registered = context.endorse_registered_validations();
+                        let closure_fallback = terminal_root_for_closure_publication
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .lease
+                            .clone();
+                        let reachability_fallback = terminal_root_for_reachability_publication
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .lease
+                            .clone();
+                        let validation_fallbacks =
+                            [closure_fallback.clone(), reachability_fallback.clone()];
+                        let _validated_registered = context
+                            .endorse_registered_validations_from(&validation_fallbacks)
+                            .expect("body retention roots belong to this query runtime");
                         let closure = context
                             .query_registered(&closures_for_publication, key.closure.clone())?;
                         let rue_query::QueryOutcome::Success(output) = closure.outcome() else {
@@ -15998,16 +16020,8 @@ impl RevisionedQueryDatabase {
                                 )
                         });
                         if closure.kind() == QueryTerminalKind::Success {
-                            let fallback = terminal_root_for_closure_publication
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                .lease
-                                .clone();
                             let pending = context
-                                .retain_observed_terminal_cone_from(
-                                    &closure,
-                                    std::slice::from_ref(&fallback),
-                                )
+                                .retain_observed_terminal_cone_from(&closure, &validation_fallbacks)
                                 .expect(
                                     "registered closure validation retains its exact dependency cone",
                                 );
@@ -16097,15 +16111,10 @@ impl RevisionedQueryDatabase {
                                 PublishedBodyReachabilityTerminalHandoff {
                                     root: terminal_root_for_reachability_publication.clone(),
                                     pending: Some(Arc::new({
-                                        let fallback = terminal_root_for_reachability_publication
-                                            .lock()
-                                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                                            .lease
-                                            .clone();
                                         context
                                             .retain_observed_terminal_cone_from(
                                                 &reachability,
-                                                std::slice::from_ref(&fallback),
+                                                &validation_fallbacks,
                                             )
                                             .expect(
                                                 "registered reachability validation retains its exact dependency cone",
