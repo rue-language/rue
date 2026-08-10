@@ -276,6 +276,7 @@ zero_charge!(
 );
 
 zero_charge!(
+    crate::DefinitionNamespace,
     rue_span::FileId,
     rue_span::Span,
     rue_query::Revision,
