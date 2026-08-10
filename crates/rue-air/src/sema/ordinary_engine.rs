@@ -22,7 +22,7 @@ use super::anon_structs::{
     IssuedCanonicalArguments, IssuedFunctionInstanceKey, IssuedStableProducerId,
 };
 use super::call_resolution::CallResolutionFacts;
-use super::context::{AnalysisContext, ParamInfo};
+use super::context::{AnalysisContext, ParamIndex, ParamInfo};
 use super::fact_mode::BodyAnalysisHost;
 use super::info::{FunctionCallInfo, MethodCallInfo};
 use super::{
@@ -2062,6 +2062,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
                 .map(|p| (p.abi_slot, p.ty))
                 .collect(),
         );
+        let param_index = ParamIndex::new(&param_vec);
 
         // ======================================================================
         // Phase 1-2: Hindley-Milner Type Inference
@@ -2109,6 +2110,7 @@ impl<'h, H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'h, H> {
             current_file_id: self.body_rir_ref().get(body).span.file_id,
             locals: HashMap::new(),
             params: &param_vec,
+            param_index: &param_index,
             next_slot: 0,
             loop_depth: 0,
             checked_depth: 0,
