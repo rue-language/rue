@@ -361,8 +361,6 @@ pub(crate) struct RevisionedQueryDatabase {
     #[allow(dead_code)]
     body_closures:
         QueryFamily<crate::body_query::BodyClosureQueryKey, crate::body_query::BodyClosureOutput>,
-    #[cfg_attr(not(test), allow(dead_code))]
-    body_closure_memberships: QueryFamily<crate::body_query::BodyClosureMembershipKey, bool>,
     body_closure_publications: QueryFamily<
         crate::body_query::BodyClosurePublicationKey,
         Arc<rue_query::QueryTerminal<crate::body_query::BodyClosureOutput>>,
@@ -15759,27 +15757,7 @@ impl RevisionedQueryDatabase {
                 },
             )
             .expect("the BodyReachability family has one canonical name");
-        let reachability_for_membership = body_reachability.clone();
-        let body_closure_memberships = runtime
-            .family_with_equality_and_evaluator(
-                "compiler.body-closure-membership",
-                BODY_QUERY_MEMO_RETENTION,
-                bool::eq,
-                move |context, _, key: &crate::body_query::BodyClosureMembershipKey| {
-                    let reachability = context
-                        .query_registered(&reachability_for_membership, key.closure.clone())?;
-                    let rue_query::QueryOutcome::Success(reachability) = reachability.outcome()
-                    else {
-                        unreachable!("BodyReachability publishes typed values")
-                    };
-                    Ok(QueryOutput::success(
-                        reachability.reached.binary_search(&key.instance).is_ok(),
-                    ))
-                },
-            )
-            .expect("the BodyClosureMembership family has one canonical name");
         let reachability_for_closure = body_reachability.clone();
-        let memberships_for_closure = body_closure_memberships.clone();
         let bundles_for_closure = body_analysis_bundles.clone();
         let declarations_for_closure_aggregation = declaration_semantics_projection.clone();
         #[cfg(test)]
@@ -15842,23 +15820,6 @@ impl RevisionedQueryDatabase {
                                 &nominal.identity,
                             );
                         }
-                    }
-                    let membership_keys = reachability
-                        .reached
-                        .iter()
-                        .cloned()
-                        .map(|instance| crate::body_query::BodyClosureMembershipKey {
-                            closure: key.clone(),
-                            instance,
-                        })
-                        .collect::<Vec<_>>();
-                    for membership_key in membership_keys {
-                        let membership =
-                            context.query_registered(&memberships_for_closure, membership_key)?;
-                        debug_assert!(matches!(
-                            membership.outcome(),
-                            rue_query::QueryOutcome::Success(true)
-                        ));
                     }
                     let body_keys = reachability
                         .reached
@@ -16198,7 +16159,6 @@ impl RevisionedQueryDatabase {
             body_analysis_bundles,
             body_reachability,
             body_closures,
-            body_closure_memberships,
             body_closure_publications,
             body_references,
             body_produced_anonymous,
@@ -18398,24 +18358,6 @@ impl RevisionedQueryDatabase {
             body_executions,
             retained_before,
         })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn body_closure_membership_projection(
-        &self,
-        revision: Revision,
-        closure: crate::body_query::BodyClosureQueryKey,
-        instance: crate::FunctionInstanceKey,
-        cancellation: CancellationToken,
-    ) -> Result<Arc<rue_query::QueryTerminal<bool>>, QueryAbort> {
-        self.runtime
-            .request_registered(
-                &self.body_closure_memberships,
-                revision,
-                crate::body_query::BodyClosureMembershipKey { closure, instance },
-                cancellation,
-            )
-            .into_result()
     }
 
     #[cfg(test)]
@@ -37695,24 +37637,8 @@ fn main() -> i32 {
         assert!(!database.body_inputs.contains_retained_key(&key));
     }
 
-    fn closure_membership(
-        database: &RevisionedQueryDatabase,
-        revision: Revision,
-        closure: &crate::body_query::BodyClosureQueryKey,
-        instance: &crate::FunctionInstanceKey,
-    ) -> Arc<rue_query::QueryTerminal<bool>> {
-        database
-            .body_closure_membership_projection(
-                revision,
-                closure.clone(),
-                instance.clone(),
-                CancellationToken::new(),
-            )
-            .expect("body-closure membership publishes a typed terminal")
-    }
-
     #[test]
-    fn body_closure_edge_addition_and_deletion_stamp_memberships_independently() {
+    fn body_closure_edge_addition_and_deletion_publish_exact_reached_sets() {
         let module = ModuleId::from_logical_path("main.rue").unwrap();
         let source = |main_body: &str| {
             source_snapshot(
@@ -37753,21 +37679,6 @@ fn main() -> i32 {
             )
             .unwrap();
         let first_root_metrics = database.body_closure_root_metrics();
-        let first_leaf = closure_membership(&database, first_revision, &closure_key, &leaf);
-        let first_stable = closure_membership(&database, first_revision, &closure_key, &stable);
-        let first_added = closure_membership(&database, first_revision, &closure_key, &added);
-        assert_eq!(
-            first_leaf.outcome(),
-            &rue_query::QueryOutcome::Success(true)
-        );
-        assert_eq!(
-            first_stable.outcome(),
-            &rue_query::QueryOutcome::Success(true)
-        );
-        assert_eq!(
-            first_added.outcome(),
-            &rue_query::QueryOutcome::Success(false)
-        );
 
         let added_revision = revision_for(&mut database, &added_source);
         let added_closure = database
@@ -37778,12 +37689,6 @@ fn main() -> i32 {
             )
             .unwrap();
         let added_root_metrics = database.body_closure_root_metrics();
-        let second_leaf = closure_membership(&database, added_revision, &closure_key, &leaf);
-        let second_stable = closure_membership(&database, added_revision, &closure_key, &stable);
-        let second_added = closure_membership(&database, added_revision, &closure_key, &added);
-        assert_eq!(second_leaf.stamp(), first_leaf.stamp());
-        assert_eq!(second_stable.stamp(), first_stable.stamp());
-        assert_ne!(second_added.stamp(), first_added.stamp());
 
         let deleted_revision = revision_for(&mut database, &deleted_source);
         let deleted_closure = database
@@ -37794,16 +37699,6 @@ fn main() -> i32 {
             )
             .unwrap();
         let deleted_root_metrics = database.body_closure_root_metrics();
-        let third_leaf = closure_membership(&database, deleted_revision, &closure_key, &leaf);
-        let third_stable = closure_membership(&database, deleted_revision, &closure_key, &stable);
-        let third_added = closure_membership(&database, deleted_revision, &closure_key, &added);
-        assert_ne!(third_leaf.stamp(), second_leaf.stamp());
-        assert_eq!(
-            third_leaf.outcome(),
-            &rue_query::QueryOutcome::Success(false)
-        );
-        assert_eq!(third_stable.stamp(), second_stable.stamp());
-        assert_eq!(third_added.stamp(), second_added.stamp());
 
         let reached = |request: &BodyClosureRequest| {
             let rue_query::QueryOutcome::Success(output) = request.terminal.outcome() else {
@@ -37819,7 +37714,15 @@ fn main() -> i32 {
                 stable.clone(),
             ]
         );
-        assert_eq!(reached(&added_closure).len(), 4);
+        assert_eq!(
+            reached(&added_closure),
+            vec![
+                added.clone(),
+                leaf.clone(),
+                free_function_instance(&module, "main"),
+                stable.clone(),
+            ]
+        );
         assert_eq!(
             reached(&deleted_closure),
             vec![
