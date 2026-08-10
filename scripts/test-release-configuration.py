@@ -38,7 +38,8 @@ class ReleaseConfigurationTests(unittest.TestCase):
     def test_requires_release_flags_and_forbids_them_in_debug(self) -> None:
         self.assertEqual(
             release_configuration.validate_commands(
-                "[rustc]", "[rustc, -Copt-level=3, -Clto=thin]"
+                "[rustc]",
+                "[rustc, -Copt-level=3, -Clto=thin, --cfg=rue_release_build]",
             ),
             [],
         )
@@ -47,6 +48,18 @@ class ReleaseConfigurationTests(unittest.TestCase):
         )
         self.assertIn("debug rustc_cfg unexpectedly contains -Clto=thin", errors)
         self.assertIn("release rustc_cfg is missing -Clto=thin", errors)
+        self.assertIn("release rustc_cfg is missing --cfg=rue_release_build", errors)
+
+    def test_scaling_workflow_must_build_and_resolve_release_binaries(self) -> None:
+        valid = "\n".join(release_configuration.SCALING_RELEASE_SNIPPETS)
+        self.assertEqual(
+            release_configuration.validate_scaling_workflow(valid),
+            [],
+        )
+        errors = release_configuration.validate_scaling_workflow(
+            valid.replace("scripts/rue-bin --target-platforms //platforms:release", "scripts/rue-bin")
+        )
+        self.assertTrue(any("scripts/rue-bin" in error for error in errors), errors)
 
     def test_rejects_missing_or_ambiguous_rustc_action(self) -> None:
         with self.assertRaisesRegex(ValueError, "0 matching"):

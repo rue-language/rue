@@ -74,7 +74,8 @@ http_archive(
 # when no opt-level constraint is set (a plain `//crates/rue:rue` build stays
 # debug/unoptimized).
 #
-# `-Clto=thin` is only applied to crates configured under the release target
+# `-Clto=thin` and the `rue_release_build` identity cfg are only applied to
+# crates configured under the release target
 # platform. Proc-macro crates (serde_derive, logos-derive, ...) are exec-deps
 # configured under the execution platform, which has no opt-level constraint, so
 # they hit the DEFAULT arm and never receive `-Clto=thin` — sidestepping rustc's
@@ -82,7 +83,11 @@ http_archive(
 _OPT_FLAGS = select({
     "DEFAULT": [],
     "root//constraints:debug": [],
-    "root//constraints:release": ["-Copt-level=3", "-Clto=thin"],
+    "root//constraints:release": [
+        "-Copt-level=3",
+        "-Clto=thin",
+        "--cfg=rue_release_build",
+    ],
 })
 
 # The manual cache probe supplies a unique value for each workflow attempt so

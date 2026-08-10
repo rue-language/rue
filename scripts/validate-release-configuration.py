@@ -16,7 +16,13 @@ PLATFORMS = {
     "debug": "//platforms:debug",
     "release": "//platforms:release",
 }
-RELEASE_FLAGS = ("-Copt-level=3", "-Clto=thin")
+RELEASE_FLAGS = ("-Copt-level=3", "-Clto=thin", "--cfg=rue_release_build")
+SCALING_WORKFLOW = ROOT / ".github" / "workflows" / "performance-scaling.yml"
+SCALING_RELEASE_SNIPPETS = (
+    "./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench --target-platforms //platforms:release",
+    'RUE="$(scripts/rue-bin --target-platforms //platforms:release)"',
+    'BENCH="$(./buck2 build //crates/rue-bench:rue-bench --target-platforms //platforms:release --show-simple-output',
+)
 
 def rustc_cfg_command(payload: str, platform: str) -> str:
     try:
@@ -44,6 +50,14 @@ def validate_commands(debug: str, release: str) -> list[str]:
         if flag in debug:
             errors.append(f"debug rustc_cfg unexpectedly contains {flag}")
     return errors
+
+
+def validate_scaling_workflow(workflow: str) -> list[str]:
+    return [
+        f"compiler-scaling workflow is missing release command: {snippet}"
+        for snippet in SCALING_RELEASE_SNIPPETS
+        if snippet not in workflow
+    ]
 
 
 def query(buck2: Path, platform: str) -> str:
@@ -79,7 +93,14 @@ def main() -> int:
         print(f"error: could not inspect Buck release configuration: {error}", file=sys.stderr)
         return 1
 
+    try:
+        scaling_workflow = SCALING_WORKFLOW.read_text()
+    except OSError as error:
+        print(f"error: could not read compiler-scaling workflow: {error}", file=sys.stderr)
+        return 1
+
     errors = validate_commands(debug, release)
+    errors.extend(validate_scaling_workflow(scaling_workflow))
     if errors:
         for error in errors:
             print(f"error: {error}", file=sys.stderr)
@@ -87,7 +108,7 @@ def main() -> int:
 
     print(
         "release configuration valid: release has "
-        f"{' '.join(RELEASE_FLAGS)}; debug does not"
+        f"{' '.join(RELEASE_FLAGS)}; debug does not; compiler scaling selects release"
     )
     return 0
 

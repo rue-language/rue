@@ -5,10 +5,11 @@
 # startup probe's calibrated sample counts or enter the fast headline index.
 # Every sample launches the canonical compiler binary in a fresh process. The
 # compiled program is never run.
-schema_version = 1
-revision = 1
+schema_version = 2
+revision = 2
 samples = 3
 args = []
+compiler_build_profile = "release_thin_lto"
 
 [[workloads]]
 id = "ruelex"

@@ -12,6 +12,11 @@ it for `--benchmark-json`. There is no retained compiler session or persistent
 query cache. Filesystem and operating-system page-cache state are not reset, so
 the reports call this a **fresh-process compile**, not a cold compile.
 
+The compiler and measurement runner are built with the release target platform
+(`-Copt-level=3 -Clto=thin`). The compiler reports that profile in its benchmark
+metadata, and the scaling runner rejects a binary that does not match the
+manifest's declared profile.
+
 The runner executes three samples sequentially for each workload. JSON keeps
 every raw observation in integer nanoseconds. The Markdown view reports the
 median and median absolute deviation (MAD), along with the machine and hosted
@@ -31,9 +36,9 @@ cannot be mistaken for a compiler regression.
 Build the compiler and the existing ADR-0067 runner, then run its scaling mode:
 
 ```bash
-./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench
-RUE="$(scripts/rue-bin)"
-BENCH="$(./buck2 build //crates/rue-bench:rue-bench --show-simple-output 2>/dev/null | tail -1)"
+./buck2 build //crates/rue:rue //crates/rue-bench:rue-bench --target-platforms //platforms:release
+RUE="$(scripts/rue-bin --target-platforms //platforms:release)"
+BENCH="$(./buck2 build //crates/rue-bench:rue-bench --target-platforms //platforms:release --show-simple-output 2>/dev/null | tail -1)"
 "$BENCH" scaling \
   --manifest performance/scaling.toml \
   --compiler "$RUE" \
