@@ -744,10 +744,18 @@ fn create_enum_drop_glue_function(
         callable_kind: rue_air::AnalyzedCallableKind::DropGlue,
         ordinary_owner: None,
         name: fn_name,
-        implicit_drop_source: Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
-            file: enum_def.file_id.index(),
-            name: enum_def.name.to_string(),
-        }),
+        // Membership, not the generated-name prefix (RUE-1050) — mirroring the
+        // struct glue above: an anonymous enum has no source declaration to
+        // depend on, so recording its placeholder `file: 0` and generated name
+        // would capture a dependency on a file that never declared it.
+        implicit_drop_source: if type_pool.is_anonymous_enum(enum_id) {
+            None
+        } else {
+            Some(rue_air::ImplicitDropDependencySourceEvent::NamedEnum {
+                file: enum_def.file_id.index(),
+                name: enum_def.name.to_string(),
+            })
+        },
         air: air
             .finish(AirValidationContext::Canonical(type_pool))
             .map_err(|error| {
