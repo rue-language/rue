@@ -5,7 +5,7 @@
 //! an exact semantic request. The importer reconstructs only values that AIR
 //! can represent without borrowing handles from the exporting request.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 use std::sync::Arc;
 
@@ -584,7 +584,7 @@ impl PartialEq for SemanticImportedConstValue {
 }
 impl Eq for SemanticImportedConstValue {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum LocalNominal {
     Struct(StructId),
     Enum(EnumId),
@@ -592,9 +592,10 @@ enum LocalNominal {
 
 /// A fresh AIR-owned interning epoch joined to caller-owned stable keys.
 ///
-/// Stable keys never become AIR IDs. They are retained only in the maps at
-/// this boundary. Imported types and constants are returned through opaque,
-/// epoch-branded wrappers, so request-local IDs cannot cross epoch boundaries.
+/// Stable keys never become AIR IDs. The boundary retains deterministic
+/// stable-to-local maps for import and local-to-stable indexes for export.
+/// Imported types and constants are returned through opaque, epoch-branded
+/// wrappers, so request-local IDs cannot cross epoch boundaries.
 pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     epoch: Arc<()>,
     interner: ThreadedRodeo,
@@ -604,6 +605,10 @@ pub struct SemanticImportEpoch<K: Ord, M: Ord> {
     functions: BTreeMap<FunctionInstanceKey<K, M>, Spur>,
     modules: BTreeMap<M, ModuleId>,
     builtins: BTreeMap<(Arc<str>, SemanticImportNominalKind), LocalNominal>,
+    nominal_exports: HashMap<LocalNominal, NominalInstanceKey<K, M>>,
+    function_exports: HashMap<Spur, FunctionInstanceKey<K, M>>,
+    module_exports: HashMap<ModuleId, M>,
+    builtin_exports: HashMap<LocalNominal, (Arc<str>, SemanticImportNominalKind)>,
     local_completeness: Option<SemanticLocalCompleteness>,
 }
 
@@ -612,6 +617,33 @@ where
     K: Clone + Ord,
     M: Clone + Ord,
 {
+    fn rebuild_export_indexes(&mut self) {
+        self.nominal_exports = self
+            .nominals
+            .iter()
+            .map(|(stable, local)| (*local, stable.clone()))
+            .collect();
+        self.function_exports = self
+            .functions
+            .iter()
+            .map(|(stable, local)| (*local, stable.clone()))
+            .collect();
+        self.module_exports = self
+            .modules
+            .iter()
+            .map(|(stable, local)| (*local, stable.clone()))
+            .collect();
+        self.builtin_exports = self
+            .builtins
+            .iter()
+            .map(|(stable, local)| (*local, stable.clone()))
+            .collect();
+        assert_eq!(self.nominal_exports.len(), self.nominals.len());
+        assert_eq!(self.function_exports.len(), self.functions.len());
+        assert_eq!(self.module_exports.len(), self.modules.len());
+        assert_eq!(self.builtin_exports.len(), self.builtins.len());
+    }
+
     /// Reconstruct a structured durable body without publishing partial state.
     ///
     /// The first pass performs every fallible reconstruction step against the
@@ -1280,7 +1312,7 @@ where
             (Arc::from("str"), SemanticImportNominalKind::Struct),
             LocalNominal::Struct(str_id),
         );
-        Ok(Self {
+        let mut epoch = Self {
             epoch: Arc::new(()),
             interner,
             type_pool,
@@ -1289,8 +1321,14 @@ where
             functions,
             modules,
             builtins,
+            nominal_exports: HashMap::new(),
+            function_exports: HashMap::new(),
+            module_exports: HashMap::new(),
+            builtin_exports: HashMap::new(),
             local_completeness: None,
-        })
+        };
+        epoch.rebuild_export_indexes();
+        Ok(epoch)
     }
 
     /// Construct a body-local epoch from exact query-owned facts.
@@ -1465,6 +1503,7 @@ where
             callables_registered: callables.len(),
             modules_registered: epoch.modules.len(),
         });
+        epoch.rebuild_export_indexes();
         Ok(epoch)
     }
 
@@ -1914,10 +1953,8 @@ where
                         ),
                         name: def.name.clone(),
                     }
-                } else if let Some(((name, kind), _)) = self
-                    .builtins
-                    .iter()
-                    .find(|(_, local)| **local == LocalNominal::Struct(id))
+                } else if let Some((name, kind)) =
+                    self.builtin_exports.get(&LocalNominal::Struct(id))
                 {
                     SemanticImportType::BuiltinNominal {
                         name: name.clone(),
@@ -1941,32 +1978,24 @@ where
                     }
                 } else {
                     nominal_import_type(
-                        self.nominals
-                            .iter()
-                            .find_map(|(key, local)| {
-                                (*local == LocalNominal::Struct(id)).then(|| key.clone())
-                            })
+                        self.nominal_exports
+                            .get(&LocalNominal::Struct(id))
+                            .cloned()
                             .ok_or(SemanticImportFailure::ForeignLocalType)?,
                     )
                 }
             }
             crate::TypeKind::Enum(id) => {
-                if let Some(((name, kind), _)) = self
-                    .builtins
-                    .iter()
-                    .find(|(_, local)| **local == LocalNominal::Enum(id))
-                {
+                if let Some((name, kind)) = self.builtin_exports.get(&LocalNominal::Enum(id)) {
                     SemanticImportType::BuiltinNominal {
                         name: name.clone(),
                         kind: *kind,
                     }
                 } else {
                     nominal_import_type(
-                        self.nominals
-                            .iter()
-                            .find_map(|(key, local)| {
-                                (*local == LocalNominal::Enum(id)).then(|| key.clone())
-                            })
+                        self.nominal_exports
+                            .get(&LocalNominal::Enum(id))
+                            .cloned()
                             .ok_or(SemanticImportFailure::ForeignLocalType)?,
                     )
                 }
@@ -1985,9 +2014,9 @@ where
                 self.export_type_local(self.type_pool.ptr_mut_def(id))?,
             )),
             crate::TypeKind::Module(id) => SemanticImportType::Module(
-                self.modules
-                    .iter()
-                    .find_map(|(key, local)| (*local == id).then(|| key.clone()))
+                self.module_exports
+                    .get(&id)
+                    .cloned()
                     .ok_or(SemanticImportFailure::ForeignLocalType)?,
             ),
             crate::TypeKind::Error => return Err(SemanticImportFailure::ForeignLocalType),
@@ -2005,17 +2034,13 @@ where
             ConstValue::Integer(v) => SemanticImportConstValue::Integer(v),
             ConstValue::Bool(v) => SemanticImportConstValue::Bool(v),
             ConstValue::Type(v) => SemanticImportConstValue::Type(self.export_type_local(v)?),
-            ConstValue::Function(symbol) => SemanticImportConstValue::Function(
-                self.functions
-                    .iter()
-                    .find_map(|(key, local)| match key {
-                        FunctionInstanceKey::Definition(key) if *local == symbol => {
-                            Some(key.clone())
-                        }
-                        _ => None,
-                    })
-                    .ok_or(SemanticImportFailure::ForeignLocalValue)?,
-            ),
+            ConstValue::Function(symbol) => {
+                let Some(FunctionInstanceKey::Definition(key)) = self.function_exports.get(&symbol)
+                else {
+                    return Err(SemanticImportFailure::ForeignLocalValue);
+                };
+                SemanticImportConstValue::Function(key.clone())
+            }
             ConstValue::Unit => SemanticImportConstValue::Unit,
             ConstValue::String(content) => {
                 SemanticImportConstValue::String(Arc::from(self.interner.resolve(&content)))
@@ -2680,6 +2705,90 @@ mod tests {
                 .unwrap(),
             value
         );
+    }
+
+    #[test]
+    fn large_local_epoch_indexes_every_reverse_identity_join() {
+        type OwnedEpoch = SemanticImportEpoch<String, String>;
+        type OwnedType = SemanticImportType<String, String>;
+
+        let mut nominals = (0..24)
+            .map(|index| SemanticLocalNominal {
+                key: NominalInstanceKey::Named(format!("nominal-{index}")),
+                module_path: Arc::from(format!("module-{index}")),
+                name: Arc::from(format!("Nominal{index}")),
+                kind: SemanticImportNominalKind::Struct,
+                is_public: true,
+                lang_item: None,
+                shape: SemanticLocalNominalShape::Struct {
+                    fields: Arc::new([]),
+                    is_copy: false,
+                    is_linear: false,
+                    destructor: None,
+                },
+            })
+            .collect::<Vec<_>>();
+        let anonymous = crate::AnonymousNominalKey {
+            kind: crate::AnonymousNominalKind::Struct,
+            producer: crate::StableProducerId::Definition("producer".to_string()),
+            anchor: rue_rir::RirStructuralAnchor::new(vec![
+                rue_rir::RirStructuralPathSegment::Body,
+                rue_rir::RirStructuralPathSegment::AnonymousType(0),
+            ]),
+            arguments: crate::CanonicalArguments::default(),
+        };
+        nominals.push(SemanticLocalNominal {
+            key: NominalInstanceKey::Anonymous(anonymous.clone()),
+            module_path: Arc::from("module-anonymous"),
+            name: Arc::from("Anonymous"),
+            kind: SemanticImportNominalKind::Struct,
+            is_public: false,
+            lang_item: None,
+            shape: SemanticLocalNominalShape::Struct {
+                fields: Arc::new([]),
+                is_copy: false,
+                is_linear: false,
+                destructor: None,
+            },
+        });
+        let callables = (0..24)
+            .map(|index| SemanticLocalCallable {
+                key: FunctionInstanceKey::Definition(format!("function-{index}")),
+                symbol: Arc::from(format!("function#{index}")),
+            })
+            .collect::<Vec<_>>();
+        let modules = (0..24)
+            .map(|index| format!("module-{index}"))
+            .collect::<Vec<_>>();
+        let epoch = OwnedEpoch::new_local(nominals, callables, modules).unwrap();
+
+        for stable in [
+            OwnedType::Nominal("nominal-23".to_string()),
+            OwnedType::AnonymousNominal(anonymous),
+            OwnedType::Module("module-23".to_string()),
+            OwnedType::BuiltinNominal {
+                name: Arc::from("Arch"),
+                kind: SemanticImportNominalKind::Enum,
+            },
+        ] {
+            assert_eq!(
+                epoch
+                    .export_type(epoch.import_type(&stable).unwrap())
+                    .unwrap(),
+                stable
+            );
+        }
+        let callable = SemanticImportConstValue::Function("function-23".to_string());
+        assert_eq!(
+            epoch
+                .export_const_value(epoch.import_const_value(&callable).unwrap())
+                .unwrap(),
+            callable
+        );
+        assert_eq!(epoch.nominal_exports.len(), 25);
+        assert_eq!(epoch.function_exports.len(), 24);
+        assert_eq!(epoch.module_exports.len(), 24);
+        assert_eq!(epoch.builtin_exports.len(), epoch.builtins.len());
     }
 
     #[test]
