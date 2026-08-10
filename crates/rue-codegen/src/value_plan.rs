@@ -306,6 +306,54 @@ pub enum IntrinsicOperation {
     PlaceAddress,
     Debug,
     Syscall,
+    /// Same-width two's-complement reinterpretation, `@bitCast` (RUE-952). The
+    /// language operation moves no bits; the payload is only the renormalization
+    /// the *register image* of the target type needs, selected here so neither
+    /// backend re-derives a width policy.
+    BitCast(BitCastForm),
+}
+
+/// How a `@bitCast` result reaches the target type's canonical register image
+/// (RUE-952).
+///
+/// Rue keeps an integer in a register in the canonical image of its own type:
+/// an 8/16-bit value is sign-/zero-extended per its signedness (the form
+/// `emit_subword_narrow` and `emit_wrap_narrow` restore), a 32-bit value has
+/// bits 32..63 clear (what a 32-bit ALU op leaves behind), and a 64-bit value
+/// occupies the whole register. A reinterpretation keeps the low `N` bits and
+/// changes only which type reads them, so the bits above `N` — which belong to
+/// the *source* type's image, and for a negative constant are its sign
+/// extension — must be rebuilt for the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitCastForm {
+    /// 64-bit: the two images are the same 64 bits; a plain register move.
+    Move,
+    /// Re-extend the low byte for a signed 8-bit target.
+    Sign8,
+    /// Clear all but the low byte for an unsigned 8-bit target.
+    Zero8,
+    /// Re-extend the low halfword for a signed 16-bit target.
+    Sign16,
+    /// Clear all but the low halfword for an unsigned 16-bit target.
+    Zero16,
+    /// Clear bits 32..63 for a 32-bit target of either signedness: that is the
+    /// canonical 32-bit image, and a signed consumer re-extends it itself
+    /// (`integer_extension` yields `Sign32` for `i32`).
+    Zero32,
+}
+
+/// Select the renormalization a same-width `@bitCast` into `to` needs
+/// (RUE-952). Sema has already rejected a non-integer or differently sized
+/// operand (E0950), so only the target's width and signedness matter.
+pub fn bit_cast_form(to: Type) -> BitCastForm {
+    match (type_bits(to), type_is_signed(to)) {
+        (8, true) => BitCastForm::Sign8,
+        (8, false) => BitCastForm::Zero8,
+        (16, true) => BitCastForm::Sign16,
+        (16, false) => BitCastForm::Zero16,
+        (32, _) => BitCastForm::Zero32,
+        _ => BitCastForm::Move,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1642,6 +1690,12 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     },
                     "random_u32" => IntrinsicOperation::RandomU32,
                     "random_u64" => IntrinsicOperation::RandomU64,
+                    // `@bitCast` renames the operand's bits at the result type
+                    // (RUE-952). Only the result type matters: the widths agree
+                    // by construction (sema rejects the cross-width form with
+                    // E0950), so the plan carries just the target's canonical
+                    // register image.
+                    "bitCast" => IntrinsicOperation::BitCast(bit_cast_form(inst.ty)),
                     "ptr_to_int" => IntrinsicOperation::PtrToInt,
                     "int_to_ptr" => IntrinsicOperation::IntToPtr,
                     // The `_unaligned` scalar access pair (ADR-0059 Phase 4,
@@ -2046,6 +2100,7 @@ fn intrinsic_runtime_call(
         | IntrinsicOperation::ByteRead
         | IntrinsicOperation::ByteWrite
         | IntrinsicOperation::PlaceAddress
+        | IntrinsicOperation::BitCast(_)
         | IntrinsicOperation::Syscall => return None,
     };
     let plan = RuntimeCallPlan::expect_manifest(helper, call_args);

@@ -306,6 +306,8 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_drop_intrinsic(air, &args, span, ctx)
         } else if name == known.int_cast {
             self.analyze_intcast_intrinsic(air, inst_ref, &args, span, ctx)
+        } else if name == known.bit_cast {
+            self.analyze_bitcast_intrinsic(air, name, inst_ref, &args, span, ctx)
         } else if name == known.test_preview_gate {
             self.analyze_test_preview_gate_intrinsic(air, &args, span)
         } else if name == known.read_line {
@@ -1153,6 +1155,103 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ty: target_ty,
             span,
         });
+        Ok(AnalysisResult::new(air_ref, target_ty))
+    }
+
+    /// Analyze the `@bitCast` intrinsic (RUE-952, spec 4.13:118-4.13:123).
+    ///
+    /// `@bitCast` is the same-width sibling of `@intCast`: it renames the
+    /// operand's two's-complement bit pattern at the target type instead of
+    /// preserving its numeric value, so it is total (it never traps) and is the
+    /// only way to move a `u64` with its top bit set into an `i64`. The target
+    /// type comes from context exactly as `@intCast`'s does, and the widths
+    /// **must** agree — a reinterpretation neither invents nor discards bits, so
+    /// a cross-width use is E0950 rather than a silent truncation.
+    ///
+    /// Because the operation only renames bits, it lowers to an ordinary
+    /// intrinsic node (like `@ptr_to_int`) rather than to `IntCast`, which owns
+    /// the range check.
+    pub(super) fn analyze_bitcast_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        inst_ref: InstRef,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        let intrinsic_name = "bitCast";
+
+        if args.len() != 1 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: intrinsic_name.to_string(),
+                    expected: 1,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+
+        let arg_result = self.analyze_inst(air, args[0].value, ctx)?;
+        let from_ty = arg_result.ty;
+
+        if !from_ty.is_integer() {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                    name: intrinsic_name.to_string(),
+                    expected: "integer".to_string(),
+                    found: from_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                })),
+                span,
+            ));
+        }
+
+        // The target type comes from HM inference, exactly as `@intCast`'s does:
+        // an annotation, a parameter, or a return position supplies it, and an
+        // unconstrained result is the same "cannot infer the cast target"
+        // diagnostic (RUE-588) rather than an unrelated fallback.
+        let target_ty = match ctx.resolved_type_of(inst_ref) {
+            Some(ty) if ty.is_integer() => ty,
+            Some(Type::ERROR) | None => {
+                return Err(CompileError::new(
+                    ErrorKind::CannotInferCastTarget(intrinsic_name.to_string()),
+                    span,
+                ));
+            }
+            Some(ty) => {
+                return Err(CompileError::new(
+                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
+                        name: intrinsic_name.to_string(),
+                        expected: "integer".to_string(),
+                        found: ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    })),
+                    span,
+                ));
+            }
+        };
+
+        // Same-width only (E0950). Both types are integers here, so both widths
+        // are present.
+        let from_bits = from_ty.int_bit_width().unwrap_or(0);
+        let to_bits = target_ty.int_bit_width().unwrap_or(0);
+        if from_bits != to_bits {
+            return Err(CompileError::new(
+                ErrorKind::BitCastWidthMismatch {
+                    from: from_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    to: target_ty.safe_name_with_pool(Some(self.body_type_pool())),
+                    from_bits,
+                    to_bits,
+                },
+                span,
+            )
+            .with_help(
+                "'@bitCast' reinterprets a value's bits at the same width; use \
+                 '@intCast' to convert between widths",
+            ));
+        }
+
+        let air_ref = air.add_intrinsic(None, name, &[arg_result.air_ref], target_ty, span)?;
         Ok(AnalysisResult::new(air_ref, target_ty))
     }
 

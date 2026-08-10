@@ -1,0 +1,73 @@
+[section]
+id = "diagnostics.bitcast-width-mismatch"
+name = "@bitCast cross-width diagnostic names both widths and points at @intCast (RUE-952)"
+description = """
+`@bitCast` reinterprets a value's bits, so it is defined only between integer
+types of one width. A cross-width use is not a truncation to be performed
+silently and not a generic type mismatch: the diagnostic (E0950) names the two
+types with their widths and directs the programmer to `@intCast`, the
+value-changing conversion. The mirror case — a same-width use — must stay
+accepted, including for the high-bit values `@intCast` traps on.
+"""
+
+[[case]]
+name = "narrowing_bitcast_is_e0950"
+description = "u64 into i32 names both widths and suggests @intCast."
+source = """
+fn main() -> i32 {
+    let x: u64 = 5;
+    let y: i32 = @bitCast(x);
+    @intCast(y)
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0950",
+    "'@bitCast' requires the source and target to have the same width",
+    "`u64` is 64-bit and `i32` is 32-bit",
+    "use '@intCast' to convert between widths",
+]
+
+[[case]]
+name = "widening_bitcast_is_e0950"
+description = "The widening direction reports the same rule, not a silent extension."
+source = """
+fn main() -> i32 {
+    let x: u8 = 5;
+    let y: i64 = @bitCast(x);
+    @intCast(y)
+}
+"""
+compile_fail = true
+error_contains = ["E0950", "`u8` is 8-bit and `i64` is 64-bit"]
+
+[[case]]
+name = "uninferrable_bitcast_target_is_a_cast_error"
+description = "An unconstrained result reports the cast-target error, naming @bitCast."
+source = """
+fn main() -> i32 {
+    let x: u64 = 5;
+    let n = @bitCast(x);
+    @dbg(n);
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E0709",
+    "cannot infer the target type of '@bitCast'",
+    "add a type annotation",
+]
+
+[[case]]
+name = "same_width_bitcast_still_accepted"
+description = "The control: the same-width reinterpretation @intCast cannot express compiles and runs."
+source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    let y: i64 = @bitCast(x);
+    if y == -9223372036854775808 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+no_warnings = true

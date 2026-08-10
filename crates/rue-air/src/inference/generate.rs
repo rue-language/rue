@@ -1704,8 +1704,13 @@ impl<'a> ConstraintGenerator<'a> {
                 let intrinsic_name = self.interner.resolve(name);
                 let args = self.rir.intrinsic_args(args);
 
-                if intrinsic_name == "intCast" || intrinsic_name == "cast" {
+                if intrinsic_name == "intCast"
+                    || intrinsic_name == "bitCast"
+                    || intrinsic_name == "cast"
+                {
                     // @intCast: target type is inferred from context.
+                    // @bitCast: the same context-supplied target (RUE-952); sema
+                    // additionally requires the two widths to agree (E0950).
                     // @cast: a fresh var here too, so sema can reject it with a
                     // clean "use @intCast" diagnostic instead of inference
                     // masking it with a type-mismatch error (RUE-319).

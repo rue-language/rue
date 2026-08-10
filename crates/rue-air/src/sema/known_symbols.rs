@@ -42,6 +42,10 @@ pub struct KnownSymbols {
     pub drop: Spur,
     /// The `intCast` intrinsic symbol (deprecated, use `cast`).
     pub int_cast: Spur,
+    /// The `bitCast` intrinsic symbol — same-width two's-complement
+    /// reinterpretation between integer types (RUE-952, spec 4.13:118). Unlike
+    /// `intCast` it preserves the bits rather than the value, and never traps.
+    pub bit_cast: Spur,
     /// The `cast` intrinsic symbol.
     pub cast: Spur,
     /// The `panic` intrinsic symbol.
@@ -185,6 +189,7 @@ impl KnownSymbols {
             dbg: interner.get_or_intern_static("dbg"),
             drop: interner.get_or_intern_static("drop"),
             int_cast: interner.get_or_intern_static("intCast"),
+            bit_cast: interner.get_or_intern_static("bitCast"),
             cast: interner.get_or_intern_static("cast"),
             panic: interner.get_or_intern_static("panic"),
             assert: interner.get_or_intern_static("assert"),
@@ -276,6 +281,7 @@ mod tests {
         assert_eq!(interner.resolve(&known.dbg), "dbg");
         assert_eq!(interner.resolve(&known.drop), "drop");
         assert_eq!(interner.resolve(&known.int_cast), "intCast");
+        assert_eq!(interner.resolve(&known.bit_cast), "bitCast");
         assert_eq!(interner.resolve(&known.cast), "cast");
         assert_eq!(interner.resolve(&known.panic), "panic");
         assert_eq!(interner.resolve(&known.assert), "assert");

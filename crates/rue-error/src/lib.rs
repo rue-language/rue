@@ -436,6 +436,15 @@ impl ErrorCode {
     pub const TYPE_TOO_LARGE: Self = Self(906);
     pub const FUNCTION_FRAME_TOO_LARGE: Self = Self(907);
 
+    // ------------------------------------------------------------------
+    // Bit-reinterpretation errors (E0950-E0959)
+    // ------------------------------------------------------------------
+    /// `@bitCast` was written between integer types of different widths
+    /// (RUE-952, spec 4.13:120). A bit reinterpretation renames the bits it is
+    /// given; it neither invents nor discards any, so the source and target
+    /// **must** share a width. The value-changing conversion is `@intCast`.
+    pub const BIT_CAST_WIDTH_MISMATCH: Self = Self(950);
+
     // ========================================================================
     // Linker/target errors (E1000-E1099)
     // ========================================================================
@@ -1687,6 +1696,20 @@ pub enum ErrorKind {
          type is expected"
     )]
     CannotInferCastTarget(String),
+    /// `@bitCast` between integer types of different widths (RUE-952).
+    /// Reinterpretation is width-preserving by construction, so the diagnostic
+    /// names both widths and points at `@intCast` for the value-changing
+    /// conversion.
+    #[error(
+        "'@bitCast' requires the source and target to have the same width, but \
+         `{from}` is {from_bits}-bit and `{to}` is {to_bits}-bit"
+    )]
+    BitCastWidthMismatch {
+        from: String,
+        to: String,
+        from_bits: u32,
+        to_bits: u32,
+    },
     #[error(
         "cannot infer the pointee type of '@{0}'; add a type annotation \
          (e.g. `let p: ptr mut T = @{0}(...)`) or use it where a specific \
@@ -2146,6 +2169,7 @@ impl ErrorKind {
             ErrorKind::IntrinsicWrongArgCount { .. } => ErrorCode::INTRINSIC_WRONG_ARG_COUNT,
             ErrorKind::IntrinsicTypeMismatch(_) => ErrorCode::INTRINSIC_TYPE_MISMATCH,
             ErrorKind::CannotInferCastTarget(_) => ErrorCode::CANNOT_INFER_CAST_TARGET,
+            ErrorKind::BitCastWidthMismatch { .. } => ErrorCode::BIT_CAST_WIDTH_MISMATCH,
             ErrorKind::CannotInferPointeeType(_) => ErrorCode::CANNOT_INFER_POINTEE_TYPE,
             ErrorKind::IntrinsicAlignNotPowerOfTwo { .. } => {
                 ErrorCode::INTRINSIC_ALIGN_NOT_POWER_OF_TWO

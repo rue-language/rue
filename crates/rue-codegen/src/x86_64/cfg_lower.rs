@@ -2202,6 +2202,52 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
+            // `@bitCast` (RUE-952) moves no bits: it copies the operand and
+            // rebuilds only the bits above the shared width, which belong to the
+            // source type's register image. The shared planner picked the form
+            // from the target type; this leaf just spells it.
+            crate::value_plan::IntrinsicOperation::BitCast(form) => {
+                use crate::value_plan::BitCastForm;
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(X86Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                let operand = Operand::Virtual(dst);
+                match form {
+                    BitCastForm::Move => {}
+                    BitCastForm::Sign8 => self.mir.push(X86Inst::Movsx8To64 {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    BitCastForm::Zero8 => self.mir.push(X86Inst::Movzx8To64 {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    BitCastForm::Sign16 => self.mir.push(X86Inst::Movsx16To64 {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    BitCastForm::Zero16 => self.mir.push(X86Inst::Movzx16To64 {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    // x86-64 has no register-to-register 32-bit zero extension
+                    // in this instruction set, so clear bits 32..63 with the
+                    // 64-bit shift pair.
+                    BitCastForm::Zero32 => {
+                        self.mir.push(X86Inst::ShlRI {
+                            dst: operand,
+                            imm: 32,
+                        });
+                        self.mir.push(X86Inst::ShrRI {
+                            dst: operand,
+                            imm: 32,
+                        });
+                    }
+                }
+                dst
+            }
             crate::value_plan::IntrinsicOperation::PtrRead => {
                 let ptr = plan.args[0].primary;
                 let count = plan.result_slots;

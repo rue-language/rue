@@ -55,6 +55,7 @@ Expression intrinsics (usable in any expression position):
 | `@align_of` | Get type alignment in bytes | 1 type | `i32` |
 | `@offset_of` | Get a struct field's byte offset | 1 type, 1 field name | `u64` |
 | `@intCast` | Convert between integer types | 1 expression (integer) | inferred integer type |
+| `@bitCast` | Reinterpret an integer's bits at the same width (§4.13:118) | 1 expression (integer) | inferred integer type of the same width |
 | `@wrapping_add` | Wrapping (modular) addition (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@wrapping_sub` | Wrapping (modular) subtraction (§4.13:97) | 2 expressions (same integer type) | that integer type |
 | `@wrapping_mul` | Wrapping (modular) multiplication (§4.13:97) | 2 expressions (same integer type) | that integer type |
@@ -379,6 +380,80 @@ fn main() -> i32 {
 fn main() -> i32 {
     let x: i32 = -1;
     let y: u32 = @intCast(x); // panic: integer cast overflow
+    0
+}
+```
+
+## `@bitCast`
+
+{{ rule(id="4.13:118", cat="normative") }}
+
+The `@bitCast` intrinsic reinterprets an integer value's bits at another
+integer type of the same width. It is the bit-preserving counterpart to
+`@intCast`, which is value-preserving: `@intCast` keeps the number and rejects
+the representations that do not fit, while `@bitCast` keeps the representation
+and lets the number change.
+
+{{ rule(id="4.13:119", cat="normative") }}
+
+`@bitCast` accepts exactly one argument, which **MUST** be of an integer type
+(any of `i8`, `i16`, `i32`, `i64`, `u8`, `u16`, `u32`, `u64`). The target type
+is inferred from the context where `@bitCast` is used, exactly as `@intCast`'s
+target type is (4.13:26).
+
+{{ rule(id="4.13:120", cat="legality-rule") }}
+
+It is a compile-time error if the target type cannot be inferred, is not an
+integer type, or is an integer type whose width differs from the argument's
+width (E0950). A reinterpretation neither invents nor discards bits, so it is
+defined only between the same-width pairs — `i8`/`u8`, `i16`/`u16`,
+`i32`/`u32`, and `i64`/`u64` — in either direction, and between an integer type
+and itself. Converting between widths is `@intCast`'s job.
+
+{{ rule(id="4.13:121", cat="dynamic-semantics") }}
+
+For a source type of width `N` bits, the value of `@bitCast(x)` is the value
+whose `N`-bit two's-complement representation is identical to that of `x`.
+Equivalently, for a target type `T`: when the shared width is `N` and the
+argument's value is `x`, the result is `x` if `x` is in range for `T`, and
+otherwise `x - 2^N` when `T` is signed and `x + 2^N` when `T` is unsigned.
+
+{{ rule(id="4.13:122", cat="dynamic-semantics") }}
+
+`@bitCast` never traps. Every value of the source type has a representation at
+the target type — the same representation — so no operand is rejected, in
+contrast to the overflow trap of 4.13:28. In particular `@bitCast` is the
+operation that moves a `u64` whose top bit is set into an `i64`, which
+`@intCast` traps on.
+
+{{ rule(id="4.13:123", cat="normative") }}
+
+`@bitCast` is an involution on each same-width pair: for every value `x` of an
+integer type `S` and same-width type `T`, reinterpreting `x` at `T` and then
+reinterpreting that result back at `S` yields `x`.
+
+{{ rule(id="4.13:124", cat="normative") }}
+
+In a compile-time context, `@bitCast` is evaluated exactly as `@intCast` is: it
+introduces no new constant-evaluation rule, so an invocation that `@intCast`
+would not fold into a constant is likewise not a constant expression.
+
+{{ rule(id="4.13:125") }}
+
+```rue
+fn main() -> i32 {
+    // The u64 values above i64::MAX have no @intCast into i64 at all;
+    // @bitCast moves them across, and back, unchanged.
+    let big: u64 = 9223372036854775808;   // 1 << 63
+    let signed: i64 = @bitCast(big);
+    @dbg(signed);                          // -9223372036854775808
+    let back: u64 = @bitCast(signed);
+    @dbg(back);                            // 9223372036854775808
+
+    // Narrower pairs reinterpret the same way.
+    let byte: u8 = 255;
+    let sbyte: i8 = @bitCast(byte);
+    @dbg(sbyte);                           // -1
     0
 }
 ```
