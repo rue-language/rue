@@ -322,12 +322,10 @@ pub fn frontend_query_invalidations(session: &crate::CompilerSession) -> u64 {
     session.frontend_query_invalidations()
 }
 
-/// Structural-sharing witnesses for the committed import discovery's three
-/// additively shared artifacts (RUE-1112): `[graph_records, plan_groups,
-/// resolution_modules]`, each `(predecessor_segment_address, delta_len)`. A
-/// trusted-toolchain successor shares each predecessor segment `Arc` by
-/// reference, so every address is identical to the predecessor close's — proving
-/// no predecessor entry was copied when the successor artifacts were built.
+/// Storage-tier witnesses for the committed import discovery's three additive
+/// artifacts (RUE-1112): `[graph_records, plan_groups, resolution_modules]`,
+/// each `(lineage_root_segment_address, exact_delta_len)`. The address is a
+/// stable ancestry witness even when size-tiered storage compacts.
 pub fn committed_successor_sharing(
     session: &crate::CompilerSession,
 ) -> Option<[(usize, usize); 3]> {

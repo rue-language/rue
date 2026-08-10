@@ -991,9 +991,9 @@ impl ParsedModulesWork {
 }
 
 /// Deterministically ordered collection of independently parsed modules. The
-/// module table is held as `Arc`-shared sorted segments: a strictly-additive
-/// successor shares every predecessor segment by reference and appends only its
-/// newly parsed modules (RUE-1112). The whole-program merged views — the
+/// module table is held as bounded `Arc`-shared sorted tiers: a strictly-additive
+/// successor retains an exact delta while compacting equal-magnitude tail tiers.
+/// The whole-program merged views — the
 /// contiguous module slice and the merged import directives — are projections
 /// that materialize lazily, never on the successor staging path.
 #[derive(Debug, Clone)]

@@ -31,10 +31,9 @@ pub struct SourceSnapshot {
 #[derive(Debug)]
 struct SourceSnapshotData {
     metadata: SourceMetadata,
-    /// `Arc`-shared record segments, oldest first (RUE-1112): a strictly
-    /// additive successor appends one segment and shares the rest, so extending
-    /// a snapshot never copies, re-hashes, or re-validates a predecessor
-    /// record.
+    /// `Arc`-shared size-tiered record segments, oldest first. Untouched tiers
+    /// stay shared; compacted tail tiers copy only record metadata and retain
+    /// the same source-text and identity `Arc`s.
     segments: Vec<Arc<SnapshotSegment>>,
     /// Global start index of each segment, aligned with `segments`.
     segment_offsets: Vec<usize>,
@@ -48,20 +47,48 @@ struct SnapshotSegment {
     contents: Vec<SourceRecord>,
     /// Position within THIS segment for each of its file ids.
     index: HashMap<FileId, usize>,
+    min_file_index: u32,
+    max_file_index: u32,
 }
 
 impl SnapshotSegment {
     fn from_records(contents: Vec<SourceRecord>) -> Self {
+        let min_file_index = contents
+            .iter()
+            .map(|record| record.file_id.index())
+            .min()
+            .expect("snapshot segments are nonempty");
+        let max_file_index = contents
+            .iter()
+            .map(|record| record.file_id.index())
+            .max()
+            .expect("snapshot segments are nonempty");
         let index = contents
             .iter()
             .enumerate()
             .map(|(index, record)| (record.file_id, index))
             .collect();
-        Self { contents, index }
+        Self {
+            contents,
+            index,
+            min_file_index,
+            max_file_index,
+        }
+    }
+
+    fn merge(left: &Self, right: &Self) -> Self {
+        assert!(left.max_file_index < right.min_file_index);
+        Self::from_records(
+            left.contents
+                .iter()
+                .chain(right.contents.iter())
+                .cloned()
+                .collect(),
+        )
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SourceRecord {
     file_id: FileId,
     module_id: ModuleId,
@@ -156,18 +183,13 @@ impl SourceSnapshot {
                 })
             })
             .collect::<CompileResult<_>>()?;
-        let index = contents
-            .iter()
-            .enumerate()
-            .map(|(index, record)| (record.file_id, index))
-            .collect();
         let revision = program.source_revision().clone();
 
         Ok(Self {
             data: Arc::new(SourceSnapshotData {
                 metadata,
                 len: contents.len(),
-                segments: vec![Arc::new(SnapshotSegment { contents, index })],
+                segments: vec![Arc::new(SnapshotSegment::from_records(contents))],
                 segment_offsets: vec![0],
                 revision,
                 source_store,
@@ -271,11 +293,6 @@ impl SourceSnapshot {
                 }
             })
             .collect();
-        let index = contents
-            .iter()
-            .enumerate()
-            .map(|(index, record)| (record.file_id, index))
-            .collect();
         let root_module = metadata.root_module_id();
         let revision = SourceRevision::new(
             root_module,
@@ -292,7 +309,7 @@ impl SourceSnapshot {
             data: Arc::new(SourceSnapshotData {
                 metadata,
                 len: contents.len(),
-                segments: vec![Arc::new(SnapshotSegment { contents, index })],
+                segments: vec![Arc::new(SnapshotSegment::from_records(contents))],
                 segment_offsets: vec![0],
                 revision,
                 source_store,
@@ -393,24 +410,26 @@ impl SourceSnapshot {
     }
 
     fn record(&self, file_id: FileId) -> Option<&SourceRecord> {
-        let record = self.data.segments.iter().find_map(|segment| {
-            segment
-                .index
-                .get(&file_id)
-                .map(|&position| &segment.contents[position])
-        })?;
+        let segment_position = self
+            .data
+            .segments
+            .partition_point(|segment| segment.max_file_index < file_id.index());
+        let segment = self.data.segments.get(segment_position)?;
+        if file_id.index() < segment.min_file_index {
+            return None;
+        }
+        let position = *segment.index.get(&file_id)?;
+        let record = &segment.contents[position];
         debug_assert_eq!(record.file_id, file_id);
         Some(record)
     }
 
     fn record_at(&self, index: usize) -> &SourceRecord {
-        // Few segments (one per acquisition step, compacted publication-side),
-        // so a linear offset walk stays cheap.
         let segment_position = self
             .data
             .segment_offsets
-            .iter()
-            .rposition(|&start| start <= index)
+            .partition_point(|&start| start <= index)
+            .checked_sub(1)
             .expect("segment offsets begin at zero");
         let segment = &self.data.segments[segment_position];
         &segment.contents[index - self.data.segment_offsets[segment_position]]
@@ -427,11 +446,9 @@ impl SourceSnapshot {
         SourceView::new(path, record.text.as_str(), file_id)
     }
 
-    /// Build a strictly-additive successor snapshot that shares every record
-    /// segment, metadata segment, store bucket segment, and module-revision
-    /// segment of `base` by reference, appending one validated segment holding
-    /// only `appended` (RUE-1112). Only the appended sources are hashed and
-    /// validated; no predecessor record is copied, re-hashed, or re-validated.
+    /// Build a strictly-additive successor snapshot using bounded size-tiered
+    /// indexes. Only appended sources are hashed and validated; occasional tier
+    /// merges copy record/path metadata but never source bytes or identities.
     /// Appended file ids are assigned after the base's, so predecessor ids stay
     /// stable across the extension.
     pub(crate) fn extend_with_appended(
@@ -505,11 +522,24 @@ impl SourceSnapshot {
                 })
                 .collect(),
         )?;
+        let appended_len = records.len();
         let mut segments = base.data.segments.clone();
-        let mut segment_offsets = base.data.segment_offsets.clone();
-        segment_offsets.push(base.data.len);
-        let len = base.data.len + records.len();
-        segments.push(Arc::new(SnapshotSegment::from_records(records)));
+        crate::shared_segments::push_size_tiered_segment(
+            &mut segments,
+            Arc::new(SnapshotSegment::from_records(records)),
+            |segment| segment.contents.len(),
+            |left, right| Arc::new(SnapshotSegment::merge(left, right)),
+        );
+        let mut next_offset = 0;
+        let segment_offsets = segments
+            .iter()
+            .map(|segment| {
+                let offset = next_offset;
+                next_offset += segment.contents.len();
+                offset
+            })
+            .collect();
+        let len = base.data.len + appended_len;
         Ok(SourceSnapshot {
             data: Arc::new(SourceSnapshotData {
                 metadata,
@@ -774,6 +804,63 @@ mod tests {
     fn source_snapshots_are_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SourceSnapshot>();
+    }
+
+    #[test]
+    fn one_import_per_round_keeps_all_source_indexes_logarithmic() {
+        const DEPTH: u32 = 1024;
+        let mut snapshot = SourceSnapshot::single(
+            "/project/main.rue",
+            "const next = @import(\"module_1\"); fn main() {}",
+        )
+        .unwrap();
+
+        for index in 1..=DEPTH {
+            let text = if index == DEPTH {
+                "pub fn leaf() -> i32 { 42 }".to_owned()
+            } else {
+                format!("const next = @import(\"module_{}\");", index + 1)
+            };
+            let file_id = FileId::new(index);
+            snapshot = SourceSnapshot::extend_with_appended(
+                &snapshot,
+                vec![AppendedSource {
+                    file_id,
+                    physical_path: format!("/project/module_{index}.rue"),
+                    logical_path: format!("module_{index}.rue"),
+                    trusted_standard_library: false,
+                    text: Arc::new(text.clone()),
+                }],
+            )
+            .unwrap();
+            assert_eq!(snapshot.source_text(file_id), Some(text.as_str()));
+        }
+
+        let depths = [
+            snapshot.data.segments.len(),
+            snapshot.data.metadata.segment_depth(),
+            snapshot.data.source_store.segment_depth(),
+            snapshot
+                .source_revision()
+                .module_segments()
+                .segments()
+                .len(),
+        ];
+        assert!(depths.into_iter().all(|depth| depth <= 12), "{depths:?}");
+        assert!(
+            depths
+                .into_iter()
+                .all(|depth| depth <= crate::shared_segments::MAX_SIZE_TIERED_SEGMENTS)
+        );
+        assert_eq!(snapshot.files().count(), DEPTH as usize + 1);
+        assert_eq!(
+            snapshot
+                .files()
+                .next_back()
+                .expect("the deepest module is present")
+                .file_id,
+            FileId::new(DEPTH)
+        );
     }
 
     #[test]

@@ -117,10 +117,54 @@ impl From<&SourceId> for SourceBucketKey {
 /// remain distinct entries.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceStore {
-    /// `Arc`-shared bucket segments, oldest first; a strictly-additive
-    /// successor appends one segment and shares the rest (RUE-1112).
-    buckets: Vec<Arc<BTreeMap<SourceBucketKey, Arc<[SourceId]>>>>,
+    /// `Arc`-shared size-tiered bucket segments, oldest first.
+    buckets: Vec<Arc<SourceStoreSegment>>,
     len: usize,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SourceStoreSegment {
+    buckets: BTreeMap<SourceBucketKey, Arc<[SourceId]>>,
+    len: usize,
+}
+
+impl SourceStoreSegment {
+    fn from_sources(sources: Vec<SourceId>) -> Self {
+        let len = sources.len();
+        let mut buckets = BTreeMap::<_, Vec<_>>::new();
+        for source in sources {
+            buckets
+                .entry(SourceBucketKey::from(&source))
+                .or_default()
+                .push(source);
+        }
+        Self {
+            buckets: buckets
+                .into_iter()
+                .map(|(key, bucket)| (key, bucket.into()))
+                .collect(),
+            len,
+        }
+    }
+
+    fn merge(left: &Self, right: &Self) -> Self {
+        let mut buckets = left.buckets.clone();
+        for (key, right_bucket) in &right.buckets {
+            let bucket = buckets.entry(*key).or_default();
+            let mut merged = bucket
+                .iter()
+                .chain(right_bucket.iter())
+                .cloned()
+                .collect::<Vec<_>>();
+            merged.sort();
+            merged.dedup();
+            *bucket = merged.into();
+        }
+        Self {
+            buckets,
+            len: left.len + right.len,
+        }
+    }
 }
 
 impl SourceStore {
@@ -145,28 +189,15 @@ impl SourceStore {
         sources.sort();
         sources.dedup();
         let len = sources.len();
-        let mut buckets = BTreeMap::<_, Vec<_>>::new();
-        for source in sources {
-            buckets
-                .entry(SourceBucketKey::from(&source))
-                .or_default()
-                .push(source);
-        }
         Self {
-            buckets: vec![Arc::new(
-                buckets
-                    .into_iter()
-                    .map(|(key, bucket)| (key, bucket.into()))
-                    .collect(),
-            )],
+            buckets: vec![Arc::new(SourceStoreSegment::from_sources(sources))],
             len,
         }
     }
 
-    /// Build a strictly-additive successor store that shares every bucket
-    /// segment of `base` by reference and appends one segment holding only the
-    /// genuinely new identities (RUE-1112). No base identity is copied or
-    /// re-bucketed.
+    /// Build a strictly-additive successor store holding only genuinely new
+    /// identities. Untouched bucket tiers remain shared; equal-magnitude tail
+    /// tiers are re-bucketed to keep lookup depth bounded.
     pub(crate) fn extend_with_ids(
         base: &SourceStore,
         appended: impl IntoIterator<Item = SourceId>,
@@ -181,20 +212,13 @@ impl SourceStore {
             return base.clone();
         }
         let len = base.len + appended.len();
-        let mut new_bucket = BTreeMap::<_, Vec<_>>::new();
-        for source in appended {
-            new_bucket
-                .entry(SourceBucketKey::from(&source))
-                .or_default()
-                .push(source);
-        }
         let mut buckets = base.buckets.clone();
-        buckets.push(Arc::new(
-            new_bucket
-                .into_iter()
-                .map(|(key, bucket)| (key, bucket.into()))
-                .collect(),
-        ));
+        crate::shared_segments::push_size_tiered_segment(
+            &mut buckets,
+            Arc::new(SourceStoreSegment::from_sources(appended)),
+            |segment| segment.len,
+            |left, right| Arc::new(SourceStoreSegment::merge(left, right)),
+        );
         Self { buckets, len }
     }
 
@@ -208,11 +232,16 @@ impl SourceStore {
         self.len == 0
     }
 
+    #[cfg(test)]
+    pub(crate) fn segment_depth(&self) -> usize {
+        self.buckets.len()
+    }
+
     /// Return this store's canonical exact identity for `source`.
     pub fn get(&self, source: &SourceId) -> Option<&SourceId> {
         let key = SourceBucketKey::from(source);
         self.buckets.iter().find_map(|segment| {
-            let bucket = segment.get(&key)?;
+            let bucket = segment.buckets.get(&key)?;
             bucket
                 .binary_search(source)
                 .ok()
@@ -230,7 +259,7 @@ impl SourceStore {
     pub fn iter(&self) -> impl Iterator<Item = &SourceId> + '_ {
         self.buckets
             .iter()
-            .flat_map(|segment| segment.values().flat_map(|bucket| bucket.iter()))
+            .flat_map(|segment| segment.buckets.values().flat_map(|bucket| bucket.iter()))
     }
 }
 
@@ -414,10 +443,9 @@ impl SourceRevision {
         })
     }
 
-    /// Build a strictly-additive successor mapping that shares `base`'s module
-    /// segments by reference and appends only `appended` (RUE-1112). Validates
-    /// the appended entries alone: they must be new module identities. No base
-    /// entry is copied, re-sorted, or re-validated.
+    /// Build a strictly-additive successor mapping from an exact appended delta.
+    /// Validates only the appended entries; untouched size tiers remain shared
+    /// and equal-magnitude tails compact in canonical order.
     pub(crate) fn extend_with_appended(
         base: &SourceRevision,
         appended: Vec<ModuleRevision>,

@@ -3014,14 +3014,10 @@ mod tests {
         assert_eq!(project_read_count(&small.read_manifest), 1);
         assert_eq!(project_read_count(&big.read_manifest), 4);
 
-        // STRUCTURAL SHARING: the committed successor carries the predecessor
-        // close's segment `Arc` by reference for ALL THREE additive artifacts —
-        // canonical graph records, plan request groups, and the module-resolution
-        // table. Each artifact's shared predecessor-segment address is
-        // byte-identical to the predecessor close's flat address (so no predecessor
-        // entry was copied, re-sorted, or reallocated), and each delta size is
-        // non-vacuous and identical across the two sharply different predecessor
-        // topologies (allocation independent of predecessor size).
+        // STRUCTURAL LINEAGE: the committed successor retains the predecessor
+        // close's root segment `Arc` as a stable witness for all three additive
+        // artifacts, even if bounded size-tiered storage compacted. Each exact
+        // delta is non-vacuous and independent of predecessor topology.
         let artifacts = ["graph records", "plan groups", "resolution modules"];
         for acq in [&small_acq, &big_acq] {
             let before = acq
@@ -3036,7 +3032,7 @@ mod tests {
                 assert_eq!(before_delta, 0, "the initial close is flat for {name}");
                 assert_eq!(
                     before_ptr, after_ptr,
-                    "the successor must share the predecessor {name} Arc by reference (no copy)"
+                    "the successor must retain the predecessor {name} lineage witness"
                 );
                 assert!(after_delta > 0, "the successor delta must carry new {name}");
             }

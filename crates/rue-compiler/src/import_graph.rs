@@ -53,9 +53,9 @@ impl ImportDirective {
 }
 
 /// Canonically ordered import sites from one lowered source snapshot, held as
-/// `Arc`-shared sorted segments: a strictly-additive successor program shares
-/// every predecessor segment by reference and appends only its new modules'
-/// sites (RUE-1112). Equality, hashing, and debug rendering are logical over
+/// bounded `Arc`-shared sorted tiers. A strictly-additive successor retains its
+/// exact new-module delta while compacting equal-magnitude tail tiers. Equality,
+/// hashing, and debug rendering are logical over
 /// the merged order; the contiguous slice materializes lazily, at most once
 /// per value, off the successor staging path.
 #[derive(Clone)]
@@ -182,9 +182,9 @@ fn record_order(a: &CanonicalImportRecord, b: &CanonicalImportRecord) -> std::cm
 /// Canonical resolved topology, independent of import-site occurrences.
 ///
 /// The record sequence is a [`SharedSegments`], so a strictly-additive
-/// trusted-toolchain successor (RUE-1112) reuses the predecessor's record `Arc`
-/// by reference and stores only its sorted delta — no predecessor record is
-/// copied, re-sorted, or reallocated when the successor graph is built.
+/// trusted-toolchain successor (RUE-1112) keeps an exact sorted delta and shares
+/// untouched size tiers. Equal-magnitude tail tiers compact to bound lookup and
+/// merge work.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CanonicalImportGraph {
     root: ModuleId,

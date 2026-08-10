@@ -1,14 +1,12 @@
 //! Structurally shared, additively extended sorted sequences (RUE-1112).
 //!
 //! A [`SharedSegments`] holds a canonical sorted sequence as an ordered list of
-//! `Arc`-shared, mutually-disjoint sorted segments. A strictly-additive successor
-//! appends exactly one new segment and shares every predecessor segment by `Arc`
-//! clone — no predecessor element is copied, sorted, or reallocated, and a chain
-//! of successors accumulates one segment per acquisition round (bounded by the
-//! driver's round bound) rather than flattening. The merged flat slice is
-//! materialized at most once, lazily, and only when a consumer needs a contiguous
-//! `&[T]`; the acquisition path reads the newest delta segment directly and never
-//! triggers it.
+//! `Arc`-shared, mutually-disjoint sorted segments. Successors use size-tiered
+//! compaction: untouched tiers stay shared, while adjacent tiers of the same
+//! magnitude merge. Segment depth is therefore bounded by the number of bits in
+//! `usize`, and each element participates in at most logarithmically many merges.
+//! The exact newest delta and direct-parent lineage remain available to the
+//! acquisition path even when its storage tier was compacted.
 //!
 //! Equality and hashing are over the LOGICAL merged sequence, computed by a
 //! streaming k-way merge with no allocation of the merged buffer, so a flat value
@@ -19,6 +17,45 @@ use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
 
+/// A size-tiered sequence has at most one segment at each possible `usize`
+/// magnitude, plus the possible empty flat base.
+pub(crate) const MAX_SIZE_TIERED_SEGMENTS: usize = usize::BITS as usize + 1;
+
+fn size_tier(len: usize) -> u32 {
+    if len == 0 {
+        0
+    } else {
+        usize::BITS - len.leading_zeros() - 1
+    }
+}
+
+/// Append one immutable segment and merge tail tiers until their size tiers are
+/// strictly descending from oldest to newest. The merge callback preserves the
+/// sequence-specific logical order.
+pub(crate) fn push_size_tiered_segment<T: ?Sized>(
+    segments: &mut Vec<Arc<T>>,
+    mut appended: Arc<T>,
+    len: impl Fn(&T) -> usize,
+    mut merge: impl FnMut(&T, &T) -> Arc<T>,
+) {
+    while let Some(previous) = segments.last() {
+        if size_tier(len(previous)) > size_tier(len(&appended)) {
+            break;
+        }
+        let previous = segments.pop().expect("the tail segment exists");
+        appended = merge(&previous, &appended);
+    }
+    segments.push(appended);
+    assert!(segments.len() <= MAX_SIZE_TIERED_SEGMENTS);
+}
+
+#[derive(Debug)]
+struct SegmentLineage<T> {
+    parent: Option<Arc<SegmentLineage<T>>>,
+    delta: Arc<[T]>,
+    root_segment: Arc<[T]>,
+}
+
 /// A canonical sorted sequence represented as an ordered list of `Arc`-shared,
 /// mutually-disjoint sorted segments. `cmp` is the canonical total order every
 /// segment is sorted by; the segments partition the logical sequence, so their
@@ -26,7 +63,8 @@ use std::sync::{Arc, OnceLock};
 pub(crate) struct SharedSegments<T> {
     segments: Arc<[Arc<[T]>]>,
     cmp: fn(&T, &T) -> Ordering,
-    merged: OnceLock<Arc<[T]>>,
+    merged: Arc<OnceLock<Arc<[T]>>>,
+    lineage: Arc<SegmentLineage<T>>,
 }
 
 impl<T> SharedSegments<T> {
@@ -34,34 +72,46 @@ impl<T> SharedSegments<T> {
     /// `cmp`, deduplicated).
     pub(crate) fn flat(items: Arc<[T]>, cmp: fn(&T, &T) -> Ordering) -> Self {
         Self {
-            segments: Arc::from([items]),
+            segments: Arc::from([Arc::clone(&items)]),
             cmp,
-            merged: OnceLock::new(),
+            merged: Arc::new(OnceLock::new()),
+            lineage: Arc::new(SegmentLineage {
+                parent: None,
+                delta: Arc::from([]),
+                root_segment: items,
+            }),
         }
     }
 
-    /// The first (oldest) segment: the original base carried through every
-    /// successor by reference. Two successors of the same base return
-    /// `Arc`-pointer-equal first segments, proving the base was never copied.
+    /// The original flat segment retained as a stable lineage witness. It is not
+    /// necessarily one of the current compacted storage tiers.
     pub(crate) fn predecessor_segment(&self) -> &Arc<[T]> {
-        &self.segments[0]
+        &self.lineage.root_segment
     }
 
-    /// The newest delta segment (empty for a flat value). Iterating this avoids
-    /// materializing the merged sequence on the acquisition path.
+    /// The exact newest logical delta (empty for a flat value), independent of
+    /// whether its physical storage tier was compacted.
     pub(crate) fn delta_segment(&self) -> &[T] {
-        if self.segments.len() > 1 {
-            &self.segments[self.segments.len() - 1]
-        } else {
-            &[]
-        }
+        &self.lineage.delta
     }
 
-    /// Every `Arc`-shared segment, oldest first. Two successors of a common
-    /// ancestor share every ancestor segment by pointer; consumers use this to
-    /// witness structural inheritance without walking predecessor entries.
+    /// Every bounded storage tier, oldest first.
     pub(crate) fn segments(&self) -> &[Arc<[T]>] {
         &self.segments
+    }
+
+    /// Return the exact appended values when `ancestor` is this value or its
+    /// direct structural parent. Pointer identity makes this a constant-time
+    /// ancestry proof even when size-tiered compaction replaced storage tiers.
+    pub(crate) fn direct_delta_from(&self, ancestor: &Self) -> Option<&[T]> {
+        if Arc::ptr_eq(&self.lineage, &ancestor.lineage) {
+            return Some(&[]);
+        }
+        self.lineage
+            .parent
+            .as_ref()
+            .is_some_and(|parent| Arc::ptr_eq(parent, &ancestor.lineage))
+            .then_some(self.lineage.delta.as_ref())
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -103,20 +153,31 @@ impl<T> SharedSegments<T> {
 }
 
 impl<T: Clone> SharedSegments<T> {
-    /// Build a strictly-additive successor that carries every segment of `base`
-    /// by `Arc` clone and appends `delta` as one new segment. `delta` must be
-    /// disjoint from `base` and is sorted here (only `delta`, never `base`). No
-    /// base segment is copied or re-sorted, and the base is NOT flattened, so a
-    /// chain of successors stays O(round) segments.
+    /// Build a strictly-additive successor. `delta` must be disjoint from `base`
+    /// and is sorted here. Untouched size tiers remain shared; tail tiers merge
+    /// only when necessary to preserve the bounded-depth invariant.
     pub(crate) fn extend(base: &SharedSegments<T>, mut delta: Vec<T>) -> Self {
         delta.sort_by(base.cmp);
         delta.dedup_by(|a, b| (base.cmp)(a, b) == Ordering::Equal);
+        let delta: Arc<[T]> = delta.into();
         let mut segments: Vec<Arc<[T]>> = base.segments.to_vec();
-        segments.push(delta.into());
+        if !delta.is_empty() {
+            push_size_tiered_segment(
+                &mut segments,
+                Arc::clone(&delta),
+                <[T]>::len,
+                |left, right| merge_sorted(left, right, base.cmp),
+            );
+        }
         Self {
             segments: segments.into(),
             cmp: base.cmp,
-            merged: OnceLock::new(),
+            merged: Arc::new(OnceLock::new()),
+            lineage: Arc::new(SegmentLineage {
+                parent: Some(Arc::clone(&base.lineage)),
+                delta,
+                root_segment: Arc::clone(&base.lineage.root_segment),
+            }),
         }
     }
 
@@ -132,6 +193,23 @@ impl<T: Clone> SharedSegments<T> {
         self.merged
             .get_or_init(|| self.iter().cloned().collect::<Vec<_>>().into())
     }
+}
+
+fn merge_sorted<T: Clone>(left: &[T], right: &[T], cmp: fn(&T, &T) -> Ordering) -> Arc<[T]> {
+    let mut merged = Vec::with_capacity(left.len() + right.len());
+    let (mut left_index, mut right_index) = (0, 0);
+    while left_index < left.len() && right_index < right.len() {
+        if cmp(&right[right_index], &left[left_index]) == Ordering::Less {
+            merged.push(right[right_index].clone());
+            right_index += 1;
+        } else {
+            merged.push(left[left_index].clone());
+            left_index += 1;
+        }
+    }
+    merged.extend_from_slice(&left[left_index..]);
+    merged.extend_from_slice(&right[right_index..]);
+    merged.into()
 }
 
 /// Streaming k-way merge over the segments (each sorted, mutually disjoint).
@@ -179,12 +257,11 @@ impl<'a, T> ExactSizeIterator for MergeIter<'a, T> {}
 
 impl<T: Clone> Clone for SharedSegments<T> {
     fn clone(&self) -> Self {
-        // Share all segments by `Arc` clone; the materialized cache is not carried
-        // so a clone holds no predecessor-sized buffer.
         Self {
             segments: Arc::clone(&self.segments),
             cmp: self.cmp,
-            merged: OnceLock::new(),
+            merged: Arc::clone(&self.merged),
+            lineage: Arc::clone(&self.lineage),
         }
     }
 }
@@ -225,15 +302,13 @@ impl<T: std::fmt::Debug> std::fmt::Debug for SharedSegments<T> {
 }
 
 /// An append-only ORDERED sequence (no sort relation) represented as `Arc`-shared
-/// concatenated segments. A strictly-additive successor appends exactly one new
-/// segment and shares every predecessor segment by `Arc` clone; the logical
-/// sequence is the segments in order, back to back. Equality, hashing, and debug
+/// size-tiered concatenated segments. Untouched tiers stay shared and compacted
+/// tail tiers preserve concatenation order. Equality, hashing, and debug
 /// rendering are over the logical concatenation, so representation is invisible
-/// to memoization. The contiguous slice materializes lazily, at most once per
-/// value, and never on a path that only iterates.
+/// to memoization. Clones share the lazily materialized contiguous slice.
 pub(crate) struct SharedList<T> {
     segments: Arc<[Arc<[T]>]>,
-    merged: OnceLock<Arc<[T]>>,
+    merged: Arc<OnceLock<Arc<[T]>>>,
 }
 
 impl<T> SharedList<T> {
@@ -241,7 +316,7 @@ impl<T> SharedList<T> {
     pub(crate) fn flat(items: Arc<[T]>) -> Self {
         Self {
             segments: Arc::from([items]),
-            merged: OnceLock::new(),
+            merged: Arc::new(OnceLock::new()),
         }
     }
 
@@ -291,15 +366,23 @@ impl<'a, T> Iterator for ListIter<'a, T> {
 impl<'a, T> ExactSizeIterator for ListIter<'a, T> {}
 
 impl<T: Clone> SharedList<T> {
-    /// Build a strictly-additive successor that carries every segment of `base`
-    /// by `Arc` clone and appends `delta` in order as one new segment. No base
-    /// segment is copied and the base is never flattened.
+    /// Build a strictly-additive successor, compacting equal-magnitude tail
+    /// tiers while preserving concatenation order.
     pub(crate) fn extend(base: &SharedList<T>, delta: Vec<T>) -> Self {
         let mut segments: Vec<Arc<[T]>> = base.segments.to_vec();
-        segments.push(delta.into());
+        let delta: Arc<[T]> = delta.into();
+        if !delta.is_empty() {
+            push_size_tiered_segment(&mut segments, delta, <[T]>::len, |left, right| {
+                left.iter()
+                    .chain(right.iter())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .into()
+            });
+        }
         Self {
             segments: segments.into(),
-            merged: OnceLock::new(),
+            merged: Arc::new(OnceLock::new()),
         }
     }
 
@@ -320,11 +403,9 @@ impl<T: Clone> SharedList<T> {
 
 impl<T: Clone> Clone for SharedList<T> {
     fn clone(&self) -> Self {
-        // Share all segments by `Arc` clone; the materialized cache is not
-        // carried so a clone holds no predecessor-sized buffer.
         Self {
             segments: Arc::clone(&self.segments),
-            merged: OnceLock::new(),
+            merged: Arc::clone(&self.merged),
         }
     }
 }
@@ -399,20 +480,19 @@ mod tests {
     }
 
     #[test]
-    fn chained_successors_stay_multi_segment_and_share_every_ancestor() {
+    fn chained_successors_compact_tail_tiers_and_preserve_direct_lineage() {
         let base = SharedSegments::flat(Arc::from([10, 20, 30]), cmp);
         let first = SharedSegments::extend(&base, vec![15, 25]);
         let second = SharedSegments::extend(&first, vec![5, 35]);
 
-        // The second successor is three segments (no flattening of `first`).
-        assert_eq!(second.segments().len(), 3);
-        // Every ancestor segment is shared by pointer with `first`.
+        // The first extension merges equal-magnitude tiers. The next smaller
+        // delta stays separate and shares the untouched compacted tier.
+        assert_eq!(first.segments().len(), 1);
+        assert_eq!(second.segments().len(), 2);
         assert!(Arc::ptr_eq(&second.segments()[0], &first.segments()[0]));
-        assert!(Arc::ptr_eq(&second.segments()[1], &first.segments()[1]));
-        assert!(Arc::ptr_eq(
-            second.predecessor_segment(),
-            base.predecessor_segment()
-        ));
+        assert_eq!(second.direct_delta_from(&first), Some(&[5, 35][..]));
+        assert!(first.direct_delta_from(&base).is_some());
+        assert!(second.direct_delta_from(&base).is_none());
 
         // Logical content and equivalence with a flat value are preserved.
         assert_eq!(
@@ -436,20 +516,21 @@ mod tests {
     }
 
     #[test]
-    fn shared_list_extends_in_order_sharing_ancestors() {
+    fn shared_list_extends_in_order_with_size_tiered_compaction() {
         let base = SharedList::flat(Arc::from([30, 10, 20]));
         let first = SharedList::extend(&base, vec![5, 25]);
         let second = SharedList::extend(&first, vec![15]);
 
-        // Order is concatenation order, never sorted; ancestors are shared by
-        // pointer and never flattened.
+        // Order is concatenation order, never sorted. The equal-magnitude first
+        // extension compacts, then the smaller tail remains separate.
         assert_eq!(
             second.iter().copied().collect::<Vec<_>>(),
             vec![30, 10, 20, 5, 25, 15]
         );
         assert_eq!(second.len(), 6);
+        assert_eq!(first.segments.len(), 1);
+        assert_eq!(second.segments.len(), 2);
         assert!(Arc::ptr_eq(&second.segments[0], &first.segments[0]));
-        assert!(Arc::ptr_eq(&second.segments[1], &first.segments[1]));
 
         // Logical equality/hash match a flat value with identical content.
         let flat = SharedList::flat(Arc::from([30, 10, 20, 5, 25, 15]));
@@ -461,6 +542,25 @@ mod tests {
         let items: Arc<[i32]> = Arc::from([1, 2]);
         let single = SharedList::flat(Arc::clone(&items));
         assert!(std::ptr::eq(single.as_arc().as_ptr(), items.as_ptr()));
+    }
+
+    #[test]
+    fn one_item_rounds_keep_depth_logarithmic_and_share_materialization() {
+        let mut value = SharedSegments::flat(Arc::from([0]), cmp);
+        let mut max_depth = value.segments().len();
+        for item in 1..=4096 {
+            let successor = SharedSegments::extend(&value, vec![item]);
+            assert_eq!(successor.direct_delta_from(&value), Some(&[item][..]));
+            max_depth = max_depth.max(successor.segments().len());
+            assert!(successor.segments().len() <= MAX_SIZE_TIERED_SEGMENTS);
+            value = successor;
+        }
+
+        assert!(max_depth <= 13, "4097 entries need at most 13 size tiers");
+        assert_eq!(value.len(), 4097);
+        let clone = value.clone();
+        let materialized = value.as_slice().as_ptr();
+        assert_eq!(clone.as_slice().as_ptr(), materialized);
     }
 
     fn hash_of_list(value: &SharedList<i32>) -> u64 {
