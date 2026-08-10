@@ -1945,10 +1945,15 @@ pub struct OneShotMetrics {
     pub parsed: ParseMetrics,
     pub lowered: LowerMetrics,
     pub semantic: SemanticMetrics,
+    pub query_runtime: QueryRuntimeMetrics,
 }
 
 impl OneShotMetrics {
-    pub(crate) fn new(stats: crate::SourceStats, work: crate::PipelineWork) -> Self {
+    pub(crate) fn new(
+        stats: crate::SourceStats,
+        work: crate::PipelineWork,
+        query_runtime: QueryRuntimeMetrics,
+    ) -> Self {
         Self {
             files: stats.files,
             bytes: stats.bytes,
@@ -1957,6 +1962,7 @@ impl OneShotMetrics {
             parsed: ParseMetrics::from_work(work.parsed),
             lowered: LowerMetrics::from_work(work.lowered),
             semantic: SemanticMetrics::from_work(work.semantic),
+            query_runtime,
         }
     }
 }

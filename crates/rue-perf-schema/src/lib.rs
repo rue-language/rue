@@ -61,8 +61,9 @@ pub use run::{
     RunIdentity, RunObject, Sample, WorkloadObservation,
 };
 pub use scaling::{
-    SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity, ScalingManifest, ScalingObservation,
-    ScalingRegime, ScalingReport, ScalingWorkload, WorkloadShape,
+    CompilerWork, QueryRuntimeWork, SCALING_REPORT_SCHEMA_VERSION, ScalingIdentity,
+    ScalingManifest, ScalingObservation, ScalingRegime, ScalingReport, ScalingWorkload,
+    WorkloadShape,
 };
 pub use series::{Metric, SeriesId};
 pub use stats::{

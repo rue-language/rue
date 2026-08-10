@@ -1087,13 +1087,15 @@ pub struct CompileOutput {
     pub(crate) source_stats: SourceStats,
     /// Structural work performed by the session query graph.
     pub(crate) work: PipelineWork,
+    /// Live query-runtime work observed after the rooted compiler queries.
+    pub(crate) query_runtime: crate::unstable::QueryRuntimeMetrics,
 }
 
 impl CompileOutput {
     /// Return instrumentation from this one-shot compilation without exposing
     /// query-engine work records.
     pub fn unstable_metrics(&self) -> crate::unstable::OneShotMetrics {
-        crate::unstable::OneShotMetrics::new(self.source_stats, self.work)
+        crate::unstable::OneShotMetrics::new(self.source_stats, self.work, self.query_runtime)
     }
 }
 
@@ -1267,6 +1269,7 @@ pub(crate) fn compile_rooted_with_session(
         })?;
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let session_work = session.work().clone();
+    let query_runtime = session.unstable_metrics().query_runtime();
     let image = crate::program_image_plan::ProgramImage::from_rooted(
         rooted.objects,
         rooted.exports,
@@ -1288,5 +1291,6 @@ pub(crate) fn compile_rooted_with_session(
         lowered: Default::default(),
         semantic: rooted.work,
     };
+    output.query_runtime = query_runtime;
     Ok(output)
 }
