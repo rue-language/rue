@@ -1,0 +1,94 @@
+# The boundary between a type used as a *value* and a type used in an
+# *annotation* (RUE-770).
+#
+# `Expr::TypeLit` has exactly three producers in the expression grammar:
+# `struct { ... }`, `enum { ... }`, and a primitive type keyword. Every compound
+# type shape — arrays, slices, pointers — is therefore reachable only from a
+# type annotation, where lowering preserves element/length identity. The
+# bracketed forms that look like array *types* in value position are ordinary
+# array expressions over type values and are rejected at their own span, so RIR
+# lowering never invents a stand-in name for an "array type value".
+#
+# These cases pin both halves: the rejections keep their precise diagnostics,
+# and the annotation path keeps its runtime behavior (stdout pinned, not just
+# the exit code).
+
+[section]
+id = "cli.type_value_boundary"
+name = "Type-value boundary"
+description = "Compound type shapes are annotation-only; value position yields precise diagnostics (RUE-770)."
+
+[[case]]
+name = "array_bracket_form_in_value_position_is_an_array_expression"
+description = "`[i32; 4]` as a value is an array repeat of the type value `i32`, rejected at its own span (E1200) — not lowered to a placeholder array type."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let t = [i32; 4];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime", "[i32; 4]"]
+
+[[case]]
+name = "slice_bracket_form_in_value_position_is_an_array_expression"
+description = "`[i32]` as a value is a one-element array literal holding the type value `i32`, rejected the same way."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let t = [i32];
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E1200", "type values cannot exist at runtime", "[i32]"]
+
+[[case]]
+name = "pointer_type_in_value_position_is_not_an_expression"
+description = "`ptr const i32` never starts an expression, so it is a parse error (E0100) rather than a silently interned type value."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let p = ptr const i32;
+    0
+}
+""" }]
+compile_fail = true
+error_contains = ["E0100", "expected expression, found 'ptr'"]
+
+[[case]]
+name = "primitive_type_value_still_binds"
+description = "A primitive type keyword is the one compound-free shape the grammar admits as a value; it keeps its own name through lowering."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const T = i32;
+
+fn Holder(comptime U: type) -> type {
+    struct { value: U }
+}
+
+fn main() -> i32 {
+    let h = Holder(T) { value: 7 };
+    @dbg(h.value);
+    @dbg(@size_of(T));
+    0
+}
+""" }]
+stdout = "7\n4\n"
+
+[[case]]
+name = "array_annotations_preserve_element_and_length"
+description = "The annotation path keeps element/length identity for nested arrays, named lengths, and `@size_of` type arguments."
+args = ["main.rue", "-o", "prog"]
+files = [{ path = "main.rue", source = """
+const N: i32 = 3;
+
+fn main() -> i32 {
+    let a: [i32; 4] = [3; 4];
+    let n: [[u8; 2]; N] = [[1; 2]; 3];
+    let e: i32 = @intCast(n[1][1]);
+    @dbg(@size_of([i32; 4]));
+    @dbg(@size_of([[u8; 2]; N]));
+    @dbg(a[2] + e);
+    0
+}
+""" }]
+stdout = "16\n6\n4\n"
