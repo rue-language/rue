@@ -43,5 +43,6 @@ fi
 
 echo "Formatting ${#RUST_FILES[@]} Rust files..."
 ./buck2 run toolchains//rust:rustfmt -- \
+    --config-path "$(pwd)" \
     --edition 2024 "${RUST_FILES[@]}"
 echo "Done!"

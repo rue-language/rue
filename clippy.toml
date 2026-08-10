@@ -1,0 +1,3 @@
+# Clippy lint levels are configured in toolchains/rust/BUCK.
+# This file is reserved for configuration values consumed by individual
+# Clippy lints. Keep it present so those values remain a declared Buck input.

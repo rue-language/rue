@@ -146,6 +146,8 @@ EOF
     "$([ "$(wc -l <"$sb/calls" 2>/dev/null | tr -d ' ')" = 1 ] && echo 0 || echo 1)"
   check "fmt.sh: uses the rustfmt RunInfo target" \
     "$(grep -Fxq 'run' "$sb/args" && grep -Fxq 'toolchains//rust:rustfmt' "$sb/args" && echo 0 || echo 1)"
+  check "fmt.sh: passes the repository rustfmt configuration" \
+    "$(grep -Fxq -- '--config-path' "$sb/args" && grep -Fxq "$sb" "$sb/args" && echo 0 || echo 1)"
   check "fmt.sh: preserves an ordinary source path" \
     "$(grep -Fxq "$sb/crates/a.rs" "$sb/args" && echo 0 || echo 1)"
   check "fmt.sh: preserves a source path containing spaces" \

@@ -23,6 +23,8 @@
 
 load("//:test_defs.bzl", "rue_test_labels")
 
+_RUSTFMT_CONFIG = "//:rustfmt-config"
+
 def _fmt_check(name, srcs):
     """Emits `<name>-fmt-check`: rustfmt --check over this crate's own sources.
 
@@ -42,11 +44,17 @@ def _fmt_check(name, srcs):
     native.sh_test(
         name = name + "-fmt-check",
         test = "toolchains//rust:rustfmt",
-        args = ["--edition", "2024", "--check"] + [
+        args = [
+            "--config-path",
+            "$(location {})".format(_RUSTFMT_CONFIG),
+            "--edition",
+            "2024",
+            "--check",
+        ] + [
             package_name() + "/" + src
             for src in srcs
         ],
-        resources = srcs,
+        resources = srcs + [_RUSTFMT_CONFIG],
         # Premerge tier; excluded from quick iteration so `scripts/rue quick`
         # keeps meaning "unit tests only" (see quick-test.sh).
         labels = rue_test_labels("premerge", ["rue_not_quick"]),
