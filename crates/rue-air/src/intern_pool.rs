@@ -310,10 +310,26 @@ impl StructDefEntry {
 
     /// Find a field by name and return its declaration index and definition.
     pub fn find_field(&self, name: &str) -> Option<(usize, &StructField)> {
+        self.find_field_with_observer(name, || {})
+    }
+
+    /// Indexed field lookup with a hook for each candidate-name comparison.
+    ///
+    /// The hook is a test seam for proving callers use the member index rather
+    /// than scanning `fields`; the no-op production caller is inlined away.
+    #[inline(always)]
+    pub(crate) fn find_field_with_observer(
+        &self,
+        name: &str,
+        mut observe_candidate: impl FnMut(),
+    ) -> Option<(usize, &StructField)> {
         self.field_index
             .candidates(name)
             .map(|index| (index, &self.def.fields[index]))
-            .find(|(_, field)| field.name == name)
+            .find(|(_, field)| {
+                observe_candidate();
+                field.name == name
+            })
     }
 
     /// Mutable access to the declaration metadata of an installed definition.
