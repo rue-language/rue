@@ -48,6 +48,16 @@ fn declaration_type_dependency_admission_is_deterministic_and_subquadratic() {
 }
 
 #[test]
+fn deferred_generic_signature_lookup_has_one_first_wins_index() {
+    let manifest = include_str!("sema/binding_manifest.rs");
+
+    assert!(manifest.contains("let mut generic_name_indices = HashMap::new()"));
+    assert!(manifest.contains(".entry(param.name)\n                .or_insert(index as u32)"));
+    assert!(manifest.contains(".and_then(|name| generic_name_indices.get(&name))"));
+    assert!(!manifest.contains(".position(|name| self.interner.resolve(name) == syntax)"));
+}
+
+#[test]
 fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
     let analysis = include_str!("sema/analysis.rs");
     let manifest = include_str!("sema/binding_manifest.rs");
