@@ -2321,6 +2321,27 @@ impl Air {
         }))
     }
 
+    fn source_order_is_permutation(source_order: &[u32], field_count: usize) -> bool {
+        Self::source_order_is_permutation_with_observer(source_order, field_count, || {})
+    }
+
+    #[inline(always)]
+    fn source_order_is_permutation_with_observer(
+        source_order: &[u32],
+        field_count: usize,
+        mut observe_field: impl FnMut(),
+    ) -> bool {
+        let mut seen = vec![false; field_count];
+        for &field in source_order {
+            observe_field();
+            let field = field as usize;
+            if field >= field_count || std::mem::replace(&mut seen[field], true) {
+                return false;
+            }
+        }
+        true
+    }
+
     pub(crate) fn add_struct_init(
         &mut self,
         struct_id: StructId,
@@ -2337,15 +2358,13 @@ impl Air {
                 kind: AirBuildErrorKind::ProducerInvariant("field/source-order length mismatch"),
             });
         }
-        for (position, &field) in source_order.iter().enumerate() {
-            if field as usize >= fields.len() || source_order[..position].contains(&field) {
-                return Err(AirBuildError {
-                    phase: "AIR",
-                    family: "struct initialization",
-                    operation: "preflight",
-                    kind: AirBuildErrorKind::ProducerInvariant("source order is not a permutation"),
-                });
-            }
+        if !Self::source_order_is_permutation(source_order, fields.len()) {
+            return Err(AirBuildError {
+                phase: "AIR",
+                family: "struct initialization",
+                operation: "preflight",
+                kind: AirBuildErrorKind::ProducerInvariant("source order is not a permutation"),
+            });
         }
         self.preflight_refs("struct fields", fields.iter().copied())?;
         self.reserve_instruction("struct initialization")?;
@@ -4365,6 +4384,71 @@ mod tests {
         );
         assert_eq!(air.checkpoint().instructions, before.instructions);
         assert_eq!(air.checkpoint().extra, before.extra);
+    }
+
+    #[test]
+    fn wide_struct_init_source_order_preflight_is_linear_and_preserves_errors() {
+        const WIDE_FIELDS: usize = 8_192;
+        let mut air = Air::new(Type::UNIT);
+        let field = air.add_inst(AirInst {
+            data: AirInstData::UnitConst,
+            ty: Type::UNIT,
+            span: Span::new(0, 0),
+        });
+        let fields = vec![field; WIDE_FIELDS];
+        let source_order = (0..WIDE_FIELDS as u32).rev().collect::<Vec<_>>();
+        let mut fields_examined = 0;
+        assert!(Air::source_order_is_permutation_with_observer(
+            &source_order,
+            fields.len(),
+            || fields_examined += 1,
+        ));
+        assert_eq!(fields_examined, WIDE_FIELDS);
+        air.add_struct_init(
+            StructId::from_pool_index(0),
+            &fields,
+            &source_order,
+            Type::UNIT,
+            Span::new(0, 0),
+        )
+        .unwrap();
+
+        let before_errors = air.checkpoint();
+        for (fields, source_order, operation, reason) in [
+            (
+                vec![field],
+                vec![0, 1],
+                "stage",
+                "field/source-order length mismatch",
+            ),
+            (
+                vec![field, field],
+                vec![0, 0],
+                "preflight",
+                "source order is not a permutation",
+            ),
+            (
+                vec![field, field],
+                vec![0, 2],
+                "preflight",
+                "source order is not a permutation",
+            ),
+        ] {
+            let error = air
+                .add_struct_init(
+                    StructId::from_pool_index(0),
+                    &fields,
+                    &source_order,
+                    Type::UNIT,
+                    Span::new(0, 0),
+                )
+                .unwrap_err();
+            assert_eq!(error.family, "struct initialization");
+            assert_eq!(error.operation, operation);
+            assert_eq!(error.kind, AirBuildErrorKind::ProducerInvariant(reason));
+            assert_eq!(air.checkpoint().instructions, before_errors.instructions);
+            assert_eq!(air.checkpoint().extra, before_errors.extra);
+        }
     }
 
     #[test]
