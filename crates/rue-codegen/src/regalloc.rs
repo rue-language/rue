@@ -49,6 +49,7 @@ use fixedbitset::FixedBitSet;
 use rue_error::CompileResult;
 
 use crate::index_map::IndexMap;
+use crate::reg_class::{RegClass, VRegClasses};
 use crate::vreg::VReg;
 
 // ============================================================================
@@ -393,6 +394,13 @@ pub struct LivenessInfo<Reg: Copy + Eq + std::hash::Hash> {
     /// no value is live after it; see [`ClobberIndex::build`] for why the
     /// distinction matters to allocation (RUE-1224).
     pub non_returning_at: Vec<bool>,
+    /// The register class of each virtual register.
+    ///
+    /// Liveness carries the MIR's class table forward so that allocation and
+    /// coalescing have one authoritative answer for "what kind of register can
+    /// hold this value" without re-deriving it from the instruction stream
+    /// (RUE-1067). Every entry is [`RegClass::Gp`] today.
+    pub vreg_classes: VRegClasses,
 }
 
 impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
@@ -403,10 +411,12 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
             live_at: Vec::new(),
             clobbers_at: Vec::new(),
             non_returning_at: Vec::new(),
+            vreg_classes: VRegClasses::new(),
         }
     }
 
-    /// Create liveness info with capacity for the given number of vregs.
+    /// Create liveness info with capacity for the given number of vregs, all
+    /// of them general-purpose.
     pub fn with_vreg_capacity(vreg_count: u32) -> Self {
         let mut ranges = IndexMap::with_capacity(vreg_count as usize);
         ranges.resize(vreg_count as usize, None);
@@ -415,7 +425,14 @@ impl<Reg: Copy + Eq + std::hash::Hash> LivenessInfo<Reg> {
             live_at: Vec::new(),
             clobbers_at: Vec::new(),
             non_returning_at: Vec::new(),
+            vreg_classes: VRegClasses::all_gp(vreg_count),
         }
+    }
+
+    /// The register class of `vreg`.
+    #[inline]
+    pub fn class_of(&self, vreg: VReg) -> RegClass {
+        self.vreg_classes.class_of(vreg)
     }
 
     /// Get vregs that are live at a given instruction index.
@@ -548,10 +565,10 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
 }
 
 // ============================================================================
-// Register Classes
+// Save Classes and the Register File
 // ============================================================================
 
-/// The two register classes allocation distinguishes.
+/// One [`RegClass`]'s allocatable registers, split by who preserves them.
 ///
 /// A caller-saved register costs nothing in the prologue but is destroyed by
 /// every call, so it is offered only to an interval that no instruction
@@ -562,8 +579,11 @@ impl<Reg: Copy + Eq> ClobberIndex<Reg> {
 /// Standard linear-scan practice is to prefer caller-saved registers for the
 /// intervals that can take them, which both leaves the callee-saved registers
 /// for the intervals that need them and shrinks the prologue.
-#[derive(Clone, Copy)]
-pub struct RegisterClasses<'a, Reg> {
+///
+/// This split is orthogonal to [`RegClass`]: *who saves a register* and *what
+/// kind of value it can hold* are independent facts, so each register class of
+/// a target has its own `SaveClasses` and [`RegisterFile`] holds one per class.
+pub struct SaveClasses<'a, Reg> {
     /// Tried first, in order, for intervals with no clobber in range.
     pub caller_saved: &'a [Reg],
     /// Tried next, in order; saved by the prologue when used.
@@ -582,12 +602,33 @@ pub struct RegisterClasses<'a, Reg> {
     pub compact_callee_saved: &'a [Reg],
 }
 
-impl<'a, Reg: Copy + Eq> RegisterClasses<'a, Reg> {
+// Derived `Clone`/`Copy` would demand `Reg: Clone`/`Reg: Copy`; these hold
+// shared slices only, so they are copyable for any `Reg`.
+impl<Reg> Clone for SaveClasses<'_, Reg> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Reg> Copy for SaveClasses<'_, Reg> {}
+
+impl<'a, Reg> SaveClasses<'a, Reg> {
+    /// A class with no allocatable registers at all.
+    ///
+    /// This is what both backends supply for [`RegClass::Fp`] until the floats
+    /// series populates it, and what a target with no such registers would
+    /// supply permanently.
+    pub const EMPTY: Self = Self {
+        caller_saved: &[],
+        callee_saved: &[],
+        compact_callee_saved: &[],
+    };
+
     /// Classes for a caller that offers callee-saved registers only.
     ///
     /// This reproduces the pre-RUE-1146 policy exactly and is what the
     /// standalone `linear_scan*` entry points below use.
-    pub fn callee_saved_only(regs: &'a [Reg]) -> Self {
+    pub const fn callee_saved_only(regs: &'a [Reg]) -> Self {
         Self {
             caller_saved: &[],
             callee_saved: regs,
@@ -595,19 +636,97 @@ impl<'a, Reg: Copy + Eq> RegisterClasses<'a, Reg> {
         }
     }
 
-    /// Total number of allocatable registers across both classes.
+    /// Total number of allocatable registers across both save classes.
     pub fn len(&self) -> usize {
         self.caller_saved.len() + self.callee_saved.len()
     }
 
-    /// Whether no register at all is allocatable.
+    /// Whether no register at all is allocatable in this class.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+}
 
+impl<Reg: Copy + Eq> SaveClasses<'_, Reg> {
     /// Whether `reg` is one this function's prologue must preserve.
     pub fn is_callee_saved(&self, reg: Reg) -> bool {
         self.callee_saved.contains(&reg)
+    }
+}
+
+/// A target's allocatable registers, one [`SaveClasses`] per [`RegClass`].
+///
+/// Allocation offers an interval only the registers of its own class: an
+/// integer value cannot be parked in a floating-point register however free
+/// that register is. What stays *shared* across classes is everything the
+/// frame owns — the spill-slot allocator and the callee-saved save set — since
+/// a function has one stack frame and one prologue no matter how many register
+/// classes its target has.
+///
+/// Both backends populate [`RegClass::Gp`] only; [`RegClass::Fp`] is
+/// [`SaveClasses::EMPTY`] and no virtual register selects it (RUE-1067).
+pub struct RegisterFile<'a, Reg> {
+    classes: [SaveClasses<'a, Reg>; RegClass::COUNT],
+}
+
+impl<Reg> Clone for RegisterFile<'_, Reg> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<Reg> Copy for RegisterFile<'_, Reg> {}
+
+impl<'a, Reg> RegisterFile<'a, Reg> {
+    /// Build a register file from one entry per class, in [`RegClass::ALL`]
+    /// order.
+    pub const fn new(classes: [SaveClasses<'a, Reg>; RegClass::COUNT]) -> Self {
+        Self { classes }
+    }
+
+    /// A register file whose only allocatable registers are general-purpose.
+    pub const fn gp_only(gp: SaveClasses<'a, Reg>) -> Self {
+        Self::new([gp, SaveClasses::EMPTY])
+    }
+
+    /// The allocatable registers of one class.
+    #[inline]
+    pub fn class(&self, class: RegClass) -> SaveClasses<'a, Reg> {
+        self.classes[class.index()]
+    }
+
+    /// Every class paired with its allocatable registers, in
+    /// [`RegClass::ALL`] order.
+    pub fn iter(&self) -> impl Iterator<Item = (RegClass, SaveClasses<'a, Reg>)> + '_ {
+        RegClass::ALL
+            .into_iter()
+            .map(|class| (class, self.class(class)))
+    }
+
+    /// Total number of allocatable registers across every class.
+    pub fn len(&self) -> usize {
+        self.classes.iter().map(SaveClasses::len).sum()
+    }
+
+    /// Whether no register of any class is allocatable.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<Reg: Copy> RegisterFile<'_, Reg> {
+    /// Every caller-saved register of every class, in class order.
+    ///
+    /// [`ClobberIndex`] is built once per allocation over this flattening: the
+    /// index answers "is this register destroyed inside that range", which is a
+    /// per-register question with no class structure of its own, and building
+    /// one index for the whole file keeps the class partitioning to the
+    /// candidate lists that consult it.
+    pub fn caller_saved_flattened(&self) -> Vec<Reg> {
+        self.classes
+            .iter()
+            .flat_map(|save| save.caller_saved.iter().copied())
+            .collect()
     }
 }
 
@@ -704,6 +823,17 @@ impl CoalesceResult {
 /// - src's live range ends at or before the move (its last use is the move)
 /// - dst's live range starts at the move (its first def is the move)
 /// - OR more generally: their ranges don't overlap except at the move point
+///
+/// # Register classes
+///
+/// Two vregs of different [`RegClass`]es are never merged, whatever their live
+/// ranges do. Coalescing asserts that one physical register can hold both
+/// values and that the move between them is therefore redundant; across
+/// classes neither holds — no register is both an integer and a floating-point
+/// register, and the "move" would be a class-crossing transfer instruction
+/// that has to survive. Backends do not offer such a pair as a candidate
+/// today, and none can arise while every vreg is [`RegClass::Gp`], so this is
+/// a guard rather than a filter (RUE-1067).
 pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
     candidates: &[CoalesceCandidate],
     liveness: &mut LivenessInfo<Reg>,
@@ -733,6 +863,12 @@ pub fn coalesce<Reg: Copy + Eq + std::hash::Hash>(
         // Already in the same equivalence class
         if dst == src {
             result.eliminated_moves.insert(candidate.inst_idx);
+            continue;
+        }
+
+        // A class-crossing pair cannot share a physical register, so the move
+        // between them is not redundant and must not be eliminated.
+        if liveness.class_of(dst) != liveness.class_of(src) {
             continue;
         }
 
@@ -1110,10 +1246,12 @@ pub trait RegAllocBackend {
     fn analyze_with_debug(mir: &Self::Mir) -> (LivenessInfo<Self::Reg>, LivenessDebugInfo);
     fn analyze_loops(mir: &Self::Mir) -> LoopInfo;
     fn coalesce_candidates(instructions: &[Self::Inst]) -> Vec<CoalesceCandidate>;
-    /// The allocatable registers, split by who is responsible for preserving
-    /// them. Allocation prefers the caller-saved class for intervals that no
-    /// instruction clobbers while they are live (RUE-1146).
-    fn register_classes() -> RegisterClasses<'static, Self::Reg>;
+    /// The allocatable registers of every [`RegClass`], each split by who is
+    /// responsible for preserving them. Allocation prefers the caller-saved
+    /// save class for intervals that no instruction clobbers while they are
+    /// live (RUE-1146), and never offers an interval a register outside its
+    /// own register class (RUE-1067).
+    fn register_file() -> RegisterFile<'static, Self::Reg>;
 
     /// Every physical register `inst` names as an operand — read or written.
     ///
@@ -1284,14 +1422,16 @@ impl<I> RewriteBuffer<I> {
 /// code, and `docs/process/ci.md` gives code generation no debug-assert
 /// allowance (RUE-1224).
 fn assert_no_allocatable_physical_operands<B: RegAllocBackend>(mir: &B::Mir) {
-    let classes = B::register_classes();
+    let file = B::register_file();
     for inst in B::instructions(mir) {
         for reg in B::physical_operands(inst) {
-            assert!(
-                !classes.caller_saved.contains(&reg) && !classes.callee_saved.contains(&reg),
-                "lowering named the allocatable register {reg} as a physical operand; \
-                 allocation may put an unrelated value there"
-            );
+            for (_, save) in file.iter() {
+                assert!(
+                    !save.caller_saved.contains(&reg) && !save.callee_saved.contains(&reg),
+                    "lowering named the allocatable register {reg} as a physical operand; \
+                     allocation may put an unrelated value there"
+                );
+            }
         }
     }
 }
@@ -1327,6 +1467,12 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         } else {
             (B::analyze(&mir), None)
         };
+        assert_eq!(
+            liveness.vreg_classes.len(),
+            vreg_count as u32,
+            "the MIR's virtual-register class table does not cover its virtual registers; \
+             a mint site skipped recording a register class"
+        );
         let loop_info = B::analyze_loops(&mir);
         let candidates = B::coalesce_candidates(B::instructions(&mir));
         let coalesce_result = coalesce(&candidates, &mut liveness);
@@ -1418,7 +1564,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
             B::vreg_count(&self.mir),
             &self.liveness,
-            B::register_classes(),
+            B::register_file(),
             self.existing_locals,
             false,
             &CostModel::default(),
@@ -1434,7 +1580,7 @@ impl<B: RegAllocBackend> RegAllocDriver<B> {
         let (allocation, num_spills, used_callee_saved, debug_info) = linear_scan_impl_with_remat(
             B::vreg_count(&self.mir),
             &self.liveness,
-            B::register_classes(),
+            B::register_file(),
             self.existing_locals,
             true,
             &CostModel::default(),
@@ -1564,7 +1710,7 @@ impl<Reg: Copy + Eq + std::hash::Hash + fmt::Display> fmt::Display for RegAllocD
 ///
 /// * `vreg_count` - Total number of virtual registers
 /// * `liveness` - Liveness information from dataflow analysis
-/// * `allocatable_regs` - Physical registers available for allocation
+/// * `allocatable_regs` - General-purpose registers available for allocation
 /// * `existing_locals` - Number of local variable slots already on the stack
 ///
 /// # Returns
@@ -1588,7 +1734,7 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl(
         vreg_count,
         liveness,
-        RegisterClasses::callee_saved_only(allocatable_regs),
+        RegisterFile::gp_only(SaveClasses::callee_saved_only(allocatable_regs)),
         existing_locals,
         false,
         &cost_model,
@@ -1608,7 +1754,7 @@ pub fn linear_scan<Reg: Copy + Eq + std::hash::Hash>(
 ///
 /// * `vreg_count` - Total number of virtual registers
 /// * `liveness` - Liveness information from dataflow analysis
-/// * `allocatable_regs` - Physical registers available for allocation
+/// * `allocatable_regs` - General-purpose registers available for allocation
 /// * `existing_locals` - Number of local variable slots already on the stack
 /// * `cost_model` - Cost model for spill decisions
 /// * `loop_info` - Loop depth information for each instruction
@@ -1630,7 +1776,7 @@ pub fn linear_scan_with_cost_model<Reg: Copy + Eq + std::hash::Hash>(
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl(
         vreg_count,
         liveness,
-        RegisterClasses::callee_saved_only(allocatable_regs),
+        RegisterFile::gp_only(SaveClasses::callee_saved_only(allocatable_regs)),
         existing_locals,
         false,
         cost_model,
@@ -1649,7 +1795,7 @@ pub fn linear_scan_with_cost_model<Reg: Copy + Eq + std::hash::Hash>(
 ///
 /// * `vreg_count` - Total number of virtual registers
 /// * `liveness` - Liveness information from dataflow analysis
-/// * `allocatable_regs` - Physical registers available for allocation
+/// * `allocatable_regs` - General-purpose registers available for allocation
 /// * `existing_locals` - Number of local variable slots already on the stack
 /// * `vreg_info` - Rematerialization info for each vreg (optional per-vreg)
 ///
@@ -1674,7 +1820,7 @@ pub fn linear_scan_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     let (allocation, num_spills, used_callee_saved, _debug_info) = linear_scan_impl_with_remat(
         vreg_count,
         liveness,
-        RegisterClasses::callee_saved_only(allocatable_regs),
+        RegisterFile::gp_only(SaveClasses::callee_saved_only(allocatable_regs)),
         existing_locals,
         false,
         &cost_model,
@@ -1708,7 +1854,7 @@ pub fn linear_scan_with_debug<Reg: Copy + Eq + std::hash::Hash>(
     linear_scan_impl(
         vreg_count,
         liveness,
-        RegisterClasses::callee_saved_only(allocatable_regs),
+        RegisterFile::gp_only(SaveClasses::callee_saved_only(allocatable_regs)),
         existing_locals,
         true,
         &cost_model,
@@ -1736,7 +1882,7 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
     linear_scan_impl(
         vreg_count,
         liveness,
-        RegisterClasses::callee_saved_only(allocatable_regs),
+        RegisterFile::gp_only(SaveClasses::callee_saved_only(allocatable_regs)),
         existing_locals,
         true,
         cost_model,
@@ -1747,17 +1893,24 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
 /// Pick a physical register for an interval covering `range`, or report that
 /// none is free.
 ///
+/// `save` is the arriving interval's *own* register class, already selected by
+/// the caller; nothing here can hand out a register of another class.
+///
 /// Caller-saved registers come before callee-saved ones: an interval that no
 /// instruction clobbers while it is live costs nothing to keep in one, and
 /// every callee-saved register it leaves alone is one the prologue does not
 /// have to save (RUE-1146).
 ///
 /// Ahead of both sits one narrow exception, the RUE-1227 tiebreak: a register
-/// that is both in [`RegisterClasses::compact_callee_saved`] and in `sunk` —
+/// that is both in [`SaveClasses::compact_callee_saved`] and in `sunk` —
 /// the callee-saved registers this function's prologue already saves. Against a
 /// *fresh* callee-saved register the caller-saved candidate wins on the save it
 /// avoids, but against one whose save is already paid for it has nothing left
 /// to offer and a worse encoding, so preferring the sunk register is free.
+///
+/// `sunk` spans every class, because the prologue does; the intersection with
+/// this class's `compact_callee_saved` is what makes the preference apply to
+/// this class's registers only.
 ///
 /// The exception cannot enlarge the save set: it only ever hands out a register
 /// already in it. It can still *shift* which registers end up saved, because
@@ -1765,27 +1918,24 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
 /// then reaches for a fresh one. Ruling that out is [`accept_reuse_pass`]'s
 /// job, not this function's.
 fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
-    classes: RegisterClasses<'_, Reg>,
+    save: SaveClasses<'_, Reg>,
     clobbers: &ClobberIndex<Reg>,
     used: &HashSet<Reg>,
     sunk: &[Reg],
     range: &LiveRange,
 ) -> Option<Reg> {
-    classes
-        .compact_callee_saved
+    save.compact_callee_saved
         .iter()
         .copied()
         .find(|&reg| sunk.contains(&reg) && !used.contains(&reg))
         .or_else(|| {
-            classes
-                .caller_saved
+            save.caller_saved
                 .iter()
                 .copied()
                 .find(|&reg| !used.contains(&reg) && !clobbers.is_clobbered_during(reg, range))
         })
         .or_else(|| {
-            classes
-                .callee_saved
+            save.callee_saved
                 .iter()
                 .copied()
                 .find(|&reg| !used.contains(&reg))
@@ -1800,13 +1950,16 @@ fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
 /// that becomes free by spilling its current occupant is still only usable by
 /// the arriving interval if that interval survives everything the register does
 /// not.
+///
+/// `save` is the class `reg` belongs to, which is also the arriving interval's:
+/// eviction only ever considers registers held by intervals of the same class.
 fn register_survives_range<Reg: Copy + Eq + std::hash::Hash>(
-    classes: RegisterClasses<'_, Reg>,
+    save: SaveClasses<'_, Reg>,
     clobbers: &ClobberIndex<Reg>,
     reg: Reg,
     range: &LiveRange,
 ) -> bool {
-    classes.is_callee_saved(reg) || !clobbers.is_clobbered_during(reg, range)
+    save.is_callee_saved(reg) || !clobbers.is_clobbered_during(reg, range)
 }
 
 /// How many vregs an allocation keeps in a physical register.
@@ -1870,7 +2023,7 @@ fn accept_reuse_pass<Reg: Copy + Eq + std::hash::Hash>(
 fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
-    classes: RegisterClasses<'_, Reg>,
+    file: RegisterFile<'_, Reg>,
     existing_locals: u32,
     collect_debug: bool,
     cost_model: &CostModel,
@@ -1884,7 +2037,7 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     let baseline = scan_intervals(
         vreg_count,
         liveness,
-        classes,
+        file,
         existing_locals,
         collect_debug,
         cost_model,
@@ -1892,22 +2045,13 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
         &[],
     );
     let (_, _, baseline_saved, _) = &baseline;
-    // The reuse pass can only differ where a compact callee-saved register is
-    // already in the save set and there is a caller-saved register to prefer it
-    // over. Otherwise skip it entirely, so neither a push-free function nor a
-    // fixed-width target pays for a second scan.
-    if classes.caller_saved.is_empty()
-        || !classes
-            .compact_callee_saved
-            .iter()
-            .any(|reg| baseline_saved.contains(reg))
-    {
+    if !reuse_pass_could_differ(file, baseline_saved) {
         return baseline;
     }
     let reuse = scan_intervals(
         vreg_count,
         liveness,
-        classes,
+        file,
         existing_locals,
         collect_debug,
         cost_model,
@@ -1921,6 +2065,40 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
     }
 }
 
+/// Empty per-class "currently in a register" lists, sized to each class's
+/// register count.
+///
+/// A linear scan can never hold more live intervals in registers than the
+/// class has registers, so each list is allocated once at that size and never
+/// grows. Splitting them by class is what stops an interval of one class from
+/// seeing another class's registers as occupied — or, worse, as free.
+fn active_by_class<Reg: Copy>(
+    file: RegisterFile<'_, Reg>,
+) -> [Vec<(VReg, Reg, usize)>; RegClass::COUNT] {
+    std::array::from_fn(|index| Vec::with_capacity(file.class(RegClass::ALL[index]).len()))
+}
+
+/// Whether the RUE-1227 reuse pass can possibly reach a different answer than
+/// the baseline pass, and is therefore worth running at all.
+///
+/// It can only in a class that has both a caller-saved register to prefer
+/// against and a compact callee-saved register the baseline already committed
+/// to the prologue. When no class qualifies the second scan is skipped
+/// outright, so neither a push-free function nor a fixed-width target pays for
+/// it.
+fn reuse_pass_could_differ<Reg: Copy + Eq>(
+    file: RegisterFile<'_, Reg>,
+    baseline_saved: &[Reg],
+) -> bool {
+    file.iter().any(|(_, save)| {
+        !save.caller_saved.is_empty()
+            && save
+                .compact_callee_saved
+                .iter()
+                .any(|reg| baseline_saved.contains(reg))
+    })
+}
+
 /// One linear-scan pass over the intervals.
 ///
 /// When `collect_debug` is `false` (the normal compilation path, where callers
@@ -1931,10 +2109,21 @@ fn linear_scan_impl<Reg: Copy + Eq + std::hash::Hash>(
 ///
 /// `sunk` names callee-saved registers whose prologue save is already paid for;
 /// see [`pick_free_register`].
+///
+/// # Register classes
+///
+/// The scan stays a single pass over every interval in start order, but the
+/// state that answers "which register is free" is kept per [`RegClass`] — see
+/// [`active_by_class`]. What stays shared is what the frame owns: one
+/// [`SpillSlotAllocator`], one `used_callee_saved` save set. Splitting the scan
+/// itself per class instead would hand the spill-slot allocator its requests in
+/// a different order and change the frame layout of any function that mixed
+/// classes; keeping one ordered pass keeps slot assignment a function of
+/// interval order alone (RUE-1067).
 fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
-    classes: RegisterClasses<'_, Reg>,
+    file: RegisterFile<'_, Reg>,
     existing_locals: u32,
     collect_debug: bool,
     cost_model: &CostModel,
@@ -1989,31 +2178,38 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
-    // Constant-time clobber answers for the caller-saved candidates; the
-    // callee-saved class survives every clobber by definition (RUE-1146).
-    let clobbers = ClobberIndex::build(liveness, classes.caller_saved);
+    // Constant-time clobber answers for the caller-saved candidates of every
+    // class; the callee-saved registers survive every clobber by definition
+    // (RUE-1146).
+    let caller_saved = file.caller_saved_flattened();
+    let clobbers = ClobberIndex::build(liveness, &caller_saved);
 
-    // Track which registers are currently in use and when they become free
+    // Track which registers are currently in use and when they become free,
+    // separately per register class.
     // Tuple: (vreg, physical reg, live range end)
-    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(classes.len());
+    let mut active = active_by_class(file);
 
     for (vreg, range) in vregs_by_start {
+        let class = liveness.class_of(vreg);
+        let save = file.class(class);
+        let active = &mut active[class.index()];
+
         // Expire old intervals - remove registers whose vregs are no longer live
         active.retain(|&(_, _, end)| end >= range.start);
 
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register: a sunk compact one, else caller-saved,
-        // else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, sunk, &range);
+        // Try to find a free register of this vreg's own class: a sunk compact
+        // one, else caller-saved, else a fresh callee-saved one.
+        let allocated_reg = pick_free_register(save, &clobbers, &used_regs, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
             allocation[vreg] = Some(Allocation::Register(reg));
             active.push((vreg, reg, range.end));
             // Track callee-saved register usage: only these oblige the prologue
-            if classes.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
+            if save.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
                 used_callee_saved.push(reg);
             }
         } else {
@@ -2034,7 +2230,7 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
                 // Evicting only helps if the freed register can actually hold
                 // the arriving interval; a caller-saved register clobbered
                 // during that interval cannot.
-                if !register_survives_range(classes, &clobbers, active_reg, &range) {
+                if !register_survives_range(save, &clobbers, active_reg, &range) {
                     continue;
                 }
                 let active_loop_depth = loop_info.max_depth_in_range(range.start, end);
@@ -2121,7 +2317,7 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
 fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
-    classes: RegisterClasses<'_, Reg>,
+    file: RegisterFile<'_, Reg>,
     existing_locals: u32,
     collect_debug: bool,
     cost_model: &CostModel,
@@ -2136,7 +2332,7 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     let baseline = scan_intervals_with_remat(
         vreg_count,
         liveness,
-        classes,
+        file,
         existing_locals,
         collect_debug,
         cost_model,
@@ -2145,22 +2341,13 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         &[],
     );
     let (_, _, baseline_saved, _) = &baseline;
-    // The reuse pass can only differ where a compact callee-saved register is
-    // already in the save set and there is a caller-saved register to prefer it
-    // over. Otherwise skip it entirely, so neither a push-free function nor a
-    // fixed-width target pays for a second scan.
-    if classes.caller_saved.is_empty()
-        || !classes
-            .compact_callee_saved
-            .iter()
-            .any(|reg| baseline_saved.contains(reg))
-    {
+    if !reuse_pass_could_differ(file, baseline_saved) {
         return baseline;
     }
     let reuse = scan_intervals_with_remat(
         vreg_count,
         liveness,
-        classes,
+        file,
         existing_locals,
         collect_debug,
         cost_model,
@@ -2183,10 +2370,13 @@ fn linear_scan_impl_with_remat<Reg: Copy + Eq + std::hash::Hash>(
 ///
 /// `sunk` names callee-saved registers whose prologue save is already paid for;
 /// see [`pick_free_register`].
+///
+/// Register classes partition the scan state exactly as in [`scan_intervals`];
+/// see that function's notes.
 fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
     vreg_count: u32,
     liveness: &LivenessInfo<Reg>,
-    classes: RegisterClasses<'_, Reg>,
+    file: RegisterFile<'_, Reg>,
     existing_locals: u32,
     collect_debug: bool,
     cost_model: &CostModel,
@@ -2246,31 +2436,38 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         }
     }
 
-    // Constant-time clobber answers for the caller-saved candidates; the
-    // callee-saved class survives every clobber by definition (RUE-1146).
-    let clobbers = ClobberIndex::build(liveness, classes.caller_saved);
+    // Constant-time clobber answers for the caller-saved candidates of every
+    // class; the callee-saved registers survive every clobber by definition
+    // (RUE-1146).
+    let caller_saved = file.caller_saved_flattened();
+    let clobbers = ClobberIndex::build(liveness, &caller_saved);
 
-    // Track which registers are currently in use and when they become free
+    // Track which registers are currently in use and when they become free,
+    // separately per register class.
     // Tuple: (vreg, physical reg, live range end)
-    let mut active: Vec<(VReg, Reg, usize)> = Vec::with_capacity(classes.len());
+    let mut active = active_by_class(file);
 
     for (vreg, range) in vregs_by_start {
+        let class = liveness.class_of(vreg);
+        let save = file.class(class);
+        let active = &mut active[class.index()];
+
         // Expire old intervals - remove registers whose vregs are no longer live
         active.retain(|&(_, _, end)| end >= range.start);
 
         // Find registers currently in use
         let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
 
-        // Try to find a free register: a sunk compact one, else caller-saved,
-        // else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(classes, &clobbers, &used_regs, sunk, &range);
+        // Try to find a free register of this vreg's own class: a sunk compact
+        // one, else caller-saved, else a fresh callee-saved one.
+        let allocated_reg = pick_free_register(save, &clobbers, &used_regs, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
             allocation[vreg] = Some(Allocation::Register(reg));
             active.push((vreg, reg, range.end));
             // Track callee-saved register usage: only these oblige the prologue
-            if classes.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
+            if save.is_callee_saved(reg) && !used_callee_saved.contains(&reg) {
                 used_callee_saved.push(reg);
             }
         } else {
@@ -2299,7 +2496,7 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
                 // Evicting only helps if the freed register can actually hold
                 // the arriving interval; a caller-saved register clobbered
                 // during that interval cannot.
-                if !register_survives_range(classes, &clobbers, active_reg, &range) {
+                if !register_survives_range(save, &clobbers, active_reg, &range) {
                     continue;
                 }
                 let active_is_remat = can_remat(active_vreg).is_some();
@@ -2483,6 +2680,34 @@ mod tests {
         }
     }
 
+    /// Liveness whose vregs carry the given classes, one per vreg index.
+    ///
+    /// Nothing in the compiler produces this yet — both backends mint only
+    /// [`RegClass::Gp`] registers — so the class-aware behavior of allocation
+    /// is exercised here, on the shared algorithm, rather than through a
+    /// backend (RUE-1067).
+    fn make_classed_liveness(
+        ranges: Vec<(u32, usize, usize)>,
+        classes: &[RegClass],
+    ) -> LivenessInfo<TestReg> {
+        let mut info = make_liveness(ranges);
+        let mut vreg_classes = VRegClasses::new();
+        for &class in classes {
+            vreg_classes.push(class);
+        }
+        info.vreg_classes = vreg_classes;
+        info
+    }
+
+    /// A two-class register file: `gp` for [`RegClass::Gp`], `fp` for
+    /// [`RegClass::Fp`], both entirely callee-saved.
+    fn two_class_file<'a>(gp: &'a [TestReg], fp: &'a [TestReg]) -> RegisterFile<'a, TestReg> {
+        RegisterFile::new([
+            SaveClasses::callee_saved_only(gp),
+            SaveClasses::callee_saved_only(fp),
+        ])
+    }
+
     #[test]
     fn clobber_index_ignores_a_never_returning_call_site() {
         // The shape Rue emits for every checked add: the value is defined
@@ -2524,15 +2749,15 @@ mod tests {
             vec![(2, TestReg(9)), (2, TestReg(8))],
         );
         mark_non_returning(&mut liveness, &[2]);
-        let classes = RegisterClasses {
+        let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
             compact_callee_saved: &[],
-        };
+        });
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             2,
             &liveness,
-            classes,
+            file,
             0,
             false,
             &CostModel::default(),
@@ -2551,6 +2776,149 @@ mod tests {
         assert!(
             used_callee_saved.is_empty(),
             "no interval needed a callee-saved register, so the prologue saves nothing"
+        );
+    }
+
+    // ========================================
+    // Register-class allocation (RUE-1067)
+    // ========================================
+
+    #[test]
+    fn an_interval_takes_only_a_register_of_its_own_class() {
+        // Two intervals live over the same instructions, one general-purpose
+        // and one floating-point, against a file with exactly one register of
+        // each class. A class-blind allocator sees two intervals competing for
+        // whichever single pool it was handed and spills one of them; a
+        // class-aware one gives each its own class's register.
+        let liveness =
+            make_classed_liveness(vec![(0, 0, 4), (1, 0, 4)], &[RegClass::Gp, RegClass::Fp]);
+        let gp = [TestReg(0)];
+        let fp = [TestReg(100)];
+        let file = two_class_file(&gp, &fp);
+
+        let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
+            2,
+            &liveness,
+            file,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(num_spills, 0, "neither interval had to spill");
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(0)))
+        );
+        assert_eq!(
+            allocation[VReg::new(1)],
+            Some(Allocation::Register(TestReg(100)))
+        );
+        assert_eq!(
+            used_callee_saved,
+            vec![TestReg(0), TestReg(100)],
+            "the save set spans classes: one prologue preserves both"
+        );
+    }
+
+    #[test]
+    fn an_interval_of_an_empty_class_spills_past_free_registers_of_another() {
+        // The floating-point class has no registers at all, which is exactly
+        // both backends' state today. Its interval must spill even though
+        // general-purpose registers are sitting free — those cannot hold it.
+        let liveness =
+            make_classed_liveness(vec![(0, 0, 4), (1, 0, 4)], &[RegClass::Gp, RegClass::Fp]);
+        let gp = [TestReg(0), TestReg(1)];
+        let fp: [TestReg; 0] = [];
+        let file = two_class_file(&gp, &fp);
+
+        let (allocation, num_spills, _, _) = linear_scan_impl(
+            2,
+            &liveness,
+            file,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        assert_eq!(
+            allocation[VReg::new(0)],
+            Some(Allocation::Register(TestReg(0)))
+        );
+        assert!(
+            matches!(allocation[VReg::new(1)], Some(Allocation::Spill(_))),
+            "an interval whose class has no registers spills, free registers of \
+             another class notwithstanding"
+        );
+        assert_eq!(num_spills, 1);
+    }
+
+    #[test]
+    fn spill_slots_are_shared_across_register_classes() {
+        // A function has one stack frame however many register classes its
+        // target has, so two overlapping spilled intervals of different classes
+        // must get distinct slots.
+        let liveness =
+            make_classed_liveness(vec![(0, 0, 4), (1, 0, 4)], &[RegClass::Gp, RegClass::Fp]);
+        let gp: [TestReg; 0] = [];
+        let fp: [TestReg; 0] = [];
+        let file = two_class_file(&gp, &fp);
+
+        let (allocation, num_spills, _, _) = linear_scan_impl(
+            2,
+            &liveness,
+            file,
+            0,
+            false,
+            &CostModel::default(),
+            &LoopInfo::no_loops(liveness.live_at.len()),
+        );
+
+        let slot = |vreg: u32| match allocation[VReg::new(vreg)] {
+            Some(Allocation::Spill(offset)) => offset,
+            other => panic!("v{vreg} should have spilled, got {other:?}"),
+        };
+        assert_ne!(
+            slot(0),
+            slot(1),
+            "overlapping spills share no slot across classes"
+        );
+        assert_eq!(num_spills, 2);
+    }
+
+    #[test]
+    fn a_cross_class_move_is_not_coalesced() {
+        // Ranges that would coalesce cleanly if the two vregs were the same
+        // class: v0's last use is the move, v1's first def is the move.
+        let ranges = vec![(0, 0, 1), (1, 1, 2)];
+        let candidates = vec![CoalesceCandidate {
+            inst_idx: 1,
+            dst: VReg::new(1),
+            src: VReg::new(0),
+        }];
+
+        // Control: same class, so the move is redundant and goes away.
+        let mut same_class = make_classed_liveness(ranges.clone(), &[RegClass::Gp, RegClass::Gp]);
+        let same = coalesce(&candidates, &mut same_class);
+        assert!(same.is_eliminated(1));
+        assert_eq!(same.representative(VReg::new(1)), VReg::new(0));
+
+        // Across classes no physical register can hold both values, so the
+        // transfer is real work and must survive.
+        let mut cross_class = make_classed_liveness(ranges, &[RegClass::Gp, RegClass::Fp]);
+        let cross = coalesce(&candidates, &mut cross_class);
+        assert!(
+            !cross.is_eliminated(1),
+            "a class-crossing move is not a redundant register-to-register move"
+        );
+        assert_eq!(cross.num_eliminated(), 0);
+        assert_eq!(cross.representative(VReg::new(1)), VReg::new(1));
+        assert_eq!(
+            cross_class.range(VReg::new(1)),
+            Some(&LiveRange::new(1, 2)),
+            "the destination keeps its own live range"
         );
     }
 
@@ -2583,15 +2951,15 @@ mod tests {
             vec![(0, 0, 4), (1, 3, 4)],
             vec![(2, TestReg(9)), (2, TestReg(8))],
         );
-        let classes = RegisterClasses {
+        let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
             compact_callee_saved: &[],
-        };
+        });
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             2,
             &liveness,
-            classes,
+            file,
             0,
             false,
             &CostModel::default(),
@@ -2628,15 +2996,15 @@ mod tests {
             vec![(0, 0, 2), (1, 3, 4)],
             vec![(2, TestReg(9)), (2, TestReg(8))],
         );
-        let classes = RegisterClasses {
+        let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9), TestReg(8)],
             callee_saved: &[TestReg(0)],
             compact_callee_saved: &[TestReg(0)],
-        };
+        });
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             2,
             &liveness,
-            classes,
+            file,
             0,
             false,
             &CostModel::default(),
@@ -2665,15 +3033,15 @@ mod tests {
         // is skipped outright. The prologue stays empty.
         let liveness =
             make_liveness_with_clobbers(vec![(0, 0, 1), (1, 3, 4)], vec![(2, TestReg(9))]);
-        let classes = RegisterClasses {
+        let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[TestReg(0)],
             compact_callee_saved: &[TestReg(0)],
-        };
+        });
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             2,
             &liveness,
-            classes,
+            file,
             0,
             false,
             &CostModel::default(),
@@ -2712,15 +3080,15 @@ mod tests {
             vec![(0, 0, 2), (1, 3, 5), (2, 4, 9)],
             vec![(2, TestReg(9)), (7, TestReg(9))],
         );
-        let classes = RegisterClasses {
+        let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[TestReg(0), TestReg(1)],
             compact_callee_saved: &[TestReg(0)],
-        };
+        });
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             3,
             &liveness,
-            classes,
+            file,
             0,
             false,
             &CostModel::default(),
@@ -2752,15 +3120,15 @@ mod tests {
             vec![(0, 0, 4), (1, 0, 4), (2, 0, 4)],
             vec![(2, TestReg(9))],
         );
-        let classes = RegisterClasses {
+        let file = RegisterFile::gp_only(SaveClasses {
             caller_saved: &[TestReg(9)],
             callee_saved: &[],
             compact_callee_saved: &[],
-        };
+        });
         let (allocation, num_spills, used_callee_saved, _) = linear_scan_impl(
             3,
             &liveness,
-            classes,
+            file,
             0,
             false,
             &CostModel::default(),

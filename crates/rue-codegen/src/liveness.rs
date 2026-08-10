@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use fixedbitset::FixedBitSet;
 
 use crate::index_map::IndexMap;
+use crate::reg_class::VRegClasses;
 use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LivenessInfo, LoopInfo};
 use crate::vreg::{LabelId, VReg};
 
@@ -43,6 +44,14 @@ pub trait LivenessAdapter {
 
     /// Number of virtual registers allocated in the MIR.
     fn vreg_count(&self) -> u32;
+
+    /// The register class of every virtual register in the MIR.
+    ///
+    /// The MIR records this as it mints registers, and liveness copies it into
+    /// [`LivenessInfo::vreg_classes`] so allocation and coalescing read one
+    /// authoritative table. The returned table must have one entry per
+    /// register counted by [`LivenessAdapter::vreg_count`] (RUE-1067).
+    fn vreg_classes(&self) -> &VRegClasses;
 
     /// Return the label ID if `inst` is a label.
     fn label(&self, inst: &Self::Inst) -> Option<LabelId>;
@@ -83,6 +92,7 @@ where
     analyze(
         adapter.instructions(),
         adapter.vreg_count(),
+        adapter.vreg_classes().clone(),
         |inst| adapter.label(inst),
         |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
         |inst| adapter.uses(inst),
@@ -101,6 +111,7 @@ where
     analyze_debug::<_, A::Reg>(
         adapter.instructions(),
         adapter.vreg_count(),
+        adapter.vreg_classes().clone(),
         |inst| adapter.label(inst),
         |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
         |inst| adapter.uses(inst),
@@ -117,6 +128,7 @@ where
     analyze_with_debug(
         adapter.instructions(),
         adapter.vreg_count(),
+        adapter.vreg_classes().clone(),
         |inst| adapter.label(inst),
         |idx, inst, label_to_idx| adapter.successors(idx, inst, label_to_idx),
         |inst| adapter.uses(inst),
@@ -189,6 +201,8 @@ pub fn conditional_successors(
 ///
 /// * `instructions` - The instruction sequence to analyze
 /// * `vreg_count` - Total number of virtual registers
+/// * `vreg_classes` - The register class of each virtual register, carried
+///   through into [`LivenessInfo::vreg_classes`] for allocation and coalescing
 /// * `get_label` - Returns the label ID if the instruction is a label, None otherwise
 /// * `get_successors` - Returns the successor instruction indices for control flow
 /// * `get_uses` - Returns the virtual registers used (read) by the instruction
@@ -200,6 +214,7 @@ pub fn conditional_successors(
 pub fn analyze<I, R>(
     instructions: &[I],
     vreg_count: u32,
+    vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
     get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
     get_uses: impl Fn(&I) -> Vec<VReg>,
@@ -213,6 +228,7 @@ where
     analyze_inner(
         instructions,
         vreg_count,
+        vreg_classes,
         get_label,
         get_successors,
         get_uses,
@@ -230,6 +246,7 @@ where
 pub fn analyze_with_debug<I, R>(
     instructions: &[I],
     vreg_count: u32,
+    vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
     get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
     get_uses: impl Fn(&I) -> Vec<VReg>,
@@ -243,6 +260,7 @@ where
     let (liveness, debug) = analyze_inner(
         instructions,
         vreg_count,
+        vreg_classes,
         get_label,
         get_successors,
         get_uses,
@@ -261,6 +279,7 @@ where
 fn analyze_inner<I, R>(
     instructions: &[I],
     vreg_count: u32,
+    vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
     get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
     get_uses: impl Fn(&I) -> Vec<VReg>,
@@ -281,6 +300,7 @@ where
                 live_at: Vec::new(),
                 clobbers_at: Vec::new(),
                 non_returning_at: Vec::new(),
+                vreg_classes,
             },
             collect_debug.then(|| LivenessDebugInfo {
                 instructions: Vec::new(),
@@ -349,6 +369,7 @@ where
             live_at,
             clobbers_at,
             non_returning_at,
+            vreg_classes,
         },
         debug,
     )
@@ -361,6 +382,7 @@ where
 pub fn analyze_debug<I, R>(
     instructions: &[I],
     vreg_count: u32,
+    vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
     get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
     get_uses: impl Fn(&I) -> Vec<VReg>,
@@ -372,6 +394,7 @@ where
     analyze_with_debug(
         instructions,
         vreg_count,
+        vreg_classes,
         get_label,
         get_successors,
         get_uses,
@@ -828,6 +851,7 @@ mod tests {
         let info: LivenessInfo<u32> = analyze(
             &instructions,
             2,
+            VRegClasses::all_gp(2),
             test_get_label,
             |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
             test_get_uses,
@@ -858,6 +882,7 @@ mod tests {
         let info: LivenessInfo<u32> = analyze(
             &instructions,
             1,
+            VRegClasses::all_gp(1),
             test_get_label,
             |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
             test_get_uses,
@@ -880,6 +905,7 @@ mod tests {
         let info: LivenessInfo<u32> = analyze(
             &instructions,
             0,
+            VRegClasses::all_gp(0),
             test_get_label,
             |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
             test_get_uses,
@@ -906,6 +932,7 @@ mod tests {
         let info: LivenessInfo<u32> = analyze(
             &instructions,
             2,
+            VRegClasses::all_gp(2),
             test_get_label,
             |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
             test_get_uses,

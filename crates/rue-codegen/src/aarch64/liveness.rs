@@ -9,6 +9,7 @@ use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg, ReturnBehavior};
 use crate::liveness::{
     LivenessAdapter, branch_successor, conditional_successors, fallthrough_successor,
 };
+use crate::reg_class::VRegClasses;
 use crate::vreg::{LabelId, VReg};
 
 // Re-export shared types from the regalloc module
@@ -31,6 +32,10 @@ impl LivenessAdapter for Aarch64LivenessAdapter<'_> {
 
     fn vreg_count(&self) -> u32 {
         self.mir.vreg_count()
+    }
+
+    fn vreg_classes(&self) -> &VRegClasses {
+        self.mir.vreg_classes()
     }
 
     fn label(&self, inst: &Self::Inst) -> Option<LabelId> {

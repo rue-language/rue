@@ -40,6 +40,7 @@ pub use rue_runtime_abi::ReturnBehavior;
 // - Aarch64Inst: 40 bytes
 const _: () = assert!(std::mem::size_of::<Aarch64Inst>() <= 48);
 
+pub use crate::reg_class::{RegClass, VRegClasses};
 pub use crate::vreg::{BLOCK_LABEL_BASE, LabelId, VReg};
 
 /// A physical AArch64 register.
@@ -200,6 +201,18 @@ const _: () = {
 };
 
 impl Reg {
+    /// The register class this register belongs to.
+    ///
+    /// Every `Reg` variant is an AArch64 general-purpose register (X0-X30, SP,
+    /// XZR), so this is [`RegClass::Gp`] throughout. The floats series adds the
+    /// V/D register variants that answer [`RegClass::Fp`]; until then this
+    /// method exists so the shared scheduler and allocator can ask the question
+    /// without special-casing a target that has only one class (RUE-1067).
+    #[inline]
+    pub const fn class(self) -> RegClass {
+        RegClass::Gp
+    }
+
     /// Get the register encoding for instruction fields (0-30 for X0-X30, 31 for SP/XZR).
     #[inline]
     pub const fn encoding(self) -> u8 {
@@ -1317,6 +1330,9 @@ pub struct Aarch64Mir {
     instructions: Vec<Aarch64Inst>,
     /// The next virtual register index.
     next_vreg: u32,
+    /// The register class of each virtual register, one entry per register
+    /// minted by [`Aarch64Mir::alloc_vreg_in`] and indexed by vreg index.
+    vreg_classes: VRegClasses,
     /// Next inline label ID for generating unique labels.
     ///
     /// Inline labels (for overflow checks, bounds checks, etc.) use IDs from
@@ -1339,6 +1355,7 @@ impl Aarch64Mir {
         Self {
             instructions: Vec::new(),
             next_vreg: 0,
+            vreg_classes: VRegClasses::new(),
             next_label: 0,
             symbols: Vec::new(),
             symbol_index: HashMap::new(),
@@ -1397,11 +1414,38 @@ impl Aarch64Mir {
         self.symbols = symbols;
     }
 
-    /// Allocate a new virtual register.
+    /// Allocate a new general-purpose virtual register.
+    ///
+    /// This is the whole of lowering today: no Rue type lowers to a
+    /// floating-point value yet, so every value a function computes lives in a
+    /// general-purpose register. Sites that later hold a floating-point value
+    /// call [`Aarch64Mir::alloc_vreg_in`] with [`RegClass::Fp`] instead (RUE-1067).
     pub fn alloc_vreg(&mut self) -> VReg {
+        self.alloc_vreg_in(RegClass::Gp)
+    }
+
+    /// Allocate a new virtual register of `class`, recording its class.
+    ///
+    /// The class table grows in lock-step with `next_vreg`, which is what lets
+    /// liveness hand allocation a table that covers every virtual register the
+    /// function has.
+    pub fn alloc_vreg_in(&mut self, class: RegClass) -> VReg {
         let vreg = VReg::new(self.next_vreg);
         self.next_vreg += 1;
+        self.vreg_classes.push(class);
         vreg
+    }
+
+    /// The register class of each virtual register.
+    #[inline]
+    pub fn vreg_classes(&self) -> &VRegClasses {
+        &self.vreg_classes
+    }
+
+    /// The register class of one virtual register.
+    #[inline]
+    pub fn vreg_class(&self, vreg: VReg) -> RegClass {
+        self.vreg_classes.class_of(vreg)
     }
 
     /// Allocate a new inline label ID.
@@ -1531,6 +1575,49 @@ mod tests {
         assert_eq!(v1.index(), 1);
         assert_eq!(v2.index(), 2);
         assert_eq!(mir.vreg_count(), 3);
+    }
+
+    #[test]
+    fn vreg_classes_cover_every_minted_register() {
+        // The allocator indexes the class table with any vreg the live ranges
+        // mention, so the table must stay exactly as long as `vreg_count`.
+        let mut mir = Aarch64Mir::new();
+        assert_eq!(mir.vreg_classes().len(), mir.vreg_count());
+        for _ in 0..4 {
+            mir.alloc_vreg();
+            assert_eq!(mir.vreg_classes().len(), mir.vreg_count());
+        }
+    }
+
+    #[test]
+    fn lowering_mints_general_purpose_registers_only() {
+        // Every value a Rue function computes is an integer, pointer, or
+        // boolean today, so `alloc_vreg` — the only mint site lowering uses —
+        // must produce general-purpose registers. When the floats series adds
+        // `alloc_vreg_in(RegClass::Fp)` call sites this stops being true of the
+        // program, but never of `alloc_vreg` itself (RUE-1067).
+        let mut mir = Aarch64Mir::new();
+        let vregs: Vec<_> = (0..3).map(|_| mir.alloc_vreg()).collect();
+        for vreg in vregs {
+            assert_eq!(mir.vreg_class(vreg), RegClass::Gp);
+        }
+        assert_eq!(mir.vreg_classes().count_in(RegClass::Fp), 0);
+    }
+
+    #[test]
+    fn an_explicit_class_is_recorded_as_given() {
+        let mut mir = Aarch64Mir::new();
+        let gp = mir.alloc_vreg_in(RegClass::Gp);
+        let fp = mir.alloc_vreg_in(RegClass::Fp);
+
+        assert_eq!(mir.vreg_class(gp), RegClass::Gp);
+        assert_eq!(mir.vreg_class(fp), RegClass::Fp);
+        assert_eq!(mir.vreg_classes().count_in(RegClass::Fp), 1);
+    }
+
+    #[test]
+    fn every_physical_register_is_general_purpose() {
+        assert_eq!(Reg::X19.class(), RegClass::Gp);
     }
 
     #[test]

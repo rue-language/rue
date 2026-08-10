@@ -65,6 +65,7 @@ pub mod frame_layout;
 pub mod index_map;
 pub mod liveness;
 pub mod place_lower;
+pub mod reg_class;
 pub mod regalloc;
 pub mod types;
 pub mod vreg;
@@ -516,9 +517,10 @@ pub use cfg_lower::{
     BlockLoweringInfo, LoweringDebugInfo, LoweringDecision, TerminatorLoweringDecision,
 };
 pub use index_map::{Handle, IndexMap};
+pub use reg_class::{RegClass, VRegClasses};
 pub use regalloc::{
-    Allocation, InstructionLiveness, LivenessDebugInfo, RegAllocDebugInfo, RematerializeOp,
-    VRegInfo, linear_scan_with_debug, linear_scan_with_remat,
+    Allocation, InstructionLiveness, LivenessDebugInfo, RegAllocDebugInfo, RegisterFile,
+    RematerializeOp, SaveClasses, VRegInfo, linear_scan_with_debug, linear_scan_with_remat,
 };
 pub use stack_frame::{
     ArgumentLocation, ReturnLocation, StackFrameInfo, StackSlot, generate_stack_frame_info,

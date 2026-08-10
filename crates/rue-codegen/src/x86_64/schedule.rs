@@ -29,6 +29,7 @@
 //! Memory dependencies are handled conservatively (all loads/stores ordered).
 
 use super::mir::{Operand, Reg, X86Inst, X86Mir};
+use crate::reg_class::RegClass;
 use crate::schedule_core::{self, SchedulerAdapter};
 
 struct X86Scheduler;
@@ -36,6 +37,10 @@ struct X86Scheduler;
 impl SchedulerAdapter for X86Scheduler {
     type Inst = X86Inst;
     type Reg = Reg;
+
+    fn reg_class(&self, reg: Self::Reg) -> RegClass {
+        reg.class()
+    }
 
     fn latency(&self, inst: &Self::Inst) -> u32 {
         get_latency(inst)

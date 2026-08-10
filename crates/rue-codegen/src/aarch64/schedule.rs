@@ -29,6 +29,7 @@
 //! Memory dependencies are handled conservatively (all loads/stores ordered).
 
 use super::mir::{Aarch64Inst, Aarch64Mir, Operand, Reg};
+use crate::reg_class::RegClass;
 use crate::schedule_core::{self, SchedulerAdapter};
 
 struct Aarch64Scheduler;
@@ -36,6 +37,10 @@ struct Aarch64Scheduler;
 impl SchedulerAdapter for Aarch64Scheduler {
     type Inst = Aarch64Inst;
     type Reg = Reg;
+
+    fn reg_class(&self, reg: Self::Reg) -> RegClass {
+        reg.class()
+    }
 
     fn latency(&self, inst: &Self::Inst) -> u32 {
         get_latency(inst)
