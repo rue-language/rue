@@ -8,12 +8,23 @@ use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::hash::Hash;
 
+use crate::reg_class::RegClass;
+
 /// Backend-specific facts required by the shared scheduler.
 pub trait SchedulerAdapter {
     /// Backend MIR instruction type.
     type Inst: Clone;
     /// Backend physical register type.
     type Reg: Copy + Eq + Hash;
+
+    /// The register class `reg` belongs to.
+    ///
+    /// The dependency graph keeps its per-register bookkeeping separately per
+    /// class (see [`RegTracker`]), so a backend that numbers its
+    /// floating-point registers independently of its integer ones cannot have
+    /// the two collide. Both backends answer [`RegClass::Gp`] for every
+    /// register today (RUE-1067).
+    fn reg_class(&self, reg: Self::Reg) -> RegClass;
 
     /// Latency in cycles until an instruction's result is ready.
     fn latency(&self, inst: &Self::Inst) -> u32;
@@ -39,6 +50,61 @@ pub trait SchedulerAdapter {
 
     /// Whether this instruction reads the target's condition flags.
     fn reads_flags(&self, inst: &Self::Inst) -> bool;
+}
+
+/// The dependency graph's per-physical-register bookkeeping, partitioned by
+/// [`RegClass`].
+///
+/// "Which instruction last wrote this register" and "which instructions have
+/// read it since" are what every RAW, WAW, WAR, and clobber edge is built
+/// from. The maps are held one pair per register class rather than one pair
+/// overall because registers of different classes are different registers:
+/// nothing a floating-point register does can order an integer register's
+/// readers, and a backend that numbers its floating-point registers
+/// independently of its integer ones must not have the two share a map key.
+///
+/// Every register both backends name is [`RegClass::Gp`] today, so the `Fp`
+/// partition stays empty and the resulting graph is exactly the one a single
+/// pair of maps produced (RUE-1067).
+struct RegTracker<Reg> {
+    last_writer: [HashMap<Reg, usize>; RegClass::COUNT],
+    last_readers: [HashMap<Reg, Vec<usize>>; RegClass::COUNT],
+}
+
+impl<Reg: Copy + Eq + Hash> RegTracker<Reg> {
+    fn new() -> Self {
+        Self {
+            last_writer: std::array::from_fn(|_| HashMap::new()),
+            last_readers: std::array::from_fn(|_| HashMap::new()),
+        }
+    }
+
+    /// The instruction that last wrote or clobbered `reg`, if any.
+    fn last_writer(&self, class: RegClass, reg: &Reg) -> Option<usize> {
+        self.last_writer[class.index()].get(reg).copied()
+    }
+
+    /// The instructions that have read `reg` since it was last written.
+    fn last_readers(&self, class: RegClass, reg: &Reg) -> Option<&Vec<usize>> {
+        self.last_readers[class.index()].get(reg)
+    }
+
+    /// Record that instruction `idx` wrote or clobbered `reg`.
+    ///
+    /// Readers recorded before the write belong to the previous value, so they
+    /// are dropped: a later instruction cannot have a WAR dependency on them.
+    fn record_write(&mut self, class: RegClass, reg: Reg, idx: usize) {
+        self.last_writer[class.index()].insert(reg, idx);
+        self.last_readers[class.index()].remove(&reg);
+    }
+
+    /// Record that instruction `idx` read `reg`.
+    fn record_read(&mut self, class: RegClass, reg: Reg, idx: usize) {
+        self.last_readers[class.index()]
+            .entry(reg)
+            .or_default()
+            .push(idx);
+    }
 }
 
 /// A node in the scheduling dependency graph.
@@ -167,10 +233,9 @@ where
         .collect();
     let mut edges = HashSet::new();
 
-    // Track last writer of each register.
-    let mut last_writer: HashMap<A::Reg, usize> = HashMap::new();
-    // Track last readers of each register (for WAR dependencies).
-    let mut last_readers: HashMap<A::Reg, Vec<usize>> = HashMap::new();
+    // Track the last writer and the readers since that write, per register
+    // class (see `RegTracker`).
+    let mut regs: RegTracker<A::Reg> = RegTracker::new();
     // Track last memory access (conservative).
     let mut last_memory_access: Option<usize> = None;
     // Track last FLAGS writer and readers.
@@ -184,21 +249,21 @@ where
 
         // RAW (Read After Write): this instruction reads what another wrote.
         for reg in &reads {
-            if let Some(&writer) = last_writer.get(reg) {
+            if let Some(writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
                 add_edge(&mut nodes, &mut edges, writer, i);
             }
         }
 
         // WAW (Write After Write): this instruction writes what another wrote.
         for reg in &writes {
-            if let Some(&prev_writer) = last_writer.get(reg) {
+            if let Some(prev_writer) = regs.last_writer(adapter.reg_class(*reg), reg) {
                 add_edge(&mut nodes, &mut edges, prev_writer, i);
             }
         }
 
         // WAR (Write After Read): this instruction writes what another read.
         for reg in &writes {
-            if let Some(readers) = last_readers.get(reg) {
+            if let Some(readers) = regs.last_readers(adapter.reg_class(*reg), reg) {
                 for &reader in readers {
                     if reader != i {
                         add_edge(&mut nodes, &mut edges, reader, i);
@@ -239,9 +304,10 @@ where
         let clobbers = adapter.clobbers(inst);
         // Clobber dependencies.
         for &clobbered in &clobbers {
+            let class = adapter.reg_class(clobbered);
             // This instruction clobbers the register, so it must come after
             // any readers.
-            if let Some(readers) = last_readers.get(&clobbered) {
+            if let Some(readers) = regs.last_readers(class, &clobbered) {
                 for &reader in readers {
                     if reader != i {
                         add_edge(&mut nodes, &mut edges, reader, i);
@@ -249,7 +315,7 @@ where
                 }
             }
             // And after the last writer.
-            if let Some(&writer) = last_writer.get(&clobbered) {
+            if let Some(writer) = regs.last_writer(class, &clobbered) {
                 add_edge(&mut nodes, &mut edges, writer, i);
             }
         }
@@ -258,15 +324,13 @@ where
         // that writes (WAW) or reads (RAW) a clobbered register must not be
         // scheduled above the clobberer, or the clobber destroys its value.
         for clobbered in clobbers {
-            last_writer.insert(clobbered, i);
-            last_readers.remove(&clobbered);
+            regs.record_write(adapter.reg_class(clobbered), clobbered, i);
         }
         for reg in writes {
-            last_writer.insert(reg, i);
-            last_readers.remove(&reg);
+            regs.record_write(adapter.reg_class(reg), reg, i);
         }
         for reg in reads {
-            last_readers.entry(reg).or_default().push(i);
+            regs.record_read(adapter.reg_class(reg), reg, i);
         }
 
         if adapter.writes_flags(inst) {
@@ -415,6 +479,129 @@ fn schedule_block_with_work(nodes: &[SchedNode]) -> (Vec<usize>, ScheduleWork) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A register named by class and number, so the same number can appear in
+    /// two classes — the aliasing case the partitioned [`RegTracker`] rules
+    /// out. No backend has such a register type yet.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    struct ClassedReg(RegClass, u32);
+
+    /// A minimal instruction: what it reads, what it writes, nothing else.
+    #[derive(Debug, Clone)]
+    struct TestInst {
+        reads: Vec<ClassedReg>,
+        writes: Vec<ClassedReg>,
+    }
+
+    struct TestAdapter;
+
+    impl SchedulerAdapter for TestAdapter {
+        type Inst = TestInst;
+        type Reg = ClassedReg;
+
+        fn reg_class(&self, reg: Self::Reg) -> RegClass {
+            reg.0
+        }
+
+        fn latency(&self, _inst: &Self::Inst) -> u32 {
+            1
+        }
+
+        fn is_barrier(&self, _inst: &Self::Inst) -> bool {
+            false
+        }
+
+        fn accesses_memory(&self, _inst: &Self::Inst) -> bool {
+            false
+        }
+
+        fn regs_read(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+            inst.reads.clone()
+        }
+
+        fn regs_written(&self, inst: &Self::Inst) -> Vec<Self::Reg> {
+            inst.writes.clone()
+        }
+
+        fn clobbers(&self, _inst: &Self::Inst) -> Vec<Self::Reg> {
+            Vec::new()
+        }
+
+        fn writes_flags(&self, _inst: &Self::Inst) -> bool {
+            false
+        }
+
+        fn reads_flags(&self, _inst: &Self::Inst) -> bool {
+            false
+        }
+    }
+
+    fn inst(reads: &[ClassedReg], writes: &[ClassedReg]) -> TestInst {
+        TestInst {
+            reads: reads.to_vec(),
+            writes: writes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn same_class_registers_still_carry_a_read_after_write_dependency() {
+        let gp0 = ClassedReg(RegClass::Gp, 0);
+        let instructions = vec![inst(&[], &[gp0]), inst(&[gp0], &[])];
+
+        let nodes = build_dep_graph::<TestAdapter>(&instructions, 0, 2, &TestAdapter);
+
+        assert_eq!(nodes[1].deps, vec![0], "the reader depends on the writer");
+        assert_eq!(nodes[0].users, vec![1]);
+    }
+
+    #[test]
+    fn a_write_in_one_class_does_not_order_a_read_in_another() {
+        // Same register *number*, different classes: two distinct machine
+        // registers, so the second instruction reads something the first never
+        // wrote and the two may be scheduled in either order.
+        let gp0 = ClassedReg(RegClass::Gp, 0);
+        let fp0 = ClassedReg(RegClass::Fp, 0);
+        let instructions = vec![inst(&[], &[gp0]), inst(&[fp0], &[])];
+
+        let nodes = build_dep_graph::<TestAdapter>(&instructions, 0, 2, &TestAdapter);
+
+        assert!(
+            nodes[1].deps.is_empty(),
+            "a general-purpose write cannot order a floating-point read"
+        );
+        assert!(nodes[0].users.is_empty());
+    }
+
+    #[test]
+    fn a_write_in_one_class_does_not_order_a_write_in_another() {
+        let gp3 = ClassedReg(RegClass::Gp, 3);
+        let fp3 = ClassedReg(RegClass::Fp, 3);
+        let instructions = vec![inst(&[], &[gp3]), inst(&[], &[fp3])];
+
+        let nodes = build_dep_graph::<TestAdapter>(&instructions, 0, 2, &TestAdapter);
+
+        assert!(
+            nodes[1].deps.is_empty(),
+            "write-after-write is a per-register fact, and these are two registers"
+        );
+    }
+
+    #[test]
+    fn a_write_in_one_class_does_not_order_an_earlier_read_in_another() {
+        // WAR: instruction 1 reads gp5, instruction 2 writes fp5. Different
+        // registers, so nothing forces instruction 2 to stay after it.
+        let gp5 = ClassedReg(RegClass::Gp, 5);
+        let fp5 = ClassedReg(RegClass::Fp, 5);
+        let instructions = vec![inst(&[], &[gp5]), inst(&[gp5], &[]), inst(&[], &[fp5])];
+
+        let nodes = build_dep_graph::<TestAdapter>(&instructions, 0, 3, &TestAdapter);
+
+        assert_eq!(nodes[1].deps, vec![0]);
+        assert!(
+            nodes[2].deps.is_empty(),
+            "write-after-read is a per-register fact, and these are two registers"
+        );
+    }
 
     #[test]
     fn high_fan_in_readiness_work_is_edge_linear_and_ties_are_stable() {

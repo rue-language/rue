@@ -22,7 +22,7 @@ use super::mir::{
 use crate::alloc_dst;
 use crate::regalloc::{
     Allocation, AllocationContext, CoalesceCandidate, LivenessInfo, LoopInfo, RegAllocBackend,
-    RegAllocDebugInfo, RegAllocDriver, RegisterClasses, RematerializeOp, RewriteBuffer,
+    RegAllocDebugInfo, RegAllocDriver, RegisterFile, RematerializeOp, RewriteBuffer, SaveClasses,
 };
 
 /// Caller-saved registers offered to intervals no instruction clobbers while
@@ -1348,8 +1348,11 @@ impl RegAllocBackend for Aarch64Backend {
             .collect()
     }
 
-    fn register_classes() -> RegisterClasses<'static, Self::Reg> {
-        RegisterClasses {
+    fn register_file() -> RegisterFile<'static, Self::Reg> {
+        // General-purpose only: `Reg` names no floating-point register yet, so
+        // the `Fp` class of the file is empty and no interval can select it
+        // (RUE-1067). The floats series adds the V/D registers here.
+        RegisterFile::gp_only(SaveClasses {
             caller_saved: CALLER_SAVED_REGS,
             callee_saved: CALLEE_SAVED_REGS,
             // AArch64 instructions are a fixed four bytes and encode every
@@ -1358,7 +1361,7 @@ impl RegAllocBackend for Aarch64Backend {
             // preference has nothing to trade. Reusing a callee-saved register
             // in place of a caller-saved one here would only add pressure.
             compact_callee_saved: &[],
-        }
+        })
     }
 
     fn physical_operands(inst: &Self::Inst) -> Vec<Self::Reg> {
@@ -1398,12 +1401,53 @@ impl RegAllocBackend for Aarch64Backend {
 
 #[cfg(test)]
 mod tests {
+    use super::Aarch64Backend;
     use super::liveness;
     use super::{
         ALLOCATABLE_REGS, Aarch64Inst, Aarch64Mir, CALLEE_SAVED_REGS, CALLER_SAVED_REGS, Operand,
         Reg, RegAlloc, VReg,
     };
-    use crate::regalloc::{Allocation, RematerializeOp};
+    use crate::reg_class::RegClass;
+    use crate::regalloc::{Allocation, RegAllocBackend, RematerializeOp};
+
+    #[test]
+    fn the_register_file_is_general_purpose_only() {
+        // The whole of RUE-1067's claim on this backend: the class dimension
+        // exists, and the floating-point half of it is empty. A change that
+        // populates `Fp` here without the rest of the floats series would make
+        // allocation hand out registers no instruction can encode, so this
+        // guard fails loudly instead.
+        let file = <Aarch64Backend as RegAllocBackend>::register_file();
+        let gp = file.class(RegClass::Gp);
+        let fp = file.class(RegClass::Fp);
+
+        assert_eq!(gp.caller_saved, CALLER_SAVED_REGS);
+        assert_eq!(gp.callee_saved, CALLEE_SAVED_REGS);
+        assert!(!gp.is_empty());
+        assert!(
+            fp.is_empty(),
+            "no floating-point register is allocatable yet"
+        );
+        assert_eq!(file.len(), ALLOCATABLE_REGS.len());
+        assert_eq!(file.caller_saved_flattened(), CALLER_SAVED_REGS.to_vec());
+    }
+
+    #[test]
+    fn allocation_liveness_classes_every_vreg_as_general_purpose() {
+        // Liveness is where the class table reaches allocation, so this is the
+        // end-to-end statement that lowering mints one class only.
+        let mut mir = Aarch64Mir::new();
+        let vregs: Vec<VReg> = (0..3).map(|_| mir.alloc_vreg()).collect();
+        define_loaded_values(&mut mir, &vregs);
+
+        let info = liveness::analyze(&mir);
+
+        assert_eq!(info.vreg_classes.len(), mir.vreg_count());
+        assert_eq!(info.vreg_classes.count_in(RegClass::Fp), 0);
+        for &vreg in &vregs {
+            assert_eq!(info.class_of(vreg), RegClass::Gp);
+        }
+    }
 
     fn define_loaded_values(mir: &mut Aarch64Mir, vregs: &[VReg]) {
         for (index, &vreg) in vregs.iter().enumerate() {
