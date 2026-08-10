@@ -2132,6 +2132,7 @@ mod tests {
 /// entered or exited.
 #[cfg(test)]
 mod phase_accounting_tests {
+    use std::sync::Barrier;
     use std::thread;
     use std::time::Duration;
 
@@ -2515,29 +2516,98 @@ mod phase_accounting_tests {
         // Real threads and independent local buffers. The final partition is of
         // wall time globally, so overlapping workers in one phase still yield
         // that phase.
-        let accounting = collect(|| {
+        //
+        // Each worker publishes through the same bounded `timing_flush`
+        // completion marker a registered query worker emits — and, exactly as
+        // the query runtime does for its batch workers, installs the
+        // propagated dispatcher first so the marker reaches THIS subscriber.
+        // An earlier draft skipped the propagation: `with_default` is
+        // thread-scoped, so the worker's marker dispatched to the thread's
+        // (unset) global default and publication silently fell back to TLS
+        // teardown — which `thread::scope` does not order before its join, so
+        // the reader raced the workers' destructors and sometimes saw every
+        // phase band empty (RUE-1283).
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        let dispatch = tracing::Dispatch::new(subscriber);
+        tracing::dispatcher::with_default(&dispatch, || {
             let _root = tracing::info_span!("compile").entered();
             let span = tracing::info_span!("codegen", phase = "backend");
             thread::scope(|scope| {
                 for _ in 0..4 {
                     let worker_span = span.clone();
+                    let worker_dispatch = dispatch.clone();
                     scope.spawn(move || {
-                        {
-                            let _entered = worker_span.entered();
-                            thread::sleep(TICK);
-                        }
-                        tracing::trace!(timing_flush = true, "test worker complete");
+                        tracing::dispatcher::with_default(&worker_dispatch, || {
+                            {
+                                let _entered = worker_span.entered();
+                                thread::sleep(TICK);
+                            }
+                            tracing::trace!(timing_flush = true, "test worker complete");
+                        });
                     });
                 }
             });
         });
+        let accounting = data.phase_accounting();
 
+        assert_eq!(
+            data.flush_threads().len(),
+            4,
+            "every worker's completion marker must reach this layer and flush"
+        );
         assert_invariant(&accounting);
         assert!(phase_ns(&accounting, Phase::Backend) > 0, "{accounting:?}");
         assert_eq!(
             accounting.mixed_parallel_ns, 0,
             "four workers in one phase is not mixed: {accounting:?}"
         );
+    }
+
+    #[test]
+    fn worker_flush_marker_publishes_phase_events_before_thread_teardown() {
+        // The deterministic form of the RUE-1283 race: the `timing_flush`
+        // marker must merge the worker's local buffer synchronously, so the
+        // phase bands are complete the moment the worker has emitted it —
+        // thread teardown is only a fallback, and `thread::scope` gives it no
+        // ordering against the scope's join. The barriers hold the worker
+        // alive past its flush, so a read that sees the phase can only have
+        // been served by the marker, never by teardown.
+        let data = TimingData::new();
+        let subscriber = tracing_subscriber::registry().with(TimingLayer::new(data.clone()));
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let flushed = Barrier::new(2);
+        let release = Barrier::new(2);
+        tracing::dispatcher::with_default(&dispatch, || {
+            let _root = tracing::info_span!("compile").entered();
+            let span = tracing::info_span!("codegen", phase = "backend");
+            thread::scope(|scope| {
+                let worker_span = span.clone();
+                let worker_dispatch = dispatch.clone();
+                let (flushed, release) = (&flushed, &release);
+                scope.spawn(move || {
+                    tracing::dispatcher::with_default(&worker_dispatch, || {
+                        {
+                            let _entered = worker_span.entered();
+                            thread::sleep(TICK);
+                        }
+                        tracing::trace!(timing_flush = true, "worker flushed");
+                    });
+                    flushed.wait();
+                    // Stay alive until the reader is done: TLS teardown must
+                    // not be able to publish on this test's behalf.
+                    release.wait();
+                });
+                flushed.wait();
+                let accounting = data.phase_accounting();
+                assert!(
+                    phase_ns(&accounting, Phase::Backend) > 0,
+                    "the flush marker alone must have published the worker's \
+                     phase interval: {accounting:?}"
+                );
+                release.wait();
+            });
+        });
     }
 
     #[test]
