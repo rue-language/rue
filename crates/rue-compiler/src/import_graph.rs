@@ -234,6 +234,45 @@ impl CanonicalImportGraph {
         self.records.as_slice()
     }
 
+    /// Find the unique record for one canonical import key without re-deriving
+    /// resolution. The graph's validated order makes this logarithmic.
+    pub(crate) fn record_for(
+        &self,
+        importer: &ModuleId,
+        normalized_specifier: &str,
+    ) -> Option<&CanonicalImportRecord> {
+        self.record_for_with(importer, normalized_specifier, || {})
+    }
+
+    fn record_for_with(
+        &self,
+        importer: &ModuleId,
+        normalized_specifier: &str,
+        mut compared: impl FnMut(),
+    ) -> Option<&CanonicalImportRecord> {
+        self.records()
+            .binary_search_by(|record| {
+                compared();
+                record
+                    .importer()
+                    .cmp(importer)
+                    .then_with(|| record.normalized_specifier().cmp(normalized_specifier))
+            })
+            .ok()
+            .map(|index| &self.records()[index])
+    }
+
+    #[cfg(test)]
+    pub(crate) fn record_for_with_comparison_count(
+        &self,
+        importer: &ModuleId,
+        normalized_specifier: &str,
+    ) -> (Option<&CanonicalImportRecord>, usize) {
+        let mut comparisons = 0;
+        let record = self.record_for_with(importer, normalized_specifier, || comparisons += 1);
+        (record, comparisons)
+    }
+
     /// Validate and canonicalize an explicitly supplied graph, failing closed.
     ///
     /// Cycles are legal Rue topology and do not make construction fail. Query

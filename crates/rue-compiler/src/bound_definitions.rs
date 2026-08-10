@@ -51,12 +51,7 @@ impl CanonicalImportView for CanonicalSemanticImportView<'_> {
             let normalized = rue_air::normalize_module_path(directive.specifier());
             let record = self
                 .graph
-                .records()
-                .iter()
-                .find(|record| {
-                    record.importer() == directive.importer()
-                        && record.normalized_specifier() == normalized
-                })
+                .record_for(directive.importer(), &normalized)
                 .ok_or_else(|| {
                     invalid("validated canonical graph does not cover a parsed import directive")
                 })?;
@@ -1165,6 +1160,7 @@ fn invalid(message: impl Into<String>) -> CompileError {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::fmt::Write as _;
 
     use rue_span::FileId;
 
@@ -1239,6 +1235,118 @@ mod tests {
             Target::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn canonical_semantic_import_join_is_logarithmic_and_preserves_source_order() {
+        const DIRECTIVES: usize = 2_048;
+        let mut root_source = String::new();
+        for index in (0..DIRECTIVES).rev() {
+            writeln!(
+                root_source,
+                "const imported_{index:04} = @import(\"module_{index:04}.rue\");"
+            )
+            .unwrap();
+        }
+        root_source.push_str("fn main() {}");
+
+        let mut owned = Vec::with_capacity(DIRECTIVES + 1);
+        owned.push((
+            1_u32,
+            "/src/main.rue".to_owned(),
+            "main.rue".to_owned(),
+            root_source,
+        ));
+        for index in 0..DIRECTIVES {
+            owned.push((
+                index as u32 + 2,
+                format!("/src/module_{index:04}.rue"),
+                format!("module_{index:04}.rue"),
+                String::new(),
+            ));
+        }
+        let borrowed = owned
+            .iter()
+            .map(|(id, physical, logical, source)| {
+                (*id, physical.as_str(), logical.as_str(), source.as_str())
+            })
+            .collect::<Vec<_>>();
+        let input = snapshot(&borrowed, 1);
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let graph = crate::test_support::test_import_graph(&input).unwrap();
+        assert_eq!(graph.records().len(), DIRECTIVES);
+
+        let view = CanonicalSemanticImportView {
+            merged: &stages.merged,
+            graph: &graph,
+        };
+        let mut visited = Vec::with_capacity(DIRECTIVES);
+        view.visit_resolved_sites(&mut |_, source_offset, specifier, target| {
+            visited.push((source_offset, specifier.to_owned(), target.to_owned()));
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(visited.len(), DIRECTIVES);
+        assert!(
+            visited.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "resolved sites retain directive source order"
+        );
+        assert_eq!(visited[0].1, "module_2047.rue");
+        assert_eq!(visited[DIRECTIVES - 1].1, "module_0000.rue");
+        let comparisons = stages
+            .merged
+            .ast()
+            .import_directives()
+            .iter()
+            .map(|directive| {
+                let normalized = rue_air::normalize_module_path(directive.specifier());
+                let (record, comparisons) =
+                    graph.record_for_with_comparison_count(directive.importer(), &normalized);
+                assert!(record.is_some());
+                comparisons
+            })
+            .sum::<usize>();
+        let comparisons_per_lookup = (usize::BITS - (DIRECTIVES - 1).leading_zeros()) as usize + 1;
+        assert!(
+            comparisons <= DIRECTIVES * comparisons_per_lookup,
+            "{} comparisons exceeded {} logarithmic lookup probes",
+            comparisons,
+            DIRECTIVES * comparisons_per_lookup
+        );
+    }
+
+    #[test]
+    fn canonical_semantic_import_join_still_rejects_a_missing_record() {
+        let input = snapshot(
+            &[
+                (
+                    1,
+                    "/src/main.rue",
+                    "main.rue",
+                    "const imported = @import(\"module.rue\"); fn main() {}",
+                ),
+                (2, "/src/module.rue", "module.rue", ""),
+            ],
+            1,
+        );
+        let stages = crate::test_support::test_frontend_stages(&input).unwrap();
+        let incomplete = crate::CanonicalImportGraph::from_discovery_records(
+            stages.merged.ast().root().clone(),
+            Vec::new(),
+        );
+        let view = CanonicalSemanticImportView {
+            merged: &stages.merged,
+            graph: &incomplete,
+        };
+        let error = view
+            .visit_resolved_sites(&mut |_, _, _, _| Ok(()))
+            .unwrap_err();
+        assert!(matches!(
+            error.kind,
+            ErrorKind::InvalidCompilerInput(ref message)
+                if message == "validated canonical graph does not cover a parsed import directive"
+        ));
     }
 
     #[test]
