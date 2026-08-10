@@ -11,6 +11,45 @@ use crate::retained_charge::RetainedCharge;
 
 type CanonicalType = SemanticImportType<crate::StableDefinitionKey, crate::ModuleId>;
 
+pub(crate) struct CfgTypeAdmissionIndex<'a> {
+    pool: &'a rue_air::FrozenTypeInternPool,
+    aggregates: &'a HashMap<Type, crate::TypeInstanceKey>,
+    live_by_stable: Option<HashMap<CanonicalType, Type>>,
+}
+
+impl<'a> CfgTypeAdmissionIndex<'a> {
+    pub(crate) fn new(
+        pool: &'a rue_air::FrozenTypeInternPool,
+        aggregates: &'a HashMap<Type, crate::TypeInstanceKey>,
+    ) -> Self {
+        Self {
+            pool,
+            aggregates,
+            live_by_stable: None,
+        }
+    }
+
+    fn current(&mut self, stable: &CanonicalType) -> Option<Type> {
+        let pool = self.pool;
+        let aggregates = self.aggregates;
+        self.live_by_stable
+            .get_or_insert_with(|| {
+                let mut live_by_stable = HashMap::with_capacity(pool.len());
+                let mut stable_by_live = HashMap::with_capacity(pool.len());
+                for live in pool.all_types() {
+                    if let Ok(stable) =
+                        canonical_type_from_live_cached(live, pool, aggregates, &mut stable_by_live)
+                    {
+                        live_by_stable.entry(stable).or_insert(live);
+                    }
+                }
+                live_by_stable
+            })
+            .get(stable)
+            .copied()
+    }
+}
+
 fn first_string_indices(strings: &[String]) -> Result<HashMap<&str, u32>, CfgDomainFailure> {
     let mut indices = HashMap::with_capacity(strings.len());
     for (index, value) in strings.iter().enumerate() {
@@ -107,8 +146,20 @@ pub(crate) fn canonical_type_from_live(
     pool: &rue_air::FrozenTypeInternPool,
     aggregates: &HashMap<Type, crate::TypeInstanceKey>,
 ) -> Result<CanonicalType, CfgDomainFailure> {
+    canonical_type_from_live_cached(ty, pool, aggregates, &mut HashMap::new())
+}
+
+fn canonical_type_from_live_cached(
+    ty: Type,
+    pool: &rue_air::FrozenTypeInternPool,
+    aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+    stable_by_live: &mut HashMap<Type, CanonicalType>,
+) -> Result<CanonicalType, CfgDomainFailure> {
+    if let Some(stable) = stable_by_live.get(&ty) {
+        return Ok(stable.clone());
+    }
     use rue_air::TypeKind as K;
-    Ok(match ty.kind() {
+    let stable = match ty.kind() {
         K::I8 => CanonicalType::I8,
         K::I16 => CanonicalType::I16,
         K::I32 => CanonicalType::I32,
@@ -124,19 +175,26 @@ pub(crate) fn canonical_type_from_live(
         K::Array(id) => {
             let (element, len) = pool.array_def(id);
             CanonicalType::Array {
-                element: Box::new(canonical_type_from_live(element, pool, aggregates)?),
+                element: Box::new(canonical_type_from_live_cached(
+                    element,
+                    pool,
+                    aggregates,
+                    stable_by_live,
+                )?),
                 len,
             }
         }
-        K::PtrConst(id) => CanonicalType::PtrConst(Box::new(canonical_type_from_live(
+        K::PtrConst(id) => CanonicalType::PtrConst(Box::new(canonical_type_from_live_cached(
             pool.ptr_const_def(id),
             pool,
             aggregates,
+            stable_by_live,
         )?)),
-        K::PtrMut(id) => CanonicalType::PtrMut(Box::new(canonical_type_from_live(
+        K::PtrMut(id) => CanonicalType::PtrMut(Box::new(canonical_type_from_live_cached(
             pool.ptr_mut_def(id),
             pool,
             aggregates,
+            stable_by_live,
         )?)),
         K::Struct(_) | K::Enum(_) => {
             let stable = aggregates.get(&ty).ok_or(CfgDomainFailure::Missing)?;
@@ -164,7 +222,9 @@ pub(crate) fn canonical_type_from_live(
             }
         }
         K::Module(_) | K::Error => return Err(CfgDomainFailure::Unsupported),
-    })
+    };
+    stable_by_live.insert(ty, stable.clone());
+    Ok(stable)
 }
 
 fn canonical_primitive(ty: Type) -> Option<CanonicalType> {
@@ -465,8 +525,7 @@ impl CfgDomainProjection {
     pub(crate) fn admit_stable_types(
         &mut self,
         old: &Self,
-        type_pool: &rue_air::FrozenTypeInternPool,
-        aggregates: &HashMap<Type, crate::TypeInstanceKey>,
+        admission: &mut CfgTypeAdmissionIndex<'_>,
     ) -> Result<(), CfgDomainFailure> {
         let mut stable_types = self
             .types
@@ -477,12 +536,8 @@ impl CfgDomainProjection {
             if live_primitive(stable).is_some() || !stable_types.insert(stable.clone()) {
                 continue;
             }
-            let current = type_pool
-                .all_types()
-                .find(|candidate| {
-                    canonical_type_from_live(*candidate, type_pool, aggregates)
-                        .is_ok_and(|value| value == *stable)
-                })
+            let current = admission
+                .current(stable)
                 .ok_or_else(|| CfgDomainFailure::MissingStableType(stable.clone()))?;
             self.types.push((current, stable.clone()));
         }
@@ -1479,6 +1534,21 @@ mod tests {
     }
 
     #[test]
+    fn type_admission_index_stays_lazy_when_domains_already_cover_types() {
+        let interner = lasso::ThreadedRodeo::new();
+        let symbol = interner.get_or_intern("f");
+        let old = projection(symbol);
+        let mut current = projection(symbol);
+        let pool = rue_air::TypeInternPool::new().freeze();
+        let aggregates = HashMap::new();
+        let mut admission = CfgTypeAdmissionIndex::new(&pool, &aggregates);
+
+        current.admit_stable_types(&old, &mut admission).unwrap();
+
+        assert!(admission.live_by_stable.is_none());
+    }
+
+    #[test]
     fn accessor_string_relocation_indexes_first_occurrences_and_new_content_once() {
         let old_interner = lasso::ThreadedRodeo::new();
         let new_interner = lasso::ThreadedRodeo::new();
@@ -1641,6 +1711,14 @@ mod tests {
             .collect::<String>();
         assert!(!type_admission.contains("self.current_type("));
         assert!(!type_admission.contains(".types.iter().find("));
+        assert!(!type_admission.contains(".all_types()"));
+        assert!(!type_admission.contains("canonical_type_from_live("));
+
+        let queries = include_str!("queries.rs");
+        assert_eq!(queries.matches("CfgTypeAdmissionIndex::new(").count(), 1);
+        assert!(
+            queries.contains(".admit_stable_types(&record.domains, &mut type_admission_index)")
+        );
     }
 
     #[test]

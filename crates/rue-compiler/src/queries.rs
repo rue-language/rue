@@ -600,6 +600,8 @@ pub(crate) fn collect_function_cfg_queries(
 
     let _span = info_span!("cfg_collection", phase = "cfg_query_collection").entered();
     let aggregate_types = std::sync::Arc::new(stable_aggregate_types);
+    let mut type_admission_index =
+        crate::durable_cfg::CfgTypeAdmissionIndex::new(&type_pool, &aggregate_types);
     let results: Vec<_> = all_functions
         .into_iter()
         .map(
@@ -874,7 +876,7 @@ pub(crate) fn collect_function_cfg_queries(
                                 )
                             })?;
                         domains
-                            .admit_stable_types(&record.domains, &type_pool, &aggregate_types)
+                            .admit_stable_types(&record.domains, &mut type_admission_index)
                             .map_err(|failure| {
                                 (
                                     CompileError::new(
