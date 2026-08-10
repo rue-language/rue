@@ -24,7 +24,14 @@ pub enum ScalePurpose {
     IndexOffset,
     /// Scaling a raw pointer offset before adding it to a pointer.
     PointerOffset,
-    /// Scaling an allocation count for a runtime heap call.
+    /// Scaling an element count into a trapping byte product.
+    ///
+    /// No plan carries this purpose today: the allocation family became
+    /// byte-shaped in ADR-0059 Phase 3 (RUE-961), so `count * @size_of(T)` is
+    /// ordinary source arithmetic whose overflow the language already traps
+    /// (§8.1), not a codegen-private multiply. The purpose and both backends'
+    /// checked-multiply lowering are retained as the one place a trapping
+    /// scale is expressed, should another consumer need it.
     AllocationSize,
 }
 
@@ -100,21 +107,6 @@ pub fn pointer_element_width(type_pool: &FrozenTypeInternPool, ptr_ty: Type) -> 
     type_width(type_pool, pointee)
 }
 
-/// Canonical byte alignment a pointer's pointee requires, from the layout
-/// authority. Companion to [`pointer_element_width`]; typed allocation passes
-/// this as the runtime allocator's `align` operand so the allocation carries the
-/// pointee's canonical `(size, alignment)` contract (ADR-0052). The defensive
-/// fallback mirrors [`pointer_element_width`]'s one-slot scalar width.
-#[inline]
-pub fn pointer_element_align(type_pool: &FrozenTypeInternPool, ptr_ty: Type) -> u64 {
-    let pointee = match ptr_ty.kind() {
-        TypeKind::PtrMut(id) => type_pool.ptr_mut_def(id),
-        TypeKind::PtrConst(id) => type_pool.ptr_const_def(id),
-        _ => return SLOT_BYTES,
-    };
-    type_pool.layout(pointee).alignment
-}
-
 /// Select the shared constant scaling operation for a byte width.
 #[inline]
 pub const fn scale_kind(bytes: u64) -> ScaleKind {
@@ -155,17 +147,6 @@ pub fn pointer_offset_scale_plan(type_pool: &FrozenTypeInternPool, ptr_ty: Type)
         kind: scale_kind(pointer_element_width(type_pool, ptr_ty).bytes),
         purpose: ScalePurpose::PointerOffset,
         overflow: OverflowBehavior::Wrap,
-    }
-}
-
-/// Build the checked scaling plan used by `@alloc`, `@free`, and `@realloc`.
-#[inline]
-pub fn allocation_size_scale_plan(type_pool: &FrozenTypeInternPool, ptr_ty: Type) -> ScalePlan {
-    let width = pointer_element_width(type_pool, ptr_ty);
-    ScalePlan {
-        kind: scale_kind(width.bytes),
-        purpose: ScalePurpose::AllocationSize,
-        overflow: OverflowBehavior::Trap,
     }
 }
 

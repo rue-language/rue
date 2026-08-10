@@ -895,7 +895,8 @@ fn pointee_or_self(type_pool: &FrozenTypeInternPool, ty: Type) -> Type {
 /// Purely compile-time layout queries (`@size_of`/`@align_of`/`@offset_of`) fold
 /// to constants before code generation. Slot-identical aggregates (all
 /// eight-byte leaves, e.g. `StrBuf`) marshal correctly, as does the
-/// byte-addressed raw-byte family (`@byte_read`/`@byte_write`/`@alloc_bytes`).
+/// byte-addressed raw-byte family (`@byte_read`/`@byte_write` over an
+/// `@alloc`'d block).
 ///
 /// Returning `None` never weakens correctness: every remaining physical access
 /// is either byte-for-byte identical to the slot model, a narrow scalar access

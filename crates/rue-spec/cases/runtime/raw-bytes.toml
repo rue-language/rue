@@ -1,5 +1,9 @@
-# Raw physical-byte allocation and access intrinsics (RUE-879; the raw_bytes
-# preview gate was removed at stabilization, ADR-0059 Phase 6, RUE-937).
+# Raw physical-byte access and bulk-memory intrinsics (RUE-879; the raw_bytes
+# preview gate was removed at stabilization, ADR-0059 Phase 6, RUE-937). The
+# `_bytes` allocators folded into the unified `@alloc`/`@realloc`/`@free` family
+# in ADR-0059 Phase 3 (RUE-961), so allocation behavior is specified in §9.2's
+# heap section and covered by `runtime/heap.toml`; these cases allocate only to
+# get a byte block to access.
 
 [section]
 id = "runtime.raw_bytes"
@@ -9,18 +13,18 @@ description = "Packed physical-byte allocation and access"
 
 [[case]]
 name = "packed_offsets_read_write_exactly_one_byte"
-spec = ["9.2:14a", "9.2:14b", "9.2:14d"]
+spec = ["9.2:14a", "9.2:14d"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(3, 1);
+        let p: ptr mut u8 = @alloc(3, 1);
         @byte_write(p, 0, 11);
         @byte_write(p, 1, 22);
         @byte_write(p, 2, 33);
         let result: i32 = @intCast(@byte_read(p, 0))
             + @intCast(@byte_read(p, 1))
             + @intCast(@byte_read(p, 2));
-        @free_bytes(p, 3, 1);
+        @free(p, 3, 1);
         result
     }
 }
@@ -33,7 +37,7 @@ spec = ["9.2:14d"]
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(3, 1);
+        let p = @alloc(3, 1);
         @byte_write(p, 0, 17);
         @byte_write(p, 1, 34);
         @byte_write(p, 2, 51);
@@ -41,7 +45,7 @@ fn main() -> i32 {
         let result: i32 = @intCast(@byte_read(p, 0))
             + @intCast(@byte_read(p, 1))
             + @intCast(@byte_read(p, 2));
-        @free_bytes(p, 3, 1);
+        @free(p, 3, 1);
         result
     }
 }
@@ -63,15 +67,15 @@ fn main() -> i32 {
 exit_code = 79
 
 [[case]]
-name = "alloc_bytes_result_type_is_inferred"
-spec = ["9.2:14b", "9.2:14f"]
+name = "alloc_result_type_is_inferred"
+spec = ["9.2:10", "9.2:14f"]
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(1, 1);
+        let p = @alloc(1, 1);
         @byte_write(p, 0, 71);
         let result: i32 = @intCast(@byte_read(p, 0));
-        @free_bytes(p, 1, 1);
+        @free(p, 1, 1);
         result
     }
 }
@@ -79,20 +83,20 @@ fn main() -> i32 {
 exit_code = 71
 
 [[case]]
-name = "realloc_bytes_preserves_packed_prefix"
-spec = ["9.2:14b", "9.2:14c", "9.2:14f"]
+name = "realloc_preserves_packed_prefix"
+spec = ["9.2:12", "9.2:14f"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(2, 1);
+        let p: ptr mut u8 = @alloc(2, 1);
         @byte_write(p, 0, 40);
         @byte_write(p, 1, 2);
-        let q = @realloc_bytes(p, 2, 1, 4);
+        let q = @realloc(p, 2, 1, 4);
         @byte_write(q, 2, 3);
         let result: i32 = @intCast(@byte_read(q, 0))
             + @intCast(@byte_read(q, 1))
             + @intCast(@byte_read(q, 2));
-        @free_bytes(q, 4, 1);
+        @free(q, 4, 1);
         result
     }
 }
@@ -101,36 +105,36 @@ exit_code = 45
 
 [[case]]
 name = "raw_byte_allocation_failure_returns_null"
-spec = ["9.2:14b", "8.6:4"]
+spec = ["9.2:10", "8.6:4"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(18446744073709551615, 1);
-        if @ptr_to_int(p) == 0 { 0 } else { @free_bytes(p, 18446744073709551615, 1); 1 }
+        let p: ptr mut u8 = @alloc(18446744073709551615, 1);
+        if @ptr_to_int(p) == 0 { 0 } else { @free(p, 18446744073709551615, 1); 1 }
     }
 }
 """
 exit_code = 0
 
 [[case]]
-name = "failed_realloc_bytes_preserves_original"
-spec = ["9.2:14c", "8.6:4"]
+name = "failed_realloc_preserves_original"
+spec = ["9.2:12", "8.6:4"]
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(3, 1);
+        let p = @alloc(3, 1);
         @byte_write(p, 0, 11);
         @byte_write(p, 1, 22);
         @byte_write(p, 2, 33);
-        let q = @realloc_bytes(p, 3, 1, 18446744073709551615);
+        let q = @realloc(p, 3, 1, 18446744073709551615);
         if @ptr_to_int(q) == 0 {
             let result: i32 = @intCast(@byte_read(p, 0))
                 + @intCast(@byte_read(p, 1))
                 + @intCast(@byte_read(p, 2));
-            @free_bytes(p, 3, 1);
+            @free(p, 3, 1);
             result
         } else {
-            @free_bytes(q, 18446744073709551615, 1);
+            @free(q, 18446744073709551615, 1);
             1
         }
     }
@@ -139,12 +143,12 @@ fn main() -> i32 {
 exit_code = 66
 
 [[case]]
-name = "alloc_bytes_zero_returns_null"
-spec = ["9.2:14b"]
+name = "alloc_zero_returns_null"
+spec = ["9.2:10"]
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(0, 1);
+        let p = @alloc(0, 1);
         if @ptr_to_int(p) == 0 { 0 } else { 1 }
     }
 }
@@ -152,13 +156,13 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
-name = "free_bytes_null_zero_is_permitted"
-spec = ["9.2:14b"]
+name = "free_null_zero_is_permitted"
+spec = ["9.2:10"]
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(0, 1);
-        @free_bytes(p, 0, 1);
+        let p = @alloc(0, 1);
+        @free(p, 0, 1);
         0
     }
 }
@@ -166,14 +170,14 @@ fn main() -> i32 {
 exit_code = 0
 
 [[case]]
-name = "realloc_bytes_zero_frees_and_returns_null"
-spec = ["9.2:14c"]
+name = "realloc_zero_frees_and_returns_null"
+spec = ["9.2:12"]
 source = """
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(1, 1);
+        let p = @alloc(1, 1);
         @byte_write(p, 0, 42);
-        let q = @realloc_bytes(p, 1, 1, 0);
+        let q = @realloc(p, 1, 1, 0);
         if @ptr_to_int(q) == 0 { 0 } else { 1 }
     }
 }
@@ -185,7 +189,7 @@ name = "raw_bytes_require_checked"
 spec = ["9.2:14a", "9.2:14e"]
 source = """
 fn main() -> i32 {
-    let p: ptr mut u8 = @alloc_bytes(1, 1);
+    let p: ptr mut u8 = @alloc(1, 1);
     0
 }
 """
@@ -198,7 +202,7 @@ spec = ["9.2:14e"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(1, 1);
+        let p: ptr mut u8 = @alloc(1, 1);
         let value: u64 = 1;
         @byte_write(p, 0, value);
     };
@@ -214,17 +218,17 @@ spec = ["9.2:14g", "9.2:14h"]
 source = """
 fn main() -> i32 {
     checked {
-        let src: ptr mut u8 = @alloc_bytes(3, 1);
+        let src: ptr mut u8 = @alloc(3, 1);
         @byte_write(src, 0, 10);
         @byte_write(src, 1, 20);
         @byte_write(src, 2, 30);
-        let dst: ptr mut u8 = @alloc_bytes(3, 1);
+        let dst: ptr mut u8 = @alloc(3, 1);
         @byte_copy(dst, src, 3);
         let result: i32 = @intCast(@byte_read(dst, 0))
             + @intCast(@byte_read(dst, 1))
             + @intCast(@byte_read(dst, 2));
-        @free_bytes(src, 3, 1);
-        @free_bytes(dst, 3, 1);
+        @free(src, 3, 1);
+        @free(dst, 3, 1);
         result
     }
 }
@@ -237,13 +241,13 @@ spec = ["9.2:14g", "9.2:14h"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(4, 1);
+        let p: ptr mut u8 = @alloc(4, 1);
         @byte_set(p, 9, 4);
         let result: i32 = @intCast(@byte_read(p, 0))
             + @intCast(@byte_read(p, 1))
             + @intCast(@byte_read(p, 2))
             + @intCast(@byte_read(p, 3));
-        @free_bytes(p, 4, 1);
+        @free(p, 4, 1);
         result
     }
 }
@@ -256,15 +260,15 @@ spec = ["9.2:14g"]
 source = """
 fn main() -> i32 {
     checked {
-        let dst: ptr mut u8 = @alloc_bytes(2, 1);
+        let dst: ptr mut u8 = @alloc(2, 1);
         @byte_write(dst, 0, 55);
         @byte_write(dst, 1, 11);
-        let src: ptr mut u8 = @alloc_bytes(2, 1);
+        let src: ptr mut u8 = @alloc(2, 1);
         @byte_set(src, 99, 2);
         @byte_copy(dst, src, 0);
         let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
-        @free_bytes(src, 2, 1);
-        @free_bytes(dst, 2, 1);
+        @free(src, 2, 1);
+        @free(dst, 2, 1);
         result
     }
 }
@@ -277,18 +281,18 @@ spec = ["9.2:14g"]
 source = """
 fn main() -> i32 {
     checked {
-        let src: ptr mut u8 = @alloc_bytes(4, 1);
+        let src: ptr mut u8 = @alloc(4, 1);
         @byte_write(src, 0, 1);
         @byte_write(src, 1, 2);
         @byte_write(src, 2, 3);
         @byte_write(src, 3, 4);
-        let dst: ptr mut u8 = @alloc_bytes(2, 1);
+        let dst: ptr mut u8 = @alloc(2, 1);
         @byte_set(dst, 0, 2);
         let src_mid: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
         @byte_copy(dst, src_mid, 2);
         let result: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1));
-        @free_bytes(src, 4, 1);
-        @free_bytes(dst, 2, 1);
+        @free(src, 4, 1);
+        @free(dst, 2, 1);
         result
     }
 }
@@ -304,9 +308,9 @@ fn use_it(p: ptr mut u8) -> i32 {
     0
 }
 fn main() -> i32 {
-    let p: ptr mut u8 = checked { @alloc_bytes(1, 1) };
+    let p: ptr mut u8 = checked { @alloc(1, 1) };
     let r = use_it(p);
-    checked { @free_bytes(p, 1, 1); };
+    checked { @free(p, 1, 1); };
     r
 }
 """
@@ -319,7 +323,7 @@ spec = ["9.2:14h"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(1, 1);
+        let p: ptr mut u8 = @alloc(1, 1);
         let value: u64 = 1;
         @byte_set(p, value, 1);
     };
@@ -346,13 +350,13 @@ compile_fail = true
 error_contains = "ptr mut u8"
 
 [[case]]
-name = "alloc_bytes_result_is_ptr_mut_u8"
-spec = ["9.2:14b", "9.2:14e"]
+name = "alloc_result_is_ptr_mut_u8"
+spec = ["9.2:10", "9.2:13"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc_bytes(1, 1);
-        @free_bytes(p, 1, 1);
+        let p: ptr mut i32 = @alloc(1, 1);
+        @free(p, 1, 1);
     };
     0
 }
@@ -361,20 +365,20 @@ compile_fail = true
 error_contains = "ptr mut u8"
 
 [[case]]
-name = "alloc_bytes_align_one_round_trip"
-spec = ["9.2:14b", "9.2:14c", "9.2:14j"]
+name = "alloc_align_one_round_trip"
+spec = ["9.2:10", "9.2:12", "9.2:13a"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(4, 1);
+        let p: ptr mut u8 = @alloc(4, 1);
         @byte_write(p, 0, 20);
         @byte_write(p, 1, 22);
-        let q = @realloc_bytes(p, 4, 1, 8);
+        let q = @realloc(p, 4, 1, 8);
         @byte_write(q, 2, 3);
         let result: i32 = @intCast(@byte_read(q, 0))
             + @intCast(@byte_read(q, 1))
             + @intCast(@byte_read(q, 2));
-        @free_bytes(q, 8, 1);
+        @free(q, 8, 1);
         result
     }
 }
@@ -382,20 +386,20 @@ fn main() -> i32 {
 exit_code = 45
 
 [[case]]
-name = "alloc_bytes_align_eight_round_trip"
-spec = ["9.2:14b", "9.2:14c", "9.2:14j"]
+name = "alloc_align_eight_round_trip"
+spec = ["9.2:10", "9.2:12", "9.2:13a"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(16, 8);
+        let p: ptr mut u8 = @alloc(16, 8);
         @byte_write(p, 0, 30);
         @byte_write(p, 7, 12);
-        let q = @realloc_bytes(p, 16, 8, 32);
+        let q = @realloc(p, 16, 8, 32);
         @byte_write(q, 8, 6);
         let result: i32 = @intCast(@byte_read(q, 0))
             + @intCast(@byte_read(q, 7))
             + @intCast(@byte_read(q, 8));
-        @free_bytes(q, 32, 8);
+        @free(q, 32, 8);
         result
     }
 }
@@ -403,13 +407,13 @@ fn main() -> i32 {
 exit_code = 48
 
 [[case]]
-name = "alloc_bytes_align_zero_rejected"
-spec = ["9.2:14j"]
+name = "alloc_align_zero_rejected"
+spec = ["9.2:13a"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(1, 0);
-        @free_bytes(p, 1, 1);
+        let p: ptr mut u8 = @alloc(1, 0);
+        @free(p, 1, 1);
     };
     0
 }
@@ -418,14 +422,14 @@ compile_fail = true
 error_contains = "[E0712]"
 
 [[case]]
-name = "realloc_bytes_align_not_power_of_two_rejected"
-spec = ["9.2:14j"]
+name = "realloc_align_not_power_of_two_rejected"
+spec = ["9.2:13a"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(2, 1);
-        let q = @realloc_bytes(p, 2, 3, 4);
-        @free_bytes(q, 4, 1);
+        let p: ptr mut u8 = @alloc(2, 1);
+        let q = @realloc(p, 2, 3, 4);
+        @free(q, 4, 1);
     };
     0
 }
@@ -434,13 +438,13 @@ compile_fail = true
 error_contains = "power of two"
 
 [[case]]
-name = "free_bytes_requires_align_argument"
+name = "free_requires_align_argument"
 spec = ["9.2:14e"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(1, 1);
-        @free_bytes(p, 1);
+        let p: ptr mut u8 = @alloc(1, 1);
+        @free(p, 1);
     };
     0
 }
@@ -456,10 +460,13 @@ spec = ["9.2:14k", "9.2:14m"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(1);
+        let bytes: u64 = @intCast(@size_of(i32));
+        let align: u64 = @intCast(@align_of(i32));
+        let raw: ptr mut u8 = @alloc(bytes, align);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
         @ptr_write_unaligned(p, 1234);
         let v: i32 = @ptr_read_unaligned(p);
-        @free(p, 1);
+        @free(raw, bytes, align);
         @intCast(v % 200)
     }
 }
@@ -475,13 +482,188 @@ fn read(p: ptr mut i32) -> i32 {
 }
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(1);
+        let bytes: u64 = @intCast(@size_of(i32));
+        let align: u64 = @intCast(@align_of(i32));
+        let raw: ptr mut u8 = @alloc(bytes, align);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
         @ptr_write(p, 0);
         let v: i32 = read(p);
-        @free(p, 1);
+        @free(raw, bytes, align);
     };
     0
 }
 """
 compile_fail = true
 error_contains = "[E1300]"
+
+# =============================================================================
+# @byte_move — the overlapping sibling of @byte_copy (RUE-964). memmove
+# semantics: the copy behaves as if every source byte were read into a
+# temporary region before any destination byte is written, so both overlap
+# directions are well defined. A naive forward byte loop gets the dst > src
+# case wrong and a naive backward loop gets the dst < src case wrong, so both
+# directions are pinned here with results that distinguish them.
+# =============================================================================
+
+[[case]]
+name = "byte_move_non_overlapping_matches_byte_copy"
+spec = ["9.2:14g", "9.2:14h"]
+source = """
+fn main() -> i32 {
+    checked {
+        let src: ptr mut u8 = @alloc(3, 1);
+        @byte_write(src, 0, 10);
+        @byte_write(src, 1, 20);
+        @byte_write(src, 2, 30);
+        let dst: ptr mut u8 = @alloc(3, 1);
+        @byte_move(dst, src, 3);
+        let result: i32 = @intCast(@byte_read(dst, 0))
+            + @intCast(@byte_read(dst, 1))
+            + @intCast(@byte_read(dst, 2));
+        @free(src, 3, 1);
+        @free(dst, 3, 1);
+        result
+    }
+}
+"""
+exit_code = 60
+
+# Forward overlap (dst > src): [1,2,3,0] shifted up one byte must yield
+# [1,1,2,3]. The four bytes are packed base-4 into one exit code (weights
+# 64/16/4/1) so the whole result fits the process exit status. Correct memmove
+# gives 64+16+8+3 = 91; a naive forward byte loop would smear the first byte to
+# [1,1,1,1] = 85.
+[[case]]
+name = "byte_move_forward_overlap_shifts_up"
+spec = ["9.2:14g"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4, 1);
+        @byte_write(p, 0, 1);
+        @byte_write(p, 1, 2);
+        @byte_write(p, 2, 3);
+        @byte_write(p, 3, 0);
+        let dst: ptr mut u8 = @int_to_ptr(@ptr_to_int(p) + 1);
+        @byte_move(dst, p, 3);
+        let result: i32 = @intCast(@byte_read(p, 0)) * 64
+            + @intCast(@byte_read(p, 1)) * 16
+            + @intCast(@byte_read(p, 2)) * 4
+            + @intCast(@byte_read(p, 3));
+        @free(p, 4, 1);
+        result
+    }
+}
+"""
+exit_code = 91
+
+# Backward overlap (dst < src): [0,1,2,3] shifted down one byte must yield
+# [1,2,3,3], packed the same way. Correct memmove gives 64+32+12+3 = 111; a
+# naive backward byte loop would smear the last byte to [3,3,3,3] = 255.
+[[case]]
+name = "byte_move_backward_overlap_shifts_down"
+spec = ["9.2:14g"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4, 1);
+        @byte_write(p, 0, 0);
+        @byte_write(p, 1, 1);
+        @byte_write(p, 2, 2);
+        @byte_write(p, 3, 3);
+        let src: ptr mut u8 = @int_to_ptr(@ptr_to_int(p) + 1);
+        @byte_move(p, src, 3);
+        let result: i32 = @intCast(@byte_read(p, 0)) * 64
+            + @intCast(@byte_read(p, 1)) * 16
+            + @intCast(@byte_read(p, 2)) * 4
+            + @intCast(@byte_read(p, 3));
+        @free(p, 4, 1);
+        result
+    }
+}
+"""
+exit_code = 111
+
+# A fully overlapping self-move is the identity.
+[[case]]
+name = "byte_move_onto_itself_is_the_identity"
+spec = ["9.2:14g"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(2, 1);
+        @byte_write(p, 0, 40);
+        @byte_write(p, 1, 5);
+        @byte_move(p, p, 2);
+        let result: i32 = @intCast(@byte_read(p, 0)) + @intCast(@byte_read(p, 1));
+        @free(p, 2, 1);
+        result
+    }
+}
+"""
+exit_code = 45
+
+# A zero-length move touches no memory, so it is well defined even between
+# overlapping (here identical) addresses.
+[[case]]
+name = "byte_move_of_zero_bytes_is_a_noop"
+spec = ["9.2:14g"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(1, 1);
+        @byte_write(p, 0, 77);
+        @byte_move(p, p, 0);
+        let result: i32 = @intCast(@byte_read(p, 0));
+        @free(p, 1, 1);
+        result
+    }
+}
+"""
+exit_code = 77
+
+[[case]]
+name = "byte_move_requires_checked"
+spec = ["9.2:14h"]
+source = """
+fn main() -> i32 {
+    let p: ptr mut u8 = checked { @alloc(2, 1) };
+    @byte_move(p, p, 1);
+    0
+}
+"""
+compile_fail = true
+error_contains = "[E1300]"
+
+[[case]]
+name = "byte_move_destination_must_be_ptr_mut_u8"
+spec = ["9.2:14h"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(1, 1);
+        let value: u8 = 0;
+        let src: ptr const u8 = @raw(value);
+        @byte_move(src, p, 1);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "ptr mut u8"
+
+[[case]]
+name = "byte_move_size_must_be_u64"
+spec = ["9.2:14h"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(2, 1);
+        let n: i32 = 1;
+        @byte_move(p, p, n);
+    };
+    0
+}
+"""
+compile_fail = true
+error_contains = "expected u64, found i32"

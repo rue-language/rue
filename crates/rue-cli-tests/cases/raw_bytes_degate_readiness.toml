@@ -8,7 +8,7 @@
 # through the same one-byte narrow scalar access a typed `ptr u8` takes, and the
 # byte allocators share the general allocator helper. These cases pin that the
 # fold-in is behavior-preserving: the byte family is byte-granular (a
-# `@byte_read` reads one physical byte, `@alloc_bytes(n, a)` reserves n physical
+# `@byte_read` reads one physical byte, `@alloc(n, a)` reserves n physical
 # bytes, offsets are never scaled by the slot size), so the result never moves.
 #
 # Note: the byte surface deliberately avoids `@ptr_offset` for byte addressing
@@ -21,8 +21,8 @@ id = "cli.raw_bytes_degate_readiness"
 name = "raw-byte surface behaves identically under the compact layout"
 description = "Byte-intrinsic programs compute the byte-granular result the byte surface guarantees, evidencing that the RUE-978 fold-in into the narrow typed path is behavior-preserving."
 
-# The whole byte family — @alloc_bytes/@byte_set/@byte_write/@realloc_bytes/
-# @byte_copy/@byte_read/@free_bytes — in one round-trip.
+# The whole byte family — @alloc/@byte_set/@byte_write/@realloc/
+# @byte_copy/@byte_read/@free — in one round-trip.
 [[case]]
 name = "byte_family_roundtrip_plain"
 description = "Full byte-family round-trip through the byte surface."
@@ -31,21 +31,21 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc_bytes(6, 1);
+        let p: ptr mut u8 = @alloc(6, 1);
         @byte_set(p, 0, 6);
         @byte_write(p, 0, 10);
         @byte_write(p, 1, 20);
         @byte_write(p, 2, 30);
-        let q: ptr mut u8 = @realloc_bytes(p, 6, 1, 8);
+        let q: ptr mut u8 = @realloc(p, 6, 1, 8);
         @byte_write(q, 3, 40);
-        let dst: ptr mut u8 = @alloc_bytes(8, 1);
+        let dst: ptr mut u8 = @alloc(8, 1);
         @byte_copy(dst, q, 8);
         let sum: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1))
             + @intCast(@byte_read(dst, 2)) + @intCast(@byte_read(dst, 3))
             + @intCast(@byte_read(dst, 4));
         @dbg(sum);
-        @free_bytes(q, 8, 1);
-        @free_bytes(dst, 8, 1);
+        @free(q, 8, 1);
+        @free(dst, 8, 1);
     };
     0
 }
@@ -63,13 +63,13 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let src: ptr mut u8 = @alloc_bytes(5, 1);
+        let src: ptr mut u8 = @alloc(5, 1);
         let mut i: u64 = 0;
         while i < 5 {
             @byte_write(src, i, @intCast(i + 1));
             i = i + 1;
         }
-        let dst: ptr mut u8 = @alloc_bytes(5, 1);
+        let dst: ptr mut u8 = @alloc(5, 1);
         @byte_set(dst, 0, 5);
         let sp: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
         let dp: ptr mut u8 = @int_to_ptr(@ptr_to_int(dst) + 2);
@@ -81,8 +81,8 @@ fn main() -> i32 {
             j = j + 1;
         }
         @dbg(sum);
-        @free_bytes(src, 5, 1);
-        @free_bytes(dst, 5, 1);
+        @free(src, 5, 1);
+        @free(dst, 5, 1);
     };
     0
 }

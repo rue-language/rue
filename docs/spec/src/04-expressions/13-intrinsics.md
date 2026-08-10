@@ -92,15 +92,15 @@ full semantics):
 | `@ptr_offset` | Pointer arithmetic | 2 expressions (`ptr T`, integer) | `ptr T` |
 | `@ptr_to_int` | Pointer to integer | 1 expression (pointer) | `u64` |
 | `@int_to_ptr` | Integer to pointer | 1 expression (`u64`) | inferred `ptr mut T` |
-| `@alloc` | Allocate a heap block | 1 expression (`u64` count) | inferred `ptr mut T` |
-| `@free` | Free a heap block | 2 expressions (`ptr mut T`, `u64` count) | `()` |
-| `@realloc` | Resize a heap block | 3 expressions (`ptr mut T`, `u64`, `u64`) | `ptr mut T` |
-| `@alloc_bytes` | Allocate physical bytes with alignment | 2 expressions (`u64` size, `u64` align) | `ptr mut u8` |
-| `@free_bytes` | Free physical bytes | 3 expressions (`ptr mut u8`, `u64` size, `u64` align) | `()` |
-| `@realloc_bytes` | Resize physical bytes with alignment | 4 expressions (`ptr mut u8`, `u64` old size, `u64` align, `u64` new size) | `ptr mut u8` |
+| `@alloc` | Allocate physical bytes with alignment (§9.2) | 2 expressions (`u64` size, `u64` align) | `ptr mut u8` |
+| `@alloc_zeroed` | Allocate zero-filled physical bytes (§9.2) | 2 expressions (`u64` size, `u64` align) | `ptr mut u8` |
+| `@free` | Free an allocated block (§9.2) | 3 expressions (`ptr mut u8`, `u64` size, `u64` align) | `()` |
+| `@realloc` | Resize an allocated block, possibly moving it (§9.2) | 4 expressions (`ptr mut u8`, `u64` old size, `u64` align, `u64` new size) | `ptr mut u8` |
+| `@resize` | Resize an allocated block in place only (§9.2) | 4 expressions (`ptr mut u8`, `u64` old size, `u64` align, `u64` new size) | `bool` |
 | `@byte_read` | Read one physical byte | 2 expressions (`ptr const u8`/`ptr mut u8`, `u64`) | `u8` |
 | `@byte_write` | Write one physical byte | 3 expressions (`ptr mut u8`, `u64`, `u8`) | `()` |
 | `@byte_copy` | Copy `size` non-overlapping bytes | 3 expressions (`ptr mut u8`, `ptr const u8`/`ptr mut u8`, `u64`) | `()` |
+| `@byte_move` | Copy `size` possibly overlapping bytes (§9.2) | 3 expressions (`ptr mut u8`, `ptr const u8`/`ptr mut u8`, `u64`) | `()` |
 | `@byte_set` | Fill `size` bytes with a byte | 3 expressions (`ptr mut u8`, `u8`, `u64`) | `()` |
 | `@arg_ptr` | Pointer to argument `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |
 | `@env_ptr` | Pointer to environment entry `i`'s bytes (null out of range) | 1 expression (`u64` index) | `ptr mut u8` |

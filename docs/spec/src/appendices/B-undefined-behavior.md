@@ -172,7 +172,7 @@ defines it.
 | Mutating storage through a `ptr mut T` while another live pointer aliases the same storage in a way the program's reasoning assumes cannot happen (aliasing violation). | ADR-0028 |
 | Accessing storage through a pointer that does not satisfy the pointee type's alignment requirement. | ADR-0028 |
 | Reading or writing with `@byte_read`/`@byte_write` when `address_of(p) + offset` is not a live byte within the referenced storage, including null, out-of-bounds, use-after-free, and overflowed-address access. | §9.2 (9.2:14d) |
-| Passing an incorrect size, a pointer from a different allocation family, or an already-freed pointer to `@free_bytes`/`@realloc_bytes`. | §9.2 (9.2:14b–14c) |
+| Passing an incorrect size or alignment, a pointer not returned by the allocation family, or an already-freed pointer to `@free`/`@realloc`/`@resize`. | §9.2 (9.2:11–13) |
 
 {{ rule(id="B.3:3", cat="informative") }}
 

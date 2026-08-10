@@ -7,11 +7,16 @@ fn main() -> i32 {
     text.push_str(" matrix");
     println(text);
     checked {
-        let values: ptr mut i32 = @alloc(2);
+        // Typed allocation is source-computed over the byte allocator
+        // (ADR-0059 Phase 3, RUE-961), the same shape std/rawbuf.rue uses.
+        let bytes: u64 = 2 * @intCast(@size_of(i32));
+        let align: u64 = @intCast(@align_of(i32));
+        let block: ptr mut u8 = @alloc(bytes, align);
+        let values: ptr mut i32 = @int_to_ptr(@ptr_to_int(block));
         @ptr_write(values, 19);
         @ptr_write(@ptr_offset(values, 1), 23);
         let result = @ptr_read(values) + @ptr_read(@ptr_offset(values, 1));
-        @free(values, 2);
+        @free(block, bytes, align);
         result
     }
 }

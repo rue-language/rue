@@ -21,21 +21,14 @@ pub enum RuntimeOperandOrigin {
         source: RuntimeAirType,
     },
     /// A `ptr const u8` / `ptr mut u8` argument passed straight through to a
-    /// `const u8*` runtime parameter (the `@byte_copy` source, ADR-0058).
+    /// `const u8*` runtime parameter (the `@byte_copy`/`@byte_move` source,
+    /// ADR-0059).
     BytePointerArgument(u8),
     TextPointer(u8),
     TextLength(u8),
     ProjectedTextPointer(u8),
     ProjectedTextLength(u8),
-    ResultPointeeAlign,
-    ScaledByResultPointeeSize(u8),
-    PointerPointeeAlign(u8),
-    ScaledByPointerPointeeSize {
-        pointer: u8,
-        count: u8,
-    },
     OptionDiscriminant(OptionVariant),
-    ByteAlignment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -88,14 +81,7 @@ impl RuntimeOperandOrigin {
             Self::TextPointer(_) | Self::ProjectedTextPointer(_) | Self::BytePointerArgument(_) => {
                 parameter.ty == AbiType::Byte && parameter.mode == ParameterMode::ConstPointer
             }
-            Self::TextLength(_)
-            | Self::ProjectedTextLength(_)
-            | Self::ResultPointeeAlign
-            | Self::ScaledByResultPointeeSize(_)
-            | Self::PointerPointeeAlign(_)
-            | Self::ScaledByPointerPointeeSize { .. }
-            | Self::OptionDiscriminant(_)
-            | Self::ByteAlignment => {
+            Self::TextLength(_) | Self::ProjectedTextLength(_) | Self::OptionDiscriminant(_) => {
                 parameter.ty == AbiType::U64 && parameter.mode == ParameterMode::Value
             }
             Self::ValueArgument { ty, .. } => {
@@ -145,12 +131,11 @@ pub enum RuntimeCallKind {
     ParseU64,
     RandomU32,
     RandomU64,
-    AllocTyped,
-    FreeTyped,
-    ReallocTyped,
-    AllocBytes,
-    FreeBytes,
-    ReallocBytes,
+    Alloc,
+    AllocZeroed,
+    Free,
+    Realloc,
+    Resize,
     ArgCount,
     ArgPtr,
     ArgLen,
@@ -158,6 +143,7 @@ pub enum RuntimeCallKind {
     EnvPtr,
     EnvLen,
     ByteCopy,
+    ByteMove,
     ByteSet,
 }
 
@@ -212,43 +198,16 @@ const PARSE: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::OptionDiscriminant(OptionVariant::Some),
     RuntimeOperandOrigin::OptionDiscriminant(OptionVariant::None),
 ];
-const ALLOC_TYPED: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::ScaledByResultPointeeSize(0),
-    RuntimeOperandOrigin::ResultPointeeAlign,
-];
-const FREE_TYPED: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::MutablePointerArgument {
-        index: 0,
-        source: RuntimeAirType::MutPointer,
-    },
-    RuntimeOperandOrigin::ScaledByPointerPointeeSize {
-        pointer: 0,
-        count: 1,
-    },
-    RuntimeOperandOrigin::PointerPointeeAlign(0),
-];
-const REALLOC_TYPED: &[RuntimeOperandOrigin] = &[
-    RuntimeOperandOrigin::MutablePointerArgument {
-        index: 0,
-        source: RuntimeAirType::MutPointer,
-    },
-    RuntimeOperandOrigin::ScaledByPointerPointeeSize {
-        pointer: 0,
-        count: 1,
-    },
-    RuntimeOperandOrigin::ScaledByPointerPointeeSize {
-        pointer: 0,
-        count: 2,
-    },
-    RuntimeOperandOrigin::PointerPointeeAlign(0),
-];
-const ALLOC_BYTES: &[RuntimeOperandOrigin] = &[
+// The unified allocation family is byte-shaped end to end (ADR-0059 Phase 3,
+// RUE-961): `@alloc(size, align)` and `@alloc_zeroed(size, align)` hand their
+// two `u64` operands straight to the runtime helper, so no operand is derived
+// from a pointee type. Typed allocation is source-computed sugar over
+// `@size_of`/`@align_of` and never reaches this table.
+const ALLOC: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::ValueArgument {
         index: 0,
         ty: AbiType::U64,
     },
-    // Explicit alignment argument (ADR-0059 Phase 2, RUE-960): sourced from the
-    // intrinsic's `align` operand rather than a synthesized `ByteAlignment`.
     RuntimeOperandOrigin::ValueArgument {
         index: 1,
         ty: AbiType::U64,
@@ -261,7 +220,9 @@ const PROCESS_INDEX: &[RuntimeOperandOrigin] = &[RuntimeOperandOrigin::ValueArgu
     index: 0,
     ty: AbiType::U64,
 }];
-const FREE_BYTES: &[RuntimeOperandOrigin] = &[
+// `@free(p, size, align)` — the sizeless-allocator ABI hands the block's layout
+// back to the runtime (ADR-0059 Phase 3, RUE-961).
+const FREE: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::MutablePointerArgument {
         index: 0,
         source: RuntimeAirType::MutBytePointer,
@@ -270,17 +231,19 @@ const FREE_BYTES: &[RuntimeOperandOrigin] = &[
         index: 1,
         ty: AbiType::U64,
     },
-    // Explicit alignment argument (ADR-0059 Phase 2, RUE-960).
     RuntimeOperandOrigin::ValueArgument {
         index: 2,
         ty: AbiType::U64,
     },
 ];
-// `@realloc_bytes(p, old_size, align, new_size)` maps onto the runtime helper
-// signature `__rue_realloc(ptr, old_size, new_size, align)`, so the alignment
-// operand (AIR argument 2) is passed last while `new_size` (AIR argument 3)
-// precedes it (ADR-0059 Phase 2, RUE-960).
-const REALLOC_BYTES: &[RuntimeOperandOrigin] = &[
+// `@realloc(p, old_size, align, new_size)` and `@resize(p, old_size, align,
+// new_size)` map onto the runtime helper signatures `__rue_realloc(ptr,
+// old_size, new_size, align)` and `__rue_resize(ptr, old_size, new_size,
+// align)`, so the alignment operand (AIR argument 2) is passed last while
+// `new_size` (AIR argument 3) precedes it. Keeping the intrinsic's `align`
+// ahead of `new_size` keeps `(p, old_size, align, ...)` identical across
+// `@free`, `@realloc`, and `@resize` at the call site.
+const RESIZE_LAYOUT: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::MutablePointerArgument {
         index: 0,
         source: RuntimeAirType::MutBytePointer,
@@ -298,6 +261,8 @@ const REALLOC_BYTES: &[RuntimeOperandOrigin] = &[
         ty: AbiType::U64,
     },
 ];
+// `@byte_copy` and `@byte_move` share one operand plan and differ only in the
+// helper they select (memcpy vs memmove, RUE-937 / RUE-964).
 const BYTE_COPY: &[RuntimeOperandOrigin] = &[
     RuntimeOperandOrigin::MutablePointerArgument {
         index: 0,
@@ -349,12 +314,11 @@ impl RuntimeCallKind {
         Self::ParseU64,
         Self::RandomU32,
         Self::RandomU64,
-        Self::AllocTyped,
-        Self::FreeTyped,
-        Self::ReallocTyped,
-        Self::AllocBytes,
-        Self::FreeBytes,
-        Self::ReallocBytes,
+        Self::Alloc,
+        Self::AllocZeroed,
+        Self::Free,
+        Self::Realloc,
+        Self::Resize,
         Self::ArgCount,
         Self::ArgPtr,
         Self::ArgLen,
@@ -362,6 +326,7 @@ impl RuntimeCallKind {
         Self::EnvPtr,
         Self::EnvLen,
         Self::ByteCopy,
+        Self::ByteMove,
         Self::ByteSet,
     ];
 
@@ -391,9 +356,11 @@ impl RuntimeCallKind {
             Self::ParseU64 => RuntimeHelperId::ParseU64,
             Self::RandomU32 => RuntimeHelperId::RandomU32,
             Self::RandomU64 => RuntimeHelperId::RandomU64,
-            Self::AllocTyped | Self::AllocBytes => RuntimeHelperId::Alloc,
-            Self::FreeTyped | Self::FreeBytes => RuntimeHelperId::Free,
-            Self::ReallocTyped | Self::ReallocBytes => RuntimeHelperId::Realloc,
+            Self::Alloc => RuntimeHelperId::Alloc,
+            Self::AllocZeroed => RuntimeHelperId::AllocZeroed,
+            Self::Free => RuntimeHelperId::Free,
+            Self::Realloc => RuntimeHelperId::Realloc,
+            Self::Resize => RuntimeHelperId::Resize,
             Self::ArgCount => RuntimeHelperId::ArgCount,
             Self::ArgPtr => RuntimeHelperId::ArgPtr,
             Self::ArgLen => RuntimeHelperId::ArgLen,
@@ -401,6 +368,7 @@ impl RuntimeCallKind {
             Self::EnvPtr => RuntimeHelperId::EnvPtr,
             Self::EnvLen => RuntimeHelperId::EnvLen,
             Self::ByteCopy => RuntimeHelperId::ByteCopy,
+            Self::ByteMove => RuntimeHelperId::ByteMove,
             Self::ByteSet => RuntimeHelperId::ByteSet,
         }
     }
@@ -434,13 +402,10 @@ impl RuntimeCallKind {
             Self::ArgPtr | Self::ArgLen | Self::EnvPtr | Self::EnvLen => PROCESS_INDEX,
             Self::ReadLine => READ_LINE,
             Self::ParseI32 | Self::ParseI64 | Self::ParseU32 | Self::ParseU64 => PARSE,
-            Self::AllocTyped => ALLOC_TYPED,
-            Self::FreeTyped => FREE_TYPED,
-            Self::ReallocTyped => REALLOC_TYPED,
-            Self::AllocBytes => ALLOC_BYTES,
-            Self::FreeBytes => FREE_BYTES,
-            Self::ReallocBytes => REALLOC_BYTES,
-            Self::ByteCopy => BYTE_COPY,
+            Self::Alloc | Self::AllocZeroed => ALLOC,
+            Self::Free => FREE,
+            Self::Realloc | Self::Resize => RESIZE_LAYOUT,
+            Self::ByteCopy | Self::ByteMove => BYTE_COPY,
             Self::ByteSet => BYTE_SET,
         }
     }
@@ -515,11 +480,6 @@ impl RuntimeCallKind {
                             _ => return false,
                         },
                     }
-                } else if self.has_result_pointee_origin() {
-                    if helper_result != AbiResult::Scalar(AbiType::MutBytePointer) {
-                        return false;
-                    }
-                    RuntimeAirType::MutPointer
                 } else if helper_result == AbiResult::Scalar(AbiType::MutBytePointer) {
                     self.pointer_result_type()
                 } else {
@@ -545,16 +505,6 @@ impl RuntimeCallKind {
             }
         }
         shape
-    }
-
-    fn has_result_pointee_origin(self) -> bool {
-        self.operands().iter().any(|operand| {
-            matches!(
-                operand,
-                RuntimeOperandOrigin::ResultPointeeAlign
-                    | RuntimeOperandOrigin::ScaledByResultPointeeSize(_)
-            )
-        })
     }
 
     fn pointer_result_type(self) -> RuntimeAirType {
@@ -596,9 +546,7 @@ impl RuntimeCallKind {
         for operand in operands {
             let valid = match *operand {
                 RuntimeOperandOrigin::OutResult(_)
-                | RuntimeOperandOrigin::ResultPointeeAlign
-                | RuntimeOperandOrigin::OptionDiscriminant(_)
-                | RuntimeOperandOrigin::ByteAlignment => true,
+                | RuntimeOperandOrigin::OptionDiscriminant(_) => true,
                 RuntimeOperandOrigin::ValueArgument { index, ty } => {
                     require(index, Self::air_type_for_abi_value(ty))
                 }
@@ -628,16 +576,8 @@ impl RuntimeCallKind {
                 RuntimeOperandOrigin::ProjectedTextPointer(index) => {
                     require(index, RuntimeAirType::BytePointer)
                 }
-                RuntimeOperandOrigin::ProjectedTextLength(index)
-                | RuntimeOperandOrigin::ScaledByResultPointeeSize(index) => {
+                RuntimeOperandOrigin::ProjectedTextLength(index) => {
                     require(index, RuntimeAirType::U64)
-                }
-                RuntimeOperandOrigin::PointerPointeeAlign(pointer) => {
-                    require(pointer, RuntimeAirType::MutPointer)
-                }
-                RuntimeOperandOrigin::ScaledByPointerPointeeSize { pointer, count } => {
-                    require(pointer, RuntimeAirType::MutPointer)
-                        && require(count, RuntimeAirType::U64)
                 }
             };
             if !valid {
@@ -696,9 +636,10 @@ impl RuntimeCallKind {
                 actual,
                 T::BytePointer | T::ConstBytePointer | T::MutBytePointer
             ),
-            // A typed allocation specialized with `T = u8` has the same AIR
-            // pointer type as the byte-oriented helpers, while retaining the
-            // typed helper's pointee-scaled operand plan.
+            // No runtime helper takes a non-`u8` pointer since the allocation
+            // family became byte-shaped (ADR-0059 Phase 3), but the AIR
+            // classification still distinguishes the two, and a `ptr mut u8`
+            // satisfies a plan written for any mutable pointer.
             T::MutPointer => matches!(actual, T::MutPointer | T::MutBytePointer),
             _ => expected == actual,
         }
@@ -733,7 +674,7 @@ mod tests {
         assert!(RuntimeCallKind::ToString.validate_air_arguments(&[normal(RuntimeAirType::I64)]));
         assert!(!RuntimeCallKind::ToString.validate_air_arguments(&[normal(RuntimeAirType::U64)]));
         assert!(
-            !RuntimeCallKind::AllocBytes
+            !RuntimeCallKind::Alloc
                 .validate_air_arguments(&[normal(RuntimeAirType::SignedInteger)])
         );
         assert!(
@@ -780,42 +721,30 @@ mod tests {
     }
 
     #[test]
-    fn scaled_pointer_origins_validate_both_pointer_and_count_indices() {
+    fn layout_returning_plans_require_a_byte_pointer_and_u64_sizes() {
         let normal = |ty| RuntimeAirArgument {
             ty,
             mode: crate::AirArgMode::Normal,
         };
-        let scaled = [RuntimeOperandOrigin::ScaledByPointerPointeeSize {
-            pointer: 0,
-            count: 1,
-        }];
-        assert!(RuntimeCallKind::validate_air_arguments_for_plan(
-            &scaled,
-            RuntimeCallActivation::Always,
-            &[
-                normal(RuntimeAirType::MutPointer),
-                normal(RuntimeAirType::U64),
-            ],
-        ));
-        assert!(!RuntimeCallKind::validate_air_arguments_for_plan(
-            &scaled,
-            RuntimeCallActivation::Always,
-            &[
-                normal(RuntimeAirType::U64),
-                normal(RuntimeAirType::MutPointer),
-            ],
-        ));
-        assert!(!RuntimeCallKind::validate_air_arguments_for_plan(
-            &[RuntimeOperandOrigin::ScaledByPointerPointeeSize {
-                pointer: 0,
-                count: 2,
-            }],
-            RuntimeCallActivation::Always,
-            &[
-                normal(RuntimeAirType::MutPointer),
-                normal(RuntimeAirType::U64),
-            ],
-        ));
+        // `@realloc`/`@resize`: (ptr mut u8, old_size, align, new_size).
+        let layout = [
+            normal(RuntimeAirType::MutBytePointer),
+            normal(RuntimeAirType::U64),
+            normal(RuntimeAirType::U64),
+            normal(RuntimeAirType::U64),
+        ];
+        assert!(RuntimeCallKind::Realloc.validate_air_arguments(&layout));
+        assert!(RuntimeCallKind::Resize.validate_air_arguments(&layout));
+        // The pointer operand is not interchangeable with a size operand.
+        assert!(!RuntimeCallKind::Realloc.validate_air_arguments(&[
+            normal(RuntimeAirType::U64),
+            normal(RuntimeAirType::U64),
+            normal(RuntimeAirType::U64),
+            normal(RuntimeAirType::MutBytePointer),
+        ]));
+        // `@free`: (ptr mut u8, size, align) — one operand shorter.
+        assert!(!RuntimeCallKind::Free.validate_air_arguments(&layout));
+        assert!(RuntimeCallKind::Free.validate_air_arguments(&layout[..3]));
     }
 
     #[test]
@@ -850,9 +779,18 @@ mod tests {
             assert!(!kind.validate_air_result(wrong_width));
             assert!(!kind.validate_air_result(RuntimeAirType::OptionStrBuf));
         }
-        assert!(RuntimeCallKind::AllocTyped.validate_air_result(RuntimeAirType::MutPointer));
-        assert!(RuntimeCallKind::AllocTyped.validate_air_result(RuntimeAirType::MutBytePointer));
-        assert!(!RuntimeCallKind::AllocTyped.validate_air_result(RuntimeAirType::U64));
+        for kind in [RuntimeCallKind::Alloc, RuntimeCallKind::AllocZeroed] {
+            assert!(kind.validate_air_result(RuntimeAirType::MutBytePointer));
+            assert!(!kind.validate_air_result(RuntimeAirType::U64));
+        }
+        // `@resize` reports success as a `bool`, not as a pointer.
+        assert!(RuntimeCallKind::Resize.validate_air_result(RuntimeAirType::Bool));
+        assert!(!RuntimeCallKind::Resize.validate_air_result(RuntimeAirType::MutBytePointer));
+        assert!(RuntimeCallKind::Realloc.validate_air_result(RuntimeAirType::MutBytePointer));
+        assert!(!RuntimeCallKind::Realloc.validate_air_result(RuntimeAirType::Bool));
+        // The overlapping and non-overlapping bulk moves are both statements.
+        assert!(RuntimeCallKind::ByteMove.validate_air_result(RuntimeAirType::Unit));
+        assert!(!RuntimeCallKind::ByteMove.validate_air_result(RuntimeAirType::U64));
         assert!(RuntimeCallKind::Panic.validate_air_result(RuntimeAirType::Never));
         assert!(!RuntimeCallKind::Panic.validate_air_result(RuntimeAirType::Unit));
         assert!(RuntimeCallKind::AssertFailed.validate_air_result(RuntimeAirType::Unit));

@@ -103,7 +103,7 @@ const ENTRIES: &[Entry] = &[
     ),
     // std.fs File IO v0 (RUE-712, ADR-0057): pure-Rue fs over @syscall. The
     // oracle model cannot execute the raw-pointer/syscall substrate (StrBuf/
-    // ArrayBuf `@int_to_ptr` prologue, `@alloc_bytes`, `@syscall`), so every
+    // ArrayBuf `@int_to_ptr` prologue, `@alloc`, `@syscall`), so every
     // case is accepted debt, exactly like the arraybuf/strbuf CLI cases. The
     // two error-detection cases run `only_on` Linux (macOS carry-flag gap,
     // ADR-0057 §3a), so their gap registration is Linux-scoped to match.
@@ -251,10 +251,10 @@ const ENTRIES: &[Entry] = &[
         &[],
     ),
     // RUE-1014: the real-std json/priority-queue cases reach memory through the
-    // std allocators (`@alloc_bytes` in StrBuf, `@int_to_ptr` in ArrayBuf.new()),
+    // std allocators (`@alloc` in StrBuf, `@int_to_ptr` in ArrayBuf.new()),
     // outside the oracle model.
 
-    // RUE-978: the byte-surface behavior cases allocate through @alloc_bytes,
+    // RUE-978: the byte-surface behavior cases allocate through @alloc,
     // which the oracle model does not model.
     Entry::new(
         "cli.pointers",

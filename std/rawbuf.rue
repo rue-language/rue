@@ -7,6 +7,18 @@
 // confines every unchecked heap intrinsic (`@realloc`/`@ptr_read`/`@ptr_write`/
 // `@ptr_offset`/`@free`) behind a safe method API.
 //
+// TYPED ALLOCATION IS SOURCE-COMPUTED HERE. The allocator surface is byte- and
+// alignment-shaped (`@alloc(size, align)`, `@realloc(p, old_size, align,
+// new_size)`, `@free(p, size, align)`, all over `ptr mut u8`; ADR-0059 Phase 3,
+// RUE-961). This type is where element counts become byte counts: it computes
+// `cap * @size_of(T)` and `@align_of(T)` itself and casts the resulting
+// `ptr mut u8` to `ptr mut T` through `@int_to_ptr(@ptr_to_int(..))`, the same
+// division of labor as Rust's `RawVec` over `GlobalAlloc`. Because the byte
+// size is now ordinary source arithmetic, its overflow is the language's
+// ordinary trapping multiply rather than a compiler-internal check — but the
+// explicit `@panic("out of memory")` guard below still runs first, so an
+// oversized request is a diagnosable OOM rather than an overflow trap.
+//
 // Deliberately NOT a container: it has no `len`, runs no element drop glue, and
 // makes no growth-policy decision. Length, the amortized growth policy and its
 // floor, the trivially-droppable read gate (RUE-651), and ascending element
@@ -50,11 +62,16 @@ pub fn RawBuf(comptime T: type) -> type {
                 if new_cap > 18446744073709551615 / element_size {
                     @panic("out of memory");
                 }
+                let align: u64 = @intCast(@align_of(T));
                 checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
-                    if @ptr_to_int(grown) == 0 {
+                    let old_bytes: u64 = self.cap * element_size;
+                    let new_bytes: u64 = new_cap * element_size;
+                    let block: ptr mut u8 = @int_to_ptr(@ptr_to_int(self.buf));
+                    let grown_block = @realloc(block, old_bytes, align, new_bytes);
+                    if @ptr_to_int(grown_block) == 0 {
                         @panic("out of memory");
                     }
+                    let grown: ptr mut T = @int_to_ptr(@ptr_to_int(grown_block));
                     self.buf = grown;
                 };
             }
@@ -82,14 +99,27 @@ pub fn RawBuf(comptime T: type) -> type {
         }
 
         // Release the allocation and reset to the empty state. Idempotent and
-        // safe on an empty buffer: `@free(null, 0)` is a no-op. Callers that have
-        // already moved/dropped the live cells use this for early release; the
-        // destructor calls the same path at scope exit.
+        // safe on an empty buffer: `@free(null, 0, align)` is a no-op. Callers
+        // that have already moved/dropped the live cells use this for early
+        // release; the destructor calls the same path at scope exit.
         fn free(inout self) {
-            checked { @free(self.buf, self.cap); };
+            self.release();
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
             self.cap = 0;
+        }
+
+        // Hand the block back to the allocator with exactly the `(size, align)`
+        // it was allocated with — the sizeless-allocator ABI's requirement.
+        // A zero-sized `T` never reached the allocator, so `cap * 0` is 0 and
+        // the pointer is null: the call is the documented no-op.
+        fn release(borrow self) {
+            let element_size: u64 = @intCast(@size_of(T));
+            let align: u64 = @intCast(@align_of(T));
+            checked {
+                let block: ptr mut u8 = @int_to_ptr(@ptr_to_int(self.buf));
+                @free(block, self.cap * element_size, align);
+            };
         }
 
         // Free the backing allocation when the buffer goes out of scope. The
@@ -98,7 +128,7 @@ pub fn RawBuf(comptime T: type) -> type {
         // has already run its elements' drop glue and this only reclaims storage.
         // After an explicit `free()` the pointer is null and this is a no-op.
         drop fn(self) {
-            checked { @free(self.buf, self.cap); };
+            self.release();
         }
     }
 }

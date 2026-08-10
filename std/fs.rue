@@ -527,7 +527,7 @@ fn _normalize_macos(e: i64) -> FileError {
 
 fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
     let n = path.len();
-    let buf: ptr mut u8 = checked { @alloc_bytes(n + 1, 1) };
+    let buf: ptr mut u8 = checked { @alloc(n + 1, 1) };
     if checked { @ptr_to_int(buf) } == 0 {
         @panic("out of memory");
     }
@@ -562,7 +562,7 @@ pub struct File {
         let addr: u64 = checked { @ptr_to_int(cbuf) };
         let free_len = path.len() + 1;
         let ret: i64 = checked { @syscall(_sys_openat(), _at_fdcwd(), addr, flags, mode) };
-        checked { @free_bytes(cbuf, free_len, 1); };
+        checked { @free(cbuf, free_len, 1); };
         if ret < 0 {
             R.Err(_normalize_errno(0 - ret))
         } else {
@@ -606,7 +606,7 @@ pub struct File {
             // A full buffer is a caller error, distinct from EOF (Ok(0)).
             return R.Err(FileError.InvalidInput);
         }
-        let tmp: ptr mut u8 = checked { @alloc_bytes(want, 1) };
+        let tmp: ptr mut u8 = checked { @alloc(want, 1) };
         if checked { @ptr_to_int(tmp) } == 0 {
             @panic("out of memory");
         }
@@ -614,7 +614,7 @@ pub struct File {
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_read(), fd_u, addr, want) };
         if ret < 0 {
-            checked { @free_bytes(tmp, want, 1); };
+            checked { @free(tmp, want, 1); };
             return R.Err(_normalize_errno(0 - ret));
         }
         let n: u64 = @intCast(ret);
@@ -624,7 +624,7 @@ pub struct File {
             buf.push(b);
             i += 1;
         }
-        checked { @free_bytes(tmp, want, 1); };
+        checked { @free(tmp, want, 1); };
         R.Ok(n)
     }
 
@@ -638,7 +638,7 @@ pub struct File {
         if n == 0 {
             return R.Ok(0);
         }
-        let tmp: ptr mut u8 = checked { @alloc_bytes(n, 1) };
+        let tmp: ptr mut u8 = checked { @alloc(n, 1) };
         if checked { @ptr_to_int(tmp) } == 0 {
             @panic("out of memory");
         }
@@ -650,7 +650,7 @@ pub struct File {
         let addr: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_write(), fd_u, addr, n) };
-        checked { @free_bytes(tmp, n, 1); };
+        checked { @free(tmp, n, 1); };
         if ret < 0 {
             R.Err(_normalize_errno(0 - ret))
         } else {
@@ -665,7 +665,7 @@ pub struct File {
         if n == 0 {
             return R.Ok(());
         }
-        let tmp: ptr mut u8 = checked { @alloc_bytes(n, 1) };
+        let tmp: ptr mut u8 = checked { @alloc(n, 1) };
         if checked { @ptr_to_int(tmp) } == 0 {
             @panic("out of memory");
         }
@@ -686,20 +686,20 @@ pub struct File {
                     _ => false,
                 };
                 if !retry {
-                    checked { @free_bytes(tmp, n, 1); };
+                    checked { @free(tmp, n, 1); };
                     return R.Err(e);
                 }
             } else {
                 let wrote: u64 = @intCast(ret);
                 if wrote == 0 {
                     // No progress on a non-error write; stop rather than spin.
-                    checked { @free_bytes(tmp, n, 1); };
+                    checked { @free(tmp, n, 1); };
                     return R.Err(FileError.Other(0));
                 }
                 off += wrote;
             }
         }
-        checked { @free_bytes(tmp, n, 1); };
+        checked { @free(tmp, n, 1); };
         R.Ok(())
     }
 
@@ -745,7 +745,7 @@ pub struct File {
     fn metadata(inout self) -> result.Result(Metadata, FileError) {
         let R = result.Result(Metadata, FileError);
         let sz = _stat_buf_size();
-        let buf: ptr mut u8 = checked { @alloc_bytes(sz, 8) };
+        let buf: ptr mut u8 = checked { @alloc(sz, 8) };
         if checked { @ptr_to_int(buf) } == 0 {
             @panic("out of memory");
         }
@@ -753,11 +753,11 @@ pub struct File {
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_fstat(), fd_u, addr) };
         if ret < 0 {
-            checked { @free_bytes(buf, sz, 8); };
+            checked { @free(buf, sz, 8); };
             return R.Err(_normalize_errno(0 - ret));
         }
         let md = _decode_stat(buf);
-        checked { @free_bytes(buf, sz, 8); };
+        checked { @free(buf, sz, 8); };
         R.Ok(md)
     }
 
@@ -809,20 +809,20 @@ pub fn metadata(borrow path: strbuf.StrBuf) -> result.Result(Metadata, FileError
     let free_len = path.len() + 1;
 
     let sz = _stat_buf_size();
-    let sbuf: ptr mut u8 = checked { @alloc_bytes(sz, 8) };
+    let sbuf: ptr mut u8 = checked { @alloc(sz, 8) };
     if checked { @ptr_to_int(sbuf) } == 0 {
         @panic("out of memory");
     }
     let saddr: u64 = checked { @ptr_to_int(sbuf) };
     let no_flags: u64 = 0; // follow symlinks (AT_SYMLINK_NOFOLLOW unset)
     let ret: i64 = checked { @syscall(_sys_newfstatat(), _at_fdcwd(), paddr, saddr, no_flags) };
-    checked { @free_bytes(cbuf, free_len, 1); };
+    checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
-        checked { @free_bytes(sbuf, sz, 8); };
+        checked { @free(sbuf, sz, 8); };
         return R.Err(_normalize_errno(0 - ret));
     }
     let md = _decode_stat(sbuf);
-    checked { @free_bytes(sbuf, sz, 8); };
+    checked { @free(sbuf, sz, 8); };
     R.Ok(md)
 }
 
@@ -837,8 +837,8 @@ pub fn rename(borrow from: strbuf.StrBuf, borrow to: strbuf.StrBuf) -> result.Re
     let taddr: u64 = checked { @ptr_to_int(tbuf) };
     let tlen = to.len() + 1;
     let ret: i64 = checked { @syscall(_sys_renameat(), _at_fdcwd(), faddr, _at_fdcwd(), taddr) };
-    checked { @free_bytes(fbuf, flen, 1); };
-    checked { @free_bytes(tbuf, tlen, 1); };
+    checked { @free(fbuf, flen, 1); };
+    checked { @free(tbuf, tlen, 1); };
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
     } else {
@@ -855,7 +855,7 @@ pub fn remove(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let free_len = path.len() + 1;
     let no_flags: u64 = 0; // no AT_REMOVEDIR: unlink a file, not a directory
     let ret: i64 = checked { @syscall(_sys_unlinkat(), _at_fdcwd(), addr, no_flags) };
-    checked { @free_bytes(cbuf, free_len, 1); };
+    checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
     } else {
@@ -872,7 +872,7 @@ pub fn create_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
     let ret: i64 = checked { @syscall(_sys_mkdirat(), _at_fdcwd(), addr, _dir_mode()) };
-    checked { @free_bytes(cbuf, free_len, 1); };
+    checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
     } else {
@@ -888,7 +888,7 @@ pub fn remove_dir(borrow path: strbuf.StrBuf) -> result.Result((), FileError) {
     let addr: u64 = checked { @ptr_to_int(cbuf) };
     let free_len = path.len() + 1;
     let ret: i64 = checked { @syscall(_sys_unlinkat(), _at_fdcwd(), addr, _at_removedir()) };
-    checked { @free_bytes(cbuf, free_len, 1); };
+    checked { @free(cbuf, free_len, 1); };
     if ret < 0 {
         R.Err(_normalize_errno(0 - ret))
     } else {

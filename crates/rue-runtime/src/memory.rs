@@ -110,6 +110,21 @@ pub unsafe fn __rue_byte_set(dst: *mut u8, value: u64, size: u64) {
     unsafe { memset(dst, value as i32, size as usize) };
 }
 
+/// `@byte_move(dst, src, size)` runtime helper: copy `size` bytes from `src`
+/// into `dst` as if through a temporary buffer, so the two regions may overlap
+/// (RUE-964). This is the memmove-shaped sibling of [`__rue_byte_copy`].
+///
+/// # Safety
+///
+/// - When `size > 0`, `dst` must be valid for writes of `size` bytes and `src`
+///   valid for reads of `size` bytes. The regions may overlap.
+/// - Either pointer may be null when `size == 0` (a no-op).
+pub unsafe fn __rue_byte_move(dst: *mut u8, src: *const u8, size: u64) {
+    // SAFETY: the caller upholds `memmove`'s validity contract, which is
+    // `memcpy`'s minus the non-overlap requirement.
+    unsafe { memmove(dst, src, size as usize) };
+}
+
 /// Compare `n` bytes of memory at `s1` and `s2`.
 ///
 /// Returns 0 if equal, negative if s1 < s2, positive if s1 > s2.

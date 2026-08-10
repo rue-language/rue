@@ -158,8 +158,10 @@ pub mod string;
 macro_rules! call_runtime_helper_implementation {
     (__rue_exit($($argument:expr),*)) => { crate::entry::__rue_exit($($argument),*) };
     (__rue_alloc($($argument:expr),*)) => { crate::string::__rue_alloc($($argument),*) };
+    (__rue_alloc_zeroed($($argument:expr),*)) => { crate::string::__rue_alloc_zeroed($($argument),*) };
     (__rue_free($($argument:expr),*)) => { crate::string::__rue_free($($argument),*) };
     (__rue_realloc($($argument:expr),*)) => { crate::string::__rue_realloc($($argument),*) };
+    (__rue_resize($($argument:expr),*)) => { crate::string::__rue_resize($($argument),*) };
     (__rue_div_by_zero($($argument:expr),*)) => { crate::error::__rue_div_by_zero($($argument),*) };
     (__rue_overflow($($argument:expr),*)) => { crate::error::__rue_overflow($($argument),*) };
     (__rue_intcast_overflow($($argument:expr),*)) => { crate::error::__rue_intcast_overflow($($argument),*) };
@@ -198,6 +200,7 @@ macro_rules! call_runtime_helper_implementation {
     (__rue_env_ptr($($argument:expr),*)) => { crate::process::__rue_env_ptr($($argument),*) };
     (__rue_env_len($($argument:expr),*)) => { crate::process::__rue_env_len($($argument),*) };
     (__rue_byte_copy($($argument:expr),*)) => { crate::memory::__rue_byte_copy($($argument),*) };
+    (__rue_byte_move($($argument:expr),*)) => { crate::memory::__rue_byte_move($($argument),*) };
     (__rue_byte_set($($argument:expr),*)) => { crate::memory::__rue_byte_set($($argument),*) };
 }
 

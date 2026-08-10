@@ -414,9 +414,9 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         ("alloc", Intrinsic::Allocate),
         ("free", Intrinsic::Free),
         ("realloc", Intrinsic::Reallocate),
-        ("alloc_bytes", Intrinsic::AllocateBytes),
-        ("free_bytes", Intrinsic::FreeBytes),
-        ("realloc_bytes", Intrinsic::ReallocateBytes),
+        ("alloc_zeroed", Intrinsic::AllocateZeroed),
+        ("resize", Intrinsic::Resize),
+        ("byte_move", Intrinsic::ByteMove),
         ("byte_read", Intrinsic::ByteRead),
         ("byte_write", Intrinsic::ByteWrite),
         ("byte_copy", Intrinsic::ByteCopy),
@@ -491,7 +491,7 @@ fn every_known_missing_runtime_call_has_a_closed_kind() {
     for kind in [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::DebugI64,
-        RuntimeCallKind::AllocBytes,
+        RuntimeCallKind::Alloc,
     ] {
         assert_eq!(unsupported_runtime_call_kind(kind), None, "{kind:?}");
     }
@@ -1148,14 +1148,17 @@ fn ptr_offset_strides_by_element() {
 fn alloc_read_after_free_is_unsupported() {
     let src = r#"fn main() -> i32 {
         checked {
-            let p: ptr mut i32 = @alloc(3);
+            let bytes: u64 = 3 * @intCast(@size_of(i32));
+            let align: u64 = @intCast(@align_of(i32));
+            let raw: ptr mut u8 = @alloc(bytes, align);
+            let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
             @ptr_write(p, 10);
             @ptr_write(@ptr_offset(p, 1), 20);
             @ptr_write(@ptr_offset(p, 2), 30);
             @dbg(@ptr_read(p));
             @dbg(@ptr_read(@ptr_offset(p, 1)));
             @dbg(@ptr_read(@ptr_offset(p, 2)));
-            @free(p, 3);
+            @free(raw, bytes, align);
             @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
         }
     }"#;
@@ -1176,11 +1179,14 @@ fn alloc_read_write_aggregate() {
     struct AosBox { a: [P; 2] }
     fn main() -> i32 {
         checked {
-            let wp: ptr mut AosBox = @alloc(1);
+            let bytes: u64 = @intCast(@size_of(AosBox));
+            let align: u64 = @intCast(@align_of(AosBox));
+            let raw: ptr mut u8 = @alloc(bytes, align);
+            let wp: ptr mut AosBox = @int_to_ptr(@ptr_to_int(raw));
             @ptr_write(wp, AosBox { a: [P { x: 1, y: 2 }, P { x: 3, y: 4 }] });
             let v = @ptr_read(wp);
             @dbg(v.a[0].x); @dbg(v.a[1].y);
-            @free(wp, 1);
+            @free(raw, bytes, align);
         };
         0
     }"#;
@@ -1221,27 +1227,27 @@ fn field_ptr_on_param_struct() {
     assert_eq!(run(src).stdout, "44\n");
 }
 
-/// The full byte family round-trips through `@alloc_bytes`, `@byte_*`, and
-/// `@realloc_bytes` with contents preserved across a grow.
+/// The full byte family round-trips through `@alloc`, `@byte_*`, and
+/// `@realloc` with contents preserved across a grow.
 #[test]
 fn byte_family_roundtrip() {
     let src = r#"fn main() -> i32 {
         checked {
-            let p: ptr mut u8 = @alloc_bytes(6, 1);
+            let p: ptr mut u8 = @alloc(6, 1);
             @byte_set(p, 0, 6);
             @byte_write(p, 0, 10);
             @byte_write(p, 1, 20);
             @byte_write(p, 2, 30);
-            let q: ptr mut u8 = @realloc_bytes(p, 6, 1, 8);
+            let q: ptr mut u8 = @realloc(p, 6, 1, 8);
             @byte_write(q, 3, 40);
-            let dst: ptr mut u8 = @alloc_bytes(8, 1);
+            let dst: ptr mut u8 = @alloc(8, 1);
             @byte_copy(dst, q, 8);
             let sum: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1))
                 + @intCast(@byte_read(dst, 2)) + @intCast(@byte_read(dst, 3))
                 + @intCast(@byte_read(dst, 4));
             @dbg(sum);
-            @free_bytes(q, 8, 1);
-            @free_bytes(dst, 8, 1);
+            @free(q, 8, 1);
+            @free(dst, 8, 1);
         };
         0
     }"#;
@@ -1254,13 +1260,13 @@ fn byte_family_roundtrip() {
 fn byte_address_arithmetic_roundtrip() {
     let src = r#"fn main() -> i32 {
         checked {
-            let src: ptr mut u8 = @alloc_bytes(5, 1);
+            let src: ptr mut u8 = @alloc(5, 1);
             let mut i: u64 = 0;
             while i < 5 {
                 @byte_write(src, i, @intCast(i + 1));
                 i = i + 1;
             }
-            let dst: ptr mut u8 = @alloc_bytes(5, 1);
+            let dst: ptr mut u8 = @alloc(5, 1);
             @byte_set(dst, 0, 5);
             let sp: ptr mut u8 = @int_to_ptr(@ptr_to_int(src) + 1);
             let dp: ptr mut u8 = @int_to_ptr(@ptr_to_int(dst) + 2);
@@ -1272,8 +1278,8 @@ fn byte_address_arithmetic_roundtrip() {
                 j = j + 1;
             }
             @dbg(sum);
-            @free_bytes(src, 5, 1);
-            @free_bytes(dst, 5, 1);
+            @free(src, 5, 1);
+            @free(dst, 5, 1);
         };
         0
     }"#;
@@ -1285,13 +1291,17 @@ fn byte_address_arithmetic_roundtrip() {
 fn realloc_grows_and_preserves() {
     let src = r#"fn main() -> i32 {
         checked {
-            let mut p: ptr mut i32 = @alloc(2);
+            let unit: u64 = @intCast(@size_of(i32));
+            let align: u64 = @intCast(@align_of(i32));
+            let mut raw: ptr mut u8 = @alloc(2 * unit, align);
+            let mut p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
             @ptr_write(p, 5);
             @ptr_write(@ptr_offset(p, 1), 7);
-            p = @realloc(p, 2, 16);
+            raw = @realloc(raw, 2 * unit, align, 16 * unit);
+            p = @int_to_ptr(@ptr_to_int(raw));
             @ptr_write(@ptr_offset(p, 8), 100);
             let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 8));
-            @free(p, 16);
+            @free(raw, 16 * unit, align);
             sum
         }
     }"#;
@@ -1304,21 +1314,21 @@ fn realloc_grows_and_preserves() {
 fn realloc_failure_returns_null_and_preserves_original() {
     let src = r#"fn main() -> i32 {
         checked {
-            let p: ptr mut u8 = @alloc(4);
+            let p: ptr mut u8 = @alloc(4, 1);
             @ptr_write(p, 10);
             @ptr_write(@ptr_offset(p, 1), 20);
             @ptr_write(@ptr_offset(p, 2), 30);
             @ptr_write(@ptr_offset(p, 3), 40);
-            let q: ptr mut u8 = @realloc(p, 4, 2305843009213693951);
+            let q: ptr mut u8 = @realloc(p, 4, 1, 2305843009213693951);
             if @ptr_to_int(q) == 0 {
                 let sum: i32 = @intCast(@ptr_read(p))
                     + @intCast(@ptr_read(@ptr_offset(p, 1)))
                     + @intCast(@ptr_read(@ptr_offset(p, 2)))
                     + @intCast(@ptr_read(@ptr_offset(p, 3)));
-                @free(p, 4);
+                @free(p, 4, 1);
                 sum
             } else {
-                @free(q, 2305843009213693951);
+                @free(q, 2305843009213693951, 1);
                 1
             }
         }

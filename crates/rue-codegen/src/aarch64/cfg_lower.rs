@@ -2119,35 +2119,35 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
-            crate::value_plan::IntrinsicOperation::Alloc { element_size } => {
-                let _ = element_size;
+            // The unified allocation family and the bulk byte primitives are
+            // pure runtime calls: the shared plan already carries their
+            // operands in helper order (ADR-0059 Phase 3, RUE-961).
+            crate::value_plan::IntrinsicOperation::Alloc => {
                 self.lower_runtime_call(plan.runtime_call.expect("alloc runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::Free { element_size } => {
-                let _ = element_size;
+            crate::value_plan::IntrinsicOperation::AllocZeroed => {
+                self.lower_runtime_call(plan.runtime_call.expect("alloc-zeroed runtime call plan"))
+                    .primary
+            }
+            crate::value_plan::IntrinsicOperation::Free => {
                 self.lower_runtime_call(plan.runtime_call.expect("free runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::Realloc { element_size } => {
-                let _ = element_size;
+            crate::value_plan::IntrinsicOperation::Realloc => {
                 self.lower_runtime_call(plan.runtime_call.expect("realloc runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::AllocBytes => {
-                self.lower_runtime_call(plan.runtime_call.expect("alloc-bytes runtime call plan"))
-                    .primary
-            }
-            crate::value_plan::IntrinsicOperation::FreeBytes => {
-                self.lower_runtime_call(plan.runtime_call.expect("free-bytes runtime call plan"))
-                    .primary
-            }
-            crate::value_plan::IntrinsicOperation::ReallocBytes => {
-                self.lower_runtime_call(plan.runtime_call.expect("realloc-bytes runtime call plan"))
+            crate::value_plan::IntrinsicOperation::Resize => {
+                self.lower_runtime_call(plan.runtime_call.expect("resize runtime call plan"))
                     .primary
             }
             crate::value_plan::IntrinsicOperation::ByteCopy => {
                 self.lower_runtime_call(plan.runtime_call.expect("byte-copy runtime call plan"))
+                    .primary
+            }
+            crate::value_plan::IntrinsicOperation::ByteMove => {
+                self.lower_runtime_call(plan.runtime_call.expect("byte-move runtime call plan"))
                     .primary
             }
             crate::value_plan::IntrinsicOperation::ByteSet => {
@@ -3978,8 +3978,8 @@ mod tests {
     /// narrow pseudos (`ldrsw`/`str w`) instead of the eight-byte `Ldr`/`Str`.
     #[test]
     fn aggregate_layout_allows_narrow_scalar_physical_access() {
-        let source = "fn main() -> i32 { checked { let p: ptr mut i32 = @alloc(1); \
-                      @ptr_write(p, 5); @dbg(@ptr_read(p)); @free(p, 1); }; 0 }";
+        let source = "fn main() -> i32 { checked { let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(i32)), @intCast(@align_of(i32))))); \
+                      @ptr_write(p, 5); @dbg(@ptr_read(p)); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(i32)), @intCast(@align_of(i32))); }; 0 }";
         let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a narrow scalar through a typed pointer must lower under compact layout");
         assert!(
@@ -4007,10 +4007,10 @@ mod tests {
     #[test]
     fn aggregate_layout_allows_compact_enum_memory() {
         let source = "enum Opt { Some(i32), None } \
-                      fn main() -> i32 { checked { let p: ptr mut Opt = @alloc(1); \
+                      fn main() -> i32 { checked { let p: ptr mut Opt = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Opt)), @intCast(@align_of(Opt))))); \
                       @ptr_write(p, Opt.Some(42)); let e = @ptr_read(p); \
                       match e { Opt.Some(x) => @dbg(x), Opt.None => @dbg(0), }; \
-                      @free(p, 1); }; 0 }";
+                      @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Opt)), @intCast(@align_of(Opt))); }; 0 }";
         let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a compact enum with a variant-independent image must lower");
         assert!(
@@ -4040,7 +4040,7 @@ mod tests {
         let source = "enum R { Ok(Point), Err(i64) } \
                       struct Point { x: i32, y: i32, z: i32 } \
                       fn store_it(p: ptr mut R) { checked { @ptr_write(p, R.Ok(Point { x: 1, y: 2, z: 3 })); }; } \
-                      fn main() -> i32 { checked { let p: ptr mut R = @alloc(1); store_it(p); @free(p, 1); }; 0 }";
+                      fn main() -> i32 { checked { let p: ptr mut R = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(R)), @intCast(@align_of(R))))); store_it(p); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(R)), @intCast(@align_of(R))); }; 0 }";
         let mir = try_lower_named_fn(source, PreviewFeatures::new(), Some("store_it"))
             .expect("a heterogeneous enum @ptr_write must lower via tag dispatch");
         assert!(
@@ -4063,9 +4063,9 @@ mod tests {
     #[test]
     fn aggregate_layout_allows_compact_struct_memory() {
         let source = "struct Padded { a: u8, b: i32, c: u8 } \
-                      fn main() -> i32 { checked { let p: ptr mut Padded = @alloc(1); \
+                      fn main() -> i32 { checked { let p: ptr mut Padded = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Padded)), @intCast(@align_of(Padded))))); \
                       @ptr_write(p, Padded { a: 7, b: 1000, c: 9 }); let s = @ptr_read(p); \
-                      @dbg(s.b); @free(p, 1); }; 0 }";
+                      @dbg(s.b); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Padded)), @intCast(@align_of(Padded))); }; 0 }";
         let mir = try_lower_first_fn(source, PreviewFeatures::new()).expect(
             "a whole compact struct through a typed pointer must lower under compact layout",
         );
@@ -4089,9 +4089,9 @@ mod tests {
     #[test]
     fn aggregate_layout_allows_array_bearing_struct_memory() {
         let source = "struct HasArr { tag: u8, xs: [i32; 2] } \
-                      fn main() -> i32 { let r = checked { let p: ptr mut HasArr = @alloc(1); \
+                      fn main() -> i32 { let r = checked { let p: ptr mut HasArr = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(HasArr)), @intCast(@align_of(HasArr))))); \
                       @ptr_write(p, HasArr { tag: 5, xs: [10, 20] }); let v = @ptr_read(p); \
-                      @free(p, 1); v.xs[0] + v.xs[1] }; @dbg(r); 0 }";
+                      @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(HasArr)), @intCast(@align_of(HasArr))); v.xs[0] + v.xs[1] }; @dbg(r); 0 }";
         let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a struct with a compact array image must lower under compact layout");
         assert!(
@@ -4108,9 +4108,9 @@ mod tests {
     #[test]
     fn aggregate_layout_allows_variant_dependent_enum_image() {
         let source = "struct Point { x: i32, y: i32 } enum Opt { Some(Point), None } \
-                      fn main() -> i32 { let r = checked { let p: ptr mut Opt = @alloc(1); \
+                      fn main() -> i32 { let r = checked { let p: ptr mut Opt = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Opt)), @intCast(@align_of(Opt))))); \
                       @ptr_write(p, Opt.Some(Point { x: 40, y: 2 })); let v = @ptr_read(p); \
-                      @free(p, 1); match v { Opt.Some(pt) => pt.x + pt.y, Opt.None => 0 - 1 } }; \
+                      @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Opt)), @intCast(@align_of(Opt))); match v { Opt.Some(pt) => pt.x + pt.y, Opt.None => 0 - 1 } }; \
                       @dbg(r); 0 }";
         let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("an enum with a variant-independent struct-payload image must lower");
@@ -4129,8 +4129,8 @@ mod tests {
     #[test]
     fn aggregate_layout_marshals_struct_embedding_heterogeneous_enum() {
         let source = "enum Bad { A(i64), B(i32, i32) } struct HasBad { b: Bad } \
-                      fn main() -> i32 { checked { let p: ptr mut HasBad = @alloc(1); \
-                      @ptr_write(p, HasBad { b: Bad.A(5) }); @free(p, 1); }; 0 }";
+                      fn main() -> i32 { checked { let p: ptr mut HasBad = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(HasBad)), @intCast(@align_of(HasBad))))); \
+                      @ptr_write(p, HasBad { b: Bad.A(5) }); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(HasBad)), @intCast(@align_of(HasBad))); }; 0 }";
         let mir = try_lower_first_fn(source, PreviewFeatures::new())
             .expect("a struct embedding a heterogeneous enum must lower via nested tag dispatch");
         assert!(
@@ -4216,8 +4216,8 @@ mod tests {
     fn aggregate_layout_marshals_variant_dependent_enum_memory() {
         let mir = try_lower_first_fn(
             "enum Bad { A(i64), B(i32, i32) } \
-             fn main() -> i32 { checked { let p: ptr mut Bad = @alloc(1); \
-             @ptr_write(p, Bad.A(5)); @free(p, 1); }; 0 }",
+             fn main() -> i32 { checked { let p: ptr mut Bad = @int_to_ptr(@ptr_to_int(@alloc(@intCast(@size_of(Bad)), @intCast(@align_of(Bad))))); \
+             @ptr_write(p, Bad.A(5)); @free(@int_to_ptr(@ptr_to_int(p)), @intCast(@size_of(Bad)), @intCast(@align_of(Bad))); }; 0 }",
             PreviewFeatures::new(),
         )
         .expect("a variant-dependent enum memory image must lower via tag dispatch");
@@ -4388,9 +4388,9 @@ mod tests {
     fn raw_bytes_runtime_helper_identity_and_slots_match_shared_plan() {
         let preview = PreviewFeatures::new();
         let mir = lower_function_to_mir_with_preview(
-            "fn main() -> i32 { checked { let p = @alloc_bytes(3, 1); \
-             @byte_write(p, 1, 255); let q = @realloc_bytes(p, 3, 1, 5); \
-             let b = @byte_read(q, 1); @free_bytes(q, 5, 1); \
+            "fn main() -> i32 { checked { let p = @alloc(3, 1); \
+             @byte_write(p, 1, 255); let q = @realloc(p, 3, 1, 5); \
+             let b = @byte_read(q, 1); @free(q, 5, 1); \
              @intCast(b) } }",
             "main",
             preview,
@@ -4427,9 +4427,9 @@ mod tests {
     #[test]
     fn aggregate_layout_folds_byte_access_into_narrow_typed_path() {
         let mir = lower_function_to_mir_with_preview(
-            "fn main() -> i32 { checked { let p = @alloc_bytes(2, 1); \
+            "fn main() -> i32 { checked { let p = @alloc(2, 1); \
              @byte_write(p, 0, 65); let b = @byte_read(p, 1); \
-             @free_bytes(p, 2, 1); @intCast(b) } }",
+             @free(p, 2, 1); @intCast(b) } }",
             "main",
             PreviewFeatures::new(),
         );

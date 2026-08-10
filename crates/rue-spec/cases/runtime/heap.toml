@@ -1,17 +1,22 @@
 # Heap Allocation Intrinsic Tests
 #
-# Tests for @alloc / @free / @realloc — the raw, unchecked heap primitives
-# (RUE-1). Like the raw-pointer intrinsics they must appear inside a `checked`
-# block. These are the primitives a source-level `Vec` is built on.
+# Tests for the unified byte-and-alignment allocation family
+# @alloc / @alloc_zeroed / @free / @realloc / @resize (ADR-0059 Phase 3,
+# RUE-961, RUE-968). Every size is a physical byte count, every allocation
+# states its alignment, and every pointer is `ptr mut u8`. Like the raw-pointer
+# intrinsics they must appear inside a `checked` block. These are the primitives
+# a source-level `ArrayBuf` is built on, which is why several cases exercise the
+# typed-allocation idiom `@alloc(count * @size_of(T), @align_of(T))` followed by
+# a `@int_to_ptr(@ptr_to_int(..))` cast to `ptr mut T`.
 
 [section]
 id = "runtime.heap"
 spec_chapter = "9.2"
 name = "Heap Allocation Intrinsics"
-description = "Tests for @alloc, @free, and @realloc heap intrinsics"
+description = "Tests for the byte-oriented @alloc, @alloc_zeroed, @free, @realloc, and @resize intrinsics"
 
 # =============================================================================
-# @alloc allocates a typed block; write/read through the returned pointer.
+# @alloc reserves physical bytes; write/read through the returned pointer.
 # =============================================================================
 
 [[case]]
@@ -20,33 +25,73 @@ spec = ["9.2:9", "9.2:10"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(4);
-        @ptr_write(p, 42);
-        @ptr_read(p)
+        let p: ptr mut u8 = @alloc(4, 1);
+        @byte_write(p, 0, 42);
+        @intCast(@byte_read(p, 0))
     }
 }
 """
 exit_code = 42
 
-# @alloc + @ptr_offset addresses successive elements (element i at offset i).
+# Typed allocation is source-computed sugar: the byte size and alignment come
+# from the element type's own layout, and the block is then viewed as `ptr mut T`.
 [[case]]
-name = "alloc_multiple_elements"
-spec = ["9.2:10"]
+name = "alloc_typed_block_is_source_computed"
+spec = ["9.2:9", "9.2:10", "9.2:14"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(3);
+        let align: u64 = @intCast(@align_of(i32));
+        let bytes: u64 = 3 * @intCast(@size_of(i32));
+        let raw: ptr mut u8 = @alloc(bytes, align);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
         @ptr_write(p, 10);
         @ptr_write(@ptr_offset(p, 1), 20);
         @ptr_write(@ptr_offset(p, 2), 30);
-        @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2))
+        let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2));
+        @free(raw, bytes, align);
+        sum
     }
 }
 """
 exit_code = 60
 
+# A zero-byte request names no storage and yields null.
+[[case]]
+name = "alloc_of_zero_bytes_is_null"
+spec = ["9.2:10"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(0, 8);
+        if @ptr_to_int(p) == 0 { 0 } else { 1 }
+    }
+}
+"""
+exit_code = 0
+
+# @alloc_zeroed guarantees every byte of the block reads as zero.
+[[case]]
+name = "alloc_zeroed_block_reads_as_zero"
+spec = ["9.2:10"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc_zeroed(5, 1);
+        let sum: i32 = @intCast(@byte_read(p, 0))
+            + @intCast(@byte_read(p, 1))
+            + @intCast(@byte_read(p, 2))
+            + @intCast(@byte_read(p, 3))
+            + @intCast(@byte_read(p, 4));
+        @free(p, 5, 1);
+        sum
+    }
+}
+"""
+exit_code = 0
+
 # =============================================================================
-# @free releases an allocated block (value read out before freeing).
+# @free releases a block, returning the layout it was allocated with.
 # =============================================================================
 
 [[case]]
@@ -55,18 +100,34 @@ spec = ["9.2:11"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(2);
-        @ptr_write(p, 7);
-        let v: i32 = @ptr_read(p);
-        @free(p, 2);
+        let p: ptr mut u8 = @alloc(2, 1);
+        @byte_write(p, 0, 7);
+        let v: i32 = @intCast(@byte_read(p, 0));
+        @free(p, 2, 1);
         v
     }
 }
 """
 exit_code = 7
 
+# Freeing a null pointer is permitted and has no effect.
+[[case]]
+name = "free_of_null_is_a_noop"
+spec = ["9.2:11"]
+source = """
+fn main() -> i32 {
+    checked {
+        let zero: u64 = 0;
+        let p: ptr mut u8 = @int_to_ptr(zero);
+        @free(p, 0, 1);
+        0
+    }
+}
+"""
+exit_code = 0
+
 # =============================================================================
-# @realloc grows a block and preserves the existing contents.
+# @realloc grows a block and preserves the existing bytes.
 # =============================================================================
 
 [[case]]
@@ -75,12 +136,12 @@ spec = ["9.2:12"]
 source = """
 fn main() -> i32 {
     checked {
-        let mut p: ptr mut i32 = @alloc(2);
-        @ptr_write(p, 5);
-        @ptr_write(@ptr_offset(p, 1), 7);
-        p = @realloc(p, 2, 8);
-        let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1));
-        @free(p, 8);
+        let mut p: ptr mut u8 = @alloc(2, 1);
+        @byte_write(p, 0, 5);
+        @byte_write(p, 1, 7);
+        p = @realloc(p, 2, 1, 8);
+        let sum: i32 = @intCast(@byte_read(p, 0)) + @intCast(@byte_read(p, 1));
+        @free(p, 8, 1);
         sum
     }
 }
@@ -95,21 +156,21 @@ spec = ["9.2:12", "8.6:3", "8.6:4"]
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc(4);
-        @ptr_write(p, 10);
-        @ptr_write(@ptr_offset(p, 1), 20);
-        @ptr_write(@ptr_offset(p, 2), 30);
-        @ptr_write(@ptr_offset(p, 3), 40);
-        let q: ptr mut u8 = @realloc(p, 4, 2305843009213693951);
+        let p: ptr mut u8 = @alloc(4, 1);
+        @byte_write(p, 0, 10);
+        @byte_write(p, 1, 20);
+        @byte_write(p, 2, 30);
+        @byte_write(p, 3, 40);
+        let q: ptr mut u8 = @realloc(p, 4, 1, 18446744073709551615);
         if @ptr_to_int(q) == 0 {
-            let sum: i32 = @intCast(@ptr_read(p))
-                + @intCast(@ptr_read(@ptr_offset(p, 1)))
-                + @intCast(@ptr_read(@ptr_offset(p, 2)))
-                + @intCast(@ptr_read(@ptr_offset(p, 3)));
-            @free(p, 4);
+            let sum: i32 = @intCast(@byte_read(p, 0))
+                + @intCast(@byte_read(p, 1))
+                + @intCast(@byte_read(p, 2))
+                + @intCast(@byte_read(p, 3));
+            @free(p, 4, 1);
             sum
         } else {
-            @free(q, 2305843009213693951);
+            @free(q, 18446744073709551615, 1);
             1
         }
     }
@@ -125,16 +186,75 @@ source = """
 fn main() -> i32 {
     checked {
         let zero: u64 = 0;
-        let start: ptr mut i32 = @int_to_ptr(zero);
-        let p: ptr mut i32 = @realloc(start, 0, 4);
-        @ptr_write(p, 99);
-        let v: i32 = @ptr_read(p);
-        @free(p, 4);
+        let start: ptr mut u8 = @int_to_ptr(zero);
+        let p: ptr mut u8 = @realloc(start, 0, 1, 4);
+        @byte_write(p, 0, 99);
+        let v: i32 = @intCast(@byte_read(p, 0));
+        @free(p, 4, 1);
         v
     }
 }
 """
 exit_code = 99
+
+# @realloc to zero bytes frees a non-null block and returns null.
+[[case]]
+name = "realloc_to_zero_frees_and_returns_null"
+spec = ["9.2:12"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4, 1);
+        let q: ptr mut u8 = @realloc(p, 4, 1, 0);
+        if @ptr_to_int(q) == 0 { 0 } else { 1 }
+    }
+}
+"""
+exit_code = 0
+
+# =============================================================================
+# @resize is in-place only: the pointer never moves, and a refusal changes
+# nothing. The result is unspecified, so a case may only observe that the
+# block is intact and still described by whichever size the answer selects.
+# =============================================================================
+
+[[case]]
+name = "resize_never_moves_or_disturbs_the_block"
+spec = ["9.2:12a"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(65, 8);
+        @byte_write(p, 0, 21);
+        let size: u64 = if @resize(p, 65, 8, 120) { 120 } else { 65 };
+        let v: i32 = @intCast(@byte_read(p, 0));
+        @free(p, size, 8);
+        v
+    }
+}
+"""
+exit_code = 21
+
+# An in-place request the allocator cannot satisfy answers false and leaves the
+# old layout in force. Growing by many orders of magnitude cannot be satisfied
+# in place by any implementation that does not already own the address space
+# beyond the block.
+[[case]]
+name = "resize_refusal_leaves_the_old_layout_in_force"
+spec = ["9.2:12a"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(8, 8);
+        @byte_write(p, 0, 33);
+        let refused: bool = !@resize(p, 8, 8, 18446744073709551615);
+        let v: i32 = @intCast(@byte_read(p, 0));
+        @free(p, 8, 8);
+        if refused { v } else { 0 }
+    }
+}
+"""
+exit_code = 33
 
 # =============================================================================
 # Legality: heap intrinsics require a `checked` block.
@@ -146,7 +266,7 @@ error_contains = "[E1300]"
 spec = ["9.2:13"]
 source = """
 fn main() -> i32 {
-    let p: ptr mut i32 = @alloc(4);
+    let p: ptr mut u8 = @alloc(4, 1);
     0
 }
 """
@@ -159,9 +279,56 @@ spec = ["9.2:13"]
 source = """
 fn main() -> i32 {
     let zero: u64 = 0;
-    let p: ptr mut i32 = checked { @int_to_ptr(zero) };
-    @free(p, 4);
+    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
+    @free(p, 4, 1);
     0
+}
+"""
+compile_fail = true
+
+[[case]]
+name = "resize_requires_checked"
+error_contains = "[E1300]"
+spec = ["9.2:13"]
+source = """
+fn main() -> i32 {
+    let zero: u64 = 0;
+    let p: ptr mut u8 = checked { @int_to_ptr(zero) };
+    let ok: bool = @resize(p, 4, 1, 8);
+    0
+}
+"""
+compile_fail = true
+
+# @resize evaluates to bool, not to a pointer.
+[[case]]
+name = "resize_result_is_bool"
+spec = ["9.2:13"]
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(16, 8);
+        let answered: bool = @resize(p, 16, 8, 16);
+        let size: u64 = if answered { 16 } else { 16 };
+        @free(p, size, 8);
+        if answered { 1 } else { 1 }
+    }
+}
+"""
+exit_code = 1
+
+# The allocation family takes u64 sizes; a mistyped operand is rejected.
+[[case]]
+name = "alloc_size_must_be_u64"
+error_contains = "expected u64, found i32"
+spec = ["9.2:13"]
+source = """
+fn main() -> i32 {
+    checked {
+        let n: i32 = 4;
+        let p: ptr mut u8 = @alloc(n, 1);
+        0
+    }
 }
 """
 compile_fail = true

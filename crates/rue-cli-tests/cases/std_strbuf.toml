@@ -327,7 +327,7 @@ const std = @import("std");
 const S = std.strbuf.StrBuf;
 
 fn owned(byte: u8) -> S {
-    let p: ptr mut u8 = checked { @alloc_bytes(4, 1) };
+    let p: ptr mut u8 = checked { @alloc(4, 1) };
     checked { @byte_write(p, 0, byte); };
     // White-box: assemble an owned header (cap = 4 exactly, below the 16 floor)
     // over the RawBuf core (RUE-1066).

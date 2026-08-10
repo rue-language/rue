@@ -356,6 +356,9 @@ const VOID: AbiResult = AbiResult::Void;
 const U32_RESULT: AbiResult = AbiResult::Scalar(AbiType::U32);
 const U64_RESULT: AbiResult = AbiResult::Scalar(AbiType::U64);
 const MUT_POINTER_RESULT: AbiResult = AbiResult::Scalar(AbiType::MutBytePointer);
+/// A `bool`-valued helper result: the C-ABI word carrying 0 or 1, the same
+/// representation `AbiType::BoolWordI64` gives a `bool` argument.
+const BOOL_WORD_RESULT: AbiResult = AbiResult::Scalar(AbiType::BoolWordI64);
 const TARGET_C: CallingConvention = CallingConvention::TargetC;
 const ALL_TARGETS: TargetSet = TargetSet::ALL;
 
@@ -500,6 +503,13 @@ macro_rules! for_each_runtime_helper {
             safety: ALLOC_LAYOUT,
             returns: RETURNS
         },
+        AllocZeroed => safe __rue_alloc_zeroed(size: u64, align: u64) -> *mut u8 {
+            symbol: "__rue_alloc_zeroed",
+            parameters: params![U64_VALUE, U64_VALUE],
+            result: MUT_POINTER_RESULT,
+            safety: ALLOC_LAYOUT,
+            returns: RETURNS
+        },
         Free => unsafe __rue_free(ptr: *mut u8, size: u64, align: u64) {
             symbol: "__rue_free",
             parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE],
@@ -516,6 +526,18 @@ macro_rules! for_each_runtime_helper {
             symbol: "__rue_realloc",
             parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE, U64_VALUE],
             result: MUT_POINTER_RESULT,
+            safety: VALID_ALLOC_LAYOUT,
+            returns: RETURNS
+        },
+        Resize => unsafe __rue_resize(
+            ptr: *mut u8,
+            old_size: u64,
+            new_size: u64,
+            align: u64,
+        ) -> i64 {
+            symbol: "__rue_resize",
+            parameters: params![MUT_BYTE_POINTER, U64_VALUE, U64_VALUE, U64_VALUE],
+            result: BOOL_WORD_RESULT,
             safety: VALID_ALLOC_LAYOUT,
             returns: RETURNS
         },
@@ -841,6 +863,16 @@ macro_rules! for_each_runtime_helper {
             result: VOID,
             // Copies `size` bytes from `src` into the non-overlapping region at
             // `dst`; both pointer/length ranges must describe accessible bytes.
+            safety: READABLE.union(WRITABLE),
+            returns: RETURNS
+        },
+        ByteMove => unsafe __rue_byte_move(dst: *mut u8, src: *const u8, size: u64) {
+            symbol: "__rue_byte_move",
+            parameters: params![MUT_BYTE_POINTER, BYTE_VIEW, U64_VALUE],
+            result: VOID,
+            // Copies `size` bytes from `src` into `dst` as if through a
+            // temporary buffer, so the two ranges may overlap; both must
+            // describe accessible bytes.
             safety: READABLE.union(WRITABLE),
             returns: RETURNS
         },
@@ -1296,7 +1328,7 @@ mod tests {
     #[test]
     fn manifest_is_const_valid_and_exhaustive() {
         assert_eq!(validate_manifest(), Ok(()));
-        assert_eq!(RuntimeHelperId::ALL.len(), 43);
+        assert_eq!(RuntimeHelperId::ALL.len(), 46);
         assert_eq!(RuntimeHelperId::ALL.len(), RUNTIME_HELPERS.len());
         for (index, id) in RuntimeHelperId::ALL.iter().copied().enumerate() {
             assert_eq!(id as usize, index);
@@ -1320,8 +1352,10 @@ mod tests {
         let expected = [
             "__rue_exit",
             "__rue_alloc",
+            "__rue_alloc_zeroed",
             "__rue_free",
             "__rue_realloc",
+            "__rue_resize",
             "__rue_div_by_zero",
             "__rue_overflow",
             "__rue_intcast_overflow",
@@ -1360,6 +1394,7 @@ mod tests {
             "__rue_env_ptr",
             "__rue_env_len",
             "__rue_byte_copy",
+            "__rue_byte_move",
             "__rue_byte_set",
         ];
         assert_eq!(
@@ -1372,7 +1407,7 @@ mod tests {
     #[test]
     fn every_helper_has_the_exact_accepted_signature_and_contract() {
         fn check(
-            visited: &mut [bool; 43],
+            visited: &mut [bool; 46],
             ids: &[RuntimeHelperId],
             parameters: &[AbiParameter],
             result: AbiResult,
@@ -1393,7 +1428,7 @@ mod tests {
             }
         }
 
-        let mut visited = [false; 43];
+        let mut visited = [false; 46];
         check(
             &mut visited,
             &[RuntimeHelperId::Exit],
@@ -1404,7 +1439,7 @@ mod tests {
         );
         check(
             &mut visited,
-            &[RuntimeHelperId::Alloc],
+            &[RuntimeHelperId::Alloc, RuntimeHelperId::AllocZeroed],
             &[U64_VALUE, U64_VALUE],
             MUT_POINTER_RESULT,
             ALLOC_LAYOUT,
@@ -1423,6 +1458,14 @@ mod tests {
             &[RuntimeHelperId::Realloc],
             &[MUT_BYTE_POINTER, U64_VALUE, U64_VALUE, U64_VALUE],
             MUT_POINTER_RESULT,
+            VALID_ALLOC_LAYOUT,
+            RETURNS,
+        );
+        check(
+            &mut visited,
+            &[RuntimeHelperId::Resize],
+            &[MUT_BYTE_POINTER, U64_VALUE, U64_VALUE, U64_VALUE],
+            BOOL_WORD_RESULT,
             VALID_ALLOC_LAYOUT,
             RETURNS,
         );
@@ -1599,7 +1642,7 @@ mod tests {
         );
         check(
             &mut visited,
-            &[RuntimeHelperId::ByteCopy],
+            &[RuntimeHelperId::ByteCopy, RuntimeHelperId::ByteMove],
             &[MUT_BYTE_POINTER, BYTE_VIEW, U64_VALUE],
             VOID,
             READABLE.union(WRITABLE),

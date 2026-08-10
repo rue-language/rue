@@ -618,6 +618,49 @@ fn main() -> i32 {
 """
 exit_code = 4
 
+# RUE-969: `@offset_of` folds at compile time and so composes with ordinary
+# constant arithmetic and constant-folded control flow inside a function body,
+# not just as a bare initializer.
+[[case]]
+name = "offset_of_folds_inside_a_larger_constant_expression"
+spec = ["4.13:94"]
+source = """
+struct Point { x: i32, y: i32 }
+struct Pair { head: Point, tail: Point }
+fn main() -> i32 {
+    // A nested field's byte displacement is the sum of the two hops, computed
+    // entirely from folded @offset_of values.
+    let nested: u64 = @offset_of(Pair, tail) + @offset_of(Point, y);
+    if nested == 12 { @intCast(nested) } else { 0 }
+}
+"""
+exit_code = 12
+
+# RUE-969: `@offset_of` reports a field's displacement in the type's compact
+# memory image, and `@field_ptr` addresses that field's storage. For a
+# slot-identical struct — every field exactly one eight-byte slot — the frame's
+# slot-shaped storage and the compact image coincide, so the two agree exactly.
+# (They deliberately do not agree for a non-slot-identical struct held in a
+# frame: §3.6 stores such a value slot-shaped while @offset_of describes the
+# compact image.)
+[[case]]
+name = "offset_of_agrees_with_field_ptr_when_storage_is_slot_identical"
+spec = ["4.13:94", "9.2:18"]
+source = """
+struct Cell { first: i64, second: i64, third: i64 }
+fn main() -> i32 {
+    let mut c = Cell { first: 1, second: 2, third: 3 };
+    let agree: bool = checked {
+        let p0: u64 = @ptr_to_int(@field_ptr(c.first));
+        let p1: u64 = @ptr_to_int(@field_ptr(c.second));
+        let p2: u64 = @ptr_to_int(@field_ptr(c.third));
+        p1 - p0 == @offset_of(Cell, second) && p2 - p0 == @offset_of(Cell, third)
+    };
+    if agree { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
 [[case]]
 name = "offset_of_non_struct_type_errors"
 spec = ["4.13:95"]

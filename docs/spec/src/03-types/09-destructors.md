@@ -294,7 +294,10 @@ fn Buf(comptime T: type) -> type {
         buf: ptr mut T,
         cap: u64,
         drop fn(self) {
-            checked { @free(self.buf, self.cap); };
+            checked {
+                let block: ptr mut u8 = @int_to_ptr(@ptr_to_int(self.buf));
+                @free(block, self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)));
+            };
         }
     }
 }

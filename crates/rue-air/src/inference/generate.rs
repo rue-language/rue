@@ -1892,25 +1892,11 @@ impl<'a> ConstraintGenerator<'a> {
                     }
                     let result_var = self.fresh_var();
                     InferType::Var(result_var)
-                } else if intrinsic_name == "alloc" {
-                    // @alloc(count: u64) -> ptr mut T. The element type T (and
-                    // thus the result pointer type) is inferred from context,
-                    // exactly like @int_to_ptr; sema validates it is `ptr mut T`.
-                    // Constrain `count` to u64 so a bare integer literal
-                    // (`@alloc(4)`) defaults to u64 rather than i64.
-                    for arg_ref in args.iter() {
-                        let info = self.generate(*arg_ref, ctx);
-                        self.add_constraint(Constraint::equal(
-                            info.ty,
-                            InferType::Concrete(Type::U64),
-                            info.span,
-                        ));
-                    }
-                    let result_var = self.fresh_var();
-                    InferType::Var(result_var)
-                } else if intrinsic_name == "alloc_bytes" {
-                    // @alloc_bytes(size: u64, align: u64) -> ptr mut u8. Both
-                    // operands are u64 (ADR-0059 Phase 2, RUE-960).
+                } else if intrinsic_name == "alloc" || intrinsic_name == "alloc_zeroed" {
+                    // @alloc(size: u64, align: u64) -> ptr mut u8 and its
+                    // zeroing twin (ADR-0059 Phase 3, RUE-961/RUE-968). Both
+                    // operands are physical byte counts, so both are u64 and
+                    // the result type is fixed rather than context-inferred.
                     for arg_ref in args.iter() {
                         let info = self.generate(*arg_ref, ctx);
                         self.add_constraint(Constraint::equal(
@@ -1922,33 +1908,11 @@ impl<'a> ConstraintGenerator<'a> {
                     InferType::Concrete(Type::new_ptr_mut(
                         self.type_pool.intern_ptr_mut_from_type(Type::U8),
                     ))
-                } else if intrinsic_name == "realloc" {
-                    // @realloc(ptr: ptr mut T, old_count: u64, new_count: u64)
-                    // -> ptr mut T. The result type is the same pointer type as
-                    // the first argument; unify a fresh var with arg0's type so
-                    // it flows in both directions. Counts are constrained to u64.
-                    let mut first_ty: Option<InferType> = None;
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
-                        if i == 0 {
-                            first_ty = Some(info.ty);
-                        } else {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(Type::U64),
-                                info.span,
-                            ));
-                        }
-                    }
-                    let result_var = self.fresh_var();
-                    let result_ty = InferType::Var(result_var);
-                    if let Some(arg0_ty) = first_ty {
-                        self.add_constraint(Constraint::equal(result_ty.clone(), arg0_ty, span));
-                    }
-                    result_ty
-                } else if intrinsic_name == "realloc_bytes" {
-                    // @realloc_bytes(ptr mut u8, u64, u64, u64) -> ptr mut u8:
-                    // (p, old_size, align, new_size) (ADR-0059 Phase 2).
+                } else if intrinsic_name == "realloc" || intrinsic_name == "resize" {
+                    // @realloc(p, old_size, align, new_size) -> ptr mut u8 and
+                    // @resize(p, old_size, align, new_size) -> bool share one
+                    // operand shape: a `ptr mut u8` block plus three u64 byte
+                    // counts (ADR-0059 Phase 3, RUE-961/RUE-968).
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {
@@ -1960,22 +1924,13 @@ impl<'a> ConstraintGenerator<'a> {
                             info.span,
                         ));
                     }
-                    InferType::Concrete(ptr_ty)
+                    InferType::Concrete(if intrinsic_name == "resize" {
+                        Type::BOOL
+                    } else {
+                        ptr_ty
+                    })
                 } else if intrinsic_name == "free" {
-                    // @free(ptr: ptr mut T, count: u64) -> (). Constrain the
-                    // `count` (second) argument to u64.
-                    for (i, arg_ref) in args.iter().enumerate() {
-                        let info = self.generate(*arg_ref, ctx);
-                        if i == 1 {
-                            self.add_constraint(Constraint::equal(
-                                info.ty,
-                                InferType::Concrete(Type::U64),
-                                info.span,
-                            ));
-                        }
-                    }
-                    InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "free_bytes" {
+                    // @free(p: ptr mut u8, size: u64, align: u64) -> ().
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {
@@ -2020,11 +1975,14 @@ impl<'a> ConstraintGenerator<'a> {
                         }
                     }
                     InferType::Concrete(Type::UNIT)
-                } else if intrinsic_name == "byte_copy" {
-                    // @byte_copy(dst: ptr mut u8, src: ptr const u8 | ptr mut u8,
-                    // size: u64) -> (). Constrain dst to `ptr mut u8` and size to
-                    // u64; the source pointer may be const or mut u8, so it is
-                    // left to sema's `require_u8_pointer` rather than pinned here.
+                } else if intrinsic_name == "byte_copy" || intrinsic_name == "byte_move" {
+                    // @byte_copy/@byte_move(dst: ptr mut u8,
+                    // src: ptr const u8 | ptr mut u8, size: u64) -> (). Constrain
+                    // dst to `ptr mut u8` and size to u64; the source pointer may
+                    // be const or mut u8, so it is left to sema's
+                    // `require_u8_pointer` rather than pinned here. The two
+                    // differ only in their overlap contract (RUE-964), which
+                    // inference does not see.
                     let ptr_ty =
                         Type::new_ptr_mut(self.type_pool.intern_ptr_mut_from_type(Type::U8));
                     for (i, arg_ref) in args.iter().enumerate() {

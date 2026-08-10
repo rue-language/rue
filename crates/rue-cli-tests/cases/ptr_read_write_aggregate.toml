@@ -30,12 +30,12 @@ files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
 fn main() -> i32 {
     checked {
-        let p: ptr mut P = @alloc(1);
+        let p: ptr mut P = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(P)), @intCast(@align_of(P)))));
         @ptr_write(p, P { x: 1, y: 2 });
         let v = @ptr_read(p);
         @dbg(v.x);
         @dbg(v.y);
-        @free(p, 1);
+        @free(@int_to_ptr(@ptr_to_int(p)), 1 * @intCast(@size_of(P)), @intCast(@align_of(P)));
     };
     0
 }
@@ -49,12 +49,12 @@ files = [{ path = "main.rue", source = """
 struct P { x: i32, y: i32 }
 fn main() -> i32 {
     checked {
-        let p: ptr mut P = @alloc(1);
+        let p: ptr mut P = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(P)), @intCast(@align_of(P)))));
         @ptr_write(p, P { x: 7, y: 9 });
         let v = @ptr_read(p);
         @dbg(v.x);
         @dbg(v.y);
-        @free(p, 1);
+        @free(@int_to_ptr(@ptr_to_int(p)), 1 * @intCast(@size_of(P)), @intCast(@align_of(P)));
     };
     0
 }
@@ -69,7 +69,7 @@ struct Inner { a: i32, b: i32 }
 struct Outer { p: Inner, q: i32 }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut Outer = @alloc(1);
+        let wp: ptr mut Outer = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(Outer)), @intCast(@align_of(Outer)))));
         @ptr_write(wp, Outer { p: Inner { a: 10, b: 20 }, q: 30 });
         let v = @ptr_read(wp);
         @dbg(v.p.a);
@@ -80,7 +80,7 @@ fn main() -> i32 {
         @dbg(v2.p.a);
         @dbg(v2.p.b);
         @dbg(v2.q);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(Outer)), @intCast(@align_of(Outer)));
     };
     0
 }

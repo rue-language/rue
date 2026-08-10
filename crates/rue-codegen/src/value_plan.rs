@@ -282,25 +282,20 @@ pub enum IntrinsicOperation {
     PtrRead,
     PtrWrite,
     PtrOffset,
-    Alloc {
-        /// The pointee's canonical byte alignment (from the layout authority),
-        /// passed as the runtime allocator's `align` operand.
-        element_size: u64,
-    },
-    Free {
-        /// The pointee's canonical byte alignment (see [`Self::Alloc`]).
-        element_size: u64,
-    },
-    Realloc {
-        /// The pointee's canonical byte alignment (see [`Self::Alloc`]).
-        element_size: u64,
-    },
-    AllocBytes,
-    FreeBytes,
-    ReallocBytes,
+    /// The unified byte-and-alignment allocation family (ADR-0059 Phase 3,
+    /// RUE-961). Every operand — the block pointer, the byte sizes, and the
+    /// alignment — is a user-supplied value, so these carry no layout-derived
+    /// payload; typed allocation is source-computed `@size_of`/`@align_of`
+    /// arithmetic at the call site.
+    Alloc,
+    AllocZeroed,
+    Free,
+    Realloc,
+    Resize,
     ByteRead,
     ByteWrite,
     ByteCopy,
+    ByteMove,
     ByteSet,
     ArgCount,
     ArgPtr,
@@ -1658,30 +1653,19 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                     "ptr_read" | "ptr_read_unaligned" => IntrinsicOperation::PtrRead,
                     "ptr_write" | "ptr_write_unaligned" => IntrinsicOperation::PtrWrite,
                     "ptr_offset" => IntrinsicOperation::PtrOffset,
-                    "alloc" => IntrinsicOperation::Alloc {
-                        element_size: crate::allocation::pointer_element_align(
-                            ctx.type_pool,
-                            inst.ty,
-                        ),
-                    },
-                    "free" => IntrinsicOperation::Free {
-                        element_size: crate::allocation::pointer_element_align(
-                            ctx.type_pool,
-                            ctx.cfg.get_inst(args[0]).ty,
-                        ),
-                    },
-                    "realloc" => IntrinsicOperation::Realloc {
-                        element_size: crate::allocation::pointer_element_align(
-                            ctx.type_pool,
-                            ctx.cfg.get_inst(args[0]).ty,
-                        ),
-                    },
-                    "alloc_bytes" => IntrinsicOperation::AllocBytes,
-                    "free_bytes" => IntrinsicOperation::FreeBytes,
-                    "realloc_bytes" => IntrinsicOperation::ReallocBytes,
+                    // The unified allocation family carries physical byte
+                    // sizes and an explicit alignment in its own operands
+                    // (ADR-0059 Phase 3, RUE-961), so nothing here consults a
+                    // pointee layout: every operand passes straight through.
+                    "alloc" => IntrinsicOperation::Alloc,
+                    "alloc_zeroed" => IntrinsicOperation::AllocZeroed,
+                    "free" => IntrinsicOperation::Free,
+                    "realloc" => IntrinsicOperation::Realloc,
+                    "resize" => IntrinsicOperation::Resize,
                     "byte_read" => IntrinsicOperation::ByteRead,
                     "byte_write" => IntrinsicOperation::ByteWrite,
                     "byte_copy" => IntrinsicOperation::ByteCopy,
+                    "byte_move" => IntrinsicOperation::ByteMove,
                     "byte_set" => IntrinsicOperation::ByteSet,
                     "arg_count" => IntrinsicOperation::ArgCount,
                     "arg_ptr" => IntrinsicOperation::ArgPtr,
@@ -1701,19 +1685,10 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
                             ctx.cfg.get_inst(args[0]).ty,
                         ))
                     }
-                    IntrinsicOperation::Alloc { .. } => Some(
-                        crate::allocation::allocation_size_scale_plan(ctx.type_pool, inst.ty),
-                    ),
-                    IntrinsicOperation::Free { .. } | IntrinsicOperation::Realloc { .. } => {
-                        Some(crate::allocation::allocation_size_scale_plan(
-                            ctx.type_pool,
-                            ctx.cfg.get_inst(args[0]).ty,
-                        ))
-                    }
                     _ => None,
                 };
                 let result_slots = ctx.type_slot_count(inst.ty);
-                let runtime_call = intrinsic_runtime_call(&operation, &values, scale, result_slots);
+                let runtime_call = intrinsic_runtime_call(&operation, &values, result_slots);
                 // A narrow-scalar `@ptr_read`/`@ptr_write` under the compact
                 // layout accesses 1/2/4 physical bytes with the pointee's
                 // extension (RUE-989). The read's pointee is its result type; the
@@ -1895,18 +1870,20 @@ pub(crate) fn lower_value<A: ValueLowerAdapter>(
 /// Realize an allocation-family runtime call's operand list from its manifest
 /// (`RuntimeCallKind::operands()`) — the single description the AIR validator in
 /// `rue_air::runtime_call` also consumes, so the two encodings of the alloc ABI
-/// the ADR-0052 audit found are reconciled to one authority (RUE-973). Each
-/// operand's semantic origin selects how it is materialized: a size scales its
-/// count by the pointee's canonical layout size (`scale`), an alignment takes
-/// the pointee's canonical alignment (`pointee_align`, from the layout
-/// authority), a pointer passes straight through, and a plain byte-family value
-/// operand passes its AIR argument. Ordering, arity, and ABI types come from the
-/// manifest and are re-checked by `RuntimeCallPlan::expect_manifest`.
+/// the ADR-0052 audit found stay reconciled to one authority (RUE-973).
+/// Ordering, arity, and ABI types come from the manifest and are re-checked by
+/// `RuntimeCallPlan::expect_manifest`.
+///
+/// Every operand of `@alloc`/`@alloc_zeroed`/`@free`/`@realloc`/`@resize` is a
+/// user-supplied value — a `ptr mut u8` block or a `u64` byte count — so this
+/// only reorders the intrinsic's arguments into the helper's parameter order
+/// (ADR-0059 Phase 3, RUE-961). Codegen computes no size and synthesizes no
+/// alignment: `count * @size_of(T)` and `@align_of(T)` are ordinary source
+/// arithmetic at the call site, which also means their overflow is the
+/// language's ordinary trapping multiply rather than a codegen-private check.
 fn realize_alloc_operands(
     kind: rue_air::RuntimeCallKind,
     args: &[IntrinsicArgPlan],
-    scale: Option<crate::allocation::ScalePlan>,
-    pointee_align: u64,
 ) -> Vec<crate::runtime_call_plan::RuntimeCallArg> {
     use crate::runtime_call_plan::RuntimeCallArg;
     use rue_air::RuntimeOperandOrigin;
@@ -1917,22 +1894,6 @@ fn realize_alloc_operands(
         .map(|origin| match *origin {
             RuntimeOperandOrigin::MutablePointerArgument { index, .. } => {
                 RuntimeCallArg::mut_pointer(args[index as usize].primary, AbiType::Byte)
-            }
-            RuntimeOperandOrigin::ScaledByResultPointeeSize(index) => RuntimeCallArg::scaled(
-                args[index as usize].primary,
-                scale.expect("typed allocation size scale"),
-                AbiType::U64,
-            ),
-            RuntimeOperandOrigin::ScaledByPointerPointeeSize { count, .. } => {
-                RuntimeCallArg::scaled(
-                    args[count as usize].primary,
-                    scale.expect("typed allocation size scale"),
-                    AbiType::U64,
-                )
-            }
-            RuntimeOperandOrigin::ResultPointeeAlign
-            | RuntimeOperandOrigin::PointerPointeeAlign(_) => {
-                RuntimeCallArg::immediate(pointee_align, AbiType::U64)
             }
             RuntimeOperandOrigin::ValueArgument { index, ty } => {
                 RuntimeCallArg::value(args[index as usize].primary, ty)
@@ -1945,7 +1906,6 @@ fn realize_alloc_operands(
 fn intrinsic_runtime_call(
     operation: &IntrinsicOperation,
     args: &[IntrinsicArgPlan],
-    scale: Option<crate::allocation::ScalePlan>,
     result_slots: u32,
 ) -> Option<crate::runtime_call_plan::RuntimeCallPlan> {
     use crate::runtime_call_plan::{RuntimeCallArg, RuntimeCallPlan};
@@ -2003,24 +1963,28 @@ fn intrinsic_runtime_call(
             RuntimeHelperId::EnvPtr,
             vec![RuntimeCallArg::value(args[0].primary, AbiType::U64)],
         ),
-        IntrinsicOperation::Alloc { element_size } => (
+        IntrinsicOperation::Alloc => (
             RuntimeHelperId::Alloc,
-            realize_alloc_operands(RuntimeCallKind::AllocTyped, args, scale, *element_size),
+            realize_alloc_operands(RuntimeCallKind::Alloc, args),
         ),
-        IntrinsicOperation::AllocBytes => (
-            RuntimeHelperId::Alloc,
-            realize_alloc_operands(RuntimeCallKind::AllocBytes, args, scale, 0),
+        IntrinsicOperation::AllocZeroed => (
+            RuntimeHelperId::AllocZeroed,
+            realize_alloc_operands(RuntimeCallKind::AllocZeroed, args),
         ),
-        IntrinsicOperation::Free { element_size } => (
+        IntrinsicOperation::Free => (
             RuntimeHelperId::Free,
-            realize_alloc_operands(RuntimeCallKind::FreeTyped, args, scale, *element_size),
-        ),
-        IntrinsicOperation::FreeBytes => (
-            RuntimeHelperId::Free,
-            realize_alloc_operands(RuntimeCallKind::FreeBytes, args, scale, 0),
+            realize_alloc_operands(RuntimeCallKind::Free, args),
         ),
         IntrinsicOperation::ByteCopy => (
             RuntimeHelperId::ByteCopy,
+            vec![
+                RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
+                RuntimeCallArg::const_pointer(args[1].primary, AbiType::Byte),
+                RuntimeCallArg::value(args[2].primary, AbiType::U64),
+            ],
+        ),
+        IntrinsicOperation::ByteMove => (
+            RuntimeHelperId::ByteMove,
             vec![
                 RuntimeCallArg::mut_pointer(args[0].primary, AbiType::Byte),
                 RuntimeCallArg::const_pointer(args[1].primary, AbiType::Byte),
@@ -2035,13 +1999,13 @@ fn intrinsic_runtime_call(
                 RuntimeCallArg::value(args[2].primary, AbiType::U64),
             ],
         ),
-        IntrinsicOperation::Realloc { element_size } => (
+        IntrinsicOperation::Realloc => (
             RuntimeHelperId::Realloc,
-            realize_alloc_operands(RuntimeCallKind::ReallocTyped, args, scale, *element_size),
+            realize_alloc_operands(RuntimeCallKind::Realloc, args),
         ),
-        IntrinsicOperation::ReallocBytes => (
-            RuntimeHelperId::Realloc,
-            realize_alloc_operands(RuntimeCallKind::ReallocBytes, args, scale, 0),
+        IntrinsicOperation::Resize => (
+            RuntimeHelperId::Resize,
+            realize_alloc_operands(RuntimeCallKind::Resize, args),
         ),
         IntrinsicOperation::Debug => {
             let arg = args.first()?;
@@ -3288,18 +3252,13 @@ mod tests {
             some_discriminant: 1,
             none_discriminant: 0,
         };
-        let scale = crate::allocation::ScalePlan {
-            kind: crate::allocation::ScaleKind::Constant(8),
-            purpose: crate::allocation::ScalePurpose::AllocationSize,
-            overflow: crate::allocation::OverflowBehavior::Trap,
-        };
-        let call = |operation, args: &[IntrinsicArgPlan], scale, result_slots| {
-            super::intrinsic_runtime_call(&operation, args, scale, result_slots)
+        let call = |operation, args: &[IntrinsicArgPlan], result_slots| {
+            super::intrinsic_runtime_call(&operation, args, result_slots)
                 .expect("operation should have a runtime call")
         };
 
         assert_eq!(
-            call(option(OptionIntrinsic::ReadLine), &[], None, 4).helper(),
+            call(option(OptionIntrinsic::ReadLine), &[], 4).helper(),
             RuntimeHelperId::ReadLine
         );
         for (intrinsic, helper) in [
@@ -3308,28 +3267,22 @@ mod tests {
             (OptionIntrinsic::ParseU32, RuntimeHelperId::ParseU32),
             (OptionIntrinsic::ParseU64, RuntimeHelperId::ParseU64),
         ] {
-            let plan = call(
-                option(intrinsic),
-                std::slice::from_ref(&string_arg),
-                None,
-                2,
-            );
+            let plan = call(option(intrinsic), std::slice::from_ref(&string_arg), 2);
             assert_eq!(plan.helper(), helper);
             assert_eq!(plan.args().len(), 5);
         }
         assert_eq!(
-            call(IntrinsicOperation::RandomU32, &[], None, 1).helper(),
+            call(IntrinsicOperation::RandomU32, &[], 1).helper(),
             RuntimeHelperId::RandomU32
         );
         assert_eq!(
-            call(IntrinsicOperation::RandomU64, &[], None, 1).helper(),
+            call(IntrinsicOperation::RandomU64, &[], 1).helper(),
             RuntimeHelperId::RandomU64
         );
         assert_eq!(
             call(
-                IntrinsicOperation::Alloc { element_size: 8 },
-                std::slice::from_ref(&scalar_arg),
-                Some(scale),
+                IntrinsicOperation::Alloc,
+                &[scalar_arg.clone(), scalar_arg.clone()],
                 1,
             )
             .helper(),
@@ -3337,9 +3290,17 @@ mod tests {
         );
         assert_eq!(
             call(
-                IntrinsicOperation::Free { element_size: 8 },
+                IntrinsicOperation::AllocZeroed,
                 &[scalar_arg.clone(), scalar_arg.clone()],
-                Some(scale),
+                1,
+            )
+            .helper(),
+            RuntimeHelperId::AllocZeroed
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::Free,
+                &[scalar_arg.clone(), scalar_arg.clone(), scalar_arg.clone()],
                 0,
             )
             .helper(),
@@ -3347,9 +3308,13 @@ mod tests {
         );
         assert_eq!(
             call(
-                IntrinsicOperation::Realloc { element_size: 8 },
-                &[scalar_arg.clone(), scalar_arg.clone(), scalar_arg.clone()],
-                Some(scale),
+                IntrinsicOperation::Realloc,
+                &[
+                    scalar_arg.clone(),
+                    scalar_arg.clone(),
+                    scalar_arg.clone(),
+                    scalar_arg.clone(),
+                ],
                 1,
             )
             .helper(),
@@ -3357,9 +3322,31 @@ mod tests {
         );
         assert_eq!(
             call(
+                IntrinsicOperation::Resize,
+                &[
+                    scalar_arg.clone(),
+                    scalar_arg.clone(),
+                    scalar_arg.clone(),
+                    scalar_arg.clone(),
+                ],
+                1,
+            )
+            .helper(),
+            RuntimeHelperId::Resize
+        );
+        assert_eq!(
+            call(
+                IntrinsicOperation::ByteMove,
+                &[scalar_arg.clone(), scalar_arg.clone(), scalar_arg.clone()],
+                0,
+            )
+            .helper(),
+            RuntimeHelperId::ByteMove
+        );
+        assert_eq!(
+            call(
                 IntrinsicOperation::Debug,
                 std::slice::from_ref(&scalar_arg),
-                None,
                 0,
             )
             .helper(),
@@ -3369,7 +3356,6 @@ mod tests {
             call(
                 IntrinsicOperation::Debug,
                 std::slice::from_ref(&string_arg),
-                None,
                 0,
             )
             .helper(),
@@ -3377,9 +3363,13 @@ mod tests {
         );
 
         let realloc = call(
-            IntrinsicOperation::Realloc { element_size: 8 },
-            &[scalar_arg.clone(), scalar_arg.clone(), scalar_arg],
-            Some(scale),
+            IntrinsicOperation::Realloc,
+            &[
+                scalar_arg.clone(),
+                scalar_arg.clone(),
+                scalar_arg.clone(),
+                scalar_arg,
+            ],
             1,
         );
         assert_eq!(

@@ -1,31 +1,19 @@
 [section]
 id = "diagnostics.alloc-infer-pointee"
-name = "@alloc / @int_to_ptr uninferrable pointee reports a clean error, not an ICE"
+name = "@int_to_ptr uninferrable pointee reports a clean error, not an ICE"
 description = """
-The pointer intrinsics `@alloc(count)` and `@int_to_ptr(addr)` return `ptr mut T`
-whose pointee `T` comes only from context. In a discarded or otherwise
-unconstrained position (`@alloc(4);`) the result variable has nothing to fix its
-pointee and decayed to `<error>`, which reached the end of semantic analysis as
-a graceful ICE (E9000, RUE-153 backstop) — found by the daily sema fuzzer
-(github #1419). It now reports a targeted E0710 naming the intrinsic and
-suggesting a `ptr mut T` annotation. An annotated allocation still compiles.
-"""
+`@int_to_ptr(addr)` returns `ptr mut T` whose pointee `T` comes only from
+context. In a discarded or otherwise unconstrained position the result variable
+has nothing to fix its pointee and decayed to `<error>`, which reached the end
+of semantic analysis as a graceful ICE (E9000, RUE-153 backstop) — found by the
+daily sema fuzzer (github #1419). It now reports a targeted E0710 naming the
+intrinsic and suggesting a `ptr mut T` annotation.
 
-[[case]]
-name = "bare_alloc_cannot_infer_pointee"
-description = "@alloc whose result is discarded cannot infer its pointee: clean E0710, not an ICE."
-source = """
-fn main() -> i32 {
-    checked { @alloc(4); };
-    0
-}
+`@alloc` was the other half of this pair until ADR-0059 Phase 3 (RUE-961) gave
+the allocation family a fixed `ptr mut u8` result, so it can no longer fail to
+infer a pointee; the cases below pin that its result type is now fixed rather
+than context-derived, which is what removes it from this diagnostic's scope.
 """
-compile_fail = true
-error_contains = [
-    "E0710",
-    "cannot infer the pointee type of '@alloc'",
-    "add a type annotation",
-]
 
 [[case]]
 name = "bare_int_to_ptr_cannot_infer_pointee"
@@ -43,14 +31,42 @@ error_contains = [
 ]
 
 [[case]]
-name = "annotated_alloc_still_compiles"
-description = "An @alloc bound to a `ptr mut T` annotation still infers its pointee and compiles."
+name = "bare_alloc_needs_no_pointee_context"
+description = "@alloc in a discarded position compiles: its result type is `ptr mut u8`, not context-inferred."
+source = """
+fn main() -> i32 {
+    checked { @alloc(4, 1); };
+    0
+}
+"""
+compile_fail = false
+exit_code = 0
+
+[[case]]
+name = "alloc_result_is_ptr_mut_u8_not_the_annotation"
+description = "A `ptr mut T` annotation no longer steers @alloc; a non-u8 pointee is a type error."
 source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(4);
-        @ptr_write(p, 42);
+        let p: ptr mut i32 = @alloc(4, 4);
         @ptr_read(p)
+    }
+}
+"""
+compile_fail = true
+error_contains = ["ptr mut u8"]
+
+[[case]]
+name = "annotated_alloc_still_compiles"
+description = "An @alloc bound to a `ptr mut u8` annotation compiles and its block is usable."
+source = """
+fn main() -> i32 {
+    checked {
+        let p: ptr mut u8 = @alloc(4, 1);
+        @byte_write(p, 0, 42);
+        let v: i32 = @intCast(@byte_read(p, 0));
+        @free(p, 4, 1);
+        v
     }
 }
 """

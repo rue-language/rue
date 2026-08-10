@@ -260,14 +260,14 @@ pub enum UnsupportedIntrinsicKind {
     RawMutableAddress,
     FieldPointer,
     Allocate,
+    AllocateZeroed,
     Free,
     Reallocate,
-    AllocateBytes,
-    FreeBytes,
-    ReallocateBytes,
+    Resize,
     ByteRead,
     ByteWrite,
     ByteCopy,
+    ByteMove,
     ByteSet,
 }
 
@@ -694,10 +694,25 @@ struct Allocation {
     /// projection): its single cell is the scalar, and a redirected `Load` of
     /// the owning slot must unwrap `root[0]` rather than return the aggregate.
     wrapped_scalar: bool,
-    /// `@free`/`@free_bytes` released this allocation. Pointer access checks the
-    /// flag so undefined use-after-free remains a typed oracle gap rather than
+    /// `@free` released this allocation. Pointer access checks the flag so
+    /// undefined use-after-free remains a typed oracle gap rather than
     /// receiving a deterministic value that native execution does not promise.
     freed: bool,
+    /// The block came from `@alloc`/`@alloc_zeroed`, which reserve raw physical
+    /// bytes and carry no element type (ADR-0059 Phase 3, RUE-961). Such a block
+    /// starts out as one-byte cells; the first typed pointer formed over an
+    /// **untouched** one reinterprets it as cells of that pointee. That is
+    /// exactly the shape `std/rawbuf.rue` gives a block when it turns
+    /// `cap * @size_of(T)` bytes into `cap` cells of `T`, and it lets the
+    /// interpreter keep modeling typed containers now that the compiler no
+    /// longer knows an allocation's element type. Reinterpreting clears the
+    /// flag.
+    untyped_bytes: bool,
+    /// Some cell of this allocation has been written. A touched block is never
+    /// reinterpreted, because its existing cells hold values a reinterpretation
+    /// would silently discard. Reads do not set this: an untouched block reads
+    /// as zero bytes whatever shape its cells are given.
+    touched: bool,
 }
 
 impl Value {
@@ -836,18 +851,16 @@ fn unsupported_intrinsic_kind(name: &str) -> UnsupportedKind {
         }
         "field_ptr" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FieldPointer)),
         "alloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Allocate)),
+        "alloc_zeroed" => {
+            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::AllocateZeroed))
+        }
         "free" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Free)),
         "realloc" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Reallocate)),
-        "alloc_bytes" => {
-            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::AllocateBytes))
-        }
-        "free_bytes" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::FreeBytes)),
-        "realloc_bytes" => {
-            UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ReallocateBytes))
-        }
+        "resize" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::Resize)),
         "byte_read" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteRead)),
         "byte_write" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteWrite)),
         "byte_copy" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteCopy)),
+        "byte_move" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteMove)),
         "byte_set" => UnsupportedKind::SemanticGap(Semantic::Intrinsic(Intrinsic::ByteSet)),
         "read_line" => UnsupportedKind::ExternalDependency(External::StandardInput),
         "random_u32" => UnsupportedKind::ExternalDependency(External::RandomU32),
@@ -1430,11 +1443,11 @@ impl<'a> Interp<'a> {
             "ptr_write"
             | "ptr_write_unaligned"
             | "ptr_offset"
-            | "free"
             | "byte_read"
-            | "alloc_bytes" => args.len() == 2,
-            "realloc" | "byte_write" | "byte_copy" | "byte_set" | "free_bytes" => args.len() == 3,
-            "realloc_bytes" => args.len() == 4,
+            | "alloc"
+            | "alloc_zeroed" => args.len() == 2,
+            "byte_write" | "byte_copy" | "byte_move" | "byte_set" | "free" => args.len() == 3,
+            "realloc" | "resize" => args.len() == 4,
             "syscall" => (1..=7).contains(&args.len()),
             _ => args.len() == 1,
         };
@@ -1499,42 +1512,25 @@ impl<'a> Interp<'a> {
                         .pointer_pointee(result_ty)
                         .is_some_and(|(pointee, mutable)| mutable && pointee == ty(0))
             }
-            "alloc" => {
-                ty(0) == Type::U64
-                    && self
-                        .pointer_pointee(result_ty)
-                        .is_some_and(|(_, mutable)| mutable)
-            }
-            "free" => {
-                self.pointer_pointee(ty(0))
-                    .is_some_and(|(_, mutable)| mutable)
-                    && ty(1) == Type::U64
-                    && result_ty == Type::UNIT
-            }
-            "realloc" => {
-                self.pointer_pointee(ty(0))
-                    .is_some_and(|(_, mutable)| mutable)
-                    && ty(1) == Type::U64
-                    && ty(2) == Type::U64
-                    && result_ty == ty(0)
-            }
-            "alloc_bytes" => {
+            "alloc" | "alloc_zeroed" => {
                 ty(0) == Type::U64
                     && ty(1) == Type::U64
                     && self.pointer_pointee(result_ty) == Some((Type::U8, true))
             }
-            "free_bytes" => {
+            "free" => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
                     && ty(2) == Type::U64
                     && result_ty == Type::UNIT
             }
-            "realloc_bytes" => {
+            "realloc" | "resize" => {
+                // `(p, old_size, align, new_size)`; `@realloc` hands back the
+                // (possibly moved) block, `@resize` reports in-place success.
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && ty(1) == Type::U64
                     && ty(2) == Type::U64
                     && ty(3) == Type::U64
-                    && result_ty == ty(0)
+                    && result_ty == if name == "resize" { Type::BOOL } else { ty(0) }
             }
             "byte_read" => {
                 self.pointer_pointee(ty(0))
@@ -1548,7 +1544,7 @@ impl<'a> Interp<'a> {
                     && ty(2) == Type::U8
                     && result_ty == Type::UNIT
             }
-            "byte_copy" => {
+            "byte_copy" | "byte_move" => {
                 self.pointer_pointee(ty(0)) == Some((Type::U8, true))
                     && self
                         .pointer_pointee(ty(1))
@@ -3385,13 +3381,63 @@ impl<'a> Interp<'a> {
 
     /// Push a new allocation, returning its index.
     fn heap_alloc(&mut self, root: Value, elem_stride: u64, wrapped_scalar: bool) -> usize {
+        self.heap_alloc_with(root, elem_stride, wrapped_scalar, false)
+    }
+
+    /// Push a new allocation, optionally marking it as a raw byte block whose
+    /// element type is not yet known (see [`Allocation::untyped_bytes`]).
+    fn heap_alloc_with(
+        &mut self,
+        root: Value,
+        elem_stride: u64,
+        wrapped_scalar: bool,
+        untyped_bytes: bool,
+    ) -> usize {
         self.heap.push(Allocation {
             root,
             elem_stride: elem_stride.max(1),
             wrapped_scalar,
             freed: false,
+            untyped_bytes,
+            touched: false,
         });
         self.heap.len() - 1
+    }
+
+    /// Reinterpret an untouched raw byte block as cells of `pointee`.
+    ///
+    /// `std/rawbuf.rue` allocates `count * @size_of(T)` bytes and immediately
+    /// casts the result to `ptr mut T`; this is where that cast becomes the
+    /// interpreter's cell shape. Only an untouched block whose byte size is a
+    /// whole number of `pointee`s is reinterpreted — anything else keeps its
+    /// byte cells, so a genuinely byte-addressed block (`std/strbuf.rue`) is
+    /// never disturbed.
+    fn retype_untyped_bytes(&mut self, alloc: usize, pointee: Type) -> bool {
+        let stride = self.type_byte_size(pointee).max(1);
+        let Some(allocation) = self.heap.get(alloc) else {
+            return false;
+        };
+        if !allocation.untyped_bytes
+            || allocation.touched
+            || allocation.freed
+            || stride == allocation.elem_stride
+        {
+            return false;
+        }
+        let Value::Aggregate(cells) = &allocation.root else {
+            return false;
+        };
+        let bytes = cells.len() as u64;
+        if stride == 0 || bytes % stride != 0 {
+            return false;
+        }
+        let count = (bytes / stride) as usize;
+        let cells = (0..count).map(|_| self.zeroed_value(pointee)).collect();
+        let allocation = &mut self.heap[alloc];
+        allocation.root = Value::Aggregate(cells);
+        allocation.elem_stride = stride;
+        allocation.untyped_bytes = false;
+        true
     }
 
     /// Synthesize a stable non-null address for `target`, used by `@ptr_to_int`.
@@ -3477,6 +3523,9 @@ impl<'a> Interp<'a> {
         if alloc.freed {
             return Err(unsupported(gap, "pointer write after free"));
         }
+        // The block now carries meaningful values, which retires it from
+        // reinterpretation (see `Allocation::untyped_bytes`).
+        alloc.touched = true;
         let container = Self::nav_mut(&mut alloc.root, &target.path)
             .ok_or_else(|| unsupported(gap, "pointer path escapes allocation"))?;
         match container {
@@ -3588,19 +3637,18 @@ impl<'a> Interp<'a> {
                 };
                 Ok(Some(Value::Ptr(Some(target))))
             }
-            "alloc" => {
-                let count = self.eval(cfg, frame, args[0])?.as_int();
-                let (pointee, _) = self
-                    .pointer_pointee(result_ty)
-                    .expect("validated @alloc result is a pointer");
-                Ok(Some(self.do_alloc(count, pointee)?))
-            }
-            "alloc_bytes" => {
+            // `@alloc(size, align)` and `@alloc_zeroed(size, align)` both
+            // reserve `size` raw bytes. The interpreter's cells always read as
+            // zero, so the two differ only in what a program may rely on;
+            // modeling them identically never reports a false agreement,
+            // because reading uninitialized `@alloc` storage is undefined
+            // behavior a corpus program must not depend on.
+            "alloc" | "alloc_zeroed" => {
                 let size = self.eval(cfg, frame, args[0])?.as_int();
                 let _align = self.eval(cfg, frame, args[1])?.as_int();
-                Ok(Some(self.do_alloc_bytes(size)?))
+                Ok(Some(self.do_alloc(size)?))
             }
-            "free" | "free_bytes" => {
+            "free" => {
                 // Evaluate every operand before releasing the allocation.
                 let p = self.eval(cfg, frame, args[0])?;
                 for a in &args[1..] {
@@ -3618,29 +3666,31 @@ impl<'a> Interp<'a> {
             }
             "realloc" => {
                 let p = self.eval(cfg, frame, args[0])?;
-                let old_count = self.eval(cfg, frame, args[1])?.as_int();
-                let new_count = self.eval(cfg, frame, args[2])?.as_int();
-                let (pointee, _) = self
-                    .pointer_pointee(result_ty)
-                    .expect("validated @realloc result is a pointer");
-                let stride = self.type_byte_size(pointee);
-                Ok(Some(self.do_realloc(
-                    p, old_count, new_count, stride, pointee, false,
-                )?))
-            }
-            "realloc_bytes" => {
-                let p = self.eval(cfg, frame, args[0])?;
                 let old_size = self.eval(cfg, frame, args[1])?.as_int();
                 let _align = self.eval(cfg, frame, args[2])?.as_int();
                 let new_size = self.eval(cfg, frame, args[3])?.as_int();
-                Ok(Some(self.do_realloc(
-                    p,
-                    old_size,
-                    new_size,
-                    1,
-                    Type::U8,
-                    true,
-                )?))
+                Ok(Some(self.do_realloc(p, old_size, new_size)?))
+            }
+            // `@resize` is in-place-only and the interpreter's allocator has no
+            // size classes to grow into, so the honest model is "never resizes
+            // in place": it changes nothing and reports `false`, which the
+            // native allocator is also always free to do. A program whose
+            // result depends on a `true` here is depending on allocator
+            // internals the language does not promise.
+            "resize" => {
+                let p = self.eval(cfg, frame, args[0])?;
+                for a in &args[1..] {
+                    self.eval(cfg, frame, *a)?;
+                }
+                if let Value::Ptr(Some(target)) = p
+                    && self
+                        .heap
+                        .get(target.alloc)
+                        .is_some_and(|allocation| allocation.freed)
+                {
+                    return Err(unsupported(gap, "resize after free"));
+                }
+                Ok(Some(Value::Bool(false)))
             }
             "ptr_read" | "ptr_read_unaligned" => {
                 let p = self.eval(cfg, frame, args[0])?;
@@ -3683,9 +3733,33 @@ impl<'a> Interp<'a> {
                 let (pointee, _) = self
                     .pointer_pointee(result_ty)
                     .expect("validated @int_to_ptr result is a pointer");
+                // A `ptr mut u8` from `@alloc` becomes a typed pointer through
+                // this round trip; reinterpret the block's cells first so the
+                // decoded index is in the pointee's units (ADR-0059 Phase 3).
+                if let Some(target) = self.address_target(addr, pointee) {
+                    self.retype_untyped_bytes(target.alloc, pointee);
+                }
                 match self.address_target(addr, pointee) {
                     // A pointer-derived integer round-trips to its allocation.
-                    Some(target) => Ok(Some(Value::Ptr(Some(target)))),
+                    Some(target) => {
+                        // If the block's cells are still a different width than
+                        // the pointee, this pointer would read and write cells
+                        // of the wrong shape. A one-byte pointee is exempt: that
+                        // is the `ptr mut u8` base view `std/rawbuf.rue` forms to
+                        // pass a typed block back to `@realloc`/`@free`, which
+                        // never dereferences it. Anything wider is a genuine
+                        // reinterpretation the cell model cannot express, so it
+                        // stays a typed gap rather than a false agreement.
+                        let stride = self.type_byte_size(pointee).max(1);
+                        let cell_stride = self
+                            .heap
+                            .get(target.alloc)
+                            .map_or(stride, |allocation| allocation.elem_stride);
+                        if stride != cell_stride && stride > 1 {
+                            return Ok(None);
+                        }
+                        Ok(Some(Value::Ptr(Some(target))))
+                    }
                     // An arbitrary integer names no allocation: unmodelable,
                     // stays the typed `IntToPointer` model gap.
                     None => Ok(None),
@@ -3710,15 +3784,16 @@ impl<'a> Interp<'a> {
                 self.ptr_cell_write(&at, Value::Int(val & 0xFF), gap)?;
                 Ok(Some(Value::Unit))
             }
-            "byte_copy" => {
+            "byte_copy" | "byte_move" => {
                 let dst = self.eval(cfg, frame, args[0])?;
                 let src = self.eval(cfg, frame, args[1])?;
                 let count = self.eval(cfg, frame, args[2])?.as_int();
                 let dst = self.expect_ptr(dst, gap)?;
                 let src = self.expect_ptr(src, gap)?;
-                // Read all source bytes first so an overlapping copy is well
-                // defined (the runtime uses copy_nonoverlapping; corpus copies
-                // never overlap, but buffering keeps a same-allocation copy sane).
+                // Read all source bytes first. That is `@byte_move`'s defining
+                // semantics (memmove: copy as if through a temporary), and for
+                // `@byte_copy` it keeps a same-allocation copy sane even though
+                // overlap there is undefined behavior a corpus program avoids.
                 let mut buf = Vec::with_capacity(count.max(0) as usize);
                 for k in 0..count {
                     buf.push(self.byte_at(&src, k, gap)?);
@@ -3762,31 +3837,17 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// `@alloc(count)`: `count` zeroed cells of the pointee type, or null on
-    /// allocator failure (zero size or a byte size beyond [`MAX_ALLOC_BYTES`]).
-    fn do_alloc(&mut self, count: i128, pointee: Type) -> Step<Value> {
-        let stride = self.type_byte_size(pointee);
-        let Some(_bytes) = self.alloc_byte_size(count, stride)? else {
-            return Ok(Value::Ptr(None));
-        };
-        self.materialize_cells_guard(count)?;
-        let cells = (0..count).map(|_| self.zeroed_value(pointee)).collect();
-        let alloc = self.heap_alloc(Value::Aggregate(cells), stride, false);
-        Ok(Value::Ptr(Some(PtrTarget {
-            alloc,
-            path: Vec::new(),
-            index: 0,
-        })))
-    }
-
-    /// `@alloc_bytes(size, align)`: `size` zeroed byte cells, or null on failure.
-    fn do_alloc_bytes(&mut self, size: i128) -> Step<Value> {
+    /// `@alloc(size, align)`: `size` zeroed byte cells, or null on allocator
+    /// failure (zero size or a size beyond [`MAX_ALLOC_BYTES`]). The block is
+    /// marked untyped so the first typed pointer over it can reinterpret its
+    /// cells (see [`Allocation::untyped_bytes`]).
+    fn do_alloc(&mut self, size: i128) -> Step<Value> {
         let Some(_bytes) = self.alloc_byte_size(size, 1)? else {
             return Ok(Value::Ptr(None));
         };
         self.materialize_cells_guard(size)?;
         let cells = (0..size).map(|_| Value::Int(0)).collect();
-        let alloc = self.heap_alloc(Value::Aggregate(cells), 1, false);
+        let alloc = self.heap_alloc_with(Value::Aggregate(cells), 1, false, true);
         Ok(Value::Ptr(Some(PtrTarget {
             alloc,
             path: Vec::new(),
@@ -3800,25 +3861,11 @@ impl<'a> Interp<'a> {
     /// identity is deliberately unspecified. Returns null on `new == 0` or allocator failure, leaving the
     /// original allocation valid (spec 8.6:3), and traps on a `new * stride`
     /// overflow like the compiled size arithmetic (spec 8.6:1).
-    fn do_realloc(
-        &mut self,
-        p: Value,
-        old_count: i128,
-        new_count: i128,
-        stride: u64,
-        pointee: Type,
-        bytes: bool,
-    ) -> Step<Value> {
+    fn do_realloc(&mut self, p: Value, old_size: i128, new_size: i128) -> Step<Value> {
         let target = match p {
             Value::Ptr(Some(t)) => t,
-            // realloc(null, .., new) behaves like a fresh allocation.
-            Value::Ptr(None) => {
-                return if bytes {
-                    self.do_alloc_bytes(new_count)
-                } else {
-                    self.do_alloc(new_count, pointee)
-                };
-            }
+            // realloc(null, .., new_size) behaves like a fresh allocation.
+            Value::Ptr(None) => return self.do_alloc(new_size),
             _ => return Ok(Value::Ptr(None)),
         };
         if self
@@ -3826,22 +3873,21 @@ impl<'a> Interp<'a> {
             .get(target.alloc)
             .is_some_and(|allocation| allocation.freed)
         {
-            let name = if bytes { "realloc_bytes" } else { "realloc" };
             return Err(unsupported(
-                unsupported_intrinsic_kind(name),
+                unsupported_intrinsic_kind("realloc"),
                 "realloc after free",
             ));
         }
-        if new_count == 0 {
+        if new_size == 0 {
             if let Some(alloc) = self.heap.get_mut(target.alloc) {
                 alloc.freed = true;
             }
             return Ok(Value::Ptr(None));
         }
-        let Some(_new_bytes) = self.alloc_byte_size(new_count, stride)? else {
+        if self.alloc_byte_size(new_size, 1)?.is_none() {
             return Ok(Value::Ptr(None));
-        };
-        if new_count <= old_count {
+        }
+        if new_size <= old_size {
             // No move needed; the original block already holds the data.
             return Ok(Value::Ptr(Some(PtrTarget {
                 alloc: target.alloc,
@@ -3849,22 +3895,42 @@ impl<'a> Interp<'a> {
                 index: 0,
             })));
         }
+        // Sizes are physical bytes but the block's cells may already have been
+        // reinterpreted as a wider element type (see
+        // [`Allocation::untyped_bytes`]), so convert through its stride. A byte
+        // size that is not a whole number of cells cannot be modeled against
+        // this cell-shaped heap and stays a typed gap rather than a guess.
+        let (stride, untyped) = match self.heap.get(target.alloc) {
+            Some(allocation) => (allocation.elem_stride.max(1), allocation.untyped_bytes),
+            None => (1, true),
+        };
+        let stride_i128 = stride as i128;
+        if new_size % stride_i128 != 0 {
+            return Err(unsupported(
+                unsupported_intrinsic_kind("realloc"),
+                "realloc to a size that is not a whole number of elements",
+            ));
+        }
+        let new_count = new_size / stride_i128;
+        let old_count = old_size / stride_i128;
         self.materialize_cells_guard(new_count)?;
         let old_cells = match self.heap.get(target.alloc).map(|a| &a.root) {
             Some(Value::Aggregate(cells)) => cells.clone(),
             _ => Vec::new(),
         };
+        // Growth is uninitialized storage; the interpreter fills it with a
+        // zeroed value shaped like the cells already there so a later typed
+        // read finds a well-formed cell rather than a shape mismatch.
+        let fill = old_cells.first().map_or(Value::Int(0), zeroed_like);
         let mut cells: Vec<Value> = Vec::with_capacity(new_count as usize);
         for i in 0..new_count {
             if (i as usize) < old_cells.len() && i < old_count {
                 cells.push(old_cells[i as usize].clone());
-            } else if bytes {
-                cells.push(Value::Int(0));
             } else {
-                cells.push(self.zeroed_value(pointee));
+                cells.push(fill.clone());
             }
         }
-        let alloc = self.heap_alloc(Value::Aggregate(cells), stride, false);
+        let alloc = self.heap_alloc_with(Value::Aggregate(cells), stride, false, untyped);
         self.heap[target.alloc].freed = true;
         Ok(Value::Ptr(Some(PtrTarget {
             alloc,
@@ -3911,6 +3977,22 @@ impl<'a> Interp<'a> {
     }
 }
 
+/// A zeroed value with the same shape as `value`.
+///
+/// Reallocation growth is uninitialized storage, but the interpreter's cells
+/// are typed values, so a grown block's new cells must at least have the shape
+/// its existing cells do. Cloning the shape avoids having to rediscover the
+/// element type the compiler no longer records at the allocation site
+/// (ADR-0059 Phase 3, RUE-961).
+fn zeroed_like(value: &Value) -> Value {
+    match value {
+        Value::Aggregate(cells) => Value::Aggregate(cells.iter().map(zeroed_like).collect()),
+        Value::Bool(_) => Value::Bool(false),
+        Value::Ptr(_) => Value::Ptr(None),
+        _ => Value::Int(0),
+    }
+}
+
 /// Whether the interpreter now executes this pointer/heap intrinsic instead of
 /// reporting it as a model gap. Excludes the still-unmodeled text parses and the
 /// empty-slice `@int_to_ptr(0)` special case (kept as its own typed gap).
@@ -3927,14 +4009,14 @@ fn modeled_pointer_intrinsic(kind: UnsupportedIntrinsicKind) -> bool {
             | I::RawMutableAddress
             | I::FieldPointer
             | I::Allocate
+            | I::AllocateZeroed
             | I::Free
             | I::Reallocate
-            | I::AllocateBytes
-            | I::FreeBytes
-            | I::ReallocateBytes
+            | I::Resize
             | I::ByteRead
             | I::ByteWrite
             | I::ByteCopy
+            | I::ByteMove
             | I::ByteSet
     )
 }

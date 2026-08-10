@@ -299,9 +299,9 @@ fn _normalize_net_errno(e: i64) -> NetworkError {
 // heap buffer. A `[u8; 16]` VALUE lives in 8-byte logical slots (ADR-0040),
 // so its storage is not the contiguous byte image the kernel needs; this is
 // the one copy from value space into byte space. Caller frees with
-// `@free_bytes(buf, sockaddr_in_len(), 1)`.
+// `@free(buf, sockaddr_in_len(), 1)`.
 fn _sockaddr_to_kernel_buf(b: [u8; 16]) -> ptr mut u8 {
-    let buf: ptr mut u8 = checked { @alloc_bytes(sockaddr_in_len(), 1) };
+    let buf: ptr mut u8 = checked { @alloc(sockaddr_in_len(), 1) };
     if checked { @ptr_to_int(buf) } == 0 {
         @panic("out of memory");
     }
@@ -360,7 +360,7 @@ pub struct TcpStream {
         let baddr: u64 = checked { @ptr_to_int(buf) };
         let fd_u: u64 = @intCast(fd);
         let ret: i64 = checked { @syscall(_sys_connect(), fd_u, baddr, sockaddr_in_len()) };
-        checked { @free_bytes(buf, sockaddr_in_len(), 1); };
+        checked { @free(buf, sockaddr_in_len(), 1); };
         if ret < 0 {
             _close_raw(fd);
             return R.Err(_normalize_net_errno(0 - ret));
@@ -378,7 +378,7 @@ pub struct TcpStream {
         if want == 0 {
             return R.Err(NetworkError.InvalidInput);
         }
-        let tmp: ptr mut u8 = checked { @alloc_bytes(want, 1) };
+        let tmp: ptr mut u8 = checked { @alloc(want, 1) };
         if checked { @ptr_to_int(tmp) } == 0 {
             @panic("out of memory");
         }
@@ -386,7 +386,7 @@ pub struct TcpStream {
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_net_read(), fd_u, addr, want) };
         if ret < 0 {
-            checked { @free_bytes(tmp, want, 1); };
+            checked { @free(tmp, want, 1); };
             return R.Err(_normalize_net_errno(0 - ret));
         }
         let n: u64 = @intCast(ret);
@@ -396,7 +396,7 @@ pub struct TcpStream {
             buf.push(b);
             i += 1;
         }
-        checked { @free_bytes(tmp, want, 1); };
+        checked { @free(tmp, want, 1); };
         R.Ok(n)
     }
 
@@ -409,7 +409,7 @@ pub struct TcpStream {
         if n == 0 {
             return R.Ok(0);
         }
-        let tmp: ptr mut u8 = checked { @alloc_bytes(n, 1) };
+        let tmp: ptr mut u8 = checked { @alloc(n, 1) };
         if checked { @ptr_to_int(tmp) } == 0 {
             @panic("out of memory");
         }
@@ -421,7 +421,7 @@ pub struct TcpStream {
         let addr: u64 = checked { @ptr_to_int(tmp) };
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_net_write(), fd_u, addr, n) };
-        checked { @free_bytes(tmp, n, 1); };
+        checked { @free(tmp, n, 1); };
         if ret < 0 {
             R.Err(_normalize_net_errno(0 - ret))
         } else {
@@ -436,7 +436,7 @@ pub struct TcpStream {
         if n == 0 {
             return R.Ok(());
         }
-        let tmp: ptr mut u8 = checked { @alloc_bytes(n, 1) };
+        let tmp: ptr mut u8 = checked { @alloc(n, 1) };
         if checked { @ptr_to_int(tmp) } == 0 {
             @panic("out of memory");
         }
@@ -457,20 +457,20 @@ pub struct TcpStream {
                     _ => false,
                 };
                 if !retry {
-                    checked { @free_bytes(tmp, n, 1); };
+                    checked { @free(tmp, n, 1); };
                     return R.Err(e);
                 }
             } else {
                 let wrote: u64 = @intCast(ret);
                 if wrote == 0 {
                     // No progress on a non-error write; stop rather than spin.
-                    checked { @free_bytes(tmp, n, 1); };
+                    checked { @free(tmp, n, 1); };
                     return R.Err(NetworkError.Other(0));
                 }
                 off += wrote;
             }
         }
-        checked { @free_bytes(tmp, n, 1); };
+        checked { @free(tmp, n, 1); };
         R.Ok(())
     }
 
@@ -543,7 +543,7 @@ pub struct TcpListener {
         let baddr: u64 = checked { @ptr_to_int(buf) };
         let fd_u: u64 = @intCast(fd);
         let bret: i64 = checked { @syscall(_sys_bind(), fd_u, baddr, sockaddr_in_len()) };
-        checked { @free_bytes(buf, sockaddr_in_len(), 1); };
+        checked { @free(buf, sockaddr_in_len(), 1); };
         if bret < 0 {
             _close_raw(fd);
             return R.Err(_normalize_net_errno(0 - bret));
@@ -562,13 +562,13 @@ pub struct TcpListener {
     // (ADR-0060 §3).
     fn local_addr(inout self) -> result.Result(SockAddr, NetworkError) {
         let R = result.Result(SockAddr, NetworkError);
-        let abuf: ptr mut u8 = checked { @alloc_bytes(sockaddr_in_len(), 1) };
+        let abuf: ptr mut u8 = checked { @alloc(sockaddr_in_len(), 1) };
         if checked { @ptr_to_int(abuf) } == 0 {
             @panic("out of memory");
         }
         // socklen_t in/out argument: starts at 16, kernel writes the actual
         // length back (little-endian u32 on both v1 targets).
-        let lbuf: ptr mut u8 = checked { @alloc_bytes(4, 1) };
+        let lbuf: ptr mut u8 = checked { @alloc(4, 1) };
         if checked { @ptr_to_int(lbuf) } == 0 {
             @panic("out of memory");
         }
@@ -581,18 +581,18 @@ pub struct TcpListener {
         let fd_u: u64 = @intCast(self.fd);
         let ret: i64 = checked { @syscall(_sys_getsockname(), fd_u, aaddr, laddr) };
         if ret < 0 {
-            checked { @free_bytes(abuf, sockaddr_in_len(), 1); };
-            checked { @free_bytes(lbuf, 4, 1); };
+            checked { @free(abuf, sockaddr_in_len(), 1); };
+            checked { @free(lbuf, 4, 1); };
             return R.Err(_normalize_net_errno(0 - ret));
         }
         let l0 = checked { @byte_read(lbuf, 0) };
         let l1 = checked { @byte_read(lbuf, 1) };
         let l2 = checked { @byte_read(lbuf, 2) };
         let l3 = checked { @byte_read(lbuf, 3) };
-        checked { @free_bytes(lbuf, 4, 1); };
+        checked { @free(lbuf, 4, 1); };
         let written_len = binary.u32_from_le_bytes([l0, l1, l2, l3]);
         if written_len != 16 {
-            checked { @free_bytes(abuf, sockaddr_in_len(), 1); };
+            checked { @free(abuf, sockaddr_in_len(), 1); };
             return R.Err(NetworkError.InvalidInput);
         }
         let b0 = checked { @byte_read(abuf, 0) };
@@ -603,7 +603,7 @@ pub struct TcpListener {
         let b5 = checked { @byte_read(abuf, 5) };
         let b6 = checked { @byte_read(abuf, 6) };
         let b7 = checked { @byte_read(abuf, 7) };
-        checked { @free_bytes(abuf, sockaddr_in_len(), 1); };
+        checked { @free(abuf, sockaddr_in_len(), 1); };
         let bytes: [u8; 16] = [b0, b1, b2, b3, b4, b5, b6, b7, 0, 0, 0, 0, 0, 0, 0, 0];
         let O = option.Option(SockAddr);
         match SockAddr.from_sockaddr_in(bytes) {

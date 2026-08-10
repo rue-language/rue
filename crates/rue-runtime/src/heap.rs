@@ -94,6 +94,35 @@ pub unsafe fn free(pointer: *mut u8, size: u64, align: u64) {
     unsafe { ALLOCATOR.deallocate(pointer, size, align) };
 }
 
+/// Allocate storage for the supplied layout with every byte set to zero.
+///
+/// Returns null on the same failures as [`alloc`]. The allocator has no cheaper
+/// zeroing path than writing the bytes today (its arenas are recycled), so this
+/// allocates and clears; the intrinsic exists so the guarantee is expressible
+/// and so a future zero-page mapping is a runtime-local change (RUE-968).
+pub fn alloc_zeroed(size: u64, align: u64) -> *mut u8 {
+    let pointer = ALLOCATOR.allocate(size, align);
+    if !pointer.is_null() {
+        // SAFETY: a successful allocation is writable for `size` bytes.
+        unsafe { crate::memory::memset(pointer, 0, size as usize) };
+    }
+    pointer
+}
+
+/// Try to relabel an allocation as `new_size` bytes without moving it.
+///
+/// Reports whether the block now describes `new_size` bytes at the same
+/// address. A `false` result changed nothing: the caller keeps `old_size`.
+///
+/// # Safety
+///
+/// A non-null `pointer` must identify a live allocation for `old_size` and
+/// `align`.
+pub unsafe fn resize(pointer: *mut u8, old_size: u64, new_size: u64, align: u64) -> bool {
+    // SAFETY: inherited from this function's caller contract.
+    unsafe { ALLOCATOR.resize_in_place(pointer, old_size, new_size, align) }
+}
+
 /// Resize an allocation, preserving `min(old_size, new_size)` bytes.
 ///
 /// Allocation failure returns null and leaves the old allocation live and
@@ -234,6 +263,41 @@ mod tests {
         );
         // SAFETY: failed realloc left pointer live.
         unsafe { free(pointer, 32, 8) };
+    }
+
+    #[test]
+    fn zeroed_allocation_reads_as_zero_and_reports_failure_as_null() {
+        let pointer = alloc_zeroed(96, 8);
+        assert!(!pointer.is_null());
+        // SAFETY: the allocation is live and readable for 96 bytes.
+        assert!(
+            unsafe { core::slice::from_raw_parts(pointer, 96) }
+                .iter()
+                .all(|byte| *byte == 0)
+        );
+        // SAFETY: pointer is live with this layout.
+        unsafe { free(pointer, 96, 8) };
+
+        assert!(alloc_zeroed(0, 8).is_null());
+        assert!(alloc_zeroed(16, 3).is_null());
+    }
+
+    #[test]
+    fn in_place_resize_keeps_the_pointer_or_changes_nothing() {
+        let pointer = alloc(65, 8);
+        assert!(!pointer.is_null());
+        // SAFETY: the allocation is live and writable for 65 bytes.
+        unsafe { pointer.write(7) };
+
+        // SAFETY: pointer is live with layout (65, 8).
+        assert!(unsafe { resize(pointer, 65, 120, 8) });
+        // SAFETY: an accepted in-place resize never moves or clears the block.
+        assert_eq!(unsafe { pointer.read() }, 7);
+
+        // SAFETY: pointer is live with layout (120, 8).
+        assert!(!unsafe { resize(pointer, 120, 200 * 1024, 8) });
+        // SAFETY: the refusal left the (120, 8) layout in force.
+        unsafe { free(pointer, 120, 8) };
     }
 
     #[test]

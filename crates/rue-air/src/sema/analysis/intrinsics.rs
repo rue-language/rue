@@ -252,8 +252,9 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // them before the per-intrinsic dispatch so every one shares a single
         // diagnostic. `@syscall` has its own gating; the set here is
         // @raw/@raw_mut/@field_ptr/@ptr_read/@ptr_write/@ptr_offset/
-        // @ptr_to_int/@int_to_ptr plus the heap intrinsics
-        // @alloc/@free/@realloc (RUE-1, RUE-301).
+        // @ptr_to_int/@int_to_ptr plus the unified byte allocation family
+        // @alloc/@alloc_zeroed/@free/@realloc/@resize (RUE-1, RUE-301,
+        // ADR-0059 Phase 3).
         if ctx.checked_depth == 0
             && (name == known.ptr_read
                 || name == known.ptr_write
@@ -266,25 +267,24 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 || name == known.raw_mut
                 || name == known.field_ptr
                 || name == known.alloc
+                || name == known.alloc_zeroed
                 || name == known.free
                 || name == known.realloc
-                || name == known.alloc_bytes
-                || name == known.realloc_bytes
-                || name == known.free_bytes
+                || name == known.resize
                 || name == known.byte_read
                 || name == known.byte_write
                 || name == known.byte_copy
+                || name == known.byte_move
                 || name == known.byte_set
                 || name == known.arg_ptr
                 || name == known.env_ptr)
         {
             let intrinsic_name_str = self.body_interner().resolve(&name);
             let kind = if name == known.alloc
+                || name == known.alloc_zeroed
                 || name == known.free
                 || name == known.realloc
-                || name == known.alloc_bytes
-                || name == known.realloc_bytes
-                || name == known.free_bytes
+                || name == known.resize
             {
                 "heap"
             } else {
@@ -414,23 +414,19 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_ptr_to_int_intrinsic(air, name, &args, span, ctx)
         } else if name == known.int_to_ptr {
             self.analyze_int_to_ptr_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.alloc {
+        } else if name == known.alloc || name == known.alloc_zeroed {
             self.analyze_alloc_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.free {
-            self.analyze_free_intrinsic(air, name, &args, span, ctx)
         } else if name == known.realloc {
             self.analyze_realloc_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.alloc_bytes {
-            self.analyze_alloc_bytes_intrinsic(air, name, inst_ref, &args, span, ctx)
-        } else if name == known.realloc_bytes {
-            self.analyze_realloc_bytes_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.free_bytes {
-            self.analyze_free_bytes_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.resize {
+            self.analyze_resize_intrinsic(air, name, &args, span, ctx)
+        } else if name == known.free {
+            self.analyze_free_intrinsic(air, name, &args, span, ctx)
         } else if name == known.byte_read {
             self.analyze_byte_read_intrinsic(air, name, &args, span, ctx)
         } else if name == known.byte_write {
             self.analyze_byte_write_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.byte_copy {
+        } else if name == known.byte_copy || name == known.byte_move {
             self.analyze_byte_copy_intrinsic(air, name, &args, span, ctx)
         } else if name == known.byte_set {
             self.analyze_byte_set_intrinsic(air, name, &args, span, ctx)

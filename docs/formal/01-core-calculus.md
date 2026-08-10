@@ -1957,8 +1957,8 @@ citation:
 `StrBuf` is the `u8` refinement of the trio's growable rung plus the
 byte-string convention (ADR-0043; the RUE-386 two-types ruling), and like
 `ArrayBuf` it is **source-defined** (`std/strbuf.rue`) over the byte-oriented
-unchecked intrinsics (`@alloc_bytes`/`@realloc_bytes`/`@free_bytes`/
-`@byte_read`/`@byte_write`/`@byte_copy`, ADR-0058), so the same
+unchecked intrinsics (`@alloc`/`@realloc`/`@free`/
+`@byte_read`/`@byte_write`/`@byte_copy`, ADR-0059), so the same
 defining-equation device applies at its public boundary. Its value is
 `{ h ; len ; cap }_StrBuf` over `u8` cells, with one representation twist the
 source pins in its header comment: **`cap = 0` is the non-owning state.**

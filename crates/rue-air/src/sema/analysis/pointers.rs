@@ -369,12 +369,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, result_type))
     }
 
-    /// Analyze @alloc intrinsic: allocate an uninitialized heap block (RUE-1).
-    /// Signature: @alloc(count: u64) -> ptr mut T
-    /// The element type T (and thus the result pointer type `ptr mut T`) is
-    /// inferred from context, exactly like @int_to_ptr. The allocation is
-    /// `count * size_of(T)` bytes; the returned pointer is null on failure
-    /// (the caller is expected to check), so this is an unchecked operation.
+    /// Analyze `@alloc(size, align)` and `@alloc_zeroed(size, align)`, the
+    /// unified byte-and-alignment allocation entry points (ADR-0059 Phase 3,
+    /// RUE-961 / RUE-968).
+    ///
+    /// `size` is a physical byte count and `align` a power-of-two byte count;
+    /// the result is always `ptr mut u8`. Typed allocation is source-computed
+    /// sugar — `@alloc(count * @size_of(T), @align_of(T))` — so nothing here
+    /// consults a pointee type. `@alloc_zeroed` shares this shape and differs
+    /// only in the dynamic guarantee that the storage reads as zero bytes.
     pub(super) fn analyze_alloc_intrinsic(
         &mut self,
         air: &mut Air,
@@ -384,209 +387,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
-        if args.len() != 1 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "alloc".to_string(),
-                    expected: 1,
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-
-        let count_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let count_type = count_result.ty;
-        if count_type != Type::U64 && !count_type.is_error() && !count_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "alloc".to_string(),
-                    expected: "u64".to_string(),
-                    found: self.format_type_name(count_type),
-                })),
-                span,
-            ));
-        }
-
-        // The result type comes from HM inference (assignment/annotation
-        // context) and must be a mutable pointer `ptr mut T`. In a discarded or
-        // otherwise unconstrained position (`@alloc(4);`) the result variable
-        // has no context to fix its pointee and decays to `<error>`; report
-        // that cleanly rather than letting the `<error>`-typed value reach the
-        // end of analysis as a graceful ICE (RUE-153 backstop, found by the
-        // sema fuzzer). The `count` arg was analyzed above via `?`, so an
-        // `<error>` result here is specifically the unresolved-pointee case.
-        let result_type = Self::get_resolved_type(ctx, inst_ref, span, "@alloc intrinsic")?;
-        if result_type.is_error() {
-            return Err(CompileError::new(
-                ErrorKind::CannotInferPointeeType("alloc".to_string()),
-                span,
-            ));
-        }
-        if !result_type.is_ptr_mut() && !result_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "alloc".to_string(),
-                    expected: "ptr mut T".to_string(),
-                    found: self.format_type_name(result_type),
-                })),
-                span,
-            ));
-        }
-
-        let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::AllocTyped),
-            name,
-            &[count_result.air_ref],
-            result_type,
-            span,
-        )?;
-        Ok(AnalysisResult::new(air_ref, result_type))
-    }
-
-    /// Analyze @free intrinsic: free a block previously `@alloc`'d (RUE-1).
-    /// Signature: @free(ptr: ptr mut T, count: u64) -> ()
-    /// `count` must match the element count passed to `@alloc` so the runtime
-    /// can compute the block size.
-    pub(super) fn analyze_free_intrinsic(
-        &mut self,
-        air: &mut Air,
-        name: Spur,
-        args: &[RirCallArg],
-        span: Span,
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<AnalysisResult> {
+        let intrinsic = self.body_interner().resolve(&name).to_string();
         if args.len() != 2 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
-                    name: "free".to_string(),
-                    expected: 2,
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-
-        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let ptr_type = ptr_result.ty;
-        if !ptr_type.is_ptr_mut() && !ptr_type.is_error() && !ptr_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "free".to_string(),
-                    expected: "ptr mut T".to_string(),
-                    found: self.format_type_name(ptr_type),
-                })),
-                span,
-            ));
-        }
-
-        let count_result = self.analyze_inst(air, args[1].value, ctx)?;
-        let count_type = count_result.ty;
-        if count_type != Type::U64 && !count_type.is_error() && !count_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "free".to_string(),
-                    expected: "u64".to_string(),
-                    found: self.format_type_name(count_type),
-                })),
-                span,
-            ));
-        }
-
-        let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::FreeTyped),
-            name,
-            &[ptr_result.air_ref, count_result.air_ref],
-            Type::UNIT,
-            span,
-        )?;
-        Ok(AnalysisResult::new(air_ref, Type::UNIT))
-    }
-
-    /// Analyze @realloc intrinsic: grow/shrink an `@alloc`'d block (RUE-1).
-    /// Signature: @realloc(ptr: ptr mut T, old_count: u64, new_count: u64) -> ptr mut T
-    /// The result pointer has the same type as `ptr`; contents up to
-    /// `min(old_count, new_count)` elements are preserved (runtime copies).
-    pub(super) fn analyze_realloc_intrinsic(
-        &mut self,
-        air: &mut Air,
-        name: Spur,
-        args: &[RirCallArg],
-        span: Span,
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<AnalysisResult> {
-        if args.len() != 3 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "realloc".to_string(),
-                    expected: 3,
-                    found: args.len(),
-                },
-                span,
-            ));
-        }
-
-        let ptr_result = self.analyze_inst(air, args[0].value, ctx)?;
-        let ptr_type = ptr_result.ty;
-        if !ptr_type.is_ptr_mut() && !ptr_type.is_error() && !ptr_type.is_never() {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                    name: "realloc".to_string(),
-                    expected: "ptr mut T".to_string(),
-                    found: self.format_type_name(ptr_type),
-                })),
-                span,
-            ));
-        }
-
-        let old_result = self.analyze_inst(air, args[1].value, ctx)?;
-        let new_result = self.analyze_inst(air, args[2].value, ctx)?;
-        for count_result in [&old_result, &new_result] {
-            let count_type = count_result.ty;
-            if count_type != Type::U64 && !count_type.is_error() && !count_type.is_never() {
-                return Err(CompileError::new(
-                    ErrorKind::IntrinsicTypeMismatch(Box::new(IntrinsicTypeMismatchError {
-                        name: "realloc".to_string(),
-                        expected: "u64".to_string(),
-                        found: self.format_type_name(count_type),
-                    })),
-                    span,
-                ));
-            }
-        }
-
-        let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::ReallocTyped),
-            name,
-            &[ptr_result.air_ref, old_result.air_ref, new_result.air_ref],
-            ptr_type,
-            span,
-        )?;
-        Ok(AnalysisResult::new(air_ref, ptr_type))
-    }
-
-    /// Analyze the preview raw-byte intrinsic family (RUE-879). Unlike typed
-    /// pointer operations, byte counts and offsets here are physical bytes and
-    /// access operations transfer exactly one byte.
-    ///
-    /// The byte allocators carry an explicit `align: u64` byte count that must
-    /// be a power of two (ADR-0059 Phase 2, RUE-960). A comptime-constant
-    /// `align` that is zero or not a power of two is rejected here; a
-    /// non-constant `align` is a documented checked-gate contract left to the
-    /// runtime (spec 9.2:14j).
-    pub(super) fn analyze_alloc_bytes_intrinsic(
-        &mut self,
-        air: &mut Air,
-        name: Spur,
-        inst_ref: InstRef,
-        args: &[RirCallArg],
-        span: Span,
-        ctx: &mut AnalysisContext,
-    ) -> CompileResult<AnalysisResult> {
-        if args.len() != 2 {
-            return Err(CompileError::new(
-                ErrorKind::IntrinsicWrongArgCount {
-                    name: "alloc_bytes".to_string(),
+                    name: intrinsic,
                     expected: 2,
                     found: args.len(),
                 },
@@ -594,10 +399,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         let size = self.analyze_inst(air, args[0].value, ctx)?;
-        self.require_intrinsic_type("alloc_bytes", size.ty, Type::U64, span)?;
+        self.require_intrinsic_type(&intrinsic, size.ty, Type::U64, span)?;
         let align = self.analyze_inst(air, args[1].value, ctx)?;
-        self.require_intrinsic_type("alloc_bytes", align.ty, Type::U64, span)?;
-        self.require_power_of_two_align("alloc_bytes", args[1].value, span, ctx)?;
+        self.require_intrinsic_type(&intrinsic, align.ty, Type::U64, span)?;
+        self.require_power_of_two_align(&intrinsic, args[1].value, span, ctx)?;
         let result_ty = Type::new_ptr_mut(self.body_type_pool().intern_ptr_mut_from_type(Type::U8));
         if let Some(expected) = ctx.resolved_type_of(inst_ref)
             && !self.types_equivalent(expected, result_ty)
@@ -606,8 +411,13 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         {
             return Err(self.type_mismatch_error(expected, result_ty, span));
         }
+        let zeroed = name == self.known_symbols().alloc_zeroed;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::AllocBytes),
+            Some(if zeroed {
+                crate::RuntimeCallKind::AllocZeroed
+            } else {
+                crate::RuntimeCallKind::Alloc
+            }),
             name,
             &[size.air_ref, align.air_ref],
             result_ty,
@@ -616,7 +426,10 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, result_ty))
     }
 
-    pub(super) fn analyze_realloc_bytes_intrinsic(
+    /// Analyze `@realloc(p, old_size, align, new_size) -> ptr mut u8`
+    /// (ADR-0059 Phase 3, RUE-961). Every size is a physical byte count and
+    /// `align` must equal the alignment the block was allocated with.
+    pub(super) fn analyze_realloc_intrinsic(
         &mut self,
         air: &mut Air,
         name: Spur,
@@ -627,7 +440,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if args.len() != 4 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
-                    name: "realloc_bytes".to_string(),
+                    name: "realloc".to_string(),
                     expected: 4,
                     found: args.len(),
                 },
@@ -635,16 +448,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         let ptr = self.analyze_inst(air, args[0].value, ctx)?;
-        self.require_mut_u8_pointer("realloc_bytes", ptr.ty, span)?;
+        self.require_mut_u8_pointer("realloc", ptr.ty, span)?;
         let old_size = self.analyze_inst(air, args[1].value, ctx)?;
         let align = self.analyze_inst(air, args[2].value, ctx)?;
         let new_size = self.analyze_inst(air, args[3].value, ctx)?;
-        self.require_intrinsic_type("realloc_bytes", old_size.ty, Type::U64, span)?;
-        self.require_intrinsic_type("realloc_bytes", align.ty, Type::U64, span)?;
-        self.require_intrinsic_type("realloc_bytes", new_size.ty, Type::U64, span)?;
-        self.require_power_of_two_align("realloc_bytes", args[2].value, span, ctx)?;
+        self.require_intrinsic_type("realloc", old_size.ty, Type::U64, span)?;
+        self.require_intrinsic_type("realloc", align.ty, Type::U64, span)?;
+        self.require_intrinsic_type("realloc", new_size.ty, Type::U64, span)?;
+        self.require_power_of_two_align("realloc", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::ReallocBytes),
+            Some(crate::RuntimeCallKind::Realloc),
             name,
             &[
                 ptr.air_ref,
@@ -658,7 +471,59 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, ptr.ty))
     }
 
-    pub(super) fn analyze_free_bytes_intrinsic(
+    /// Analyze `@resize(p, old_size, align, new_size) -> bool` (RUE-968), the
+    /// in-place-only counterpart of `@realloc` modeled on Zig's
+    /// `Allocator.resize`. The block never moves: the call either relabels the
+    /// existing allocation as `new_size` bytes and evaluates to `true`, or
+    /// changes nothing and evaluates to `false`. Its operand shape is exactly
+    /// `@realloc`'s so a caller can fall back to `@realloc` without reordering
+    /// arguments.
+    pub(super) fn analyze_resize_intrinsic(
+        &mut self,
+        air: &mut Air,
+        name: Spur,
+        args: &[RirCallArg],
+        span: Span,
+        ctx: &mut AnalysisContext,
+    ) -> CompileResult<AnalysisResult> {
+        if args.len() != 4 {
+            return Err(CompileError::new(
+                ErrorKind::IntrinsicWrongArgCount {
+                    name: "resize".to_string(),
+                    expected: 4,
+                    found: args.len(),
+                },
+                span,
+            ));
+        }
+        let ptr = self.analyze_inst(air, args[0].value, ctx)?;
+        self.require_mut_u8_pointer("resize", ptr.ty, span)?;
+        let old_size = self.analyze_inst(air, args[1].value, ctx)?;
+        let align = self.analyze_inst(air, args[2].value, ctx)?;
+        let new_size = self.analyze_inst(air, args[3].value, ctx)?;
+        self.require_intrinsic_type("resize", old_size.ty, Type::U64, span)?;
+        self.require_intrinsic_type("resize", align.ty, Type::U64, span)?;
+        self.require_intrinsic_type("resize", new_size.ty, Type::U64, span)?;
+        self.require_power_of_two_align("resize", args[2].value, span, ctx)?;
+        let air_ref = air.add_intrinsic(
+            Some(crate::RuntimeCallKind::Resize),
+            name,
+            &[
+                ptr.air_ref,
+                old_size.air_ref,
+                align.air_ref,
+                new_size.air_ref,
+            ],
+            Type::BOOL,
+            span,
+        )?;
+        Ok(AnalysisResult::new(air_ref, Type::BOOL))
+    }
+
+    /// Analyze `@free(p, size, align)` (ADR-0059 Phase 3, RUE-961). The
+    /// sizeless-allocator ABI: the caller returns the block's `(size, align)`
+    /// so the runtime keeps no per-block header.
+    pub(super) fn analyze_free_intrinsic(
         &mut self,
         air: &mut Air,
         name: Spur,
@@ -669,7 +534,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
-                    name: "free_bytes".to_string(),
+                    name: "free".to_string(),
                     expected: 3,
                     found: args.len(),
                 },
@@ -677,14 +542,14 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         let ptr = self.analyze_inst(air, args[0].value, ctx)?;
-        self.require_mut_u8_pointer("free_bytes", ptr.ty, span)?;
+        self.require_mut_u8_pointer("free", ptr.ty, span)?;
         let size = self.analyze_inst(air, args[1].value, ctx)?;
         let align = self.analyze_inst(air, args[2].value, ctx)?;
-        self.require_intrinsic_type("free_bytes", size.ty, Type::U64, span)?;
-        self.require_intrinsic_type("free_bytes", align.ty, Type::U64, span)?;
-        self.require_power_of_two_align("free_bytes", args[2].value, span, ctx)?;
+        self.require_intrinsic_type("free", size.ty, Type::U64, span)?;
+        self.require_intrinsic_type("free", align.ty, Type::U64, span)?;
+        self.require_power_of_two_align("free", args[2].value, span, ctx)?;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::FreeBytes),
+            Some(crate::RuntimeCallKind::Free),
             name,
             &[ptr.air_ref, size.air_ref, align.air_ref],
             Type::UNIT,
@@ -693,11 +558,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
-    /// Reject a comptime-constant byte-allocator `align` argument that is zero
-    /// or not a power of two (ADR-0059 Phase 2, RUE-960). A non-constant
-    /// `align` evaluates to `None` here and is permitted: the power-of-two
-    /// contract for runtime values is documented checked-gate territory
-    /// (spec 9.2:14j), enforced by the allocator rather than the compiler.
+    /// Reject a comptime-constant allocator `align` argument that is zero or
+    /// not a power of two (ADR-0059, RUE-960/RUE-961). A non-constant `align`
+    /// evaluates to `None` here and is permitted: the power-of-two contract for
+    /// runtime values is documented checked-gate territory (spec 9.2:13),
+    /// enforced by the allocator rather than the compiler.
     fn require_power_of_two_align(
         &mut self,
         name: &str,
@@ -781,11 +646,15 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         Ok(AnalysisResult::new(air_ref, Type::UNIT))
     }
 
-    /// Analyze `@byte_copy(dst: ptr mut u8, src: ptr const u8 | ptr mut u8,
-    /// size: u64) -> ()` (ADR-0058 Phase 1, RUE-937). A memcpy-shaped bulk copy
-    /// of `size` physical bytes; `dst` and `src` must not overlap (undefined
-    /// behavior otherwise) and `size == 0` is a no-op. Lowers to the shared
-    /// `__rue_byte_copy` runtime helper.
+    /// Analyze the bulk byte-move pair `@byte_copy(dst, src, size)` and
+    /// `@byte_move(dst, src, size)` (ADR-0059 Phase 1, RUE-937 / RUE-964).
+    /// Both take `dst: ptr mut u8`, `src: ptr const u8 | ptr mut u8`, and a
+    /// `size: u64` physical byte count, and both evaluate to `()` with
+    /// `size == 0` a no-op. They differ only in the overlap contract:
+    /// `@byte_copy` is memcpy-shaped and overlapping regions are undefined
+    /// behavior, while `@byte_move` is memmove-shaped and copies as if through
+    /// a temporary buffer. They lower to the `__rue_byte_copy` and
+    /// `__rue_byte_move` runtime helpers respectively.
     pub(super) fn analyze_byte_copy_intrinsic(
         &mut self,
         air: &mut Air,
@@ -794,10 +663,11 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         span: Span,
         ctx: &mut AnalysisContext,
     ) -> CompileResult<AnalysisResult> {
+        let intrinsic = self.body_interner().resolve(&name).to_string();
         if args.len() != 3 {
             return Err(CompileError::new(
                 ErrorKind::IntrinsicWrongArgCount {
-                    name: "byte_copy".to_string(),
+                    name: intrinsic,
                     expected: 3,
                     found: args.len(),
                 },
@@ -805,13 +675,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             ));
         }
         let dst = self.analyze_inst(air, args[0].value, ctx)?;
-        self.require_mut_u8_pointer("byte_copy", dst.ty, span)?;
+        self.require_mut_u8_pointer(&intrinsic, dst.ty, span)?;
         let src = self.analyze_inst(air, args[1].value, ctx)?;
-        self.require_u8_pointer("byte_copy", src.ty, span)?;
+        self.require_u8_pointer(&intrinsic, src.ty, span)?;
         let size = self.analyze_inst(air, args[2].value, ctx)?;
-        self.require_intrinsic_type("byte_copy", size.ty, Type::U64, span)?;
+        self.require_intrinsic_type(&intrinsic, size.ty, Type::U64, span)?;
+        let overlapping = name == self.known_symbols().byte_move;
         let air_ref = air.add_intrinsic(
-            Some(crate::RuntimeCallKind::ByteCopy),
+            Some(if overlapping {
+                crate::RuntimeCallKind::ByteMove
+            } else {
+                crate::RuntimeCallKind::ByteCopy
+            }),
             name,
             &[dst.air_ref, src.air_ref, size.air_ref],
             Type::UNIT,

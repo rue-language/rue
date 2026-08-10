@@ -40,7 +40,7 @@ files = [{ path = "main.rue", source = """
 struct Rec { id: u8, val: i32, tag: u16 }
 fn main() -> i32 {
     let sum = checked {
-        let p: ptr mut Rec = @alloc(4);
+        let p: ptr mut Rec = @int_to_ptr(@ptr_to_int(@alloc(4 * @intCast(@size_of(Rec)), @intCast(@align_of(Rec)))));
         let mut i: u64 = 0;
         while i < 4 {
             let slot = @ptr_offset(p, i);
@@ -56,7 +56,7 @@ fn main() -> i32 {
             s = s + r.val + idc + tg;
             j = j + 1;
         }
-        @free(p, 4);
+        @free(@int_to_ptr(@ptr_to_int(p)), 4 * @intCast(@size_of(Rec)), @intCast(@align_of(Rec)));
         s
     };
     @dbg(sum);
@@ -79,10 +79,10 @@ struct Inner { a: u8, b: i32 }
 struct Outer { x: u16, inner: Inner, y: u8 }
 fn main() -> i32 {
     let r = checked {
-        let p: ptr mut Outer = @alloc(1);
+        let p: ptr mut Outer = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(Outer)), @intCast(@align_of(Outer)))));
         @ptr_write(p, Outer { x: 300, inner: Inner { a: 5, b: 9999 }, y: 42 });
         let o = @ptr_read(p);
-        @free(p, 1);
+        @free(@int_to_ptr(@ptr_to_int(p)), 1 * @intCast(@size_of(Outer)), @intCast(@align_of(Outer)));
         o
     };
     let x: i32 = @intCast(r.x);
@@ -108,13 +108,13 @@ args = ["main.rue", "-o", "prog"]
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     let sum = checked {
-        let p: ptr mut u8 = @alloc(5);
+        let p: ptr mut u8 = @int_to_ptr(@ptr_to_int(@alloc(5 * @intCast(@size_of(u8)), @intCast(@align_of(u8)))));
         let mut i: u64 = 0;
         while i < 5 { let bv: u8 = @intCast(65 + i); @ptr_write(@ptr_offset(p, i), bv); i = i + 1; }
         let mut s: i32 = 0;
         let mut j: u64 = 0;
         while j < 5 { let b: i32 = @intCast(@ptr_read(@ptr_offset(p, j))); s = s + b; j = j + 1; }
-        @free(p, 5);
+        @free(@int_to_ptr(@ptr_to_int(p)), 5 * @intCast(@size_of(u8)), @intCast(@align_of(u8)));
         s
     };
     @dbg(sum);
@@ -166,7 +166,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         fn reserve(inout self) {
             if self.len == self.cap {
                 let nc: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
-                checked { let g = @realloc(self.buf, self.cap, nc); self.buf = g; };
+                checked { let g = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)), nc * @intCast(@size_of(T))))); self.buf = g; };
                 self.cap = nc;
             }
         }
@@ -186,7 +186,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
         fn free(inout self) {
-            checked { @free(self.buf, self.cap); };
+            checked { @free(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T))); };
             let z: u64 = 0; self.buf = checked { @int_to_ptr(z) }; self.len = 0; self.cap = 0;
         }
     }
@@ -346,12 +346,12 @@ enum Ov { A(u16, u16), B(u32) }
 fn make(v: bool) -> Ov { if v { Ov.A(1, 2) } else { Ov.B(3) } }
 fn main() -> i32 {
     let r = checked {
-        let p: ptr mut Ov = @alloc(1);
+        let p: ptr mut Ov = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(Ov)), @intCast(@align_of(Ov)))));
         @ptr_write(p, make(true));
         let a: Ov = @ptr_read(p);
         @ptr_write(p, make(false));
         let b: Ov = @ptr_read(p);
-        @free(p, 1);
+        @free(@int_to_ptr(@ptr_to_int(p)), 1 * @intCast(@size_of(Ov)), @intCast(@align_of(Ov)));
         let av: i32 = match a { Ov.A(x, y) => @intCast(x) + @intCast(y), Ov.B(c) => @intCast(c) };
         let bv: i32 = match b { Ov.A(x, y) => @intCast(x) + @intCast(y), Ov.B(c) => @intCast(c) };
         av * 10 + bv
@@ -409,10 +409,10 @@ fn main() -> i32 {
     let s1 = classify(local_addr_ok());
     let s2 = classify(local_addr_err());
     let s3 = checked {
-        let p: ptr mut NetResult = @alloc(1);
+        let p: ptr mut NetResult = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(NetResult)), @intCast(@align_of(NetResult)))));
         @ptr_write(p, local_addr_ok());
         let back: NetResult = @ptr_read(p);
-        @free(p, 1);
+        @free(@int_to_ptr(@ptr_to_int(p)), 1 * @intCast(@size_of(NetResult)), @intCast(@align_of(NetResult)));
         classify(back)
     };
     let total: i32 = @intCast(s1 + s2 + s3);

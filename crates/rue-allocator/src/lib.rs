@@ -204,6 +204,44 @@ impl<M: PageMapper> Allocator<M> {
         }
     }
 
+    /// Try to relabel a live allocation as `new_size` bytes without moving it.
+    ///
+    /// Returns `true` when the block already satisfies the new layout — the
+    /// same size class, or the same page-rounded mapping — in which case the
+    /// caller may treat the memory at `pointer` as `new_size` bytes and must
+    /// hand `new_size` back at deallocation. Returns `false` without touching
+    /// anything when the new layout needs different storage; the caller keeps
+    /// the old `(old_size, align)` layout and can fall back to
+    /// [`Allocator::reallocate`].
+    ///
+    /// This is the in-place-only half of `reallocate`: it never allocates,
+    /// never copies, and never frees, so a container that manages its own copy
+    /// can grow where it stands whenever the allocator has room.
+    ///
+    /// # Safety
+    ///
+    /// A non-null `pointer` must identify a live allocation returned by this
+    /// allocator for exactly `old_size` and `align`.
+    pub unsafe fn resize_in_place(
+        &self,
+        pointer: *mut u8,
+        old_size: u64,
+        new_size: u64,
+        align: u64,
+    ) -> bool {
+        // A null block owns no storage and a zero new size describes no
+        // allocation at all; neither can be satisfied in place.
+        if pointer.is_null() || new_size == 0 {
+            return false;
+        }
+        let (Some(old_kind), Some(new_kind)) =
+            (classify(old_size, align), classify(new_size, align))
+        else {
+            return false;
+        };
+        old_kind == new_kind
+    }
+
     /// Resize an allocation while preserving its initialized prefix.
     ///
     /// If the old and new layouts use the same size class or page-rounded
@@ -464,6 +502,43 @@ mod tests {
         let smaller = allocator.allocate(16, 1);
         assert!(!smaller.is_null());
         assert_ne!(smaller, larger);
+    }
+
+    #[test]
+    fn resize_in_place_accepts_the_same_class_and_refuses_a_different_one() {
+        let allocator = Allocator::<TestMapper>::new();
+        let pointer = allocator.allocate(65, 8);
+        assert!(!pointer.is_null());
+        // SAFETY: pointer is live for 65 bytes.
+        unsafe { pointer.write(99) };
+
+        // 65 and 120 share the 128-byte class, so the block is relabeled where
+        // it stands and its bytes are untouched.
+        // SAFETY: pointer is live with layout (65, 8).
+        assert!(unsafe { allocator.resize_in_place(pointer, 65, 120, 8) });
+        // SAFETY: the block is still live and readable.
+        assert_eq!(unsafe { pointer.read() }, 99);
+
+        // A direct mapping needs different storage, so the block cannot grow
+        // in place and the old layout stays in force.
+        // SAFETY: pointer is live with layout (120, 8).
+        assert!(!unsafe { allocator.resize_in_place(pointer, 120, 40_000, 8) });
+        // SAFETY: pointer is live with layout (120, 8).
+        unsafe { allocator.deallocate(pointer, 120, 8) };
+    }
+
+    #[test]
+    fn resize_in_place_refuses_a_null_block_and_a_zero_new_size() {
+        let allocator = Allocator::<TestMapper>::new();
+        // SAFETY: a null block is explicitly accepted and refused.
+        assert!(!unsafe { allocator.resize_in_place(ptr::null_mut(), 0, 16, 8) });
+
+        let pointer = allocator.allocate(64, 8);
+        assert!(!pointer.is_null());
+        // SAFETY: pointer is live with layout (64, 8).
+        assert!(!unsafe { allocator.resize_in_place(pointer, 64, 0, 8) });
+        // SAFETY: the refusal left the block live and unchanged.
+        unsafe { allocator.deallocate(pointer, 64, 8) };
     }
 
     #[test]
