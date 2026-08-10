@@ -605,7 +605,7 @@ mod registered_batch_tests {
             "a superseded incarnation cannot certify a dependent, whatever its stamp reads"
         );
         assert!(
-            runtime.metrics().superseded_validations >= 1,
+            runtime.metrics().validation.superseded >= 1,
             "the retired incarnation is reported rather than silently accepted"
         );
     }
@@ -2244,6 +2244,239 @@ impl CancellationToken {
     }
 }
 
+/// Deterministic work performed while validating retained query terminals.
+///
+/// These counters describe semantic operations rather than elapsed time. The
+/// hot path accumulates them on the rooted request's [`Task`]; the runtime
+/// merges one aggregate when that task completes. This keeps the counters
+/// continuously available without a shared atomic update per validation edge.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ValidationWork {
+    /// Retained-terminal validation traversals started.
+    pub traversals: u64,
+    /// Traversals which proved their retained terminal current.
+    pub successful_traversals: u64,
+    /// Traversals which proved their retained terminal dirty.
+    pub dirty_traversals: u64,
+    /// Traversals aborted by cancellation or an engine error.
+    pub aborted_traversals: u64,
+    /// Direct source/input observations inspected.
+    pub input_observations: u64,
+    /// Retained dependency observations inspected.
+    pub dependency_observations: u64,
+    /// Exact node-incarnation registry probes made by validation.
+    pub registry_probes: u64,
+    /// Registry probes which found no live exact incarnation.
+    pub registry_misses: u64,
+    /// Erased node validation entry-point visits.
+    pub node_visits: u64,
+    /// Recursive visits pruned because the incarnation was already active.
+    pub active_cycle_prunes: u64,
+    /// Node visits satisfied by a revision-scoped validation certificate.
+    pub memo_hits: u64,
+    /// Node visits which had to inspect or re-demand the node.
+    pub memo_misses: u64,
+    /// Exact registered-cone endorsement lookups.
+    pub endorsement_probes: u64,
+    /// Endorsement lookups satisfied by this rooted request's retained cone.
+    pub endorsement_hits: u64,
+    /// Family-owned validation demands issued after a memo miss.
+    pub demands: u64,
+    /// Validation demands answered by a retained terminal.
+    pub demand_reuses: u64,
+    /// Validation demands which computed a terminal.
+    pub demand_computes: u64,
+    /// Validation demands which joined an in-flight terminal.
+    pub demand_joins: u64,
+    /// Validation demands which aborted without a terminal.
+    pub demand_aborts: u64,
+    /// Demands whose recorded incarnation had been retired or replaced.
+    pub superseded: u64,
+    /// New exact node/revision/stamp validation certificates published.
+    pub certificates_published: u64,
+}
+
+impl ValidationWork {
+    /// Returns the non-negative counter delta from an earlier snapshot.
+    #[must_use]
+    pub fn saturating_sub(self, earlier: Self) -> Self {
+        macro_rules! subtract_fields {
+            ($($field:ident),+ $(,)?) => {
+                Self {
+                    $($field: self.$field.saturating_sub(earlier.$field)),+
+                }
+            };
+        }
+        subtract_fields!(
+            traversals,
+            successful_traversals,
+            dirty_traversals,
+            aborted_traversals,
+            input_observations,
+            dependency_observations,
+            registry_probes,
+            registry_misses,
+            node_visits,
+            active_cycle_prunes,
+            memo_hits,
+            memo_misses,
+            endorsement_probes,
+            endorsement_hits,
+            demands,
+            demand_reuses,
+            demand_computes,
+            demand_joins,
+            demand_aborts,
+            superseded,
+            certificates_published,
+        )
+    }
+
+    /// Adds another request's counters into this aggregate.
+    pub fn saturating_add_assign(&mut self, other: Self) {
+        macro_rules! add_fields {
+            ($($field:ident),+ $(,)?) => {
+                $(self.$field = self.$field.saturating_add(other.$field);)+
+            };
+        }
+        add_fields!(
+            traversals,
+            successful_traversals,
+            dirty_traversals,
+            aborted_traversals,
+            input_observations,
+            dependency_observations,
+            registry_probes,
+            registry_misses,
+            node_visits,
+            active_cycle_prunes,
+            memo_hits,
+            memo_misses,
+            endorsement_probes,
+            endorsement_hits,
+            demands,
+            demand_reuses,
+            demand_computes,
+            demand_joins,
+            demand_aborts,
+            superseded,
+            certificates_published,
+        );
+    }
+}
+
+#[derive(Debug, Default)]
+struct AtomicValidationWork {
+    traversals: AtomicU64,
+    successful_traversals: AtomicU64,
+    dirty_traversals: AtomicU64,
+    aborted_traversals: AtomicU64,
+    input_observations: AtomicU64,
+    dependency_observations: AtomicU64,
+    registry_probes: AtomicU64,
+    registry_misses: AtomicU64,
+    node_visits: AtomicU64,
+    active_cycle_prunes: AtomicU64,
+    memo_hits: AtomicU64,
+    memo_misses: AtomicU64,
+    endorsement_probes: AtomicU64,
+    endorsement_hits: AtomicU64,
+    demands: AtomicU64,
+    demand_reuses: AtomicU64,
+    demand_computes: AtomicU64,
+    demand_joins: AtomicU64,
+    demand_aborts: AtomicU64,
+    superseded: AtomicU64,
+    certificates_published: AtomicU64,
+}
+
+impl AtomicValidationWork {
+    fn snapshot(&self) -> ValidationWork {
+        ValidationWork {
+            traversals: self.traversals.load(Ordering::Relaxed),
+            successful_traversals: self.successful_traversals.load(Ordering::Relaxed),
+            dirty_traversals: self.dirty_traversals.load(Ordering::Relaxed),
+            aborted_traversals: self.aborted_traversals.load(Ordering::Relaxed),
+            input_observations: self.input_observations.load(Ordering::Relaxed),
+            dependency_observations: self.dependency_observations.load(Ordering::Relaxed),
+            registry_probes: self.registry_probes.load(Ordering::Relaxed),
+            registry_misses: self.registry_misses.load(Ordering::Relaxed),
+            node_visits: self.node_visits.load(Ordering::Relaxed),
+            active_cycle_prunes: self.active_cycle_prunes.load(Ordering::Relaxed),
+            memo_hits: self.memo_hits.load(Ordering::Relaxed),
+            memo_misses: self.memo_misses.load(Ordering::Relaxed),
+            endorsement_probes: self.endorsement_probes.load(Ordering::Relaxed),
+            endorsement_hits: self.endorsement_hits.load(Ordering::Relaxed),
+            demands: self.demands.load(Ordering::Relaxed),
+            demand_reuses: self.demand_reuses.load(Ordering::Relaxed),
+            demand_computes: self.demand_computes.load(Ordering::Relaxed),
+            demand_joins: self.demand_joins.load(Ordering::Relaxed),
+            demand_aborts: self.demand_aborts.load(Ordering::Relaxed),
+            superseded: self.superseded.load(Ordering::Relaxed),
+            certificates_published: self.certificates_published.load(Ordering::Relaxed),
+        }
+    }
+
+    fn take(&self) -> ValidationWork {
+        ValidationWork {
+            traversals: self.traversals.swap(0, Ordering::Relaxed),
+            successful_traversals: self.successful_traversals.swap(0, Ordering::Relaxed),
+            dirty_traversals: self.dirty_traversals.swap(0, Ordering::Relaxed),
+            aborted_traversals: self.aborted_traversals.swap(0, Ordering::Relaxed),
+            input_observations: self.input_observations.swap(0, Ordering::Relaxed),
+            dependency_observations: self.dependency_observations.swap(0, Ordering::Relaxed),
+            registry_probes: self.registry_probes.swap(0, Ordering::Relaxed),
+            registry_misses: self.registry_misses.swap(0, Ordering::Relaxed),
+            node_visits: self.node_visits.swap(0, Ordering::Relaxed),
+            active_cycle_prunes: self.active_cycle_prunes.swap(0, Ordering::Relaxed),
+            memo_hits: self.memo_hits.swap(0, Ordering::Relaxed),
+            memo_misses: self.memo_misses.swap(0, Ordering::Relaxed),
+            endorsement_probes: self.endorsement_probes.swap(0, Ordering::Relaxed),
+            endorsement_hits: self.endorsement_hits.swap(0, Ordering::Relaxed),
+            demands: self.demands.swap(0, Ordering::Relaxed),
+            demand_reuses: self.demand_reuses.swap(0, Ordering::Relaxed),
+            demand_computes: self.demand_computes.swap(0, Ordering::Relaxed),
+            demand_joins: self.demand_joins.swap(0, Ordering::Relaxed),
+            demand_aborts: self.demand_aborts.swap(0, Ordering::Relaxed),
+            superseded: self.superseded.swap(0, Ordering::Relaxed),
+            certificates_published: self.certificates_published.swap(0, Ordering::Relaxed),
+        }
+    }
+
+    fn add(&self, work: ValidationWork) {
+        macro_rules! add_fields {
+            ($($field:ident),+ $(,)?) => {
+                $(if work.$field != 0 {
+                    self.$field.fetch_add(work.$field, Ordering::Relaxed);
+                })+
+            };
+        }
+        add_fields!(
+            traversals,
+            successful_traversals,
+            dirty_traversals,
+            aborted_traversals,
+            input_observations,
+            dependency_observations,
+            registry_probes,
+            registry_misses,
+            node_visits,
+            active_cycle_prunes,
+            memo_hits,
+            memo_misses,
+            endorsement_probes,
+            endorsement_hits,
+            demands,
+            demand_reuses,
+            demand_computes,
+            demand_joins,
+            demand_aborts,
+            superseded,
+            certificates_published,
+        );
+    }
+}
+
 /// Deterministic structural execution counters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RuntimeMetrics {
@@ -2254,13 +2487,8 @@ pub struct RuntimeMetrics {
     pub joins: u64,
     /// Compatible retained terminals reused.
     pub reuses: u64,
-    /// Dependency validations satisfied by a node's revision-scoped memo.
-    pub validation_memo_hits: u64,
-    /// Dependency validations which had to inspect or re-demand the node.
-    pub validation_memo_misses: u64,
-    /// Retained dependency observations whose node incarnation was retired from
-    /// its family's key memo, so the dependent recomputed instead of reusing.
-    pub superseded_validations: u64,
+    /// Retained-terminal validation work.
+    pub validation: ValidationWork,
     /// Query bodies which completed before publication checks.
     pub body_completions: u64,
     /// Recomputations whose observable stamp stayed red.
@@ -2375,9 +2603,7 @@ struct Metrics {
     claims: AtomicU64,
     joins: AtomicU64,
     reuses: AtomicU64,
-    validation_memo_hits: AtomicU64,
-    validation_memo_misses: AtomicU64,
-    superseded_validations: AtomicU64,
+    validation: AtomicValidationWork,
     body_completions: AtomicU64,
     red_publications: AtomicU64,
     green_publications: AtomicU64,
@@ -2419,9 +2645,7 @@ impl Metrics {
             claims: self.claims.load(Ordering::Relaxed),
             joins: self.joins.load(Ordering::Relaxed),
             reuses: self.reuses.load(Ordering::Relaxed),
-            validation_memo_hits: self.validation_memo_hits.load(Ordering::Relaxed),
-            validation_memo_misses: self.validation_memo_misses.load(Ordering::Relaxed),
-            superseded_validations: self.superseded_validations.load(Ordering::Relaxed),
+            validation: self.validation.snapshot(),
             body_completions: self.body_completions.load(Ordering::Relaxed),
             red_publications: self.red_publications.load(Ordering::Relaxed),
             green_publications: self.green_publications.load(Ordering::Relaxed),
@@ -3530,6 +3754,7 @@ impl QueryRuntime {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             validation_proofs: Mutex::new(Vec::new()),
+            validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
@@ -3974,7 +4199,8 @@ trait ErasedNode: fmt::Debug + Send + Sync {
         active: &mut BTreeSet<u64>,
     ) -> Result<Option<u64>, QueryAbort>;
 
-    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool);
+    /// Records one exact validation certificate and reports whether it was new.
+    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool) -> bool;
 
     /// The typed node behind this erased handle, for the family-owned
     /// exact-terminal adoption path ([`QueryFamily::observe_adopted_terminal`])
@@ -3994,7 +4220,13 @@ where
         task: &Arc<Task>,
         active: &mut BTreeSet<u64>,
     ) -> Result<Option<u64>, QueryAbort> {
+        task.validation_work
+            .node_visits
+            .fetch_add(1, Ordering::Relaxed);
         if !active.insert(self.incarnation) {
+            task.validation_work
+                .active_cycle_prunes
+                .fetch_add(1, Ordering::Relaxed);
             return Ok(None);
         }
         {
@@ -4018,17 +4250,18 @@ where
                 if !registered_only {
                     task.taint_validation_proofs();
                 }
-                core.metrics
-                    .validation_memo_hits
+                task.validation_work
+                    .memo_hits
                     .fetch_add(1, Ordering::Relaxed);
                 active.remove(&self.incarnation);
                 return Ok(Some(stamp));
             }
         }
-        core.metrics
-            .validation_memo_misses
+        task.validation_work
+            .memo_misses
             .fetch_add(1, Ordering::Relaxed);
         if let Some(demand) = &self.demand {
+            task.validation_work.demands.fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
             core.interpose(InterposeSite::RetainedDependencyDemand);
             let request_id = task.next_nested_request();
@@ -4037,8 +4270,8 @@ where
                 // The key is still computable, but only as a fresh incarnation
                 // whose stamps are unrelated to the retained observation, so the
                 // dependent is dirty rather than provably green.
-                core.metrics
-                    .superseded_validations
+                task.validation_work
+                    .superseded
                     .fetch_add(1, Ordering::Relaxed);
                 active.remove(&self.incarnation);
                 return Ok(None);
@@ -4051,14 +4284,21 @@ where
                     execution,
                     ..
                 } => {
+                    match execution {
+                        RequestExecution::Reused => &task.validation_work.demand_reuses,
+                        RequestExecution::Computed => &task.validation_work.demand_computes,
+                        RequestExecution::Joined => &task.validation_work.demand_joins,
+                        RequestExecution::Aborted => &task.validation_work.demand_aborts,
+                    }
+                    .fetch_add(1, Ordering::Relaxed);
                     // Retention can retire this incarnation between the memo
                     // check above and the request itself. The answering
                     // incarnation is authoritative: a stamp published by any
                     // other node is a different counter and never witnesses this
                     // observation, however numerically equal it looks.
                     if terminal.node_incarnation != self.incarnation {
-                        core.metrics
-                            .superseded_validations
+                        task.validation_work
+                            .superseded
                             .fetch_add(1, Ordering::Relaxed);
                         return Ok(None);
                     }
@@ -4093,8 +4333,18 @@ where
                 TaskQueryResult::Aborted {
                     abort: QueryAbort::MissingInput(_),
                     ..
-                } => Ok(None),
-                TaskQueryResult::Aborted { abort, .. } => Err(abort),
+                } => {
+                    task.validation_work
+                        .demand_aborts
+                        .fetch_add(1, Ordering::Relaxed);
+                    Ok(None)
+                }
+                TaskQueryResult::Aborted { abort, .. } => {
+                    task.validation_work
+                        .demand_aborts
+                        .fetch_add(1, Ordering::Relaxed);
+                    Err(abort)
+                }
             };
         }
         // An externally supplied evaluator cannot participate in a reusable
@@ -4127,7 +4377,7 @@ where
         self
     }
 
-    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool) {
+    fn mark_validated(&self, revision: Revision, stamp: u64, registered_only: bool) -> bool {
         let mut state = lock(&self.state);
         if state.attempts.iter().any(|attempt| {
             matches!(
@@ -4135,8 +4385,13 @@ where
                 AttemptState::Terminal { terminal, .. } if terminal.stamp == stamp
             )
         }) {
+            if state.validated_at == Some((revision, stamp, registered_only)) {
+                return false;
+            }
             state.validated_at = Some((revision, stamp, registered_only));
+            return true;
         }
+        false
     }
 }
 
@@ -6434,6 +6689,9 @@ struct Task {
     /// Active recursive validation certificates. Encountering an unregistered
     /// node taints every enclosing traversal.
     validation_proofs: Mutex<Vec<Arc<AtomicU8>>>,
+    /// High-frequency validation work accumulated on this rooted request and
+    /// merged into the runtime once at task completion.
+    validation_work: AtomicValidationWork,
     /// Request-scoped retention leases. This task, which owns one rooted request
     /// and all of its nested observations (nested queries share the task), holds
     /// one pin per distinct terminal it has observed. The pins release together
@@ -7312,6 +7570,7 @@ impl Task {
                     .collect(),
             ),
             validation_proofs: Mutex::new(inherited_validation_proofs),
+            validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
@@ -7323,6 +7582,8 @@ impl Task {
     }
 
     fn absorb_batch_child(&self, child: &Arc<Self>, transfer_handoffs: bool) {
+        self.validation_work.add(child.validation_work.take());
+
         let mut child_leases = lock(&child.leases);
         let mut parent_leases = lock(&self.leases);
         for lease in child_leases.held.drain(..) {
@@ -7419,16 +7680,25 @@ impl Task {
         let Some(scope) = scopes.first() else {
             return false;
         };
+        self.validation_work
+            .endorsement_probes
+            .fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         self.validation_endorsement_index_probes
             .fetch_add(1, Ordering::Relaxed);
-        scope
+        let hit = scope
             .range(
                 (incarnation, stamp, Revision::new(0, 0))
                     ..=(incarnation, stamp, Revision::new(u64::MAX, u64::MAX)),
             )
             .next()
-            .is_some()
+            .is_some();
+        if hit {
+            self.validation_work
+                .endorsement_hits
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        hit
     }
 
     fn validation_endorsed<V>(&self, terminal: &QueryTerminal<V>) -> bool {
@@ -7437,10 +7707,19 @@ impl Task {
         let Some(scope) = scopes.first() else {
             return false;
         };
+        self.validation_work
+            .endorsement_probes
+            .fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         self.validation_endorsement_index_probes
             .fetch_add(1, Ordering::Relaxed);
-        scope.contains(&identity)
+        let hit = scope.contains(&identity);
+        if hit {
+            self.validation_work
+                .endorsement_hits
+                .fetch_add(1, Ordering::Relaxed);
+        }
+        hit
     }
 
     fn endorse_validation<V>(&self, terminal: &QueryTerminal<V>) {
@@ -7856,6 +8135,10 @@ impl Drop for Task {
         self.discard_observed_handoffs();
         self.core
             .metrics
+            .validation
+            .add(self.validation_work.take());
+        self.core
+            .metrics
             .task_leases_released(lock(&self.leases).held.len());
     }
 }
@@ -8104,12 +8387,30 @@ impl RuntimeCore {
         terminal: &QueryTerminal<V>,
         task: &Arc<Task>,
     ) -> Result<(bool, bool, bool), QueryAbort> {
+        task.validation_work
+            .traversals
+            .fetch_add(1, Ordering::Relaxed);
         let proof = task.begin_validation();
-        let valid = self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new())?;
+        let valid = match self.valid_for_revision_inner(terminal, task, &mut BTreeSet::new()) {
+            Ok(valid) => valid,
+            Err(abort) => {
+                task.validation_work
+                    .aborted_traversals
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(abort);
+            }
+        };
         let registered_only = proof.registered_only();
         let retryable = proof.retryable();
         if valid {
-            self.mark_terminal_validated(terminal, task.revision, registered_only);
+            task.validation_work
+                .successful_traversals
+                .fetch_add(1, Ordering::Relaxed);
+            self.mark_terminal_validated(terminal, task.revision, registered_only, task);
+        } else {
+            task.validation_work
+                .dirty_traversals
+                .fetch_add(1, Ordering::Relaxed);
         }
         Ok((valid, registered_only, retryable))
     }
@@ -8119,9 +8420,21 @@ impl RuntimeCore {
         terminal: &QueryTerminal<V>,
         revision: Revision,
         registered_only: bool,
+        task: &Task,
     ) {
+        task.validation_work
+            .registry_probes
+            .fetch_add(1, Ordering::Relaxed);
         if let Some(node) = self.registered_node(terminal.node_incarnation) {
-            node.mark_validated(revision, terminal.stamp, registered_only);
+            if node.mark_validated(revision, terminal.stamp, registered_only) {
+                task.validation_work
+                    .certificates_published
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        } else {
+            task.validation_work
+                .registry_misses
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -8145,6 +8458,9 @@ impl RuntimeCore {
         {
             return Ok(false);
         }
+        task.validation_work
+            .input_observations
+            .fetch_add(terminal.inputs.len() as u64, Ordering::Relaxed);
         let direct_inputs_valid = terminal.inputs.iter().all(|observed| {
             if observed.stamp == 0 {
                 !revisions.input_present(task.revision.id, &observed.input)
@@ -8161,6 +8477,12 @@ impl RuntimeCore {
             return Ok(false);
         }
         for observed in terminal.dependencies.iter() {
+            task.validation_work
+                .dependency_observations
+                .fetch_add(1, Ordering::Relaxed);
+            task.validation_work
+                .registry_probes
+                .fetch_add(1, Ordering::Relaxed);
             let node = self.registered_node(observed.incarnation);
             let stamp = match node {
                 Some(node) => match node.validated_stamp(self, task, active) {
@@ -8184,7 +8506,12 @@ impl RuntimeCore {
                     Err(QueryAbort::Cycle(_)) => return Ok(false),
                     Err(abort) => return Err(abort),
                 },
-                None => None,
+                None => {
+                    task.validation_work
+                        .registry_misses
+                        .fetch_add(1, Ordering::Relaxed);
+                    None
+                }
             };
             if stamp != Some(observed.stamp) {
                 return Ok(false);
@@ -8498,6 +8825,31 @@ mod tests {
         fn stable_identity(&self) -> String {
             self.0.to_owned()
         }
+    }
+
+    fn assert_validation_work_consistent(work: ValidationWork) {
+        assert_eq!(
+            work.traversals,
+            work.successful_traversals + work.dirty_traversals + work.aborted_traversals,
+            "every validation traversal has exactly one outcome"
+        );
+        assert_eq!(
+            work.node_visits,
+            work.active_cycle_prunes + work.memo_hits + work.memo_misses,
+            "every erased-node visit has exactly one outcome"
+        );
+        assert_eq!(
+            work.registry_probes,
+            work.dependency_observations + work.successful_traversals,
+            "validation probes once per dependency and successful root certificate"
+        );
+        assert!(work.registry_misses <= work.registry_probes);
+        assert!(work.endorsement_hits <= work.endorsement_probes);
+        assert!(
+            work.demand_reuses + work.demand_computes + work.demand_joins + work.demand_aborts
+                <= work.demands
+        );
+        assert!(work.certificates_published <= work.successful_traversals);
     }
 
     // A numeric key for tests that need an unbounded supply of distinct keys
@@ -10423,6 +10775,7 @@ mod tests {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             validation_proofs: Mutex::new(Vec::new()),
+            validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
@@ -10475,6 +10828,7 @@ mod tests {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             validation_proofs: Mutex::new(Vec::new()),
+            validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
@@ -10749,6 +11103,7 @@ mod tests {
             nested_attempt_filters: Mutex::new(Vec::new()),
             validation_endorsements: Mutex::new(Vec::new()),
             validation_proofs: Mutex::new(Vec::new()),
+            validation_work: AtomicValidationWork::default(),
             leases: Mutex::new(TaskLeases::default()),
             observed_handoffs: Mutex::new(Vec::new()),
             checked_handoffs: Mutex::new(HashSet::new()),
@@ -12188,13 +12543,11 @@ mod tests {
             runtime.request_registered(&root, second, Key("root"), CancellationToken::new());
         assert_eq!(reused.execution(), RequestExecution::Reused);
         let after = runtime.metrics();
+        let validation = after.validation.saturating_sub(before.validation);
+        assert_validation_work_consistent(validation);
+        assert_eq!(validation.memo_misses, 3);
         assert_eq!(
-            after.validation_memo_misses - before.validation_memo_misses,
-            3
-        );
-        assert_eq!(
-            after.validation_memo_hits - before.validation_memo_hits,
-            1,
+            validation.memo_hits, 1,
             "the second edge into the shared leaf uses its revision memo"
         );
         assert_eq!(

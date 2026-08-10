@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use rue_compiler::unstable::{
-    EndpointQueryWork, EndpointWork, MetricsSnapshot, QueryRuntimeMetrics,
+    EndpointQueryWork, EndpointWork, MetricsSnapshot, QueryRuntimeMetrics, QueryValidationMetrics,
 };
 use rue_compiler::{CompileErrors, CompileOptions, CompileOutput, CompileWarning, OptLevel};
 use rue_driver::{FilesystemCompilerHost, HostOpenRequest, SourceLoadError};
@@ -19,8 +19,8 @@ use rue_perf_schema::{
     EditReportIdentity, EditReportRegime, EditRow, EditSample, EditScenario, ExpectedEditOutcome,
     FailureStage, OptimizationSetting, OracleComparison, OutcomeIdentity, OutcomeKind, PhaseWork,
     RetainedGauges, RetentionSequence, RetentionStep, RetentionStepOutcome, SourceShape,
-    StructuralWork, TransformationIdentity, WorkerMode, canonical_json, derive_edit_report,
-    render_edit_report_markdown, validate_edit_report,
+    StructuralWork, TransformationIdentity, ValidationWork as ReportValidationWork, WorkerMode,
+    canonical_json, derive_edit_report, render_edit_report_markdown, validate_edit_report,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -305,10 +305,17 @@ impl CollectionTiming {
         self.warm += other.warm;
         self.fresh_oracle += other.fresh_oracle;
         self.total += other.total;
-        self.query_runtime.validation_memo_hits += other.query_runtime.validation_memo_hits;
-        self.query_runtime.validation_memo_misses += other.query_runtime.validation_memo_misses;
-        self.query_runtime.retention_enforcements += other.query_runtime.retention_enforcements;
-        self.query_runtime.retention_scan_entries += other.query_runtime.retention_scan_entries;
+        self.query_runtime
+            .validation
+            .saturating_add_assign(other.query_runtime.validation);
+        self.query_runtime.retention_enforcements = self
+            .query_runtime
+            .retention_enforcements
+            .saturating_add(other.query_runtime.retention_enforcements);
+        self.query_runtime.retention_scan_entries = self
+            .query_runtime
+            .retention_scan_entries
+            .saturating_add(other.query_runtime.retention_scan_entries);
     }
 
     fn other(self) -> Duration {
@@ -322,6 +329,32 @@ impl CollectionTiming {
 
 fn elapsed_ms(duration: Duration) -> u128 {
     duration.as_millis()
+}
+
+fn validation_summary(work: QueryValidationMetrics) -> String {
+    format!(
+        "walks {}/{}/{}/{} total/clean/dirty/abort, edges {}/{}, nodes {}/{}/{} hit/miss/cycle, registry {}/{}, demands {}/{}/{}/{}/{}, endorsements {}/{}, superseded {}, certificates {}",
+        work.traversals,
+        work.successful_traversals,
+        work.dirty_traversals,
+        work.aborted_traversals,
+        work.input_observations,
+        work.dependency_observations,
+        work.memo_hits,
+        work.memo_misses,
+        work.active_cycle_prunes,
+        work.registry_misses,
+        work.registry_probes,
+        work.demand_reuses,
+        work.demand_computes,
+        work.demand_joins,
+        work.demand_aborts,
+        work.demands,
+        work.endorsement_hits,
+        work.endorsement_probes,
+        work.superseded,
+        work.certificates_published,
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -467,7 +500,7 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
                     eprintln!(
                         "rue-bench: incremental {} {} {} sample {}/{} completed in {} ms \
                          (setup+baseline {} ms, warm {} ms, fresh-oracle {} ms, other {} ms; \
-                         validation hits {}, misses {}; retention passes {}, scan entries {})",
+                         validation {}; retention passes {}, scan entries {})",
                         workload.id,
                         declaration.scenario.wire_name(),
                         worker.mode.wire_name(),
@@ -478,14 +511,7 @@ pub(crate) fn run() -> Result<ReportStatus, String> {
                         elapsed_ms(observation.collection_timing.warm),
                         elapsed_ms(observation.collection_timing.fresh_oracle),
                         elapsed_ms(observation.collection_timing.other()),
-                        observation
-                            .collection_timing
-                            .query_runtime
-                            .validation_memo_hits,
-                        observation
-                            .collection_timing
-                            .query_runtime
-                            .validation_memo_misses,
+                        validation_summary(observation.collection_timing.query_runtime.validation),
                         observation
                             .collection_timing
                             .query_runtime
@@ -777,6 +803,7 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
         baseline_metrics.query_runtime(),
         endpoint_metrics.query_runtime(),
     );
+    let validation = report_validation_work(query_runtime.validation);
     let work = structural_work(
         &baseline_metrics,
         &endpoint_metrics,
@@ -821,6 +848,7 @@ pub(crate) fn measure_sample(request: SampleRequest<'_>) -> Result<SampleObserva
             transformation: request.operation.identity(),
             outcome,
             work,
+            validation,
             retention,
             oracle,
         },
@@ -839,18 +867,39 @@ fn query_runtime_delta(
     after: QueryRuntimeMetrics,
 ) -> QueryRuntimeMetrics {
     QueryRuntimeMetrics {
-        validation_memo_hits: after
-            .validation_memo_hits
-            .saturating_sub(before.validation_memo_hits),
-        validation_memo_misses: after
-            .validation_memo_misses
-            .saturating_sub(before.validation_memo_misses),
+        validation: after.validation.saturating_sub(before.validation),
         retention_enforcements: after
             .retention_enforcements
             .saturating_sub(before.retention_enforcements),
         retention_scan_entries: after
             .retention_scan_entries
             .saturating_sub(before.retention_scan_entries),
+    }
+}
+
+fn report_validation_work(work: QueryValidationMetrics) -> ReportValidationWork {
+    ReportValidationWork {
+        traversals: work.traversals,
+        successful_traversals: work.successful_traversals,
+        dirty_traversals: work.dirty_traversals,
+        aborted_traversals: work.aborted_traversals,
+        input_observations: work.input_observations,
+        dependency_observations: work.dependency_observations,
+        registry_probes: work.registry_probes,
+        registry_misses: work.registry_misses,
+        node_visits: work.node_visits,
+        active_cycle_prunes: work.active_cycle_prunes,
+        memo_hits: work.memo_hits,
+        memo_misses: work.memo_misses,
+        endorsement_probes: work.endorsement_probes,
+        endorsement_hits: work.endorsement_hits,
+        demands: work.demands,
+        demand_reuses: work.demand_reuses,
+        demand_computes: work.demand_computes,
+        demand_joins: work.demand_joins,
+        demand_aborts: work.demand_aborts,
+        superseded: work.superseded,
+        certificates_published: work.certificates_published,
     }
 }
 
@@ -1767,7 +1816,7 @@ mod tests {
                 eprintln!(
                     "rue-bench: maintained fixture {} {} completed in {} ms \
                      (setup+baseline {} ms, warm {} ms, fresh-oracle {} ms, other {} ms; \
-                     validation hits {}, misses {}; retention passes {}, scan entries {})",
+                     validation {}; retention passes {}, scan entries {})",
                     workload.id,
                     declaration.scenario.wire_name(),
                     elapsed_ms(observation.collection_timing.total),
@@ -1775,14 +1824,7 @@ mod tests {
                     elapsed_ms(observation.collection_timing.warm),
                     elapsed_ms(observation.collection_timing.fresh_oracle),
                     elapsed_ms(observation.collection_timing.other()),
-                    observation
-                        .collection_timing
-                        .query_runtime
-                        .validation_memo_hits,
-                    observation
-                        .collection_timing
-                        .query_runtime
-                        .validation_memo_misses,
+                    validation_summary(observation.collection_timing.query_runtime.validation),
                     observation
                         .collection_timing
                         .query_runtime
