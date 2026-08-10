@@ -885,6 +885,28 @@ rue_sh_test(
     },
 )
 
+# RUE-802: the nightly fuzz workflow files crashes into Linear. The reporting
+# logic that decides whether a crash is filed once, filed twice, or lost — crash
+# fingerprinting, dedup against open issues, payload construction, and the
+# GitHub fallback when LINEAR_API_KEY is missing — cannot be exercised in CI
+# against the real API, so it is driven through its injected transport with a
+# mock. The workflow file is an input as well, so deleting the reporting step
+# fails this test instead of quietly restoring the silence.
+filegroup(
+    name = "fuzz-report-test-inputs",
+    srcs = [".github/workflows/fuzz.yml"],
+)
+
+rue_sh_test(
+    name = "fuzz-report-tool-tests",
+    test = "scripts/test-fuzz-report-failure.py",
+    env = {
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "RUE_FUZZ_REPORT_ROOT": "$(location :fuzz-report-test-inputs)",
+    },
+    resources = ["scripts/fuzz-report-failure.py"],
+)
+
 # RUE-1119: pin the deterministic, coverage-deciding logic of the affected-
 # corpus selection — the out-of-graph force-full matcher in
 # scripts/affected-targets and the fail-open gate in scripts/ci-corpus-selected.

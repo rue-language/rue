@@ -5,10 +5,12 @@ on:
     - cron: '0 0 * * *'  # Daily at midnight UTC
   workflow_dispatch:  # Allow manual triggering
 
-# The default GITHUB_TOKEN is read-only; without issues:write the
-# "notify on failure" step below fails with "Resource not accessible by
-# integration" and nightly crashes are found but never reported (this
-# silently ate real crash reports for at least 2026-07-03/04).
+# Crashes are filed in Linear (RUE-802); GitHub Issues is the fallback used when
+# the LINEAR_API_KEY secret is missing. The default GITHUB_TOKEN is read-only,
+# and without issues:write that fallback fails with "Resource not accessible by
+# integration" — nightly crashes found but never reported (this silently ate
+# real crash reports for at least 2026-07-03/04). Keep issues:write even though
+# the primary path no longer needs it: it is what makes the fallback real.
 permissions:
   contents: read
   issues: write
@@ -164,66 +166,43 @@ jobs:
           echo "One or more fuzz targets found crashes (see step outcomes above)."
           exit 1
 
-      - name: Notify on failure (create or comment on the fuzz-crash issue)
+      # RUE-802: crashes are tracked in Linear (team Rue), ONE ISSUE PER DISTINCT
+      # CRASH FINGERPRINT. This replaced an inline `actions/github-script` block
+      # that kept a single ever-open GitHub issue labelled `fuzz-crash` and
+      # appended every later crash to it as a comment — dedup by label, which
+      # made two unrelated miscompiles indistinguishable from one bug recurring.
+      #
+      # The script prefers Linear and falls back to GitHub Issues (clearly
+      # marked as such in the filed issue) when LINEAR_API_KEY is absent, so a
+      # missing secret degrades the tracker instead of dropping the night's
+      # findings. With neither credential it exits non-zero, turning this step
+      # red rather than reporting nothing and passing.
+      #
+      # Fingerprinting, dedup, payload construction, and backend selection are
+      # pinned by //:fuzz-report-tool-tests against a mock transport.
+      - name: Report crashes (Linear, GitHub Issues fallback)
         if: failure()
-        uses: actions/github-script@v9
-        with:
-          script: |
-            const failed = [
-              ['lexer', '${{ steps.fuzz-lexer.outcome }}'],
-              ['parser', '${{ steps.fuzz-parser.outcome }}'],
-              ['sema', '${{ steps.fuzz-sema.outcome }}'],
-              ['compiler', '${{ steps.fuzz-compiler.outcome }}'],
-              ['payload_schemas', '${{ steps.fuzz-payload-schemas.outcome }}'],
-              ['emitter', '${{ steps.fuzz-emitter.outcome }}'],
-              ['emitter_aarch64', '${{ steps.fuzz-emitter-aarch64.outcome }}'],
-              ['emitter_sequence', '${{ steps.fuzz-emitter-sequence.outcome }}'],
-              ['emitter_sequence_aarch64', '${{ steps.fuzz-emitter-sequence-aarch64.outcome }}'],
-              ['differential', '${{ steps.fuzz-differential.outcome }}'],
-            ].filter(([, o]) => o === 'failure').map(([n]) => n);
-            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const summary = `**Run:** ${runUrl}\n**Failed targets:** ${failed.join(', ') || '(job-level failure)'}\n`;
-            const body = `## Fuzz Testing Failure
-
-            The daily fuzz testing workflow found a crash.
-
-            ${summary}
-            ### Next Steps
-            1. Download the crash artifacts from the workflow run. Each
-               reproducer is named \`crash-<target>-<sighash>-<inputhash>.txt\`
-               with a \`.meta\` sibling recording the crash class and
-               signature; the fuzzer detects panics, *aborts* (stack overflow /
-               SIGABRT / SIGSEGV / SIGFPE), hangs (per-input timeout), and
-               graceful ICEs, deduping by crash signature (RUE-43).
-            2. Reproduce locally by feeding the saved input to the target named
-               in the filename, e.g. for a source-level target:
-               \`./buck2 run //crates/rue-fuzz:rue-fuzz -- <target> <dir-with-the-file>\`
-            3. Fix the issue and add a regression test
-            `;
-
-            // One open tracking issue at a time; new crashes while it is open
-            // are appended as comments instead of being silently dropped.
-            const issues = await github.rest.issues.listForRepo({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              state: 'open',
-              labels: 'fuzz-crash'
-            });
-
-            if (issues.data.length === 0) {
-              const title = `Fuzz testing found a crash (${new Date().toISOString().split('T')[0]})`;
-              await github.rest.issues.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                title: title,
-                body: body,
-                labels: ['fuzz-crash', 'bug']
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: issues.data[0].number,
-                body: `Another nightly fuzz failure while this issue is open.\n\n${summary}`
-              });
-            }
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          failed=""
+          record() {
+            if [ "$2" = "failure" ]; then
+              failed="${failed:+$failed,}$1"
+            fi
+          }
+          record lexer '${{ steps.fuzz-lexer.outcome }}'
+          record parser '${{ steps.fuzz-parser.outcome }}'
+          record sema '${{ steps.fuzz-sema.outcome }}'
+          record compiler '${{ steps.fuzz-compiler.outcome }}'
+          record payload_schemas '${{ steps.fuzz-payload-schemas.outcome }}'
+          record emitter '${{ steps.fuzz-emitter.outcome }}'
+          record emitter_aarch64 '${{ steps.fuzz-emitter-aarch64.outcome }}'
+          record emitter_sequence '${{ steps.fuzz-emitter-sequence.outcome }}'
+          record emitter_sequence_aarch64 '${{ steps.fuzz-emitter-sequence-aarch64.outcome }}'
+          record differential '${{ steps.fuzz-differential.outcome }}'
+          python3 scripts/fuzz-report-failure.py \
+            --crash-dir crates/rue-fuzz/crashes \
+            --failed-targets "$failed" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"

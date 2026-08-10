@@ -141,6 +141,17 @@ done
 Any crash — panic or abort (signal) — causes a non-zero exit code, which fails
 the CI job and uploads the saved reproducers as artifacts.
 
+A failed nightly run then reports every crash it found to the issue tracker via
+`scripts/fuzz-report-failure.py`: **one issue per distinct crash fingerprint**
+in the Rue Linear team, deduplicated against open issues so a recurrence becomes
+a comment rather than a second issue. The fingerprint is derived from the target
+plus the *normalized* signature recorded in the `.meta` sibling (addresses, temp
+paths, source line numbers, and generator seeds erased), which is what lets the
+same bug dedup across nights. See
+[docs/process/fuzz-failure-reporting.md](../../docs/process/fuzz-failure-reporting.md)
+— including the one-time `LINEAR_API_KEY` secret setup, without which the
+workflow falls back to filing GitHub Issues.
+
 ## Proptest Integration
 
 The fuzzer includes proptest-based tests that generate syntactically valid Rue programs. These run as part of the unit tests:
