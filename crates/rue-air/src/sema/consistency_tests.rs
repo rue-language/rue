@@ -1355,6 +1355,34 @@ mod tests {
     }
 
     #[test]
+    fn successful_field_lookup_keeps_the_interned_name_borrowed() {
+        for (file, source) in [
+            ("analysis/type_inference.rs", TYPE_INFERENCE_SOURCE),
+            ("analysis/ownership.rs", OWNERSHIP_SOURCE),
+        ] {
+            assert!(
+                !source.contains("resolve(&field).to_string()"),
+                "{file} eagerly allocates an owned field name before lookup"
+            );
+        }
+
+        assert_eq!(
+            TYPE_INFERENCE_SOURCE
+                .matches("field_name: field_name.to_string()")
+                .count(),
+            1,
+            "type inference must allocate the field name only for its unknown-field diagnostic"
+        );
+        assert_eq!(
+            OWNERSHIP_SOURCE
+                .matches("field_name: field_name.to_string()")
+                .count(),
+            2,
+            "ownership analysis must allocate field names only for its unknown-field diagnostics"
+        );
+    }
+
+    #[test]
     fn aggregate_analysis_has_one_cohesive_owner() {
         for method in [
             "analyze_struct_ops",
