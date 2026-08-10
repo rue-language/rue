@@ -16,7 +16,9 @@ use rue_span::Span;
 use super::analysis::FirstClassStrSite;
 use super::anon_structs::TrustedTryProducer;
 use super::call_resolution::CallResolutionFacts;
-use super::context::{AnalysisContext, AnalysisResult, ConstValue, LocalVar};
+use super::context::{
+    AnalysisContext, AnalysisResult, ConstValue, LocalVar, LoopEdgeStates, union_move_maps,
+};
 use crate::declaration_validation::{
     AccessorExitForm, AccessorMethodLink, AccessorYieldRootForm, accessor_method_link_error,
     accessor_yield_root_error,
@@ -75,10 +77,16 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                     return Err(CompileError::new(ErrorKind::BreakWithValue, inst.span));
                 }
 
-                // Record the break against the innermost enclosing loop, so
-                // the loop can be typed `()` instead of `!` (spec 4.8:17).
-                if let Some(broke) = ctx.loop_break_stack.last_mut() {
-                    *broke = true;
+                // Record the break against the innermost enclosing loop: it
+                // is now `()`-typed instead of `!` (spec 4.8:17), and the
+                // move state in force HERE is one of the loop's exit states —
+                // union-merged with the other breaks' states, it becomes the
+                // ownership state after the loop (RUE-1293; formal core §5.7,
+                // (Loop-Break): Σ_exit = join over the at-break states).
+                let break_depth = ctx.moved_scope_stack.len();
+                let break_moves = ctx.moved_vars.clone();
+                if let Some(record) = ctx.loop_break_stack.last_mut() {
+                    record.record_break(&break_moves, break_depth);
                 }
 
                 // Break has the never type - it diverges
@@ -94,6 +102,18 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 // Validate that we're inside a loop
                 if ctx.loop_depth == 0 {
                     return Err(CompileError::new(ErrorKind::ContinueOutsideLoop, inst.span));
+                }
+
+                // The move state in force HERE rides the back edge into the
+                // next iteration: record it so the loop's back-edge recheck
+                // is seeded with it — the branch joins exclude this diverging
+                // arm, so without the record a move on a continue path would
+                // vanish and the next iteration could re-use the value
+                // (RUE-1293, the continue-edge variant).
+                let continue_depth = ctx.moved_scope_stack.len();
+                let continue_moves = ctx.moved_vars.clone();
+                if let Some(record) = ctx.loop_break_stack.last_mut() {
+                    record.record_continue(&continue_moves, continue_depth);
                 }
 
                 // Continue has the never type - it diverges
@@ -348,11 +368,31 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // the flag itself is unused because a while loop is always `()`.
         ctx.push_scope();
         ctx.loop_depth += 1;
-        ctx.loop_break_stack.push(false);
+        ctx.loop_break_stack.push(LoopEdgeStates::default());
         let body_result = self.analyze_inst(air, body, ctx)?;
-        ctx.loop_break_stack.pop();
         ctx.loop_depth -= 1;
+        // pop_scope replays this scope's RUE-522 restoration onto the
+        // break-site snapshots still on the stack, so the record popped
+        // afterwards describes the post-loop scope view.
         ctx.pop_scope();
+        let (break_moves, continue_moves) =
+            ctx.loop_break_stack.pop().unwrap_or_default().merged_moves();
+        // The back edge carries the fall-through state joined with the
+        // continue-site states — a continue re-enters the loop exactly like
+        // falling off the body's end — while a break path never re-enters.
+        // Keep the joined state for the recheck below (RUE-1293).
+        let mut backedge_moves = ctx.moved_vars.clone();
+        if let Some(continue_moves) = &continue_moves {
+            backedge_moves = union_move_maps(&backedge_moves, continue_moves);
+        }
+        // A while loop's exits are the condition-false fall-through — whose
+        // state on iterations past the first is the back-edge state — AND its
+        // breaks; union in the at-break states so a move on a break path is
+        // marked after the loop too (RUE-1293).
+        ctx.moved_vars = match &break_moves {
+            Some(break_moves) => union_move_maps(&backedge_moves, break_moves),
+            None => backedge_moves.clone(),
+        };
 
         // A while loop discards its body's result value on every iteration;
         // discarding a value that carries a linear value would implicitly
@@ -364,15 +404,21 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // state. Any use of a value moved by a previous iteration then errors.
         // The scratch Air and context are discarded - this pass exists only
         // for the checks.
-        if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
+        if !ctx.in_loop_move_recheck && backedge_moves != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
+            // Seed the back-edge recheck with the back-edge state (the
+            // fall-through joined with the continue states), not the exit
+            // state: break-path moves never reach the back edge, and seeding
+            // them would reject a value legitimately moved only on a path
+            // that exits the loop (RUE-1293).
+            scratch_ctx.moved_vars = backedge_moves;
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             let result = (|| -> CompileResult<()> {
                 self.analyze_inst(air, cond, &mut scratch_ctx)?;
                 scratch_ctx.push_scope();
                 scratch_ctx.loop_depth += 1;
-                scratch_ctx.loop_break_stack.push(false);
+                scratch_ctx.loop_break_stack.push(LoopEdgeStates::default());
                 self.analyze_inst(air, body, &mut scratch_ctx)?;
                 scratch_ctx.loop_break_stack.pop();
                 scratch_ctx.loop_depth -= 1;
@@ -418,7 +464,7 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
 
         ctx.push_scope();
         ctx.loop_depth += 1;
-        ctx.loop_break_stack.push(false);
+        ctx.loop_break_stack.push(LoopEdgeStates::default());
         // A `for` over a named variable borrows it (shared) for the body's
         // duration (spec 4.8:26, RUE-233): record the borrow so a mutation of
         // the iterated collection inside the body is rejected (E0428).
@@ -429,9 +475,28 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         if iter_borrow.is_some() {
             ctx.iter_borrows.pop();
         }
-        let has_break = ctx.loop_break_stack.pop().unwrap_or(false);
         ctx.loop_depth -= 1;
+        // pop_scope replays this scope's RUE-522 restoration onto the
+        // break-site snapshots still on the stack (see analyze_while_loop).
         ctx.pop_scope();
+        let edge_record = ctx.loop_break_stack.pop().unwrap_or_default();
+        let has_break = edge_record.broke;
+        let (break_moves, continue_moves) = edge_record.merged_moves();
+        // The back edge carries the fall-through state joined with the
+        // continue-site states; keep it for the recheck below (RUE-1293).
+        let mut backedge_moves = ctx.moved_vars.clone();
+        if let Some(continue_moves) = &continue_moves {
+            backedge_moves = union_move_maps(&backedge_moves, continue_moves);
+        }
+        // An infinite loop's only exits are its breaks, so the union of the
+        // at-break states IS the exit ownership state — the back-edge state
+        // re-enters the loop and never reaches the code after it (RUE-1293;
+        // formal core §5.7, (Loop-Break)). A breakless loop is `!`-typed and
+        // the code after it unreachable; its state is left as the
+        // fall-through, which nothing can observe.
+        if let Some(break_moves) = break_moves {
+            ctx.moved_vars = break_moves;
+        }
 
         // The loop discards its body's result value on every iteration;
         // discarding a value that carries a linear value would implicitly
@@ -441,13 +506,17 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
         // Loop back-edge move check (see analyze_while_loop for details).
         // Note: like Rust, this is conservative - a body that unconditionally
         // breaks after the move still errors.
-        if !ctx.in_loop_move_recheck && ctx.moved_vars != moves_before_loop {
+        if !ctx.in_loop_move_recheck && backedge_moves != moves_before_loop {
             let checkpoint = air.checkpoint();
             let mut scratch_ctx = ctx.fork_for_loop_recheck();
+            // Seed with the back-edge state (fall-through joined with the
+            // continue states), not the exit state: only the back edge's
+            // moves reach the next iteration (RUE-1293).
+            scratch_ctx.moved_vars = backedge_moves;
             let recovered_before = self.body_analysis_recovered_errors_mut().len();
             scratch_ctx.push_scope();
             scratch_ctx.loop_depth += 1;
-            scratch_ctx.loop_break_stack.push(false);
+            scratch_ctx.loop_break_stack.push(LoopEdgeStates::default());
             if let Some(var) = iter_borrow {
                 scratch_ctx.iter_borrows.push(var);
             }

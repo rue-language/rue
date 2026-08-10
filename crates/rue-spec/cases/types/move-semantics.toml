@@ -2174,16 +2174,11 @@ error_contains = ["[E0493]", "overwrite a live linear value"]
 
 # A value moved on a `break` path must be MovedOut after the loop: the loop's
 # exit ownership state is the join of the break-site states (formal core §5.7,
-# (Loop-Break)), exactly as an `if` join. The compiler currently computes the
-# loop-exit state from the loop-entry state instead, accepting this
-# use-after-move — and, for a drop-glue type, running the destructor twice
-# (RUE-1293). Skipped until that lands; the equivalent if/else shape is
-# correctly rejected today.
+# (Loop-Break)), exactly as an `if` join (RUE-1293).
 [[case]]
 name = "break_path_move_is_moved_after_loop"
 spec = ["3.8:50", "3.8:51"]
 description = "A value moved on a break path is moved after the loop; post-loop use is E0205."
-skip = true
 source = """
 struct P { x: i64 }
 
@@ -2193,6 +2188,106 @@ fn main() -> i32 {
     let p = P { x: 1 };
     let mut i = 0;
     loop {
+        i = i + 1;
+        if i > 0 { let v = consume(p); break; }
+    }
+    let q = consume(p);
+    if q == 1 { 0 } else { 1 }
+}
+"""
+compile_fail = true
+error_contains = ["E0205", "use of moved value"]
+
+# The exit join is per-binding, not per-name (RUE-522 × RUE-1293): a loop-local
+# shadow consumed on the break path leaves the outer binding untouched.
+[[case]]
+name = "break_path_move_of_shadow_leaves_outer_owned"
+spec = ["3.8:50", "3.8:12"]
+description = "Consuming a loop-local shadow on a break path does not mark the outer binding moved."
+source = """
+struct P { x: i64 }
+
+fn consume(p: P) -> i64 { p.x }
+
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        let p = P { x: 2 };
+        if i > 0 { let v = consume(p); break; }
+    }
+    let q = consume(p);
+    if q == 1 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# Reinitialization after the loop discharges the exit join's MovedOut exactly
+# as after an if join (3.8:55).
+[[case]]
+name = "break_path_move_reassigned_after_loop"
+spec = ["3.8:50", "3.8:55"]
+description = "A value moved on a break path may be reinitialized after the loop and used."
+source = """
+struct P { x: i64 }
+
+fn consume(p: P) -> i64 { p.x }
+
+fn main() -> i32 {
+    let mut p = P { x: 1 };
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        if i > 0 { let v = consume(p); break; }
+    }
+    p = P { x: 5 };
+    let q = consume(p);
+    if q == 5 { 0 } else { 1 }
+}
+"""
+exit_code = 0
+
+# A move on one break path with no use after the loop stays legal: the join
+# marks the value conservatively and the per-path drop flag drops it on
+# exactly the exits that did not move it (3.8:73).
+[[case]]
+name = "break_path_move_without_later_use_is_legal"
+spec = ["3.8:73"]
+description = "Moving on one of several break paths is legal when the value is not used after the loop."
+source = """
+struct P { x: i64 }
+
+fn consume(p: P) -> i64 { p.x }
+
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let mut i = 0;
+    loop {
+        i = i + 1;
+        if i > 2 { let v = consume(p); break; }
+        if i > 1 { break; }
+    }
+    0
+}
+"""
+exit_code = 0
+
+# The while form has the same exit join: its exits are the condition-false
+# fall-through and its breaks.
+[[case]]
+name = "while_break_path_move_is_moved_after_loop"
+spec = ["3.8:50", "3.8:51"]
+description = "A value moved on a while-loop break path is moved after the loop; post-loop use is E0205."
+source = """
+struct P { x: i64 }
+
+fn consume(p: P) -> i64 { p.x }
+
+fn main() -> i32 {
+    let p = P { x: 1 };
+    let mut i = 0;
+    while i < 10 {
         i = i + 1;
         if i > 0 { let v = consume(p); break; }
     }
