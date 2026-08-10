@@ -1,0 +1,298 @@
+# `@bitCast` end-to-end coverage (RUE-952).
+#
+# `@bitCast` is a same-width two's-complement reinterpretation: the bits stay,
+# the type reading them changes, and nothing traps. Its whole implementation is
+# register-image discipline, so the risk is not arithmetic but the bits ABOVE
+# the shared width. Rue keeps an integer in the canonical image of its own type
+# (8/16-bit sign-/zero-extended per signedness, 32-bit with bits 32..63 clear),
+# and a reinterpretation has to rebuild those bits for the target — a negative
+# constant arrives in a register whose high bits are its sign extension, which
+# is exactly the wrong image for an unsigned target.
+#
+# These cases therefore pin every width pair in both directions with exact
+# stdout, through BOTH constant operands (materialized as immediates) and
+# runtime operands (returned from a call, so no constant folding can hide the
+# lowering), at -O0 and -O2.
+
+[section]
+id = "cli.bitcast"
+name = "@bitCast same-width reinterpretation"
+description = "Bit-preserving integer reinterpretation across every width pair, both directions."
+
+[[case]]
+name = "u64_i64_high_bit_round_trip"
+description = "The RUE-952 repro: a u64 with the top bit set has no @intCast into i64 at all."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    let y: i64 = @bitCast(x);
+    @dbg(y);
+    let back: u64 = @bitCast(y);
+    @dbg(back);
+    0
+}
+""" }]
+exit_code = 0
+stdout = """
+-9223372036854775808
+9223372036854775808
+"""
+
+[[case]]
+name = "intcast_still_traps_on_the_same_value"
+description = "The control: @intCast keeps its value-preserving trap; @bitCast did not weaken it."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u64 = 9223372036854775808;
+    let y: i64 = @intCast(x);
+    @dbg(y);
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["integer cast overflow"]
+
+[[case]]
+name = "constants_every_width_pair"
+description = """
+Every width pair in both directions from constant operands. The negative
+constants matter most: their register image is sign-extended to 64 bits, so an
+unsigned target must have the bits above the width cleared.
+"""
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let a: u8 = 255;
+    let a2: i8 = @bitCast(a);
+    @dbg(a2);
+    let b: i8 = -128;
+    let b2: u8 = @bitCast(b);
+    @dbg(b2);
+
+    let c: u16 = 65535;
+    let c2: i16 = @bitCast(c);
+    @dbg(c2);
+    let d: i16 = -32768;
+    let d2: u16 = @bitCast(d);
+    @dbg(d2);
+
+    let e: u32 = 4294967295;
+    let e2: i32 = @bitCast(e);
+    @dbg(e2);
+    let f: i32 = -2147483648;
+    let f2: u32 = @bitCast(f);
+    @dbg(f2);
+
+    let g: u64 = 18446744073709551615;
+    let g2: i64 = @bitCast(g);
+    @dbg(g2);
+    let h: i64 = -9223372036854775808;
+    let h2: u64 = @bitCast(h);
+    @dbg(h2);
+    0
+}
+""" }]
+exit_code = 0
+stdout = """
+-1
+128
+-1
+32768
+-1
+2147483648
+-1
+9223372036854775808
+"""
+
+[[case]]
+name = "runtime_operands_every_width_pair"
+description = """
+The same matrix with operands returned from calls, so nothing folds and the
+lowering itself is exercised at every width.
+"""
+files = [{ path = "main.rue", source = """
+fn u8_of(v: u8) -> u8 { v }
+fn i8_of(v: i8) -> i8 { v }
+fn u16_of(v: u16) -> u16 { v }
+fn i16_of(v: i16) -> i16 { v }
+fn u32_of(v: u32) -> u32 { v }
+fn i32_of(v: i32) -> i32 { v }
+fn u64_of(v: u64) -> u64 { v }
+fn i64_of(v: i64) -> i64 { v }
+
+fn main() -> i32 {
+    let a: i8 = @bitCast(u8_of(255));
+    @dbg(a);
+    let b: u8 = @bitCast(i8_of(-128));
+    @dbg(b);
+    let c: i16 = @bitCast(u16_of(65535));
+    @dbg(c);
+    let d: u16 = @bitCast(i16_of(-32768));
+    @dbg(d);
+    let e: i32 = @bitCast(u32_of(4294967295));
+    @dbg(e);
+    let f: u32 = @bitCast(i32_of(-2147483648));
+    @dbg(f);
+    let g: i64 = @bitCast(u64_of(18446744073709551615));
+    @dbg(g);
+    let h: u64 = @bitCast(i64_of(-9223372036854775808));
+    @dbg(h);
+    0
+}
+""" }]
+exit_code = 0
+stdout = """
+-1
+128
+-1
+32768
+-1
+2147483648
+-1
+9223372036854775808
+"""
+
+[[case]]
+name = "runtime_operands_every_width_pair_O2"
+description = "The runtime matrix at -O2: inlining and folding must not change a single digit."
+files = [{ path = "main.rue", source = """
+fn u8_of(v: u8) -> u8 { v }
+fn i8_of(v: i8) -> i8 { v }
+fn u16_of(v: u16) -> u16 { v }
+fn i16_of(v: i16) -> i16 { v }
+fn u32_of(v: u32) -> u32 { v }
+fn i32_of(v: i32) -> i32 { v }
+fn u64_of(v: u64) -> u64 { v }
+fn i64_of(v: i64) -> i64 { v }
+
+fn main() -> i32 {
+    let a: i8 = @bitCast(u8_of(255));
+    @dbg(a);
+    let b: u8 = @bitCast(i8_of(-128));
+    @dbg(b);
+    let c: i16 = @bitCast(u16_of(65535));
+    @dbg(c);
+    let d: u16 = @bitCast(i16_of(-32768));
+    @dbg(d);
+    let e: i32 = @bitCast(u32_of(4294967295));
+    @dbg(e);
+    let f: u32 = @bitCast(i32_of(-2147483648));
+    @dbg(f);
+    let g: i64 = @bitCast(u64_of(18446744073709551615));
+    @dbg(g);
+    let h: u64 = @bitCast(i64_of(-9223372036854775808));
+    @dbg(h);
+    0
+}
+""" }]
+args = ["main.rue", "-O2", "-o", "prog"]
+exit_code = 0
+stdout = """
+-1
+128
+-1
+32768
+-1
+2147483648
+-1
+9223372036854775808
+"""
+
+[[case]]
+name = "round_trip_is_the_identity"
+description = "Reinterpreting there and back restores the operand at every width (spec 4.13:123)."
+files = [{ path = "main.rue", source = """
+fn u8_of(v: u8) -> u8 { v }
+fn u16_of(v: u16) -> u16 { v }
+fn u32_of(v: u32) -> u32 { v }
+fn u64_of(v: u64) -> u64 { v }
+
+fn main() -> i32 {
+    let a: u8 = u8_of(200);
+    let a2: i8 = @bitCast(a);
+    if @bitCast(a2) != a { return 1; }
+
+    let b: u16 = u16_of(40000);
+    let b2: i16 = @bitCast(b);
+    if @bitCast(b2) != b { return 2; }
+
+    let c: u32 = u32_of(3000000000);
+    let c2: i32 = @bitCast(c);
+    if @bitCast(c2) != c { return 3; }
+
+    let d: u64 = u64_of(18000000000000000000);
+    let d2: i64 = @bitCast(d);
+    if @bitCast(d2) != d { return 4; }
+
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "reinterpreted_value_participates_in_arithmetic"
+description = """
+The result must be a fully canonical value of its target type, not just a
+correctly printing one: it feeds comparisons and arithmetic afterwards.
+"""
+files = [{ path = "main.rue", source = """
+fn i32_of(v: i32) -> i32 { v }
+
+fn main() -> i32 {
+    // 0xFFFFFFFF reinterpreted as i32 is -1, so adding 1 gives 0.
+    let raw: u32 = 4294967295;
+    let signed: i32 = @bitCast(raw);
+    if signed + 1 != 0 { return 1; }
+    if signed >= 0 { return 2; }
+
+    // -1 reinterpreted as u32 is u32.MAX, so subtracting it from itself is 0
+    // and it compares above every other u32.
+    let back: u32 = @bitCast(i32_of(-1));
+    if back - 4294967294 != 1 { return 3; }
+    if back <= 1000 { return 4; }
+
+    0
+}
+""" }]
+exit_code = 0
+
+[[case]]
+name = "identity_and_inference_positions"
+description = "The target comes from context: an annotation, a parameter, or a return type."
+files = [{ path = "main.rue", source = """
+fn takes_u32(v: u32) -> u32 { v }
+fn reinterpret(v: i16) -> u16 { @bitCast(v) }
+
+fn main() -> i32 {
+    // Annotation position, same type on both sides.
+    let same: u32 = @bitCast(takes_u32(7));
+    @dbg(same);
+
+    // Parameter position.
+    @dbg(takes_u32(@bitCast(i32_of(-2))));
+
+    // Return position.
+    @dbg(reinterpret(-2));
+    0
+}
+
+fn i32_of(v: i32) -> i32 { v }
+""" }]
+exit_code = 0
+stdout = """
+7
+4294967294
+65534
+"""
+
+[[case]]
+name = "cross_width_is_rejected"
+description = "A cross-width @bitCast is E0950, not a silent truncation."
+files = [{ path = "main.rue", source = """
+fn main() -> i32 {
+    let x: u64 = 5;
+    let y: i32 = @bitCast(x);
+    @intCast(y)
+}
+""" }]
+compile_fail = true
+error_contains = ["E0950", "same width"]

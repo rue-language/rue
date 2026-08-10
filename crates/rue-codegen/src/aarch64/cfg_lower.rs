@@ -1978,6 +1978,53 @@ impl<'a> CfgLower<'a> {
                 });
                 dst
             }
+            // `@bitCast` (RUE-952) moves no bits: it copies the operand and
+            // rebuilds only the bits above the shared width, which belong to the
+            // source type's register image. The shared planner picked the form
+            // from the target type; this leaf just spells it.
+            crate::value_plan::IntrinsicOperation::BitCast(form) => {
+                use crate::value_plan::BitCastForm;
+                let dst = self.mir.alloc_vreg();
+                self.mir.push(Aarch64Inst::MovRR {
+                    dst: Operand::Virtual(dst),
+                    src: Operand::Virtual(plan.args[0].primary),
+                });
+                let operand = Operand::Virtual(dst);
+                match form {
+                    BitCastForm::Move => {}
+                    BitCastForm::Sign8 => self.mir.push(Aarch64Inst::Sxtb {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    BitCastForm::Zero8 => self.mir.push(Aarch64Inst::Uxtb {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    BitCastForm::Sign16 => self.mir.push(Aarch64Inst::Sxth {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    BitCastForm::Zero16 => self.mir.push(Aarch64Inst::Uxth {
+                        dst: operand,
+                        src: operand,
+                    }),
+                    // The 64-bit shift pair clears bits 32..63 without needing a
+                    // `uxtw`-shaped instruction in this instruction set.
+                    BitCastForm::Zero32 => {
+                        self.mir.push(Aarch64Inst::LslImm {
+                            dst: operand,
+                            src: operand,
+                            imm: 32,
+                        });
+                        self.mir.push(Aarch64Inst::Lsr64Imm {
+                            dst: operand,
+                            src: operand,
+                            imm: 32,
+                        });
+                    }
+                }
+                dst
+            }
             crate::value_plan::IntrinsicOperation::PtrRead => {
                 let ptr = plan.args[0].primary;
                 let count = plan.result_slots;

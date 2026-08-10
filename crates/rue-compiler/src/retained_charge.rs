@@ -1481,6 +1481,11 @@ impl RetainedCharge for rue_error::ErrorKind {
                 operand_err: left,
                 fn_err: right,
             }
+            | E::BitCastWidthMismatch {
+                from: left,
+                to: right,
+                ..
+            }
             | E::PrivateMemberAccess {
                 item_kind: left,
                 name: right,

@@ -2785,6 +2785,11 @@ impl<'a> Interp<'a> {
                 let args = cfg.get_intrinsic_args(&inst.data).to_vec();
                 if let Some(intrinsic) = self.preflight_abort_intrinsic(cfg, &iname, &args, ty)? {
                     self.eval_abort_intrinsic(cfg, frame, intrinsic, &args)?
+                } else if iname == "bitCast" {
+                    // `@bitCast` is fully modeled, not a gap: a same-width
+                    // reinterpretation is exactly a `to_bits`/`from_bits` round
+                    // trip in the value model (RUE-952).
+                    self.eval_bit_cast(cfg, frame, &args, ty)?
                 } else if iname != "dbg" {
                     // Classify first: the same static arity/signature validation
                     // that gates a model-gap registration also gates execution, so
@@ -3594,6 +3599,46 @@ impl<'a> Interp<'a> {
                 index: 0,
             }),
         }
+    }
+
+    /// `@bitCast` (RUE-952, spec 4.13:118): reinterpret the operand's
+    /// `N`-bit two's-complement pattern at the same-width target type.
+    ///
+    /// This is total — no bound is checked and no trap is reachable, unlike
+    /// `IntCast` — so the model is exactly the value model's own bit
+    /// round trip: take the operand's pattern at its width, then read that
+    /// pattern back at the target's signedness. Sema guarantees both types are
+    /// integers of one width; a CFG that violates that is a contract failure,
+    /// not a gap.
+    fn eval_bit_cast(
+        &mut self,
+        cfg: &'a Cfg,
+        frame: &mut Frame,
+        args: &[CfgValue],
+        result_ty: Type,
+    ) -> Step<Value> {
+        let [arg] = args else {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicArity),
+                "@bitCast arity",
+            ));
+        };
+        let source_ty = cfg.get_inst(*arg).ty;
+        let (source_bits, _) = int_shape(source_ty)?;
+        let (target_bits, target_kind) = int_shape(result_ty)?;
+        if source_bits != target_bits {
+            return Err(unsupported(
+                UnsupportedKind::ContractViolation(ContractViolationKind::IntrinsicSignature),
+                "@bitCast operand and result widths differ",
+            ));
+        }
+        let value = self.eval(cfg, frame, *arg)?.as_int();
+        let pattern = to_bits(value, source_bits);
+        Ok(Value::Int(from_bits(
+            pattern,
+            target_bits,
+            kind_signed(target_kind),
+        )))
     }
 
     /// Execute a heap/pointer intrinsic whose signature already validated as a
