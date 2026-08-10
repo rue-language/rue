@@ -1701,6 +1701,7 @@ pub(crate) struct ModuleIndex {
     definition_partitions:
         BTreeMap<DefinitionNamespace, BTreeMap<Arc<str>, ModuleDefinitionIndices>>,
     pub(crate) imports: Arc<[crate::ImportDirective]>,
+    import_partitions: BTreeMap<Arc<str>, usize>,
 }
 
 impl ModuleIndex {
@@ -1721,11 +1722,18 @@ impl ModuleIndex {
                 .and_modify(|indices| indices.push(index))
                 .or_insert(ModuleDefinitionIndices::One(index));
         }
+        let mut import_partitions = BTreeMap::new();
+        for (index, directive) in imports.iter().enumerate() {
+            let normalized: Arc<str> =
+                Arc::from(rue_air::normalize_module_path(directive.specifier()));
+            import_partitions.entry(normalized).or_insert(index);
+        }
         Self {
             revision,
             definitions,
             definition_partitions,
             imports,
+            import_partitions,
         }
     }
 
@@ -1752,6 +1760,17 @@ impl ModuleIndex {
         self.definition_partitions
             .iter()
             .flat_map(|(namespace, names)| names.keys().map(move |name| (*namespace, name)))
+    }
+
+    /// Normalize one consulted import path and recover its first source-order
+    /// locator without revisiting unrelated directives.
+    fn normalized_import(&self, specifier: &str) -> (String, Option<&crate::ImportDirective>) {
+        let normalized = rue_air::normalize_module_path(specifier);
+        let directive = self
+            .import_partitions
+            .get(normalized.as_str())
+            .map(|index| &self.imports[*index]);
+        (normalized, directive)
     }
 }
 
@@ -2286,10 +2305,9 @@ enum ImportBindingFailure {
 struct LookupImportValue(Result<ResolvedImportBinding, ImportBindingFailure>);
 
 impl LookupImportValue {
-    /// Classify a consulted import path against the consulting module's declared
-    /// `@import` specifiers. Pure and `O(module imports)`; it reads only the
-    /// consulting module's own index, never another module's, matching the §4
-    /// requirement to resolve "only the paths consulted by the lookup".
+    /// Classify one normalized import partition from the consulting module's
+    /// index. It never reads another module, matching the §4 requirement to
+    /// resolve "only the paths consulted by the lookup".
     ///
     /// Both the requested specifier and every directive specifier are normalized
     /// through the one [`rue_air::normalize_module_path`] authority *before*
@@ -2301,22 +2319,15 @@ impl LookupImportValue {
     /// `./`-spelled directive would falsely classify as `Absent`. Repeated
     /// source sites are not ambiguous: they consult the same normalized key,
     /// while genuine physical ambiguity remains a result of `ResolveImport`.
-    fn classify<'a>(
-        specifier: &str,
-        directives: impl IntoIterator<Item = &'a crate::ImportDirective>,
-    ) -> Self {
-        let requested = rue_air::normalize_module_path(specifier);
-        let mut matches = directives
-            .into_iter()
-            .filter(|directive| rue_air::normalize_module_path(directive.specifier()) == requested);
-        let Some(_) = matches.next() else {
+    fn classify(normalized_specifier: String, directive: Option<&crate::ImportDirective>) -> Self {
+        let Some(_) = directive else {
             return Self(Err(ImportBindingFailure::Absent));
         };
-        if requested.is_empty() {
+        if normalized_specifier.is_empty() {
             return Self(Err(ImportBindingFailure::Rejected));
         }
         Self(Ok(ResolvedImportBinding {
-            normalized_specifier: Arc::from(requested),
+            normalized_specifier: Arc::from(normalized_specifier),
             target: None,
         }))
     }
@@ -2350,6 +2361,7 @@ impl RetainedCharge for ModuleIndex {
             .saturating_add(self.definitions.retained_charge())
             .saturating_add(self.definition_partitions.retained_charge())
             .saturating_add(self.imports.retained_charge())
+            .saturating_add(self.import_partitions.retained_charge())
     }
 }
 
@@ -12024,28 +12036,22 @@ impl RevisionedQueryDatabase {
                     let rue_query::QueryOutcome::Success(indexed) = indexed.outcome() else {
                         unreachable!("ModuleIndex publishes typed values")
                     };
-                    let mut value = match &indexed.0 {
+                    let (mut value, directive) = match &indexed.0 {
                         Ok(index) => {
-                            LookupImportValue::classify(&key.specifier, index.imports.iter())
+                            let (normalized, directive) =
+                                index.normalized_import(key.specifier.as_ref());
+                            (
+                                LookupImportValue::classify(normalized, directive),
+                                directive,
+                            )
                         }
                         // An unavailable index carries no consultable import
                         // directives, so the consulted path is a first-class
                         // absent binding.
-                        Err(_) => LookupImportValue(Err(ImportBindingFailure::Absent)),
+                        Err(_) => (LookupImportValue(Err(ImportBindingFailure::Absent)), None),
                     };
                     if let LookupImportValue(Ok(binding)) = &mut value {
-                        let normalized = binding.normalized_specifier.clone();
-                        let directive = indexed
-                            .0
-                            .as_ref()
-                            .ok()
-                            .and_then(|index| {
-                                index.imports.iter().find(|directive| {
-                                    rue_air::normalize_module_path(directive.specifier())
-                                        == normalized.as_ref()
-                                })
-                            })
-                            .ok_or(QueryAbort::Canceled)?;
+                        let directive = directive.ok_or(QueryAbort::Canceled)?;
                         let resolved = context.query_registered(
                             resolve_import_for_lookup_evaluator
                                 .get()
@@ -29177,6 +29183,36 @@ fn main() -> i32 {
     }
 
     #[test]
+    fn module_index_exact_import_partition_ignores_irrelevant_directives() {
+        let mut source = String::from("const target = @import(\"./target.rue\");\n");
+        for index in 0..128 {
+            source.push_str(&format!(
+                "const irrelevant_{index} = @import(\"irrelevant_{index}.rue\");\n"
+            ));
+        }
+        let snapshot = source_snapshot(&[(1, "/main.rue", "main.rue", source.as_str())], 1);
+        let module = ModuleId::from_logical_path("main.rue").unwrap();
+        let mut database = RevisionedQueryDatabase::default();
+        let revision = revision_for(&mut database, &snapshot);
+        let (_, index, _) = database.module_terminals(revision, module);
+
+        assert_eq!(index.imports.len(), 129);
+        assert_eq!(
+            index.import_partitions.get("target.rue"),
+            Some(&0),
+            "the exact-key partition recovers one source locator regardless of unrelated imports"
+        );
+        let (normalized, directive) = index.normalized_import("target.rue");
+        assert_eq!(normalized, "target.rue");
+        assert_eq!(
+            directive.map(crate::ImportDirective::specifier),
+            Some("./target.rue")
+        );
+        let (_, absent) = index.normalized_import("absent.rue");
+        assert!(absent.is_none());
+    }
+
+    #[test]
     fn lookup_name_retains_position_free_facts_across_trivia_shifts() {
         let first = source_snapshot(
             &[(1, "/main.rue", "main.rue", "pub struct Base { value: i32 }")],
@@ -32366,15 +32402,22 @@ fn main() -> i32 {
     #[test]
     fn import_binding_classifier_covers_absent_rejected_and_repeated_sites() {
         let m = ModuleId::from_logical_path("m.rue").unwrap();
+        let classify = |specifier: &str, directives: &[crate::ImportDirective]| {
+            let normalized = rue_air::normalize_module_path(specifier);
+            let directive = directives.iter().find(|directive| {
+                rue_air::normalize_module_path(directive.specifier()) == normalized
+            });
+            LookupImportValue::classify(normalized, directive)
+        };
         // A specifier that normalizes to an empty module path is a first-class
         // rejected binding.
         let dot = crate::ImportDirective::new(m.clone(), 0, 1, Arc::from("."));
         assert_eq!(
-            LookupImportValue::classify(".", std::slice::from_ref(&dot)),
+            classify(".", std::slice::from_ref(&dot)),
             LookupImportValue(Err(ImportBindingFailure::Rejected))
         );
         assert_eq!(
-            LookupImportValue::classify("other.rue", std::slice::from_ref(&dot)),
+            classify("other.rue", std::slice::from_ref(&dot)),
             LookupImportValue(Err(ImportBindingFailure::Absent))
         );
         let duplicated = [
@@ -32382,14 +32425,14 @@ fn main() -> i32 {
             crate::ImportDirective::new(m.clone(), 2, 3, Arc::from("dep.rue")),
         ];
         assert_eq!(
-            LookupImportValue::classify("dep.rue", &duplicated),
+            classify("dep.rue", &duplicated),
             LookupImportValue(Ok(ResolvedImportBinding {
                 normalized_specifier: Arc::from("dep.rue"),
                 target: None,
             }))
         );
         assert_eq!(
-            LookupImportValue::classify("dep.rue", std::slice::from_ref(&duplicated[0])),
+            classify("dep.rue", std::slice::from_ref(&duplicated[0])),
             LookupImportValue(Ok(ResolvedImportBinding {
                 normalized_specifier: Arc::from("dep.rue"),
                 target: None,
@@ -32408,7 +32451,7 @@ fn main() -> i32 {
             crate::ImportDirective::new(m.clone(), 2, 3, Arc::from("dep.rue")),
         ];
         assert_eq!(
-            LookupImportValue::classify("dep.rue", &mixed_spellings),
+            classify("dep.rue", &mixed_spellings),
             LookupImportValue(Ok(ResolvedImportBinding {
                 normalized_specifier: Arc::from("dep.rue"),
                 target: None,
@@ -32421,7 +32464,7 @@ fn main() -> i32 {
         // `dep.rue` against a lone `./dep.rue` directive would be `Absent`.
         let dot_slash = crate::ImportDirective::new(m.clone(), 0, 1, Arc::from("./dep.rue"));
         assert_eq!(
-            LookupImportValue::classify("dep.rue", std::slice::from_ref(&dot_slash)),
+            classify("dep.rue", std::slice::from_ref(&dot_slash)),
             LookupImportValue(Ok(ResolvedImportBinding {
                 normalized_specifier: Arc::from("dep.rue"),
                 target: None,
