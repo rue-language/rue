@@ -990,16 +990,24 @@ impl<'a> ConstraintGenerator<'a> {
 
     /// Resolve a field's declared type on a concrete struct type.
     fn field_type_of(&self, struct_ty: Type, field: Spur) -> Option<Type> {
+        self.field_type_of_with_observer(struct_ty, field, || {})
+    }
+
+    #[inline(always)]
+    fn field_type_of_with_observer(
+        &self,
+        struct_ty: Type,
+        field: Spur,
+        observe_candidate: impl FnMut(),
+    ) -> Option<Type> {
         let TypeKind::Struct(struct_id) = struct_ty.kind() else {
             return None;
         };
         let field_name = self.interner.resolve(&field);
         self.type_pool
             .struct_def(struct_id)
-            .fields
-            .iter()
-            .find(|f| f.name == field_name)
-            .map(|f| f.ty)
+            .find_field_with_observer(field_name, observe_candidate)
+            .map(|(_, field)| field.ty)
     }
 
     pub fn fresh_var(&mut self) -> TypeVarId {
@@ -4116,6 +4124,99 @@ mod tests {
         let interner = ThreadedRodeo::new();
         let type_pool = TypeInternPool::new();
         (rir, interner, type_pool)
+    }
+
+    #[test]
+    fn indexed_struct_field_resolution_scales_with_field_accesses() {
+        const FIELD_COUNT: usize = 8_192;
+
+        let (rir, interner, type_pool) = make_test_rir_interner_and_type_pool();
+        let mut field_names = Vec::with_capacity(FIELD_COUNT);
+        let fields = (0..FIELD_COUNT)
+            .map(|index| {
+                let name = format!("field_{index:04}");
+                field_names.push(interner.get_or_intern(&name));
+                crate::types::StructField {
+                    name: name.into(),
+                    ty: if index.is_multiple_of(2) {
+                        Type::I32
+                    } else {
+                        Type::I64
+                    },
+                }
+            })
+            .collect();
+        let (wide_id, inserted) = type_pool.register_struct(
+            interner.get_or_intern("Wide"),
+            crate::types::StructDef {
+                name: "Wide".into(),
+                fields,
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: false,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        assert!(inserted);
+
+        let functions = HashMap::new();
+        let structs = HashMap::new();
+        let enums = HashMap::new();
+        let methods: HashMap<(StructId, Spur), MethodSig> = HashMap::new();
+        let cgen = ConstraintGenerator::new(
+            &rir, &interner, &functions, &structs, &enums, &methods, &type_pool,
+        );
+        let wide_ty = Type::new_struct(wide_id);
+        let mut candidate_comparisons = 0;
+
+        for index in (0..FIELD_COUNT).rev() {
+            let expected = if index.is_multiple_of(2) {
+                Type::I32
+            } else {
+                Type::I64
+            };
+            assert_eq!(
+                cgen.field_type_of_with_observer(wide_ty, field_names[index], || {
+                    candidate_comparisons += 1;
+                }),
+                Some(expected)
+            );
+        }
+        assert_eq!(
+            candidate_comparisons, FIELD_COUNT,
+            "indexed inference should compare one candidate name per field access"
+        );
+
+        let missing = interner.get_or_intern("missing");
+        assert_eq!(cgen.field_type_of(wide_ty, missing), None);
+        assert_eq!(cgen.field_type_of(Type::I32, field_names[0]), None);
+
+        let (builtin_id, inserted) = type_pool.register_struct(
+            interner.get_or_intern("BuiltinRecord"),
+            crate::types::StructDef {
+                name: "BuiltinRecord".into(),
+                fields: vec![crate::types::StructField {
+                    name: "value".into(),
+                    ty: Type::I64,
+                }],
+                is_copy: true,
+                is_linear: false,
+                destructor: None,
+                is_builtin: true,
+                is_pub: false,
+                file_id: FileId::DEFAULT,
+            },
+        );
+        assert!(inserted);
+        assert_eq!(
+            cgen.field_type_of(
+                Type::new_struct(builtin_id),
+                interner.get_or_intern("value")
+            ),
+            Some(Type::I64)
+        );
     }
 
     #[test]
