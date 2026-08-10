@@ -397,14 +397,12 @@ Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
   `@byte_move(dst, src, size)`, the memmove-shaped sibling of `@byte_copy`
   (which stays memcpy-shaped, overlap undefined), over the new
   `__rue_byte_move` helper. Purely additive.
-- [ ] **Phase 4: Byte-correct typed access (post-RUE-971)** — RUE-962.
-  Make `@ptr_read`/`@ptr_write`/`@ptr_offset` physical-layout-driven; add
-  `@ptr_read_unaligned`/`@ptr_write_unaligned`; fold `@byte_read`/`@byte_write`
-  into `@ptr_read`/`@ptr_write`. Before implementing the `_unaligned` pair,
-  re-evaluate `*align(N)` alignment-qualified pointer types (see the ruling
-  below): if RUE-971 has landed and slices have stabilized by then, type-carried
-  alignment may replace the two-intrinsic split at near-zero churn, since
-  nothing will have been built on the split yet.
+- [x] **Phase 4: Byte-correct typed access (post-RUE-971)** — RUE-962.
+  `@ptr_read`/`@ptr_write`/`@ptr_offset` are physical-layout-driven,
+  `@ptr_read_unaligned`/`@ptr_write_unaligned` exist, and `@byte_read`/
+  `@byte_write` are folded into `@ptr_read`/`@ptr_write` (hard removal, no
+  alias window). The `*align(N)` re-evaluation this phase required was made and
+  declined; see the fold ruling under "Resolved at acceptance".
 - [ ] **Phase 5: Specification sweep** — RUE-963. Rewrite `4.13:5a` and
   `9.2:7`,`9.2:10`–`9.2:13`, and remove/fold `9.2:14a`–`9.2:14f`; update
   traceability.
@@ -476,6 +474,29 @@ The proposal's open questions, settled by the 2026-07-17 ratification:
   consumer overlaps today, and a later `@byte_move` (memmove) is purely
   additive. Superseded: `@byte_move` shipped in Phase 3b (RUE-964), exactly as
   the additive change this ruling anticipated.
+- **Byte-access fold: accepted with the two-call nesting; `@ptr_offset` stays
+  sugarless.** Ruled by Steve on 2026-08-10, closing Phase 4 (RUE-962). The
+  single-byte pair folds by direct substitution:
+
+  ```
+  @byte_read(p, i)      →  @ptr_read(@ptr_offset(p, i))
+  @byte_write(p, i, v)  →  @ptr_write(@ptr_offset(p, i), v)
+  ```
+
+  Both forms are equivalent because `@size_of(u8)` is `1` post-canonical-layout,
+  so an element-scaled `@ptr_offset` over a `ptr u8` strides exactly one byte;
+  the existing spec case
+  `byte_access_agrees_with_typed_access_on_a_u8_pointer` proved the two spellings
+  access the same byte before the fold. The substitution applies unchanged to
+  `ptr const u8`, since both `@ptr_offset` and `@ptr_read` accept const
+  pointers. The nesting is the accepted cost: no byte-granular `@ptr_offset`
+  sugar and no offset operand on the access pair are added, keeping one
+  element-scaled arithmetic intrinsic (9.2:7) and one typed access pair
+  (9.2:6b/9.2:6d) rather than reintroducing a parallel byte-shaped surface —
+  which is the very duplication this ADR exists to remove. Removal is hard, with
+  no alias window, matching the `_bytes` allocator ruling above: `@byte_read` is
+  now an unknown intrinsic (E0700). Spec rules `9.2:14d`/`14e`/`14f` are deleted
+  and their coverage re-homed onto `9.2:6b`/`9.2:6d`.
 - **Null primitive: keep the `@int_to_ptr(0)` idiom.** A dedicated `@null_ptr`
   acquires design questions (typed or untyped result?) better answered by the
   future provenance work.

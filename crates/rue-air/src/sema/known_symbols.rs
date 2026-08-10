@@ -157,8 +157,6 @@ pub struct KnownSymbols {
     /// the in-place-only grow/shrink that never moves the block and reports
     /// success as a `bool` (Zig's `Allocator.resize`, RUE-968).
     pub resize: Spur,
-    pub byte_read: Spur,
-    pub byte_write: Spur,
     /// Bulk byte primitives `@byte_copy` (memcpy), `@byte_move` (memmove), and
     /// `@byte_set` (memset). ADR-0059 Phase 1 (RUE-937) plus the overlapping
     /// sibling `@byte_move` (RUE-964).
@@ -234,8 +232,6 @@ impl KnownSymbols {
             realloc: interner.get_or_intern_static("realloc"),
             alloc_zeroed: interner.get_or_intern_static("alloc_zeroed"),
             resize: interner.get_or_intern_static("resize"),
-            byte_read: interner.get_or_intern_static("byte_read"),
-            byte_write: interner.get_or_intern_static("byte_write"),
             byte_copy: interner.get_or_intern_static("byte_copy"),
             byte_move: interner.get_or_intern_static("byte_move"),
             byte_set: interner.get_or_intern_static("byte_set"),
@@ -326,8 +322,6 @@ mod tests {
         assert_eq!(interner.resolve(&known.realloc), "realloc");
         assert_eq!(interner.resolve(&known.alloc_zeroed), "alloc_zeroed");
         assert_eq!(interner.resolve(&known.resize), "resize");
-        assert_eq!(interner.resolve(&known.byte_read), "byte_read");
-        assert_eq!(interner.resolve(&known.byte_write), "byte_write");
         assert_eq!(interner.resolve(&known.byte_copy), "byte_copy");
         assert_eq!(interner.resolve(&known.byte_move), "byte_move");
         assert_eq!(interner.resolve(&known.byte_set), "byte_set");

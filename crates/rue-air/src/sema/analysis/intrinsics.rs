@@ -271,8 +271,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 || name == known.free
                 || name == known.realloc
                 || name == known.resize
-                || name == known.byte_read
-                || name == known.byte_write
                 || name == known.byte_copy
                 || name == known.byte_move
                 || name == known.byte_set
@@ -424,10 +422,6 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             self.analyze_resize_intrinsic(air, name, &args, span, ctx)
         } else if name == known.free {
             self.analyze_free_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.byte_read {
-            self.analyze_byte_read_intrinsic(air, name, &args, span, ctx)
-        } else if name == known.byte_write {
-            self.analyze_byte_write_intrinsic(air, name, &args, span, ctx)
         } else if name == known.byte_copy || name == known.byte_move {
             self.analyze_byte_copy_intrinsic(air, name, &args, span, ctx)
         } else if name == known.byte_set {

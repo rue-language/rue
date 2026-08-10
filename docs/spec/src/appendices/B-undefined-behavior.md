@@ -172,7 +172,6 @@ defines it.
 | Using a pointer obtained from `@raw`/`@raw_mut`/`@field_ptr` after the value it borrowed has been moved, dropped, or otherwise gone out of scope (a dangling pointer). | ADR-0028 |
 | Mutating storage through a `ptr mut T` while another live pointer aliases the same storage in a way the program's reasoning assumes cannot happen (aliasing violation). | ADR-0028 |
 | Accessing storage through a pointer that does not satisfy the pointee type's alignment requirement, other than through `@ptr_read_unaligned`/`@ptr_write_unaligned`, for which an underaligned address is well defined. | §9.2 (9.2:6b, 9.2:14k), ADR-0028 |
-| Reading or writing with `@byte_read`/`@byte_write` when `address_of(p) + offset` is not a live byte within the referenced storage, including null, out-of-bounds, use-after-free, and overflowed-address access. | §9.2 (9.2:14d) |
 | Copying with `@byte_copy` between regions that overlap: `[dst, dst + size)` and `[src, src + size)` must be disjoint. `@byte_move` is the well-defined form for overlapping regions. | §9.2 (9.2:14g) |
 | Reading or writing outside live storage with `@byte_copy`, `@byte_move`, or `@byte_set` — that is, when `size` reaches past the end of the block either operand addresses. A `size` of zero accesses no memory and is always defined. | §9.2 (9.2:14g) |
 | Passing an incorrect size or alignment, a pointer not returned by the allocation family, or an already-freed pointer to `@free`/`@realloc`/`@resize`. | §9.2 (9.2:11–13) |

@@ -2201,40 +2201,6 @@ impl<'a> CfgLower<'a> {
                 self.lower_runtime_call(plan.runtime_call.expect("byte-set runtime call plan"))
                     .primary
             }
-            crate::value_plan::IntrinsicOperation::ByteRead => {
-                let addr = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::AddRR {
-                    dst: Operand::Virtual(addr),
-                    src1: Operand::Virtual(plan.args[0].primary),
-                    src2: Operand::Virtual(plan.args[1].primary),
-                });
-                let dst = self.mir.alloc_vreg();
-                let narrow = plan
-                    .narrow_access
-                    .expect("byte access always has a one-byte narrow descriptor");
-                // Fold into the typed `ptr u8` narrow load (ADR-0052, RUE-978).
-                self.emit_narrow_load_through_ptr(dst, addr, 0, narrow);
-                dst
-            }
-            crate::value_plan::IntrinsicOperation::ByteWrite => {
-                let addr = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::AddRR {
-                    dst: Operand::Virtual(addr),
-                    src1: Operand::Virtual(plan.args[0].primary),
-                    src2: Operand::Virtual(plan.args[1].primary),
-                });
-                let narrow = plan
-                    .narrow_access
-                    .expect("byte access always has a one-byte narrow descriptor");
-                // Fold into the typed `ptr u8` narrow store (ADR-0052, RUE-978).
-                self.emit_narrow_store_through_ptr(plan.args[2].primary, addr, 0, narrow);
-                let dst = self.mir.alloc_vreg();
-                self.mir.push(Aarch64Inst::MovImm {
-                    dst: Operand::Virtual(dst),
-                    imm: 0,
-                });
-                dst
-            }
             crate::value_plan::IntrinsicOperation::PlaceAddress => {
                 let place = plan.args[0]
                     .place
@@ -4436,8 +4402,8 @@ mod tests {
         let preview = PreviewFeatures::new();
         let mir = lower_function_to_mir_with_preview(
             "fn main() -> i32 { checked { let p = @alloc(3, 1); \
-             @byte_write(p, 1, 255); let q = @realloc(p, 3, 1, 5); \
-             let b = @byte_read(q, 1); @free(q, 5, 1); \
+             @ptr_write(@ptr_offset(p, 1), 255); let q = @realloc(p, 3, 1, 5); \
+             let b = @ptr_read(@ptr_offset(q, 1)); @free(q, 5, 1); \
              @intCast(b) } }",
             "main",
             preview,
@@ -4467,15 +4433,15 @@ mod tests {
         assert_eq!(immediate_call_arg(&mir, free, Reg::X2), Some(1));
     }
 
-    /// RUE-978: under the default compact layout the raw-byte access family folds
-    /// into the ordinary typed `ptr u8` narrow path — `@byte_read`/`@byte_write`
-    /// emit the same one-byte `NarrowLoadIndexed`/`NarrowStoreIndexed` a typed
-    /// `@ptr_read`/`@ptr_write` of a `u8` pointee does.
+    /// RUE-978/RUE-962: byte-granular access is the ordinary typed `ptr u8`
+    /// narrow path. `@ptr_read`/`@ptr_write` of a `u8` pointee, walked with
+    /// `@ptr_offset`, emit a one-byte `NarrowLoadIndexed`/`NarrowStoreIndexed`
+    /// rather than a full-slot access.
     #[test]
     fn aggregate_layout_folds_byte_access_into_narrow_typed_path() {
         let mir = lower_function_to_mir_with_preview(
             "fn main() -> i32 { checked { let p = @alloc(2, 1); \
-             @byte_write(p, 0, 65); let b = @byte_read(p, 1); \
+             @ptr_write(@ptr_offset(p, 0), 65); let b = @ptr_read(@ptr_offset(p, 1)); \
              @free(p, 2, 1); @intCast(b) } }",
             "main",
             PreviewFeatures::new(),
@@ -4484,7 +4450,7 @@ mod tests {
             mir.instructions()
                 .iter()
                 .any(|inst| matches!(inst, Aarch64Inst::NarrowStoreIndexed { width: 1, .. })),
-            "@byte_write must fold into the one-byte narrow store"
+            "a `u8` @ptr_write must use the one-byte narrow store"
         );
         assert!(
             mir.instructions().iter().any(|inst| matches!(
@@ -4495,7 +4461,7 @@ mod tests {
                     ..
                 }
             )),
-            "@byte_read must fold into the one-byte zero-extended narrow load"
+            "a `u8` @ptr_read must use the one-byte zero-extended narrow load"
         );
     }
 }

@@ -63,8 +63,8 @@ source = """
 fn main() -> i32 {
     checked {
         let p: ptr mut u8 = @alloc(4, 1);
-        @byte_write(p, 0, 42);
-        let v: i32 = @intCast(@byte_read(p, 0));
+        @ptr_write(@ptr_offset(p, 0), 42);
+        let v: i32 = @intCast(@ptr_read(@ptr_offset(p, 0)));
         @free(p, 4, 1);
         v
     }

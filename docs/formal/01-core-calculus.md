@@ -1962,7 +1962,8 @@ citation:
 `StrBuf` is the `u8` refinement of the trio's growable rung plus the
 byte-string convention (ADR-0043; the RUE-386 two-types ruling), and like
 `ArrayBuf` it is **source-defined** (`std/strbuf.rue`) over the byte-oriented
-unchecked intrinsics — `@byte_read`/`@byte_write`/`@byte_copy` and
+unchecked intrinsics — `@byte_copy` for bulk moves, `@ptr_read`/`@ptr_write`
+over a `ptr u8` for single bytes, and
 `@ptr_to_int`/`@int_to_ptr`/`@ptr_offset` directly, plus the `@alloc` of the
 literal-promotion arm below, with the growable `{buf, cap}` allocation itself
 delegated to the same `std/rawbuf.rue` core `ArrayBuf` uses (ADR-0059) — so the

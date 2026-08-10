@@ -248,9 +248,11 @@ now unblocks IO without waiting on the slice feature.
 
 `std.fs` source is trusted standard-library input (`ModuleOrigin::
 StandardLibrary`), so its use of the `raw_bytes` packed-byte intrinsics
-(`@alloc_bytes`/`@byte_read`/`@byte_write`/`@ptr_to_int`/`@free_bytes`) is
-authorized without a preview flag, exactly as `std/strbuf.rue` is — programs
-that consume `std.fs` need no `--preview raw_bytes`.
+(`@alloc`/`@free`/`@ptr_read`/`@ptr_write`/`@ptr_offset`/`@ptr_to_int`, the
+unified surface ADR-0059 folded the original `_bytes` and `@byte_read`/
+`@byte_write` names into) is authorized without a preview flag, exactly as
+`std/strbuf.rue` is — programs that consume `std.fs` need no
+`--preview raw_bytes`.
 
 ## Implementation status
 

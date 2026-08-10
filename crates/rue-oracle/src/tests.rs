@@ -417,8 +417,6 @@ fn every_known_unsupported_intrinsic_has_a_closed_kind() {
         ("alloc_zeroed", Intrinsic::AllocateZeroed),
         ("resize", Intrinsic::Resize),
         ("byte_move", Intrinsic::ByteMove),
-        ("byte_read", Intrinsic::ByteRead),
-        ("byte_write", Intrinsic::ByteWrite),
         ("byte_copy", Intrinsic::ByteCopy),
         ("byte_set", Intrinsic::ByteSet),
     ] {
@@ -1227,24 +1225,25 @@ fn field_ptr_on_param_struct() {
     assert_eq!(run(src).stdout, "44\n");
 }
 
-/// The full byte family round-trips through `@alloc`, `@byte_*`, and
-/// `@realloc` with contents preserved across a grow.
+/// The full byte family round-trips through `@alloc`, the bulk `@byte_*`
+/// helpers, per-byte `@ptr_read`/`@ptr_write` over a `ptr u8`, and `@realloc`,
+/// with contents preserved across a grow.
 #[test]
 fn byte_family_roundtrip() {
     let src = r#"fn main() -> i32 {
         checked {
             let p: ptr mut u8 = @alloc(6, 1);
             @byte_set(p, 0, 6);
-            @byte_write(p, 0, 10);
-            @byte_write(p, 1, 20);
-            @byte_write(p, 2, 30);
+            @ptr_write(@ptr_offset(p, 0), 10);
+            @ptr_write(@ptr_offset(p, 1), 20);
+            @ptr_write(@ptr_offset(p, 2), 30);
             let q: ptr mut u8 = @realloc(p, 6, 1, 8);
-            @byte_write(q, 3, 40);
+            @ptr_write(@ptr_offset(q, 3), 40);
             let dst: ptr mut u8 = @alloc(8, 1);
             @byte_copy(dst, q, 8);
-            let sum: i32 = @intCast(@byte_read(dst, 0)) + @intCast(@byte_read(dst, 1))
-                + @intCast(@byte_read(dst, 2)) + @intCast(@byte_read(dst, 3))
-                + @intCast(@byte_read(dst, 4));
+            let sum: i32 = @intCast(@ptr_read(@ptr_offset(dst, 0))) + @intCast(@ptr_read(@ptr_offset(dst, 1)))
+                + @intCast(@ptr_read(@ptr_offset(dst, 2))) + @intCast(@ptr_read(@ptr_offset(dst, 3)))
+                + @intCast(@ptr_read(@ptr_offset(dst, 4)));
             @dbg(sum);
             @free(q, 8, 1);
             @free(dst, 8, 1);
@@ -1263,7 +1262,8 @@ fn byte_address_arithmetic_roundtrip() {
             let src: ptr mut u8 = @alloc(5, 1);
             let mut i: u64 = 0;
             while i < 5 {
-                @byte_write(src, i, @intCast(i + 1));
+                let b: u8 = @intCast(i + 1);
+                @ptr_write(@ptr_offset(src, i), b);
                 i = i + 1;
             }
             let dst: ptr mut u8 = @alloc(5, 1);
@@ -1274,7 +1274,7 @@ fn byte_address_arithmetic_roundtrip() {
             let mut sum: i32 = 0;
             let mut j: u64 = 0;
             while j < 5 {
-                sum = sum + @intCast(@byte_read(dst, j));
+                sum = sum + @intCast(@ptr_read(@ptr_offset(dst, j)));
                 j = j + 1;
             }
             @dbg(sum);

@@ -163,7 +163,8 @@ pub const c_bool = bool;
 /// scan both `strbuf_from_c_string` and `free_c_string` share.
 pub fn c_strlen(cstr: ptr mut u8) -> u64 {
     let mut len: u64 = 0;
-    while checked { @byte_read(cstr, len) } != 0 {
+    let nul: u8 = 0;
+    while checked { @ptr_read(@ptr_offset(cstr, len)) } != nul {
         len += 1;
     }
     len
@@ -192,10 +193,10 @@ pub fn owned_c_string(borrow source: strbuf.StrBuf) -> ptr mut u8 {
     let mut i: u64 = 0;
     while i < len {
         let byte = strbuf.StrBuf.byte_at_borrowed(borrow source, i);
-        checked { @byte_write(buf, i, byte); };
+        checked { @ptr_write(@ptr_offset(buf, i), byte); };
         i += 1;
     }
-    checked { @byte_write(buf, len, 0); };
+    checked { @ptr_write(@ptr_offset(buf, len), 0); };
     buf
 }
 
@@ -212,7 +213,7 @@ pub fn strbuf_from_c_string(cstr: ptr mut u8) -> strbuf.StrBuf {
     let mut out = strbuf.StrBuf.with_capacity(len);
     let mut i: u64 = 0;
     while i < len {
-        out.push(checked { @byte_read(cstr, i) });
+        out.push(checked { @ptr_read(@ptr_offset(cstr, i)) });
         i += 1;
     }
     out
@@ -227,7 +228,8 @@ pub fn strbuf_from_c_string(cstr: ptr mut u8) -> strbuf.StrBuf {
 /// string, or an already-freed pointer — is a contract violation.
 pub fn free_c_string(cstr: ptr mut u8) {
     let mut len: u64 = 0;
-    while checked { @byte_read(cstr, len) } != 0 {
+    let nul: u8 = 0;
+    while checked { @ptr_read(@ptr_offset(cstr, len)) } != nul {
         len += 1;
     }
     checked { @free(cstr, len + 1, 1); };

@@ -26,10 +26,10 @@ pub fn swap(comptime T: type, inout a: T, inout b: T) {
     let pb: ptr mut u8 = checked { @int_to_ptr(addr_b) };
     let mut i: u64 = 0;
     while i < size {
-        let ta = checked { @byte_read(pa, i) };
-        let tb = checked { @byte_read(pb, i) };
-        checked { @byte_write(pa, i, tb); };
-        checked { @byte_write(pb, i, ta); };
+        let ta = checked { @ptr_read(@ptr_offset(pa, i)) };
+        let tb = checked { @ptr_read(@ptr_offset(pb, i)) };
+        checked { @ptr_write(@ptr_offset(pa, i), tb); };
+        checked { @ptr_write(@ptr_offset(pb, i), ta); };
         i += 1;
     }
 }

@@ -9,9 +9,10 @@
 // core (RUE-1066), the same core `ArrayBuf(T)` builds on — so both canonical
 // growable containers own their heap through one primitive. StrBuf adds the
 // length and the byte-string algorithms on top. The packed bytes are still
-// read/written through the byte intrinsics (`@byte_read`/`@byte_write`/
-// `@byte_copy`) for the memcpy-shaped bulk copies; only the raw `{buf, cap}`
-// ownership (allocate / grow / free / teardown) is delegated to the core.
+// read/written one at a time through `@ptr_read`/`@ptr_write` over a
+// `@ptr_offset` walk of the `ptr u8`, and in bulk through `@byte_copy`; only
+// the raw `{buf, cap}` ownership (allocate / grow / free / teardown) is
+// delegated to the core.
 //
 // Interoperability with core `str` and `ArrayBuf(u8)` is explicit and copying:
 // `from_str`, `from_bytes`, and `to_bytes` create independent owners, while
@@ -26,11 +27,11 @@ const rawbuf = @import("rawbuf.rue");
 // them outside the public struct prevents callers from laundering unchecked
 // arbitrary pointers through safe-looking associated functions.
 fn read_packed_byte(source: ptr mut u8, index: u64) -> u8 {
-    checked { @byte_read(source, index) }
+    checked { @ptr_read(@ptr_offset(source, index)) }
 }
 
 fn write_packed_byte(destination: ptr mut u8, index: u64, byte: u8) {
-    checked { @byte_write(destination, index, byte); };
+    checked { @ptr_write(@ptr_offset(destination, index), byte); };
 }
 
 fn copy_packed_bytes(

@@ -437,23 +437,24 @@ fn _stat_size_offset() -> u64 {
 fn _stat_buf_size() -> u64 { 256 }
 
 // Decode the two v1 fields from a kernel-filled `struct stat` buffer at the
-// per-target offsets above. Reads bytes through `@byte_read` and reassembles
-// them little-endian, so nothing depends on Rue struct layout.
+// per-target offsets above. Reads bytes through `@ptr_read` over a
+// `@ptr_offset` walk of the `ptr u8` and reassembles them little-endian, so
+// nothing depends on Rue struct layout.
 fn _decode_stat(buf: ptr mut u8) -> Metadata {
     let mo = _stat_mode_offset();
-    let m0 = checked { @byte_read(buf, mo) };
-    let m1 = checked { @byte_read(buf, mo + 1) };
+    let m0 = checked { @ptr_read(@ptr_offset(buf, mo)) };
+    let m1 = checked { @ptr_read(@ptr_offset(buf, mo + 1)) };
     let mode = binary.u16_from_le_bytes([m0, m1]);
 
     let so = _stat_size_offset();
-    let s0 = checked { @byte_read(buf, so) };
-    let s1 = checked { @byte_read(buf, so + 1) };
-    let s2 = checked { @byte_read(buf, so + 2) };
-    let s3 = checked { @byte_read(buf, so + 3) };
-    let s4 = checked { @byte_read(buf, so + 4) };
-    let s5 = checked { @byte_read(buf, so + 5) };
-    let s6 = checked { @byte_read(buf, so + 6) };
-    let s7 = checked { @byte_read(buf, so + 7) };
+    let s0 = checked { @ptr_read(@ptr_offset(buf, so)) };
+    let s1 = checked { @ptr_read(@ptr_offset(buf, so + 1)) };
+    let s2 = checked { @ptr_read(@ptr_offset(buf, so + 2)) };
+    let s3 = checked { @ptr_read(@ptr_offset(buf, so + 3)) };
+    let s4 = checked { @ptr_read(@ptr_offset(buf, so + 4)) };
+    let s5 = checked { @ptr_read(@ptr_offset(buf, so + 5)) };
+    let s6 = checked { @ptr_read(@ptr_offset(buf, so + 6)) };
+    let s7 = checked { @ptr_read(@ptr_offset(buf, so + 7)) };
     let size = binary.u64_from_le_bytes([s0, s1, s2, s3, s4, s5, s6, s7]);
 
     Metadata { mode: mode, size_bytes: size }
@@ -541,10 +542,10 @@ fn _path_to_cbuf(borrow path: strbuf.StrBuf) -> ptr mut u8 {
             O.Some(x) => x,
             O.None => 0,
         };
-        checked { @byte_write(buf, i, b); };
+        checked { @ptr_write(@ptr_offset(buf, i), b); };
         i += 1;
     }
-    checked { @byte_write(buf, n, 0); };
+    checked { @ptr_write(@ptr_offset(buf, n), 0); };
     buf
 }
 
@@ -623,7 +624,7 @@ pub struct File {
         let n: u64 = @intCast(ret);
         let mut i: u64 = 0;
         while i < n {
-            let b = checked { @byte_read(tmp, i) };
+            let b = checked { @ptr_read(@ptr_offset(tmp, i)) };
             buf.push(b);
             i += 1;
         }
@@ -647,7 +648,7 @@ pub struct File {
         }
         let mut i: u64 = 0;
         while i < n {
-            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            checked { @ptr_write(@ptr_offset(tmp, i), buf.get_or(i, 0)); };
             i += 1;
         }
         let addr: u64 = checked { @ptr_to_int(tmp) };
@@ -674,7 +675,7 @@ pub struct File {
         }
         let mut i: u64 = 0;
         while i < n {
-            checked { @byte_write(tmp, i, buf.get_or(i, 0)); };
+            checked { @ptr_write(@ptr_offset(tmp, i), buf.get_or(i, 0)); };
             i += 1;
         }
         let base: u64 = checked { @ptr_to_int(tmp) };

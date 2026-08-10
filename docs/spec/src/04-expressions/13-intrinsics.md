@@ -98,8 +98,6 @@ full semantics):
 | `@free` | Free an allocated block (§9.2) | 3 expressions (`ptr mut u8`, `u64` size, `u64` align) | `()` |
 | `@realloc` | Resize an allocated block, possibly moving it (§9.2) | 4 expressions (`ptr mut u8`, `u64` old size, `u64` align, `u64` new size) | `ptr mut u8` |
 | `@resize` | Resize an allocated block in place only (§9.2) | 4 expressions (`ptr mut u8`, `u64` old size, `u64` align, `u64` new size) | `bool` |
-| `@byte_read` | Read one physical byte | 2 expressions (`ptr const u8`/`ptr mut u8`, `u64`) | `u8` |
-| `@byte_write` | Write one physical byte | 3 expressions (`ptr mut u8`, `u64`, `u8`) | `()` |
 | `@byte_copy` | Copy `size` non-overlapping bytes | 3 expressions (`ptr mut u8`, `ptr const u8`/`ptr mut u8`, `u64`) | `()` |
 | `@byte_move` | Copy `size` possibly overlapping bytes (§9.2) | 3 expressions (`ptr mut u8`, `ptr const u8`/`ptr mut u8`, `u64`) | `()` |
 | `@byte_set` | Fill `size` bytes with a byte | 3 expressions (`ptr mut u8`, `u8`, `u64`) | `()` |
