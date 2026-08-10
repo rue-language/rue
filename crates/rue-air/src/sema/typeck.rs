@@ -7,7 +7,7 @@
 //! - Type conversions between AIR types and inference types
 
 use super::ordinary_engine::{OrdinaryBodyAnalysisHost, OrdinaryBodyEngine};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -174,6 +174,8 @@ pub(super) enum TypeSyntaxNamedKind {
     Alias,
 }
 
+type ObservedTypeDependency = (FileId, String, super::DeclarationTypeDependencyTargetKind);
+
 pub(super) struct TypeSyntaxProvider<'host, 'c, H: TypeSyntaxHost> {
     host: &'host mut H,
     span: Span,
@@ -181,7 +183,10 @@ pub(super) struct TypeSyntaxProvider<'host, 'c, H: TypeSyntaxHost> {
     resolution_context: SemaTypeResolutionContext,
     type_substitutions: Option<&'c HashMap<Spur, Type>>,
     value_substitutions: Option<&'c HashMap<Spur, ConstValue>>,
-    observed_type_dependencies: Vec<(FileId, String, super::DeclarationTypeDependencyTargetKind)>,
+    // Preserve observation order for the host while using a lazy membership
+    // index once a resolution grows beyond the allocation-free small case.
+    observed_type_dependencies: Vec<ObservedTypeDependency>,
+    observed_type_dependency_index: Option<HashSet<ObservedTypeDependency>>,
 }
 
 /// The lexical root a type-syntax resolution walks from.
@@ -583,6 +588,7 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
             type_substitutions,
             value_substitutions,
             observed_type_dependencies: Vec::new(),
+            observed_type_dependency_index: None,
         }
     }
 
@@ -741,6 +747,9 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
     }
 
     pub(super) fn flush_observed_type_dependencies(&mut self) {
+        if let Some(index) = &mut self.observed_type_dependency_index {
+            index.clear();
+        }
         for (file, name, kind) in std::mem::take(&mut self.observed_type_dependencies) {
             self.host.type_syntax_flush_dependency(file, name, kind);
         }
@@ -752,9 +761,21 @@ impl<'s, 'c, H: TypeSyntaxHost> TypeSyntaxProvider<'s, 'c, H> {
         name: String,
         kind: super::DeclarationTypeDependencyTargetKind,
     ) {
+        const LINEAR_ADMISSION_LIMIT: usize = 8;
+
         let dependency = (file, name, kind);
+        if let Some(index) = &mut self.observed_type_dependency_index {
+            if index.insert(dependency.clone()) {
+                self.observed_type_dependencies.push(dependency);
+            }
+            return;
+        }
         if !self.observed_type_dependencies.contains(&dependency) {
             self.observed_type_dependencies.push(dependency);
+            if self.observed_type_dependencies.len() == LINEAR_ADMISSION_LIMIT {
+                self.observed_type_dependency_index =
+                    Some(self.observed_type_dependencies.iter().cloned().collect());
+            }
         }
     }
 
