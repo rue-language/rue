@@ -1281,16 +1281,15 @@ fn finalize_function_body_analysis(
         },
         supported_type_call_heads_complete: true,
         named_const_dependencies: {
-            let bound_constants = sema
-                .value_consts()
-                .map(|(key, _)| key)
-                .map(|(file, name)| (file.index(), sema.interner.resolve(name).to_owned()))
-                .collect::<HashSet<_>>();
-            sema.named_const_dependencies.retain(|event| {
-                bound_constants
-                    .iter()
-                    .any(|(file, name)| *file == event.source_file && *name == event.source_name)
-            });
+            let bound_constants = index_bound_named_constants(
+                sema.value_consts()
+                    .map(|(key, _)| key)
+                    .map(|(file, name)| (file.index(), sema.interner.resolve(name).to_owned())),
+            );
+            retain_bound_named_const_dependencies(
+                &mut sema.named_const_dependencies,
+                &bound_constants,
+            );
             sema.named_const_dependencies.sort();
             sema.named_const_dependencies.dedup();
             sema.named_const_dependencies.clone()
@@ -1306,6 +1305,48 @@ fn finalize_function_body_analysis(
     };
 
     Ok(output)
+}
+
+type NamedConstSourceIndex = HashMap<u32, HashSet<String>>;
+
+fn index_bound_named_constants(
+    bound_constants: impl IntoIterator<Item = (u32, String)>,
+) -> NamedConstSourceIndex {
+    index_bound_named_constants_with_observer(bound_constants, || {})
+}
+
+#[inline(always)]
+fn index_bound_named_constants_with_observer(
+    bound_constants: impl IntoIterator<Item = (u32, String)>,
+    mut observe_constant: impl FnMut(),
+) -> NamedConstSourceIndex {
+    let mut bound_by_file = NamedConstSourceIndex::new();
+    for (file, name) in bound_constants {
+        observe_constant();
+        bound_by_file.entry(file).or_default().insert(name);
+    }
+    bound_by_file
+}
+
+fn retain_bound_named_const_dependencies(
+    dependencies: &mut Vec<super::NamedConstDependencyEvent>,
+    bound_constants: &NamedConstSourceIndex,
+) {
+    retain_bound_named_const_dependencies_with_observer(dependencies, bound_constants, || {});
+}
+
+#[inline(always)]
+fn retain_bound_named_const_dependencies_with_observer(
+    dependencies: &mut Vec<super::NamedConstDependencyEvent>,
+    bound_constants: &NamedConstSourceIndex,
+    mut observe_event: impl FnMut(),
+) {
+    dependencies.retain(|event| {
+        observe_event();
+        bound_constants
+            .get(&event.source_file)
+            .is_some_and(|names| names.contains(event.source_name.as_str()))
+    });
 }
 
 /// Emit warnings for unused free functions.
@@ -3203,6 +3244,70 @@ mod ownership;
 pub(crate) use ownership::{AccessorEscapeSite, CallOperands, FirstClassStrSite};
 mod pointers;
 mod type_inference;
+
+#[cfg(test)]
+mod named_const_dependency_filter_tests {
+    use super::*;
+
+    fn dependency(
+        source_file: u32,
+        source_name: String,
+    ) -> super::super::NamedConstDependencyEvent {
+        super::super::NamedConstDependencyEvent {
+            source_file,
+            target: super::super::NamedConstDependencyTargetEvent::FreeFunction {
+                file: source_file,
+                name: format!("target_{source_name}"),
+            },
+            source_name,
+        }
+    }
+
+    #[test]
+    fn constant_heavy_dependency_filter_is_linear_and_preserves_order() {
+        const CONSTANTS: usize = 4_096;
+        const FILES: u32 = 16;
+        let bound_constants = (0..CONSTANTS)
+            .map(|index| (index as u32 % FILES, format!("CONST_{index}")))
+            .collect::<Vec<_>>();
+        let mut dependencies = Vec::with_capacity(CONSTANTS * 3);
+        let mut expected = Vec::with_capacity(CONSTANTS * 2);
+        for (index, (file, name)) in bound_constants.iter().enumerate() {
+            dependencies.push(dependency(*file, format!("MISSING_{index}")));
+            let kept = dependency(*file, name.clone());
+            dependencies.push(kept.clone());
+            dependencies.push(kept.clone());
+            expected.push(kept.clone());
+            expected.push(kept);
+        }
+        let event_count = dependencies.len();
+        let mut constants_indexed = 0;
+        let mut events_examined = 0;
+
+        let bound_constants =
+            index_bound_named_constants_with_observer(bound_constants, || constants_indexed += 1);
+        retain_bound_named_const_dependencies_with_observer(
+            &mut dependencies,
+            &bound_constants,
+            || events_examined += 1,
+        );
+
+        assert_eq!(constants_indexed, CONSTANTS);
+        assert_eq!(events_examined, event_count);
+        assert_eq!(constants_indexed + events_examined, CONSTANTS + event_count);
+        assert_eq!(
+            dependencies, expected,
+            "retain preserves source event order"
+        );
+
+        dependencies.sort();
+        dependencies.dedup();
+        expected.sort();
+        expected.dedup();
+        assert_eq!(dependencies, expected, "sort/dedup output remains stable");
+        assert_eq!(dependencies.len(), CONSTANTS);
+    }
+}
 
 #[cfg(test)]
 mod error_invariant_tests {
