@@ -26,6 +26,28 @@ fn reusable_specialization_candidates_have_one_indexed_first_wins_authority() {
 }
 
 #[test]
+fn declaration_type_dependency_admission_is_deterministic_and_subquadratic() {
+    let sema = include_str!("sema/mod.rs");
+    let typeck = include_str!("sema/typeck.rs");
+    let declarations = include_str!("sema/declarations.rs");
+    let installer = include_str!("sema/binding_manifest.rs");
+    let output = include_str!("sema/analysis.rs");
+
+    assert!(
+        sema.contains("declaration_type_dependency_index: HashSet<DeclarationTypeDependencyEvent>")
+    );
+    assert!(typeck.contains("declaration_type_dependency_index.insert(event.clone())"));
+    assert!(!typeck.contains("declaration_type_dependencies.contains(&event)"));
+    assert!(declarations.contains("declaration_type_dependency_index.insert(event.clone())"));
+    assert!(
+        installer
+            .contains(".declaration_type_dependency_index\n                .insert(event.clone())")
+    );
+    assert!(output.contains("sema.declaration_type_dependencies.sort()"));
+    assert!(output.contains("baseline_declaration_type_dependency_index"));
+}
+
+#[test]
 fn retired_whole_program_body_driver_is_an_explicit_test_oracle_only() {
     let analysis = include_str!("sema/analysis.rs");
     let manifest = include_str!("sema/binding_manifest.rs");

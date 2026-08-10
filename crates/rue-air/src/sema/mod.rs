@@ -466,7 +466,13 @@ pub struct Sema<'a, D: DeclarationPhase = MutableDeclarations> {
         AnalyzedBodyOwnerEvent,
         crate::FunctionInstanceKey<crate::SemanticDefinitionToken, crate::SemanticModuleToken>,
     )>,
+    /// Insertion-ordered dependency log. Specialization export consumes the
+    /// suffix appended by one analysis, while final output sorts it.
     pub(crate) declaration_type_dependencies: Vec<DeclarationTypeDependencyEvent>,
+    /// Exact membership authority for the log above. Keep both in sync at the
+    /// three admission boundaries; the index avoids a growing-vector scan
+    /// without sacrificing suffix-based specialization capture.
+    pub(crate) declaration_type_dependency_index: HashSet<DeclarationTypeDependencyEvent>,
     pub(crate) declaration_type_call_head_dependencies: Vec<DeclarationTypeCallHeadDependencyEvent>,
     pub(crate) declaration_builtin_type_call_head_dependencies:
         Vec<DeclarationBuiltinTypeCallHeadDependencyEvent>,
@@ -684,6 +690,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_callable_dependencies,
             body_specialization_dependencies,
             declaration_type_dependencies,
+            declaration_type_dependency_index,
             declaration_type_call_head_dependencies,
             declaration_builtin_type_call_head_dependencies,
             named_const_dependencies,
@@ -761,6 +768,7 @@ impl<'a, D: DeclarationPhase> Sema<'a, D> {
             body_callable_dependencies,
             body_specialization_dependencies,
             declaration_type_dependencies,
+            declaration_type_dependency_index,
             declaration_type_call_head_dependencies,
             declaration_builtin_type_call_head_dependencies,
             named_const_dependencies,
@@ -1238,6 +1246,7 @@ impl<'a> Sema<'a, MutableDeclarations> {
             body_callable_dependencies: Vec::new(),
             body_specialization_dependencies: Vec::new(),
             declaration_type_dependencies: Vec::new(),
+            declaration_type_dependency_index: HashSet::new(),
             declaration_type_call_head_dependencies: Vec::new(),
             declaration_builtin_type_call_head_dependencies: Vec::new(),
             named_const_dependencies: Vec::new(),

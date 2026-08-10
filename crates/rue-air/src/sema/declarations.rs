@@ -704,21 +704,23 @@ impl<'a> Sema<'a, super::MutableDeclarations> {
             _ => None,
         };
         if let Some((target_file, target_name, target_kind)) = target {
-            self.declaration_type_dependencies
-                .push(super::DeclarationTypeDependencyEvent {
-                    source_token: self
-                        .body_dependency_observer
-                        .as_ref()
-                        .and_then(super::AnalyzedBodyOwnerEvent::token),
-                    source_file: source_file.index(),
-                    source_name,
-                    source_owner_name,
-                    source_kind,
-                    dependency_kind,
-                    target_file: target_file.index(),
-                    target_name: target_name.to_string(),
-                    target_kind,
-                });
+            let event = super::DeclarationTypeDependencyEvent {
+                source_token: self
+                    .body_dependency_observer
+                    .as_ref()
+                    .and_then(super::AnalyzedBodyOwnerEvent::token),
+                source_file: source_file.index(),
+                source_name,
+                source_owner_name,
+                source_kind,
+                dependency_kind,
+                target_file: target_file.index(),
+                target_name: target_name.to_string(),
+                target_kind,
+            };
+            if self.declaration_type_dependency_index.insert(event.clone()) {
+                self.declaration_type_dependencies.push(event);
+            }
             self.body_analysis_work.declaration_type_dependency_events += 1;
         }
     }
