@@ -1,0 +1,136 @@
+# DCE compacts unreachable blocks away (RUE-769).
+#
+# `BlockId` is a dense index into the CFG's block vector, so removing a block
+# implies renumbering every survivor. Rather than pay that, DCE used to empty
+# each unreachable block and give it an `Unreachable` terminator, leaving husks
+# in the graph: every consumer (verification, dominators, display, codegen)
+# then had to walk and skip them, and an `Unreachable` terminator was ambiguous
+# between "this block diverges" and "this block is debris".
+#
+# DCE now runs a remapping compaction: unreachable blocks are dropped and the
+# survivors are renumbered densely, with the entry id, every Goto/Branch target,
+# and every Switch default and case target rewritten in one place
+# (`Cfg::retain_blocks`). These cases pin the observable half of that — the
+# emitted CFG carries no placeholder blocks, its block references still name
+# the right blocks, and control flow through folded branches, matches, and
+# loops is unchanged at every optimization level.
+
+[section]
+id = "cli.dce_block_compaction"
+name = "DCE block compaction"
+description = "Optimized CFGs retain no unreachable placeholder blocks, and every rewritten block reference still selects the right successor (RUE-769)."
+
+# --- The graph itself: no husks left behind ---------------------------------
+[[case]]
+name = "optimized_cfg_has_no_unreachable_placeholder_blocks"
+description = "A folded `if false` and a lowered match leave unreachable blocks behind; after compaction the emitted CFG contains no `unreachable` block at all."
+files = [{ path = "main.rue", source = """
+fn classify(n: i32) -> i32 {
+    let base = if false { 100 } else { 1 };
+    let bonus = match n {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    };
+    let mut total = base + bonus;
+    let mut i = 0;
+    while i < 3 {
+        total = total + 1;
+        i = i + 1;
+    }
+    total
+}
+fn main() -> i32 {
+    @dbg(classify(0));
+    0
+}
+""" }]
+args = ["--emit", "cfg", "-O1", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== CFG ===", "cfg main"]
+# No block in this program diverges, so every `unreachable` in the dump would
+# be a pruned-block husk. Before compaction three of them survived here.
+compile_stdout_not_contains = ["unreachable"]
+
+# --- The references: every rewritten target still selects the right block ---
+[[case]]
+name = "compacted_switch_and_branch_targets_still_select_the_right_arm"
+description = "Renumbering runs across a switch whose arms sit after pruned blocks; each arm, the default, and the loop back-edge must still be reached."
+files = [{ path = "main.rue", source = """
+fn classify(n: i32) -> i32 {
+    let base = if false { 100 } else { 1 };
+    let bonus = match n {
+        0 => 10,
+        1 => 20,
+        _ => 30,
+    };
+    let mut total = base + bonus;
+    let mut i = 0;
+    while i < 3 {
+        total = total + 1;
+        i = i + 1;
+    }
+    total
+}
+fn main() -> i32 {
+    @dbg(classify(0));
+    @dbg(classify(1));
+    @dbg(classify(7));
+    0
+}
+""" }]
+stdout = "14\n24\n34\n"
+exit_code = 0
+differential_opt = true
+
+# --- A genuinely diverging block keeps its Unreachable terminator -----------
+[[case]]
+name = "diverging_block_keeps_its_unreachable_terminator"
+description = "Compaction removes unreachable BLOCKS, not `Unreachable` TERMINATORS: a reachable block that ends in a diverging call keeps one."
+files = [{ path = "main.rue", source = """
+fn bail(n: i32) -> i32 {
+    if n > 0 {
+        @panic("positive");
+    }
+    n
+}
+fn main() -> i32 {
+    @dbg(bail(-1));
+    0
+}
+""" }]
+args = ["--emit", "cfg", "-O1", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== CFG ===", "unreachable"]
+
+# --- Nested and early-return control flow survives renumbering --------------
+[[case]]
+name = "nested_loops_and_early_returns_survive_renumbering"
+description = "A denser graph — nested loops, a break, an early return, and a constant-folded guard — still computes the same result at every level."
+files = [{ path = "main.rue", source = """
+fn total(limit: i32) -> i32 {
+    if false { return -1; }
+    let mut sum = 0;
+    let mut i = 0;
+    while i < limit {
+        let mut j = 0;
+        while j < 3 {
+            if j == 2 { break; }
+            sum = sum + j;
+            j = j + 1;
+        }
+        if sum > 100 { return sum; }
+        i = i + 1;
+    }
+    sum
+}
+fn main() -> i32 {
+    @dbg(total(0));
+    @dbg(total(4));
+    @dbg(total(200));
+    0
+}
+""" }]
+stdout = "0\n4\n101\n"
+exit_code = 0
+differential_opt = true

@@ -10,7 +10,8 @@
 //! 2. Mark all values used by terminators as live
 //! 3. Transitively mark all values used by live instructions
 //! 4. Remove dead instructions from basic blocks
-//! 5. Remove unreachable blocks
+//! 5. Remove unreachable blocks, compacting the survivors into a dense block
+//!    numbering (see [`eliminate_unreachable_blocks`] for the invariant)
 //!
 //! ## What keeps an instruction live
 //!
@@ -328,24 +329,27 @@ fn eliminate_dead_instructions(cfg: &mut Cfg, live: &BitSet) {
 }
 
 /// Remove unreachable blocks (blocks with no predecessors except entry).
+///
+/// ## Compaction invariant (RUE-769)
+///
+/// Unreachable blocks are *deleted*, not emptied into `Unreachable`
+/// placeholders. `BlockId` is a dense index into the block vector, so deletion
+/// implies renumbering; [`Cfg::retain_blocks`] performs both together and
+/// rewrites every block reference in the graph, so the invariant this pass
+/// establishes is:
+///
+/// - after DCE, every block in the CFG is reachable from the entry;
+/// - block ids remain `0..block_count()`, each block's own `id` equal to its
+///   position, and the entry id is rewritten with the rest.
+///
+/// An `Unreachable` *terminator* that survives DCE therefore always belongs to
+/// a reachable block — one that ends in a diverging expression — and is never
+/// the husk of a pruned region. Nothing outside the CFG may hold a `BlockId`
+/// across this pass; DCE is the last pass in the pipeline, and every pass
+/// derives block ids from the graph it is handed.
 fn eliminate_unreachable_blocks(cfg: &mut Cfg) {
-    // First, compute which blocks are reachable from entry
     let reachable = compute_reachable_blocks(cfg);
-
-    // Collect the block IDs to process (to avoid borrowing issues)
-    let block_ids: Vec<BlockId> = cfg.block_ids().collect();
-
-    // For now, we don't actually remove blocks from the vector
-    // (that would require renumbering all BlockIds).
-    // Instead, we mark unreachable blocks with Unreachable terminator
-    // and empty their instruction lists.
-    for block_id in block_ids {
-        if block_id != cfg.entry && !reachable.contains(block_id.as_u32()) {
-            let block = cfg.get_block_mut(block_id);
-            block.insts.clear();
-            block.terminator = Terminator::Unreachable;
-        }
-    }
+    cfg.retain_blocks(|block_id| reachable.contains(block_id.as_u32()));
 }
 
 /// Compute the set of blocks reachable from the entry block.
@@ -560,17 +564,97 @@ mod tests {
         );
         cfg.set_terminator(unreachable_block, Terminator::Return { value: Some(c2) });
 
+        assert_eq!(cfg.block_count(), 2);
         run(&mut cfg);
 
-        // Unreachable block should have Unreachable terminator and no instructions
-        let block = cfg.get_block(unreachable_block);
-        assert!(
-            block.insts.is_empty(),
-            "Unreachable block should have no instructions"
+        // The unreachable block is removed outright, not left as an
+        // `Unreachable` husk, and the survivors stay densely numbered
+        // (RUE-769). `unreachable_block`'s id is deliberately not reused here:
+        // ids are only meaningful against the graph they were read from.
+        assert_eq!(cfg.block_count(), 1);
+        assert_eq!(cfg.entry, entry);
+        let block = cfg.get_block(cfg.entry);
+        assert_eq!(block.id, cfg.entry);
+        assert_eq!(block.insts, vec![c1]);
+        assert!(matches!(block.terminator, Terminator::Return { .. }));
+    }
+
+    /// Compaction rewrites every block reference, including the case targets a
+    /// `Switch` keeps in the payload store rather than in the terminator
+    /// (RUE-769). Unreachable blocks are interleaved with live ones so every
+    /// surviving target has to shift by a different amount — an identity
+    /// remap, or one applied to the terminator but not the payload, would
+    /// leave a target naming the wrong block.
+    #[test]
+    fn test_dce_compaction_renumbers_switch_and_goto_targets() {
+        let mut cfg = make_cfg();
+        let entry = cfg.entry;
+        let scrutinee = add_const(&mut cfg, 2, Type::I32);
+        let result = add_const(&mut cfg, 42, Type::I32);
+
+        // 0: entry   1: first case   2: DEAD   3: second case
+        // 4: default 5: DEAD
+        let first_case = cfg.new_block();
+        let dead_between = cfg.new_block();
+        let second_case = cfg.new_block();
+        let default = cfg.new_block();
+        let dead_last = cfg.new_block();
+
+        cfg.set_switch(
+            entry,
+            scrutinee,
+            [(1, first_case), (2, second_case)],
+            default,
         );
+        let no_args = cfg.push_goto_args(std::iter::empty()).unwrap();
+        cfg.set_terminator(
+            first_case,
+            Terminator::Goto {
+                target: default,
+                args: no_args,
+            },
+        );
+        for block in [second_case, default, dead_between, dead_last] {
+            cfg.set_terminator(
+                block,
+                Terminator::Return {
+                    value: Some(result),
+                },
+            );
+        }
+
+        assert_eq!(cfg.block_count(), 6);
+        run(&mut cfg);
+
+        // Four blocks survive, densely renumbered in their original order:
+        // entry -> 0, first_case -> 1, second_case -> 2, default -> 3.
+        assert_eq!(cfg.block_count(), 4);
+        for (index, block) in cfg.blocks().iter().enumerate() {
+            assert_eq!(block.id, BlockId(index as u32));
+        }
+        assert_eq!(cfg.entry, BlockId(0));
+
+        let terminator = &cfg.get_block(BlockId(0)).terminator;
+        assert_eq!(
+            cfg.get_switch_cases(terminator),
+            &[(1, BlockId(1)), (2, BlockId(2))]
+        );
+        let Terminator::Switch { default, .. } = terminator else {
+            panic!("entry must still switch");
+        };
+        assert_eq!(*default, BlockId(3));
+        assert!(matches!(
+            cfg.get_block(BlockId(1)).terminator,
+            Terminator::Goto {
+                target: BlockId(3),
+                ..
+            }
+        ));
         assert!(
-            matches!(block.terminator, Terminator::Unreachable),
-            "Unreachable block should have Unreachable terminator"
+            cfg.blocks()
+                .iter()
+                .all(|block| !matches!(block.terminator, Terminator::Unreachable)),
+            "DCE must leave no unreachable placeholder blocks behind"
         );
     }
 

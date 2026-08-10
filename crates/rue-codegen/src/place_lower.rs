@@ -21,6 +21,23 @@ use rue_air::Type;
 /// entry points below.
 pub type ResolvedPlace = crate::value_plan::PlacePlan;
 
+/// The canonical address of a zero-sized place (RUE-605).
+///
+/// A zero-sized place occupies no storage, so the slot model has no cell that
+/// names it: an all-ZST root spans zero slots, and a zero-sized field at the
+/// end of its root names the root's past-the-end address, which the descending
+/// slot numbering cannot express at all (it underflowed `u32`, panicking in
+/// debug and wrapping to a wild frame slot in release).
+///
+/// ADR-0052 ruling 3 settles the semantics: a zero-sized type has size 0 and
+/// alignment 1, and a well-aligned dangling pointer to one is a valid,
+/// non-dereferenceable address. Address-taking is therefore accepted and every
+/// zero-sized place forms this one constant instead of a frame address: it is
+/// non-null, well-aligned for alignment 1, frame-independent, and identical on
+/// both backends. Nothing can dereference it — zero-sized reads return the
+/// canonical zero value and zero-sized writes store no slots.
+pub(crate) const ZERO_SIZED_PLACE_ADDR: i64 = 1;
+
 /// Per-target instruction leaves used by shared place lowering.
 pub(crate) trait PlaceLowerBackend: SlotBackend {
     /// Get or lazily materialize a received by-reference parameter pointer.
@@ -45,6 +62,13 @@ pub(crate) trait PlaceLowerBackend: SlotBackend {
     /// historically used a 64-bit immediate here; retaining that exact MIR is
     /// part of making this extraction mechanically output-neutral.
     fn emit_zero_sized_place(&mut self, dst: VReg);
+
+    /// Materialize [`ZERO_SIZED_PLACE_ADDR`], the canonical address of a place
+    /// that occupies no storage.
+    ///
+    /// The constant itself is shared; only the immediate-materialization
+    /// instruction differs per target, so this leaf carries no policy.
+    fn emit_zero_sized_place_addr(&mut self, dst: VReg);
 
     /// Load from the address in `ptr` with no encoded displacement.
     ///
@@ -93,6 +117,55 @@ fn resolved_root_count<B: PlaceLowerBackend + ?Sized>(b: &B, place: &ResolvedPla
     b.ctx().type_slot_count(place.base_type)
 }
 
+/// Slot count of the sub-object the projection chain selects.
+///
+/// Every projection carries the type it projects *out of*, so the last link
+/// alone determines the selected type; an empty chain selects the root. Zero
+/// here means the place has no storage, which is what
+/// [`ZERO_SIZED_PLACE_ADDR`] answers for.
+fn resolved_projected_slot_count<B: PlaceLowerBackend + ?Sized>(
+    b: &B,
+    place: &ResolvedPlace,
+) -> u32 {
+    match place.projections.last() {
+        None => resolved_root_count(b, place),
+        Some(crate::value_plan::ProjectionPlan::Field {
+            struct_id,
+            field_index,
+        }) => {
+            let struct_def = b.ctx().type_pool.struct_def(*struct_id);
+            b.ctx()
+                .type_slot_count(struct_def.fields[*field_index as usize].ty)
+        }
+        Some(crate::value_plan::ProjectionPlan::Index { array_type, .. }) => {
+            b.ctx().array_element_slot_count(*array_type)
+        }
+    }
+}
+
+/// The frame slot holding the low (lowest-addressed) end of a projected place.
+///
+/// The root occupies slots `base_slot ..= base_slot + root_count - 1` and slot
+/// numbers descend in address, so the field at static slot offset `k` starts at
+/// `base_slot + root_count - 1 - k`. A place with at least one slot always has
+/// `k + slot_count <= root_count`, hence `k <= root_count - 1`, so the
+/// subtraction is in range. A zero-sized place is the only shape that can push
+/// `k` past the end, and every caller diverts those to
+/// [`ZERO_SIZED_PLACE_ADDR`] before reaching here (RUE-605) — so an underflow
+/// is a violated invariant, reported as an ICE rather than silently wrapping to
+/// a wild slot in release builds.
+fn projected_low_slot(base_slot: u32, root_count: u32, static_slot_offset: u32) -> u32 {
+    (base_slot + root_count)
+        .checked_sub(1 + static_slot_offset)
+        .unwrap_or_else(|| {
+            panic!(
+                "projected place at slot offset {static_slot_offset} of a \
+                 {root_count}-slot root has no storage slot; zero-sized places \
+                 must be diverted to the canonical zero-sized address"
+            )
+        })
+}
+
 fn resolved_access<B: PlaceLowerBackend + ?Sized>(
     b: &mut B,
     place: &ResolvedPlace,
@@ -103,7 +176,7 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
     match place.base {
         crate::value_plan::PlaceBasePlan::Local(slot) => frame_access(
             b,
-            slot + root_count.saturating_sub(1) - offsets.static_slot_offset,
+            projected_low_slot(slot, root_count, offsets.static_slot_offset),
             dynamic_offset,
         ),
         crate::value_plan::PlaceBasePlan::Param { slot, by_ref: true } => {
@@ -124,12 +197,14 @@ fn resolved_access<B: PlaceLowerBackend + ?Sized>(
         crate::value_plan::PlaceBasePlan::Param {
             slot,
             by_ref: false,
-        } => frame_access(
-            b,
-            b.ctx().param_frame_slot(slot) + root_count.saturating_sub(1)
-                - offsets.static_slot_offset,
-            dynamic_offset,
-        ),
+        } => {
+            let base_slot = b.ctx().param_frame_slot(slot);
+            frame_access(
+                b,
+                projected_low_slot(base_slot, root_count, offsets.static_slot_offset),
+                dynamic_offset,
+            )
+        }
     }
 }
 
@@ -241,13 +316,21 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
     check_bounds: bool,
 ) {
     let offsets = resolved_offsets(b, place, check_bounds);
+    // `resolved_offsets` has already emitted the bounds checks, so a zero-sized
+    // indexed place keeps its language-level trap edge even though the address
+    // itself is a constant. The index math below is deliberately skipped: a
+    // zero-sized element has a zero stride, so no index can move the address.
+    if resolved_projected_slot_count(b, place) == 0 {
+        b.emit_zero_sized_place_addr(dst);
+        return;
+    }
     let root_count = resolved_root_count(b, place);
     let dynamic = compute_resolved_index_offset(b, &offsets.index_levels);
     match place.base {
         crate::value_plan::PlaceBasePlan::Local(slot) => {
             b.emit_frame_addr(
                 dst,
-                slot + root_count.saturating_sub(1) - offsets.static_slot_offset,
+                projected_low_slot(slot, root_count, offsets.static_slot_offset),
             );
             if let Some(dynamic) = dynamic {
                 b.emit_addr_add(dst, dynamic);
@@ -268,10 +351,10 @@ fn lower_place_addr_plan_with_bounds<B: PlaceLowerBackend + ?Sized>(
             slot,
             by_ref: false,
         } => {
+            let base_slot = b.ctx().param_frame_slot(slot);
             b.emit_frame_addr(
                 dst,
-                b.ctx().param_frame_slot(slot) + root_count.saturating_sub(1)
-                    - offsets.static_slot_offset,
+                projected_low_slot(base_slot, root_count, offsets.static_slot_offset),
             );
             if let Some(dynamic) = dynamic {
                 b.emit_addr_add(dst, dynamic);
@@ -332,7 +415,10 @@ mod tests {
     use rue_span::{FileId, Span};
     use rue_target::Target;
 
-    use crate::aarch64::{Aarch64Inst, CfgLower as Aarch64CfgLower};
+    use super::ZERO_SIZED_PLACE_ADDR;
+    use crate::aarch64::{
+        Aarch64Inst, CfgLower as Aarch64CfgLower, Operand as Aarch64Operand, Reg as Aarch64Reg,
+    };
     use crate::x86_64::{CfgLower as X86CfgLower, X86Inst};
 
     /// Exercise all three shared entry points with a field followed by two
@@ -702,6 +788,114 @@ mod tests {
         assert!(unit_write_arm.instructions().iter().any(|inst| {
             matches!(inst, Aarch64Inst::Bl { symbol_id, .. } if unit_write_arm.get_symbol(*symbol_id) == "__rue_bounds_check")
         }));
+    }
+
+    /// Forming the address of a place with no storage yields
+    /// [`ZERO_SIZED_PLACE_ADDR`] rather than frame slot arithmetic (RUE-605).
+    ///
+    /// Both address-forming entry points are exercised: `@raw` through
+    /// [`lower_place_addr_plan`], and a `borrow` argument through
+    /// [`lower_checked_place_addr_plan`]. Both root shapes are exercised too:
+    /// an all-ZST root, which spans zero slots, and a zero-sized field at the
+    /// end of a sized root, which names the root's past-the-end address. Before
+    /// the fix the latter underflowed the descending slot numbering — an ICE in
+    /// debug, a wild frame slot in release.
+    #[test]
+    fn zero_sized_place_addresses_are_canonical_on_both_backends() {
+        let source = r#"
+            struct Empty { unit: () }
+            struct Tail { value: i64, unit: () }
+            fn take_unit(borrow unit: ()) -> i32 { 0 }
+            fn main() -> i32 {
+                let empty = Empty { unit: () };
+                let _all_zst: ptr const () = checked { @raw(empty.unit) };
+                let tail = Tail { value: 7, unit: () };
+                let _tail_zst: ptr const () = checked { @raw(tail.unit) };
+                take_unit(borrow tail.unit)
+            }
+        "#;
+
+        let lexer = Lexer::new(source);
+        let (tokens, interner) = lexer.tokenize().expect("fixture should lex");
+        let parser = Parser::new(tokens, interner);
+        let (ast, mut interner) = parser.parse().expect("fixture should parse");
+        let mut astgen = AstGen::with_symbol_normalizer(&interner, |symbol| symbol);
+        astgen.append_items(&ast.items);
+        let rir = astgen.finish();
+        let output = Sema::new_synthetic(&rir, &mut interner, PreviewFeatures::new())
+            .analyze_all_for_test()
+            .expect("fixture should analyze");
+        let function = output
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("fixture function should exist");
+        let cfg = CfgBuilder::build(
+            &function.air,
+            function.num_locals,
+            function.num_param_slots,
+            &function.name,
+            &output.type_pool,
+            function.param_modes.clone(),
+            &interner,
+            function.allow_unreachable_code,
+            function.callable_kind,
+        )
+        .cfg
+        .unwrap();
+
+        let x86 = X86CfgLower::new_unchecked(&cfg, &output.type_pool, &interner)
+            .lower()
+            .expect("x86 zero-sized address fixture should lower");
+        let arm = Aarch64CfgLower::new_unchecked(
+            &cfg,
+            &output.type_pool,
+            &interner,
+            Target::Aarch64Linux,
+        )
+        .lower()
+        .expect("AArch64 zero-sized address fixture should lower");
+
+        // Three zero-sized addresses, one canonical constant each, and no frame
+        // address formed for any of them: the only `lea`/`add fp` in the
+        // function would come from this lowering, since nothing else here takes
+        // an address.
+        assert_eq!(
+            x86.instructions()
+                .iter()
+                .filter(|inst| matches!(
+                    inst,
+                    X86Inst::MovRI64 { imm, .. } if *imm == ZERO_SIZED_PLACE_ADDR
+                ))
+                .count(),
+            3
+        );
+        assert!(
+            !x86.instructions()
+                .iter()
+                .any(|inst| matches!(inst, X86Inst::Lea { .. })),
+            "a zero-sized place must not form a frame address"
+        );
+        assert_eq!(
+            arm.instructions()
+                .iter()
+                .filter(|inst| matches!(
+                    inst,
+                    Aarch64Inst::MovImm { imm, .. } if *imm == ZERO_SIZED_PLACE_ADDR
+                ))
+                .count(),
+            3
+        );
+        assert!(
+            !arm.instructions().iter().any(|inst| matches!(
+                inst,
+                Aarch64Inst::AddImm {
+                    src: Aarch64Operand::Physical(Aarch64Reg::Fp),
+                    ..
+                }
+            )),
+            "a zero-sized place must not form a frame address"
+        );
     }
 
     /// Taking a raw pointer into an element of a frame-resident non-slot-identical

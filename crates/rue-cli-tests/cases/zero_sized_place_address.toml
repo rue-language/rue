@@ -1,0 +1,183 @@
+# Addresses of zero-sized places (RUE-605).
+#
+# A zero-sized place occupies no storage, so the slot model has no cell that
+# names it. Codegen still anchored every projected address at
+# `base + (root_slot_count - 1) - static_slot_offset`, which two shapes push
+# below zero: an all-ZST root (zero slots) and a zero-sized field at the end of
+# a sized root (its offset equals the root's slot count). The subtraction
+# underflowed `u32` — an ICE in a debug compiler, a wild frame slot in a release
+# one. Reads already returned the canonical zero and zero-sized writes were
+# already skipped; only address formation (`@raw`/`@raw_mut` and inout/borrow
+# arguments) still entered the math.
+#
+# ADR-0052 ruling 3 settles the semantics: a ZST has size 0 and alignment 1, and
+# a well-aligned dangling pointer to one is valid and non-dereferenceable. So
+# address-taking stays accepted and every zero-sized place now forms one
+# canonical constant address — non-null, well-aligned, frame-independent, and
+# identical on both backends.
+#
+# These cases assert only what the ruling actually promises: the address exists,
+# is non-null, does not collide with a sized sibling's address, and disturbs
+# nothing around it. The specific constant is an implementation choice, not an
+# observable of the language, so it is pinned where it belongs — in
+# `place_lower`'s two-backend unit test and in the AArch64 `--emit asm` case
+# below — rather than as expected program output.
+
+[section]
+id = "cli.zero_sized_place_address"
+name = "Zero-sized place addresses"
+description = "@raw and inout/borrow arguments over zero-sized places form a canonical non-null address instead of underflowing the frame slot arithmetic (RUE-605)."
+
+# --- The issue's verbatim repro: an all-ZST root ----------------------------
+[[case]]
+name = "all_zst_root_projected_address"
+description = "RUE-605 repro: `@raw(empty.unit)` on a struct whose only field is `()`. The root spans zero slots, so `root_slot_count - 1` underflowed."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn main() -> i32 {
+    let empty = Empty { unit: () };
+    let _pointer: ptr const () = checked { @raw(empty.unit) };
+    0
+}
+""" }]
+stdout = ""
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "all_zst_root_address_is_non_null"
+description = "The address an all-ZST root yields is a real, non-null pointer value — the ruling's well-aligned dangling pointer, not a null placeholder."
+files = [{ path = "main.rue", source = """
+struct Empty { unit: () }
+fn main() -> i32 {
+    let empty = Empty { unit: () };
+    let pointer: ptr const () = checked { @raw(empty.unit) };
+    let address = checked { @ptr_to_int(pointer) };
+    if address == 0 { @dbg(0); } else { @dbg(1); }
+    0
+}
+""" }]
+stdout = "1\n"
+exit_code = 0
+differential_opt = true
+
+# --- The same underflow from the other direction: a trailing ZST field ------
+[[case]]
+name = "trailing_zero_sized_field_address_keeps_neighbour_intact"
+description = "A `()` field at the end of a sized struct sits at the root's past-the-end slot offset; forming its address must not disturb the sized field it follows."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let tail = Tail { value: 42, unit: () };
+    let _pointer: ptr const () = checked { @raw(tail.unit) };
+    @intCast(tail.value)
+}
+""" }]
+stdout = ""
+exit_code = 42
+differential_opt = true
+
+[[case]]
+name = "trailing_zero_sized_field_address_is_non_null_and_distinct"
+description = "The trailing `()` field's address is non-null and does not alias its sized sibling's address, and reading that sibling still gives its value."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let tail = Tail { value: 7, unit: () };
+    let zero_sized: ptr const () = checked { @raw(tail.unit) };
+    let sized: ptr const i64 = checked { @raw(tail.value) };
+    let zero_sized_address = checked { @ptr_to_int(zero_sized) };
+    let sized_address = checked { @ptr_to_int(sized) };
+    if zero_sized_address == 0 { @dbg(0); } else { @dbg(1); }
+    if zero_sized_address == sized_address { @dbg(0); } else { @dbg(1); }
+    @dbg(tail.value);
+    0
+}
+""" }]
+stdout = "1\n1\n7\n"
+exit_code = 0
+differential_opt = true
+
+# --- The by-reference argument entry point ----------------------------------
+[[case]]
+name = "inout_and_borrow_zero_sized_field_arguments"
+description = "inout/borrow of a projected zero-sized field forms its address through the checked entry point; the enclosing struct's sized field survives the call."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn touch(inout unit: ()) -> i32 { unit = (); 1 }
+fn look(borrow unit: ()) -> i32 { 2 }
+fn main() -> i32 {
+    let mut tail = Tail { value: 7, unit: () };
+    @dbg(touch(inout tail.unit));
+    @dbg(look(borrow tail.unit));
+    @dbg(tail.value);
+    0
+}
+""" }]
+stdout = "1\n2\n7\n"
+exit_code = 0
+differential_opt = true
+
+# --- An indexed zero-sized place keeps its language-level bounds check -------
+# The canonical address short-circuits the index arithmetic (a zero-sized
+# element cannot be moved past by an index), so the trap edge has to come from
+# the shared bounds check emitted before it. These two cases pin both sides.
+[[case]]
+name = "indexed_zero_sized_field_address_in_bounds"
+description = "An in-bounds `@raw(arr[i].unit)` reaches the zero-sized field through an index level and yields a non-null address; the element's sized field is untouched."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let arr: [Tail; 2] = [Tail { value: 7, unit: () }, Tail { value: 9, unit: () }];
+    let i: u64 = 1;
+    let element: ptr const () = checked { @raw(arr[i].unit) };
+    let address = checked { @ptr_to_int(element) };
+    if address == 0 { @dbg(0); } else { @dbg(1); }
+    @dbg(arr[i].value);
+    0
+}
+""" }]
+stdout = "1\n9\n"
+exit_code = 0
+differential_opt = true
+
+[[case]]
+name = "indexed_zero_sized_field_address_out_of_bounds_still_traps"
+description = "Skipping the index arithmetic must not skip the bounds check: an out-of-range index still traps before any address is formed."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+fn main() -> i32 {
+    let arr: [Tail; 2] = [Tail { value: 7, unit: () }, Tail { value: 9, unit: () }];
+    let i: u64 = 5;
+    let element: ptr const () = checked { @raw(arr[i].unit) };
+    @dbg(checked { @ptr_to_int(element) });
+    0
+}
+""" }]
+exit_code = 101
+runtime_error_contains = ["index out of bounds"]
+
+# --- AArch64 lowers the same shapes (CI runs this natively) -----------------
+[[case]]
+name = "aarch64_zero_sized_place_addresses_lower"
+description = "Both underflowing shapes and the by-ref argument path emit AArch64 assembly; before RUE-605 this aborted in the shared place lowering."
+files = [{ path = "main.rue", source = """
+struct Tail { value: i64, unit: () }
+struct Empty { unit: () }
+fn look(borrow unit: ()) -> i32 { 2 }
+fn main() -> i32 {
+    let tail = Tail { value: 7, unit: () };
+    let empty = Empty { unit: () };
+    let _tail_zst: ptr const () = checked { @raw(tail.unit) };
+    let _empty_zst: ptr const () = checked { @raw(empty.unit) };
+    look(borrow tail.unit)
+}
+""" }]
+args = ["--emit", "asm", "--target", "aarch64-linux", "main.rue"]
+compile_only = true
+compile_stdout_contains = ["=== Assembly (aarch64-linux) ===", "main:"]
+# Every address this program forms is zero-sized, so no frame address may be
+# formed at all. AArch64 spells one `sub <reg>, fp, #<n>` / `add <reg>, fp,
+# #<n>`; the bracketed `[fp, #...]` of an ordinary slot load or store does not
+# match this substring.
+compile_stdout_not_contains = [", fp, #"]
