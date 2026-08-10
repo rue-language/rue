@@ -687,18 +687,20 @@ impl CfgDomainProjection {
     }
 
     pub(crate) fn callable_for_symbol(&self, name: Spur) -> Option<crate::FunctionInstanceKey> {
-        self.symbols.iter().find_map(|(live, stable)| {
-            if *live != name {
-                return None;
+        let position = self
+            .symbols
+            .partition_point(|(live, _)| live.into_usize() < name.into_usize());
+        let (live, stable) = self.symbols.get(position)?;
+        if *live != name {
+            return None;
+        }
+        match stable {
+            StableCfgSymbol::Callable(callable) => Some(callable.clone()),
+            StableCfgSymbol::Specialization(identity) => {
+                crate::semantic_identity::function_instance_from_specialization(identity)
             }
-            match stable {
-                StableCfgSymbol::Callable(callable) => Some(callable.clone()),
-                StableCfgSymbol::Specialization(identity) => {
-                    crate::semantic_identity::function_instance_from_specialization(identity)
-                }
-                StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => None,
-            }
-        })
+            StableCfgSymbol::Runtime(_) | StableCfgSymbol::Intrinsic(_) => None,
+        }
     }
 
     pub(crate) fn same_live_domain(&self, other: &Self) -> bool {

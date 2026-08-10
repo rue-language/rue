@@ -1281,16 +1281,11 @@ pub(crate) fn evaluate_optimized_cfg(
         };
         accessor_cfgs.insert(dependency.function.clone(), (callee.clone(), body_span));
     }
-    loop {
-        let call = current.blocks().iter().find_map(|block| {
-            block.insts.iter().copied().find(|value| {
-                matches!(
-                    current.get_inst(*value).data,
-                    rue_cfg::CfgInstData::AccessorCall { .. }
-                )
-            })
-        });
-        let Some(call) = call else { break };
+    let mut accessor_calls: std::collections::VecDeque<_> =
+        attached_accessor_calls(&current, 0, 0).into();
+    let mut splice_block_redirects = std::collections::HashMap::new();
+    while let Some((call, call_block)) = accessor_calls.pop_front() {
+        let call_block = resolve_splice_block(call_block, &mut splice_block_redirects);
         let rue_cfg::CfgInstData::AccessorCall { name, .. } = current.get_inst(call).data else {
             unreachable!()
         };
@@ -1378,7 +1373,18 @@ pub(crate) fn evaluate_optimized_cfg(
         implicit_destructor_targets.extend(callee.implicit_destructor_targets.iter().cloned());
         implicit_destructor_dependencies_complete &=
             callee.implicit_destructor_dependencies_complete;
-        current = match rue_cfg::inline_call(&current, call, &callee_cfg, &record.type_pool) {
+        let callee_value_base = current.value_count() as u32;
+        let continuation = rue_cfg::BlockId::from_raw(current.block_count() as u32);
+        let callee_block_base = continuation.as_u32() + 1;
+        let introduced_calls =
+            attached_accessor_calls(&callee_cfg, callee_value_base, callee_block_base);
+        current = match rue_cfg::inline_call_in_block(
+            &current,
+            call,
+            call_block,
+            &callee_cfg,
+            &record.type_pool,
+        ) {
             Ok(cfg) => cfg,
             Err(error) => {
                 return Ok(QueryOutput::success(internal_failure(
@@ -1388,6 +1394,8 @@ pub(crate) fn evaluate_optimized_cfg(
                 .with_terminal_kind(rue_query::QueryTerminalKind::Failure));
             }
         };
+        splice_block_redirects.insert(call_block, continuation);
+        accessor_calls.extend(introduced_calls);
         context.record_work(rue_query::WorkItem::new("cfg.accessor-splices", 1));
     }
     context.record_work(rue_query::WorkItem::new("cfg.optimize.attempts", 1));
@@ -1435,6 +1443,48 @@ pub(crate) fn evaluate_optimized_cfg(
             .with_terminal_kind(rue_query::QueryTerminalKind::Failure))
         }
     }
+}
+
+fn attached_accessor_calls(
+    cfg: &rue_cfg::ValidatedCfg,
+    value_base: u32,
+    block_base: u32,
+) -> Vec<(rue_cfg::CfgValue, rue_cfg::BlockId)> {
+    cfg.blocks()
+        .iter()
+        .flat_map(|block| {
+            block
+                .insts
+                .iter()
+                .copied()
+                .filter(|&value| {
+                    matches!(
+                        cfg.get_inst(value).data,
+                        rue_cfg::CfgInstData::AccessorCall { .. }
+                    )
+                })
+                .map(|value| {
+                    (
+                        rue_cfg::CfgValue::from_raw(value_base + value.as_u32()),
+                        rue_cfg::BlockId::from_raw(block_base + block.id.as_u32()),
+                    )
+                })
+        })
+        .collect()
+}
+
+fn resolve_splice_block(
+    original: rue_cfg::BlockId,
+    redirects: &mut std::collections::HashMap<rue_cfg::BlockId, rue_cfg::BlockId>,
+) -> rue_cfg::BlockId {
+    let mut current = original;
+    while let Some(next) = redirects.get(&current).copied() {
+        current = next;
+    }
+    if current != original {
+        redirects.insert(original, current);
+    }
+    current
 }
 
 #[cfg(test)]
@@ -1496,5 +1546,40 @@ mod accessor_graph_tests {
             validate_accessor_dag(&missing, |node| missing.contains_key(node), &mut work),
             Err(AccessorDagFailure::Cycle(0))
         ));
+    }
+
+    #[test]
+    fn accessor_splicing_discovers_attached_calls_once() {
+        let source = include_str!("cfg_query.rs");
+        let evaluator = source
+            .split_once("pub(crate) fn evaluate_optimized_cfg(")
+            .unwrap()
+            .1
+            .split_once("fn attached_accessor_calls(")
+            .unwrap()
+            .0;
+        assert_eq!(
+            evaluator
+                .matches("attached_accessor_calls(&current, 0, 0)")
+                .count(),
+            1
+        );
+        assert!(evaluator.contains("accessor_calls.pop_front()"));
+        assert!(evaluator.contains("accessor_calls.extend(introduced_calls)"));
+        assert!(evaluator.contains("resolve_splice_block("));
+        assert!(evaluator.contains("inline_call_in_block("));
+        assert!(!evaluator.contains("rue_cfg::inline_call(&current"));
+        assert!(!evaluator.contains("loop {\n        let call = current.blocks()"));
+
+        let domains = include_str!("durable_cfg.rs");
+        let lookup = domains
+            .split_once("pub(crate) fn callable_for_symbol(")
+            .unwrap()
+            .1
+            .split_once("pub(crate) fn same_live_domain")
+            .unwrap()
+            .0;
+        assert!(lookup.contains(".partition_point("));
+        assert!(!lookup.contains(".iter().find"));
     }
 }

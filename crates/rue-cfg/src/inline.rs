@@ -237,10 +237,35 @@ impl Splice<'_> {
 ///
 /// The result carries a detached value husk for the replaced `Call` (like
 /// the husks optimization passes leave for DCE), so it is verified under the
-/// post-optimization contract.
+/// post-optimization contract. Existing caller values keep their indices, and
+/// callee arena value `v` is appended at `caller.value_count() + v`. Drivers
+/// may use that stable offset to discover work introduced by the splice. The
+/// continuation is appended at `caller.block_count()`, followed by callee block
+/// `b` at `caller.block_count() + 1 + b`.
 pub fn inline_call(
     caller: &ValidatedCfg,
     call: CfgValue,
+    callee: &ValidatedCfg,
+    type_pool: &FrozenTypeInternPool,
+) -> Result<ValidatedCfg, CfgInlineError> {
+    let call_block = caller
+        .blocks()
+        .iter()
+        .find(|block| block.insts.contains(&call))
+        .map(|block| block.id)
+        .ok_or(CfgInlineError::CallSiteNotFound { call })?;
+    inline_call_in_block(caller, call, call_block, callee, type_pool)
+}
+
+/// Inline one call whose current attached block is already known.
+///
+/// This is the indexed driver entry point. It preserves the value- and block-
+/// append contract documented on [`inline_call`] without rediscovering the
+/// call's block by scanning the whole caller.
+pub fn inline_call_in_block(
+    caller: &ValidatedCfg,
+    call: CfgValue,
+    call_block: BlockId,
     callee: &ValidatedCfg,
     type_pool: &FrozenTypeInternPool,
 ) -> Result<ValidatedCfg, CfgInlineError> {
@@ -265,13 +290,15 @@ pub fn inline_call(
             _ => return Err(CfgInlineError::NotACall { call }),
         }
     };
-    let Some((call_block, call_position)) = dst.blocks().iter().find_map(|block| {
-        block
-            .insts
-            .iter()
-            .position(|&value| value == call)
-            .map(|position| (block.id, position))
-    }) else {
+    if call_block.as_u32() as usize >= dst.block_count() {
+        return Err(CfgInlineError::CallSiteNotFound { call });
+    }
+    let Some(call_position) = dst
+        .get_block(call_block)
+        .insts
+        .iter()
+        .position(|&value| value == call)
+    else {
         return Err(CfgInlineError::CallSiteNotFound { call });
     };
     if callee.return_type() != call_ty {
