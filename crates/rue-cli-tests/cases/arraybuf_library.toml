@@ -86,7 +86,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             if self.len == self.cap {
                 let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
                 checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    let grown = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)), new_cap * @intCast(@size_of(T)))));
                     self.buf = grown;
                 };
                 self.cap = new_cap;
@@ -134,7 +134,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         }
         fn clear(inout self) { self.len = 0; }
         fn free(inout self) {
-            checked { @free(self.buf, self.cap); };
+            checked { @free(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T))); };
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
             self.len = 0;
@@ -200,7 +200,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             if self.len == self.cap {
                 let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
                 checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    let grown = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)), new_cap * @intCast(@size_of(T)))));
                     self.buf = grown;
                 };
                 self.cap = new_cap;
@@ -234,7 +234,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
         fn free(inout self) {
-            checked { @free(self.buf, self.cap); };
+            checked { @free(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T))); };
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
             self.len = 0;
@@ -293,7 +293,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             if self.len == self.cap {
                 let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
                 checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    let grown = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)), new_cap * @intCast(@size_of(T)))));
                     self.buf = grown;
                 };
                 self.cap = new_cap;
@@ -312,7 +312,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
         }
 
         drop fn(self) {
-            checked { @free(self.buf, self.cap); };
+            checked { @free(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T))); };
         }
     }
 }
@@ -384,7 +384,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             if self.len == self.cap {
                 let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
                 checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    let grown = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)), new_cap * @intCast(@size_of(T)))));
                     self.buf = grown;
                 };
                 self.cap = new_cap;
@@ -407,7 +407,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             }
         }
         fn free(inout self) {
-            checked { @free(self.buf, self.cap); };
+            checked { @free(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T))); };
             let zero: u64 = 0;
             self.buf = checked { @int_to_ptr(zero) };
             self.len = 0;
@@ -509,7 +509,7 @@ pub fn ArrayBuf(comptime T: type) -> type {
             if self.len == self.cap {
                 let new_cap: u64 = if self.cap == 0 { 4 } else { self.cap * 2 };
                 checked {
-                    let grown = @realloc(self.buf, self.cap, new_cap);
+                    let grown = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(self.buf)), self.cap * @intCast(@size_of(T)), @intCast(@align_of(T)), new_cap * @intCast(@size_of(T)))));
                     self.buf = grown;
                 };
                 self.cap = new_cap;

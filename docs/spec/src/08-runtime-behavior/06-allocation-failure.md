@@ -30,8 +30,8 @@ allocation-failure trap terminates the program.
 
 {{ rule(id="8.6:4", cat="normative") }}
 
-The raw `@alloc`, `@realloc`, `@alloc_bytes`, and `@realloc_bytes` intrinsics
-are not safe, infallible allocation APIs. Allocator failure returns null as
-specified by §9.2, and does not itself produce the safe allocation-failure
-trap; checked code using these raw intrinsics is responsible for handling a
-null result.
+The raw `@alloc`, `@alloc_zeroed`, and `@realloc` intrinsics are not safe,
+infallible allocation APIs. Allocator failure returns null as specified by
+§9.2, and does not itself produce the safe allocation-failure trap; checked
+code using these raw intrinsics is responsible for handling a null result.
+`@resize` likewise never traps: it reports refusal as `false`.

@@ -130,7 +130,7 @@ fn stable_text_runtime_calls_require_exact_metadata() {
     for runtime in [
         RuntimeCallKind::StrByteAt,
         RuntimeCallKind::DebugI64,
-        RuntimeCallKind::AllocBytes,
+        RuntimeCallKind::Alloc,
     ] {
         assert_eq!(
             interp.classify_unsupported_runtime_call(runtime, &[], &[], &[], Type::UNIT),

@@ -34,9 +34,9 @@ files = [{ path = "main.rue", source = """
 struct Pair { a: i32, b: i32 }
 fn main() -> i32 {
     checked {
-        let guard: ptr mut Pair = @alloc(1);
+        let guard: ptr mut Pair = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(Pair)), @intCast(@align_of(Pair)))));
         @ptr_write(guard, Pair { a: 999, b: 999 });
-        let p: ptr mut Pair = @alloc(2);
+        let p: ptr mut Pair = @int_to_ptr(@ptr_to_int(@alloc(2 * @intCast(@size_of(Pair)), @intCast(@align_of(Pair)))));
         @ptr_write(p, Pair { a: 11, b: 22 });
         let q: ptr mut Pair = @ptr_offset(p, 1);
         @ptr_write(q, Pair { a: 33, b: 44 });
@@ -46,8 +46,8 @@ fn main() -> i32 {
         @dbg(v1.a); @dbg(v1.b);
         let g = @ptr_read(guard);
         @dbg(g.a); @dbg(g.b);
-        @free(p, 2);
-        @free(guard, 1);
+        @free(@int_to_ptr(@ptr_to_int(p)), 2 * @intCast(@size_of(Pair)), @intCast(@align_of(Pair)));
+        @free(@int_to_ptr(@ptr_to_int(guard)), 1 * @intCast(@size_of(Pair)), @intCast(@align_of(Pair)));
     };
     0
 }

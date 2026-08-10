@@ -140,7 +140,7 @@ pub const c_bool = bool;
 //
 // POINTER MUTABILITY. These are typed `ptr mut u8` (C `char*`), not
 // `ptr const u8` (C `const char*`), because Rue v0 provides no way to construct
-// or coerce to a `ptr const u8` value: `@alloc_bytes` and `@int_to_ptr` both
+// or coerce to a `ptr const u8` value: `@alloc` and `@int_to_ptr` both
 // yield `ptr mut u8`, and there is no `ptr mut → ptr const` coercion, so a
 // `ptr const u8` parameter is currently uncallable with a constructed pointer.
 // `char*` is the callable spelling of a C string boundary today; a `const
@@ -185,7 +185,7 @@ pub fn c_strlen(cstr: ptr mut u8) -> u64 {
 /// fail-fast, matching StrBuf's allocator convention.
 pub fn owned_c_string(borrow source: strbuf.StrBuf) -> ptr mut u8 {
     let len = source.len();
-    let buf: ptr mut u8 = checked { @alloc_bytes(len + 1, 1) };
+    let buf: ptr mut u8 = checked { @alloc(len + 1, 1) };
     if checked { @ptr_to_int(buf) } == 0 {
         @panic("out of memory");
     }
@@ -230,5 +230,5 @@ pub fn free_c_string(cstr: ptr mut u8) {
     while checked { @byte_read(cstr, len) } != 0 {
         len += 1;
     }
-    checked { @free_bytes(cstr, len + 1, 1); };
+    checked { @free(cstr, len + 1, 1); };
 }

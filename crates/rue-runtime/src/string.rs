@@ -110,6 +110,31 @@ crate::define_runtime_implementation! {
 }
 
 crate::define_runtime_implementation! {
+    /// Allocate zero-initialized memory from the heap.
+    ///
+    /// Identical to `__rue_alloc` except that every byte of the returned block
+    /// reads as zero (RUE-968).
+    ///
+    /// # Arguments
+    ///
+    /// * `size` - Number of bytes to allocate
+    /// * `align` - Required alignment (must be a power of 2)
+    ///
+    /// # Returns
+    ///
+    /// A pointer to zeroed memory, or null on failure.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_alloc_zeroed(size: u64, align: u64) -> *mut u8
+    /// ```
+    pub extern "C" fn __rue_alloc_zeroed(size: u64, align: u64) -> *mut u8 {
+        heap::alloc_zeroed(size, align)
+    }
+}
+
+crate::define_runtime_implementation! {
     /// Free memory previously allocated by `__rue_alloc`.
     ///
     /// # Arguments
@@ -168,6 +193,41 @@ crate::define_runtime_implementation! {
     pub unsafe extern "C" fn __rue_realloc(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> *mut u8 {
         // SAFETY: inherited from the exported helper's caller contract.
         unsafe { heap::realloc(ptr, old_size, new_size, align) }
+    }
+}
+
+crate::define_runtime_implementation! {
+    /// Resize an allocation in place, without ever moving it.
+    ///
+    /// # Arguments
+    ///
+    /// * `ptr` - Pointer to the existing allocation
+    /// * `old_size` - Size the allocation currently carries
+    /// * `new_size` - Desired new size
+    /// * `align` - Alignment the allocation was made with
+    ///
+    /// # Returns
+    ///
+    /// `1` when the block now describes `new_size` bytes at the same address —
+    /// the caller must hand `new_size` back at deallocation — and `0` when the
+    /// request was refused, in which case nothing changed and `old_size` still
+    /// describes the block.
+    ///
+    /// # ABI
+    ///
+    /// ```text
+    /// extern "C" fn __rue_resize(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> i64
+    /// ```
+    ///
+    /// The `i64` result is the C-ABI word carrying a Rue `bool`.
+    ///
+    /// # Safety
+    ///
+    /// A non-null `ptr` must be a pointer returned by this runtime allocator
+    /// that is live with exactly the supplied `old_size` and `align`.
+    pub unsafe extern "C" fn __rue_resize(ptr: *mut u8, old_size: u64, new_size: u64, align: u64) -> i64 {
+        // SAFETY: inherited from the exported helper's caller contract.
+        i64::from(unsafe { heap::resize(ptr, old_size, new_size, align) })
     }
 }
 

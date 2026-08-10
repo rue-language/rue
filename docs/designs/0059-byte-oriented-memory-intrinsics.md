@@ -374,10 +374,29 @@ Phases are ordered by the sequencing above. RUE-937 is the tracking issue.
   the `align` parameter to the byte allocator, giving the interim surface the
   `(size, align)` contract; update the runtime operand plan (already
   `(size, align)`-shaped) and `std` call sites.
-- [ ] **Phase 3: Byte-oriented allocation family (post-/co-RUE-971)** —
+- [x] **Phase 3: Byte-oriented allocation family (post-/co-RUE-971)** —
   RUE-961. Re-shape `@alloc`/`@realloc`/`@free` to byte + align; fold
   the `_bytes` allocators in; move `ArrayBuf` typed allocation to source-computed
-  `@size_of`/`@align_of` sugar.
+  `@size_of`/`@align_of` sugar. Landed with the hard removal ruled at
+  acceptance: `@alloc_bytes`/`@realloc_bytes`/`@free_bytes` no longer exist and
+  every `std/` consumer moved in the same change. Typed allocation now lives in
+  `std/rawbuf.rue`, the one place that turns `count` into
+  `count * @size_of(T)` and casts the `ptr mut u8` block to `ptr mut T`.
+  Two consequences worth recording: the allocation-size overflow trap moved out
+  of codegen into the language's ordinary trapping multiply, and the differential
+  oracle gained a lazy reinterpretation of an untouched byte block as cells of
+  the first pointee viewed over it, which is how it keeps modeling typed
+  containers now that no allocation carries an element type.
+- [x] **Phase 3a: In-place resize and zeroed allocation** — RUE-968. Added
+  `@resize(p, old_size, align, new_size) -> bool` (Zig's `Allocator.resize`:
+  in-place only, the pointer never moves, refusal is `false`) and
+  `@alloc_zeroed(size, align)`, both on the unified `(size, align)` ABI, with
+  the new `__rue_resize` / `__rue_alloc_zeroed` runtime helpers. Pulled forward
+  from Future Work ahead of the issue's wait-for-trigger note.
+- [x] **Phase 3b: Overlapping bulk move** — RUE-964. Added
+  `@byte_move(dst, src, size)`, the memmove-shaped sibling of `@byte_copy`
+  (which stays memcpy-shaped, overlap undefined), over the new
+  `__rue_byte_move` helper. Purely additive.
 - [ ] **Phase 4: Byte-correct typed access (post-RUE-971)** — RUE-962.
   Make `@ptr_read`/`@ptr_write`/`@ptr_offset` physical-layout-driven; add
   `@ptr_read_unaligned`/`@ptr_write_unaligned`; fold `@byte_read`/`@byte_write`
@@ -455,7 +474,8 @@ The proposal's open questions, settled by the 2026-07-17 ratification:
   them ungated through std via the trusted-std carve-out regardless.
 - **Overlapping copy: deferred.** `@byte_copy` (non-overlapping) only; no std
   consumer overlaps today, and a later `@byte_move` (memmove) is purely
-  additive.
+  additive. Superseded: `@byte_move` shipped in Phase 3b (RUE-964), exactly as
+  the additive change this ruling anticipated.
 - **Null primitive: keep the `@int_to_ptr(0)` idiom.** A dedicated `@null_ptr`
   acquires design questions (typed or untyped result?) better answered by the
   future provenance work.
@@ -480,10 +500,16 @@ Explicitly out of scope for this ADR, for later designs:
   question).
 - **Strict/exposed provenance split** on `@ptr_to_int`/`@int_to_ptr` as Rue's
   memory model formalizes.
-- **In-place-only resize** (`@resize` returning a success bool, Zig-style) for
-  containers that manage their own copy.
-- **`@offset_of`** once aggregate layout stabilizes under RUE-971.
-- **`@alloc_zeroed`** if the allocator can zero more cheaply than `@byte_set`.
+- ~~**In-place-only resize** (`@resize` returning a success bool, Zig-style) for
+  containers that manage their own copy.~~ Delivered in Phase 3a (RUE-968).
+- ~~**`@offset_of`** once aggregate layout stabilizes under RUE-971.~~ Already
+  present since RUE-301; verified against `@field_ptr` and in comptime constant
+  positions under RUE-969.
+- ~~**`@alloc_zeroed`** if the allocator can zero more cheaply than
+  `@byte_set`.~~ Delivered in Phase 3a (RUE-968). The current allocator recycles
+  arenas and so has no cheaper path than clearing the block, but the intrinsic
+  makes the guarantee expressible and confines a future zero-page mapping to the
+  runtime.
 - **Endianness** stays library-level forever (`to_le_bytes`/`from_le_bytes`-style
   conversions over the byte primitives); no byte-order intrinsic.
 

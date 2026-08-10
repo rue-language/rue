@@ -413,7 +413,7 @@ impl ErrorCode {
     pub const CANNOT_INFER_POINTEE_TYPE: Self = Self(710);
     pub const CONTAINER_ELEMENT_NOT_TRIVIALLY_DROPPABLE: Self = Self(711);
     /// A comptime-constant `align` argument to a byte-allocation intrinsic
-    /// (`@alloc_bytes`/`@realloc_bytes`/`@free_bytes`, ADR-0059 Phase 2) was
+    /// (`@alloc`/`@alloc_zeroed`/`@free`/`@realloc`/`@resize`, ADR-0059) was
     /// zero or not a power of two. Alignment must be a power of two.
     pub const INTRINSIC_ALIGN_NOT_POWER_OF_TWO: Self = Self(712);
 

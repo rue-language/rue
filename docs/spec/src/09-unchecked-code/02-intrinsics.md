@@ -49,7 +49,7 @@ fn main() -> i32 {
         // A syscall buffer must be a contiguous byte image; allocate it on the
         // heap (@alloc storage is the compact image) rather than an @raw of a
         // frame-resident byte array, whose storage is slot-shaped (§3.6, ADR-0040).
-        let msg: ptr mut u8 = @alloc(3); // "HI\n"
+        let msg: ptr mut u8 = @alloc(3, 1); // "HI\n"
         @ptr_write(msg, 72);
         @ptr_write(@ptr_offset(msg, 1), 73);
         @ptr_write(@ptr_offset(msg, 2), 10);
@@ -57,7 +57,7 @@ fn main() -> i32 {
         let msg_ptr: u64 = @ptr_to_int(msg);
         let msg_len: u64 = 3;
         let result = @syscall(write_num, fd, msg_ptr, msg_len);
-        @free(msg, 3);
+        @free(msg, 3, 1);
 
         // exit_group(code)
         @syscall(exit_num, code);
@@ -102,62 +102,98 @@ fn main() -> i32 {
 
 {{ rule(id="9.2:9", cat="normative") }}
 
-The `@alloc`, `@free`, and `@realloc` intrinsics provide raw, unchecked access
-to the heap. Like the raw-pointer intrinsics they may only appear inside a
-`checked` block (§9.1). They are the primitives on which safe, owned
-collections (for example a source-level `ArrayBuf`) are built: the unsafety is
-confined to the collection's internals behind a checked API.
+The `@alloc`, `@alloc_zeroed`, `@free`, `@realloc`, and `@resize` intrinsics
+provide raw, unchecked access to the heap. Like the raw-pointer intrinsics they
+may only appear inside a `checked` block (§9.1). They form **one byte-oriented
+allocation family**: every size is a count of physical bytes, every allocation
+states an explicit alignment, and every pointer is `ptr mut u8`. Allocating
+storage for values of a type `T` is ordinary source arithmetic over the
+reflection intrinsics — `@alloc(count * @size_of(T), @align_of(T))` — so the
+language has no separate element-counted allocator. They are the primitives on
+which safe, owned collections (for example a source-level `ArrayBuf`) are built:
+the unsafety is confined to the collection's internals behind a checked API.
 
 {{ rule(id="9.2:10", cat="dynamic-semantics") }}
 
-`@alloc(count)` allocates a heap block large enough to hold `count` elements of
-type `T` — that is, `count * size_of(T)` bytes of **uninitialized** storage —
-and returns a `ptr mut T` addressing the block. The element type `T` (and hence
-the result type `ptr mut T`) is inferred from the surrounding context, exactly
-as for `@int_to_ptr`. `count` must have type `u64`. On allocation failure the
-returned pointer is null; the caller is responsible for checking. The returned
-pointer is suitable for `@ptr_offset`/`@ptr_read`/`@ptr_write` over the
-`count` elements (element `i` at `@ptr_offset(p, i)`).
+`@alloc(size, align)` allocates `size` physical bytes of **uninitialized**
+storage aligned to `align` bytes and returns a `ptr mut u8` addressing the
+block. `@alloc_zeroed(size, align)` is identical except that every byte of the
+returned block reads as zero. On allocation failure both return null; the caller
+is responsible for checking. `@alloc(0, align)` and `@alloc_zeroed(0, align)`
+return null. The returned pointer is suitable for the byte intrinsics and, once
+converted to a `ptr mut T` addressing a correctly aligned offset, for
+`@ptr_offset`/`@ptr_read`/`@ptr_write` over the `T` values the block can hold.
 
 {{ rule(id="9.2:11", cat="dynamic-semantics") }}
 
-`@free(p, count)` releases a block previously returned by `@alloc`/`@realloc`,
-where `p` is a `ptr mut T` and `count` (a `u64`) is the element count that was
-allocated. Using `p` after it is freed is undefined behavior. Freeing a null
-pointer is permitted and has no effect.
+`@free(p, size, align)` releases a block previously returned by
+`@alloc`/`@alloc_zeroed`/`@realloc`. The `size` and `align` must equal those the
+block currently carries: the allocator keeps no per-block header, so the caller
+returns the layout. Using `p` after it is freed is undefined behavior. Freeing a
+null pointer is permitted and has no effect.
 
 {{ rule(id="9.2:12", cat="dynamic-semantics") }}
 
-`@realloc(p, old_count, new_count)` resizes the block addressed by `p` (a
-`ptr mut T`) from `old_count` to `new_count` elements and returns a `ptr mut T`
-to the resized block, which may differ from `p`. The first
-`min(old_count, new_count)` elements are preserved. If `p` is null it behaves
-like `@alloc(new_count)`. `old_count` and `new_count` must have type `u64`. The
-result type is the same pointer type as `p`. On allocation failure it returns
-null and leaves the original block allocated, with its contents unchanged; the
-caller remains responsible for freeing that original block.
+`@realloc(p, old_size, align, new_size)` resizes the block addressed by `p` from
+`old_size` to `new_size` physical bytes and returns a `ptr mut u8` to the
+resized block, which may differ from `p`. The first
+`min(old_size, new_size)` bytes are preserved and `align` must equal the
+alignment the block was allocated with. If `p` is null it behaves like
+`@alloc(new_size, align)`, including returning null when `new_size` is zero. If
+`new_size` is zero and `p` is non-null, the block is freed and null is returned.
+On allocation failure it returns null and leaves the original block allocated,
+with its contents unchanged; the caller remains responsible for freeing that
+original block.
+
+{{ rule(id="9.2:12a", cat="dynamic-semantics") }}
+
+`@resize(p, old_size, align, new_size)` is the in-place-only counterpart of
+`@realloc`: the block **never moves**. It evaluates to `true` when the block at
+`p` now describes `new_size` bytes at the same address — the caller must then
+pass `new_size` to a later `@free`/`@realloc`/`@resize` — and to `false` when
+the request was refused, in which case nothing changed and `old_size` still
+describes the block. Bytes below `min(old_size, new_size)` are preserved on
+success and no byte is written on refusal. Whether any particular request is
+satisfied in place is unspecified; a conforming implementation may always
+answer `false`, so a program's observable behavior must not depend on `true`.
+`@resize` never copies, never frees, and never allocates, so it cannot fail with
+a null result.
 
 {{ rule(id="9.2:13", cat="legality-rule") }}
 
-`@alloc`, `@free`, and `@realloc` may only be used inside a `checked` block. The
-element-count arguments (`count`, `old_count`, `new_count`) must be `u64`, and
-the pointer arguments of `@free`/`@realloc` must be a mutable pointer
-`ptr mut T`. The result type of `@alloc` must be resolvable to a `ptr mut T`
-from context.
+`@alloc`, `@alloc_zeroed`, `@free`, `@realloc`, and `@resize` may only be used
+inside a `checked` block. Every size and alignment operand (`size`, `align`,
+`old_size`, `new_size`) must be `u64`, and the pointer operand of
+`@free`/`@realloc`/`@resize` must be `ptr mut u8`. `@alloc` and `@alloc_zeroed`
+evaluate to `ptr mut u8`, `@realloc` to `ptr mut u8`, `@resize` to `bool`, and
+`@free` to `()`.
+
+{{ rule(id="9.2:13a", cat="legality-rule") }}
+
+The `align` argument of every intrinsic in this family is a byte count that must
+be a power of two. When `align` is a compile-time constant that is zero or not a
+power of two, the program is rejected at compile time. A non-constant `align` is
+not checked at compile time; supplying a value that is zero or not a power of
+two is then undefined behavior (§9.1, ADR-0028), like the other unchecked
+contracts of this family.
 
 {{ rule(id="9.2:14", cat="example") }}
 
 ```rue
 fn main() -> i32 {
     checked {
-        // Allocate room for 4 i32s, write three, read one back, then free.
-        let p: ptr mut i32 = @alloc(4);
+        // Room for 4 i32s, computed from the type's own layout.
+        let unit: u64 = @intCast(@size_of(i32));
+        let align: u64 = @intCast(@align_of(i32));
+        let raw: ptr mut u8 = @alloc(4 * unit, align);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
         @ptr_write(p, 10);
         @ptr_write(@ptr_offset(p, 1), 20);
         @ptr_write(@ptr_offset(p, 2), 30);
-        let grown: ptr mut i32 = @realloc(p, 4, 8); // contents preserved
+        let grown_raw: ptr mut u8 = @realloc(raw, 4 * unit, align, 8 * unit);
+        let grown: ptr mut i32 = @int_to_ptr(@ptr_to_int(grown_raw));
         let v: i32 = @ptr_read(@ptr_offset(grown, 1)); // 20
-        @free(grown, 8);
+        @free(grown_raw, 8 * unit, align);
         v
     }
 }
@@ -167,36 +203,11 @@ fn main() -> i32 {
 
 {{ rule(id="9.2:14a", cat="normative") }}
 
-The `@alloc_bytes`, `@realloc_bytes`, `@free_bytes`, `@byte_read`,
-`@byte_write`, `@byte_copy`, `@byte_set`, `@ptr_read_unaligned`, and
-`@ptr_write_unaligned` intrinsics provide raw access to packed physical bytes
-and to potentially unaligned typed scalars. They may only appear inside a
-`checked` block. They do not change the element-scaled semantics of `@alloc`,
-`@realloc`, `@free`, `@ptr_offset`, `@ptr_read`, or `@ptr_write`.
-
-{{ rule(id="9.2:14b", cat="dynamic-semantics") }}
-
-`@alloc_bytes(size, align)` allocates `size` physical bytes of uninitialized
-storage aligned to `align` bytes and returns `ptr mut u8`. `@free_bytes(p, size,
-align)` releases a block returned by `@alloc_bytes` or `@realloc_bytes`; the
-`size` and `align` passed to `@free_bytes` must equal those used to allocate the
-block, and freeing a null pointer is permitted. All `size` and `align` arguments
-have type `u64`, and `align` must be a power of two (9.2:14j). Allocation failure
-returns null and does not trap. `@alloc_bytes(0, align)` returns null.
-`@free_bytes(null, 0, align)` is permitted and has no effect.
-
-{{ rule(id="9.2:14c", cat="dynamic-semantics") }}
-
-`@realloc_bytes(p, old_size, align, new_size)` resizes a raw-byte block. The
-first `min(old_size, new_size)` physical bytes are preserved. The `align` must
-equal the alignment used to allocate the block, and behaves as an allocation
-with that alignment; a null `p` behaves like `@alloc_bytes(new_size, align)`. On
-failure it returns null and leaves the original block allocated and unchanged.
-
-If `new_size` is zero, `@realloc_bytes(p, old_size, align, 0)` frees a non-null
-`p` and returns null. If `p` is null, reallocation behaves like
-`@alloc_bytes(new_size, align)`, including returning null when `new_size` is
-zero.
+The `@byte_read`, `@byte_write`, `@byte_copy`, `@byte_move`, `@byte_set`,
+`@ptr_read_unaligned`, and `@ptr_write_unaligned` intrinsics provide raw access
+to packed physical bytes and to potentially unaligned typed scalars. They may
+only appear inside a `checked` block. Every count and offset they take is a
+number of physical bytes; none is multiplied by a pointee width.
 
 {{ rule(id="9.2:14d", cat="dynamic-semantics") }}
 
@@ -208,23 +219,20 @@ Offsets are not multiplied by Rue's typed-pointer slot size.
 
 {{ rule(id="9.2:14e", cat="legality-rule") }}
 
-Every raw-byte intrinsic requires an enclosing
-`checked` block. Allocation and write pointers must be `ptr mut u8`; a byte
-read also accepts `ptr const u8`. Size, offset, and alignment operands are
-exactly `u64`, and a byte-write value is exactly `u8`. `@alloc_bytes` takes
-`(size, align)`, `@realloc_bytes` takes `(p, old_size, align, new_size)`, and
-`@free_bytes` takes `(p, size, align)`.
+Every raw-byte intrinsic requires an enclosing `checked` block. Write pointers
+must be `ptr mut u8`; a byte read also accepts `ptr const u8`. Size and offset
+operands are exactly `u64`, and a byte-write value is exactly `u8`.
 
 {{ rule(id="9.2:14f", cat="example") }}
 
 ```rue
 fn main() -> i32 {
     checked {
-        let p = @alloc_bytes(2, 1);
+        let p = @alloc(2, 1);
         @byte_write(p, 0, 65);
         @byte_write(p, 1, 66);
         let result: i32 = @intCast(@byte_read(p, 1));
-        @free_bytes(p, 2, 1);
+        @free(p, 2, 1);
         result // 66
     }
 }
@@ -235,49 +243,44 @@ fn main() -> i32 {
 `@byte_copy(dst, src, size)` copies exactly `size` physical bytes from the
 region beginning at `src` to the region beginning at `dst`, in the manner of a
 memcpy. The two regions must not overlap; a call in which `[dst, dst + size)`
-and `[src, src + size)` overlap is undefined behavior (§9.1, ADR-0028). `dst`
-must be `ptr mut u8`; `src` may be `ptr const u8` or `ptr mut u8`. `@byte_set(dst,
-byte, size)` writes the `u8` value `byte` to each of the `size` physical bytes
-beginning at `dst`, in the manner of a memset; `dst` must be `ptr mut u8`. In
-both intrinsics `size` has type `u64`, byte counts are not multiplied by Rue's
-typed-pointer slot size, and a `size` of zero performs no access and reads and
-writes no memory.
+and `[src, src + size)` overlap is undefined behavior (§9.1, ADR-0028).
+`@byte_move(dst, src, size)` copies the same bytes in the manner of a memmove:
+the two regions **may** overlap, and the result is as if the `size` source bytes
+were first read into a temporary region and then written to `dst`, so every
+source byte is observed before any destination byte overwrites it. In both, `dst`
+must be `ptr mut u8` and `src` may be `ptr const u8` or `ptr mut u8`.
+`@byte_set(dst, byte, size)` writes the `u8` value `byte` to each of the `size`
+physical bytes beginning at `dst`, in the manner of a memset; `dst` must be
+`ptr mut u8`. In all three intrinsics `size` has type `u64`, byte counts are not
+multiplied by a pointee width, and a `size` of zero performs no access and reads
+and writes no memory.
 
 {{ rule(id="9.2:14h", cat="legality-rule") }}
 
-`@byte_copy` and `@byte_set` each require an
-enclosing `checked` block. Their destination operand is exactly `ptr mut u8`;
-the `@byte_copy` source operand is `ptr const u8` or `ptr mut u8`. The
-`@byte_set` fill operand is exactly `u8`, and every `size` operand is exactly
-`u64`. Both intrinsics evaluate to `()`.
+`@byte_copy`, `@byte_move`, and `@byte_set` each require an enclosing `checked`
+block. Their destination operand is exactly `ptr mut u8`; the `@byte_copy` and
+`@byte_move` source operand is `ptr const u8` or `ptr mut u8`. The `@byte_set`
+fill operand is exactly `u8`, and every `size` operand is exactly `u64`. All
+three intrinsics evaluate to `()`.
 
 {{ rule(id="9.2:14i", cat="example") }}
 
 ```rue
 fn main() -> i32 {
     checked {
-        let src = @alloc_bytes(3, 1);
+        let src = @alloc(3, 1);
         @byte_set(src, 7, 3);
-        let dst = @alloc_bytes(3, 1);
+        let dst = @alloc(3, 1);
         @byte_copy(dst, src, 3);
         let result: i32 = @intCast(@byte_read(dst, 0))
             + @intCast(@byte_read(dst, 1))
             + @intCast(@byte_read(dst, 2));
-        @free_bytes(src, 3, 1);
-        @free_bytes(dst, 3, 1);
+        @free(src, 3, 1);
+        @free(dst, 3, 1);
         result // 21
     }
 }
 ```
-
-{{ rule(id="9.2:14j", cat="legality-rule") }}
-
-The `align` argument to `@alloc_bytes`, `@realloc_bytes`, and `@free_bytes` is a
-byte count that must be a power of two. When `align` is a compile-time constant
-that is zero or not a power of two, the program is rejected at compile time.
-A non-constant `align` is not checked at compile time; supplying a value that is
-zero or not a power of two is then undefined behavior (§9.1, ADR-0028), like the
-other unchecked contracts of this family.
 
 {{ rule(id="9.2:14k", cat="dynamic-semantics") }}
 
@@ -304,10 +307,13 @@ and a written value has type `T`.
 ```rue
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(1);
+        let bytes: u64 = @intCast(@size_of(i32));
+        let align: u64 = @intCast(@align_of(i32));
+        let raw: ptr mut u8 = @alloc(bytes, align);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(raw));
         @ptr_write_unaligned(p, 1234);
         let v: i32 = @ptr_read_unaligned(p);
-        @free(p, 1);
+        @free(raw, bytes, align);
         v // 1234
     }
 }

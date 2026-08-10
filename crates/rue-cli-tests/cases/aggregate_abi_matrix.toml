@@ -89,11 +89,11 @@ files = [{ path = "main.rue", source = """
 struct S1 { a: i32 }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut S1 = @alloc(1);
+        let wp: ptr mut S1 = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(S1)), @intCast(@align_of(S1)))));
         @ptr_write(wp, S1 { a: 55 });
         let v = @ptr_read(wp);
         @dbg(v.a);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(S1)), @intCast(@align_of(S1)));
     };
     0
 }
@@ -200,11 +200,11 @@ files = [{ path = "main.rue", source = """
 struct S2 { a: i32, b: i32 }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut S2 = @alloc(1);
+        let wp: ptr mut S2 = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(S2)), @intCast(@align_of(S2)))));
         @ptr_write(wp, S2 { a: 7, b: 8 });
         let v = @ptr_read(wp);
         @dbg(v.a); @dbg(v.b);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(S2)), @intCast(@align_of(S2)));
     };
     0
 }
@@ -239,11 +239,11 @@ files = [{ path = "main.rue", source = """
 struct S3 { a: i32, b: i32, c: i32 }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut S3 = @alloc(1);
+        let wp: ptr mut S3 = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(S3)), @intCast(@align_of(S3)))));
         @ptr_write(wp, S3 { a: 3, b: 6, c: 9 });
         let v = @ptr_read(wp);
         @dbg(v.a); @dbg(v.b); @dbg(v.c);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(S3)), @intCast(@align_of(S3)));
     };
     0
 }
@@ -295,11 +295,11 @@ files = [{ path = "main.rue", source = """
 struct S8 { a: i32, b: i32, c: i32, d: i32, e: i32, f: i32, g: i32, h: i32 }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut S8 = @alloc(1);
+        let wp: ptr mut S8 = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(S8)), @intCast(@align_of(S8)))));
         @ptr_write(wp, S8 { a: 11, b: 22, c: 33, d: 44, e: 55, f: 66, g: 77, h: 88 });
         let v = @ptr_read(wp);
         @dbg(v.a); @dbg(v.e); @dbg(v.h);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(S8)), @intCast(@align_of(S8)));
     };
     0
 }
@@ -366,11 +366,11 @@ struct Inner { a: i32, b: i32 }
 struct Outer { p: Inner, q: i32 }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut Outer = @alloc(1);
+        let wp: ptr mut Outer = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(Outer)), @intCast(@align_of(Outer)))));
         @ptr_write(wp, Outer { p: Inner { a: 1, b: 2 }, q: 3 });
         let v = @ptr_read(wp);
         @dbg(v.p.a); @dbg(v.p.b); @dbg(v.q);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(Outer)), @intCast(@align_of(Outer)));
     };
     0
 }
@@ -430,11 +430,11 @@ files = [{ path = "main.rue", source = """
 struct ArrBox { a: [i32; 4] }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut ArrBox = @alloc(1);
+        let wp: ptr mut ArrBox = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(ArrBox)), @intCast(@align_of(ArrBox)))));
         @ptr_write(wp, ArrBox { a: [1, 2, 3, 4] });
         let v = @ptr_read(wp);
         @dbg(v.a[0]); @dbg(v.a[3]);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(ArrBox)), @intCast(@align_of(ArrBox)));
     };
     0
 }
@@ -481,11 +481,11 @@ struct P { x: i32, y: i32 }
 struct AosBox { a: [P; 2] }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut AosBox = @alloc(1);
+        let wp: ptr mut AosBox = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(AosBox)), @intCast(@align_of(AosBox)))));
         @ptr_write(wp, AosBox { a: [P { x: 1, y: 2 }, P { x: 3, y: 4 }] });
         let v = @ptr_read(wp);
         @dbg(v.a[0].x); @dbg(v.a[1].y);
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(AosBox)), @intCast(@align_of(AosBox)));
     };
     0
 }
@@ -617,11 +617,11 @@ enum E { V(i32, i32), Empty }
 fn sum(e: E) -> i32 { match e { E.V(x, y) => x + y, E.Empty => 0 } }
 fn main() -> i32 {
     checked {
-        let wp: ptr mut E = @alloc(1);
+        let wp: ptr mut E = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(E)), @intCast(@align_of(E)))));
         @ptr_write(wp, E.V(9, 8));
         let v = @ptr_read(wp);
         @dbg(sum(v));
-        @free(wp, 1);
+        @free(@int_to_ptr(@ptr_to_int(wp)), 1 * @intCast(@size_of(E)), @intCast(@align_of(E)));
     };
     0
 }

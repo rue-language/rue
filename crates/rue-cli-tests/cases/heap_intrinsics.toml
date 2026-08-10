@@ -1,7 +1,11 @@
-# @alloc / @free / @realloc heap intrinsics driven the way a user does — real
-# files, the real driver, real program exit codes and stdout (RUE-1).
+# The unified byte-and-alignment allocation family driven the way a user does —
+# real files, the real driver, real program exit codes and stdout (RUE-1,
+# ADR-0059 Phase 3 / RUE-961).
 #
-# These are the unchecked heap primitives a source-level ArrayBuf is built on. The
+# These are the unchecked heap primitives a source-level ArrayBuf is built on.
+# `@alloc`/`@realloc`/`@free` take physical byte sizes plus an alignment over
+# `ptr mut u8`, so a fixture that wants `count` values of `T` computes the byte
+# size itself and casts the block — the same thing `std/rawbuf.rue` does. The
 # runtime __rue_alloc/__rue_free/__rue_realloc are already used by StrBuf, so
 # these cases also confirm the archive symbols resolve when referenced only
 # from user code.
@@ -18,7 +22,7 @@ description = "Round-trips values through an @alloc'd i32 buffer and frees it."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i32 = @alloc(3);
+        let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(@alloc(3 * @intCast(@size_of(i32)), @intCast(@align_of(i32)))));
         @ptr_write(p, 10);
         @ptr_write(@ptr_offset(p, 1), 20);
         @ptr_write(@ptr_offset(p, 2), 30);
@@ -26,7 +30,7 @@ fn main() -> i32 {
         @dbg(@ptr_read(@ptr_offset(p, 1)));
         @dbg(@ptr_read(@ptr_offset(p, 2)));
         let sum = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 2));
-        @free(p, 3);
+        @free(@int_to_ptr(@ptr_to_int(p)), 3 * @intCast(@size_of(i32)), @intCast(@align_of(i32)));
         sum
     }
 }
@@ -41,13 +45,13 @@ description = "Growing an @alloc'd block with @realloc keeps the existing elemen
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let mut p: ptr mut i32 = @alloc(2);
+        let mut p: ptr mut i32 = @int_to_ptr(@ptr_to_int(@alloc(2 * @intCast(@size_of(i32)), @intCast(@align_of(i32)))));
         @ptr_write(p, 5);
         @ptr_write(@ptr_offset(p, 1), 7);
-        p = @realloc(p, 2, 16);
+        p = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(p)), 2 * @intCast(@size_of(i32)), @intCast(@align_of(i32)), 16 * @intCast(@size_of(i32)))));
         @ptr_write(@ptr_offset(p, 8), 100);
         let sum: i32 = @ptr_read(p) + @ptr_read(@ptr_offset(p, 1)) + @ptr_read(@ptr_offset(p, 8));
-        @free(p, 16);
+        @free(@int_to_ptr(@ptr_to_int(p)), 16 * @intCast(@size_of(i32)), @intCast(@align_of(i32)));
         sum
     }
 }
@@ -60,21 +64,21 @@ description = "A failed @realloc returns null while the original u8 allocation a
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc(4);
+        let p: ptr mut u8 = @int_to_ptr(@ptr_to_int(@alloc(4 * @intCast(@size_of(u8)), @intCast(@align_of(u8)))));
         @ptr_write(p, 10);
         @ptr_write(@ptr_offset(p, 1), 20);
         @ptr_write(@ptr_offset(p, 2), 30);
         @ptr_write(@ptr_offset(p, 3), 40);
-        let q: ptr mut u8 = @realloc(p, 4, 2305843009213693951);
+        let q: ptr mut u8 = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(p)), 4 * @intCast(@size_of(u8)), @intCast(@align_of(u8)), 2305843009213693951 * @intCast(@size_of(u8)))));
         if @ptr_to_int(q) == 0 {
             let sum: i32 = @intCast(@ptr_read(p))
                 + @intCast(@ptr_read(@ptr_offset(p, 1)))
                 + @intCast(@ptr_read(@ptr_offset(p, 2)))
                 + @intCast(@ptr_read(@ptr_offset(p, 3)));
-            @free(p, 4);
+            @free(@int_to_ptr(@ptr_to_int(p)), 4 * @intCast(@size_of(u8)), @intCast(@align_of(u8)));
             sum
         } else {
-            @free(q, 2305843009213693951);
+            @free(@int_to_ptr(@ptr_to_int(q)), 2305843009213693951 * @intCast(@size_of(u8)), @intCast(@align_of(u8)));
             1
         }
     }
@@ -94,7 +98,7 @@ struct Buf {
     cap: u64,
     fn init() -> Self {
         checked {
-            let p: ptr mut i32 = @alloc(4);
+            let p: ptr mut i32 = @int_to_ptr(@ptr_to_int(@alloc(4 * @intCast(@size_of(i32)), @intCast(@align_of(i32)))));
             @ptr_write(p, 111);
             Self { data: p, cap: 4 }
         }
@@ -105,7 +109,7 @@ struct Buf {
 }
 
 drop fn Buf(self) {
-    checked { @free(self.data, self.cap); };
+    checked { @free(@int_to_ptr(@ptr_to_int(self.data)), self.cap * @intCast(@size_of(i32)), @intCast(@align_of(i32))); };
     @dbg(999);
 }
 
@@ -126,24 +130,25 @@ name = "alloc_outside_checked_rejected"
 description = "@alloc outside a checked block is rejected (E1300)."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
-    let p: ptr mut i32 = @alloc(4);
+    let p: ptr mut u8 = @alloc(4, 1);
     0
 }
 """ }]
 compile_fail = true
 error_contains = ["heap intrinsic `@alloc`", "checked"]
 
-# The hidden `count * size_of(T)` performed by heap intrinsics is part of the
-# runtime allocation ABI. It must trap instead of wrapping to a smaller byte
-# count, which would under-allocate the buffer the source pointer describes
-# (RUE-345).
+# `count * size_of(T)` is now written in source (ADR-0059 Phase 3, RUE-961)
+# rather than hidden inside the intrinsic, so the overflow that RUE-345 pinned
+# is caught by the language's ordinary trapping multiply (§8.1). It must still
+# trap rather than wrap to a smaller byte count, which would under-allocate the
+# buffer the source pointer describes.
 [[case]]
 name = "alloc_count_size_overflow_traps"
-description = "@alloc traps when count * size_of(T) overflows u64."
+description = "The source-computed count * @size_of(T) traps on overflow instead of wrapping."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i64 = @alloc(2305843009213693952);
+        let p: ptr mut i64 = @int_to_ptr(@ptr_to_int(@alloc(2305843009213693952 * @intCast(@size_of(i64)), @intCast(@align_of(i64)))));
         if @ptr_to_int(p) == 0 { 0 } else { 1 }
     }
 }
@@ -153,12 +158,12 @@ exit_code = 101
 
 [[case]]
 name = "realloc_count_size_overflow_traps"
-description = "@realloc traps when the new count * size_of(T) overflows u64."
+description = "The source-computed new count * @size_of(T) traps on overflow instead of wrapping."
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut i64 = @alloc(1);
-        let q: ptr mut i64 = @realloc(p, 1, 2305843009213693952);
+        let p: ptr mut i64 = @int_to_ptr(@ptr_to_int(@alloc(1 * @intCast(@size_of(i64)), @intCast(@align_of(i64)))));
+        let q: ptr mut i64 = @int_to_ptr(@ptr_to_int(@realloc(@int_to_ptr(@ptr_to_int(p)), 1 * @intCast(@size_of(i64)), @intCast(@align_of(i64)), 2305843009213693952 * @intCast(@size_of(i64)))));
         if @ptr_to_int(q) == 0 { 0 } else { 1 }
     }
 }
@@ -176,7 +181,7 @@ description = "A near-usize::MAX @alloc returns null instead of an unbacked poin
 files = [{ path = "main.rue", source = """
 fn main() -> i32 {
     checked {
-        let p: ptr mut u8 = @alloc(2305843009213693951);
+        let p: ptr mut u8 = @int_to_ptr(@ptr_to_int(@alloc(2305843009213693951 * @intCast(@size_of(u8)), @intCast(@align_of(u8)))));
         let addr: u64 = @ptr_to_int(p);
         if addr == 0 { 0 } else { 1 }
     }

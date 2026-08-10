@@ -175,7 +175,7 @@ pub struct StrBuf {
 
         let new_cap = Self.growth_capacity(self.core.cap, required);
         if self.core.cap == 0 {
-            let replacement: ptr mut u8 = checked { @alloc_bytes(new_cap, 1) };
+            let replacement: ptr mut u8 = checked { @alloc(new_cap, 1) };
             if checked { @ptr_to_int(replacement) } == 0 {
                 @panic("out of memory");
             }
