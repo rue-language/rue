@@ -48,7 +48,10 @@ of mechanism; the MVP mechanism is one linked test image per target plus one
 process per test. Extensibility is tiered with no privileged built-ins: the
 structured failure channel, test identity, and runner contracts are all
 protocols that user-authored assertion libraries, frameworks, and runners can
-speak.
+speak. A standing section records the obligations this design places on
+future language evolution — traits and dynamic dispatch, std and ABI growth,
+concurrency, separate compilation, comptime inputs, failure-model changes —
+all of which degrade to "affected tests always run," never to unsoundness.
 
 ## Context
 
@@ -430,7 +433,9 @@ directive namespace reserves `@requires(<capability>...)` for that role (on
 first user: an `extern "C"` block may declare `@requires(fs)` to narrow its
 summary from opaque-top, on the author's honor, which is exactly the trust
 level FFI already has for memory safety (`checked` blocks, ADR-0064). Until
-declared narrowing ships (Phase 6), FFI is simply top.
+declared narrowing ships (Phase 6), FFI is simply top. The full obligations
+this places on future trait, dispatch, and function-value designs are
+recorded in "Constraints on future language evolution."
 
 ### 5. Hermetic verdicts are cacheable artifacts; selection is a consequence
 
@@ -470,7 +475,8 @@ declared narrowing ships (Phase 6), FFI is simply top.
   pin set, which is in the cache key.
 - There is no clock to virtualize; the absence is load-bearing. Any future
   time API must arrive behind a `clock` capability so this ADR's guarantees
-  survive it (recorded as a standing constraint, not enforced by this ADR).
+  survive it ("Constraints on future language evolution" records this and
+  its siblings).
 - `--seed N` is accepted and reported in `run_started` and in every failure's
   repro argv from Phase 2, but in the MVP it only feeds the runner's own
   choices (shuffle order, scratch naming). Making `@random_*` seedable in test
@@ -662,6 +668,12 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   compiler-synthesized artifact to maintain across both backends.
 - Contextual-keyword parsing for `test` adds grammar subtlety (mitigated by
   its restriction to item position followed by a string literal).
+- Future language designs inherit obligations from this ADR — capability
+  classification for every new effect or dispatch mechanism, summary-bearing
+  metadata for any separate-compilation design, a determinism decision for
+  any concurrency design. That is a real tax on future work, accepted
+  deliberately and recorded in "Constraints on future language evolution"
+  so it is paid knowingly, in the open, at design time.
 
 ### Neutral
 
@@ -671,6 +683,107 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
 - Tests-next-to-code means production source files carry test text; parse cost
   is whole-file already, and demand-driven analysis makes the semantic cost
   zero for executable requests.
+
+## Constraints on future language evolution
+
+This ADR's guarantees are purchased from specific properties of today's
+language: a total static call graph, three closed effect doors, no clock, no
+threads, abort-only failure, whole-program compilation. Each of these will
+change. The design degrades soundly rather than breaking — an edge the
+analysis cannot classify widens to ⊤ and the affected tests eject from
+caching and selection, never from correctness — so the constraint on each
+future design is not "do not do this" but "decide, at design time, how much
+of the verified story your users keep." This section is the standing record
+of those obligations, written to be citable from future ADRs.
+
+**The standing rule.** Any feature that adds an input channel, a
+nondeterminism source, or a call edge the compiler cannot statically resolve
+must classify itself against the capability lattice (§4.1) as part of its own
+design. The lattice is a checklist for new features, not a closed museum: new
+bits are additive, but "unclassified" is not an option — an unclassified leaf
+is a soundness hole in every cached verdict. A process hook enforcing this at
+review time is proposed under maintainer calls.
+
+### Traits, interfaces, and function-typed values
+
+Comptime-static polymorphism — today's generics, and any future trait system
+resolved entirely at monomorphization, Zig-style — costs nothing: every edge
+still resolves per specialization and inference stays total. The obligation
+lands on *runtime* polymorphism: vtables, function-typed values, closures. A
+design adding those must choose a posture per dynamic edge: (a) declared
+capability bounds at the abstraction boundary — the `@requires(...)` surface
+(§4.5) is reserved for exactly this, on trait members and function types,
+with the unannotated default bound an explicit design decision; (b) no
+bounds, the edge joins ⊤, and tests reaching it always run — sound,
+zero-annotation, and the automatic fallback; or (c) capabilities move into
+the type system (the future ADR flagged in §4.4). What a dispatch design may
+not do is make call targets unenumerable: every dynamic-dispatch table must
+be recoverable from the reached artifact graph, so that posture (b) is at
+worst conservative, never unsound.
+
+### Standard library growth and the runtime ABI
+
+Three obligations. New runtime helpers carry a capability class in the ABI
+manifest row itself, machine-checked like every other manifest property
+(ADR-0055) — Phase 3 adds the field, after which an unclassified helper does
+not build. New effectful std APIs route through the existing doors (helpers,
+`@syscall`, FFI); introducing a fourth effect mechanism requires amending
+§4.1's leaf set in the same change and is otherwise a rejected shape. And two
+reservations stand: any time API is born behind `clock` (the current absence
+of a clock is load-bearing for determinism), and any env-mutation or
+process-spawn API is born behind its own bit or an explicit join to ⊤ — a
+spawned child can do anything, so `process` can never be hermetic.
+
+### Concurrency: threads and async
+
+The obligation is to classify scheduler nondeterminism, not to avoid
+concurrency. If the exclusivity model (ADR-0037) lets a future structured-
+parallelism design guarantee deterministic observable results, parallel tests
+remain hermetic and cacheable — the best outcome, and worth weighing during
+that design. Concurrency whose observable behavior can vary with scheduling
+must carry a nondeterminism capability, ejecting affected tests from caching
+exactly as OS entropy does. Mechanism notes, all additive: an async test body
+changes how the synthesized dispatcher awaits completion (§3), not the
+execution contract; timers want a clock and inherit `clock`'s constraint; a
+trap in any thread still aborts the whole process, which keeps verdict
+semantics intact; and process-group SIGKILL must remain sufficient to reap a
+test regardless of what the runtime spawns.
+
+### Separate compilation and packages
+
+Whole-program visibility is why inference needs no annotations today (§4.2).
+A library boundary that hides bodies must ship per-function capability
+summaries and artifact fingerprints in its metadata — RUE-506 anticipated
+exactly this — or every cross-library call joins ⊤ and dependent tests
+always run. The verdict cache (§5) additionally requires that dependency
+identity contribute to closure fingerprints: a package design that cannot
+content-address its artifacts caps test caching at "eject anything crossing a
+package boundary." Both are metadata-format obligations on the package
+design, not runner changes.
+
+### Comptime input channels
+
+If comptime ever reads inputs beyond source text (embedded files, build-time
+configuration), those reads must flow through ADR-0063's host input protocol
+so they appear in revisions and closure fingerprints. A comptime input the
+fingerprint cannot see is a stale-verdict bug by construction.
+
+### Failure-model evolution
+
+Verdicts are defined by the execution contract (§3), not by the abort
+mechanism. If Rue gains catchable failures or unwinding, failure reporting
+migrates into the structured channel (§7.1), which is mechanism-neutral by
+design — the pinned-stderr-message taxonomy is an MVP implementation detail,
+already replaceable. Destructors would then start running on failing paths;
+the fixture note in §7.4 assumes they do not and would be revisited.
+
+### Opaque code mechanisms
+
+Inline assembly, a JIT surface, or any future arbitrary-instructions feature
+is a fourth door by definition: it must be `checked`-gated like `@syscall`
+and joins ⊤ unconditionally. There is no sound narrowing for code the
+compiler cannot read; such a feature trades capability precision for power,
+explicitly.
 
 ## Open Questions
 
@@ -708,6 +821,12 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   (e.g. `scripts/rue suite`), or accept the context distinction and fix docs.
 - **Exit-code contract of `rue test`** (§2): the 0/1/2/3 proposal, in
   particular empty-selection-as-error.
+- **The standing rule as process**: ratify "Constraints on future language
+  evolution" as citable policy, and add a capability/determinism/fingerprint
+  impact item to the new-feature checklist (alongside AGENTS.md's seven-layer
+  preview-feature list), so those obligations are applied when a feature is
+  designed rather than rediscovered when its tests misbehave. Cheap, but it
+  touches process docs owned outside this ADR.
 - **Naming**: `test_declarations` preview flag; `@group`/`@requires` directive
   spellings; `docs/process/test-events.md` as the schema doc home.
 
