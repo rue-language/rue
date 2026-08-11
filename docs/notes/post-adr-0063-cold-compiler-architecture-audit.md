@@ -638,6 +638,23 @@ memory remain mixed within run noise, and the Lattice executable remains
 byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1368 used those request counters to remove one peer identity query from
+every successful body-provider signature fact. The semantic-nucleus signature
+projection now carries the shared stable definition key it already computes;
+the consumer clones that pointer instead of requesting the identity projection
+solely to recover the same key. Reconstructing the key at the consumer was
+rejected because it replaced a query reuse with a fresh digest and allocation.
+
+The fixed probes remove exactly 2,014, 8,171, 16,706, and 21,198 reuses from
+Ruelex through Lattice, equal to the signature-fact counts. Claims, validation,
+retention enforcement and scans, display identities, provider work,
+reachability, and CFG materialization are unchanged. A reverse-order paired
+run on the loaded local host moved compiler medians -10.3, +5.5, -10.9, and
+-20.3 percent respectively; Mosaic's movement was smaller than its MAD, so the
+clock result is mixed/neutral rather than a claimed speedup. Peak memory was
+flat within 1.5 MiB, and the Lattice executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

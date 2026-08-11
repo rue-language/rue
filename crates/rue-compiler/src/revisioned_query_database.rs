@@ -13759,6 +13759,7 @@ impl RevisionedQueryDatabase {
                                             ) {
                                                 Ok(signature) => Value::Signature(
                                                     crate::semantic_query_nucleus::ResolvedDeclarationSignature {
+                                                        definition: provider.dependency_source.clone(),
                                                         signature,
                                                         anonymous_nominals: provider
                                                             .anonymous_nominals
@@ -23022,13 +23023,7 @@ impl rue_air::BodyFactProvider for CompilerBodyFactProvider<'_> {
         );
         match self.nucleus(query) {
             Some(crate::semantic_query_nucleus::SemanticNucleusValue::Signature(signature)) => {
-                if let Some(crate::semantic_query_nucleus::SemanticNucleusValue::Identity(
-                    identity,
-                )) = self.nucleus(crate::semantic_query_nucleus::SemanticNucleusKey::Identity(
-                    self.declaration_query_key(decl),
-                )) {
-                    self.record_definition_reference(identity.key);
-                }
+                self.record_definition_reference(signature.definition.clone());
                 Some(signature)
             }
             _ => None,
@@ -27247,6 +27242,7 @@ fn main() -> i32 {
         assert_eq!(
             signature,
             Value::Signature(crate::semantic_query_nucleus::ResolvedDeclarationSignature {
+                definition: identity.key.clone(),
                 signature: Signature::Struct {
                     fields: vec![(
                         Arc::from("next"),
@@ -36478,6 +36474,24 @@ fn main() -> i32 {
         assert_eq!(
             provider_sig, epoch_sig,
             "the candidate handle fetches the exact production signature (modes + return type)"
+        );
+        assert!(
+            sig_outcome.dependencies.iter().any(|node| {
+                node.family() == "compiler.semantic-nucleus"
+                    && node.key().starts_with("signature:")
+                    && node.key().contains("get")
+            }),
+            "signature facts observe the signature projection: {:?}",
+            sig_outcome.dependencies
+        );
+        assert!(
+            !sig_outcome.dependencies.iter().any(|node| {
+                node.family() == "compiler.semantic-nucleus"
+                    && node.key().starts_with("identity:")
+                    && node.key().contains("get")
+            }),
+            "the resolved signature carries its definition key without a peer identity request: {:?}",
+            sig_outcome.dependencies
         );
 
         // Differential: the candidate's visibility matches the method's own
