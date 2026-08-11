@@ -19,6 +19,7 @@ use std::cell::Cell;
 #[cfg(test)]
 thread_local! {
     static INJECT_CALL_ABI_FAILURE: Cell<bool> = const { Cell::new(false) };
+    static CFG_QUERY_KEY_CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -37,6 +38,24 @@ pub(crate) fn with_test_call_abi_failure_injection<T>(run: impl FnOnce() -> T) -
     });
     let _reset = Reset;
     run()
+}
+
+#[cfg(test)]
+pub(crate) fn with_test_cfg_query_key_construction_count<T>(run: impl FnOnce() -> T) -> (T, usize) {
+    struct Reset(usize);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CFG_QUERY_KEY_CONSTRUCTIONS.with(|count| count.set(self.0));
+        }
+    }
+
+    CFG_QUERY_KEY_CONSTRUCTIONS.with(|count| {
+        let reset = Reset(count.replace(0));
+        let output = run();
+        let constructions = count.get();
+        drop(reset);
+        (output, constructions)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -120,28 +139,20 @@ impl CfgQueryKey {
         configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
         semantic_input: CfgSemanticInput,
     ) -> Self {
+        #[cfg(test)]
+        CFG_QUERY_KEY_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // The family index needs a well-distributed in-process partition, not a
+        // durable fingerprint of the whole semantic payload. Function and
+        // configuration distribute independent CFGs across shards; the small
+        // bounded set of retained semantic versions for one function may share
+        // a bucket. Typed `Eq` below remains authoritative under those deliberate
+        // collisions. Avoiding a Debug render of the complete body and local
+        // materialization facts keeps key construction allocation-free and
+        // proportional to the stable function identity rather than body size.
         function.hash(&mut hasher);
         configuration.hash(&mut hasher);
-        // These stable values deliberately do not implement `Hash`. Compute
-        // their complete Debug framing once at key construction instead of on
-        // every memo-table probe; equality still resolves hash collisions.
-        match &semantic_input {
-            CfgSemanticInput::Body {
-                input,
-                materialization,
-            } => {
-                format!("{:?};{:?}", input.canonical, materialization).hash(&mut hasher);
-            }
-            CfgSemanticInput::DropGlue {
-                owner,
-                facts,
-                materialization,
-                ..
-            } => {
-                format!("{owner:?};{facts:?};{materialization:?}").hash(&mut hasher);
-            }
-        }
         let memo_hash = hasher.finish();
         Self {
             function,

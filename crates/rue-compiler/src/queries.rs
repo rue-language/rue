@@ -648,8 +648,8 @@ pub(crate) fn collect_function_cfg_queries(
                         canonical_semantic::CfgConstructionWork::default(),
                     ));
                 };
-                let semantic_input = if let Some(root) = accessor_roots.get(&semantic_identity) {
-                    root.semantic_input.clone()
+                let cfg_key = if let Some(root) = accessor_roots.get(&semantic_identity) {
+                    root.clone()
                 } else if let Some(input) = current_input {
                     let body = match input.canonical.as_ref() {
                         crate::body_query::CanonicalBody::Ordinary { body, .. }
@@ -675,10 +675,14 @@ pub(crate) fn collect_function_cfg_queries(
                             canonical_semantic::CfgConstructionWork::default(),
                         )
                     })?;
-                    crate::cfg_query::CfgSemanticInput::Body {
-                        input: std::sync::Arc::new(input.clone()),
-                        materialization: std::sync::Arc::new(materialization),
-                    }
+                    crate::cfg_query::CfgQueryKey::new(
+                        semantic_identity.clone(),
+                        configuration.clone(),
+                        crate::cfg_query::CfgSemanticInput::Body {
+                            input: std::sync::Arc::new(input.clone()),
+                            materialization: std::sync::Arc::new(materialization),
+                        },
+                    )
                 } else if let crate::FunctionInstanceKey::DropGlue(owner) = &semantic_identity {
                     let Some(facts) = stable_drop_glue_plans.get(owner.as_ref()) else {
                         return Err((
@@ -709,12 +713,16 @@ pub(crate) fn collect_function_cfg_queries(
                             canonical_semantic::CfgConstructionWork::default(),
                         )
                     })?;
-                    crate::cfg_query::CfgSemanticInput::DropGlue {
-                        owner: owner.as_ref().clone(),
-                        facts: Box::new(facts.clone()),
-                        materialization: std::sync::Arc::new(materialization),
-                        body_span,
-                    }
+                    crate::cfg_query::CfgQueryKey::new(
+                        semantic_identity.clone(),
+                        configuration.clone(),
+                        crate::cfg_query::CfgSemanticInput::DropGlue {
+                            owner: owner.as_ref().clone(),
+                            facts: Box::new(facts.clone()),
+                            materialization: std::sync::Arc::new(materialization),
+                            body_span,
+                        },
+                    )
                 } else {
                     return Err((
                         CompileError::without_span(ErrorKind::InternalError(format!(
@@ -784,9 +792,7 @@ pub(crate) fn collect_function_cfg_queries(
                 let (optimized_cfg_key, attempt) = cfg_queries
                     .optimized_cfg(
                         revision,
-                        semantic_identity.clone(),
-                        configuration.clone(),
-                        semantic_input,
+                        cfg_key,
                         opt_level,
                         accessor_dependencies
                             .get(&semantic_identity)
