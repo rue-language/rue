@@ -83,7 +83,7 @@ impl<'a, R> IntoIterator for &'a RegList<R> {
 /// Backend-specific facts required by the shared scheduler.
 pub trait SchedulerAdapter {
     /// Backend MIR instruction type.
-    type Inst: Clone;
+    type Inst;
     /// Backend physical register type.
     type Reg: Copy + Eq + Hash;
 
@@ -249,14 +249,17 @@ where
     }
     block_starts.push(instructions.len());
 
-    let mut new_instructions = Vec::with_capacity(instructions.len());
+    // `destination[old] = new`: build the complete order while every block can
+    // still inspect the original instruction slice, then realize that
+    // permutation in place. Keeping only dense indices avoids cloning every
+    // MIR instruction into a second full-width vector.
+    let mut destination = (0..instructions.len()).collect::<Vec<_>>();
 
     for window in block_starts.windows(2) {
         let start = window[0];
         let end = window[1];
 
         if end - start <= 2 {
-            new_instructions.extend_from_slice(&instructions[start..end]);
             continue;
         }
 
@@ -266,7 +269,6 @@ where
         let sched_end = if last_is_barrier { end - 1 } else { end };
 
         if sched_end - start <= 2 {
-            new_instructions.extend_from_slice(&instructions[start..end]);
             continue;
         }
 
@@ -274,16 +276,36 @@ where
         calculate_priorities(&mut nodes);
         let order = schedule_block(&nodes);
 
-        for &idx in &order {
-            new_instructions.push(instructions[start + idx].clone());
-        }
-
-        if last_is_barrier {
-            new_instructions.push(instructions[end - 1].clone());
+        for (new_offset, &old_offset) in order.iter().enumerate() {
+            destination[start + old_offset] = start + new_offset;
         }
     }
 
-    *instructions = new_instructions;
+    apply_permutation(instructions, &mut destination);
+}
+
+/// Apply an `old index -> new index` permutation in place.
+///
+/// Swapping the destinations with their elements keeps each destination
+/// attached to the original element it describes. Once slot `current` maps to
+/// itself, the correct original element occupies that slot and cannot move
+/// again.
+fn apply_permutation<T>(items: &mut [T], destination: &mut [usize]) {
+    #[cfg(test)]
+    {
+        assert_eq!(items.len(), destination.len());
+        let mut complete = destination.to_vec();
+        complete.sort_unstable();
+        assert_eq!(complete, (0..destination.len()).collect::<Vec<_>>());
+    }
+
+    for current in 0..destination.len() {
+        while destination[current] != current {
+            let target = destination[current];
+            items.swap(current, target);
+            destination.swap(current, target);
+        }
+    }
 }
 
 /// Build the dependency graph for a basic block of instructions.
@@ -544,6 +566,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn in_place_permutation_moves_a_cycle_and_keeps_fixed_positions() {
+        let mut items = ['a', 'b', 'c', 'd'];
+        let mut destination = [2, 0, 1, 3];
+
+        apply_permutation(&mut items, &mut destination);
+
+        assert_eq!(items, ['b', 'c', 'a', 'd']);
+        assert_eq!(destination, [0, 1, 2, 3]);
+    }
+
+    #[test]
     fn scheduler_register_facts_stay_inline_through_the_mir_maximum() {
         let mut regs = RegList::new();
         regs.push(0u8);
@@ -572,8 +605,11 @@ mod tests {
     /// A minimal instruction: what it reads, what it writes, nothing else.
     #[derive(Debug, Clone)]
     struct TestInst {
+        id: u32,
         reads: Vec<ClassedReg>,
         writes: Vec<ClassedReg>,
+        latency: u32,
+        barrier: bool,
     }
 
     struct TestAdapter;
@@ -586,12 +622,12 @@ mod tests {
             reg.0
         }
 
-        fn latency(&self, _inst: &Self::Inst) -> u32 {
-            1
+        fn latency(&self, inst: &Self::Inst) -> u32 {
+            inst.latency
         }
 
-        fn is_barrier(&self, _inst: &Self::Inst) -> bool {
-            false
+        fn is_barrier(&self, inst: &Self::Inst) -> bool {
+            inst.barrier
         }
 
         fn accesses_memory(&self, _inst: &Self::Inst) -> bool {
@@ -629,9 +665,42 @@ mod tests {
 
     fn inst(reads: &[ClassedReg], writes: &[ClassedReg]) -> TestInst {
         TestInst {
+            id: 0,
             reads: reads.to_vec(),
             writes: writes.to_vec(),
+            latency: 1,
+            barrier: false,
         }
+    }
+
+    fn independent_inst(id: u32, latency: u32, barrier: bool) -> TestInst {
+        TestInst {
+            id,
+            reads: Vec::new(),
+            writes: Vec::new(),
+            latency,
+            barrier,
+        }
+    }
+
+    #[test]
+    fn in_place_scheduling_preserves_barriers_and_block_boundaries() {
+        let mut instructions = vec![
+            independent_inst(0, 1, false),
+            independent_inst(1, 2, false),
+            independent_inst(2, 3, false),
+            independent_inst(99, 100, true),
+            independent_inst(3, 1, false),
+            independent_inst(4, 2, false),
+            independent_inst(5, 3, false),
+        ];
+
+        schedule_instructions(&mut instructions, &TestAdapter);
+
+        assert_eq!(
+            instructions.iter().map(|inst| inst.id).collect::<Vec<_>>(),
+            vec![2, 1, 0, 99, 5, 4, 3]
+        );
     }
 
     #[test]
