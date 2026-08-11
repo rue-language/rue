@@ -796,6 +796,28 @@ clock-neutral (-0.27%), changed no deterministic work or allocation measure,
 and did not reduce the broader string-comparison profile. Its median peak RSS
 was repeatably about 3.0 MiB higher, so the source change was not retained.
 
+RUE-1380 tested routing AIR projection helpers through the existing 64-entry
+per-body type-validation cache. It preserved focused diagnostics, work, and
+output, but removed no material allocation work. Sixteen paired Lattice runs
+were 2.86% slower and median peak RSS rose by about 5.6 MiB, so the prototype
+was rejected rather than treating locally simpler bookkeeping as a free win.
+
+RUE-1381 follows the next measured query-runtime leaf into request-frame
+dependency recording. A frame now retains its common single direct dependency
+inline by runtime-unique node incarnation. The second distinct dependency
+promotes to a boxed numeric hash index, which keeps wide-frame observation
+expected-linear instead of introducing an unbounded linear search. Completed
+frames sort once by the existing stable display identity before publishing the
+immutable dependency array, preserving canonical order.
+
+The targeted ordered-map insertion falls from 33 combined top-of-stack samples
+to zero across three profiles. Two fixed one-worker allocation comparisons save
+7,941 and 7,727 calls and 794,540 and 678,980 requested bytes respectively.
+Sixteen directly alternating ordinary-release pairs are 1.59% faster; separate
+medians move from 1,888.37 to 1,823.21 ms. Median peak RSS rises by 1.55 MiB
+(0.35%), within dispersion. Every deterministic compiler-work counter and the
+emitted executable remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

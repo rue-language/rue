@@ -8444,14 +8444,98 @@ impl FamilyEnforcer {
     }
 }
 
+type TaskDependencyEntry = (u64, NodeIdentity, u64);
+
+#[derive(Debug)]
+enum TaskDependencies {
+    Empty,
+    /// The common single-edge frame needs no side allocation. A second distinct
+    /// edge promotes to expected-O(1) hashed membership so wide frames cannot
+    /// turn repeated observation into quadratic work. Boxing the uncommon map
+    /// keeps every task's frame compact, including zero- and one-edge frames.
+    One(TaskDependencyEntry),
+    Hashed(Box<AHashMap<u64, (NodeIdentity, u64)>>),
+}
+
+impl Default for TaskDependencies {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
+impl TaskDependencies {
+    fn observe(&mut self, node: &NodeIdentity, incarnation: u64, stamp: u64) {
+        match self {
+            Self::Empty => *self = Self::One((incarnation, node.clone(), stamp)),
+            Self::One((previous_incarnation, previous_node, previous_stamp)) => {
+                if *previous_incarnation == incarnation {
+                    assert_eq!(
+                        &*previous_node, node,
+                        "one runtime node incarnation must name exactly one display identity"
+                    );
+                    *previous_stamp = stamp;
+                    return;
+                }
+                let mut hashed = Box::new(AHashMap::with_capacity(2));
+                hashed.insert(
+                    *previous_incarnation,
+                    (previous_node.clone(), *previous_stamp),
+                );
+                hashed.insert(incarnation, (node.clone(), stamp));
+                *self = Self::Hashed(hashed);
+            }
+            Self::Hashed(entries) => {
+                if let Some((previous_node, _)) = entries.insert(incarnation, (node.clone(), stamp))
+                {
+                    assert_eq!(
+                        &previous_node, node,
+                        "one runtime node incarnation must name exactly one display identity"
+                    );
+                }
+            }
+        }
+    }
+
+    fn into_observations(self) -> Vec<Observation> {
+        let mut observations: Vec<Observation> = match self {
+            Self::Empty => Vec::new(),
+            Self::One((incarnation, node, stamp)) => vec![Observation {
+                node,
+                incarnation,
+                stamp,
+            }],
+            Self::Hashed(entries) => entries
+                .into_iter()
+                .map(|(incarnation, (node, stamp))| Observation {
+                    node,
+                    incarnation,
+                    stamp,
+                })
+                .collect(),
+        };
+        observations.sort_unstable_by(|left, right| {
+            left.node
+                .cmp(&right.node)
+                .then_with(|| left.incarnation.cmp(&right.incarnation))
+        });
+        observations
+    }
+}
+
 #[derive(Debug)]
 struct TaskFrame {
     node: ExactNodeIdentity,
-    dependencies: BTreeMap<ExactNodeIdentity, u64>,
+    dependencies: TaskDependencies,
     inputs: BTreeMap<InputIdentity, u64>,
     work: BTreeMap<Arc<str>, u64>,
     handoffs: Vec<Box<dyn QueryAttemptHandoff>>,
     observed_handoffs: Vec<Arc<AttemptHandoffLifecycle>>,
+}
+
+impl TaskFrame {
+    fn observe_dependency(&mut self, node: &NodeIdentity, incarnation: u64, stamp: u64) {
+        self.dependencies.observe(node, incarnation, stamp);
+    }
 }
 
 struct TaskFrameOutput {
@@ -9402,7 +9486,7 @@ impl Task {
     fn push(&self, node: ExactNodeIdentity) {
         lock(&self.stack).push(TaskFrame {
             node,
-            dependencies: BTreeMap::new(),
+            dependencies: TaskDependencies::default(),
             inputs: BTreeMap::new(),
             work: BTreeMap::new(),
             handoffs: Vec::new(),
@@ -9415,15 +9499,7 @@ impl Task {
             .pop()
             .expect("query computation owns one dependency frame");
         assert_eq!(&frame.node, expected);
-        let dependencies = frame
-            .dependencies
-            .into_iter()
-            .map(|(node, stamp)| Observation {
-                node: node.display,
-                incarnation: node.incarnation,
-                stamp,
-            })
-            .collect();
+        let dependencies = frame.dependencies.into_observations();
         let inputs = frame
             .inputs
             .into_iter()
@@ -9450,13 +9526,7 @@ impl Task {
 
     fn observe<V>(&self, terminal: &QueryTerminal<V>) {
         if let Some(frame) = lock(&self.stack).last_mut() {
-            frame.dependencies.insert(
-                ExactNodeIdentity {
-                    display: terminal.node.clone(),
-                    incarnation: terminal.node_incarnation,
-                },
-                terminal.stamp,
-            );
+            frame.observe_dependency(&terminal.node, terminal.node_incarnation, terminal.stamp);
         }
     }
 
@@ -9487,13 +9557,7 @@ impl Task {
             return;
         };
         for dependency in dependencies {
-            frame.dependencies.insert(
-                ExactNodeIdentity {
-                    display: dependency.node.clone(),
-                    incarnation: dependency.incarnation,
-                },
-                dependency.stamp,
-            );
+            frame.observe_dependency(&dependency.node, dependency.incarnation, dependency.stamp);
         }
         for input in inputs {
             if let Some(previous) = frame.inputs.insert(input.input.clone(), input.stamp) {
@@ -13666,6 +13730,51 @@ mod tests {
         assert_eq!(serial.work(), parallel.work());
         assert_eq!(serial.dependencies(), parallel.dependencies());
         assert_eq!(serial.stamp(), parallel.stamp());
+    }
+
+    #[test]
+    fn task_dependencies_deduplicate_by_incarnation_and_publish_in_stable_order() {
+        let runtime = QueryRuntime::new(1);
+        publish_empty(&runtime, [revision(1)]);
+        let dependency = runtime
+            .family::<Key, u64>("dependency-order-leaf", 8)
+            .unwrap();
+        let root = runtime
+            .family::<Key, u64>("dependency-order-root", 8)
+            .unwrap();
+        let dependency_for_root = dependency.clone();
+        let rooted = runtime
+            .query(
+                &root,
+                revision(1),
+                Key("root"),
+                CancellationToken::new(),
+                move |context| {
+                    context.query(&dependency_for_root, Key("z"), |_| {
+                        Ok(QueryOutput::success(1))
+                    })?;
+                    context.query(&dependency_for_root, Key("z"), |_| {
+                        panic!("the inline duplicate reuses its terminal")
+                    })?;
+                    context.query(&dependency_for_root, Key("a"), |_| {
+                        Ok(QueryOutput::success(2))
+                    })?;
+                    context.query(&dependency_for_root, Key("z"), |_| {
+                        panic!("the hashed duplicate reuses its terminal")
+                    })?;
+                    Ok(QueryOutput::success(0))
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            rooted
+                .dependencies()
+                .iter()
+                .map(|dependency| dependency.node.key())
+                .collect::<Vec<_>>(),
+            ["a", "z"]
+        );
     }
 
     #[test]
