@@ -8598,10 +8598,62 @@ impl TaskDependencies {
 }
 
 #[derive(Debug)]
+enum InlineOrderedMap<K, V> {
+    Empty,
+    /// Request-frame bookkeeping is commonly empty or has one identity. Keep
+    /// that entry inline and allocate the ordered map only for a second key.
+    One(K, V),
+    Ordered(BTreeMap<K, V>),
+}
+
+impl<K, V> Default for InlineOrderedMap<K, V> {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
+impl<K: Ord, V> InlineOrderedMap<K, V> {
+    fn insert_with(&mut self, key: K, value: V, merge: impl FnOnce(&mut V, V)) {
+        match self {
+            Self::Empty => *self = Self::One(key, value),
+            Self::One(previous_key, previous_value) if previous_key == &key => {
+                merge(previous_value, value);
+            }
+            Self::One(_, _) => {
+                let Self::One(previous_key, previous_value) = std::mem::replace(self, Self::Empty)
+                else {
+                    unreachable!("the inline ordered map was matched as inline-one")
+                };
+                let mut ordered = BTreeMap::new();
+                ordered.insert(previous_key, previous_value);
+                ordered.insert(key, value);
+                *self = Self::Ordered(ordered);
+            }
+            Self::Ordered(entries) => match entries.entry(key) {
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    entry.insert(value);
+                }
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    merge(entry.get_mut(), value);
+                }
+            },
+        }
+    }
+
+    fn into_entries(self) -> Vec<(K, V)> {
+        match self {
+            Self::Empty => Vec::new(),
+            Self::One(key, value) => vec![(key, value)],
+            Self::Ordered(entries) => entries.into_iter().collect(),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct TaskFrame {
     node: ExactNodeIdentity,
     dependencies: TaskDependencies,
-    inputs: BTreeMap<InputIdentity, u64>,
+    inputs: InlineOrderedMap<InputIdentity, u64>,
     work: BTreeMap<Arc<str>, u64>,
     handoffs: Vec<Box<dyn QueryAttemptHandoff>>,
     observed_handoffs: Vec<Arc<AttemptHandoffLifecycle>>,
@@ -9562,7 +9614,7 @@ impl Task {
         lock(&self.stack).push(TaskFrame {
             node,
             dependencies: TaskDependencies::default(),
-            inputs: BTreeMap::new(),
+            inputs: InlineOrderedMap::default(),
             work: BTreeMap::new(),
             handoffs: Vec::new(),
             observed_handoffs: Vec::new(),
@@ -9577,6 +9629,7 @@ impl Task {
         let dependencies = frame.dependencies.into_observations();
         let inputs = frame
             .inputs
+            .into_entries()
             .into_iter()
             .map(|(input, stamp)| InputObservation { input, stamp })
             .collect();
@@ -9635,9 +9688,11 @@ impl Task {
             frame.observe_dependency(&dependency.node, dependency.incarnation, dependency.stamp);
         }
         for input in inputs {
-            if let Some(previous) = frame.inputs.insert(input.input.clone(), input.stamp) {
-                assert_eq!(previous, input.stamp);
-            }
+            frame
+                .inputs
+                .insert_with(input.input.clone(), input.stamp, |previous, current| {
+                    assert_eq!(*previous, current);
+                });
         }
         for (identity, amount) in work {
             *frame.work.entry(identity.clone()).or_default() += amount;
@@ -9649,9 +9704,9 @@ impl Task {
         let frame = stack
             .last_mut()
             .expect("input reads occur only inside a query computation");
-        if let Some(previous) = frame.inputs.insert(input, stamp) {
-            assert_eq!(previous, stamp);
-        }
+        frame.inputs.insert_with(input, stamp, |previous, current| {
+            assert_eq!(*previous, current);
+        });
     }
 
     fn stack_cycle(&self, node: &ExactNodeIdentity) -> Option<Arc<[NodeIdentity]>> {
@@ -13879,6 +13934,28 @@ mod tests {
                 .map(|dependency| dependency.node.key())
                 .collect::<Vec<_>>(),
             ["a", "z"]
+        );
+    }
+
+    #[test]
+    fn task_inputs_inline_one_then_promote_in_stable_order() {
+        let mut inputs = InlineOrderedMap::default();
+        let later = InputIdentity::new("source", "z.rue");
+        let earlier = InputIdentity::new("source", "a.rue");
+
+        let assert_same_stamp = |previous: &mut u64, current| assert_eq!(*previous, current);
+        inputs.insert_with(later.clone(), 7, assert_same_stamp);
+        inputs.insert_with(later, 7, assert_same_stamp);
+        assert!(matches!(inputs, InlineOrderedMap::One(_, 7)));
+
+        inputs.insert_with(earlier.clone(), 3, assert_same_stamp);
+        inputs.insert_with(earlier, 3, assert_same_stamp);
+        assert_eq!(
+            inputs.into_entries(),
+            [
+                (InputIdentity::new("source", "a.rue"), 3),
+                (InputIdentity::new("source", "z.rue"), 7),
+            ]
         );
     }
 
