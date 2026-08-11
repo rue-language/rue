@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{DisplayIdentityWork, EnvironmentFingerprint, median, median_absolute_deviation};
 
 /// Version of the retained-session raw report wire format.
-pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 7;
+pub const EDIT_REPORT_SCHEMA_VERSION: u32 = 8;
 
 /// One retained-session edit class from ADR-0068's initial matrix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -735,8 +735,10 @@ pub struct ValidationWork {
     pub input_observations: u64,
     /// Retained dependency observations inspected.
     pub dependency_observations: u64,
-    /// Exact node-incarnation registry probes.
+    /// Exact node-incarnation resolutions requested by validation.
     pub registry_probes: u64,
+    /// Resolutions which consulted the shared incarnation registry.
+    pub registry_index_lookups: u64,
     /// Registry probes with no live exact incarnation.
     pub registry_misses: u64,
     /// Erased-node validation visits.
@@ -1139,8 +1141,17 @@ fn validate_validation_work(
             "registry probes do not equal dependency observations plus published traversal probes",
         ));
     }
-    if work.registry_misses > work.registry_probes {
-        errors.push(finding(path, "registry misses exceed registry probes"));
+    if work.registry_index_lookups > work.registry_probes {
+        errors.push(finding(
+            path,
+            "registry index lookups exceed logical registry probes",
+        ));
+    }
+    if work.registry_misses > work.registry_index_lookups {
+        errors.push(finding(
+            path,
+            "registry misses exceed shared registry index lookups",
+        ));
     }
     if work.endorsement_hits > work.endorsement_probes {
         errors.push(finding(
@@ -1968,7 +1979,7 @@ mod tests {
 
     const MANIFEST: &str = r#"
 schema_version = 2
-report_schema_version = 7
+report_schema_version = 8
 fixture_revision = 3
 timing_samples_per_row = 5
 structural_samples_per_row = 1
@@ -2336,6 +2347,7 @@ minimum_memory_bytes = 15000000000
             input_observations: 4,
             dependency_observations: 5,
             registry_probes: 6,
+            registry_index_lookups: 2,
             registry_misses: 1,
             node_visits: 4,
             active_cycle_prunes: 1,
@@ -2456,8 +2468,8 @@ minimum_memory_bytes = 15000000000
 
         let json = serde_json::to_string(&report(&manifest)).unwrap();
         let unknown = json.replacen(
-            "\"schema_version\":7",
-            "\"schema_version\":7,\"surprise\":true",
+            "\"schema_version\":8",
+            "\"schema_version\":8,\"surprise\":true",
             1,
         );
         assert!(

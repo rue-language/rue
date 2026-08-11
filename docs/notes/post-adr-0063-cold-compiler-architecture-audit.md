@@ -327,6 +327,48 @@ The FIFO remains worthwhile as a representation win, and the one-worker path
 now aggregates missing toolchain modules across the complete ready frontier
 instead of requiring avoidable acquisition rounds.
 
+RUE-1355 then removed repeated successful re-derivation from validation's
+exact-node path. A runtime-created `NodeIdentity` now shares one immutable
+family/key payload among its node, terminals and dependency observations. That
+payload carries a runtime-scoped weak handle to the exact erased node; expired,
+display-only and foreign-runtime identities fall back to the incarnation
+registry and preserve the existing fail-closed behavior. Equality, ordering,
+hashing and debug presentation still use only the stable family/key pair. The
+representation shrinks `NodeIdentity` from four machine words to one and a
+complete `Observation` from six words to three without keeping evicted nodes
+alive.
+
+The new `registry_index_lookups` counter separates shared-index access from the
+existing logical `registry_probes` contract. On every maintained cold workload,
+all live runtime-created observations bypass the index:
+
+| workload | logical node resolutions | shared registry index lookups |
+| --- | ---: | ---: |
+| Ruelex | 85,784 | 0 |
+| Mosaic | 275,890 | 0 |
+| Harbor | 570,103 | 0 |
+| Lattice | 768,446 | 0 |
+
+Every other query and reachability work counter is byte-for-byte identical to
+the exact parent report. The same-host release comparison moved compiler time
+and peak RSS in the same favorable direction across the full scaling curve:
+
+| workload | compiler ms parent → RUE-1355 | peak MiB parent → RUE-1355 |
+| --- | ---: | ---: |
+| Ruelex | 145.63 → 133.77 | 113.2 → 110.7 |
+| Mosaic | 425.62 → 391.91 | 266.5 → 261.4 |
+| Harbor | 950.81 → 883.76 | 639.9 → 625.6 |
+| Lattice | 1,140.62 → 1,017.15 | 739.1 → 727.4 |
+
+Allocation instrumentation makes the representation tradeoff explicit. The
+shared payload adds one allocation per materialized memo identity, increasing
+Lattice's allocation count by 28,909 (0.13 percent), while halving every
+observation's inline identity footprint reduces requested bytes by 47,663,507
+(1.04 percent). The lower release RSS and compiler time show that the extra
+small owner allocation is preferable to copying and refcounting two fat string
+pointers across the graph. The final Lattice executable remains byte-identical
+to its parent (`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`).
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

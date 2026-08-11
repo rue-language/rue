@@ -2067,10 +2067,21 @@ impl Revision {
 }
 
 /// Canonical user-visible identity of one logical memo node.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// The display identity is shared by the node, its terminals, and every
+/// dependency observation. Runtime-created identities also carry a weak,
+/// non-owning route back to the exact erased node. Equality, ordering, hashing,
+/// and display remain defined solely by the stable family/key pair.
+#[derive(Clone)]
 pub struct NodeIdentity {
+    inner: Arc<NodeIdentityData>,
+}
+
+struct NodeIdentityData {
     family: Arc<str>,
-    key: Arc<str>,
+    key: Box<str>,
+    runtime_identity: Option<u64>,
+    node: Option<Weak<dyn ErasedNode>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -2080,14 +2091,90 @@ struct ExactNodeIdentity {
 }
 
 impl NodeIdentity {
+    fn new(family: Arc<str>, key: Box<str>) -> Self {
+        Self {
+            inner: Arc::new(NodeIdentityData {
+                family,
+                key,
+                runtime_identity: None,
+                node: None,
+            }),
+        }
+    }
+
+    fn registered(
+        family: Arc<str>,
+        key: Box<str>,
+        runtime_identity: u64,
+        node: Weak<dyn ErasedNode>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(NodeIdentityData {
+                family,
+                key,
+                runtime_identity: Some(runtime_identity),
+                node: Some(node),
+            }),
+        }
+    }
+
+    fn registered_node(
+        &self,
+        runtime_identity: u64,
+        incarnation: u64,
+    ) -> Option<Arc<dyn ErasedNode>> {
+        if self.inner.runtime_identity != Some(runtime_identity) {
+            return None;
+        }
+        let node = self.inner.node.as_ref()?.upgrade()?;
+        (node.incarnation() == incarnation).then_some(node)
+    }
+
     /// Stable family name.
     pub fn family(&self) -> &str {
-        &self.family
+        &self.inner.family
     }
 
     /// Family-defined stable key identity.
     pub fn key(&self) -> &str {
-        &self.key
+        &self.inner.key
+    }
+}
+
+impl fmt::Debug for NodeIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NodeIdentity")
+            .field("family", &self.inner.family)
+            .field("key", &self.inner.key)
+            .finish()
+    }
+}
+
+impl PartialEq for NodeIdentity {
+    fn eq(&self, other: &Self) -> bool {
+        self.family() == other.family() && self.key() == other.key()
+    }
+}
+
+impl Eq for NodeIdentity {}
+
+impl PartialOrd for NodeIdentity {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for NodeIdentity {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.family(), self.key()).cmp(&(other.family(), other.key()))
+    }
+}
+
+impl Hash for NodeIdentity {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.family().hash(state);
+        self.key().hash(state);
     }
 }
 
@@ -2710,8 +2797,10 @@ pub struct ValidationWork {
     pub input_observations: u64,
     /// Retained dependency observations inspected.
     pub dependency_observations: u64,
-    /// Exact node-incarnation registry probes made by validation.
+    /// Exact node-incarnation resolutions requested by validation.
     pub registry_probes: u64,
+    /// Resolutions which had to consult the shared incarnation registry.
+    pub registry_index_lookups: u64,
     /// Registry probes which found no live exact incarnation.
     pub registry_misses: u64,
     /// Erased node validation entry-point visits.
@@ -2769,6 +2858,7 @@ impl ValidationWork {
             input_observations,
             dependency_observations,
             registry_probes,
+            registry_index_lookups,
             registry_misses,
             node_visits,
             active_cycle_prunes,
@@ -2805,6 +2895,7 @@ impl ValidationWork {
             input_observations,
             dependency_observations,
             registry_probes,
+            registry_index_lookups,
             registry_misses,
             node_visits,
             active_cycle_prunes,
@@ -2836,6 +2927,7 @@ struct AtomicValidationWork {
     input_observations: AtomicU64,
     dependency_observations: AtomicU64,
     registry_probes: AtomicU64,
+    registry_index_lookups: AtomicU64,
     registry_misses: AtomicU64,
     node_visits: AtomicU64,
     active_cycle_prunes: AtomicU64,
@@ -2866,6 +2958,7 @@ impl AtomicValidationWork {
             input_observations: self.input_observations.load(Ordering::Relaxed),
             dependency_observations: self.dependency_observations.load(Ordering::Relaxed),
             registry_probes: self.registry_probes.load(Ordering::Relaxed),
+            registry_index_lookups: self.registry_index_lookups.load(Ordering::Relaxed),
             registry_misses: self.registry_misses.load(Ordering::Relaxed),
             node_visits: self.node_visits.load(Ordering::Relaxed),
             active_cycle_prunes: self.active_cycle_prunes.load(Ordering::Relaxed),
@@ -2898,6 +2991,7 @@ impl AtomicValidationWork {
             input_observations: self.input_observations.swap(0, Ordering::Relaxed),
             dependency_observations: self.dependency_observations.swap(0, Ordering::Relaxed),
             registry_probes: self.registry_probes.swap(0, Ordering::Relaxed),
+            registry_index_lookups: self.registry_index_lookups.swap(0, Ordering::Relaxed),
             registry_misses: self.registry_misses.swap(0, Ordering::Relaxed),
             node_visits: self.node_visits.swap(0, Ordering::Relaxed),
             active_cycle_prunes: self.active_cycle_prunes.swap(0, Ordering::Relaxed),
@@ -2939,6 +3033,7 @@ impl AtomicValidationWork {
             input_observations,
             dependency_observations,
             registry_probes,
+            registry_index_lookups,
             registry_misses,
             node_visits,
             active_cycle_prunes,
@@ -4754,6 +4849,9 @@ struct ValidationCertificate {
 }
 
 trait ErasedNode: fmt::Debug + Send + Sync {
+    /// Exact runtime-local incarnation represented by this erased handle.
+    fn incarnation(&self) -> u64;
+
     fn validated_stamp(
         &self,
         _core: &RuntimeCore,
@@ -4776,6 +4874,10 @@ where
     K: QueryKey,
     V: Clone + Send + Sync + 'static,
 {
+    fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
     fn validated_stamp(
         &self,
         core: &RuntimeCore,
@@ -5382,7 +5484,7 @@ where
             self.core
                 .metrics
                 .record_memo_node_identity(stable_key.len());
-            let stable_key: Arc<str> = stable_key.into();
+            let stable_key = stable_key.into_boxed_str();
             let incarnation = self.core.next_node.fetch_add(1, Ordering::Relaxed);
             let demand = self.inner.evaluator.as_ref().map(|_| {
                 let core = self.core.clone();
@@ -5434,10 +5536,12 @@ where
                 let registry_self: Weak<dyn ErasedNode> = registry_self.clone();
                 Node {
                     key: key.clone(),
-                    identity: NodeIdentity {
-                        family: self.inner.name.clone(),
-                        key: stable_key,
-                    },
+                    identity: NodeIdentity::registered(
+                        self.inner.name.clone(),
+                        stable_key,
+                        self.core.identity,
+                        registry_self.clone(),
+                    ),
                     incarnation,
                     registry_core,
                     registry_self,
@@ -6920,10 +7024,10 @@ impl<K: QueryKey> StructuredWaitLabels for RegisteredBatchItems<K> {
             .items
             .get(index)
             .expect("a structured wait edge names one live batch item");
-        NodeIdentity {
-            family: self.family.clone(),
-            key: item.key.stable_identity().into(),
-        }
+        NodeIdentity::new(
+            self.family.clone(),
+            item.key.stable_identity().into_boxed_str(),
+        )
     }
 }
 
@@ -7145,9 +7249,11 @@ impl QueryContext {
         // `record_nested`; the key is only formatted if this request aborted.
         self.task.record_nested(
             request_id,
-            move || NodeIdentity {
-                family: family.inner.name.clone(),
-                key: key.stable_identity().into(),
+            move || {
+                NodeIdentity::new(
+                    family.inner.name.clone(),
+                    key.stable_identity().into_boxed_str(),
+                )
             },
             &result,
         );
@@ -7183,9 +7289,11 @@ impl QueryContext {
         // `record_nested`; the key is only formatted if this request aborted.
         self.task.record_nested(
             request_id,
-            move || NodeIdentity {
-                family: family.inner.name.clone(),
-                key: key.stable_identity().into(),
+            move || {
+                NodeIdentity::new(
+                    family.inner.name.clone(),
+                    key.stable_identity().into_boxed_str(),
+                )
             },
             &result,
         );
@@ -7363,9 +7471,11 @@ impl QueryContext {
             }
             self.task.record_nested(
                 item.request_id,
-                || NodeIdentity {
-                    family: items.family.clone(),
-                    key: item.key.stable_identity().into(),
+                || {
+                    NodeIdentity::new(
+                        items.family.clone(),
+                        item.key.stable_identity().into_boxed_str(),
+                    )
                 },
                 &result,
             );
@@ -9427,6 +9537,22 @@ impl Drop for Task {
 }
 
 impl RuntimeCore {
+    /// Resolves an exact node for validation, preferring the weak handle minted
+    /// with its display identity. Display-only or expired identities fall back
+    /// to the shared incarnation index and charge that otherwise avoidable work.
+    fn validation_node(
+        &self,
+        identity: &NodeIdentity,
+        incarnation: u64,
+        work: &AtomicValidationWork,
+    ) -> Option<Arc<dyn ErasedNode>> {
+        if let Some(node) = identity.registered_node(self.identity, incarnation) {
+            return Some(node);
+        }
+        work.registry_index_lookups.fetch_add(1, Ordering::Relaxed);
+        self.registered_node(incarnation)
+    }
+
     /// Upgrades one exact registry entry while holding the registry read guard,
     /// then releases that guard before the erased node can run callbacks or
     /// recurse through validation.
@@ -9708,7 +9834,11 @@ impl RuntimeCore {
         task.validation_work
             .registry_probes
             .fetch_add(1, Ordering::Relaxed);
-        if let Some(node) = self.registered_node(terminal.node_incarnation) {
+        if let Some(node) = self.validation_node(
+            &terminal.node,
+            terminal.node_incarnation,
+            &task.validation_work,
+        ) {
             if node.mark_validated(ValidationCertificate {
                 revision,
                 stamp: terminal.stamp,
@@ -9771,7 +9901,8 @@ impl RuntimeCore {
             task.validation_work
                 .registry_probes
                 .fetch_add(1, Ordering::Relaxed);
-            let node = self.registered_node(observed.incarnation);
+            let node =
+                self.validation_node(&observed.node, observed.incarnation, &task.validation_work);
             let stamp = match node {
                 Some(node) => match node.validated_stamp(self, task, active) {
                     Ok(stamp) => stamp,
@@ -9987,8 +10118,8 @@ fn retained_terminal_charge<V>(
 ) -> (u64, u64) {
     let mut bytes = std::mem::size_of::<QueryTerminal<V>>() as u64;
     bytes = bytes
-        .saturating_add(node.family.len() as u64)
-        .saturating_add(node.key.len() as u64);
+        .saturating_add(node.family().len() as u64)
+        .saturating_add(node.key().len() as u64);
     bytes = bytes.saturating_add(match outcome {
         QueryOutcome::Success(_) => retained_value_charge.unwrap_or(0),
         QueryOutcome::Failure(failure) => {
@@ -10014,8 +10145,8 @@ fn retained_terminal_charge<V>(
     for dependency in dependencies {
         bytes = bytes
             .saturating_add(std::mem::size_of::<Observation>() as u64)
-            .saturating_add(dependency.node.family.len() as u64)
-            .saturating_add(dependency.node.key.len() as u64);
+            .saturating_add(dependency.node.family().len() as u64)
+            .saturating_add(dependency.node.key().len() as u64);
     }
     for input in inputs {
         bytes = bytes
@@ -10214,10 +10345,10 @@ mod tests {
             .begin_wait(
                 TaskId(2),
                 TaskId(1),
-                WaitEdgeLabel::Materialized(NodeIdentity {
-                    family: Arc::from("ordinary"),
-                    key: Arc::from("root"),
-                }),
+                WaitEdgeLabel::Materialized(NodeIdentity::new(
+                    Arc::from("ordinary"),
+                    Box::from("root"),
+                )),
             )
             .expect_err("the reverse wait closes a cycle");
         assert_eq!(
@@ -10269,7 +10400,8 @@ mod tests {
             work.dependency_observations + work.successful_traversals,
             "validation probes once per dependency and successful root certificate"
         );
-        assert!(work.registry_misses <= work.registry_probes);
+        assert!(work.registry_index_lookups <= work.registry_probes);
+        assert!(work.registry_misses <= work.registry_index_lookups);
         assert!(work.endorsement_hits <= work.endorsement_probes);
         assert!(work.duplicate_terminal_lease_observations <= work.terminal_lease_observations);
         assert!(
@@ -10441,6 +10573,54 @@ mod tests {
             .expect("the same leased node remains registered");
 
         assert!(Arc::ptr_eq(&first_node, &second_node));
+    }
+
+    #[test]
+    fn runtime_identity_resolves_live_exact_nodes_without_the_shared_registry() {
+        let runtime = QueryRuntime::new(1);
+        let family = runtime
+            .family::<Key, u64>("direct-node-identity", 1)
+            .unwrap();
+        let lease = family.node(Key("node")).unwrap();
+        let identity = lease.node.identity.clone();
+        let incarnation = lease.node.incarnation;
+        let work = AtomicValidationWork::default();
+
+        let direct = runtime
+            .core
+            .validation_node(&identity, incarnation, &work)
+            .expect("the live runtime-created identity resolves its exact node");
+        assert_eq!(direct.incarnation(), incarnation);
+        assert_eq!(work.snapshot().registry_index_lookups, 0);
+        drop(direct);
+
+        let display_only =
+            NodeIdentity::new(identity.inner.family.clone(), identity.inner.key.clone());
+        let fallback = runtime
+            .core
+            .validation_node(&display_only, incarnation, &work)
+            .expect("a display-only identity falls back to the exact registry entry");
+        assert_eq!(fallback.incarnation(), incarnation);
+        assert_eq!(work.snapshot().registry_index_lookups, 1);
+        drop(fallback);
+
+        let foreign = QueryRuntime::new(1);
+        assert!(
+            foreign
+                .core
+                .validation_node(&identity, incarnation, &work)
+                .is_none(),
+            "a direct handle from another runtime must fail closed"
+        );
+        assert_eq!(work.snapshot().registry_index_lookups, 2);
+
+        drop(lease);
+        assert!(
+            identity
+                .registered_node(runtime.core.identity, incarnation)
+                .is_none()
+        );
+        assert_eq!(read(&runtime.core.nodes).len(), 0);
     }
 
     #[test]
@@ -12288,10 +12468,7 @@ mod tests {
             validation_endorsement_index_probes: AtomicUsize::new(0),
         };
         task.push(ExactNodeIdentity {
-            display: NodeIdentity {
-                family: Arc::from("handoff-test"),
-                key: Arc::from("root"),
-            },
+            display: NodeIdentity::new(Arc::from("handoff-test"), Box::from("root")),
             incarnation: 1,
         });
         assert!(task.observe_handoff(AttemptHandoffLifecycle::shared_committed()));
@@ -12343,10 +12520,7 @@ mod tests {
             validation_endorsement_index_probes: AtomicUsize::new(0),
         };
         task.push(ExactNodeIdentity {
-            display: NodeIdentity {
-                family: Arc::from("handoff-cache-test"),
-                key: Arc::from("root"),
-            },
+            display: NodeIdentity::new(Arc::from("handoff-cache-test"), Box::from("root")),
             incarnation: 1,
         });
 
@@ -13516,6 +13690,16 @@ mod tests {
             .unwrap();
         assert_ne!(left.node(), right.node());
         assert_eq!(left.node().key(), right.node().key());
+        assert_eq!(
+            std::mem::size_of::<NodeIdentity>(),
+            std::mem::size_of::<usize>(),
+            "cloned display identities must remain one shared pointer"
+        );
+        assert_eq!(
+            std::mem::size_of::<Observation>(),
+            3 * std::mem::size_of::<usize>(),
+            "dependency observations retain one shared identity plus incarnation and stamp"
+        );
     }
 
     #[test]
@@ -13713,7 +13897,9 @@ mod tests {
     #[test]
     fn evicted_and_recreated_node_cannot_repeat_an_old_observation() {
         let runtime = QueryRuntime::new(1);
-        publish_empty(&runtime, [revision(1), revision(2)]);
+        let first_revision = Revision::new(1, 7);
+        let second_revision = Revision::new(2, 7);
+        publish_empty(&runtime, [first_revision, second_revision]);
         let leaf = runtime.family::<Key, u64>("aba-leaf", 0).unwrap();
         let parent = runtime.family::<Key, u64>("aba-parent", 4).unwrap();
         let run = |revision, leaf_value| {
@@ -13729,9 +13915,11 @@ mod tests {
                 },
             )
         };
-        let first = run(revision(1), 1).unwrap();
+        let first = run(first_revision, 1).unwrap();
         assert_eq!(leaf.retention().memo_nodes, 0);
-        let second = run(revision(2), 2).unwrap();
+        let before = runtime.metrics().validation;
+        let second = run(second_revision, 2).unwrap();
+        let validation = runtime.metrics().validation.saturating_sub(before);
         assert_eq!(first.dependencies()[0].stamp, 1);
         assert_eq!(second.dependencies()[0].stamp, 1);
         assert_ne!(
@@ -13743,6 +13931,8 @@ mod tests {
         // are provenance and do not make equal parent semantics green.
         assert_eq!(first.stamp(), second.stamp());
         assert_eq!(runtime.metrics().claims, 4);
+        assert!(validation.registry_index_lookups > 0);
+        assert!(validation.registry_misses > 0);
     }
 
     // ADR-0063 Phase 7 hashed-memo-index focused coverage.
@@ -14630,6 +14820,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(red_leaf.stamp(), first_leaf.stamp());
+        let before = runtime.metrics().validation;
         let reused = runtime.request(
             &root,
             revisions[1],
@@ -14638,6 +14829,12 @@ mod tests {
             |_| panic!("validated red dependency chain must reuse the root"),
         );
         assert_eq!(reused.execution(), RequestExecution::Reused);
+        let direct_validation = runtime.metrics().validation.saturating_sub(before);
+        assert!(direct_validation.registry_probes > 0);
+        assert_eq!(
+            direct_validation.registry_index_lookups, 0,
+            "live runtime-created observations resolve without the shared registry"
+        );
 
         // A green leaf makes the middle invalid, which recursively makes the
         // root recompute. Equal root semantics still retain the root stamp.
@@ -18134,10 +18331,7 @@ mod tests {
         retained_terminal_charge(
             &output.outcome,
             output.retained_value_charge,
-            &NodeIdentity {
-                family: family.into(),
-                key: key.into(),
-            },
+            &NodeIdentity::new(family.into(), key.into()),
             &[],
             &[],
             &[],
