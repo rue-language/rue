@@ -218,6 +218,15 @@ impl<'a> CfgLower<'a> {
         self
     }
 
+    /// Install the pipeline's local frame-slot decision (RUE-768).
+    pub(crate) fn with_local_storage(
+        mut self,
+        local_storage: &'a crate::local_storage::LocalSlotPlan,
+    ) -> Self {
+        self.ctx = self.ctx.with_local_storage(local_storage);
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn new_unchecked(
         cfg: &'a Cfg,

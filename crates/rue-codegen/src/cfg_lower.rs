@@ -328,13 +328,20 @@ pub(crate) struct CfgLowerContext<'a> {
     /// all-homed layout: every parameter ABI slot has a frame home at
     /// `num_locals + index`.
     param_storage: Option<&'a crate::param_storage::ParamStoragePlan>,
+    /// The pipeline's local frame-slot decision (RUE-768). `None` — a directly
+    /// constructed context in tests — behaves as the historical identity
+    /// layout: every CFG local slot keeps its own cell at its own index for
+    /// the whole function.
+    local_storage: Option<&'a crate::local_storage::LocalSlotPlan>,
 }
 
 impl<'a> CfgLowerContext<'a> {
     /// Create a new CFG lowering context with the historical all-homed
-    /// parameter storage (every parameter ABI slot has a frame home).
-    /// Production lowering supplies the pipeline's real plan via
-    /// [`with_param_storage`](Self::with_param_storage).
+    /// parameter storage (every parameter ABI slot has a frame home) and the
+    /// historical identity local layout. Production lowering supplies the
+    /// pipeline's real plans via
+    /// [`with_param_storage`](Self::with_param_storage) and
+    /// [`with_local_storage`](Self::with_local_storage).
     pub(crate) fn new(cfg: &'a Cfg, type_pool: &'a FrozenTypeInternPool) -> Self {
         Self {
             cfg,
@@ -342,6 +349,7 @@ impl<'a> CfgLowerContext<'a> {
             num_locals: cfg.num_locals(),
             num_params: cfg.num_params(),
             param_storage: None,
+            local_storage: None,
         }
     }
 
@@ -353,6 +361,18 @@ impl<'a> CfgLowerContext<'a> {
         param_storage: &'a crate::param_storage::ParamStoragePlan,
     ) -> Self {
         self.param_storage = Some(param_storage);
+        self
+    }
+
+    /// Install the pipeline's local frame-slot decision (RUE-768). The same
+    /// plan sets the base of the parameter area, the spill-placement floor,
+    /// and the emitted frame size, so lowering must consume this exact plan
+    /// rather than re-deriving one.
+    pub(crate) fn with_local_storage(
+        mut self,
+        local_storage: &'a crate::local_storage::LocalSlotPlan,
+    ) -> Self {
+        self.local_storage = Some(local_storage);
         self
     }
 
@@ -370,6 +390,14 @@ impl<'a> CfgLowerContext<'a> {
     pub(crate) fn homed_param_slots(&self) -> u32 {
         self.param_storage
             .map_or(self.num_params, |plan| plan.homed_area_slots())
+    }
+
+    /// Frame slots the (shared) local area occupies (RUE-768). This is the
+    /// base of the emitted parameter area, which the CFG's own slot numbering
+    /// places at `cfg.num_locals()`.
+    pub(crate) fn frame_local_slots(&self) -> u32 {
+        self.local_storage
+            .map_or(self.num_locals, |plan| plan.frame_local_slots())
     }
 
     // ========================================================================
@@ -434,12 +462,13 @@ impl<'a> CfgLowerContext<'a> {
     }
 
     /// The frame slot holding the incoming sret pointer, one past the
-    /// (compacted, RUE-1170) param area (only meaningful for an
-    /// sret-returning function). The prologue stores the hidden first
-    /// argument here; the return path loads it back to write the result
-    /// through. Register-allocator spill slots start after this slot.
+    /// (compacted, RUE-1170) param area, which itself starts past the (shared,
+    /// RUE-768) local area (only meaningful for an sret-returning function).
+    /// The prologue stores the hidden first argument here; the return path
+    /// loads it back to write the result through. Register-allocator spill
+    /// slots start after this slot.
     pub fn sret_ptr_slot(&self) -> u32 {
-        self.num_locals + self.homed_param_slots()
+        self.frame_local_slots() + self.homed_param_slots()
     }
 
     // ========================================================================
@@ -469,17 +498,31 @@ impl<'a> CfgLowerContext<'a> {
 
     /// Translate a CFG slot number into the emitted frame's slot number.
     ///
-    /// The CFG numbers parameter slots `num_locals..num_locals + num_params`
-    /// assuming every parameter is homed; the emitted frame compacts
-    /// register-only parameters away (RUE-1170). Local slots are identity.
+    /// The CFG numbers local slots `0..num_locals` assuming every local owns a
+    /// cell for the whole function and parameter slots
+    /// `num_locals..num_locals + num_params` assuming every parameter is
+    /// homed. The emitted frame narrows both: locals with provably disjoint
+    /// storage windows share cells (RUE-768) and register-only parameters are
+    /// compacted away (RUE-1170).
+    ///
     /// This is the single funnel every slot-addressed frame access passes
-    /// through; reaching it with a register-only parameter slot is a
+    /// through. Slots inside one multi-slot local keep their relative order,
+    /// so the `frame_slot(base) + k` addressing every aggregate access uses
+    /// stays correct. Reaching this with a register-only parameter slot is a
     /// planning bug (the storage plan must home every slot the body
     /// addresses), reported as a panic-backed ICE.
     pub fn frame_slot(&self, slot: u32) -> u32 {
         match self.slot_to_param_index(slot) {
-            None => slot,
+            None => self.local_frame_slot(slot),
             Some(index) => self.param_frame_slot(index),
+        }
+    }
+
+    /// The emitted frame slot of CFG local slot `slot` (RUE-768).
+    fn local_frame_slot(&self, slot: u32) -> u32 {
+        match self.local_storage {
+            None => slot,
+            Some(plan) => plan.frame_slot(slot),
         }
     }
 
@@ -496,6 +539,6 @@ impl<'a> CfgLowerContext<'a> {
                 )
             }),
         };
-        self.num_locals + area_slot
+        self.frame_local_slots() + area_slot
     }
 }
