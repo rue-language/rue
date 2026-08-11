@@ -100,6 +100,29 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
             | InstData::StringConst { .. }
             | InstData::UnitConst => self.analyze_literal(air, inst_ref, ctx),
 
+            // Float literals stop here (ADR-0065, RUE-1069). Phases 2 and 3
+            // give `1.5` a token, an AST node, and an untyped RIR node; the
+            // phase that would give it a *type* — `f32`/`f64` tags in the
+            // packed `Type`, `comptime_float`, and context coercion — is
+            // Phase 4 and does not exist yet. Rejecting the node here keeps a
+            // gated float literal a clean diagnostic instead of an
+            // unresolved-type ICE further down. Ordered gate-first so the
+            // program without `--preview floats` gets the standard
+            // gated-feature error (spec 8.4:1), and only an opted-in program
+            // sees the phase marker. Delete this arm when Phase 4 types the
+            // node.
+            InstData::FloatConst { .. } => {
+                self.require_preview(
+                    rue_error::PreviewFeature::Floats,
+                    "a floating-point literal",
+                    inst.span,
+                )?;
+                Err(CompileError::new(
+                    ErrorKind::FloatNotYetImplemented,
+                    inst.span,
+                ))
+            }
+
             // Binary arithmetic operations (Add also covers String + String
             // concatenation — see analyze_add).
             InstData::Add { lhs, rhs } => {

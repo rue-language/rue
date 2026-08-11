@@ -658,6 +658,9 @@ pub struct UnitLit {
 pub enum Expr {
     /// Integer literal
     Int(IntLit),
+    /// Floating-point literal (`1.5`, `1e9`) — an untyped `comptime_float`
+    /// (ADR-0065 §3, RUE-1069)
+    Float(FloatLit),
     /// String literal
     String(StringLit),
     /// Boolean literal
@@ -731,6 +734,19 @@ pub enum Expr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntLit {
     pub value: u64,
+    pub span: Span,
+}
+
+/// A floating-point literal.
+///
+/// `value` is the interned literal text with `_` separators removed, exactly
+/// as the lexer produced it (`1.5`, `1e9`, `6.022e23`). The literal is an
+/// untyped `comptime_float` — arbitrary precision until context picks `f32` or
+/// `f64` — so no decoding happens here; the phase that knows the target width
+/// parses the text (ADR-0065 §3, RUE-1069).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloatLit {
+    pub value: Spur,
     pub span: Span,
 }
 
@@ -1326,6 +1342,7 @@ impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Int(lit) => lit.span,
+            Expr::Float(lit) => lit.span,
             Expr::String(lit) => lit.span,
             Expr::Bool(lit) => lit.span,
             Expr::Unit(lit) => lit.span,
@@ -1396,6 +1413,7 @@ impl Expr {
         }
         match self {
             Expr::Int(_)
+            | Expr::Float(_)
             | Expr::String(_)
             | Expr::Bool(_)
             | Expr::Unit(_)
@@ -1709,6 +1727,7 @@ fn rebind_block(block: &mut BlockExpr, file_id: FileId) {
 fn rebind_expr(expr: &mut Expr, file_id: FileId) {
     match expr {
         Expr::Int(literal) => rebind_span(&mut literal.span, file_id),
+        Expr::Float(literal) => rebind_span(&mut literal.span, file_id),
         Expr::String(literal) => rebind_span(&mut literal.span, file_id),
         Expr::Bool(literal) => rebind_span(&mut literal.span, file_id),
         Expr::Unit(literal) => rebind_span(&mut literal.span, file_id),
@@ -2099,6 +2118,7 @@ fn fmt_expr(f: &mut fmt::Formatter<'_>, expr: &Expr, level: usize) -> fmt::Resul
     indent(f, level)?;
     match expr {
         Expr::Int(lit) => writeln!(f, "Int({})", lit.value),
+        Expr::Float(lit) => writeln!(f, "Float(sym:{})", lit.value.into_usize()),
         Expr::String(lit) => writeln!(f, "String(sym:{})", lit.value.into_usize()),
         Expr::Bool(lit) => writeln!(f, "Bool({})", lit.value),
         Expr::Unit(_) => writeln!(f, "Unit"),

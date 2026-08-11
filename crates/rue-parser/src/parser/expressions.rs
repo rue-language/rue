@@ -64,6 +64,10 @@ impl Parser {
                 let span = self.bump().span;
                 Ok(Expr::Int(IntLit { value, span }))
             }
+            TokenKind::Float(value) => {
+                let span = self.bump().span;
+                Ok(Expr::Float(FloatLit { value, span }))
+            }
             TokenKind::String(value) => {
                 let span = self.bump().span;
                 Ok(Expr::String(StringLit { value, span }))
@@ -278,10 +282,47 @@ impl Parser {
         }
     }
 
+    /// Reject a trailing-dot float literal (`5.`) before it is mistaken for a
+    /// member access with a missing name (ADR-0065 §3, RUE-1068).
+    ///
+    /// The lexer cannot make this call: `42.` is also the prefix of the legal
+    /// method call `42.to_string()`, and logos commits to the longest match
+    /// without lookahead, so a lexical `[0-9]+\.` rule would swallow the
+    /// receiver of every method call on an integer literal. Here the decision
+    /// is easy — the literal must be directly followed by the `.` (no space),
+    /// and the token after the `.` must not be a member name.
+    ///
+    /// The diagnostic is [`ErrorKind::MalformedFloatLiteral`] (E0011), the same
+    /// kind the lexer uses for the leading-dot form, because both diagnose one
+    /// spelling rule; only the phase that can decide it differs.
+    fn reject_trailing_dot_float(&mut self, base: &Expr) -> PResult<()> {
+        let literal_text = match base {
+            Expr::Int(literal) => literal.value.to_string(),
+            Expr::Float(literal) => self.interner.resolve(&literal.value).to_string(),
+            _ => return Ok(()),
+        };
+        let dot_span = self.tokens[self.cursor].span;
+        let adjacent = base.span().end == dot_span.start;
+        let member_follows = matches!(self.nth(1), TokenKind::Ident(_));
+        if !adjacent || member_follows {
+            return Ok(());
+        }
+        let span = base.span().extend_to(dot_span.end);
+        self.record_error(CompileError::new(
+            ErrorKind::MalformedFloatLiteral(format!(
+                "floating-point literal cannot end with `.`: write `{literal_text}.0` instead \
+                 of `{literal_text}.`"
+            )),
+            span,
+        ));
+        Err(())
+    }
+
     fn postfix(&mut self, mut base: Expr) -> PResult<Expr> {
         loop {
             match self.kind() {
                 TokenKind::Dot => {
+                    self.reject_trailing_dot_float(&base)?;
                     self.bump();
                     let field = self.ident()?;
                     if self.at(TokenKind::LParen) {
@@ -684,5 +725,110 @@ mod tests {
     #[test]
     fn rejects_an_unclosed_call_argument_list() {
         assert!(!parses("fn f() { g(1, 2; }"));
+    }
+
+    /// Parse `source` and return the final expression of `f`'s body together
+    /// with the interner, so the float tests can inspect the literal's text.
+    fn tail_expr(source: &str) -> (Expr, lasso::ThreadedRodeo) {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        let (ast, interner) = Parser::new(tokens, interner)
+            .parse()
+            .unwrap_or_else(|errors| panic!("`{source}` should parse: {errors:?}"));
+        let crate::ast::Item::Function(function) = &ast.items[0] else {
+            panic!("expected the first item to be a function");
+        };
+        let Expr::Block(body) = &function.body else {
+            panic!("expected a block body");
+        };
+        (body.expr.as_ref().clone(), interner)
+    }
+
+    fn parse_errors(source: &str) -> Vec<String> {
+        let (tokens, interner) = Lexer::new(source).tokenize().unwrap();
+        match Parser::new(tokens, interner).parse() {
+            Ok(_) => Vec::new(),
+            Err(errors) => errors.iter().map(|error| error.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn float_literal_parses_in_expression_position() {
+        // ADR-0065 §3 / RUE-1069: the literal reaches the AST untyped, holding
+        // the text the lexer interned rather than a decoded value.
+        let (expr, interner) = tail_expr("fn f() { 6.022e23 }");
+        let Expr::Float(literal) = expr else {
+            panic!("expected a float literal, got {expr:?}");
+        };
+        assert_eq!(interner.resolve(&literal.value), "6.022e23");
+        assert_eq!((literal.span.start, literal.span.end), (9, 17));
+    }
+
+    #[test]
+    fn float_literal_binds_like_any_other_primary() {
+        // `1.5e-3 + x` is `(1.5e-3) + x` — the `-` belongs to the exponent, so
+        // there is no subtraction here at all.
+        let (expr, interner) = tail_expr("fn f(x: i32) { 1.5e-3 + x }");
+        let Expr::Binary(binary) = expr else {
+            panic!("expected a binary expression, got {expr:?}");
+        };
+        assert_eq!(binary.op, BinaryOp::Add);
+        let Expr::Float(literal) = binary.left.as_ref() else {
+            panic!("expected the left operand to be a float literal");
+        };
+        assert_eq!(interner.resolve(&literal.value), "1.5e-3");
+        assert!(matches!(binary.right.as_ref(), Expr::Ident(_)));
+    }
+
+    #[test]
+    fn float_literal_obeys_multiplicative_precedence() {
+        // `1.5 * x + y` groups as `(1.5 * x) + y`.
+        let (expr, _) = tail_expr("fn f(x: i32, y: i32) { 1.5 * x + y }");
+        let Expr::Binary(add) = expr else {
+            panic!("expected a binary expression, got {expr:?}");
+        };
+        assert_eq!(add.op, BinaryOp::Add);
+        let Expr::Binary(mul) = add.left.as_ref() else {
+            panic!("expected the left operand to be the multiplication");
+        };
+        assert_eq!(mul.op, BinaryOp::Mul);
+        assert!(matches!(mul.left.as_ref(), Expr::Float(_)));
+    }
+
+    #[test]
+    fn trailing_dot_float_is_rejected_by_the_parser() {
+        // The lexer cannot decide this one — `5.` is also the prefix of
+        // `5.to_string()` — so the parser reports it once no member name
+        // follows the dot (ADR-0065 §3).
+        assert_eq!(
+            parse_errors("fn f() { let x = 5.; }"),
+            vec!["floating-point literal cannot end with `.`: write `5.0` instead of `5.`"]
+        );
+    }
+
+    #[test]
+    fn trailing_dot_rejection_does_not_disturb_member_access() {
+        // A member name after the dot is an ordinary access/method call, on an
+        // integer literal as much as on anything else.
+        assert!(parses("fn f() { 42.to_string() }"));
+        assert!(parses("fn f(p: P) { p.x }"));
+        // A space before the dot is not the trailing-dot spelling; it stays an
+        // ordinary "expected identifier" diagnostic.
+        let errors = parse_errors("fn f() { let x = 5 .; }");
+        assert_eq!(errors.len(), 1);
+        assert!(
+            errors[0].contains("expected identifier"),
+            "unexpected diagnostic: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn trailing_dot_float_recovers_to_the_next_item() {
+        // One diagnostic, not a cascade: recovery resumes at the next item, so
+        // the following function still parses.
+        let errors = parse_errors("fn f() -> i32 { let x = 5.; 1 } fn g() -> i32 { 2 }");
+        assert_eq!(
+            errors,
+            vec!["floating-point literal cannot end with `.`: write `5.0` instead of `5.`"]
+        );
     }
 }

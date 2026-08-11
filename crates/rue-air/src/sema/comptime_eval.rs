@@ -610,6 +610,22 @@ impl<H: OrdinaryBodyAnalysisHost> OrdinaryBodyEngine<'_, H> {
                 Ok(Some(ConstValue::Integer(v)))
             }
 
+            // Float literals stop here for the same reason they stop in
+            // `analyze_inst_dispatch` (ADR-0065, RUE-1069): there is no
+            // `comptime_float` value in `ConstValue` yet. Naming the real
+            // reason matters more here than elsewhere — falling through to
+            // the generic "not knowable at compile time" would be actively
+            // wrong about a literal, which is the most compile-time-knowable
+            // thing there is. Delete this arm when Phase 4 lands.
+            InstData::FloatConst { .. } => {
+                self.require_preview(
+                    rue_error::PreviewFeature::Floats,
+                    "a floating-point literal",
+                    span,
+                )?;
+                Err(CompileError::new(ErrorKind::FloatNotYetImplemented, span))
+            }
+
             // Boolean literals
             InstData::BoolConst(value) => Ok(Some(ConstValue::Bool(*value))),
 

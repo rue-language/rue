@@ -92,6 +92,15 @@ pub enum TokenKind {
 
     // Literals
     Int(u64),
+    /// A floating-point literal (`1.5`, `1e9`, `1.5e-3`), carried as the
+    /// interned *source text* of the literal rather than a decoded `f64`
+    /// (ADR-0065 §3, RUE-1068). A float literal is a `comptime_float`: an
+    /// arbitrary-precision abstract constant that only becomes `f32` or `f64`
+    /// when context demands one. Decoding to `f64` here would round the
+    /// constant before its target width is known, so the exact digits travel
+    /// to the phase that knows the type. Separators are already stripped, so
+    /// the interned text is directly parseable by `str::parse`.
+    Float(Spur),
     String(Spur),
 
     // Identifiers
@@ -203,6 +212,7 @@ impl TokenKind {
             TokenKind::Type => "type 'type'",
             TokenKind::Underscore => "'_'",
             TokenKind::Int(_) => "integer",
+            TokenKind::Float(_) => "float",
             TokenKind::String(_) => "string",
             TokenKind::Ident(_) => "identifier",
             TokenKind::Plus => "'+'",
@@ -320,6 +330,7 @@ impl std::fmt::Display for TokenKind {
             TokenKind::Type => write!(f, "TYPE(type)"),
             TokenKind::Underscore => write!(f, "UNDERSCORE"),
             TokenKind::Int(v) => write!(f, "INT({})", v),
+            TokenKind::Float(s) => write!(f, "FLOAT(sym:{})", s.into_usize()),
             TokenKind::String(s) => write!(f, "STRING(sym:{})", s.into_usize()),
             TokenKind::Ident(s) => write!(f, "IDENT(sym:{})", s.into_usize()),
             TokenKind::Plus => write!(f, "PLUS"),

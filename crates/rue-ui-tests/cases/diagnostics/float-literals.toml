@@ -1,0 +1,119 @@
+[section]
+id = "diagnostics.float-literals"
+name = "Float literal diagnostics"
+description = """
+ADR-0065 Phases 2-3 (RUE-1068, RUE-1069). Two families live here: the spelling
+rules for the literal itself (`.5` / `5.` / `1e`), which are lexical or
+grammatical and fire regardless of the preview flag, and the two-sided
+`floats` preview gate — E1100 without `--preview floats`, E1109 with it,
+because no phase can type the literal yet.
+"""
+
+[[case]]
+name = "gated_without_the_preview_flag"
+description = "Spec 8.4:1 — a gated feature errors without its flag, and the help names the flag and the ADR."
+source = """
+fn main() -> i32 {
+    let x = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = [
+    "E1100",
+    "a floating-point literal requires preview feature `floats`",
+    "use --preview floats to enable this feature (ADR-0065)",
+]
+
+[[case]]
+name = "enabled_but_not_yet_typed"
+description = "With the flag the literal passes the gate and stops at the phase marker instead of an unfinished typing path."
+source = """
+fn main() -> i32 {
+    let x = 1.5;
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = [
+    "E1109",
+    "floating-point literals are not yet supported at this compilation phase",
+    "ADR-0065 Phase 4, RUE-714",
+]
+
+[[case]]
+name = "float_in_a_comptime_block_names_the_real_reason"
+description = "A literal is the most compile-time-knowable thing there is; the comptime path must not blame constant-ness."
+source = """
+fn main() -> i32 {
+    let x = comptime { 1.5 };
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109", "floating-point literals are not yet supported"]
+
+[[case]]
+name = "float_as_a_call_argument"
+description = "The diagnostic anchors on the literal, not the enclosing call."
+source = """
+fn f(a: i32) -> i32 { a }
+
+fn main() -> i32 {
+    let z = f(2.5);
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = ["E1109"]
+
+[[case]]
+name = "leading_dot_names_the_replacement"
+description = "ADR-0065 §3 rejects `.5`; the diagnostic spells the accepted form."
+source = """
+fn main() -> i32 {
+    let x = .5;
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = [
+    "E0011",
+    "floating-point literal cannot start with `.`: write `0.5` instead of `.5`",
+]
+
+[[case]]
+name = "trailing_dot_names_the_replacement"
+description = "ADR-0065 §3 rejects `5.` too — reported by the parser, since `5.` is also the prefix of `5.to_string()`."
+source = """
+fn main() -> i32 {
+    let x = 5.;
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = [
+    "E0011",
+    "floating-point literal cannot end with `.`: write `5.0` instead of `5.`",
+]
+
+[[case]]
+name = "empty_exponent_names_the_literal"
+description = "`1e` is diagnosed as one malformed literal rather than an integer abutting an identifier."
+source = """
+fn main() -> i32 {
+    let x = 1e;
+    0
+}
+"""
+preview = "floats"
+compile_fail = true
+error_contains = [
+    "E0011",
+    "missing digits in the exponent of floating-point literal `1e`",
+]

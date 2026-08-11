@@ -4327,6 +4327,7 @@ impl<'a> WarningStaticCallCollector<'a> {
         use rue_parser::ast::{Expr, IntrinsicArg, LetPattern, Pattern};
         match expr {
             Expr::Int(_)
+            | Expr::Float(_)
             | Expr::String(_)
             | Expr::Bool(_)
             | Expr::Unit(_)

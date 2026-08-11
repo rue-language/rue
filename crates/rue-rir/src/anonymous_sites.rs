@@ -138,6 +138,7 @@ impl SiteWalker {
     fn walk_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Int(_)
+            | Expr::Float(_)
             | Expr::Bool(_)
             | Expr::String(_)
             | Expr::Unit(_)

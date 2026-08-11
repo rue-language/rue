@@ -234,6 +234,7 @@ impl Validator<'_> {
     fn check_expr(&mut self, expr: &Expr) {
         match expr {
             Expr::Int(_)
+            | Expr::Float(_)
             | Expr::String(_)
             | Expr::Bool(_)
             | Expr::Unit(_)

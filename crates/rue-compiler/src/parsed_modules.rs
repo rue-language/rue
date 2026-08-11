@@ -1817,6 +1817,7 @@ fn walk_expr(
 ) -> CompileResult<()> {
     match expr {
         Expr::Int(_)
+        | Expr::Float(_)
         | Expr::String(_)
         | Expr::Bool(_)
         | Expr::Unit(_)

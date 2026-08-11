@@ -1159,6 +1159,17 @@ impl<'a> ConstraintGenerator<'a> {
                 InferType::Var(var)
             }
 
+            // Float literals have no inference rule yet (ADR-0065 Phase 4,
+            // RUE-1069): there is no `f32`/`f64` tag in the packed `Type` and
+            // no `comptime_float` for the unifier to bind. Reporting `!` keeps
+            // the solver quiet — `!` coerces to anything, so a float operand
+            // neither constrains its neighbours nor leaves an unsolved
+            // variable behind — and lets the AIR-emission pass be the single
+            // place that reports the literal (as the preview gate, or as
+            // E1109). Replace this with the real `comptime_float` rule in
+            // Phase 4.
+            InstData::FloatConst { .. } => InferType::Concrete(Type::NEVER),
+
             InstData::BoolConst(_) => InferType::Concrete(Type::BOOL),
 
             // String literals are context-sensitive. A fresh variable lets an

@@ -48,3 +48,18 @@ fn main() -> i32 {
 """
 compile_fail = true
 error_contains = "--preview test_infra"
+
+# The gate applies to grammar, not just intrinsics: a float literal is
+# preview-gated syntax (ADR-0065, RUE-1068/RUE-1069), so writing one without
+# `--preview floats` is the same 8.4:1 error, naming the same flag.
+[[case]]
+name = "float_literal_requires_the_floats_feature"
+spec = ["8.4:1"]
+source = """
+fn main() -> i32 {
+    let x = 1.5;
+    0
+}
+"""
+compile_fail = true
+error_contains = "--preview floats"
