@@ -515,6 +515,27 @@ memory moved -0.8, +1.3, -3.5, and -4.3 MiB respectively. The Lattice
 executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1363 removed per-interval hash-table construction from both production
+linear-scan register-allocation paths. The allocator already maintains the
+active intervals separately for each register class, and that list cannot
+outgrow the class's small physical-register file. Free-register selection now
+checks that canonical bounded list directly instead of collecting an
+equivalent `HashSet` for every arriving virtual register. Register preference,
+clobber, spill, rematerialization, and optional reuse-pass policies are
+unchanged.
+
+On the fixed one-worker Lattice allocation probe, calls fell from 17,694,739 to
+17,593,676 (-0.57 percent) and requested bytes from 3,374,368,531 to
+3,371,985,007 (-0.07 percent). Every query, reachability, and
+CFG-materialization counter remained identical. An immediate parent/current
+ordinary-allocator comparison moved compiler medians from 128.01 to 130.36 ms
+for Ruelex, 367.85 to 371.60 ms for Mosaic, 820.46 to 793.96 ms for Harbor, and
+975.90 to 902.59 ms for Lattice. The larger parent samples were host-noisy
+(23.82 and 49.26 ms MAD), so this establishes no clock regression without
+claiming the apparent large-workload speedup. Peak memory moved +0.3, -0.8,
++0.6, and -2.3 MiB respectively. The Lattice executable remains byte-identical
+at `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

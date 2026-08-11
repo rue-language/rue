@@ -1920,26 +1920,30 @@ pub fn linear_scan_with_cost_model_and_debug<Reg: Copy + Eq + std::hash::Hash>(
 fn pick_free_register<Reg: Copy + Eq + std::hash::Hash>(
     save: SaveClasses<'_, Reg>,
     clobbers: &ClobberIndex<Reg>,
-    used: &HashSet<Reg>,
+    active: &[(VReg, Reg, usize)],
     sunk: &[Reg],
     range: &LiveRange,
 ) -> Option<Reg> {
+    // A class can never have more active intervals than physical registers.
+    // Query that small canonical list directly instead of rebuilding a hash
+    // set for every arriving virtual register.
+    let is_used = |candidate| {
+        active
+            .iter()
+            .any(|&(_, active_reg, _)| active_reg == candidate)
+    };
+
     save.compact_callee_saved
         .iter()
         .copied()
-        .find(|&reg| sunk.contains(&reg) && !used.contains(&reg))
+        .find(|&reg| sunk.contains(&reg) && !is_used(reg))
         .or_else(|| {
             save.caller_saved
                 .iter()
                 .copied()
-                .find(|&reg| !used.contains(&reg) && !clobbers.is_clobbered_during(reg, range))
+                .find(|&reg| !is_used(reg) && !clobbers.is_clobbered_during(reg, range))
         })
-        .or_else(|| {
-            save.callee_saved
-                .iter()
-                .copied()
-                .find(|&reg| !used.contains(&reg))
-        })
+        .or_else(|| save.callee_saved.iter().copied().find(|&reg| !is_used(reg)))
 }
 
 /// Whether `reg` can hold one value for the whole of `range`.
@@ -2197,12 +2201,9 @@ fn scan_intervals<Reg: Copy + Eq + std::hash::Hash>(
         // Expire old intervals - remove registers whose vregs are no longer live
         active.retain(|&(_, _, end)| end >= range.start);
 
-        // Find registers currently in use
-        let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
-
         // Try to find a free register of this vreg's own class: a sunk compact
         // one, else caller-saved, else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(save, &clobbers, &used_regs, sunk, &range);
+        let allocated_reg = pick_free_register(save, &clobbers, active, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
@@ -2455,12 +2456,9 @@ fn scan_intervals_with_remat<Reg: Copy + Eq + std::hash::Hash>(
         // Expire old intervals - remove registers whose vregs are no longer live
         active.retain(|&(_, _, end)| end >= range.start);
 
-        // Find registers currently in use
-        let used_regs: HashSet<Reg> = active.iter().map(|&(_, reg, _)| reg).collect();
-
         // Try to find a free register of this vreg's own class: a sunk compact
         // one, else caller-saved, else a fresh callee-saved one.
-        let allocated_reg = pick_free_register(save, &clobbers, &used_regs, sunk, &range);
+        let allocated_reg = pick_free_register(save, &clobbers, active, sunk, &range);
 
         if let Some(reg) = allocated_reg {
             // Assign this register
