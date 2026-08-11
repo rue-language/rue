@@ -536,6 +536,30 @@ claiming the apparent large-workload speedup. Peak memory moved +0.3, -0.8,
 +0.6, and -2.3 MiB respectively. The Lattice executable remains byte-identical
 at `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1364 followed the next release profile into recursive semantic identity
+hashing and copying. A `StableDefinitionKey` used to copy its full module,
+name, and optional owner payload into every recursive type/function key and
+re-hash those strings at every query index, task-cache, and validation lookup.
+The key now owns one `Arc`-shared immutable payload and computes a 128-bit
+SHA-256 accelerator once when that payload is issued. Exact field equality is
+still authoritative, `Ord` still compares the original fields in their
+original order, and the runtime's keyed hash map still owns bucket placement;
+a forced-collision regression proves the accelerator cannot conflate keys.
+
+The fixed one-worker Lattice allocation probe reduced requested bytes from
+3,371,985,007 to 2,917,750,583 (-13.47 percent). Issuing the shared payload
+adds one allocation per distinct stable identity, so allocation calls moved
+from 17,593,676 to 17,603,349 (+0.05 percent); the much smaller recursive key
+copies repay that bounded setup cost in bytes and retained memory. A second
+immediate current/parent ordinary-allocator comparison moved compiler medians
+from 132.65 to 130.38 ms for Ruelex, 360.10 to 343.58 ms for Mosaic, 782.21 to
+759.58 ms for Harbor, and 894.76 to 864.09 ms for Lattice. Peak memory fell on
+every workload: 109.0 to 97.7 MiB, 261.7 to 229.8 MiB, 622.1 to 550.2 MiB, and
+717.8 to 643.8 MiB respectively. Every query, reachability, and
+CFG-materialization counter remained identical, and the Lattice executable
+remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

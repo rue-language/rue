@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::hash::{Hash, Hasher};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -17,6 +18,7 @@ use rue_error::{CompileError, CompileErrors, CompileResult, ErrorKind, MultiErro
 use rue_parser::ast::{Item, Visibility};
 use rue_span::{FileId, Span};
 use rue_target::Target;
+use sha2::{Digest, Sha256};
 
 use crate::{
     CanonicalMergedProgram, CanonicalRirOutput, DefinitionKind, DefinitionNamespace,
@@ -99,13 +101,59 @@ impl StableNamedTypeKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StableDefinitionKey {
+#[derive(Debug)]
+struct StableDefinitionIdentity {
     module: ModuleId,
     namespace: StableDefinitionNamespace,
     kind: StableDefinitionKind,
     name: Arc<str>,
     owner: Option<StableNamedTypeKey>,
+    hash_accelerator: [u8; 16],
+}
+
+/// Immutable durable identity for one bound definition.
+///
+/// These keys are copied through recursive type/function identities and then
+/// hashed repeatedly by the query runtime. Sharing the exact field payload
+/// keeps clones constant-size, while the cached collision-resistant
+/// accelerator avoids re-hashing every module/name string at each lookup.
+/// Equality and ordering remain authoritative over the complete fields: the
+/// accelerator is only a bucket selector and cannot conflate distinct keys.
+/// It is recomputed at issuance and is not a durable or serialized identity.
+#[derive(Clone)]
+pub struct StableDefinitionKey(Arc<StableDefinitionIdentity>);
+
+struct DefinitionIdentityDigester(Sha256);
+
+impl Hasher for DefinitionIdentityDigester {
+    fn finish(&self) -> u64 {
+        let digest = self.0.clone().finalize();
+        u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix length"))
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+}
+
+fn definition_hash_accelerator(
+    module: &ModuleId,
+    namespace: StableDefinitionNamespace,
+    kind: StableDefinitionKind,
+    name: &Arc<str>,
+    owner: &Option<StableNamedTypeKey>,
+) -> [u8; 16] {
+    let mut hasher = DefinitionIdentityDigester(Sha256::new());
+    hasher.write(b"rue.stable-definition-key\0v1\0sha256\0");
+    module.hash(&mut hasher);
+    namespace.hash(&mut hasher);
+    kind.hash(&mut hasher);
+    name.hash(&mut hasher);
+    owner.hash(&mut hasher);
+    let digest = hasher.0.finalize();
+    digest[..16]
+        .try_into()
+        .expect("SHA-256 accelerator prefix length")
 }
 
 impl StableDefinitionKey {
@@ -121,29 +169,32 @@ impl StableDefinitionKey {
             kind,
             name,
         });
-        Self {
+        let name = name.into();
+        let hash_accelerator = definition_hash_accelerator(&module, namespace, kind, &name, &owner);
+        Self(Arc::new(StableDefinitionIdentity {
             module,
             namespace,
             kind,
-            name: name.into(),
+            name,
             owner,
-        }
+            hash_accelerator,
+        }))
     }
 
     pub fn module(&self) -> &ModuleId {
-        &self.module
+        &self.0.module
     }
     pub fn namespace(&self) -> StableDefinitionNamespace {
-        self.namespace
+        self.0.namespace
     }
     pub fn kind(&self) -> StableDefinitionKind {
-        self.kind
+        self.0.kind
     }
     pub fn name(&self) -> &str {
-        &self.name
+        &self.0.name
     }
     pub fn owner(&self) -> Option<&StableNamedTypeKey> {
-        self.owner.as_ref()
+        self.0.owner.as_ref()
     }
 
     #[cfg(test)]
@@ -155,6 +206,63 @@ impl StableDefinitionKey {
         owner: Option<(StableDefinitionKind, Arc<str>)>,
     ) -> Self {
         Self::from_stable_parts(module, namespace, kind, name, owner)
+    }
+}
+
+impl fmt::Debug for StableDefinitionKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StableDefinitionKey")
+            .field("module", &self.0.module)
+            .field("namespace", &self.0.namespace)
+            .field("kind", &self.0.kind)
+            .field("name", &self.0.name)
+            .field("owner", &self.0.owner)
+            .finish()
+    }
+}
+
+impl PartialEq for StableDefinitionKey {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+            || (self.0.module == other.0.module
+                && self.0.namespace == other.0.namespace
+                && self.0.kind == other.0.kind
+                && self.0.name == other.0.name
+                && self.0.owner == other.0.owner)
+    }
+}
+
+impl Eq for StableDefinitionKey {}
+
+impl PartialOrd for StableDefinitionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for StableDefinitionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (
+            &self.0.module,
+            self.0.namespace,
+            self.0.kind,
+            &self.0.name,
+            &self.0.owner,
+        )
+            .cmp(&(
+                &other.0.module,
+                other.0.namespace,
+                other.0.kind,
+                &other.0.name,
+                &other.0.owner,
+            ))
+    }
+}
+
+impl Hash for StableDefinitionKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write(&self.0.hash_accelerator);
     }
 }
 
@@ -1046,18 +1154,16 @@ pub(crate) fn issue_bound_definitions(
             return Err(invalid("semantic binding span has a mismatched file ID"));
         }
         let stable_kind = binding.kind;
-        let owner = binding.owner.as_ref().map(|owner| StableNamedTypeKey {
-            module: module.module_id().clone(),
-            kind: StableDefinitionKind::Struct,
-            name: owner.clone(),
-        });
-        let key = StableDefinitionKey {
-            module: module.module_id().clone(),
-            namespace: binding.namespace,
-            kind: stable_kind,
-            name: binding.name.clone(),
-            owner,
-        };
+        let key = StableDefinitionKey::from_stable_parts(
+            module.module_id().clone(),
+            binding.namespace,
+            stable_kind,
+            binding.name.clone(),
+            binding
+                .owner
+                .as_ref()
+                .map(|owner| (StableDefinitionKind::Struct, owner.clone())),
+        );
         let (occurrence, visibility) = if binding.namespace == StableDefinitionNamespace::Method {
             work.named_methods_issued += 1;
             (
@@ -1119,13 +1225,13 @@ pub(crate) fn issue_bound_definitions(
         .map_err(|failure| invalid(failure.to_string()))?;
     for record in &records {
         if let Some(owner) = record.stable_key().owner() {
-            let owner_key = StableDefinitionKey {
-                module: owner.module.clone(),
-                namespace: StableDefinitionNamespace::Type,
-                kind: owner.kind,
-                name: owner.name.clone(),
-                owner: None,
-            };
+            let owner_key = StableDefinitionKey::from_stable_parts(
+                owner.module.clone(),
+                StableDefinitionNamespace::Type,
+                owner.kind,
+                owner.name.clone(),
+                None,
+            );
             if records
                 .binary_search_by(|candidate| candidate.stable_key().cmp(&owner_key))
                 .is_err()
@@ -1262,12 +1368,61 @@ fn invalid(message: impl Into<String>) -> CompileError {
 mod tests {
     use std::collections::HashMap;
     use std::fmt::Write as _;
+    use std::hash::Hasher;
 
     use rue_error::PreviewFeature;
     use rue_span::FileId;
 
     use super::*;
     use crate::{SourceMetadata, SourceSnapshot};
+
+    #[derive(Default)]
+    struct ByteCountingHasher {
+        bytes: usize,
+    }
+
+    impl Hasher for ByteCountingHasher {
+        fn finish(&self) -> u64 {
+            self.bytes as u64
+        }
+
+        fn write(&mut self, bytes: &[u8]) {
+            self.bytes += bytes.len();
+        }
+    }
+
+    #[test]
+    fn stable_definition_hashing_is_constant_size_and_collision_safe() {
+        let module = ModuleId::from_logical_path("a/very/long/module/path").unwrap();
+        let first = StableDefinitionKey::for_test(
+            module.clone(),
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::Function,
+            "a_very_long_function_name",
+            None,
+        );
+        let cloned = first.clone();
+        assert!(Arc::ptr_eq(&first.0, &cloned.0));
+
+        let mut hasher = ByteCountingHasher::default();
+        first.hash(&mut hasher);
+        assert_eq!(hasher.bytes, 16);
+
+        let mut second = StableDefinitionKey::for_test(
+            module,
+            StableDefinitionNamespace::Value,
+            StableDefinitionKind::Function,
+            "another_function",
+            None,
+        );
+        Arc::get_mut(&mut second.0).unwrap().hash_accelerator = first.0.hash_accelerator;
+        assert_ne!(first, second);
+
+        let mut colliding = HashMap::new();
+        colliding.insert(first, 1);
+        colliding.insert(second, 2);
+        assert_eq!(colliding.len(), 2);
+    }
 
     fn snapshot(entries: &[(u32, &str, &str, &str)], root: u32) -> SourceSnapshot {
         let physical = entries
