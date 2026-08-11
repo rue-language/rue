@@ -776,6 +776,26 @@ median paired delta. Median peak RSS moves by +1.58 MiB (0.35%), within run
 dispersion. Every deterministic compiler-work counter and the emitted
 executable are identical.
 
+RUE-1378 gives the request-local terminal-lease deduplication index the same
+numeric-identity treatment. Cold Lattice makes 199,098 lease observations;
+`TaskLeases` only inserts exact `(incarnation, stamp, revision)` identities and
+tests whether each was new, so its ordered tree carried no semantic order.
+
+Two allocation-accounting comparisons reduce calls by 10,887 and 10,823 and
+requested bytes by 7,032,904 and 7,013,852 respectively. Sixteen directly
+alternating ordinary-release pairs are clock-neutral at a -0.61% median paired
+delta. Median peak RSS moves by +0.69 MiB (0.15%), within run dispersion. Every
+deterministic compiler-work counter and the emitted executable are identical.
+The adjacent structured-batch lease set was evaluated separately and retained
+as an ordered tree: hashing it saved about 1,100 allocation calls but requested
+about 6.7 MiB more memory, so it did not meet the non-regression boundary.
+
+The next apparent comparison shortcut was also rejected. Adding shared-Arc
+fast paths to `NodeIdentity` equality and ordering left 32 paired Lattice runs
+clock-neutral (-0.27%), changed no deterministic work or allocation measure,
+and did not reduce the broader string-comparison profile. Its median peak RSS
+was repeatably about 3.0 MiB higher, so the source change was not retained.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

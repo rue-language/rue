@@ -8001,7 +8001,9 @@ struct TaskLeases {
     /// and stamp while being a DISTINCT terminal at the adopting revision —
     /// both must stay leased; collapsing them would leave the endorsement
     /// unprotected. Re-observations of one exact terminal still deduplicate.
-    observed: BTreeSet<(u64, u64, Revision)>,
+    /// The runtime assigns every component and no consumer observes ordering,
+    /// so high-frequency lease acquisition uses constant-expected membership.
+    observed: AHashSet<(u64, u64, Revision)>,
     /// Live pins, type-erased across families. Dropping the task drops these,
     /// each of which decrements its terminal's pin count and re-enforces the
     /// owning family's retention bound.
