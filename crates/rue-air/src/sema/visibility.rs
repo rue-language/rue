@@ -47,8 +47,10 @@ impl<D: DeclarationPhase> Sema<'_, D> {
     ///   `pub`, or the reference is in the item's directory — ADR-0026
     ///   intra-directory visibility), the reference is fine.
     /// - Otherwise the reference is an error (E0460), naming the item's
-    ///   defining file. Whether that file was loaded via `@import` or merely
-    ///   listed on the command line makes no difference.
+    ///   defining file. Ordinary unqualified lookups are file-local, so this
+    ///   fires only on the comptime resolution paths that carry a reference
+    ///   into another file, e.g. applying a private comptime type constructor
+    ///   in type position (RUE-283).
     ///
     /// `item_kind` names the kind in the diagnostic ("function", "struct",
     /// "enum", "constant").

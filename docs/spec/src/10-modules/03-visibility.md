@@ -61,25 +61,25 @@ fn main() -> i32 {
 
 Visibility is uniform across every multi-file compilation and every item
 kind: an item is usable outside its defining directory if and only if it
-is `pub`, whether its defining file was loaded via `@import` or listed
-explicitly in the compilation. Access to a private item through a module
-binding from another directory is error E0706 (10.4:18) — this is the
-diagnostic for privacy violations, since cross-module references are
-spelled through module bindings. Where an implementation still accepts an
-unqualified reference that names a cross-directory item directly (legacy
-forms removed with flat mode, ADR-0046), referencing a private item that
-way is error E0460.
+is `pub`. Access to a private item through a module binding from another
+directory is error E0706 (10.4:18) — the diagnostic for privacy
+violations, since cross-module references are spelled through module
+bindings, and an unqualified reference to another file's item does not
+resolve at all (10.3:8). One form reports a distinct code: applying a
+comptime type constructor reached through a module binding in a type
+position (10.4:16) checks the constructor's visibility at the
+application site, and a private constructor applied from another
+directory is error E0460, naming the constructor and its defining file.
 
 {{ rule(id="10.3:8", cat="normative") }}
 
 Unqualified references resolve module-locally: a top-level name refers to
 an item of the referencing file (or a compiler builtin). A name defined
-only in other loaded files — imported or explicitly listed, `pub` or not,
-any directory — does not resolve unqualified; the reference is a
-name-resolution error (E0201 for variables/constants and enum type names
-in expressions, E0202 for functions, E0204 for types), never a silent
-resolution into another file. Cross-module access is spelled through a
-module binding (10.4:1).
+only in other loaded files — `pub` or not, in any directory — does not
+resolve unqualified; the reference is a name-resolution error (E0201 for
+variables/constants and enum type names in expressions, E0202 for
+functions, E0204 for types), never a silent resolution into another
+file. Cross-module access is spelled through a module binding (10.4:1).
 
 {{ rule(id="10.3:9", cat="example") }}
 
