@@ -19,7 +19,9 @@ relates: ["RUE-1164", "RUE-1118", "RUE-1222", "RUE-1267", "ADR-0047", "ADR-0051"
 Proposal. This is the reviewed design RUE-1164 asks for and ADR-0069 Phase 5
 defers to. Nothing here is implemented. The granularity rule under "Which
 compiles become actions" and the four items under "Open questions" are maintainer
-decisions rather than settled design.
+decisions rather than settled design; each open question now carries a
+recommendation and its evidence, but questions 2 and 3 are coupled and question 2
+proposes work large enough to deserve its own ADR.
 
 ## Summary
 
@@ -439,14 +441,20 @@ strictly.
       the scheduled release lane stops paying 243.0s and 80.7s twice when both the
       slow and stress tiers run; and these are the clearest targets on which to
       establish the mechanism.
-- [ ] **Phase 2: CLI cases naming a checked-in root** — 65 of the 73 cases into
-      10 roots (9 new programs; meridian's is already declared by Phase 1),
-      meridian's six scenarios first, which is where the disabled coverage is
-      restored. The 6 cross-target fixture cases, the repo-relative fixture case,
-      and the one `differential_opt` case stay in the harness. Depends on open
-      question 3.
-- [ ] **Phase 3: Corpus input precision** — see open question 2; this phase is
-      *not* specified here, because the obvious version of it does not work.
+- [ ] **Phase 2: break the weld for CLI cases naming a checked-in root** — 65 of
+      the 73 cases against 10 roots (9 new programs; meridian's is already declared
+      by Phase 1), meridian's six scenarios first, which is where the disabled
+      coverage is restored. The 6 cross-target fixture cases, the repo-relative
+      fixture case, and the one `differential_opt` case stay in the harness
+      regardless. **Whether these scenarios stay in TOML consuming a prebuilt
+      executable, or migrate to `rue_program_test` targets, is open question 3 —
+      and it is decided together with question 2.** The current recommendation is
+      that they stay in TOML, which makes this phase considerably smaller than
+      earlier drafts assumed.
+- [ ] **Phase 3: Corpus input precision** — see open question 2. A concrete
+      proposal now exists (per-file corpus actions, shard assignment moved into
+      the lane planner), but it is large enough to warrant its own ADR and issue
+      rather than a phase here, and it gates the shape of Phase 2.
 - [ ] **Phase 4: Test-result caching decision** — only after the negative controls
       pass on a real branch. See open question 4.
 
@@ -502,58 +510,128 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
 
 ## Open Questions
 
-1. **Target architecture: attribute or configuration?** `//platforms:release`
-   exists because, as `platforms/BUCK:23-33` records, a bare
-   `--modifier //constraints:release` left debug and release resolving to the same
-   configured output path while the toolchain's `rustc_flags` select never saw the
-   constraint. The same argument could be made for a `//constraints:rue-target`
-   setting plus platforms. Recommendation: a plain attribute. The Rue target is a
-   property of the artifact requested, not of the machine building it — the
-   `abi_conformance` and `linker` fixtures want all three targets side by side in
-   one package, which attributes make trivial and configurations make awkward —
-   and `--target` is on the command line, so it keys the action either way. (Cite
-   the `platforms/BUCK` comment rather than RUE-277 itself: the issue records the
-   symptom, the comment records the mechanism.)
-2. **Phase 3 needs re-deriving; the obvious version does not work.** An earlier
-   draft called per-shard case-file declaration "clearly right". It is not
-   implementable as stated: shard assignment is per-*case* LPT cost-balancing over
-   `shard-weights.json` (`crates/rue-cli-tests/src/sharding.rs:76-105`), so one
-   TOML file's cases scatter across all four shards and the mapping churns on
-   every weights refresh (RUE-1222). Declaring per-shard file sets would require
-   either file-aligned packing — which ADR-0069 §6's skew analysis argues against
-   — or a generated shard→files mapping, which by ADR-0069's own ledger standard
-   needs a gate to count. Note also that the blast radius is wider than stated:
-   the `cases` filegroup keys **seven** corpus actions (four shards plus
-   `//:cli-tests`, `//:cli-tests-slow`, `//:release-smoke`), not four. Options:
-   make shard assignment a build-time fact with a gate; accept coarse keys for the
-   harness bucket; or drop the phase. I do not have a recommendation I trust here.
-3. **Do the CLI cases migrate out, or does the harness consume prebuilt
-   artifacts?** Either `rue-cli-tests` learns to accept a prebuilt executable for a
-   case naming a checked-in root, or those 73 cases become `rue_program_test`
-   targets. The first preserves one authoring surface and keeps RUE-924's audit
-   working unchanged; the second gives the per-scenario targets the milestone is
-   for, at the cost of extending the discovery set and reimplementing inline
-   runtime fixtures and a writable cwd. Recommendation: migrate them out — they
-   are the least TOML-shaped cases in the corpus. This has the largest blast
-   radius on authoring ergonomics of anything here.
-4. **Test-result caching: what actually blocks it.** ADR-0069 §4 suggests buck2's
-   `supports_test_execution_caching` is available and blocked only by Rue's noop
-   toolchains. Two corrections. For the *existing* corpora it is not available at
-   all: reading the bundled prelude for the pinned 2026-07-15 buck2, the attribute
-   appears only on the java/kotlin/cxx/python/android test decls, and
-   `sh_test_impl` constructs `ExternalRunnerTestInfo` without it — so no `sh_test`
-   or `rue_sh_test` here can opt in even with a live toolchain. But for
-   `rue_program_test` the objection is moot: it is a new rule emitting its own
-   `ExternalRunnerTestInfo`, so setting the field is one line. The real costs are
-   therefore the non-noop remote test toolchain and the trust decision RUE-1164
-   already gates behind the negative controls. Recommendation: still don't, but on
-   those grounds — once `rue_program` owns the expensive half, what remains in a
-   test execution is running a binary and comparing output, and caching that is a
-   toolchain change for a small remainder. Revisit if Phases 1–2 leave test
-   execution on the critical path.
+All four carry a recommendation now, and three of them changed after review. They
+remain maintainer decisions: RUE-1164 is labelled `needs-decision`, and questions
+2 and 3 in particular reach beyond what this ADR can settle on its own.
 
-Note that RUE-1164 carries no comments, so none of these is pre-decided
-elsewhere.
+**Decide 2 and 3 together.** They are one decision wearing two numbers — whether
+the corpus stays a scheduling unit or becomes a graph of per-file actions
+determines whether migrating scenarios out of TOML buys anything.
+
+1. **Target architecture: attribute or configuration?** Recommendation: **a plain
+   attribute**, on a stronger argument than the one an earlier draft gave. That
+   draft cited the `abi_conformance`/`linker` fixtures as wanting all three
+   targets side by side in one package; the granularity repair moved those to the
+   harness, so no proposed `rue_program` needs side-by-side targets today, and the
+   example is now about keeping the door open rather than serving a consumer.
+
+   The principled argument is that **Rue's read closure is target-invariant by
+   construction.** `ImportDiscoveryContext::new` takes epoch, project root, std
+   root and policy revision — and no target (`source_loader.rs:1004-1013`) — and
+   `@import` has no conditional form, so `--target` cannot change which sources a
+   program reads. Buck configurations exist to vary the dependency graph per
+   platform; for `rue_program` there is provably nothing for a configuration to
+   vary, and the whole difference between two targets' compiles is one
+   command-line flag that keys the action as an attribute at zero cost. Revisit
+   only if Rue grows target-dependent imports, which ADR-0047's model forbids.
+
+2. **Corpus input precision — a proposal, replacing the three options an earlier
+   draft could not choose between.** The root problem is that the current design
+   couples a *scheduling* concern (which shard runs a case, a function of
+   `shard-weights.json`) into a *correctness* concern (what keys an action). All
+   three earlier options managed that coupling; none removed it.
+
+   Recommendation: **make the corpus action's unit the case file, and move shard
+   assignment up into the lane planner.**
+
+   - One corpus action per case TOML, comprehended from `glob(["cases/*.toml"])`
+     at load time — derived from the tree, so there is no hand-maintained mapping
+     and nothing to gate, which meets ADR-0069's ledger standard by construction.
+     Each file-target declares its own TOML plus the coarse rare-change inputs
+     (compiler, harness, std, fixture and example trees). A case edit then
+     invalidates exactly one action, while a compiler or fixture change still
+     invalidates everything, which is correct.
+   - **`shard-weights.json` leaves the key domain entirely.** ADR-0069 Phase 2's
+     planner (implemented and gated) generates the lane split by packing the
+     file-targets with the existing weights, regenerated per run and never
+     persisted — so stale weights can only unbalance a lane, never affect
+     correctness. Coverage stays ADR-0069's union gate. RUE-1267's floor-aware
+     packer replaces the interim packing when it lands, and the ordering is
+     consistent with ADR-0069 having deliberately scheduled that packer after the
+     distribution stops changing: this conversion *is* the distribution change.
+   - **What it deletes:** `CliShardPlan` and the LPT code in
+     `crates/rue-cli-tests/src/sharding.rs`, `CLI_TEST_SHARD_COUNT`,
+     `scripts/validate-cli-shard-coverage.py`, and the skew guard ADR-0069 §6
+     proved vacuous. RUE-1222's scheduled weight refresh becomes free: today it
+     would invalidate every shard action; afterward it touches no action key.
+   - A heavyweight file that dominates a lane is RUE-1267's indivisible-item alarm
+     firing with a mechanical remedy — split the TOML, an ordinary authoring act.
+
+   Two costs, both verified, both belonging in the decision rather than in a
+   footnote. **Scale:** ~323 file-actions repo-wide — 214 CLI, 71 spec, 38 UI,
+   since spec and UI declare whole `cases/**` filegroups today too
+   (`crates/rue-spec/BUCK`, `crates/rue-ui-tests/BUCK`) — at roughly 8–13 cases
+   each. That sits above action overhead, and if it is judged too fine the same
+   mechanism works at directory granularity (spec already has 10 subdirectories);
+   the dial is grouping, not design. **One real harness change:** contract-graph
+   validation deliberately runs against the complete unfiltered inventory before
+   any filter is applied (`crates/rue-cli-tests/src/main.rs:2876-2878`), so a
+   per-file action staged with only its own TOML needs a mode that relaxes
+   cross-file checks, with contract completeness, duplicate-name detection and
+   RUE-924-style counting moving to one whole-corpus parse-only validation target
+   whose coarse key is fine because it costs seconds.
+
+   **Scope caveat, and the reason this stays open.** This is a larger change than
+   "a phase of RUE-1164": it dissolves CLI sharding, reaches into the spec and UI
+   corpora, and modifies the harness. It is a good answer to the question, but it
+   probably deserves its own ADR and issue rather than living as Phase 3 here.
+
+3. **Do the CLI cases migrate out of TOML, or does the harness consume prebuilt
+   artifacts?** Recommendation **reversed** after review: **let the harness consume
+   prebuilt artifacts**, conditional on question 2.
+
+   The defect Phase 2 fixes is the weld between compile and scenario, not the
+   TOML. Handing the 65 scenarios a prebuilt executable fixes exactly that;
+   migrating them additionally relocates the authoring surface — by this
+   document's own assessment the largest-blast-radius change in it — to buy
+   per-scenario CI selection whose value stays speculative until RUE-1267's packer
+   names a single scenario as a binding constraint. Once the weld is broken,
+   scenario executions are cheap binary runs, and that day may not come.
+
+   The "least TOML-shaped cases" argument that justified migration also expires
+   once the weld is broken: such a case is then a program reference,
+   `program_args`, inline `files`, and expectations — precisely
+   `rue_program_test`'s attribute set. The shapes converge, so the only remaining
+   difference is where they are written, and the TOML side keeps the working
+   inline-fixture and writable-cwd machinery, keeps RUE-924's audit unchanged
+   rather than extended, and avoids a two-mechanism transition entirely.
+
+   The condition: this is clean *because of* question 2. Under per-file actions,
+   `examples_meridian.toml`'s target declares `:meridian` as an input and runs six
+   scenarios against it — one compile action, one scenario action, selectable at
+   file granularity. The per-file targets naming checked-in roots declare deps on
+   the programs their cases consume; that mapping is small (~14 files, 1–2 roots
+   each) and fails closed, since a case whose program is absent from the staging
+   environment cannot run. If question 2 is decided the other way and the shards
+   stay monolithic, the calculus shifts back toward migration, because per-scenario
+   targets become the only route to individual scheduling.
+
+   Migration stays the fallback if the prebuilt-consuming mode proves ugly — the
+   staging-environment wiring is the risk — and nothing in Phase 0 or 1 is wasted
+   either way, since the large-example scenarios use `rue_program_test` regardless.
+
+4. **Test-result caching.** Recommendation unchanged — **don't** — with two
+   reinforcements. Under question 2's proposal the corpus's scenario work is
+   already served by the action cache, because per-file corpus actions are cached
+   actions; the population of uncached test executions shrinks to
+   `rue_program_test` runs and ordinary unit tests, so the toolchain investment
+   buys even less than stated above. And the trust asymmetry deserves saying
+   outright: cache writes are authorized by holding the credential, and enabling
+   test-result caching widens what a poisoned entry can fake from an *artifact*,
+   which still has to run and pass, to a *verdict*, which does not. That is a
+   strictly sharper target, and it is the deeper reason the posture is "off until
+   the negative controls pass, then a deliberate trust decision" rather than
+   ordinary caution.
 
 ## Non-Goals
 
