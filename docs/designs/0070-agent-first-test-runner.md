@@ -807,6 +807,45 @@ and joins ⊤ unconditionally. There is no sound narrowing for code the
 compiler cannot read; such a feature trades capability precision for power,
 explicitly.
 
+## Rejected alternatives
+
+### Assertions as Result-returning functions
+
+Considered: test assertions as ordinary functions returning
+`Result((), AssertFailure)`, propagated with `?`, instead of trapping
+intrinsics. Rejected — an assertion claims the program state is correct, and
+a failed one is a bug, which ADR-0038 already routes to the trap channel
+rather than the value channel:
+
+- **Propagation tax.** A value-returning assert makes every asserting
+  function transitively fallible — test helpers and production preconditions
+  alike — forcing `Result` signatures onto call graphs whose only failure
+  mode is "the program is wrong."
+- **No meaningful handler.** Linearity forces the `Result` to be checked, but
+  must-check is not must-stop: the legal handlings are propagate-to-terminal
+  (a verbose re-implementation of the trap) or match-and-continue (running
+  code on a violated invariant — the exact thing assertions exist to
+  prevent).
+- **The abort-only runtime.** With no unwinding, a trap is the only non-local
+  exit; a leaf helper cannot otherwise end a test without threading `Result`
+  through every intermediate frame.
+- **What the intrinsic form specifically buys**: call-site attribution in a
+  runtime with no backtraces (an intrinsic lowers at the caller, so the
+  failure span is the assertion site, not a library body); comptime folding
+  (provably-false asserts become compile errors); optimizer-visible facts on
+  the fall-through path; and a spec-pinnable message/exit contract.
+
+What is genuinely given up, and where it is recovered: soft assertions
+(check-everything-then-report) fall out of fail-fast — userland accumulators
+and §7.2 sub-results are the answers; destructor-based teardown does not run
+on the trap path — process teardown plus the retained scratch directory
+covers it (§3). The intrinsic is not a monopoly: §7.1 gives userland
+assertion libraries the same failure channel, with `@src()`-style call-site
+capture as the reserved gap-closer. Using `?` in test bodies for *expected*
+fallibility (setup I/O, not assertions) is orthogonal and remains the
+Result-typed-test-bodies maintainer call, noting that spec 4.15:3 restricts
+`?` to the trusted std producers.
+
 ## Open Questions
 
 ### Maintainer calls needed (decisions this ADR takes a position on)
