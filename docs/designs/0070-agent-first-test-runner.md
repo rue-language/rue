@@ -402,6 +402,22 @@ A test's capability set is the summary of its body instance. It appears in
 `--list` output and on every test event — the analysis is visible from day
 one of Phase 3, before anything acts on it.
 
+Summaries are demanded, never pushed. `EffectSummary` is requested only by
+test requests (`rue test` execution and `--list`); an executable or check
+request never demands the family, and under ADR-0063's demand-driven model an
+undemanded family simply never executes — capability tracking is free for
+every compilation that does not consume it. Two implementation constraints
+preserve that property: leaf extraction reads the canonical body artifacts
+the normal pipeline already produces (no eager per-body effect recording is
+added to semantic analysis on behalf of a query that may never run), and
+speculative evaluation of summaries during non-test builds stays off
+(ADR-0063 §1 permits speculation as scheduling policy; enabling it for
+summaries would be an explicit future choice, not this ADR's default). If a
+consumer outside testing later wants summaries — say an optimization pass
+replacing the CFG's coarse all-intrinsics-are-opaque side-effect
+classification, or an IDE surface — it brings the cost in by demanding the
+query, and the query model attributes that cost to that consumer exactly.
+
 #### 4.3 Soundness posture
 
 The summary must be sound (never claims a capability absent that the test can
@@ -600,9 +616,12 @@ here per docs/designs/README.md).
       summaries over `BodyReferences` with red/green cutoff; leaves = helper
       manifest classification, `@syscall`, FFI; least-fixed-point over
       recursion; summaries surfaced in `--list` and `test_finished` events;
-      determinism and cutoff behavior pinned by compiler unit tests and an
-      edit-scenario measurement (ADR-0068 harness) proving near-zero warm
-      cost. No scheduling or caching behavior change.
+      determinism and cutoff behavior pinned by compiler unit tests and two
+      measured gates: an edit-scenario measurement (ADR-0068 harness) proving
+      near-zero warm cost in test mode, and a zero-delta measurement on
+      executable-request benchmarks (ADR-0067 harness) proving the family
+      costs nothing when not demanded (§4.2). No scheduling or caching
+      behavior change.
 - [ ] **Phase 4: verdict cache and selection** - RUE-TBD. Closure fingerprints
       for test roots; on-disk verdict cache with documented key composition;
       `cached_pass`, `--no-cache`, `--changed-only`; hermetic-only gating with
@@ -652,6 +671,9 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   built-ins' failure channel (§7.1), in-language frameworks inherit
   verification automatically (§7.2), and a replacement runner can exist from
   Phase 2 using only documented contracts (§7.4).
+- Capability tracking is free when unused, by construction and by measured
+  gate: the summary family is demanded only by test requests, and executable
+  compiles never evaluate it (§4.2, Phase 3 acceptance).
 
 ### Negative
 
