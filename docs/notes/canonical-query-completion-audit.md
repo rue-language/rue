@@ -1,5 +1,12 @@
 # Compiler session architecture completion audit
 
+> [!WARNING]
+> Historical implementation audit. This note describes the compiler before
+> ADR-0063's revisioned query-runtime cutover. See the
+> [post-ADR-0063 cold compiler architecture audit](post-adr-0063-cold-compiler-architecture-audit.md)
+> for the current source map; [ADR-0063](../designs/0063-parallel-demand-driven-incremental-compilation.md)
+> remains the architectural authority.
+
 This audit records the canonical compiler boundary after RUE-720 and the
 completion boundary for RUE-627.
 
