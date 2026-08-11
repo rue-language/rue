@@ -494,6 +494,11 @@ pub(crate) struct CfgRecord {
     pub(crate) domains: crate::durable_cfg::CfgDomainProjection,
     pub(crate) type_pool: rue_air::FrozenTypeInternPool,
     pub(crate) interner: Arc<lasso::ThreadedRodeo>,
+    /// Current logical retained charge of the shared append-only `interner`.
+    /// `interner_retained_entries` records this CFG's publication width, so an
+    /// accessor import refreshes the shared charge only after actual growth.
+    interner_retained_charge: Arc<std::sync::atomic::AtomicU64>,
+    interner_retained_entries: u64,
     pub(crate) strings: Arc<[String]>,
     pub(crate) local_atoms:
         Arc<[rue_air::LocalAtomRecord<crate::StableDefinitionKey, crate::ModuleId>]>,
@@ -527,10 +532,66 @@ pub(crate) enum CfgValue {
 
 impl RetainedCharge for lasso::ThreadedRodeo {
     fn retained_charge(&self) -> u64 {
-        let entries = (self.len() * std::mem::size_of::<lasso::Spur>()) as u64;
-        self.strings().fold(entries, |charge, value| {
-            charge.saturating_add(value.len() as u64)
-        })
+        measure_interner_retained_charge(self).0
+    }
+}
+
+fn measure_interner_retained_charge(interner: &lasso::ThreadedRodeo) -> (u64, u64, u64) {
+    let entries = interner.len() as u64;
+    let utf8_bytes = interner.strings().fold(0_u64, |bytes, value| {
+        bytes.saturating_add(value.len() as u64)
+    });
+    (
+        entries
+            .saturating_mul(std::mem::size_of::<lasso::Spur>() as u64)
+            .saturating_add(utf8_bytes),
+        entries,
+        utf8_bytes,
+    )
+}
+
+fn refresh_interner_retained_charge(
+    interner: &lasso::ThreadedRodeo,
+    charge: &std::sync::atomic::AtomicU64,
+    published_entries: u64,
+) -> Option<(u64, u64)> {
+    if interner.len() as u64 == published_entries {
+        return None;
+    }
+    let (payload, entries, utf8_bytes) = measure_interner_retained_charge(interner);
+    charge.fetch_max(
+        (std::mem::size_of_val(interner) as u64).saturating_add(payload),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    Some((entries, utf8_bytes))
+}
+
+struct InternerChargeRefresh<'a> {
+    context: &'a QueryContext,
+    interner: Arc<lasso::ThreadedRodeo>,
+    charge: Arc<std::sync::atomic::AtomicU64>,
+    published_entries: u64,
+}
+
+impl Drop for InternerChargeRefresh<'_> {
+    fn drop(&mut self) {
+        let Some((entries, utf8_bytes)) =
+            refresh_interner_retained_charge(&self.interner, &self.charge, self.published_entries)
+        else {
+            return;
+        };
+        self.context.record_work(rue_query::WorkItem::new(
+            "cfg.retained-interner-charge-scans",
+            1,
+        ));
+        self.context.record_work(rue_query::WorkItem::new(
+            "cfg.retained-interner-entries-scanned",
+            entries,
+        ));
+        self.context.record_work(rue_query::WorkItem::new(
+            "cfg.retained-interner-utf8-bytes-scanned",
+            utf8_bytes,
+        ));
     }
 }
 
@@ -658,7 +719,11 @@ impl RetainedCharge for CfgRecord {
             .saturating_add(self.cfg.retained_charge())
             .saturating_add(self.domains.retained_charge())
             .saturating_add(self.type_pool.retained_charge())
-            .saturating_add(self.interner.retained_charge())
+            .saturating_add(
+                self.interner_retained_charge
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
+            .saturating_add(std::mem::size_of::<std::sync::atomic::AtomicU64>() as u64)
             .saturating_add(self.strings.retained_charge())
             .saturating_add(self.local_atoms.retained_charge())
             .saturating_add(self.codegen.retained_charge())
@@ -1220,6 +1285,24 @@ fn build_cfg(
         // the live type pool for same-named structs outside this CFG's domain.
         implicit_destructor_targets.insert(owner.clone());
     }
+    let (interner_payload_charge, interner_entries, interner_utf8_bytes) =
+        measure_interner_retained_charge(&materialized.interner);
+    let interner_retained_charge = Arc::new(std::sync::atomic::AtomicU64::new(
+        (std::mem::size_of_val(materialized.interner.as_ref()) as u64)
+            .saturating_add(interner_payload_charge),
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.retained-interner-charge-scans",
+        1,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.retained-interner-entries-scanned",
+        interner_entries,
+    ));
+    context.record_work(rue_query::WorkItem::new(
+        "cfg.retained-interner-utf8-bytes-scanned",
+        interner_utf8_bytes,
+    ));
     Ok(CfgValue::Available(Arc::new(CfgRecord {
         air: Arc::new(materialized.air),
         source_name: materialized.name.into(),
@@ -1229,6 +1312,8 @@ fn build_cfg(
         domains,
         type_pool: materialized.type_pool,
         interner: materialized.interner,
+        interner_retained_charge,
+        interner_retained_entries: interner_entries,
         strings: materialized.strings.into(),
         local_atoms: materialized.local_atoms.into(),
         codegen: Arc::new(codegen),
@@ -1262,6 +1347,15 @@ pub(crate) fn evaluate_optimized_cfg(
     let mut current = record.cfg.clone();
     let mut domains = record.domains.clone();
     let interner = record.interner.clone();
+    // Accessor import is the sole operation that can extend this shared
+    // append-only symbol universe. Refresh on every exit, including partial
+    // import and optimization failures, before the returned terminal publishes.
+    let _interner_charge_refresh = InternerChargeRefresh {
+        context,
+        interner: interner.clone(),
+        charge: record.interner_retained_charge.clone(),
+        published_entries: record.interner_retained_entries,
+    };
     let mut strings = record.strings.to_vec();
     let mut local_atoms = record.local_atoms.to_vec();
     let mut local_atom_identities = None;
@@ -1421,6 +1515,7 @@ pub(crate) fn evaluate_optimized_cfg(
     match rue_cfg::opt::optimize(current, key.opt_level, &record.type_pool) {
         Ok(cfg) => {
             context.record_work(rue_query::WorkItem::new("cfg.optimize.successes", 1));
+            let interner_retained_entries = interner.len() as u64;
             Ok(QueryOutput::success(CfgValue::Available(Arc::new(
                 CfgRecord {
                     air: record.air.clone(),
@@ -1429,6 +1524,8 @@ pub(crate) fn evaluate_optimized_cfg(
                     domains,
                     type_pool: record.type_pool.clone(),
                     interner,
+                    interner_retained_charge: record.interner_retained_charge.clone(),
+                    interner_retained_entries,
                     strings: strings.into(),
                     local_atoms: local_atoms.into(),
                     codegen: Arc::new(CfgCodegenDomain {
@@ -1505,6 +1602,32 @@ fn resolve_splice_block(
 #[cfg(test)]
 mod accessor_graph_tests {
     use super::*;
+
+    #[test]
+    fn retained_interner_charge_refreshes_once_after_append() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let interner = lasso::ThreadedRodeo::new();
+        interner.get_or_intern("caller");
+        let (payload, published_entries, _) = measure_interner_retained_charge(&interner);
+        let charge =
+            AtomicU64::new((std::mem::size_of_val(&interner) as u64).saturating_add(payload));
+
+        interner.get_or_intern("callee-only");
+        assert_eq!(
+            refresh_interner_retained_charge(&interner, &charge, published_entries),
+            Some((2, 17))
+        );
+        let (payload, current_entries, _) = measure_interner_retained_charge(&interner);
+        assert_eq!(
+            charge.load(Ordering::Relaxed),
+            (std::mem::size_of_val(&interner) as u64).saturating_add(payload)
+        );
+        assert_eq!(
+            refresh_interner_retained_charge(&interner, &charge, current_entries),
+            None
+        );
+    }
 
     fn chain(size: usize) -> std::collections::BTreeMap<usize, Vec<usize>> {
         (0..size)

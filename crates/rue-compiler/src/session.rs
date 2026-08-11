@@ -5141,6 +5141,18 @@ impl CompilerSession {
         for execution in &executions {
             backend_work.observe(*execution);
         }
+        let batch_work = |name: &str| {
+            attempt
+                .work()
+                .iter()
+                .find_map(|(kind, count)| (kind.as_ref() == name).then_some(*count as usize))
+                .unwrap_or(0)
+        };
+        work.cfg.retained_interner_charge_scans += batch_work("cfg.retained-interner-charge-scans");
+        work.cfg.retained_interner_entries_scanned +=
+            batch_work("cfg.retained-interner-entries-scanned");
+        work.cfg.retained_interner_utf8_bytes_scanned +=
+            batch_work("cfg.retained-interner-utf8-bytes-scanned");
         if let Some(terminal) = attempt.terminal() {
             self.queries.revisioned.retain_backend_optimized_cfg_batch(
                 &mut backend_root,
@@ -9403,6 +9415,20 @@ mod tests {
         );
         assert!(
             cfg_work.materialization_declarations_scanned > 0,
+            "{cfg_work:?}"
+        );
+        assert_eq!(
+            cfg_work.retained_interner_charge_scans, cfg_work.cfg_builds_succeeded,
+            "without accessor imports, each newly built CFG scans its body-local interner charge exactly once: {cfg_work:?}"
+        );
+        assert!(cfg_work.retained_interner_charge_scans > 0, "{cfg_work:?}");
+        assert!(
+            cfg_work.retained_interner_entries_scanned >= cfg_work.retained_interner_charge_scans,
+            "{cfg_work:?}"
+        );
+        assert!(
+            cfg_work.retained_interner_utf8_bytes_scanned
+                >= cfg_work.retained_interner_entries_scanned,
             "{cfg_work:?}"
         );
         let names = semantic

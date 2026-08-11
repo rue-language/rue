@@ -990,6 +990,12 @@ fn benchmark_compiler_work(
             type_nodes_scanned: metrics.semantic.cfg.materialization_type_nodes_scanned as u64,
             fact_selections: metrics.semantic.cfg.materialization_fact_selections as u64,
         },
+        cfg_retained_charge: rue_perf_schema::CfgRetainedChargeWork {
+            interner_scans: metrics.semantic.cfg.retained_interner_charge_scans as u64,
+            interner_entries_scanned: metrics.semantic.cfg.retained_interner_entries_scanned as u64,
+            interner_utf8_bytes_scanned: metrics.semantic.cfg.retained_interner_utf8_bytes_scanned
+                as u64,
+        },
         query_runtime: rue_perf_schema::QueryRuntimeWork {
             claims: runtime.claims,
             reuses: runtime.reuses,
