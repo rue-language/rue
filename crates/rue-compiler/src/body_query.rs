@@ -219,8 +219,51 @@ pub(crate) struct WellKnownOptionResolution {
     pub(crate) anonymous_nominals: Arc<[crate::durable_semantics::DurableAnonymousNominal]>,
 }
 
+/// Canonical sorted, duplicate-free body-reference summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BodyReferences(pub(crate) Arc<[BodyReference]>);
+
+fn merge_ordered_unique<T: Clone + Ord>(
+    existing: Arc<[T]>,
+    selected: std::collections::BTreeSet<T>,
+) -> Arc<[T]> {
+    if selected.is_empty() {
+        return existing;
+    }
+    if existing.is_empty() {
+        return selected.into_iter().collect::<Vec<_>>().into();
+    }
+
+    let mut merged = Vec::with_capacity(existing.len() + selected.len());
+    let mut existing = existing.iter().peekable();
+    let mut selected = selected.into_iter().peekable();
+    loop {
+        match (existing.peek(), selected.peek()) {
+            (Some(left), Some(right)) => match (*left).cmp(right) {
+                std::cmp::Ordering::Less => {
+                    merged.push(existing.next().expect("peeked existing value").clone());
+                }
+                std::cmp::Ordering::Equal => {
+                    existing.next();
+                    merged.push(selected.next().expect("peeked selected value"));
+                }
+                std::cmp::Ordering::Greater => {
+                    merged.push(selected.next().expect("peeked selected value"));
+                }
+            },
+            (Some(_), None) => {
+                merged.extend(existing.cloned());
+                break;
+            }
+            (None, Some(_)) => {
+                merged.extend(selected);
+                break;
+            }
+            (None, None) => break,
+        }
+    }
+    merged.into()
+}
 
 /// Descriptor-only record of the exact lookup terminals consulted while
 /// analyzing one body. Pin ownership is deliberately absent: the registered
@@ -757,7 +800,7 @@ impl BodyTransaction {
     pub(crate) fn attach_provider_observations(
         mut self,
         lookup_observations: BodyLookupObservations,
-        selected_references: impl IntoIterator<Item = BodyReference>,
+        selected_references: std::collections::BTreeSet<BodyReference>,
     ) -> Self {
         match &mut self {
             Self::Success {
@@ -770,18 +813,47 @@ impl BodyTransaction {
                 lookup_observations: stored,
                 ..
             } => {
-                let mut merged = references
-                    .0
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::BTreeSet<_>>();
-                merged.extend(selected_references);
-                references.0 = merged.into_iter().collect::<Vec<_>>().into();
+                debug_assert!(
+                    references.0.windows(2).all(|pair| pair[0] < pair[1]),
+                    "body-reference summaries must be canonical before publication"
+                );
+                if !selected_references.is_empty() {
+                    let existing = std::mem::replace(&mut references.0, Arc::from([]));
+                    references.0 = merge_ordered_unique(existing, selected_references);
+                }
                 *stored = lookup_observations;
             }
             Self::Control(_) => {}
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_ordered_unique;
+    use std::collections::BTreeSet;
+    use std::sync::Arc;
+
+    #[test]
+    fn ordered_unique_merge_handles_empty_overlap_and_interleaving() {
+        let empty = merge_ordered_unique(Arc::from([]), BTreeSet::<u8>::new());
+        assert_eq!(&*empty, &[] as &[u8]);
+
+        let selected = BTreeSet::from([1, 3, 5]);
+        assert_eq!(&*merge_ordered_unique(Arc::from([]), selected), &[1, 3, 5]);
+
+        let selected = BTreeSet::from([2, 3, 6]);
+        assert_eq!(
+            &*merge_ordered_unique(Arc::from([1, 3, 4, 7]), selected),
+            &[1, 2, 3, 4, 6, 7]
+        );
+
+        let selected = BTreeSet::new();
+        assert_eq!(
+            &*merge_ordered_unique(Arc::from([1, 2, 3]), selected),
+            &[1, 2, 3]
+        );
     }
 }
 

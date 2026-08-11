@@ -894,6 +894,21 @@ to modestly faster at -0.78% paired median despite one noisy outlier. Median
 peak RSS moves +0.6 MiB, within dispersion. Every deterministic compiler-work
 counter and the emitted executable remain identical.
 
+RUE-1389 makes the body-reference publication representation explicit: every
+summary is sorted and duplicate-free. Provider publication previously rebuilt
+that canonical slice by inserting all old and newly selected references into a
+fresh ordered tree, even though both inputs were already canonical. It now
+merges the two ordered streams directly, reducing the merge from
+O((n + m) log(n + m)) ordered insertion work to O(n + m). A debug assertion
+guards the producer-side invariant at the publication boundary.
+
+Fixed one-worker Lattice saves 6,076 allocator calls and 6,508,304 requested
+bytes. Sixteen alternating ordinary-release pairs are clock-neutral on the
+loaded host: the paired median is -2.49%, but the paired MAD is 11.10% and the
+range is -27.68% to +54.74%. Median peak RSS falls by 2.4 MiB, within the wide
+run dispersion. Every deterministic compiler-work counter and the emitted
+executable remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
