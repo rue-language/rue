@@ -200,6 +200,71 @@ RUE-1083/RUE-1086. What the measurement establishes is only its price: this one
 test is currently two-thirds of the pre-merge unit suite's cost, and the merge
 queue serializes on it.
 
+#### Update (2026-08-11): the price collapsed, and the ruling went the other way
+
+The figures above stand as measured, but they no longer describe trunk. Same
+host, same default configuration, `rue-compiler-test`:
+
+| | at `137e3f60` (2026-08-09) | at `18def29` (2026-08-11) |
+| -- | --: | --: |
+| the pressure test alone | 146.09s | 1.66s |
+| whole binary, parallel | 154.53s | 19.93s |
+| whole binary, serial | 196.78s | 60.24s |
+
+The collapse is not from this note's scope A or B, and it is not specific to
+this test. It is general compiler perf work landing: a sibling test that
+compiles the same 34-function chain across several revisions but has **no**
+eviction-pressure loop moved 10.22s → 0.60s over the same interval, while
+sibling tests that only compile one-function programs did not move
+(1.31s → 1.07s, 0.29s → 0.30s). The win is on repeated revisions of a wide
+program in one long-lived session, which is why this test — 19 wide revisions —
+shows it most extremely. It came from the trunk work between those two commits,
+which includes several query-runtime changes (RUE-1247 and RUE-1343 through
+RUE-1349); it has not been bisected to a single commit.
+
+Note that a whole-suite subtraction hides this: the rest of `rue-compiler-test`
+went 50.69s → 58.58s across the same interval, because nearly all of those ~810
+tests compile toy programs where there is nothing to win.
+
+The premise of the split proposed above — that this test is two-thirds of the
+pre-merge unit suite — is gone, and with it the case for a `slow` variant: the
+big variant would run identical assertions on an identical program for no
+additional coverage, which is what separates it from the scaling-matrix and
+large-example precedents cited above.
+
+The ruling recorded in RUE-1262 and in the test itself is therefore to reduce
+the loop in place, from 16 iterations to a constant derived from the family
+retention bound, and to state in the test what the iterations buy. The eviction
+this test needs is driven by a per-family retained-*count* watermark
+(`BODY_QUERY_MEMO_RETENTION = 8`) against 34 terminals per compile, so it is a
+property of the graph rather than of the host, and one compile already clears
+it four times over. That also bounds the blast radius if the per-compile
+constant ever regresses again: 5 compiles rather than 19.
+
+##### The lane is no longer governed by one item
+
+`scripts/rue premerge`, warm, on the same 4-core host: 113.9s wall, 199.7s
+serial across 144 targets. (That denominator is not this note's 80 — the script
+also runs the per-crate fmt and clippy gates.) The head of the distribution:
+
+| target | seconds | share of serial |
+| -- | --: | --: |
+| `//crates/rue-oracle-diff:rue-oracle-diff-test` | 37.4 | 18.7% |
+| `//crates/rue-compiler:rue-compiler-test` | 25.5 | 12.8% |
+| `//crates/rue-compiler:scaling-matrix-test` | 18.4 | 9.2% |
+| `//:tutorial-snippet-tests` | 15.7 | 7.9% |
+| `//crates/rue-fuzz:rue-fuzz-test` | 12.7 | 6.4% |
+
+The four-core LPT bound is now `max(37.4, 199.7/4) = 49.9s` — set by aggregate
+work, not by the largest indivisible item, which is the end state this note's
+"Projection" predicted. The gap between that bound and the 113.9s measured wall
+is scheduling and build serialization, so any further premerge work is a packer
+question (RUE-1267), not a single-test question.
+
+This is warm and local. It says nothing about the cold compiler build inside
+the CI premerge job, which the ADR-0069 sample put at 354–393s in 3 of 9 runs;
+on CI that, not any test, is the likely binding constraint now.
+
 ## What this means for RUE-1250
 
 The sharding question is answered in the negative for premerge. Do not add lanes
