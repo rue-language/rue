@@ -625,7 +625,8 @@ fn compute_dataflow(
 ///   element values before storing them); the bitset scan is then O(N²) in the
 ///   number of live bits, whereas this path stays linear (RUE-302).
 /// * **Has back-edges (loops):** loop-carried values are live past their textual
-///   last use, so we fall back to the exact `live_in`/`live_out` scan.
+///   last use, so we extend the same dense range table from the exact
+///   `live_in`/`live_out` scan as well as definitions and uses.
 ///
 /// # A range is a textual interval, not liveness
 ///
@@ -665,19 +666,20 @@ fn build_live_ranges(
         IndexMap::with_capacity(vreg_count as usize);
     ranges.resize(vreg_count as usize, None);
 
+    let mut extend = |vreg: VReg, idx: usize| match &mut ranges[vreg] {
+        Some(range) => {
+            if idx < range.start {
+                range.start = idx;
+            }
+            if idx > range.end {
+                range.end = idx;
+            }
+        }
+        slot @ None => *slot = Some(LiveRange::new(idx, idx)),
+    };
+
     if !has_back_edge {
         // Fast O(defs + uses) path: no loops, so def/use extents are the range.
-        let mut extend = |vreg: VReg, idx: usize| match &mut ranges[vreg] {
-            Some(range) => {
-                if idx < range.start {
-                    range.start = idx;
-                }
-                if idx > range.end {
-                    range.end = idx;
-                }
-            }
-            slot @ None => *slot = Some(LiveRange::new(idx, idx)),
-        };
         for idx in 0..num_insts {
             for vreg in &inst_defs[idx] {
                 extend(*vreg, idx);
@@ -689,43 +691,18 @@ fn build_live_ranges(
         return ranges;
     }
 
-    let mut first_live: HashMap<VReg, usize> = HashMap::new();
-    let mut last_live: HashMap<VReg, usize> = HashMap::new();
-
     for idx in 0..num_insts {
-        // Check definitions
         for vreg in &inst_defs[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            last_live.insert(*vreg, idx);
+            extend(*vreg, idx);
         }
-        // Check uses
         for vreg in &inst_uses[idx] {
-            first_live.entry(*vreg).or_insert(idx);
-            last_live.insert(*vreg, idx);
+            extend(*vreg, idx);
         }
-        // Check live_in
         for vreg_idx in live_in[idx].ones() {
-            let vreg = VReg::new(vreg_idx as u32);
-            first_live.entry(vreg).or_insert(idx);
-            if last_live.get(&vreg).is_none_or(|&last| idx > last) {
-                last_live.insert(vreg, idx);
-            }
+            extend(VReg::new(vreg_idx as u32), idx);
         }
-        // Check live_out
         for vreg_idx in live_out[idx].ones() {
-            let vreg = VReg::new(vreg_idx as u32);
-            first_live.entry(vreg).or_insert(idx);
-            if last_live.get(&vreg).is_none_or(|&last| idx > last) {
-                last_live.insert(vreg, idx);
-            }
-        }
-    }
-
-    // Build ranges using dense Vec storage
-    for vreg_idx in 0..vreg_count {
-        let vreg = VReg::new(vreg_idx);
-        if let (Some(&start), Some(&end)) = (first_live.get(&vreg), last_live.get(&vreg)) {
-            ranges[vreg] = Some(LiveRange::new(start, end));
+            extend(VReg::new(vreg_idx as u32), idx);
         }
     }
 
@@ -1018,6 +995,35 @@ mod tests {
         let range = info.range(VReg::new(0)).expect("v0 should have a range");
         assert_eq!(range.start, 0);
         assert!(range.end >= 4);
+    }
+
+    #[test]
+    fn looped_live_range_includes_dataflow_only_extent() {
+        let loop_label = LabelId::new(0);
+        let instructions = vec![
+            TestInst::Def { dst: 0 },
+            TestInst::Label { id: loop_label },
+            TestInst::Use { src: 0 },
+            TestInst::Branch { label: loop_label },
+            TestInst::Ret,
+        ];
+        let num_insts = instructions.len();
+
+        let info: LivenessInfo<u32> = analyze(
+            &instructions,
+            1,
+            VRegClasses::all_gp(1),
+            test_get_label,
+            |idx, inst, label_to_idx| test_get_successors(idx, inst, label_to_idx, num_insts),
+            test_get_uses,
+            test_get_defs,
+            test_get_clobbers,
+            |_| false,
+        );
+
+        // The back-edge keeps v0 live through instruction 3 even though its
+        // last textual use is instruction 2.
+        assert_eq!(info.range(VReg::new(0)), Some(&LiveRange::new(0, 3)));
     }
 
     #[test]

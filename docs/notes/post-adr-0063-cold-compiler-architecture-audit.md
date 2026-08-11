@@ -496,6 +496,25 @@ for Lattice. Peak memory was neutral on the smaller workloads and fell from
 Lattice executable remains byte-identical at
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1362 simplified the looped half of shared live-range construction. Virtual
+registers are dense and the canonical result already owns one indexed slot per
+register, but the looped path previously accumulated endpoints in two hash
+maps and then scanned every register to look them up again. Definitions, uses,
+and exact `live_in`/`live_out` membership now extend the canonical dense table
+directly. The interval semantics and the loop-free fast path are unchanged.
+
+On the fixed one-worker Lattice allocation probe, calls fell from 17,700,930 to
+17,694,739 (-0.03 percent) and requested bytes from 3,382,572,379 to
+3,374,368,531 (-0.24 percent). Every query, reachability, and
+CFG-materialization counter remained identical. An immediate parent/current
+ordinary-allocator comparison moved compiler medians from 129.08 to 128.28 ms
+for Ruelex, 361.36 to 355.20 ms for Mosaic, 785.64 to 786.87 ms for Harbor, and
+897.61 to 917.22 ms for Lattice. The Lattice sample had a 21.59 ms MAD, so the
+mixed clock result is neutral rather than evidence of a regression. Peak
+memory moved -0.8, +1.3, -3.5, and -4.3 MiB respectively. The Lattice
+executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
