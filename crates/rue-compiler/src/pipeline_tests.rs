@@ -2227,8 +2227,18 @@ mod tests {
         )
         .unwrap();
         let one_shot_metrics = output.unstable_metrics();
-        let live_runtime = session.unstable_metrics().query_runtime();
+        let live_metrics = session.unstable_metrics();
+        let live_runtime = live_metrics.query_runtime();
         assert_eq!(one_shot_metrics.query_runtime, live_runtime);
+        assert_eq!(
+            one_shot_metrics.semantic_reachability,
+            live_metrics.semantic_reachability(),
+        );
+        assert!(
+            one_shot_metrics.semantic_reachability.frontier_batches > 0
+                && one_shot_metrics.semantic_reachability.frontier_keys >= 2,
+            "a rooted cold compile reports the reachability frontiers it scheduled"
+        );
         assert!(
             one_shot_metrics
                 .query_runtime

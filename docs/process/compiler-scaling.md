@@ -31,6 +31,8 @@ compilations. The report records:
 - files, modules, source bytes, lines, lexer tokens, and functions considered;
 - externally observed fresh-process wall time and peak resident memory;
 - the compiler's additive, mutually exclusive phase accounting;
+- semantic-reachability scans, scheduled keys, and fixed frontier-width
+  buckets;
 - query validation, endorsement, lease, demand, and retention-scan work;
 - display-only query identities materialized for memo nodes, structured batch
   cycle rendering, and abort fallbacks, with exact counts and formatted key
@@ -41,6 +43,15 @@ The Markdown work table includes validation nodes per token. That ratio is a
 clock-independent amplification signal: source growth should not silently turn
 into many repeated validation visits merely because elapsed time still looks
 plausible on one host.
+
+The semantic-reachability table reports average scheduled keys per non-empty
+frontier, fixed width buckets, and body transactions consumed from structured
+prefetch versus demanded on the serial coordinator path. These counters
+distinguish dependency graphs that expose little parallel work from wide
+frontiers whose work remains slow because of allocation, hashing, query-runtime,
+or synchronization overhead. They describe deterministic graph shape and
+scheduler submissions; they are not elapsed-time or worker-utilization
+estimates.
 
 The display-identity table similarly reports formatted key bytes per token.
 Memo-node identities and abort fallbacks label diagnostics. Structured-wait

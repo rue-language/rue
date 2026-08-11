@@ -410,6 +410,19 @@ impl CanonicalSemanticWork {
         body.max_specialization_depth = body
             .max_specialization_depth
             .max(query.max_specialization_depth);
+        body.reachability_frontier_scans += query.reachability_frontier_scans;
+        body.reachability_frontier_scan_keys += query.reachability_frontier_scan_keys;
+        body.reachability_frontier_batches += query.reachability_frontier_batches;
+        body.reachability_frontier_keys += query.reachability_frontier_keys;
+        body.reachability_frontier_width_one += query.reachability_frontier_width_one;
+        body.reachability_frontier_width_two_to_three +=
+            query.reachability_frontier_width_two_to_three;
+        body.reachability_frontier_width_four_to_seven +=
+            query.reachability_frontier_width_four_to_seven;
+        body.reachability_frontier_width_eight_or_more +=
+            query.reachability_frontier_width_eight_or_more;
+        body.reachability_transactions_prefetched += query.reachability_transactions_prefetched;
+        body.reachability_transactions_serial += query.reachability_transactions_serial;
         body.air_instructions_produced += query.air_instructions_produced;
         body.local_strings_produced += query.local_strings_produced;
         body.ordinary_body_exports_attempted += query.ordinary_body_exports_attempted;

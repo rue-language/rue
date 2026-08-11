@@ -1095,13 +1095,19 @@ pub struct CompileOutput {
     pub(crate) work: PipelineWork,
     /// Live query-runtime work observed after the rooted compiler queries.
     pub(crate) query_runtime: crate::unstable::QueryRuntimeMetrics,
+    pub(crate) semantic_reachability: crate::unstable::SemanticReachabilityMetrics,
 }
 
 impl CompileOutput {
     /// Return instrumentation from this one-shot compilation without exposing
     /// query-engine work records.
     pub fn unstable_metrics(&self) -> crate::unstable::OneShotMetrics {
-        crate::unstable::OneShotMetrics::new(self.source_stats, self.work, self.query_runtime)
+        crate::unstable::OneShotMetrics::new(
+            self.source_stats,
+            self.work,
+            self.query_runtime,
+            self.semantic_reachability,
+        )
     }
 }
 
@@ -1275,7 +1281,9 @@ pub(crate) fn compile_rooted_with_session(
         })?;
     let total_source_bytes: usize = snapshot.files().map(|source| source.source.len()).sum();
     let session_work = session.work().clone();
-    let query_runtime = session.unstable_metrics().query_runtime();
+    let metrics = session.unstable_metrics();
+    let query_runtime = metrics.query_runtime();
+    let semantic_reachability = metrics.semantic_reachability();
     let image = crate::program_image_plan::ProgramImage::from_rooted(
         rooted.objects,
         rooted.exports,
@@ -1298,5 +1306,6 @@ pub(crate) fn compile_rooted_with_session(
         semantic: rooted.work,
     };
     output.query_runtime = query_runtime;
+    output.semantic_reachability = semantic_reachability;
     Ok(output)
 }
