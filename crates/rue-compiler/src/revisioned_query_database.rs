@@ -938,27 +938,85 @@ impl PublishedRootLookupLease {
             .map(|(incarnation, _)| *incarnation)
     }
 
-    fn record_incarnation(&mut self, key: Arc<str>, incarnation: u64) {
+    /// Refresh one observation and return the exact inverse operation.
+    ///
+    /// Publication commits are common while aborting a committed handoff is
+    /// exceptional. A per-observation inverse keeps the success path
+    /// proportional to the new root instead of snapshotting both bounded
+    /// history trees before every commit.
+    fn record_incarnation(&mut self, key: Arc<str>, incarnation: u64) -> LookupIncarnationMutation {
         let generation = self.next_incarnation_generation;
         self.next_incarnation_generation = self
             .next_incarnation_generation
             .checked_add(1)
             .expect("lookup-incarnation observation generation overflow");
-        if let Some((_, previous_generation)) = self
+        let previous = self
             .incarnations
-            .insert(key.clone(), (incarnation, generation))
-        {
+            .insert(key.clone(), (incarnation, generation));
+        if let Some((_, previous_generation)) = previous {
             self.incarnation_order
                 .remove(&(previous_generation, key.clone()));
         }
-        self.incarnation_order.insert((generation, key));
+        self.incarnation_order.insert((generation, key.clone()));
+        let mut evicted = None;
         while self.incarnations.len() > LOOKUP_INCARNATION_HISTORY_BOUND {
             let Some((_, oldest)) = self.incarnation_order.pop_first() else {
                 break;
             };
-            self.incarnations.remove(&oldest);
+            let previous = self
+                .incarnations
+                .remove(&oldest)
+                .expect("lookup incarnation order names a retained entry");
+            assert!(
+                evicted.is_none(),
+                "one observation evicts at most one entry"
+            );
+            evicted = Some((oldest, previous));
+        }
+        LookupIncarnationMutation {
+            key,
+            installed: (incarnation, generation),
+            previous,
+            evicted,
         }
     }
+
+    fn rollback_incarnation_mutations(&mut self, mutations: Vec<LookupIncarnationMutation>) {
+        // A key may be refreshed more than once by a body-closure publication,
+        // so restore the journal in strict reverse order.
+        for mutation in mutations.into_iter().rev() {
+            let installed = self
+                .incarnations
+                .remove(&mutation.key)
+                .expect("rollback removes the installed lookup incarnation");
+            assert_eq!(installed, mutation.installed);
+            assert!(
+                self.incarnation_order
+                    .remove(&(mutation.installed.1, mutation.key.clone())),
+                "rollback removes the installed lookup recency entry"
+            );
+            if let Some((key, previous)) = mutation.evicted {
+                assert!(self.incarnations.insert(key.clone(), previous).is_none());
+                assert!(self.incarnation_order.insert((previous.1, key)));
+            }
+            if let Some(previous) = mutation.previous {
+                assert!(
+                    self.incarnations
+                        .insert(mutation.key.clone(), previous)
+                        .is_none()
+                );
+                assert!(self.incarnation_order.insert((previous.1, mutation.key)));
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LookupIncarnationMutation {
+    key: Arc<str>,
+    installed: (u64, u64),
+    previous: Option<(u64, u64)>,
+    evicted: Option<(Arc<str>, (u64, u64))>,
 }
 
 pub(crate) fn body_lookup_root_identity(key: &crate::body_query::BodyQueryKey) -> String {
@@ -1013,8 +1071,7 @@ struct PublishedLookupRootHandoff {
 struct PublishedLookupRootRollback {
     previous: Option<RootLeaseEntry>,
     publication: u64,
-    previous_incarnations: BTreeMap<Arc<str>, (u64, u64)>,
-    previous_incarnation_order: BTreeSet<(u64, Arc<str>)>,
+    incarnation_mutations: Vec<LookupIncarnationMutation>,
     previous_next_incarnation_generation: u64,
     previous_rederivations_after_eviction: u64,
     previous_supersession_evictions: u64,
@@ -1036,12 +1093,11 @@ impl rue_query::QueryAttemptHandoff for PublishedLookupRootHandoff {
             .lease
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous_incarnations = lease.incarnations.clone();
-        let previous_incarnation_order = lease.incarnation_order.clone();
         let previous_next_incarnation_generation = lease.next_incarnation_generation;
         let previous_rederivations_after_eviction = lease.rederivations_after_eviction;
         let previous_supersession_evictions = lease.supersession_evictions;
         let previous_next_root_publication = lease.next_root_publication;
+        let mut incarnation_mutations = Vec::with_capacity(observed.observed_keys.len());
         for (key, incarnation) in &observed.observed_keys {
             let identity = key.display_identity();
             if let Some(previous) = lease.seen_incarnation(&identity)
@@ -1049,7 +1105,7 @@ impl rue_query::QueryAttemptHandoff for PublishedLookupRootHandoff {
             {
                 lease.rederivations_after_eviction += 1;
             }
-            lease.record_incarnation(identity, *incarnation);
+            incarnation_mutations.push(lease.record_incarnation(identity, *incarnation));
         }
         let publication = lease.next_root_publication;
         lease.next_root_publication = lease
@@ -1066,8 +1122,7 @@ impl rue_query::QueryAttemptHandoff for PublishedLookupRootHandoff {
         self.rollback = Some(PublishedLookupRootRollback {
             previous,
             publication,
-            previous_incarnations,
-            previous_incarnation_order,
+            incarnation_mutations,
             previous_next_incarnation_generation,
             previous_rederivations_after_eviction,
             previous_supersession_evictions,
@@ -1104,8 +1159,7 @@ impl rue_query::QueryAttemptHandoff for PublishedLookupRootHandoff {
         if let Some(previous) = rollback.previous {
             lease.roots.insert(self.root.clone(), previous);
         }
-        lease.incarnations = rollback.previous_incarnations;
-        lease.incarnation_order = rollback.previous_incarnation_order;
+        lease.rollback_incarnation_mutations(rollback.incarnation_mutations);
         lease.next_incarnation_generation = rollback.previous_next_incarnation_generation;
         lease.rederivations_after_eviction = rollback.previous_rederivations_after_eviction;
         lease.supersession_evictions = rollback.previous_supersession_evictions;
@@ -1143,8 +1197,7 @@ struct PublishedBodyClosureLookupHandoff {
 struct PublishedBodyClosureLookupRollback {
     previous_roots: BTreeMap<String, RootLeaseEntry>,
     installed: BTreeMap<String, u64>,
-    previous_incarnations: BTreeMap<Arc<str>, (u64, u64)>,
-    previous_incarnation_order: BTreeSet<(u64, Arc<str>)>,
+    incarnation_mutations: Vec<LookupIncarnationMutation>,
     previous_next_incarnation_generation: u64,
     previous_rederivations_after_eviction: u64,
     previous_supersession_evictions: u64,
@@ -1549,8 +1602,7 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
         let mut rollback = PublishedBodyClosureLookupRollback {
             previous_roots: BTreeMap::new(),
             installed: BTreeMap::new(),
-            previous_incarnations: lease.incarnations.clone(),
-            previous_incarnation_order: lease.incarnation_order.clone(),
+            incarnation_mutations: Vec::new(),
             previous_next_incarnation_generation: lease.next_incarnation_generation,
             previous_rederivations_after_eviction: lease.rederivations_after_eviction,
             previous_supersession_evictions: lease.supersession_evictions,
@@ -1565,7 +1617,9 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
                 {
                     lease.rederivations_after_eviction += 1;
                 }
-                lease.record_incarnation(identity, *incarnation);
+                rollback
+                    .incarnation_mutations
+                    .push(lease.record_incarnation(identity, *incarnation));
             }
             let publication = lease.next_root_publication;
             lease.next_root_publication = lease
@@ -1637,8 +1691,7 @@ impl rue_query::QueryAttemptHandoff for PublishedBodyClosureLookupHandoff {
         for (root, previous) in rollback.previous_roots {
             lease.roots.insert(root, previous);
         }
-        lease.incarnations = rollback.previous_incarnations;
-        lease.incarnation_order = rollback.previous_incarnation_order;
+        lease.rollback_incarnation_mutations(rollback.incarnation_mutations);
         lease.next_incarnation_generation = rollback.previous_next_incarnation_generation;
         lease.rederivations_after_eviction = rollback.previous_rederivations_after_eviction;
         lease.supersession_evictions = rollback.previous_supersession_evictions;
@@ -24999,6 +25052,90 @@ mod tests {
     }
 
     #[test]
+    fn lookup_incarnation_history_mutations_roll_back_exactly() {
+        let mut lease = PublishedRootLookupLease::default();
+        for index in 0..LOOKUP_INCARNATION_HISTORY_BOUND {
+            lease.record_incarnation(format!("key-{index}").into(), index as u64);
+        }
+        let previous_incarnations = lease.incarnations.clone();
+        let previous_incarnation_order = lease.incarnation_order.clone();
+        let previous_generation = lease.next_incarnation_generation;
+
+        let mutations = vec![
+            lease.record_incarnation("key-0".into(), 10_000),
+            lease.record_incarnation("newest".into(), 20_000),
+            lease.record_incarnation("newest".into(), 30_000),
+        ];
+        assert_eq!(lease.seen_incarnation("key-0"), Some(10_000));
+        assert_eq!(lease.seen_incarnation("key-1"), None);
+        assert_eq!(lease.seen_incarnation("newest"), Some(30_000));
+
+        lease.rollback_incarnation_mutations(mutations);
+        lease.next_incarnation_generation = previous_generation;
+        assert_eq!(lease.incarnations, previous_incarnations);
+        assert_eq!(lease.incarnation_order, previous_incarnation_order);
+    }
+
+    #[test]
+    fn lookup_root_handoff_journal_rolls_back_and_retries() {
+        let mut initial = PublishedRootLookupLease {
+            roots: BTreeMap::from([(
+                "root".to_owned(),
+                RootLeaseEntry {
+                    observations: ObservedLookupRoot::new(),
+                    publication: 0,
+                },
+            )]),
+            next_root_publication: 1,
+            rederivations_after_eviction: 5,
+            supersession_evictions: 2,
+            ..PublishedRootLookupLease::default()
+        };
+        initial.record_incarnation("existing".into(), 41);
+        let lease = Arc::new(Mutex::new(initial));
+        let observed_key = LookupObservationKey::Name(LookupNameKey {
+            module: ModuleId::from_logical_path("main.rue").unwrap(),
+            namespace: DefinitionNamespace::ModuleItem,
+            name: "successor".into(),
+        });
+        let observed_identity = observed_key.display_identity();
+        let mut handoff = PublishedLookupRootHandoff {
+            lease: lease.clone(),
+            runtime: QueryRuntime::new(1),
+            root: "root".to_owned(),
+            observed: Some(ObservedLookupRoot {
+                pins: rue_query::RetainedPinSet::new(),
+                observed_keys: vec![(observed_key, 42)],
+            }),
+            rollback: None,
+        };
+
+        rue_query::QueryAttemptHandoff::commit(&mut handoff);
+        {
+            let lease = lease.lock().unwrap();
+            assert_eq!(lease.seen_incarnation(&observed_identity), Some(42));
+            assert_eq!(lease.roots["root"].publication, 1);
+        }
+        rue_query::QueryAttemptHandoff::abort(&mut handoff);
+        {
+            let lease = lease.lock().unwrap();
+            assert_eq!(lease.seen_incarnation("existing"), Some(41));
+            assert_eq!(lease.seen_incarnation(&observed_identity), None);
+            assert_eq!(lease.incarnations.len(), 1);
+            assert_eq!(lease.next_incarnation_generation, 1);
+            assert_eq!(lease.next_root_publication, 1);
+            assert_eq!(lease.rederivations_after_eviction, 5);
+            assert_eq!(lease.supersession_evictions, 2);
+            assert_eq!(lease.roots["root"].publication, 0);
+        }
+
+        rue_query::QueryAttemptHandoff::commit(&mut handoff);
+        let lease = lease.lock().unwrap();
+        assert_eq!(lease.seen_incarnation(&observed_identity), Some(42));
+        assert_eq!(lease.roots["root"].publication, 1);
+    }
+
+    #[test]
     fn body_publication_three_callback_transaction_rolls_back_and_retries() {
         let closure_root = Arc::new(Mutex::new(PublishedBodyClosureRoot {
             additions: 7,
@@ -25006,7 +25143,7 @@ mod tests {
             ..PublishedBodyClosureRoot::default()
         }));
         let reachability_root = Arc::new(Mutex::new(PublishedBodyReachabilityRoot::default()));
-        let lookup_lease = Arc::new(Mutex::new(PublishedRootLookupLease {
+        let mut initial_lookup_lease = PublishedRootLookupLease {
             roots: BTreeMap::from([(
                 "body:previous".to_owned(),
                 RootLeaseEntry {
@@ -25018,7 +25155,9 @@ mod tests {
             rederivations_after_eviction: 5,
             supersession_evictions: 2,
             ..PublishedRootLookupLease::default()
-        }));
+        };
+        initial_lookup_lease.record_incarnation("existing".into(), 41);
+        let lookup_lease = Arc::new(Mutex::new(initial_lookup_lease));
         let mut closure_handoff = PublishedBodyClosureTerminalHandoff {
             root: closure_root.clone(),
             pending: Some(Arc::new(rue_query::RetainedPinSet::new())),
@@ -25037,7 +25176,17 @@ mod tests {
             runtime: QueryRuntime::new(1),
             observed: Some(BTreeMap::from([(
                 "body:successor".to_owned(),
-                ObservedLookupRoot::new(),
+                ObservedLookupRoot {
+                    pins: rue_query::RetainedPinSet::new(),
+                    observed_keys: vec![(
+                        LookupObservationKey::Name(LookupNameKey {
+                            module: ModuleId::from_logical_path("main.rue").unwrap(),
+                            namespace: DefinitionNamespace::ModuleItem,
+                            name: "successor".into(),
+                        }),
+                        42,
+                    )],
+                },
             )])),
             retire_absent: true,
             rollback: None,
@@ -25068,6 +25217,9 @@ mod tests {
             assert_eq!(lease.rederivations_after_eviction, 5);
             assert_eq!(lease.supersession_evictions, 2);
             assert_eq!(lease.next_root_publication, 1);
+            assert_eq!(lease.next_incarnation_generation, 1);
+            assert_eq!(lease.seen_incarnation("existing"), Some(41));
+            assert_eq!(lease.incarnations.len(), 1);
         }
 
         rue_query::QueryAttemptHandoff::commit(&mut closure_handoff);
