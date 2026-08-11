@@ -36,7 +36,9 @@ consumes that executable and runs one runtime scenario. Many scenarios share one
 compile. The source manifest is derived from a cheap `--emit deps` scan rather
 than from the `srcs` glob, because a glob provably cannot produce a valid
 manifest; the derivation step is also where the declared boundary is enforced, by
-failing the build when the compiler read anything outside `srcs`. A granularity
+failing the build when the compiler read anything outside `srcs`, and where the
+envelope's absolute paths are re-anchored so that a shared scan-cache hit is not a
+build failure on another machine. A granularity
 rule keeps the action count proportionate: a compile becomes its own action when
 it is expensive relative to action overhead, or when more than one scenario
 consumes its output. That yields 47 programs; the ~4,050 inline-source corpus
@@ -170,20 +172,22 @@ back `absent`, with the path that was requested).
 ```python
 RueProgramInfo = provider(fields = [
     "executable",      # the compiled artifact
-    "manifest",        # scan-derived source manifest
-    "deps_envelope",   # the --emit deps output the manifest came from
     "root",
     "rue_target",      # x86-64-linux | aarch64-linux | aarch64-macos
     "opt_level",
     "runs_natively",   # False for a cross-target program
 ])
 
+# Mechanism internals, deliberately NOT in the consumer-facing provider.
+_RueProgramInternalInfo = provider(fields = ["manifest", "deps_envelope"])
+
 rue_program(
     name       = "meridian",
     root       = "examples/meridian/main.rue",
     srcs       = glob(["examples/meridian/**/*.rue"]),   # the declared read bound
-    std        = "//:std",
     rue_target = "x86-64-linux",
+    # compiler, std and default flags arrive as one resolved unit:
+    # _toolchain = attrs.toolchain_dep(default = "toolchains//:rue")
 )
 
 rue_program_test(
@@ -211,19 +215,40 @@ attribute that carries exactly one tier (`test_tiers.bxl:11-22`).
 
 ### Generating the manifest: a scan action, not a glob
 
-`rue_program` runs two actions.
+`rue_program` runs three ordinary actions. **Not a `dynamic_output`** — an
+earlier draft reached for one, and that was a category error worth naming, since
+it is the kind of mistake that hardens into a structure nothing else can be built
+on.
 
 1. **Scan.** `rue --emit deps <root>` with no manifest, declaring `srcs` + `std`
    as its Buck inputs. Because reads are unrestricted, resolution reports every
-   arm it probes — present and absent alike.
-2. **Compile.** `rue <root> --source-manifest <generated> -o <out>`, where the
-   manifest is `{requested_path of every accepted read} ∪ {requested_path of every
-   absent observation}`.
+   arm it probes — present and absent alike. The scan's command line carries no
+   `-O` and no `--target`, so **one scan serves every flag set of a root**: the
+   read closure is target-invariant by construction (see open question 1), which
+   is what makes this action worth separating rather than fusing into the compile.
+2. **Derive.** A script over the envelope plus the static `srcs` list, emitting
+   the manifest — `{requested_path of every accepted read} ∪ {requested_path of
+   every absent observation} ∪ the declared std` — and failing when any accepted
+   read falls outside `srcs ∪ std`.
+3. **Compile.** `rue <root> --source-manifest <generated> -o <out>`, declaring
+   `srcs` + `std` + compiler + the generated manifest as inputs.
 
-Because the manifest content depends on an action output, the rule uses
-`dynamic_output`. Verified end to end on the reproducer above, and on a program
-importing the real standard library — the scan-derived manifest picks up all 30
-std modules without the rule naming them:
+`dynamic_output` exists for when the *shape of the action graph* — which actions
+run, over which inputs — depends on an artifact's content. Nothing here does.
+Content that depends on an upstream action's output is an ordinary action edge:
+every command line and every input set above is known at analysis time, and the
+manifest is consumed by path rather than inspected to decide anything. The one
+design that would genuinely need `dynamic_output` is pruning the compile's
+declared inputs down to the observed read closure instead of declaring all of
+`srcs` — and that is precisely the design this ADR did not choose (the key table
+below reads "Transitive imports | declared `srcs`", and over-declaration is
+handled by the `ValidationInfo` audit). Steps 1 and 2 may be fused into a single
+wrapper action if the extra edge is judged not to earn its keep; that is a
+packaging choice and changes nothing above.
+
+Verified end to end on the reproducer above, and on a program importing the real
+standard library — the scan-derived manifest picks up all 30 std modules without
+the rule naming them:
 
 ```text
 $ rue --emit deps main.rue | derive-manifest > m.manifest    # 31 entries
@@ -236,9 +261,50 @@ system also disposes of a spelling hazard: the manifest's first membership check
 is lexical and never resolves symlinks, so a hand-built manifest over a Buck
 symlink-tree materialization can contain spellings the compiler never asks for.
 Using `requested_path` — literally the string the compiler will ask for — makes
-the two agree by construction. Manifest entries are written absolute so that the
-manifest-relative resolution rule (entries resolve against the manifest file's
-directory, which for a generated manifest is buck-out) cannot misfire.
+the two agree by construction.
+
+**Manifest entries must be machine-stable, and writing them verbatim would not
+be.** An earlier draft wrote entries absolute, on the theory that this kept the
+manifest-relative resolution rule from misfiring. That had it backwards: the
+manifest-relative rule is the fix, and absolute entries are a live correctness
+hole under this design's own remote-cache posture. The composition that breaks:
+
+- The envelope is machine-*un*stable. `requested_path` and `canonical_path` are
+  both `normalize_absolute` (`import_discovery.rs:334`), and the envelope also
+  embeds device/inode identity and mtimes — the same fact the audit section
+  already relies on.
+- The scan's action key is machine-*stable*: content digests of `srcs` + std +
+  compiler over a project-relative command line. That is exactly what makes it
+  uploadable and shareable, which `allow_cache_upload = True` asks for.
+- So environment A uploads a scan result; environment B, at a different checkout
+  root, takes the cache hit and receives *A's* absolute paths. Derivation then
+  emits a manifest naming paths that do not exist in B. Any compile that misses
+  while the scan hits — a different `-O`, a different `--target`, or simply a
+  combination never built in A — runs against a foreign manifest and fails: either
+  at the derive step's boundary check (A's canonical paths against B's `srcs`) or
+  at the compiler's lexical membership check (`source_loader.rs:406-431`), which
+  compares before any filesystem probe and so never matches B's requests. **A hard
+  failure on a correct build, triggered by a cache hit.**
+
+Even with upload disabled it costs the design its headline property: an absolute
+entry makes the *manifest's* digest, and therefore the compile's action key, vary
+with checkout root — so "compile once, consume many" would hold only among
+machines whose filesystem layouts agree, and Phase 1's sharing between the
+`pull_request` and `merge_group` lanes would narrow to lanes whose runners share a
+path.
+
+**Derivation therefore re-anchors before writing.** The envelope records the
+project root it was produced under (`dependency_envelope.rs:36`, populated at
+`:166`), so the script strips that prefix and writes each entry relative to the
+manifest's own directory. This needs no compiler change: `SourceManifest::load`
+already resolves a relative entry against the manifest file's parent
+(`source_loader.rs:51-83`) and normalizes it into the same absolute form the
+lexical check compares against, so relative entries and absolute requests agree
+in whatever environment the compile runs. A generated manifest lives under
+buck-out, which lives under the project root, so the relative offset is itself
+stable. This is the discipline the audit section already states — compare paths
+and fingerprints, never envelope bytes — applied one level earlier, to the
+pipeline rather than to the assertion over it.
 
 **The declared standard library is unioned in unconditionally, and it must be.**
 A scan reports only what resolution probed, and `--emit deps` does no semantic
@@ -356,7 +422,8 @@ the comparison, but the suite must own the second compile itself.
 | Cache upload | `allow_cache_upload = True` | on **both** actions; the compile-once-consume-many property depends on the scan and the compile being uploadable, not merely cacheable locally |
 | Transitive imports | action inputs | declared `srcs`; audited below |
 | Source manifest | generated input | scan-derived; changes when any probed path changes |
-| Compiler build | action input | `$(exe_target //crates/rue:rue)`; release vs debug already distinct via `//platforms:*` |
+| Compiler build | toolchain input | `RueToolchainInfo.compiler`, internally defaulting to `$(exe_target //crates/rue:rue)`; release vs debug already distinct via `//platforms:*` |
+| Standard library | toolchain input | `RueToolchainInfo.std`, internally defaulting to `//:std` |
 | Compiler flags | command line | `-O`, `--preview`, `--target` |
 | Linked archives | **action inputs** | `--link-archive` bytes are read at link time, so the flag must carry a `$(location ...)` input, not a bare path string |
 | Linker | pinned | `rue_program` pins `--linker internal`; see below |
@@ -424,11 +491,107 @@ Remote test-result caching stays off until all three pass on a real branch.
 RUE-1164 makes that ordering an acceptance criterion and this ADR keeps it
 strictly.
 
+### Forward positioning: external build systems
+
+Rue's roadmap includes first-class integration with state-of-the-art build tools
+— a published `rules_rue`, toolchain distribution, a plausible Bazel port. This
+ADR is not that work and does not attempt it. But most of what such an
+integration needs is the hard part of *this* design: compile-as-artifact keyed on
+a declared read closure, the program/scenario split, the granularity rule, and
+`--emit deps` acquiring a real consumer are all build-system-agnostic. The point
+of this section is to keep it that way, by recording the seams where an internal
+convenience would otherwise become an external constraint. Each is cheap now and
+expensive after publication.
+
+**Machine-stable manifest paths are the same fix twice.** The relative-entry
+derivation above is required for Buck2 correctness on its own; it is also the
+only portable form, because absolute paths inside a consumed action output are
+unrepresentable under sandboxed execution. Relocation-invariance of the
+derivation script belongs in the unit coverage the Consequences section already
+demands — the repository holds exactly this bar for the compiler binary, via the
+reproducibility suite's relocated-source-root perturbations
+(`scripts/check-reproducible-compiler.sh`, `scripts/test-reproducible-output.sh:164`).
+
+**A toolchain indirection, not per-invocation wiring.** The compiler and std
+reach the rule through a single `attrs.toolchain_dep` carrying compiler, std and
+default flags as one resolved unit, rather than each call site naming
+`//crates/rue:rue` and `//:std`. External consumers bring a *released* compiler,
+not a target in this repo, and both Buck2 toolchain rules and Bazel toolchain
+resolution assume that shape. This is the repository's own established pattern
+rather than a new one: `crates/rue-runtime/runtime.bzl:137` already takes
+`_rust_toolchain = attrs.toolchain_dep(default = "toolchains//:rust")` and reads
+`RustToolchainInfo`. It also buys something internal — the ability to run these
+rules against a prebuilt release compiler, which is what a toolchain-bootstrap
+test needs anyway.
+
+**The provider is an API surface; keep mechanism out of it.** `RueProgramInfo`
+above carries durable artifact facts only. `manifest` and `deps_envelope` live in
+an internal provider, because the envelope is machine-unstable bytes in a format
+this ADR treats as private — publishing it in the consumer-facing provider would
+bake that format into a compatibility contract. On naming: `rue_program` /
+`rue_program_test` depart from the ecosystem's `rue_binary` / `rue_test`
+convention. Renames are free today and not later; the choice should be made
+deliberately in Phase 0 — either adopt the conventional names, or keep the
+internal names distinct on purpose so published rules can differ. (The absence of
+a `rue_library` is not a gap. Whole-program compilation is the language's model,
+and a declared read closure is exactly what a future library-granularity unit
+would compose from.)
+
+**The scan apparatus compensates for a manifest semantic, and that is worth
+recording rather than only working around.** Mature language integrations
+converge on handing the compiler an authoritative input map it consults to the
+exclusion of everything else — rustc's `--extern` and dep-info, Go's importcfg,
+javac's classpath, Swift's module maps. `--source-manifest` is instead an
+*allowlist with fatal probes*: an undeclared probe is `DeniedLexical`-fatal even
+when a later declared arm resolves, so a valid manifest must enumerate absent
+arms, so a glob cannot produce one, so this design needs a scan action, a
+derivation script, and the hermeticity trap the Consequences section warns is
+easy to lose. That machinery is not intrinsic to Rue's build problem, and every
+future integration surface would re-inherit it.
+
+The seam is a compiler mode in which **the manifest is the filesystem**: a probe
+of a non-member path resolves as `Absent` rather than fatally. Under it a
+glob-derived manifest is valid by construction, `rue_program` collapses to one
+action, the derivation script and the path-stability problem above cease to
+exist, and under-declaration surfaces as an ordinary unresolved-import error. The
+Non-Goals section dismisses this as weakening the read policy, which is half
+right, and the honest form of the trade is:
+
+- **Cost.** On a *non-sandboxed* build where the disk is a superset of the
+  manifest, divergence between the two degrades from a loud E1400 into a silent
+  arm-shift: a file present on disk but absent from the manifest resolves via a
+  later arm, producing a different binary than the manifestless compile. That is
+  a real hazard and it is the true content of the Non-Goals sentence.
+- **Gain.** The residual window this ADR documents under Consequences — an
+  absent-arm path outside `srcs` is a declared-*allowed* read, so a file
+  materializing there is read undeclared until something re-runs derivation —
+  does not exist under manifest-as-filesystem semantics. Not in the manifest,
+  never readable. Negative control 3 exists to police a window these semantics
+  would not have.
+- **And the hazard is confined to the environments official rules do not run
+  in.** Under sandboxed or remote execution the disk *is* the declared inputs, so
+  the two semantics are observationally identical.
+
+No change is proposed here — "no compiler changes" is the right constraint for
+this milestone and the mechanism above is correct without one. This is recorded
+so that ADR-0051's fatal-probe semantics are not mistaken for a permanent
+constraint merely because this document worked around them successfully.
+
+**Portability of everything else**, for the record: `ValidationInfo` maps to
+Bazel's validation output group and is the right choice on both; `allow_cache_upload`
+is implicit in Bazel's remote cache model; `rue_program_test`'s inline `files`
+and writable working directory are expressible in both; open question 2's
+scheduling-out-of-the-key-domain principle is build-system-independent. BXL
+(`test_tiers.bxl`, the `labels`/kind-regex contract) is Buck2-only, but it is
+internal CI scheduling and would not ship in a ruleset.
+
 ## Implementation Phases
 
 - [ ] **Phase 0: Rules, scan-derived manifest, audit, controls** — `rue_rules.bzl`
-      with `rue_program`, `rue_program_test`, `RueProgramInfo`, the two-action
-      scan/compile shape, the declaration audit, and the three controls. Also the
+      with `rue_program`, `rue_program_test`, `RueProgramInfo`, the three-action
+      scan/derive/compile shape, a `RueToolchainInfo` indirection, the declaration
+      audit, and the three controls. This phase also settles the rule names while
+      renaming is still free (see "Forward positioning"). Also the
       stale-`--prefer-remote` documentation fix noted in the References (RUE-320
       is Done, so `AGENTS.md`'s condition no longer holds). No existing target
       changes.
@@ -486,12 +649,16 @@ Linear issues are filed per phase under RUE-1164 once this ADR is accepted.
 
 ### Negative
 
-- `rue_program` is two actions and a `dynamic_output`, not one action. The scan is
-  36x cheaper than the compile, but it is not free, and it runs on every cache
-  miss.
+- `rue_program` is three actions, not one. The scan is 36x cheaper than the
+  compile, but it is not free, and it runs on every cache miss. It is at least
+  ordinary static actions rather than a `dynamic_output`, so the cost is
+  scheduling overhead and not a structure that resists porting.
 - Correctness now depends on a derivation script, not only on rule wiring. A bug
   there is a hermeticity bug, so it needs its own unit coverage — the negative
-  controls exercise it end to end but will not pin its set arithmetic.
+  controls exercise it end to end but will not pin its set arithmetic. That
+  coverage must include **relocation invariance**: derivation reads absolute
+  paths out of the envelope and must emit manifest entries that do not depend on
+  the checkout root, or a shared scan-cache hit becomes a build failure.
 - Migrating the 73 cases splits the CLI authoring surface between two mechanisms
   during Phases 2 and 3.
 - Migrated targets **escape** RUE-924's corpus-omission audit rather than break
@@ -532,8 +699,24 @@ determines whether migrating scenarios out of TOML buys anything.
    program reads. Buck configurations exist to vary the dependency graph per
    platform; for `rue_program` there is provably nothing for a configuration to
    vary, and the whole difference between two targets' compiles is one
-   command-line flag that keys the action as an attribute at zero cost. Revisit
-   only if Rue grows target-dependent imports, which ADR-0047's model forbids.
+   command-line flag that keys the action as an attribute at zero cost.
+
+   **The expiry clause has three conditions, not one.** Target-invariance covers
+   the *dependency graph*; it does not by itself cover *inputs*. Revisit if Rue
+   grows target-dependent imports (which ADR-0047's model forbids); if a
+   `rue_program` ever links an archive that another rule **builds**, since a plain
+   attribute cannot request a dep in the matching configuration and that is
+   precisely what transitions are for; or on **publication**, since
+   `platform()`-driven cross-compilation is the idiom external users expect
+   (rules_go spent years migrating off goos/goarch attributes for exactly this).
+   Nothing bites today: the only archive-linking cases are the `c_ffi` inline-source
+   cases, whose archive the harness *synthesizes* per case to match the case's
+   `executable_target` (`crates/rue-cli-tests/src/main.rs:1949-1971`) rather than
+   checking one in. Note that this is already a target-variant generated input —
+   it simply lives inside the harness instead of the build graph, so the day it
+   becomes a Buck-built artifact is the day the second condition fires. The
+   recommendation still stands either way: an internal attribute forecloses
+   nothing, because the attribute can become a transition's output.
 
 2. **Corpus input precision — a proposal, replacing the three options an earlier
    draft could not choose between.** The root problem is that the current design
@@ -633,6 +816,13 @@ determines whether migrating scenarios out of TOML buys anything.
    the negative controls pass, then a deliberate trust decision" rather than
    ordinary caution.
 
+   One thing to record for any future port: this argument is
+   build-system-independent, but the **default is inverted elsewhere**. Bazel
+   caches passing test results by default, so on a Bazel surface the posture has
+   to be re-asserted (`--nocache_test_results`) rather than merely maintained.
+   Deciding it here does not decide it there, and a port that assumes otherwise
+   flips the answer silently.
+
 ## Non-Goals
 
 - **Specification traceability stays independent of action caching.**
@@ -644,7 +834,9 @@ determines whether migrating scenarios out of TOML buys anything.
   behave correctly, and the absent-arm problem is solved by using the second
   rather than by relaxing the first. Tolerating undeclared *absent* probes would
   be a compiler change and would weaken the read policy ADR-0051 defines; this
-  design does not ask for it.
+  design does not ask for it. It is, however, the seam a future external-build-tool
+  integration would most want, and "Forward positioning" states the trade in both
+  directions rather than leaving it as a one-line dismissal.
 - **External linkers.** `rue_program` pins `--linker internal`. Cases covering
   `clang`/`gcc` linking stay in the harness.
 - **No change to what is tested.** Every scenario that runs today runs after, and
