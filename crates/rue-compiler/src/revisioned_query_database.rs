@@ -21180,7 +21180,7 @@ pub(crate) struct CompilerBodyFactProvider<'a> {
 #[derive(Default)]
 struct CanonicalAnonymousNominalRegistry {
     by_identity:
-        BTreeMap<crate::AnonymousNominalKey, crate::durable_semantics::DurableAnonymousNominal>,
+        BTreeMap<crate::AnonymousNominalKey, Rc<crate::durable_semantics::DurableAnonymousNominal>>,
 }
 
 impl CanonicalAnonymousNominalRegistry {
@@ -21192,7 +21192,7 @@ impl CanonicalAnonymousNominalRegistry {
             let identity = nominal.identity.with_canonical_producer().into_owned();
             match self.by_identity.entry(identity) {
                 std::collections::btree_map::Entry::Vacant(entry) => {
-                    entry.insert(nominal);
+                    entry.insert(Rc::new(nominal));
                 }
                 std::collections::btree_map::Entry::Occupied(mut entry) => {
                     // A declaration projection may carry only the anonymous
@@ -21215,7 +21215,7 @@ impl CanonicalAnonymousNominalRegistry {
                         } if !methods.is_empty()
                     );
                     if incoming_has_methods || !existing_has_methods {
-                        entry.insert(nominal);
+                        entry.insert(Rc::new(nominal));
                     }
                 }
             }
@@ -21225,7 +21225,7 @@ impl CanonicalAnonymousNominalRegistry {
     fn get(
         &self,
         identity: &crate::AnonymousNominalKey,
-    ) -> Option<crate::durable_semantics::DurableAnonymousNominal> {
+    ) -> Option<Rc<crate::durable_semantics::DurableAnonymousNominal>> {
         self.by_identity
             .get(identity.with_canonical_producer().as_ref())
             .cloned()
@@ -21285,7 +21285,7 @@ impl<'a> CompilerBodyDurableSource<'a> {
     fn anonymous_nominal(
         &self,
         key: &crate::AnonymousNominalKey,
-    ) -> Option<crate::durable_semantics::DurableAnonymousNominal> {
+    ) -> Option<Rc<crate::durable_semantics::DurableAnonymousNominal>> {
         use rue_air::BodyFactProvider;
         let cached = self.dynamic_anonymous.borrow().get(key);
         let cached_has_methods = cached.as_ref().is_some_and(|nominal| {
@@ -22295,7 +22295,7 @@ impl rue_air::DurableAnonymousSource<crate::StableDefinitionKey, ModuleId>
     ) -> Option<rue_air::DurableAnonymousShape<crate::StableDefinitionKey, ModuleId>> {
         self.anonymous_nominal(key)
             .as_ref()
-            .map(project_provider_anonymous_shape)
+            .map(|nominal| project_provider_anonymous_shape(nominal))
     }
 
     fn anonymous_methods(
@@ -22304,7 +22304,7 @@ impl rue_air::DurableAnonymousSource<crate::StableDefinitionKey, ModuleId>
     ) -> Vec<rue_air::DurableAnonymousMethod<crate::StableDefinitionKey, ModuleId>> {
         self.anonymous_nominal(key)
             .as_ref()
-            .map(project_provider_anonymous_methods)
+            .map(|nominal| project_provider_anonymous_methods(nominal))
             .unwrap_or_default()
     }
 
@@ -29868,14 +29868,18 @@ fn main() -> i32 {
 
         let mut registry = CanonicalAnonymousNominalRegistry::default();
         registry.extend([thin.clone()]);
-        assert_eq!(registry.get(&canonical), Some(thin.clone()));
-        assert_eq!(registry.get(&wrapped), Some(thin.clone()));
+        let canonical_thin = registry.get(&canonical).unwrap();
+        let wrapped_thin = registry.get(&wrapped).unwrap();
+        assert_eq!(canonical_thin.as_ref(), &thin);
+        assert!(Rc::ptr_eq(&canonical_thin, &wrapped_thin));
         registry.extend([rich.clone()]);
         registry.extend([thin]);
 
         assert_eq!(registry.by_identity.len(), 1);
-        assert_eq!(registry.get(&canonical), Some(rich.clone()));
-        assert_eq!(registry.get(&wrapped), Some(rich));
+        let canonical_rich = registry.get(&canonical).unwrap();
+        let wrapped_rich = registry.get(&wrapped).unwrap();
+        assert_eq!(canonical_rich.as_ref(), &rich);
+        assert!(Rc::ptr_eq(&canonical_rich, &wrapped_rich));
     }
 
     #[test]
