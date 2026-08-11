@@ -45,7 +45,10 @@ process-isolated, every time, with the runner making no claims it cannot
 verify. The execution contract — isolation, independent lifecycle, per-test
 timeout, output attribution, reproduction-as-data — is specified independently
 of mechanism; the MVP mechanism is one linked test image per target plus one
-process per test.
+process per test. Extensibility is tiered with no privileged built-ins: the
+structured failure channel, test identity, and runner contracts are all
+protocols that user-authored assertion libraries, frameworks, and runners can
+speak.
 
 ## Context
 
@@ -265,9 +268,11 @@ rue test <root.rue> [--list] [--filter <pattern>]... [--format human|json]
   failure record is data: failure kind (`assert` / `trap:<class>` / `exit` /
   `signal` / `timeout` / `ice`), the pinned runtime message (the abort-only
   runtime's fixed stderr strings are machine-recognizable by construction),
-  exit code or signal, and source span of the test declaration. Richer
-  expected/actual payloads arrive with structured assertion intrinsics
-  (§Future Work), not by parsing prose.
+  exit code or signal, and a source location — in the MVP, the test
+  declaration's span. The record's payload and location fields are extension
+  points, not closed shapes: richer expected/actual payloads and
+  failing-call-site locations arrive through the structured failure channel
+  (§7.1) as additive schema minors, never by parsing prose.
 - **Asymmetric verbosity**: the default human renderer prints failures in
   full — structured failure, captured output, repro line — and passes as a
   count. No wall of green. The human renderer is implemented as a consumer of
@@ -477,19 +482,90 @@ declared narrowing ships (Phase 6), FFI is simply top.
   isolation makes order dependence impossible for hermetic tests; shuffling
   keeps everyone else honest, and the seed makes any surprise reproducible).
 
-### 7. The protocol seam for user-authored frameworks is reserved
+### 7. Extensibility is tiered, in-language first, with no privileged built-ins
 
-The built-in runner speaks to test images through an argv/exit-code/stream
-contract that Phase 2 defines and documents. Phase 7 promotes a versioned
-subset of that contract to a public protocol — enumerate (IDs, metadata,
-capabilities) and execute-by-ID with structured results — so property testers,
-snapshot harnesses, and fuzzers can present as test providers and inherit
-scheduling, caching, filtering, and reporting. Its wire format must be decided
+The built-in framework must be the default, not the ceiling: a future BDD
+layer, cucumber-style step harness, assertion library, property tester, or
+replacement runner has to be writable without this ADR being reopened. Four
+seams, ordered by how much of the verified story each preserves. What is
+deliberately *not* extensible: the verdict taxonomy's meaning, the isolation
+contract (§3), and the soundness posture (§4.3) — extensions change what tests
+look like and how they report, never what "verified hermetic" claims.
+
+#### 7.1 Assertion libraries are first-class by protocol, not by blessing
+
+The channel through which a failing test reports structure — failure kind,
+message, expected/actual payload, failing-call-site location — is a documented
+runtime protocol, not a privilege of blessed intrinsics. `@assert` today, and
+`@assert_eq` when it arrives, are sugar over the same channel any Rue function
+can invoke before aborting; a user assertion library emits the same structured
+failure records the built-ins do, and the event stream carries them without
+knowing who produced them. The mechanism (a dedicated runtime helper writing
+one framed record ahead of the abort, vs a reserved framed region of stderr)
+is a Phase 2 design decision listed under maintainer calls. Two consequences
+are deliberate: the failure payload is an open, versioned field rather than an
+enum of built-in shapes, and location is carried *in* the record — so a
+library can attribute its caller — rather than derived solely from the test
+declaration. Automatic call-site capture wants a `@src()`-style comptime
+intrinsic (deferred; nothing here blocks it); until then library-reported
+locations are the library's responsibility.
+
+#### 7.2 In-language frameworks are ordinary Rue code; comptime is the generator
+
+A BDD vocabulary, a table-driven harness, a property tester's case machinery —
+written in Rue, these are plain functions and comptime constructs used inside
+test bodies from day one, and they inherit capability inference, caching, and
+selection automatically because their helpers are reached bodies like any
+other. What v1 does not give them is per-case identity: one `test` block
+looping over a table is one verdict, one cache entry, one filterable unit. Two
+extensions are reserved so that ceiling lifts without redesign:
+
+- **Test items in comptime-instantiated types.** v1 grammar restricts `test`
+  to module item position; permitting test items inside struct bodies produced
+  by comptime functions (the Zig shape — a generic container's tests
+  instantiated and run per specialization) is additive grammar work, and
+  ADR-0063 §5's identity domain already covers specialization-anchored members
+  (producing definition + canonical arguments + structural anchor), so stable
+  test identity extends with no new scheme. The event schema therefore treats
+  a test's identity as an opaque stable ID for matching *plus* structured
+  identity fields alongside, so IDs can grow producer/argument components as a
+  schema minor rather than a breaking re-spelling.
+- **Sub-results.** The §7.1 channel generalizes to a sub-result record: a
+  running test may emit named child results with their own payloads, which the
+  runner attributes as `<test-id>/<sub-name>` rows in the stream. Scheduling,
+  caching, and selection stay at the item level — sub-results are reporting
+  granularity, which is what table tests and `describe`/`it` nesting need
+  first. Reserved in the schema from v1, implemented when demanded.
+
+#### 7.3 Reporters and observers consume the stream
+
+Custom reporters, CI adapters, dashboards, and IDE surfaces are NDJSON
+consumers with no protocol negotiation. This works from Phase 2 and is the
+intended default extension point; a JUnit adapter is the reference consumer.
+
+#### 7.4 Alternative runners and external providers use documented contracts
+
+A replacement *runner* needs no new privileges at any phase: enumerate with
+`rue test <root> --list --format json`, execute through the test image's
+documented argv/exit/stream contract — public by commitment from Phase 2, and
+nothing in Phases 1–6 may depend on it staying private — and schedule however
+it likes. The reverse direction, external test *providers* (step harnesses,
+fuzzers, snapshot tools presenting tests the compiler never saw), is Phase 7's
+versioned enumerate/execute-by-ID protocol, whose wire format must be decided
 together with RUE-505's semantic-API format policy; committing to it now would
-prejudge that discussion, so this ADR reserves the seam (nothing in Phases 1–6
-may depend on the dispatcher protocol staying private) and defers the wire
-contract. Custom reporters need no protocol at all: they consume the NDJSON
-stream from day one.
+prejudge that discussion, so this ADR reserves the seam and defers the
+contract. Provider-supplied tests are not compiler-visible bodies, so they get
+no verified capability summaries: they run as unverified — always executed,
+never cached — unless the provider generates real Rue test items instead.
+Eject-don't-degrade applies to extensions exactly as it applies to `@syscall`.
+
+Fixtures deserve one honest note: setup is plain code in the test body and
+teardown is destructors, but the abort-only runtime means destructors do not
+run on a failing path — teardown-on-failure is process death plus the
+retained scratch directory, which suffices for hermetic and fs tests alike.
+Expensive fixtures *shared across* tests (a database, a compiled corpus) are a
+runner-policy question — serialized groups (Phase 5) plus future setup
+commands — and are noted as not locked out rather than designed here.
 
 ## Implementation Phases
 
@@ -509,9 +585,10 @@ here per docs/designs/README.md).
       process-group timeout/kill and output capture (mechanics shared with
       `rue-test-runner`); `--list`, `--filter`, `--jobs`, `--shard`,
       `--timeout-ms`, `--seed` (shuffle), exit-code contract; NDJSON event
-      stream v1.0 with schema doc (docs/process/test-events.md) and the human
-      renderer as its consumer; repro argv in every failure; CLI-suite coverage
-      end to end. **This phase is the MVP: usable, agent-first, zero capability
+      stream v1.0 with schema doc (docs/process/test-events.md), including the
+      structured failure-record channel contract (§7.1) and the reserved
+      identity/sub-result shapes (§7.2), with the human renderer as its
+      consumer; repro argv in every failure; CLI-suite coverage end to end. **This phase is the MVP: usable, agent-first, zero capability
       claims — every test simply runs.**
 - [ ] **Phase 3: `EffectSummary` query family** - RUE-TBD. Bottom-up bitset
       summaries over `BodyReferences` with red/green cutoff; leaves = helper
@@ -565,6 +642,10 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   forward-designed for the features that will complicate them (traits,
   function values, time APIs, separate compilation), so none of those arrive
   as retrofits.
+- Extensibility has no privileged built-ins: assertion libraries share the
+  built-ins' failure channel (§7.1), in-language frameworks inherit
+  verification automatically (§7.2), and a replacement runner can exist from
+  Phase 2 using only documented contracts (§7.4).
 
 ### Negative
 
@@ -612,6 +693,13 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   test and production builds in exchange for determinism and cacheability of
   `random` tests. Not needed for MVP; call needed before Phase 5 flake policy
   treats `random` as permanently nondeterministic.
+- **Structured failure channel mechanism** (§7.1): a dedicated runtime helper
+  writing one framed record before the abort (touches the ABI manifest, so it
+  is an ABI change under ADR-0055 rules) vs a reserved framed region of
+  stderr (no ABI change, but stderr framing must coexist with user writes).
+  Shapes both the runtime surface and the event schema; call needed during
+  Phase 2 design, and it gates how soon userland assertion libraries reach
+  parity with `@assert`.
 - **Exit-code and `@assert` stabilization**: promote `@assert`/`@panic` from
   the reserved intrinsic bucket (4.13:5b) to normative, and decide whether
   assertion failure keeps exit 101 (shared with all traps, distinguished by
@@ -660,20 +748,24 @@ priorities shift, except that 4 requires 3 and 6 requires 3.
   its incremental-cost story inside the query graph is unstudied. Revisit with
   evidence from Phase 3 summaries about how many tests are comptime-eligible.
 - Doctests: examples in docs testable by construction (RUE-504 coordination);
-  the protocol seam (§7) is where a doc-example provider would plug in.
+  the protocol seam (§7.4) is where a doc-example provider would plug in.
 - Per-test timeout/skip/xfail metadata (`@timeout(ms)`, `@skip`,
   `@known_bug("RUE-NN")` with XPASS-fails-loudly semantics inherited from the
-  compiler's own suites): wanted, directive syntax fits, deferred to keep
-  Phase 1 grammar minimal.
+  compiler's own suites), plus user-defined tags (`@tag("...")`) with a
+  metadata map on test events (additive minor): wanted, directive syntax
+  fits, deferred to keep Phase 1 grammar minimal.
+- Test items in comptime-instantiated types (§7.2) and the `@src()`-style
+  call-site intrinsic (§7.1): both reserved as additive; scheduled when a
+  real framework or assertion library demands them, not speculatively.
 - Workspace/multi-root invocation, and whether `rue test` without a root
   argument should discover one (needs the package-model discussion, ADR-0047's
   successor).
 
 ## Future Work
 
-Structured assertion intrinsics (`@assert_eq` and friends emitting
-expected/actual as data through a runtime channel the event stream can carry —
-today's `@assert` gives only a boolean and a fixed message); the public
+Structured assertion intrinsics (`@assert_eq` and friends as sugar over the
+§7.1 failure channel — today's `@assert` gives only a boolean and a fixed
+message); the public
 provider protocol's wire format with RUE-505; capability declarations in types
 and at trait boundaries (the future ADR flagged in §4.4); seeded-entropy test
 profile; duration-aware sharding; JUnit and CI-surface adapters; test-aware
