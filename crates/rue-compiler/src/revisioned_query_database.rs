@@ -16569,9 +16569,7 @@ impl RevisionedQueryDatabase {
     pub(crate) fn optimized_cfg(
         &self,
         revision: Revision,
-        function: crate::FunctionInstanceKey,
-        configuration: crate::semantic_query_nucleus::SemanticQueryConfiguration,
-        semantic_input: crate::cfg_query::CfgSemanticInput,
+        cfg: crate::cfg_query::CfgQueryKey,
         opt_level: rue_cfg::OptLevel,
         accessor_dependencies: Arc<[crate::cfg_query::CfgQueryKey]>,
         cancellation: CancellationToken,
@@ -16582,7 +16580,6 @@ impl RevisionedQueryDatabase {
         ),
         QueryAbort,
     > {
-        let cfg = crate::cfg_query::CfgQueryKey::new(function, configuration, semantic_input);
         let optimized =
             crate::cfg_query::OptimizedCfgQueryKey::new(cfg, opt_level, accessor_dependencies);
         let attempt = self.runtime.request_registered(

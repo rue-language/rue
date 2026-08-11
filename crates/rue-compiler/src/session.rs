@@ -4910,6 +4910,9 @@ impl CompilerSession {
         let mut cfg_inputs = Vec::with_capacity(identities.len());
         let warning_references = self.rooted_warning_references(&graph, cancellation.clone())?;
         let mut warnings = rooted_unused_function_warnings(&graph, &warning_references);
+        let _cfg_collection_span =
+            tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
+                .entered();
         for closure_body in graph.closure.bodies.iter() {
             let rue_query::QueryOutcome::Success(bundle) = closure_body.bundle.outcome() else {
                 unreachable!("BodyAnalysisBundle publishes typed values")
@@ -5069,28 +5072,22 @@ impl CompilerSession {
                 };
                 CompileError::new(kind, span)
             })?;
-        let accessor_roots = accessor_subgraph.roots;
-        let accessor_dependencies = accessor_subgraph.dependencies;
+        let mut accessor_roots = accessor_subgraph.roots;
+        let mut accessor_dependencies = accessor_subgraph.dependencies;
         let accessor_functions = accessor_subgraph.accessors;
         let cfg_requests = cfg_inputs
             .into_iter()
             .filter(|(function, _, _)| !accessor_functions.contains(function))
-            .map(|(function, semantic_input, body_span)| {
-                let cfg = crate::cfg_query::CfgQueryKey::new(
-                    function.clone(),
-                    graph.configuration.clone(),
-                    accessor_roots
-                        .get(&function)
-                        .map(|key| key.semantic_input.clone())
-                        .unwrap_or(semantic_input),
-                );
+            .map(|(function, _, body_span)| {
+                let cfg = accessor_roots
+                    .remove(&function)
+                    .expect("validated accessor subgraph has one root per executable function");
                 let optimized_cfg_key = crate::cfg_query::OptimizedCfgQueryKey::new(
                     cfg,
                     options.opt_level,
                     accessor_dependencies
-                        .get(&function)
-                        .cloned()
-                        .unwrap_or_else(|| Arc::new([])),
+                        .remove(&function)
+                        .expect("validated accessor subgraph has dependencies for every root"),
                 );
                 (function, optimized_cfg_key, body_span)
             })
@@ -5104,9 +5101,6 @@ impl CompilerSession {
         let mut backend_root = self.queries.revisioned.begin_backend_root();
         #[cfg(test)]
         self.rooted_cfg_executions.clear();
-        let _cfg_collection_span =
-            tracing::info_span!("optimized_cfg_collection", phase = "cfg_and_optimization")
-                .entered();
         let (cfg_batch_key, attempt) = self.queries.revisioned.optimized_cfg_batch(
             graph.revision,
             optimized_keys,
@@ -11990,6 +11984,71 @@ fn main() -> i32 {
         let rendered = errors.to_string();
         assert!(rendered.contains("call ABI unavailable"), "{rendered}");
         assert!(rendered.contains("injected call ABI failure"), "{rendered}");
+    }
+
+    #[test]
+    fn cfg_keys_are_constructed_once_and_typed_equality_resolves_memo_hash_collisions() {
+        fn hash(key: &crate::cfg_query::CfgQueryKey) -> u64 {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(key, &mut hasher);
+            std::hash::Hasher::finish(&hasher)
+        }
+
+        let first = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 1 } fn main() -> i32 { helper() }",
+        )
+        .unwrap();
+        let second = SourceSnapshot::single(
+            "main.rue",
+            "fn helper() -> i32 { 2 } fn main() -> i32 { helper() }",
+        )
+        .unwrap();
+        let options = CompileOptions::default();
+        let mut session = CompilerSession::new();
+
+        session.update(&first).into_result().unwrap();
+        let (first_cfgs, constructions) =
+            crate::cfg_query::with_test_cfg_query_key_construction_count(|| {
+                session.rooted_cfg(&options)
+            });
+        let first_cfgs = first_cfgs.unwrap();
+        assert_eq!(
+            constructions,
+            first_cfgs.cfgs.len(),
+            "a no-accessor production root constructs each final CFG key exactly once"
+        );
+        let first_helper = first_cfgs
+            .cfgs
+            .iter()
+            .find(|cfg| crate::cfg_query::accessor_source_name(&cfg.function) == "helper")
+            .unwrap()
+            .optimized_cfg_key
+            .cfg
+            .clone();
+        drop(first_cfgs);
+
+        session.update(&second).into_result().unwrap();
+        let second_cfgs = session.rooted_cfg(&options).unwrap();
+        let second_helper = second_cfgs
+            .cfgs
+            .iter()
+            .find(|cfg| crate::cfg_query::accessor_source_name(&cfg.function) == "helper")
+            .unwrap()
+            .optimized_cfg_key
+            .cfg
+            .clone();
+
+        assert_ne!(first_helper, second_helper);
+        assert_eq!(
+            hash(&first_helper),
+            hash(&second_helper),
+            "semantic versions of one function deliberately share the cheap memo partition"
+        );
+        let mut exact = std::collections::HashMap::new();
+        exact.insert(first_helper, "first");
+        exact.insert(second_helper, "second");
+        assert_eq!(exact.len(), 2, "typed equality resolves the hash collision");
     }
 
     #[test]
