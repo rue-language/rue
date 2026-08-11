@@ -909,6 +909,22 @@ range is -27.68% to +54.74%. Median peak RSS falls by 2.4 MiB, within the wide
 run dispersion. Every deterministic compiler-work counter and the emitted
 executable remain identical.
 
+RUE-1390 removes a redundant full-tree sweep from each body-scheduler
+iteration. All pending insertion goes through `schedule_body_instance`, which
+refuses visited bodies, while the one direct deferred-producer retry removes
+its body from `visited` before reinserting it. The scheduler now asserts that
+invariant in debug builds instead of filtering the complete pending frontier in
+release builds. This removes a potential O(iterations × pending) comparison
+path without changing scheduler order or query topology.
+
+The body-scheduler `BTreeMap::ExtractIf` leaf disappears from three follow-up
+profiles; the remaining `ExtractIf` samples belong to unrelated runtime
+retention. Thirty-two alternating ordinary-release pairs are clock-neutral at
+a -0.38% paired median, with 7.96% paired MAD on the loaded host. Median peak
+RSS moves +1.53 MiB within dispersion, and repeated allocation-instrumented
+runs are neutral. Every deterministic compiler-work counter and the emitted
+executable remain identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

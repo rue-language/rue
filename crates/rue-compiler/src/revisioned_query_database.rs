@@ -15431,7 +15431,12 @@ impl RevisionedQueryDatabase {
                         concurrency.saturating_mul(2).min(64)
                     };
                     'schedule: loop {
-                        pending.retain(|instance, _| !visited.contains(instance));
+                        // Every insertion flows through `schedule_body_instance`, which
+                        // rejects visited bodies. The deferred-producer retry is the sole
+                        // direct reinsertion and removes its body from `visited` first.
+                        // Keep that ownership invariant explicit without sweeping the
+                        // complete pending frontier before every scheduled body.
+                        debug_assert!(pending.keys().all(|instance| !visited.contains(instance)));
                         if ready_frontier.is_empty() && prefetched_transactions.is_empty() {
                             // Close the statically encoded anonymous-producer
                             // graph before selecting a ready frontier. A body
