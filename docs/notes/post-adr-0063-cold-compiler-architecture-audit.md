@@ -759,6 +759,23 @@ counts and requested bytes vary by less than 0.001% across repeated accounting
 runs; every deterministic compiler-work counter and emitted executable is
 identical.
 
+RUE-1377 replaces the task-local and structured-batch validation-endorsement
+trees with exact hash indexes. These sets only insert, extend, and test the
+runtime-assigned `(incarnation, stamp, revision)` identity; no consumer uses
+their order. Cold Lattice performs 745,097 authority probes, so ordered lookup
+was avoidable work on one of the hottest query-runtime paths.
+
+Across three post-RUE-1376 and three candidate samples,
+`Task::validation_endorsement_authority_at` falls from 49 to 11 combined
+top-of-stack samples (-78%). Two allocation-accounting comparisons agree: the
+first moves from 16,567,861 to 16,553,066 calls (-14,795, or 0.09%) and from
+2,720,425,017 to 2,713,507,845 requested bytes (-6,917,172, or 0.25%); the
+reverse-order repetition differs by fewer than 20 calls and 20 KiB. Twenty-four
+directly alternating ordinary-release pairs are clock-neutral at a +0.67%
+median paired delta. Median peak RSS moves by +1.58 MiB (0.35%), within run
+dispersion. Every deterministic compiler-work counter and the emitted
+executable are identical.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:
