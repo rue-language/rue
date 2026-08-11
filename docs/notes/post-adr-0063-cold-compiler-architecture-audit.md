@@ -407,6 +407,34 @@ The fixed one-worker Lattice allocation probe fell from 22,297,695 to
 reachability counter remains exact, and the Lattice executable hash is still
 `8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
 
+RUE-1357 then removed the next coherent allocator-heavy cluster from the cold
+profile. Shared liveness previously built three separately allocated lists per
+machine instruction: successors, virtual-register uses and virtual-register
+definitions. MIR bounds those facts tightly — two successors and at most three
+current virtual operands — so the canonical liveness adapter now stores them
+in fixed-capacity inline lists. The four-register list deliberately has one
+slot of headroom, and both inline representations are no wider than the `Vec`
+elements they replace. A production capacity check fails loudly if a future
+MIR instruction changes the audited bound.
+
+That width constraint is material. A growable small-vector experiment removed
+the same tiny allocations but widened every row of the three outer fact tables,
+raising Lattice's peak by roughly 9 MiB in the first controlled run. The fixed
+representation was selected instead: its final peak was 722.5 MiB versus the
+RUE-1356 parent's 727.6 MiB, while the other maintained workloads moved -0.2,
++1.0 and 0.0 MiB. The fixed one-worker Lattice allocation probe fell from
+21,842,394 to 20,723,763 calls (-5.12 percent) and from 3,543,025,272 to
+3,535,874,140 requested bytes (-0.20 percent).
+
+Cold clock time is neutral overall rather than a universal speedup: compiler
+medians moved 132.05 to 130.84 ms for Ruelex, 389.20 to 363.53 ms for Mosaic,
+804.38 to 813.01 ms for Harbor and 932.14 to 944.40 ms for Lattice. The latter
+two deltas are small relative to the paired runs' noise, while the exact
+allocation reduction establishes the work result independently. All existing
+query, reachability and materialization counters remain identical, and the
+Lattice executable remains byte-identical at
+`8d7355dcda83780ef8a98aedfa0495a9d4745c5ed84375e0ae9a37d82eb361a9`.
+
 ## Next actions and decision boundary
 
 Authorized low-risk work:

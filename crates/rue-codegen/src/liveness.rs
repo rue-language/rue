@@ -19,6 +19,8 @@
 //! keeping the instruction-specific logic where it belongs.
 
 use std::collections::HashMap;
+use std::iter::Take;
+use std::ops::Deref;
 
 use fixedbitset::FixedBitSet;
 
@@ -26,6 +28,110 @@ use crate::index_map::IndexMap;
 use crate::reg_class::VRegClasses;
 use crate::regalloc::{InstructionLiveness, LiveRange, LivenessDebugInfo, LivenessInfo, LoopInfo};
 use crate::vreg::{LabelId, VReg};
+
+/// A fixed-capacity, inline list for bounded machine-instruction facts.
+///
+/// MIR defines exact small maxima for the facts liveness extracts. Keeping the
+/// storage inline removes per-instruction allocation without making the outer
+/// fact tables wider than their former `Vec` elements. `push` fails loudly if
+/// a future instruction exceeds the audited bound, so extending MIR requires
+/// extending the representation in the same change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineList<T, const N: usize> {
+    values: [T; N],
+    len: usize,
+}
+
+impl<T, const N: usize> InlineList<T, N>
+where
+    T: Copy + Default,
+{
+    /// Create an empty list backed by its inline storage.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            values: [T::default(); N],
+            len: 0,
+        }
+    }
+
+    /// Append one fact to the list.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the list's audited MIR-specific capacity is exceeded.
+    pub fn push(&mut self, value: T) {
+        assert!(self.len < N, "inline liveness fact capacity {N} exceeded");
+        self.values[self.len] = value;
+        self.len += 1;
+    }
+}
+
+impl<T, const N: usize> Default for InlineList<T, N>
+where
+    T: Copy + Default,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, const N: usize> Deref for InlineList<T, N> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        &self.values[..self.len]
+    }
+}
+
+impl<T, const N: usize> AsRef<[T]> for InlineList<T, N> {
+    fn as_ref(&self) -> &[T] {
+        self
+    }
+}
+
+impl<T, const N: usize> FromIterator<T> for InlineList<T, N>
+where
+    T: Copy + Default,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        let mut values = Self::new();
+        for value in iter {
+            values.push(value);
+        }
+        values
+    }
+}
+
+impl<T, const N: usize> IntoIterator for InlineList<T, N> {
+    type Item = T;
+    type IntoIter = Take<std::array::IntoIter<T, N>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.into_iter().take(self.len)
+    }
+}
+
+impl<'a, T, const N: usize> IntoIterator for &'a InlineList<T, N> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// Virtual-register facts attached to one machine instruction.
+///
+/// Current MIR forms have at most three virtual operands; four slots preserve
+/// one slot of headroom without making this representation wider than `Vec`.
+pub type VRegList = InlineList<VReg, 4>;
+
+/// Control-flow successors attached to one machine instruction.
+///
+/// MIR instructions have at most a fallthrough and one branch target, so the
+/// complete successor list fits inline.
+pub type SuccessorList = InlineList<usize, 2>;
 
 /// Backend-specific facts required by the shared liveness orchestration.
 ///
@@ -62,13 +168,13 @@ pub trait LivenessAdapter {
         idx: usize,
         inst: &Self::Inst,
         label_to_idx: &HashMap<LabelId, usize>,
-    ) -> Vec<usize>;
+    ) -> SuccessorList;
 
     /// Return virtual registers read by `inst`.
-    fn uses(&self, inst: &Self::Inst) -> Vec<VReg>;
+    fn uses(&self, inst: &Self::Inst) -> VRegList;
 
     /// Return virtual registers written by `inst`.
-    fn defs(&self, inst: &Self::Inst) -> Vec<VReg>;
+    fn defs(&self, inst: &Self::Inst) -> VRegList;
 
     /// Return physical registers clobbered by `inst`.
     fn clobbers(&self, inst: &Self::Inst) -> Vec<Self::Reg>;
@@ -152,16 +258,16 @@ where
 
 /// Successor list for an instruction that falls through to the next
 /// instruction, if there is one.
-pub fn fallthrough_successor(idx: usize, num_insts: usize) -> Vec<usize> {
+pub fn fallthrough_successor(idx: usize, num_insts: usize) -> SuccessorList {
+    let mut successors = SuccessorList::new();
     if idx + 1 < num_insts {
-        vec![idx + 1]
-    } else {
-        Vec::new()
+        successors.push(idx + 1);
     }
+    successors
 }
 
 /// Successor list for an unconditional branch to `label`.
-pub fn branch_successor(label: LabelId, label_to_idx: &HashMap<LabelId, usize>) -> Vec<usize> {
+pub fn branch_successor(label: LabelId, label_to_idx: &HashMap<LabelId, usize>) -> SuccessorList {
     label_to_idx.get(&label).copied().into_iter().collect()
 }
 
@@ -172,8 +278,8 @@ pub fn conditional_successors(
     label: LabelId,
     label_to_idx: &HashMap<LabelId, usize>,
     num_insts: usize,
-) -> Vec<usize> {
-    let mut succs = Vec::with_capacity(2);
+) -> SuccessorList {
+    let mut succs = SuccessorList::new();
     if idx + 1 < num_insts {
         succs.push(idx + 1);
     }
@@ -216,9 +322,9 @@ pub fn analyze<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
-    get_uses: impl Fn(&I) -> Vec<VReg>,
-    get_defs: impl Fn(&I) -> Vec<VReg>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_uses: impl Fn(&I) -> VRegList,
+    get_defs: impl Fn(&I) -> VRegList,
     get_clobbers: impl Fn(&I) -> Vec<R>,
     get_non_returning: impl Fn(&I) -> bool,
 ) -> LivenessInfo<R>
@@ -248,9 +354,9 @@ pub fn analyze_with_debug<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
-    get_uses: impl Fn(&I) -> Vec<VReg>,
-    get_defs: impl Fn(&I) -> Vec<VReg>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_uses: impl Fn(&I) -> VRegList,
+    get_defs: impl Fn(&I) -> VRegList,
     get_clobbers: impl Fn(&I) -> Vec<R>,
     get_non_returning: impl Fn(&I) -> bool,
 ) -> (LivenessInfo<R>, LivenessDebugInfo)
@@ -281,9 +387,9 @@ fn analyze_inner<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
-    get_uses: impl Fn(&I) -> Vec<VReg>,
-    get_defs: impl Fn(&I) -> Vec<VReg>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_uses: impl Fn(&I) -> VRegList,
+    get_defs: impl Fn(&I) -> VRegList,
     get_clobbers: impl Fn(&I) -> Vec<R>,
     get_non_returning: impl Fn(&I) -> bool,
     collect_debug: bool,
@@ -317,8 +423,8 @@ where
     let successors = build_successor_lists(instructions, &label_to_idx, &get_successors);
 
     // Step 3: Pre-compute uses and defs for each instruction
-    let inst_uses: Vec<Vec<VReg>> = instructions.iter().map(&get_uses).collect();
-    let inst_defs: Vec<Vec<VReg>> = instructions.iter().map(&get_defs).collect();
+    let inst_uses: Vec<VRegList> = instructions.iter().map(&get_uses).collect();
+    let inst_defs: Vec<VRegList> = instructions.iter().map(&get_defs).collect();
 
     // Step 4: Backward dataflow analysis to compute live sets
     let (live_in, live_out) =
@@ -352,8 +458,8 @@ where
                 index: idx,
                 live_in: bitset_to_hashset(&live_in[idx]),
                 live_out: bitset_to_hashset(&live_out[idx]),
-                defs: inst_defs[idx].clone(),
-                uses: inst_uses[idx].clone(),
+                defs: inst_defs[idx].to_vec(),
+                uses: inst_uses[idx].to_vec(),
             })
             .collect();
         LivenessDebugInfo {
@@ -384,9 +490,9 @@ pub fn analyze_debug<I, R>(
     vreg_count: u32,
     vreg_classes: VRegClasses,
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
-    get_uses: impl Fn(&I) -> Vec<VReg>,
-    get_defs: impl Fn(&I) -> Vec<VReg>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+    get_uses: impl Fn(&I) -> VRegList,
+    get_defs: impl Fn(&I) -> VRegList,
 ) -> LivenessDebugInfo
 where
     R: Copy + Eq + std::hash::Hash,
@@ -427,8 +533,8 @@ fn build_label_map<I>(
 fn build_successor_lists<I>(
     instructions: &[I],
     label_to_idx: &HashMap<LabelId, usize>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
-) -> Vec<Vec<usize>> {
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
+) -> Vec<SuccessorList> {
     instructions
         .iter()
         .enumerate()
@@ -439,7 +545,7 @@ fn build_successor_lists<I>(
 /// Return `true` if any instruction has a successor at an index `<= its own`,
 /// i.e. the control-flow graph contains a back-edge (a loop). Used to pick the
 /// fast, loop-free live-range construction path in [`build_live_ranges`].
-fn has_back_edge(successors: &[Vec<usize>]) -> bool {
+fn has_back_edge(successors: &[SuccessorList]) -> bool {
     successors
         .iter()
         .enumerate()
@@ -454,9 +560,9 @@ fn has_back_edge(successors: &[Vec<usize>]) -> bool {
 fn compute_dataflow(
     num_insts: usize,
     vreg_count: u32,
-    successors: &[Vec<usize>],
-    inst_uses: &[Vec<VReg>],
-    inst_defs: &[Vec<VReg>],
+    successors: &[SuccessorList],
+    inst_uses: &[VRegList],
+    inst_defs: &[VRegList],
 ) -> (Vec<FixedBitSet>, Vec<FixedBitSet>) {
     let vreg_count_usize = vreg_count as usize;
 
@@ -544,8 +650,8 @@ fn compute_dataflow(
 fn build_live_ranges(
     num_insts: usize,
     vreg_count: u32,
-    inst_uses: &[Vec<VReg>],
-    inst_defs: &[Vec<VReg>],
+    inst_uses: &[VRegList],
+    inst_defs: &[VRegList],
     live_in: &[FixedBitSet],
     live_out: &[FixedBitSet],
     has_back_edge: bool,
@@ -664,7 +770,10 @@ fn compute_live_at(
 /// # Returns
 ///
 /// A `LoopInfo` with loop depth for each instruction.
-pub fn compute_loop_info(num_insts: usize, successors: &[Vec<usize>]) -> LoopInfo {
+pub fn compute_loop_info<S>(num_insts: usize, successors: &[S]) -> LoopInfo
+where
+    S: AsRef<[usize]>,
+{
     if num_insts == 0 {
         return LoopInfo::no_loops(0);
     }
@@ -675,7 +784,7 @@ pub fn compute_loop_info(num_insts: usize, successors: &[Vec<usize>]) -> LoopInf
     let mut loop_ranges: Vec<(usize, usize)> = Vec::new();
 
     for (from, succs) in successors.iter().enumerate() {
-        for &to in succs {
+        for &to in succs.as_ref() {
             if to <= from {
                 // This is a back-edge: we're jumping backwards
                 // The loop spans from `to` (loop header) to `from` (back-edge source)
@@ -707,7 +816,7 @@ pub fn compute_loop_info(num_insts: usize, successors: &[Vec<usize>]) -> LoopInf
 pub fn analyze_loops<I>(
     instructions: &[I],
     get_label: impl Fn(&I) -> Option<LabelId>,
-    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> Vec<usize>,
+    get_successors: impl Fn(usize, &I, &HashMap<LabelId, usize>) -> SuccessorList,
 ) -> LoopInfo {
     let num_insts = instructions.len();
 
@@ -774,6 +883,24 @@ pub fn compute_pressure(live_at: &[FixedBitSet]) -> PressureInfo {
 mod tests {
     use super::*;
 
+    #[test]
+    fn inline_fact_lists_do_not_widen_the_outer_liveness_tables() {
+        assert!(std::mem::size_of::<VRegList>() <= std::mem::size_of::<Vec<VReg>>());
+        assert!(std::mem::size_of::<SuccessorList>() <= std::mem::size_of::<Vec<usize>>());
+
+        let facts: VRegList = (0..4).map(VReg::new).collect();
+        assert_eq!(
+            facts.as_ref(),
+            &[VReg::new(0), VReg::new(1), VReg::new(2), VReg::new(3)]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "inline liveness fact capacity 4 exceeded")]
+    fn inline_fact_lists_fail_loudly_when_the_audited_bound_changes() {
+        let _: VRegList = (0..5).map(VReg::new).collect();
+    }
+
     // Simple test instruction type
     #[derive(Debug, Clone)]
     enum TestInst {
@@ -797,10 +924,10 @@ mod tests {
         inst: &TestInst,
         label_to_idx: &HashMap<LabelId, usize>,
         num_insts: usize,
-    ) -> Vec<usize> {
+    ) -> SuccessorList {
         match inst {
             TestInst::Branch { label } => {
-                let mut succs = Vec::new();
+                let mut succs = SuccessorList::new();
                 if idx + 1 < num_insts {
                     succs.push(idx + 1);
                 }
@@ -809,30 +936,30 @@ mod tests {
                 }
                 succs
             }
-            TestInst::Ret => Vec::new(),
+            TestInst::Ret => SuccessorList::new(),
             _ => {
+                let mut successors = SuccessorList::new();
                 if idx + 1 < num_insts {
-                    vec![idx + 1]
-                } else {
-                    Vec::new()
+                    successors.push(idx + 1);
                 }
+                successors
             }
         }
     }
 
-    fn test_get_uses(inst: &TestInst) -> Vec<VReg> {
+    fn test_get_uses(inst: &TestInst) -> VRegList {
         match inst {
-            TestInst::Use { src } => vec![VReg::new(*src)],
-            TestInst::Move { src, .. } => vec![VReg::new(*src)],
-            _ => Vec::new(),
+            TestInst::Use { src } => [VReg::new(*src)].into_iter().collect(),
+            TestInst::Move { src, .. } => [VReg::new(*src)].into_iter().collect(),
+            _ => VRegList::new(),
         }
     }
 
-    fn test_get_defs(inst: &TestInst) -> Vec<VReg> {
+    fn test_get_defs(inst: &TestInst) -> VRegList {
         match inst {
-            TestInst::Def { dst } => vec![VReg::new(*dst)],
-            TestInst::Move { dst, .. } => vec![VReg::new(*dst)],
-            _ => Vec::new(),
+            TestInst::Def { dst } => [VReg::new(*dst)].into_iter().collect(),
+            TestInst::Move { dst, .. } => [VReg::new(*dst)].into_iter().collect(),
+            _ => VRegList::new(),
         }
     }
 
